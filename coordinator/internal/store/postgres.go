@@ -1,0 +1,420 @@
+package store
+
+// PostgreSQL-backed implementation of the Store interface.
+//
+// PostgresStore provides persistent storage with proper transactional
+// guarantees. It stores API key hashes (SHA-256) rather than raw keys,
+// so even if the database is compromised, API keys cannot be recovered.
+//
+// Balance operations (Credit/Debit) use PostgreSQL transactions to ensure
+// atomicity — the balance update and ledger entry are committed together
+// or not at all. The Debit operation uses a conditional UPDATE that only
+// succeeds if the balance is sufficient, preventing negative balances.
+//
+// Schema migrations run automatically on startup via the migrate() method.
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// Compile-time check that PostgresStore implements Store.
+var _ Store = (*PostgresStore)(nil)
+
+// PostgresStore is a PostgreSQL-backed implementation of Store.
+type PostgresStore struct {
+	pool *pgxpool.Pool
+}
+
+// NewPostgres creates a new PostgresStore connected to the given database URL.
+// It runs schema migrations on startup.
+func NewPostgres(ctx context.Context, connString string) (*PostgresStore, error) {
+	pool, err := pgxpool.New(ctx, connString)
+	if err != nil {
+		return nil, fmt.Errorf("store: connect to postgres: %w", err)
+	}
+
+	// Verify connectivity.
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("store: ping postgres: %w", err)
+	}
+
+	s := &PostgresStore{pool: pool}
+	if err := s.migrate(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("store: run migrations: %w", err)
+	}
+
+	return s, nil
+}
+
+// Close shuts down the connection pool.
+func (s *PostgresStore) Close() {
+	s.pool.Close()
+}
+
+// migrate runs the schema creation statements.
+func (s *PostgresStore) migrate(ctx context.Context) error {
+	migrations := []string{
+		`CREATE TABLE IF NOT EXISTS providers (
+			id TEXT PRIMARY KEY,
+			hardware JSONB NOT NULL,
+			models JSONB NOT NULL,
+			backend TEXT NOT NULL,
+			registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS api_keys (
+			key_hash TEXT PRIMARY KEY,
+			raw_prefix TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			active BOOLEAN NOT NULL DEFAULT TRUE
+		)`,
+		`CREATE TABLE IF NOT EXISTS usage (
+			id BIGSERIAL PRIMARY KEY,
+			provider_id TEXT NOT NULL,
+			consumer_key_hash TEXT NOT NULL,
+			model TEXT NOT NULL,
+			prompt_tokens INTEGER NOT NULL,
+			completion_tokens INTEGER NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS payments (
+			id BIGSERIAL PRIMARY KEY,
+			tx_hash TEXT UNIQUE,
+			consumer_address TEXT NOT NULL,
+			provider_address TEXT NOT NULL,
+			amount_usd TEXT NOT NULL,
+			model TEXT NOT NULL,
+			prompt_tokens INTEGER NOT NULL,
+			completion_tokens INTEGER NOT NULL,
+			memo TEXT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS balances (
+			account_id TEXT PRIMARY KEY,
+			balance_micro_usd BIGINT NOT NULL DEFAULT 0,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS ledger_entries (
+			id BIGSERIAL PRIMARY KEY,
+			account_id TEXT NOT NULL,
+			entry_type TEXT NOT NULL,
+			amount_micro_usd BIGINT NOT NULL,
+			balance_after BIGINT NOT NULL,
+			reference TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger_entries(account_id, created_at DESC)`,
+	}
+
+	for _, m := range migrations {
+		if _, err := s.pool.Exec(ctx, m); err != nil {
+			return fmt.Errorf("migration failed: %w", err)
+		}
+	}
+	return nil
+}
+
+// hashKey returns the SHA-256 hex digest of the given API key.
+func hashKey(key string) string {
+	h := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(h[:])
+}
+
+// keyPrefix returns the first 12 characters of a key for display purposes.
+func keyPrefix(key string) string {
+	if len(key) <= 12 {
+		return key
+	}
+	return key[:12] + "..."
+}
+
+// CreateKey generates a cryptographically random API key, hashes it, stores
+// the hash, and returns the raw key (the only time it's available in plaintext).
+func (s *PostgresStore) CreateKey() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("store: generate key: %w", err)
+	}
+	raw := "dginf-" + hex.EncodeToString(b)
+	h := hashKey(raw)
+	prefix := keyPrefix(raw)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO api_keys (key_hash, raw_prefix) VALUES ($1, $2)`,
+		h, prefix,
+	)
+	if err != nil {
+		return "", fmt.Errorf("store: insert key: %w", err)
+	}
+
+	return raw, nil
+}
+
+// SeedKey inserts a specific raw key into the database. This is used for
+// bootstrapping the admin key. If the key already exists, it is a no-op.
+func (s *PostgresStore) SeedKey(rawKey string) error {
+	h := hashKey(rawKey)
+	prefix := keyPrefix(rawKey)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO api_keys (key_hash, raw_prefix) VALUES ($1, $2)
+		 ON CONFLICT (key_hash) DO NOTHING`,
+		h, prefix,
+	)
+	if err != nil {
+		return fmt.Errorf("store: seed key: %w", err)
+	}
+	return nil
+}
+
+// ValidateKey returns true if the given key exists and is active.
+func (s *PostgresStore) ValidateKey(key string) bool {
+	h := hashKey(key)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var active bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT active FROM api_keys WHERE key_hash = $1`,
+		h,
+	).Scan(&active)
+	if err != nil {
+		return false
+	}
+	return active
+}
+
+// RevokeKey deactivates a key. Returns true if the key existed and was active.
+func (s *PostgresStore) RevokeKey(key string) bool {
+	h := hashKey(key)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE api_keys SET active = FALSE WHERE key_hash = $1 AND active = TRUE`,
+		h,
+	)
+	if err != nil {
+		return false
+	}
+	return tag.RowsAffected() > 0
+}
+
+// RecordUsage inserts a usage record into PostgreSQL.
+func (s *PostgresStore) RecordUsage(providerID, consumerKey, model string, promptTokens, completionTokens int) {
+	h := hashKey(consumerKey)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, _ = s.pool.Exec(ctx,
+		`INSERT INTO usage (provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		providerID, h, model, promptTokens, completionTokens,
+	)
+}
+
+// RecordPayment inserts a payment record into PostgreSQL.
+func (s *PostgresStore) RecordPayment(txHash, consumerAddr, providerAddr, amountUSD, model string, promptTokens, completionTokens int, memo string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO payments (tx_hash, consumer_address, provider_address, amount_usd, model, prompt_tokens, completion_tokens, memo)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		txHash, consumerAddr, providerAddr, amountUSD, model, promptTokens, completionTokens, memo,
+	)
+	if err != nil {
+		return fmt.Errorf("store: insert payment: %w", err)
+	}
+	return nil
+}
+
+// UsageRecords returns all usage records from the database, ordered by creation time.
+func (s *PostgresStore) UsageRecords() []UsageRecord {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens, created_at
+		 FROM usage ORDER BY created_at ASC`,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var records []UsageRecord
+	for rows.Next() {
+		var r UsageRecord
+		if err := rows.Scan(&r.ProviderID, &r.ConsumerKey, &r.Model, &r.PromptTokens, &r.CompletionTokens, &r.Timestamp); err != nil {
+			continue
+		}
+		records = append(records, r)
+	}
+	if records == nil {
+		records = make([]UsageRecord, 0)
+	}
+	return records
+}
+
+// GetBalance returns the current balance in micro-USD for an account.
+func (s *PostgresStore) GetBalance(accountID string) int64 {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var balance int64
+	err := s.pool.QueryRow(ctx,
+		`SELECT balance_micro_usd FROM balances WHERE account_id = $1`, accountID,
+	).Scan(&balance)
+	if err != nil {
+		return 0
+	}
+	return balance
+}
+
+// Credit adds micro-USD to an account and records a ledger entry (atomic).
+func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Upsert balance
+	_, err = tx.Exec(ctx,
+		`INSERT INTO balances (account_id, balance_micro_usd, updated_at)
+		 VALUES ($1, $2, NOW())
+		 ON CONFLICT (account_id) DO UPDATE SET
+		   balance_micro_usd = balances.balance_micro_usd + $2,
+		   updated_at = NOW()`,
+		accountID, amountMicroUSD,
+	)
+	if err != nil {
+		return fmt.Errorf("store: credit balance: %w", err)
+	}
+
+	// Get balance after update
+	var balanceAfter int64
+	err = tx.QueryRow(ctx,
+		`SELECT balance_micro_usd FROM balances WHERE account_id = $1`, accountID,
+	).Scan(&balanceAfter)
+	if err != nil {
+		return fmt.Errorf("store: read balance: %w", err)
+	}
+
+	// Record ledger entry
+	_, err = tx.Exec(ctx,
+		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		accountID, string(entryType), amountMicroUSD, balanceAfter, reference,
+	)
+	if err != nil {
+		return fmt.Errorf("store: insert ledger entry: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
+// Debit subtracts micro-USD from an account. Returns error if insufficient funds.
+func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Check and update balance atomically
+	var balanceAfter int64
+	err = tx.QueryRow(ctx,
+		`UPDATE balances
+		 SET balance_micro_usd = balance_micro_usd - $2, updated_at = NOW()
+		 WHERE account_id = $1 AND balance_micro_usd >= $2
+		 RETURNING balance_micro_usd`,
+		accountID, amountMicroUSD,
+	).Scan(&balanceAfter)
+	if err != nil {
+		return fmt.Errorf("insufficient balance or account not found")
+	}
+
+	// Record ledger entry
+	_, err = tx.Exec(ctx,
+		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		accountID, string(entryType), -amountMicroUSD, balanceAfter, reference,
+	)
+	if err != nil {
+		return fmt.Errorf("store: insert ledger entry: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
+// LedgerHistory returns ledger entries for an account, newest first.
+func (s *PostgresStore) LedgerHistory(accountID string) []LedgerEntry {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, account_id, entry_type, amount_micro_usd, balance_after, reference, created_at
+		 FROM ledger_entries WHERE account_id = $1 ORDER BY created_at DESC`,
+		accountID,
+	)
+	if err != nil {
+		return []LedgerEntry{}
+	}
+	defer rows.Close()
+
+	var entries []LedgerEntry
+	for rows.Next() {
+		var e LedgerEntry
+		var entryType string
+		if err := rows.Scan(&e.ID, &e.AccountID, &entryType, &e.AmountMicroUSD, &e.BalanceAfter, &e.Reference, &e.CreatedAt); err != nil {
+			continue
+		}
+		e.Type = LedgerEntryType(entryType)
+		entries = append(entries, e)
+	}
+	if entries == nil {
+		return []LedgerEntry{}
+	}
+	return entries
+}
+
+// KeyCount returns the number of active API keys.
+func (s *PostgresStore) KeyCount() int {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var count int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM api_keys WHERE active = TRUE`,
+	).Scan(&count)
+	if err != nil {
+		return 0
+	}
+	return count
+}

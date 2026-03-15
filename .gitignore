@@ -1,0 +1,40 @@
+# Build artifacts
+target/
+*.o
+*.a
+*.dylib
+
+# Rust
+provider/target/
+
+# Go
+coordinator/bin/
+
+# Swift
+enclave/.build/
+enclave/.swiftpm/
+
+# Python
+sdk/__pycache__/
+sdk/*.egg-info/
+sdk/dist/
+sdk/build/
+.venv/
+*.pyc
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Config (local dev)
+*.local.toml
+
+# Keys (never commit)
+*.pem
+enclave_key.data

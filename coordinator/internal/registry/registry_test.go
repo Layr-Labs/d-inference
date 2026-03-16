@@ -169,29 +169,37 @@ func TestFindProviderSkipsServing(t *testing.T) {
 	}
 }
 
-func TestFindProviderRoundRobin(t *testing.T) {
+func TestFindProviderScoreBased(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
-	reg.Register("p2", nil, msg)
 
-	// First call.
+	// Register two providers with different benchmark data.
+	// p2 has higher decode_tps, so it should be preferred.
+	p1 := reg.Register("p1", nil, msg)
+	p1.DecodeTPS = 50.0
+
+	p2 := reg.Register("p2", nil, msg)
+	p2.DecodeTPS = 100.0
+
+	// First call should pick p2 (higher score).
 	first := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if first == nil {
 		t.Fatal("first FindProvider returned nil")
 	}
-	// Mark it idle so it can be picked again.
+	if first.ID != "p2" {
+		t.Errorf("expected p2 (higher decode_tps), got %q", first.ID)
+	}
+
+	// Mark p2 idle so it can be picked again.
 	reg.SetProviderIdle(first.ID)
 
-	// Second call.
+	// Second call should still pick p2 (higher score, score-based not round-robin).
 	second := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if second == nil {
 		t.Fatal("second FindProvider returned nil")
 	}
-
-	// They should be different providers (round-robin).
-	if first.ID == second.ID {
-		t.Errorf("expected round-robin, got same provider %q twice", first.ID)
+	if second.ID != "p2" {
+		t.Errorf("expected p2 again (score-based), got %q", second.ID)
 	}
 }
 
@@ -468,6 +476,234 @@ func TestChallengeFailureThreshold(t *testing.T) {
 	p := reg.GetProvider("p1")
 	if p.FailedChallenges != 3 {
 		t.Errorf("failed_challenges = %d, want 3", p.FailedChallenges)
+	}
+}
+
+// --- scoring tests ---
+
+func TestScoringHigherDecodeTPS(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+
+	p1 := reg.Register("p1", nil, msg)
+	p1.DecodeTPS = 50.0
+
+	p2 := reg.Register("p2", nil, msg)
+	p2.DecodeTPS = 200.0
+
+	// p2 should be selected (higher decode_tps).
+	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if selected == nil {
+		t.Fatal("FindProvider returned nil")
+	}
+	if selected.ID != "p2" {
+		t.Errorf("expected p2 (higher decode_tps), got %q", selected.ID)
+	}
+}
+
+func TestScoringTrustedPreferred(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+
+	// Both have the same decode_tps.
+	p1 := reg.Register("p1", nil, msg)
+	p1.DecodeTPS = 100.0
+	p1.TrustLevel = TrustNone // multiplier 0.5
+
+	p2 := reg.Register("p2", nil, msg)
+	p2.DecodeTPS = 100.0
+	p2.TrustLevel = TrustHardware // multiplier 1.0
+
+	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if selected == nil {
+		t.Fatal("FindProvider returned nil")
+	}
+	if selected.ID != "p2" {
+		t.Errorf("expected p2 (hardware trust), got %q", selected.ID)
+	}
+}
+
+func TestScoringIdlePreferredOverServing(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+
+	// p1 has higher decode_tps but is serving.
+	p1 := reg.Register("p1", nil, msg)
+	p1.DecodeTPS = 200.0
+
+	p2 := reg.Register("p2", nil, msg)
+	p2.DecodeTPS = 100.0
+
+	// Mark p1 as serving.
+	reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+
+	// p2 should be selected because p1 is serving (status != Online).
+	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if selected == nil {
+		t.Fatal("FindProvider returned nil")
+	}
+	if selected.ID != "p2" {
+		t.Errorf("expected p2 (idle), got %q", selected.ID)
+	}
+}
+
+func TestScoringWarmModelPreferred(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+
+	// Both have same decode_tps and trust, but p2 has the model warm.
+	p1 := reg.Register("p1", nil, msg)
+	p1.DecodeTPS = 100.0
+
+	p2 := reg.Register("p2", nil, msg)
+	p2.DecodeTPS = 100.0
+	p2.WarmModels = []string{"mlx-community/Qwen3.5-9B-Instruct-4bit"}
+
+	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if selected == nil {
+		t.Fatal("FindProvider returned nil")
+	}
+	if selected.ID != "p2" {
+		t.Errorf("expected p2 (warm model), got %q", selected.ID)
+	}
+}
+
+func TestScoreProviderFunction(t *testing.T) {
+	p := &Provider{
+		DecodeTPS:  100.0,
+		TrustLevel: TrustHardware,
+		Status:     StatusOnline,
+		Reputation: NewReputation(),
+	}
+
+	score := ScoreProvider(p, "test-model")
+	if score <= 0 {
+		t.Errorf("score = %f, should be positive", score)
+	}
+
+	// Serving provider should have zero score.
+	p.Status = StatusServing
+	servingScore := ScoreProvider(p, "test-model")
+	// Note: ScoreProvider itself doesn't check status — FindProvider filters.
+	// But the (1-load) factor does apply. Serving = load 1.0 -> score 0.
+	if servingScore != 0 {
+		t.Errorf("serving score = %f, want 0", servingScore)
+	}
+}
+
+func TestTrustMultiplierValues(t *testing.T) {
+	if TrustMultiplier(TrustHardware) != 1.0 {
+		t.Errorf("hardware multiplier = %f, want 1.0", TrustMultiplier(TrustHardware))
+	}
+	if TrustMultiplier(TrustSelfSigned) != 0.8 {
+		t.Errorf("self_signed multiplier = %f, want 0.8", TrustMultiplier(TrustSelfSigned))
+	}
+	if TrustMultiplier(TrustNone) != 0.5 {
+		t.Errorf("none multiplier = %f, want 0.5", TrustMultiplier(TrustNone))
+	}
+}
+
+func TestRecordJobSuccessUpdatesReputation(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+
+	reg.RecordJobSuccess("p1", 500*time.Millisecond)
+	reg.RecordJobSuccess("p1", 500*time.Millisecond)
+
+	if p.Reputation.SuccessfulJobs != 2 {
+		t.Errorf("successful_jobs = %d, want 2", p.Reputation.SuccessfulJobs)
+	}
+	if p.Reputation.TotalJobs != 2 {
+		t.Errorf("total_jobs = %d, want 2", p.Reputation.TotalJobs)
+	}
+}
+
+func TestRecordJobFailureUpdatesReputation(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+
+	reg.RecordJobFailure("p1")
+
+	if p.Reputation.FailedJobs != 1 {
+		t.Errorf("failed_jobs = %d, want 1", p.Reputation.FailedJobs)
+	}
+	if p.Reputation.TotalJobs != 1 {
+		t.Errorf("total_jobs = %d, want 1", p.Reputation.TotalJobs)
+	}
+}
+
+func TestBenchmarkFieldsInRegistration(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	msg.PrefillTPS = 500.0
+	msg.DecodeTPS = 100.0
+
+	p := reg.Register("p1", nil, msg)
+	if p.PrefillTPS != 500.0 {
+		t.Errorf("prefill_tps = %f, want 500.0", p.PrefillTPS)
+	}
+	if p.DecodeTPS != 100.0 {
+		t.Errorf("decode_tps = %f, want 100.0", p.DecodeTPS)
+	}
+}
+
+func TestHeartbeatUpdatesWarmModels(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	reg.Register("p1", nil, msg)
+
+	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
+	hb := &protocol.HeartbeatMessage{
+		Type:        protocol.TypeHeartbeat,
+		Status:      "serving",
+		ActiveModel: &model,
+		Stats:       protocol.HeartbeatStats{},
+		WarmModels:  []string{"mlx-community/Qwen3.5-9B-Instruct-4bit"},
+	}
+
+	reg.Heartbeat("p1", hb)
+
+	p := reg.GetProvider("p1")
+	if len(p.WarmModels) != 1 {
+		t.Errorf("warm_models len = %d, want 1", len(p.WarmModels))
+	}
+	if p.CurrentModel != model {
+		t.Errorf("current_model = %q, want %q", p.CurrentModel, model)
+	}
+}
+
+func TestSetProviderIdleDrainsQueue(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+
+	// Mark provider as serving.
+	reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+
+	// Queue a request.
+	qr := &QueuedRequest{
+		RequestID:  "req-queued",
+		Model:      "mlx-community/Qwen3.5-9B-Instruct-4bit",
+		ResponseCh: make(chan *Provider, 1),
+	}
+	reg.Queue().Enqueue(qr)
+
+	// Set provider idle — should drain queue and assign.
+	reg.SetProviderIdle(p.ID)
+
+	// The provider should have been assigned from the queue.
+	select {
+	case assigned := <-qr.ResponseCh:
+		if assigned == nil {
+			t.Fatal("expected non-nil provider from queue")
+		}
+		if assigned.ID != "p1" {
+			t.Errorf("assigned provider = %q, want p1", assigned.ID)
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("timed out waiting for queue assignment")
 	}
 }
 

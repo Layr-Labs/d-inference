@@ -10,5 +10,16 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  coordinator:
+    build: ../
+    ports:
+      - "8080:8080"
+    environment:
+      DGINF_PORT: "8080"
+      DGINF_ADMIN_KEY: "${DGINF_ADMIN_KEY}"
+      DGINF_DATABASE_URL: "postgres://dginf:dginf-dev@postgres:5432/dginf?sslmode=disable"
+    depends_on:
+      - postgres
+
 volumes:
   pgdata:

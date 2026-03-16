@@ -37,6 +37,12 @@ pub enum ProviderMessage {
         /// Signed Secure Enclave attestation blob (JSON value from Swift CLI tool).
         #[serde(skip_serializing_if = "Option::is_none")]
         attestation: Option<serde_json::Value>,
+        /// Benchmark: prefill tokens per second.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prefill_tps: Option<f64>,
+        /// Benchmark: decode tokens per second.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        decode_tps: Option<f64>,
     },
     Heartbeat {
         status: ProviderStatus,
@@ -150,6 +156,8 @@ mod tests {
             public_key: None,
             wallet_address: None,
             attestation: None,
+            prefill_tps: None,
+            decode_tps: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -158,6 +166,9 @@ mod tests {
         assert!(!json.contains("wallet_address"));
         // attestation should be omitted when None
         assert!(!json.contains("attestation"));
+        // benchmark fields should be omitted when None
+        assert!(!json.contains("prefill_tps"));
+        assert!(!json.contains("decode_tps"));
         let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, deserialized);
     }
@@ -178,6 +189,8 @@ mod tests {
             public_key: None,
             wallet_address: Some("0x1234567890abcdef1234567890abcdef12345678".to_string()),
             attestation: None,
+            prefill_tps: None,
+            decode_tps: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -216,6 +229,8 @@ mod tests {
             public_key: Some("c29tZWtleQ==".to_string()),
             wallet_address: None,
             attestation: Some(attestation_json),
+            prefill_tps: Some(500.0),
+            decode_tps: Some(100.0),
         };
 
         let json = serde_json::to_string(&msg).unwrap();

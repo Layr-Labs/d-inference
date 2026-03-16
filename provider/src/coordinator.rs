@@ -156,6 +156,8 @@ impl CoordinatorClient {
             public_key: self.public_key.clone(),
             wallet_address: self.wallet_address.clone(),
             attestation: self.attestation.clone(),
+            prefill_tps: None,
+            decode_tps: None,
         };
         let register_json = serde_json::to_string(&register)?;
         write.send(Message::Text(register_json.into())).await?;
@@ -334,6 +336,8 @@ pub fn build_register_message_with_wallet(
         public_key,
         wallet_address,
         attestation,
+        prefill_tps: None,
+        decode_tps: None,
     }
 }
 

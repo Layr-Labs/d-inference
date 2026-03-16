@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInfPackageTests.build/master.swiftdeps"
+  },
+  "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInfPackageTests.derived/runner.swift": {
+    "dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInfPackageTests.build/runner.d",
+    "object": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInfPackageTests.build/runner.swift.o",
+    "swiftmodule": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInfPackageTests.build/runner~partial.swiftmodule",
+    "swift-dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInfPackageTests.build/runner.swiftdeps",
+    "diagnostics": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInfPackageTests.build/runner.dia"
+  }
+}

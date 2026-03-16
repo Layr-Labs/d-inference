@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInfTests.build/master.swiftdeps"
+  },
+  "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/Tests/DGInfTests/DGInfAppTests.swift": {
+    "dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInfTests.build/DGInfAppTests.d",
+    "object": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInfTests.build/DGInfAppTests.swift.o",
+    "swiftmodule": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInfTests.build/DGInfAppTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInfTests.build/DGInfAppTests.swiftdeps",
+    "diagnostics": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInfTests.build/DGInfAppTests.dia"
+  }
+}

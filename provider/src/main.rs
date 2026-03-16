@@ -70,10 +70,6 @@ enum Command {
         #[arg(long)]
         model: Option<String>,
 
-        /// Backend to use (overrides config): mlx-lm or vllm-mlx
-        #[arg(long)]
-        backend: Option<String>,
-
         /// Port for the inference backend
         #[arg(long)]
         backend_port: Option<u16>,
@@ -114,9 +110,8 @@ async fn main() -> Result<()> {
             coordinator,
             port,
             model,
-            backend,
             backend_port,
-        } => cmd_serve(local, coordinator, port, model, backend, backend_port).await,
+        } => cmd_serve(local, coordinator, port, model, backend_port).await,
         Command::Benchmark => cmd_benchmark().await,
         Command::Status => cmd_status().await,
         Command::Models => cmd_models().await,
@@ -151,7 +146,6 @@ async fn cmd_serve(
     coordinator_url: String,
     port: u16,
     model_override: Option<String>,
-    backend_override: Option<String>,
     backend_port_override: Option<u16>,
 ) -> Result<()> {
     let hw = hardware::detect()?;
@@ -188,25 +182,12 @@ async fn cmd_serve(
     // Determine backend port (CLI override > config)
     let be_port = backend_port_override.unwrap_or(cfg.backend.port);
 
-    // Determine backend type (CLI override > config)
-    let backend_type = match backend_override.as_deref() {
-        Some("mlx-lm") => config::BackendType::MlxLm,
-        Some("vllm-mlx") => config::BackendType::VllmMlx,
-        _ => cfg.backend.primary.clone(),
-    };
-
-    // Create the backend
-    let backend: Box<dyn backend::Backend> = match backend_type {
-        config::BackendType::VllmMlx => Box::new(backend::vllm_mlx::VllmMlxBackend::new(
-            model.clone(),
-            be_port,
-            cfg.backend.continuous_batching,
-        )),
-        config::BackendType::MlxLm => Box::new(backend::mlx_lm::MlxLmBackend::new(
-            model.clone(),
-            be_port,
-        )),
-    };
+    // Create the vllm-mlx backend
+    let backend: Box<dyn backend::Backend> = Box::new(backend::vllm_mlx::VllmMlxBackend::new(
+        model.clone(),
+        be_port,
+        cfg.backend.continuous_batching,
+    ));
 
     // Start backend manager
     let manager = backend::BackendManager::new(
@@ -231,10 +212,7 @@ async fn cmd_serve(
         let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(64);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-        let backend_name = match cfg.backend.primary {
-            config::BackendType::VllmMlx => "vllm_mlx",
-            config::BackendType::MlxLm => "mlx_lm",
-        };
+        let backend_name = "vllm_mlx";
 
         let public_key_b64 = node_keypair.public_key_base64();
 

@@ -74,11 +74,31 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find a provider that serves the requested model. The registry uses
-	// round-robin among idle providers with the model loaded.
+	// intelligent scoring based on benchmark data, trust, and reputation.
 	provider := s.registry.FindProvider(req.Model)
 	if provider == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no provider available for model %q", req.Model)))
-		return
+		// No idle provider — try queueing the request and waiting.
+		queuedReq := &registry.QueuedRequest{
+			RequestID:  uuid.New().String(),
+			Model:      req.Model,
+			ResponseCh: make(chan *registry.Provider, 1),
+		}
+		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no provider available for model %q and queue is full", req.Model)))
+			return
+		}
+
+		s.logger.Info("request queued, waiting for provider",
+			"model", req.Model,
+			"queue_request_id", queuedReq.RequestID,
+		)
+
+		var err error
+		provider, err = s.registry.Queue().WaitForProvider(queuedReq)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no provider became available for model %q (queue timeout)", req.Model)))
+			return
+		}
 	}
 
 	// Build the inference request to forward to the provider.

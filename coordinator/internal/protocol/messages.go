@@ -85,6 +85,8 @@ type RegisterMessage struct {
 	PublicKey     string          `json:"public_key,omitempty"`     // base64-encoded X25519 public key for E2E encryption
 	WalletAddress string          `json:"wallet_address,omitempty"` // Ethereum-format hex address for Tempo payouts
 	Attestation   json.RawMessage `json:"attestation,omitempty"`   // signed Secure Enclave attestation blob
+	PrefillTPS    float64         `json:"prefill_tps,omitempty"`   // benchmark: prefill tokens per second
+	DecodeTPS     float64         `json:"decode_tps,omitempty"`    // benchmark: decode tokens per second
 }
 
 // HeartbeatMessage is sent periodically by connected providers.
@@ -93,6 +95,7 @@ type HeartbeatMessage struct {
 	Status      string          `json:"status"`
 	ActiveModel *string         `json:"active_model"`
 	Stats       HeartbeatStats  `json:"stats"`
+	WarmModels  []string        `json:"warm_models,omitempty"` // models currently loaded in memory
 }
 
 // HeartbeatStats contains counters reported in heartbeats.

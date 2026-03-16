@@ -30,17 +30,9 @@ pub struct ProviderSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BackendSettings {
-    pub primary: BackendType,
     pub port: u16,
     pub model: Option<String>,
     pub continuous_batching: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum BackendType {
-    VllmMlx,
-    MlxLm,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -59,7 +51,6 @@ impl ProviderConfig {
                 memory_reserve_gb: 4,
             },
             backend: BackendSettings {
-                primary: BackendType::VllmMlx,
                 port: 8100,
                 model: None,
                 continuous_batching: true,
@@ -130,7 +121,6 @@ mod tests {
         let config = ProviderConfig::default_for_hardware(&hw);
 
         assert_eq!(config.provider.name, "dginf-mac16-1");
-        assert_eq!(config.backend.primary, BackendType::VllmMlx);
         assert_eq!(config.backend.port, 8100);
         assert!(config.backend.continuous_batching);
     }

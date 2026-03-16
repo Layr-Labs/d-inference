@@ -360,6 +360,11 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	close(pr.ChunkCh)
 	close(pr.CompleteCh)
 
+	// Record job success for reputation tracking.
+	// Use a simple heuristic for response time based on token count.
+	responseTime := time.Duration(msg.Usage.CompletionTokens) * time.Millisecond * 10
+	s.registry.RecordJobSuccess(providerID, responseTime)
+
 	// Record usage.
 	s.store.RecordUsage(providerID, pr.ConsumerKey, pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
 
@@ -423,6 +428,9 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	close(pr.ChunkCh)
 	close(pr.CompleteCh)
 	close(pr.ErrorCh)
+
+	// Record job failure for reputation tracking.
+	s.registry.RecordJobFailure(providerID)
 
 	// Mark provider idle.
 	s.registry.SetProviderIdle(providerID)

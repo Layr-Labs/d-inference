@@ -20,6 +20,7 @@ package registry
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -74,6 +75,17 @@ type Provider struct {
 	LastHeartbeat     time.Time
 	Stats             protocol.HeartbeatStats
 
+	// Benchmark data reported at registration
+	PrefillTPS float64 // prefill tokens per second
+	DecodeTPS  float64 // decode tokens per second
+
+	// Warm model cache tracking
+	WarmModels   []string // models currently loaded in provider's memory
+	CurrentModel string   // model currently being served
+
+	// Reputation tracking
+	Reputation Reputation
+
 	// Challenge-response verification state
 	LastChallengeVerified time.Time // last successful challenge verification
 	FailedChallenges     int       // consecutive failed challenges
@@ -123,8 +135,8 @@ type Registry struct {
 	mu        sync.RWMutex
 	providers map[string]*Provider
 
-	// roundRobin tracks the next provider index per model for round-robin.
-	roundRobin map[string]int
+	// queue manages requests waiting for a provider to become available.
+	queue *RequestQueue
 
 	logger *slog.Logger
 }
@@ -132,10 +144,15 @@ type Registry struct {
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
-		providers:  make(map[string]*Provider),
-		roundRobin: make(map[string]int),
-		logger:     logger,
+		providers: make(map[string]*Provider),
+		queue:     NewRequestQueue(10, 30*time.Second),
+		logger:    logger,
 	}
+}
+
+// Queue returns the registry's request queue.
+func (r *Registry) Queue() *RequestQueue {
+	return r.queue
 }
 
 // Register adds a new provider to the registry, returning its assigned ID.
@@ -147,10 +164,13 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		Backend:       msg.Backend,
 		PublicKey:     msg.PublicKey,
 		WalletAddress: msg.WalletAddress,
+		PrefillTPS:    msg.PrefillTPS,
+		DecodeTPS:     msg.DecodeTPS,
 		TrustLevel:    TrustNone,
 		Status:        StatusOnline,
 		Conn:          conn,
 		LastHeartbeat: time.Now(),
+		Reputation:    NewReputation(),
 		pendingReqs:   make(map[string]*PendingRequest),
 	}
 
@@ -164,6 +184,8 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		"memory_gb", msg.Hardware.MemoryGB,
 		"models", len(msg.Models),
 		"backend", msg.Backend,
+		"prefill_tps", msg.PrefillTPS,
+		"decode_tps", msg.DecodeTPS,
 	)
 
 	return p
@@ -182,6 +204,13 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	p.mu.Lock()
 	p.LastHeartbeat = time.Now()
 	p.Stats = msg.Stats
+	// Update warm models from heartbeat
+	if len(msg.WarmModels) > 0 {
+		p.WarmModels = msg.WarmModels
+	}
+	if msg.ActiveModel != nil {
+		p.CurrentModel = *msg.ActiveModel
+	}
 	// Only update status from heartbeat if provider is not actively serving
 	// (serving status is managed by request lifecycle).
 	if p.Status != StatusServing || msg.Status == "idle" {
@@ -288,8 +317,57 @@ func (r *Registry) RecordChallengeFailure(providerID string) int {
 	return count
 }
 
+// TrustMultiplier returns the trust multiplier for routing score calculation.
+func TrustMultiplier(t TrustLevel) float64 {
+	switch t {
+	case TrustHardware:
+		return 1.0
+	case TrustSelfSigned:
+		return 0.8
+	default:
+		return 0.5
+	}
+}
+
+// ScoreProvider calculates a routing score for a provider.
+// Higher scores indicate better routing candidates.
+// Score = (1 - load) * decode_tps * trust_multiplier * reputation * warm_bonus
+func ScoreProvider(p *Provider, model string) float64 {
+	// Load: 0.0 for idle, 1.0 for serving
+	var load float64
+	if p.Status == StatusServing {
+		load = 1.0
+	}
+
+	// Base decode TPS — use 1.0 as minimum to avoid zero scores
+	decodeTPS := p.DecodeTPS
+	if decodeTPS <= 0 {
+		decodeTPS = 1.0
+	}
+
+	trustMul := TrustMultiplier(p.TrustLevel)
+
+	// Reputation factor (0.0 to 1.0)
+	repScore := p.Reputation.Score()
+
+	// Warm model bonus: 1.5x if the model is already warm, 1.0x otherwise
+	warmBonus := 1.0
+	for _, wm := range p.WarmModels {
+		if wm == model {
+			warmBonus = 1.5
+			break
+		}
+	}
+	if p.CurrentModel == model {
+		warmBonus = 1.5
+	}
+
+	return (1.0 - load) * decodeTPS * trustMul * repScore * warmBonus
+}
+
 // FindProvider selects an available provider for the given model using
-// round-robin among idle providers that have the model loaded.
+// intelligent scoring based on benchmark data, trust level, reputation,
+// and warm model cache. Picks the highest-scoring idle provider.
 func (r *Registry) FindProvider(model string) *Provider {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -311,16 +389,20 @@ func (r *Registry) FindProvider(model string) *Provider {
 		return nil
 	}
 
-	idx := r.roundRobin[model] % len(candidates)
-	r.roundRobin[model] = idx + 1
+	// Sort candidates by score descending (highest score first).
+	sort.Slice(candidates, func(i, j int) bool {
+		return ScoreProvider(candidates[i], model) > ScoreProvider(candidates[j], model)
+	})
 
-	selected := candidates[idx]
+	selected := candidates[0]
 	selected.Status = StatusServing
 
 	return selected
 }
 
 // SetProviderIdle marks a provider as idle (available for new requests).
+// If there are queued requests for any model this provider serves, the
+// first matching queued request is assigned to this provider.
 func (r *Registry) SetProviderIdle(id string) {
 	r.mu.RLock()
 	p, ok := r.providers[id]
@@ -334,6 +416,15 @@ func (r *Registry) SetProviderIdle(id string) {
 		p.Status = StatusOnline
 	}
 	p.mu.Unlock()
+
+	// Check if there are queued requests for any model this provider serves.
+	if r.queue != nil && p.Status == StatusOnline {
+		for _, m := range p.Models {
+			if r.queue.TryAssign(m.ID, p) {
+				break
+			}
+		}
+	}
 }
 
 // AttestationSummary provides aggregate attestation status for a model's providers.
@@ -435,6 +526,34 @@ func trustRank(t TrustLevel) int {
 	default:
 		return 0
 	}
+}
+
+// RecordJobSuccess records a successful job completion for the provider's reputation.
+func (r *Registry) RecordJobSuccess(providerID string, responseTime time.Duration) {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	p.mu.Lock()
+	p.Reputation.RecordJobSuccess(responseTime)
+	p.mu.Unlock()
+}
+
+// RecordJobFailure records a failed job for the provider's reputation.
+func (r *Registry) RecordJobFailure(providerID string) {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	p.mu.Lock()
+	p.Reputation.RecordJobFailure()
+	p.mu.Unlock()
 }
 
 // ProviderCount returns the number of registered providers.

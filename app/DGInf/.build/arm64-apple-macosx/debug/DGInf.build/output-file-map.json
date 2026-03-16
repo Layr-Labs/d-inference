@@ -1,0 +1,61 @@
+{
+  "": {
+    "swift-dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/master.swiftdeps"
+  },
+  "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/Sources/DGInf/DGInfApp.swift": {
+    "dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/DGInfApp.d",
+    "object": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/DGInfApp.swift.o",
+    "swiftmodule": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/DGInfApp~partial.swiftmodule",
+    "swift-dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/DGInfApp.swiftdeps",
+    "diagnostics": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/DGInfApp.dia"
+  },
+  "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/Sources/DGInf/DashboardView.swift": {
+    "dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/DashboardView.d",
+    "object": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/DashboardView.swift.o",
+    "swiftmodule": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/DashboardView~partial.swiftmodule",
+    "swift-dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/DashboardView.swiftdeps",
+    "diagnostics": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/DashboardView.dia"
+  },
+  "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/Sources/DGInf/IdleDetector.swift": {
+    "dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/IdleDetector.d",
+    "object": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/IdleDetector.swift.o",
+    "swiftmodule": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/IdleDetector~partial.swiftmodule",
+    "swift-dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/IdleDetector.swiftdeps",
+    "diagnostics": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/IdleDetector.dia"
+  },
+  "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/Sources/DGInf/MenuBarView.swift": {
+    "dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/MenuBarView.d",
+    "object": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/MenuBarView.swift.o",
+    "swiftmodule": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/MenuBarView~partial.swiftmodule",
+    "swift-dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/MenuBarView.swiftdeps",
+    "diagnostics": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/MenuBarView.dia"
+  },
+  "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/Sources/DGInf/ModelManager.swift": {
+    "dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/ModelManager.d",
+    "object": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/ModelManager.swift.o",
+    "swiftmodule": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/ModelManager~partial.swiftmodule",
+    "swift-dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/ModelManager.swiftdeps",
+    "diagnostics": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/ModelManager.dia"
+  },
+  "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/Sources/DGInf/ProviderManager.swift": {
+    "dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/ProviderManager.d",
+    "object": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/ProviderManager.swift.o",
+    "swiftmodule": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/ProviderManager~partial.swiftmodule",
+    "swift-dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/ProviderManager.swiftdeps",
+    "diagnostics": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/ProviderManager.dia"
+  },
+  "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/Sources/DGInf/SettingsView.swift": {
+    "dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/SettingsView.d",
+    "object": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/SettingsView.swift.o",
+    "swiftmodule": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/SettingsView~partial.swiftmodule",
+    "swift-dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/SettingsView.swiftdeps",
+    "diagnostics": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/SettingsView.dia"
+  },
+  "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/Sources/DGInf/StatusViewModel.swift": {
+    "dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/StatusViewModel.d",
+    "object": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/StatusViewModel.swift.o",
+    "swiftmodule": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/StatusViewModel~partial.swiftmodule",
+    "swift-dependencies": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/StatusViewModel.swiftdeps",
+    "diagnostics": "/Users/gaj/Documents/Fun/Builds/DGInf/worktree/opus-work/app/DGInf/.build/arm64-apple-macosx/debug/DGInf.build/StatusViewModel.dia"
+  }
+}

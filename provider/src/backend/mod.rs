@@ -1,19 +1,17 @@
 //! Inference backend management for the DGInf provider.
 //!
-//! This module defines the Backend trait and BackendManager, plus concrete
-//! implementations for two Apple Silicon inference engines:
-//!   - vllm-mlx: High-performance engine with continuous batching support
-//!   - mlx-lm: Simpler engine using Apple's MLX framework directly
+//! The only supported backend is vllm-mlx — a high-performance inference
+//! engine for Apple Silicon with continuous batching, prefix caching, and
+//! an OpenAI-compatible API. It builds on Apple's MLX framework.
 //!
-//! The BackendManager wraps a Backend with health monitoring and automatic
+//! The BackendManager wraps the backend with health monitoring and automatic
 //! restart. It periodically checks the backend's /health endpoint and
 //! restarts it with exponential backoff if it becomes unhealthy.
 //!
-//! Both backends are spawned as child processes and communicate via HTTP
-//! on localhost. Their stdout/stderr are forwarded to the provider's
+//! The backend is spawned as a child process and communicates via HTTP
+//! on localhost. Its stdout/stderr are forwarded to the provider's
 //! tracing output for unified logging.
 
-pub mod mlx_lm;
 pub mod vllm_mlx;
 
 use anyhow::Result;

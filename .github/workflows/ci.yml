@@ -1,0 +1,33 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  provider:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cd provider && cargo test
+
+  coordinator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - run: cd coordinator && go test ./...
+
+  sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: cd sdk && pip install -e ".[dev]" && pytest tests/
+
+  enclave:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cd enclave && swift test

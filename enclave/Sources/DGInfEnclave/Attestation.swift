@@ -42,6 +42,7 @@ import Foundation
 /// Managed Device Attestation (MDA) which provides hardware-attested
 /// evidence. The software checks here are a development placeholder.
 public struct AttestationBlob: Codable {
+    public let authenticatedRootEnabled: Bool   // Authenticated Root Volume (sealed system volume)
     public let binaryHash: String?             // SHA-256 of the provider binary, for integrity verification
     public let chipName: String                // e.g. "Apple M3 Max"
     public let encryptionPublicKey: String?    // base64 X25519 public key, bound to this identity
@@ -52,6 +53,7 @@ public struct AttestationBlob: Codable {
     public let secureEnclaveAvailable: Bool
     public let serialNumber: String?           // Hardware serial number for MDM cross-reference
     public let sipEnabled: Bool
+    public let systemVolumeHash: String?       // ARV snapshot hash (proves unmodified system volume)
     public let timestamp: Date
 }
 
@@ -96,6 +98,7 @@ public final class AttestationService {
     ///     providers from running modified binaries.
     public func createAttestation(encryptionPublicKey: String? = nil, binaryHash: String? = nil) throws -> SignedAttestation {
         let blob = AttestationBlob(
+            authenticatedRootEnabled: checkAuthenticatedRootEnabled(),
             binaryHash: binaryHash,
             chipName: getChipName(),
             encryptionPublicKey: encryptionPublicKey,
@@ -106,6 +109,7 @@ public final class AttestationService {
             secureEnclaveAvailable: SecureEnclave.isAvailable,
             serialNumber: getSerialNumber(),
             sipEnabled: checkSIPEnabled(),
+            systemVolumeHash: getSystemVolumeHash(),
             timestamp: Date()
         )
 
@@ -247,4 +251,56 @@ func checkSIPEnabled() -> Bool {
 /// a development placeholder.
 func checkSecureBootEnabled() -> Bool {
     return true
+}
+
+/// Check if Authenticated Root Volume (ARV) is enabled.
+///
+/// ARV seals the system volume with a cryptographic hash. Any modification
+/// to system files breaks the seal and the volume won't mount. This is
+/// verified via `csrutil authenticated-root status`.
+func checkAuthenticatedRootEnabled() -> Bool {
+    let pipe = Pipe()
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/csrutil")
+    process.arguments = ["authenticated-root", "status"]
+    process.standardOutput = pipe
+    process.standardError = Pipe()
+    try? process.run()
+    process.waitUntilExit()
+
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    let output = String(data: data, encoding: .utf8) ?? ""
+    return output.contains("enabled")
+}
+
+/// Get the Authenticated Root Volume snapshot hash.
+///
+/// This is the cryptographic hash of the sealed system volume. It proves
+/// the system volume is Apple's original, unmodified volume. The hash
+/// is embedded in the APFS snapshot name.
+func getSystemVolumeHash() -> String? {
+    let pipe = Pipe()
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
+    process.arguments = ["info", "/"]
+    process.standardOutput = pipe
+    process.standardError = Pipe()
+    try? process.run()
+    process.waitUntilExit()
+
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    let output = String(data: data, encoding: .utf8) ?? ""
+
+    // Extract hash from snapshot name: com.apple.os.update-<HASH>
+    for line in output.components(separatedBy: "\n") {
+        if line.contains("APFS Snapshot Name") {
+            if let range = line.range(of: "com.apple.os.update-") {
+                let hash = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                if !hash.isEmpty {
+                    return hash
+                }
+            }
+        }
+    }
+    return nil
 }

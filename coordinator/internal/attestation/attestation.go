@@ -42,17 +42,19 @@ import (
 // and Swift's JSONEncoder with .sortedKeys uses alphabetical order.
 // Keeping them aligned ensures both produce identical JSON.
 type AttestationBlob struct {
-	BinaryHash             string `json:"binaryHash,omitempty"`
-	ChipName               string `json:"chipName"`
-	EncryptionPublicKey    string `json:"encryptionPublicKey,omitempty"`
-	HardwareModel          string `json:"hardwareModel"`
-	OSVersion              string `json:"osVersion"`
-	PublicKey              string `json:"publicKey"`
-	SecureBootEnabled      bool   `json:"secureBootEnabled"`
-	SecureEnclaveAvailable bool   `json:"secureEnclaveAvailable"`
-	SerialNumber           string `json:"serialNumber,omitempty"`
-	SIPEnabled             bool   `json:"sipEnabled"`
-	Timestamp              string `json:"timestamp"`
+	AuthenticatedRootEnabled bool   `json:"authenticatedRootEnabled"`
+	BinaryHash               string `json:"binaryHash,omitempty"`
+	ChipName                 string `json:"chipName"`
+	EncryptionPublicKey      string `json:"encryptionPublicKey,omitempty"`
+	HardwareModel            string `json:"hardwareModel"`
+	OSVersion                string `json:"osVersion"`
+	PublicKey                string `json:"publicKey"`
+	SecureBootEnabled        bool   `json:"secureBootEnabled"`
+	SecureEnclaveAvailable   bool   `json:"secureEnclaveAvailable"`
+	SerialNumber             string `json:"serialNumber,omitempty"`
+	SIPEnabled               bool   `json:"sipEnabled"`
+	SystemVolumeHash         string `json:"systemVolumeHash,omitempty"`
+	Timestamp                string `json:"timestamp"`
 }
 
 // SignedAttestation is a signed attestation blob with a base64-encoded
@@ -86,18 +88,20 @@ func (s *SignedAttestation) UnmarshalJSON(data []byte) error {
 
 // VerificationResult contains the outcome of attestation verification.
 type VerificationResult struct {
-	Valid                  bool
-	PublicKey              string
-	EncryptionPublicKey    string
-	BinaryHash             string
-	HardwareModel          string
-	ChipName               string
-	SerialNumber           string
-	SecureEnclaveAvailable bool
-	SIPEnabled             bool
-	SecureBootEnabled      bool
-	Timestamp              time.Time
-	Error                  string
+	Valid                    bool
+	PublicKey                string
+	EncryptionPublicKey      string
+	BinaryHash               string
+	HardwareModel            string
+	ChipName                 string
+	SerialNumber             string
+	SecureEnclaveAvailable   bool
+	SIPEnabled               bool
+	SecureBootEnabled        bool
+	AuthenticatedRootEnabled bool
+	SystemVolumeHash         string
+	Timestamp                time.Time
+	Error                    string
 }
 
 // ecdsaSig holds the two integers in a DER-encoded ECDSA signature.
@@ -116,15 +120,17 @@ type ecdsaSig struct {
 // available, SIP must be enabled, and Secure Boot must be enabled.
 func Verify(signed SignedAttestation) VerificationResult {
 	result := VerificationResult{
-		PublicKey:              signed.Attestation.PublicKey,
-		EncryptionPublicKey:    signed.Attestation.EncryptionPublicKey,
-		BinaryHash:            signed.Attestation.BinaryHash,
-		HardwareModel:          signed.Attestation.HardwareModel,
-		ChipName:               signed.Attestation.ChipName,
-		SerialNumber:           signed.Attestation.SerialNumber,
-		SecureEnclaveAvailable: signed.Attestation.SecureEnclaveAvailable,
-		SIPEnabled:             signed.Attestation.SIPEnabled,
-		SecureBootEnabled:      signed.Attestation.SecureBootEnabled,
+		PublicKey:                signed.Attestation.PublicKey,
+		EncryptionPublicKey:     signed.Attestation.EncryptionPublicKey,
+		BinaryHash:              signed.Attestation.BinaryHash,
+		HardwareModel:           signed.Attestation.HardwareModel,
+		ChipName:                signed.Attestation.ChipName,
+		SerialNumber:            signed.Attestation.SerialNumber,
+		SecureEnclaveAvailable:  signed.Attestation.SecureEnclaveAvailable,
+		SIPEnabled:              signed.Attestation.SIPEnabled,
+		SecureBootEnabled:       signed.Attestation.SecureBootEnabled,
+		AuthenticatedRootEnabled: signed.Attestation.AuthenticatedRootEnabled,
+		SystemVolumeHash:        signed.Attestation.SystemVolumeHash,
 	}
 
 	// Parse timestamp
@@ -205,6 +211,10 @@ func Verify(signed SignedAttestation) VerificationResult {
 		result.Valid = false
 		result.Error = "Secure Boot not enabled"
 	}
+	if !signed.Attestation.AuthenticatedRootEnabled {
+		result.Valid = false
+		result.Error = "Authenticated Root Volume not enabled — system volume may be tampered"
+	}
 
 	return result
 }
@@ -274,14 +284,15 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 	// Swift sorts keys alphabetically (Unicode code point order).
 	// encoding/json marshals map keys in sorted order as of Go 1.12+.
 	m := map[string]interface{}{
-		"chipName":               blob.ChipName,
-		"hardwareModel":          blob.HardwareModel,
-		"osVersion":              blob.OSVersion,
-		"publicKey":              blob.PublicKey,
-		"secureBootEnabled":      blob.SecureBootEnabled,
-		"secureEnclaveAvailable": blob.SecureEnclaveAvailable,
-		"sipEnabled":             blob.SIPEnabled,
-		"timestamp":              blob.Timestamp,
+		"authenticatedRootEnabled": blob.AuthenticatedRootEnabled,
+		"chipName":                 blob.ChipName,
+		"hardwareModel":            blob.HardwareModel,
+		"osVersion":                blob.OSVersion,
+		"publicKey":                blob.PublicKey,
+		"secureBootEnabled":        blob.SecureBootEnabled,
+		"secureEnclaveAvailable":   blob.SecureEnclaveAvailable,
+		"sipEnabled":               blob.SIPEnabled,
+		"timestamp":                blob.Timestamp,
 	}
 
 	// Only include optional fields if set (Swift's JSONEncoder with
@@ -294,6 +305,9 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 	}
 	if blob.SerialNumber != "" {
 		m["serialNumber"] = blob.SerialNumber
+	}
+	if blob.SystemVolumeHash != "" {
+		m["systemVolumeHash"] = blob.SystemVolumeHash
 	}
 
 	return json.Marshal(m)

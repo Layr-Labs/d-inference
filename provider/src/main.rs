@@ -128,6 +128,17 @@ enum Command {
         coordinator: String,
     },
 
+    /// Start the provider in the background (uses existing config)
+    Start {
+        /// Coordinator WebSocket URL
+        #[arg(long, default_value = "wss://inference-test.openinnovation.dev/ws/provider")]
+        coordinator: String,
+
+        /// Model to serve
+        #[arg(long)]
+        model: Option<String>,
+    },
+
     /// Stop the provider gracefully
     Stop,
 
@@ -185,6 +196,7 @@ async fn main() -> Result<()> {
         Command::Models => cmd_models().await,
         Command::Earnings { coordinator } => cmd_earnings(coordinator).await,
         Command::Doctor { coordinator } => cmd_doctor(coordinator).await,
+        Command::Start { coordinator, model } => cmd_start(coordinator, model).await,
         Command::Stop => cmd_stop().await,
         Command::Logs { lines } => cmd_logs(lines).await,
         Command::Wallet => cmd_wallet().await,
@@ -1294,6 +1306,51 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
             println!("  {}. {}", i + 1, issue);
         }
     }
+
+    Ok(())
+}
+
+async fn cmd_start(coordinator_url: String, model_override: Option<String>) -> Result<()> {
+    // Stop any existing provider first
+    cmd_stop().await?;
+
+    // Detect model from config or scan
+    let model = if let Some(m) = model_override {
+        m
+    } else {
+        let hw = hardware::detect()?;
+        let models = models::scan_models(&hw);
+        if let Some(m) = models.last() {
+            m.id.clone()
+        } else {
+            anyhow::bail!("No models downloaded. Run: dginf-provider install");
+        }
+    };
+
+    let exe = std::env::current_exe()?;
+    let log_path = dirs::home_dir().unwrap_or_default().join(".dginf/provider.log");
+    let pid_path = dirs::home_dir().unwrap_or_default().join(".dginf/provider.pid");
+
+    let log_file = std::fs::File::create(&log_path)?;
+    let log_err = log_file.try_clone()?;
+
+    let child = std::process::Command::new(&exe)
+        .args(["serve", "--coordinator", &coordinator_url, "--model", &model])
+        .stdout(log_file)
+        .stderr(log_err)
+        .stdin(std::process::Stdio::null())
+        .spawn()?;
+
+    std::fs::write(&pid_path, child.id().to_string())?;
+
+    println!("Provider started in background");
+    println!("  PID:   {}", child.id());
+    println!("  Model: {}", model);
+    println!("  Logs:  {}", log_path.display());
+    println!();
+    println!("  dginf-provider stop    Stop the provider");
+    println!("  dginf-provider logs    View logs");
+    println!("  dginf-provider status  Check status");
 
     Ok(())
 }

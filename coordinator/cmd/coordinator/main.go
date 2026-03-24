@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/dginf/coordinator/internal/api"
+	"github.com/dginf/coordinator/internal/mdm"
 	"github.com/dginf/coordinator/internal/registry"
 	"github.com/dginf/coordinator/internal/store"
 )
@@ -76,6 +77,19 @@ func main() {
 
 	reg := registry.New(logger)
 	srv := api.NewServer(reg, st, logger)
+
+	// Configure MDM client for provider security verification.
+	// When set, the coordinator independently verifies SIP/SecureBoot via MicroMDM
+	// rather than trusting the provider's self-reported attestation.
+	if mdmURL := os.Getenv("DGINF_MDM_URL"); mdmURL != "" {
+		mdmKey := os.Getenv("DGINF_MDM_API_KEY")
+		if mdmKey == "" {
+			mdmKey = "dginf-micromdm-api" // default
+		}
+		mdmClient := mdm.NewClient(mdmURL, mdmKey, logger)
+		srv.SetMDMClient(mdmClient)
+		logger.Info("MDM verification enabled", "url", mdmURL)
+	}
 
 	// Start background eviction of stale providers.
 	reg.StartEvictionLoop(ctx, 90*time.Second)

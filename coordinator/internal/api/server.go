@@ -17,12 +17,14 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/dginf/coordinator/internal/mdm"
 	"github.com/dginf/coordinator/internal/payments"
 	"github.com/dginf/coordinator/internal/registry"
 	"github.com/dginf/coordinator/internal/store"
@@ -56,6 +58,7 @@ type Server struct {
 	mux               *http.ServeMux
 	challengeInterval time.Duration // 0 means use DefaultChallengeInterval
 	settlementURL     string        // URL of the settlement sidecar (e.g. "http://localhost:8090")
+	mdmClient         *mdm.Client   // MicroMDM client for provider security verification
 	processedTxHashes map[string]bool // prevents double-crediting the same on-chain tx
 }
 
@@ -79,6 +82,26 @@ func (s *Server) SetSettlementURL(url string) {
 	s.settlementURL = url
 }
 
+// SetMDMClient configures the MicroMDM client for provider verification.
+// When set, providers are verified against MDM on registration.
+func (s *Server) SetMDMClient(client *mdm.Client) {
+	s.mdmClient = client
+}
+
+// HandleMDMWebhook processes a MicroMDM webhook callback.
+// Mount this on the webhook URL configured in MicroMDM.
+func (s *Server) HandleMDMWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if s.mdmClient != nil {
+		s.mdmClient.HandleWebhook(body)
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 // routes mounts all HTTP and WebSocket handlers.
 func (s *Server) routes() {
 	// Health check — no auth required.
@@ -93,6 +116,9 @@ func (s *Server) routes() {
 	// Consumer endpoints — API key auth required.
 	s.mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.handleChatCompletions))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
+
+	// MDM webhook — MicroMDM sends command responses here.
+	s.mux.HandleFunc("POST /v1/mdm/webhook", s.HandleMDMWebhook)
 
 	// Payment endpoints — API key auth required.
 	s.mux.HandleFunc("POST /v1/payments/deposit", s.requireAuth(s.handleDeposit))

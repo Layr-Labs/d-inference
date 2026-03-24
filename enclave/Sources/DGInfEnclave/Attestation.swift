@@ -50,6 +50,7 @@ public struct AttestationBlob: Codable {
     public let publicKey: String               // base64 raw P-256 public key (64 bytes: X||Y)
     public let secureBootEnabled: Bool
     public let secureEnclaveAvailable: Bool
+    public let serialNumber: String?           // Hardware serial number for MDM cross-reference
     public let sipEnabled: Bool
     public let timestamp: Date
 }
@@ -103,6 +104,7 @@ public final class AttestationService {
             publicKey: identity.publicKeyBase64,
             secureBootEnabled: checkSecureBootEnabled(),
             secureEnclaveAvailable: SecureEnclave.isAvailable,
+            serialNumber: getSerialNumber(),
             sipEnabled: checkSIPEnabled(),
             timestamp: Date()
         )
@@ -190,6 +192,32 @@ func getChipName() -> String {
 func getOSVersion() -> String {
     let version = ProcessInfo.processInfo.operatingSystemVersion
     return "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+}
+
+/// Get the hardware serial number for MDM cross-reference.
+///
+/// The coordinator uses this to look up the device in MicroMDM and
+/// independently verify its security posture via MDM SecurityInfo.
+func getSerialNumber() -> String? {
+    let pipe = Pipe()
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
+    process.arguments = ["SPHardwareDataType"]
+    process.standardOutput = pipe
+    process.standardError = Pipe()
+    try? process.run()
+    process.waitUntilExit()
+
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    let output = String(data: data, encoding: .utf8) ?? ""
+
+    for line in output.components(separatedBy: "\n") {
+        if line.contains("Serial Number") {
+            return line.components(separatedBy: ":").last?
+                .trimmingCharacters(in: .whitespaces)
+        }
+    }
+    return nil
 }
 
 /// Check if System Integrity Protection (SIP) is enabled.

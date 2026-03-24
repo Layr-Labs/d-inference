@@ -50,6 +50,7 @@ type AttestationBlob struct {
 	PublicKey              string `json:"publicKey"`
 	SecureBootEnabled      bool   `json:"secureBootEnabled"`
 	SecureEnclaveAvailable bool   `json:"secureEnclaveAvailable"`
+	SerialNumber           string `json:"serialNumber,omitempty"`
 	SIPEnabled             bool   `json:"sipEnabled"`
 	Timestamp              string `json:"timestamp"`
 }
@@ -91,6 +92,7 @@ type VerificationResult struct {
 	BinaryHash             string
 	HardwareModel          string
 	ChipName               string
+	SerialNumber           string
 	SecureEnclaveAvailable bool
 	SIPEnabled             bool
 	SecureBootEnabled      bool
@@ -119,6 +121,7 @@ func Verify(signed SignedAttestation) VerificationResult {
 		BinaryHash:            signed.Attestation.BinaryHash,
 		HardwareModel:          signed.Attestation.HardwareModel,
 		ChipName:               signed.Attestation.ChipName,
+		SerialNumber:           signed.Attestation.SerialNumber,
 		SecureEnclaveAvailable: signed.Attestation.SecureEnclaveAvailable,
 		SIPEnabled:             signed.Attestation.SIPEnabled,
 		SecureBootEnabled:      signed.Attestation.SecureBootEnabled,
@@ -288,6 +291,9 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 	}
 	if blob.EncryptionPublicKey != "" {
 		m["encryptionPublicKey"] = blob.EncryptionPublicKey
+	}
+	if blob.SerialNumber != "" {
+		m["serialNumber"] = blob.SerialNumber
 	}
 
 	return json.Marshal(m)

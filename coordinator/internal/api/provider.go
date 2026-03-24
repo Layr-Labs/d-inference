@@ -521,14 +521,80 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 
 	provider.Attested = true
 	provider.TrustLevel = registry.TrustSelfSigned
-	s.logger.Info("provider attestation verified",
+	s.logger.Info("provider attestation verified (self-signed)",
 		"provider_id", providerID,
 		"hardware_model", result.HardwareModel,
 		"chip_name", result.ChipName,
+		"serial_number", result.SerialNumber,
 		"secure_enclave", result.SecureEnclaveAvailable,
 		"sip_enabled", result.SIPEnabled,
 		"secure_boot", result.SecureBootEnabled,
 		"trust_level", provider.TrustLevel,
+	)
+
+	// MDM verification: independently verify security posture via MicroMDM.
+	// This upgrades trust from self_signed to hardware if MDM confirms
+	// the device is enrolled and SIP/SecureBoot match.
+	if s.mdmClient != nil && result.SerialNumber != "" {
+		go s.verifyProviderViaMDM(providerID, provider, result)
+	} else if s.mdmClient != nil && result.SerialNumber == "" {
+		s.logger.Warn("provider attestation has no serial number — cannot verify via MDM",
+			"provider_id", providerID,
+		)
+	}
+}
+
+// verifyProviderViaMDM runs MDM verification in the background.
+// If MDM confirms the device's security posture, the trust level is upgraded.
+func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Provider, attestResult attestation.VerificationResult) {
+	s.logger.Info("starting MDM verification",
+		"provider_id", providerID,
+		"serial_number", attestResult.SerialNumber,
+	)
+
+	mdmResult, err := s.mdmClient.VerifyProvider(
+		attestResult.SerialNumber,
+		attestResult.SIPEnabled,
+		attestResult.SecureBootEnabled,
+	)
+	if err != nil {
+		s.logger.Error("MDM verification error",
+			"provider_id", providerID,
+			"error", err,
+		)
+		return
+	}
+
+	if !mdmResult.DeviceEnrolled {
+		s.logger.Warn("provider device not enrolled in MDM — staying at self_signed trust",
+			"provider_id", providerID,
+			"serial_number", attestResult.SerialNumber,
+			"error", mdmResult.Error,
+		)
+		return
+	}
+
+	if mdmResult.Error != "" {
+		s.logger.Warn("MDM verification failed — marking provider untrusted",
+			"provider_id", providerID,
+			"error", mdmResult.Error,
+			"mdm_sip", mdmResult.MDMSIPEnabled,
+			"mdm_secure_boot", mdmResult.MDMSecureBootFull,
+			"sip_match", mdmResult.SIPMatch,
+			"secure_boot_match", mdmResult.SecureBootMatch,
+		)
+		s.registry.MarkUntrusted(providerID)
+		return
+	}
+
+	// MDM verification passed — upgrade trust level
+	provider.TrustLevel = registry.TrustHardware
+	s.logger.Info("MDM verification passed — upgraded to hardware trust",
+		"provider_id", providerID,
+		"serial_number", attestResult.SerialNumber,
+		"mdm_sip", mdmResult.MDMSIPEnabled,
+		"mdm_secure_boot", mdmResult.MDMSecureBootFull,
+		"mdm_auth_root_volume", mdmResult.MDMAuthRootVolume,
 	)
 }
 

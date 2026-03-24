@@ -128,6 +128,9 @@ enum Command {
         coordinator: String,
     },
 
+    /// Stop the provider gracefully
+    Stop,
+
     /// Show provider logs
     Logs {
         /// Number of lines to show
@@ -182,6 +185,7 @@ async fn main() -> Result<()> {
         Command::Models => cmd_models().await,
         Command::Earnings { coordinator } => cmd_earnings(coordinator).await,
         Command::Doctor { coordinator } => cmd_doctor(coordinator).await,
+        Command::Stop => cmd_stop().await,
         Command::Logs { lines } => cmd_logs(lines).await,
         Command::Wallet => cmd_wallet().await,
     }
@@ -434,6 +438,10 @@ async fn cmd_install(
         .stdin(std::process::Stdio::null())
         .spawn()?;
 
+    // Save PID for graceful stop
+    let pid_path = dirs::home_dir().unwrap_or_default().join(".dginf/provider.pid");
+    std::fs::write(&pid_path, child.id().to_string())?;
+
     println!("╔══════════════════════════════════════════╗");
     println!("║  Provider is running in the background!   ║");
     println!("╚══════════════════════════════════════════╝");
@@ -444,8 +452,8 @@ async fn cmd_install(
     println!("Commands:");
     println!("  dginf-provider status     Show provider status");
     println!("  dginf-provider logs       View logs");
+    println!("  dginf-provider stop       Stop the provider");
     println!("  dginf-provider doctor     Run diagnostics");
-    println!("  pkill -f dginf-provider   Stop the provider");
     println!();
 
     Ok(())
@@ -1287,6 +1295,48 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn cmd_stop() -> Result<()> {
+    let pid_path = dirs::home_dir().unwrap_or_default().join(".dginf/provider.pid");
+
+    if pid_path.exists() {
+        let pid_str = std::fs::read_to_string(&pid_path)?.trim().to_string();
+        if let Ok(pid) = pid_str.parse::<i32>() {
+            // Send SIGTERM for graceful shutdown
+            #[cfg(unix)]
+            {
+                let result = unsafe { libc::kill(pid, libc::SIGTERM) };
+                if result == 0 {
+                    println!("Stopping provider (PID: {})...", pid);
+                    // Wait up to 5 seconds for it to stop
+                    for _ in 0..10 {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        if unsafe { libc::kill(pid, 0) } != 0 {
+                            break;
+                        }
+                    }
+                    // Kill mlx_lm.server too
+                    let _ = std::process::Command::new("pkill").args(["-f", "mlx_lm.server"]).status();
+                    let _ = std::fs::remove_file(&pid_path);
+                    println!("Provider stopped.");
+                    return Ok(());
+                }
+            }
+        }
+        // PID file exists but process isn't running
+        let _ = std::fs::remove_file(&pid_path);
+    }
+
+    // Fallback: try pkill
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("pkill").args(["-f", "dginf-provider serve"]).status();
+        let _ = std::process::Command::new("pkill").args(["-f", "mlx_lm.server"]).status();
+    }
+
+    println!("Provider stopped.");
     Ok(())
 }
 

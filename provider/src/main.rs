@@ -70,7 +70,8 @@ enum Command {
         #[arg(long, default_value_t = 8000)]
         port: u16,
 
-        /// Model to serve (overrides config)
+        /// Model to serve (serves largest downloaded model if not specified)
+        /// Can specify multiple: --model model1 --model model2
         #[arg(long)]
         model: Option<String>,
 
@@ -78,6 +79,9 @@ enum Command {
         #[arg(long)]
         backend_port: Option<u16>,
 
+        /// Serve all downloaded models that fit in memory
+        #[arg(long)]
+        all_models: bool,
     },
 
     /// One-command setup: enroll in MDM, download model, start serving
@@ -147,6 +151,10 @@ enum Command {
         /// Number of lines to show
         #[arg(long, default_value_t = 50)]
         lines: usize,
+
+        /// Watch logs in real-time (like tail -f)
+        #[arg(short, long)]
+        watch: bool,
     },
 
     /// Show or create provider wallet (stored in macOS Keychain)
@@ -188,7 +196,8 @@ async fn main() -> Result<()> {
             port,
             model,
             backend_port,
-        } => cmd_serve(local, coordinator, port, model, backend_port).await,
+            all_models,
+        } => cmd_serve(local, coordinator, port, model, backend_port, all_models).await,
         Command::Enroll { profile_url } => cmd_enroll(profile_url).await,
         Command::Unenroll => cmd_unenroll().await,
         Command::Benchmark => cmd_benchmark().await,
@@ -198,7 +207,7 @@ async fn main() -> Result<()> {
         Command::Doctor { coordinator } => cmd_doctor(coordinator).await,
         Command::Start { coordinator, model } => cmd_start(coordinator, model).await,
         Command::Stop => cmd_stop().await,
-        Command::Logs { lines } => cmd_logs(lines).await,
+        Command::Logs { lines, watch } => cmd_logs(lines, watch).await,
         Command::Wallet => cmd_wallet().await,
     }
 }
@@ -444,6 +453,7 @@ async fn cmd_install(
             "serve",
             "--coordinator", &coordinator_url,
             "--model", &model,
+            "--all-models",
         ])
         .stdout(log_file)
         .stderr(log_err)
@@ -477,6 +487,7 @@ async fn cmd_serve(
     port: u16,
     model_override: Option<String>,
     backend_port_override: Option<u16>,
+    _all_models: bool,
 ) -> Result<()> {
     // Kill any existing provider/mlx_lm processes to avoid "address already in use"
     #[cfg(unix)]
@@ -517,20 +528,36 @@ async fn cmd_serve(
         node_keypair.public_key_base64()
     );
 
-    // Determine model (CLI override > config > default)
-    let model = model_override
-        .or(cfg.backend.model.clone())
-        .unwrap_or_else(|| "mlx-community/Qwen3.5-9B-MLX-4bit".to_string());
-
     // Determine backend port (CLI override > config)
     let be_port = backend_port_override.unwrap_or(cfg.backend.port);
+
+    // Determine models to serve
+    let available_models = models::scan_models(&hw);
+    let model = if let Some(m) = model_override {
+        m
+    } else if let Some(m) = cfg.backend.model.clone() {
+        m
+    } else if let Some(m) = available_models.last() {
+        // Default to largest model that fits
+        m.id.clone()
+    } else {
+        "mlx-community/Qwen3.5-9B-MLX-4bit".to_string()
+    };
+
+    // Log all available models
+    if !available_models.is_empty() {
+        tracing::info!("Available models ({}):", available_models.len());
+        for m in &available_models {
+            tracing::info!("  {} ({:.1} GB)", m.id, m.estimated_memory_gb);
+        }
+    }
+    tracing::info!("Primary model: {}", model);
 
     // Find the bundled or system Python
     let dginf_dir = dirs::home_dir().unwrap_or_default().join(".dginf");
     let bundled_python = dginf_dir.join("python/bin/python3");
     let python_cmd = if bundled_python.exists() {
         tracing::info!("Using bundled Python: {}", bundled_python.display());
-        // Set PYTHONHOME for bundled Python
         unsafe { std::env::set_var("PYTHONHOME", dginf_dir.join("python")); }
         bundled_python.to_string_lossy().to_string()
     } else {
@@ -538,7 +565,9 @@ async fn cmd_serve(
         "python3".to_string()
     };
 
-    // Start mlx_lm.server as the inference backend
+    // Start mlx_lm.server with the primary model
+    // mlx_lm.server supports dynamic model loading via the /v1/models endpoint
+    // so additional models can be served on-demand
     tracing::info!("Starting mlx_lm.server for model: {}", model);
     let mlx_serve = std::process::Command::new(&python_cmd)
         .args(["-m", "mlx_lm.server", "--model", &model, "--port", &be_port.to_string()])
@@ -1335,7 +1364,7 @@ async fn cmd_start(coordinator_url: String, model_override: Option<String>) -> R
     let log_err = log_file.try_clone()?;
 
     let child = std::process::Command::new(&exe)
-        .args(["serve", "--coordinator", &coordinator_url, "--model", &model])
+        .args(["serve", "--coordinator", &coordinator_url, "--model", &model, "--all-models"])
         .stdout(log_file)
         .stderr(log_err)
         .stdin(std::process::Stdio::null())
@@ -1414,23 +1443,32 @@ async fn cmd_wallet() -> Result<()> {
     Ok(())
 }
 
-async fn cmd_logs(lines: usize) -> Result<()> {
+async fn cmd_logs(lines: usize, watch: bool) -> Result<()> {
     let log_path = dirs::home_dir()
         .unwrap_or_default()
         .join(".dginf/provider.log");
 
     if !log_path.exists() {
         println!("No log file found at {}", log_path.display());
-        println!("Logs are written when the provider runs in the background.");
-        println!("Start with: dginf-provider serve > {} 2>&1 &", log_path.display());
+        println!("Start the provider first: dginf-provider start");
         return Ok(());
     }
 
-    let content = std::fs::read_to_string(&log_path)?;
-    let all_lines: Vec<&str> = content.lines().collect();
-    let start = all_lines.len().saturating_sub(lines);
-    for line in &all_lines[start..] {
-        println!("{line}");
+    if watch {
+        // Use tail -f for real-time watching
+        let status = std::process::Command::new("tail")
+            .args(["-f", "-n", &lines.to_string(), &log_path.to_string_lossy()])
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("tail exited with: {status}");
+        }
+    } else {
+        let content = std::fs::read_to_string(&log_path)?;
+        let all_lines: Vec<&str> = content.lines().collect();
+        let start = all_lines.len().saturating_sub(lines);
+        for line in &all_lines[start..] {
+            println!("{line}");
+        }
     }
 
     Ok(())

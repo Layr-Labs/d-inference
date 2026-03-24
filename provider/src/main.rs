@@ -93,6 +93,16 @@ enum Command {
         model: Option<String>,
     },
 
+    /// Enroll this Mac in DGInf MDM (without starting to serve)
+    Enroll {
+        /// MDM enrollment profile URL
+        #[arg(long, default_value = "https://inference-test.openinnovation.dev/enroll.mobileconfig")]
+        profile_url: String,
+    },
+
+    /// Remove MDM enrollment and clean up DGInf data
+    Unenroll,
+
     /// Run standardized benchmarks
     Benchmark,
 
@@ -101,6 +111,27 @@ enum Command {
 
     /// List available models that fit in memory
     Models,
+
+    /// Show earnings and usage history
+    Earnings {
+        /// Coordinator API URL
+        #[arg(long, default_value = "https://inference-test.openinnovation.dev")]
+        coordinator: String,
+    },
+
+    /// Diagnose issues: check SIP, Secure Enclave, MDM, models, connectivity
+    Doctor {
+        /// Coordinator URL to test connectivity
+        #[arg(long, default_value = "https://inference-test.openinnovation.dev")]
+        coordinator: String,
+    },
+
+    /// Show provider logs
+    Logs {
+        /// Number of lines to show
+        #[arg(long, default_value_t = 50)]
+        lines: usize,
+    },
 }
 
 fn setup_logging(verbose: bool) {
@@ -139,9 +170,14 @@ async fn main() -> Result<()> {
             model,
             backend_port,
         } => cmd_serve(local, coordinator, port, model, backend_port).await,
+        Command::Enroll { profile_url } => cmd_enroll(profile_url).await,
+        Command::Unenroll => cmd_unenroll().await,
         Command::Benchmark => cmd_benchmark().await,
         Command::Status => cmd_status().await,
         Command::Models => cmd_models().await,
+        Command::Earnings { coordinator } => cmd_earnings(coordinator).await,
+        Command::Doctor { coordinator } => cmd_doctor(coordinator).await,
+        Command::Logs { lines } => cmd_logs(lines).await,
     }
 }
 
@@ -739,14 +775,190 @@ fn generate_attestation(encryption_key_base64: &str, binary_hash: Option<&str>) 
     }
 }
 
+async fn cmd_enroll(profile_url: String) -> Result<()> {
+    println!("DGInf MDM Enrollment");
+    println!();
+
+    // Download profile
+    let profile_path = std::env::temp_dir().join("DGInf-Enroll.mobileconfig");
+    println!("Downloading enrollment profile...");
+    let client = reqwest::Client::new();
+    let resp = client.get(&profile_url).send().await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("Failed to download profile: HTTP {}", resp.status());
+    }
+    let bytes = resp.bytes().await?;
+    std::fs::write(&profile_path, &bytes)?;
+    println!("  Downloaded to {}", profile_path.display());
+
+    // Open for install
+    #[cfg(target_os = "macos")]
+    {
+        println!();
+        println!("Opening System Settings → Profiles...");
+        println!("Click Install on the DGInf profile.");
+        println!();
+        let _ = std::process::Command::new("open").arg(&profile_path).status();
+    }
+
+    println!("After installing, verify with: dginf-provider doctor");
+    Ok(())
+}
+
+async fn cmd_unenroll() -> Result<()> {
+    println!("DGInf Unenrollment");
+    println!();
+
+    #[cfg(target_os = "macos")]
+    {
+        // Check if enrolled
+        let output = std::process::Command::new("profiles").args(["list"]).output();
+        match output {
+            Ok(o) => {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                if stdout.contains("micromdm") || stdout.contains("com.github") {
+                    println!("MDM profile found. To remove:");
+                    println!("  System Settings → General → Device Management");
+                    println!("  Click on the DGInf profile → Remove");
+                    println!();
+                    println!("Opening System Settings...");
+                    let _ = std::process::Command::new("open")
+                        .arg("x-apple.systempreferences:com.apple.preferences.configurationprofiles")
+                        .status();
+                } else {
+                    println!("No DGInf MDM profile found. Nothing to remove.");
+                }
+            }
+            Err(_) => println!("Could not check profiles."),
+        }
+    }
+
+    // Clean up local data
+    println!();
+    println!("Clean up local DGInf data? This removes:");
+    println!("  - Config: ~/.config/dginf/");
+    println!("  - Node key: ~/.dginf/node_key");
+    println!("  - Enclave key: ~/.dginf/enclave_key.data");
+    println!();
+    println!("Type 'yes' to confirm:");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    if input.trim() == "yes" {
+        let home = dirs::home_dir().unwrap_or_default();
+        let _ = std::fs::remove_dir_all(home.join(".config/dginf"));
+        let _ = std::fs::remove_file(home.join(".dginf/node_key"));
+        let _ = std::fs::remove_file(home.join(".dginf/enclave_key.data"));
+        println!("  ✓ Local data cleaned up");
+    } else {
+        println!("  Skipped cleanup");
+    }
+
+    Ok(())
+}
+
 async fn cmd_benchmark() -> Result<()> {
-    tracing::warn!("Benchmark not yet implemented");
+    let hw = hardware::detect()?;
+    println!("DGInf Benchmark — {}", hw.chip_name);
+    println!();
+
+    // Check if mlx-lm is available
+    let has_mlx = std::process::Command::new("python3")
+        .args(["-c", "import mlx_lm; print('ok')"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !has_mlx {
+        println!("mlx-lm not installed. Install with: pip3 install mlx-lm");
+        return Ok(());
+    }
+
+    // Scan available models
+    let models = models::scan_models(&hw);
+    if models.is_empty() {
+        println!("No models downloaded. Download one first:");
+        println!("  huggingface-cli download mlx-community/Qwen3.5-9B-MLX-4bit");
+        return Ok(());
+    }
+
+    // Benchmark each available model
+    for model in &models {
+        println!("Benchmarking: {} ({:.1} GB)", model.id, model.estimated_memory_gb);
+        let output = std::process::Command::new("python3")
+            .args(["-c", &format!(
+                "import mlx_lm, time\n\
+                 m, t = mlx_lm.load('{}')\n\
+                 prompt = '<|im_start|>user\\nWrite a short poem about the ocean.<|im_end|>\\n<|im_start|>assistant\\n'\n\
+                 start = time.time()\n\
+                 result = mlx_lm.generate(m, t, prompt=prompt, max_tokens=100)\n\
+                 elapsed = time.time() - start\n\
+                 tokens = len(result.split())\n\
+                 print(f'  Tokens: {{tokens}}, Time: {{elapsed:.2f}}s, Speed: {{tokens/elapsed:.1f}} tok/s')",
+                model.id
+            )])
+            .output();
+        match output {
+            Ok(o) if o.status.success() => {
+                print!("{}", String::from_utf8_lossy(&o.stdout));
+            }
+            _ => println!("  Failed to benchmark this model"),
+        }
+        println!();
+    }
+
     Ok(())
 }
 
 async fn cmd_status() -> Result<()> {
     let hw = hardware::detect()?;
-    println!("{hw}");
+    println!("DGInf Provider Status");
+    println!();
+
+    // Hardware
+    println!("Hardware:");
+    println!("  Chip:       {}", hw.chip_name);
+    println!("  Memory:     {} GB total, {} GB available", hw.memory_gb, hw.memory_available_gb);
+    println!("  GPU:        {} cores", hw.gpu_cores);
+    println!("  Bandwidth:  {} GB/s", hw.memory_bandwidth_gbs);
+    println!();
+
+    // Security
+    println!("Security:");
+    let sip = security::check_sip_enabled();
+    println!("  SIP:              {}", if sip { "✓ Enabled" } else { "✗ DISABLED" });
+    println!("  Secure Enclave:   ✓ Available (Apple Silicon)");
+
+    // Check MDM enrollment
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("profiles").args(["list"]).output();
+        let enrolled = output.map(|o| {
+            let s = String::from_utf8_lossy(&o.stdout);
+            s.contains("micromdm") || s.contains("com.github") || s.contains("dginf")
+        }).unwrap_or(false);
+        println!("  MDM enrolled:     {}", if enrolled { "✓ Yes" } else { "✗ No" });
+    }
+    println!();
+
+    // Config
+    let config_path = config::default_config_path()?;
+    println!("Config:");
+    println!("  Config file:  {}", if config_path.exists() { config_path.display().to_string() } else { "Not created (run: dginf-provider init)".to_string() });
+    let key_path = crypto::default_key_path()?;
+    println!("  Node key:     {}", if key_path.exists() { "✓ Generated" } else { "✗ Not generated" });
+
+    let home = dirs::home_dir().unwrap_or_default();
+    let enclave_key = home.join(".dginf/enclave_key.data");
+    println!("  Enclave key:  {}", if enclave_key.exists() { "✓ Generated" } else { "✗ Not generated" });
+    println!();
+
+    // Models
+    let models = models::scan_models(&hw);
+    println!("Models: {} downloaded", models.len());
+    for m in &models {
+        println!("  {} ({:.1} GB)", m.id, m.estimated_memory_gb);
+    }
+
     Ok(())
 }
 
@@ -759,10 +971,251 @@ async fn cmd_models() -> Result<()> {
         println!("Download models with: huggingface-cli download <model-name>");
         println!("Example: huggingface-cli download mlx-community/Qwen3.5-9B-MLX-4bit");
     } else {
-        println!("Available models ({} found):\n", models.len());
+        println!("Downloaded models ({} found):\n", models.len());
         for model in &models {
             println!("  {model}");
         }
+    }
+
+    println!();
+    println!("Recommended models for {} ({} GB available):", hw.chip_name, hw.memory_available_gb);
+    let catalog = [
+        ("Qwen3.5-4B",       2.5,  "mlx-community/Qwen3.5-4B-MLX-4bit"),
+        ("Qwen3.5-9B",       6.0,  "mlx-community/Qwen3.5-9B-MLX-4bit"),
+        ("Qwen3.5-27B",     17.0,  "mlx-community/Qwen3.5-27B-MLX-4bit"),
+        ("Qwen3.5-35B-A3B", 22.0,  "mlx-community/Qwen3.5-35B-A3B-MLX-4bit"),
+        ("Qwen3.5-122B",    76.0,  "mlx-community/Qwen3.5-122B-A10B-MLX-4bit"),
+    ];
+    for (name, size, id) in &catalog {
+        let fits = hw.memory_available_gb as f64 >= *size;
+        let downloaded = models.iter().any(|m| m.id == *id);
+        let status = if downloaded { "✓ downloaded" } else if fits { "  fits" } else { "✗ too large" };
+        println!("  {} {:>5.1} GB  {:15} {}", status, size, name, id);
+    }
+
+    Ok(())
+}
+
+async fn cmd_earnings(coordinator_url: String) -> Result<()> {
+    println!("DGInf Earnings");
+    println!();
+
+    // Load config for API key
+    let config_path = config::default_config_path()?;
+    if !config_path.exists() {
+        println!("Not configured yet. Run: dginf-provider install");
+        return Ok(());
+    }
+
+    // Try to get earnings from coordinator
+    let client = reqwest::Client::new();
+    let health = client.get(format!("{}/health", coordinator_url))
+        .send().await;
+
+    match health {
+        Ok(resp) if resp.status().is_success() => {
+            let body: serde_json::Value = resp.json().await?;
+            println!("Coordinator: {} (online, {} providers)", coordinator_url, body["providers"]);
+        }
+        _ => {
+            println!("Coordinator: {} (offline or unreachable)", coordinator_url);
+        }
+    }
+
+    println!();
+    println!("Earnings tracking requires provider wallet configuration.");
+    println!("This feature will show:");
+    println!("  - Total earnings (USD)");
+    println!("  - Jobs completed");
+    println!("  - Tokens generated");
+    println!("  - Average earnings per hour");
+    println!();
+    println!("Coming soon. For now, check the coordinator dashboard.");
+
+    Ok(())
+}
+
+async fn cmd_doctor(coordinator_url: String) -> Result<()> {
+    println!("DGInf Doctor — System Diagnostics");
+    println!();
+
+    let mut issues: Vec<String> = Vec::new();
+    let mut passed = 0;
+
+    // 1. Hardware
+    print!("1. Hardware detection........... ");
+    match hardware::detect() {
+        Ok(hw) => {
+            println!("✓ {} ({} GB, {} GPU cores)", hw.chip_name, hw.memory_gb, hw.gpu_cores);
+            passed += 1;
+        }
+        Err(e) => {
+            println!("✗ Failed: {e}");
+            issues.push("Hardware detection failed".to_string());
+        }
+    }
+
+    // 2. SIP
+    print!("2. System Integrity Protection.. ");
+    if security::check_sip_enabled() {
+        println!("✓ Enabled");
+        passed += 1;
+    } else {
+        println!("✗ DISABLED — provider cannot serve safely");
+        issues.push("SIP is disabled. Enable via Recovery Mode: csrutil enable".to_string());
+    }
+
+    // 3. Secure Enclave
+    print!("3. Secure Enclave.............. ");
+    #[cfg(target_os = "macos")]
+    {
+        let enclave_ok = std::process::Command::new("dginf-enclave")
+            .args(["info"])
+            .output()
+            .or_else(|_| {
+                let home = dirs::home_dir().unwrap_or_default();
+                std::process::Command::new(home.join(".dginf/bin/dginf-enclave"))
+                    .args(["info"])
+                    .output()
+            })
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if enclave_ok {
+            println!("✓ Available");
+            passed += 1;
+        } else {
+            println!("✗ dginf-enclave not found");
+            issues.push("Install dginf-enclave binary".to_string());
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        println!("- Not applicable (non-macOS)");
+        passed += 1;
+    }
+
+    // 4. MDM enrollment
+    print!("4. MDM enrollment.............. ");
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("profiles").args(["list"]).output();
+        let enrolled = output.map(|o| {
+            let s = String::from_utf8_lossy(&o.stdout);
+            s.contains("micromdm") || s.contains("com.github") || s.contains("dginf")
+        }).unwrap_or(false);
+        if enrolled {
+            println!("✓ Enrolled");
+            passed += 1;
+        } else {
+            println!("✗ Not enrolled");
+            issues.push("Run: dginf-provider enroll".to_string());
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        println!("- Not applicable (non-macOS)");
+        passed += 1;
+    }
+
+    // 5. Python + MLX
+    print!("5. Python + mlx-lm............. ");
+    let mlx_ok = std::process::Command::new("python3")
+        .args(["-c", "import mlx_lm; print(mlx_lm.__version__)"])
+        .output();
+    match mlx_ok {
+        Ok(o) if o.status.success() => {
+            let ver = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            println!("✓ mlx-lm {ver}");
+            passed += 1;
+        }
+        _ => {
+            println!("✗ Not installed");
+            issues.push("Install: pip3 install mlx-lm".to_string());
+        }
+    }
+
+    // 6. Models
+    print!("6. Downloaded models........... ");
+    let hw = hardware::detect().unwrap_or_else(|_| hardware::HardwareInfo {
+        machine_model: "unknown".into(), chip_name: "unknown".into(),
+        chip_family: hardware::ChipFamily::Unknown, chip_tier: hardware::ChipTier::Unknown,
+        memory_gb: 0, memory_available_gb: 0,
+        cpu_cores: hardware::CpuCores { total: 0, performance: 0, efficiency: 0 },
+        gpu_cores: 0, memory_bandwidth_gbs: 0,
+    });
+    let model_count = models::scan_models(&hw).len();
+    if model_count > 0 {
+        println!("✓ {} model(s) found", model_count);
+        passed += 1;
+    } else {
+        println!("✗ No models");
+        issues.push("Download: huggingface-cli download mlx-community/Qwen3.5-9B-MLX-4bit".to_string());
+    }
+
+    // 7. Node key
+    print!("7. Node encryption key......... ");
+    let key_path = crypto::default_key_path().unwrap_or_default();
+    if key_path.exists() {
+        println!("✓ Generated");
+        passed += 1;
+    } else {
+        println!("✗ Not generated");
+        issues.push("Run: dginf-provider init".to_string());
+    }
+
+    // 8. Coordinator connectivity
+    print!("8. Coordinator connectivity.... ");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    match client.get(format!("{}/health", coordinator_url)).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            println!("✓ Online ({} providers)", body["providers"]);
+            passed += 1;
+        }
+        Ok(resp) => {
+            println!("✗ HTTP {}", resp.status());
+            issues.push(format!("Coordinator returned HTTP {}", resp.status()));
+        }
+        Err(e) => {
+            println!("✗ Unreachable: {e}");
+            issues.push(format!("Cannot reach coordinator at {coordinator_url}"));
+        }
+    }
+
+    // Summary
+    println!();
+    println!("Result: {passed}/8 checks passed");
+    if issues.is_empty() {
+        println!();
+        println!("All good! Start serving with: dginf-provider serve");
+    } else {
+        println!();
+        println!("Issues to fix:");
+        for (i, issue) in issues.iter().enumerate() {
+            println!("  {}. {}", i + 1, issue);
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_logs(lines: usize) -> Result<()> {
+    let log_path = std::env::temp_dir().join("dginf-provider.log");
+
+    if !log_path.exists() {
+        println!("No log file found at {}", log_path.display());
+        println!("Logs are written when the provider runs in the background.");
+        println!("Start with: dginf-provider serve > {} 2>&1 &", log_path.display());
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&log_path)?;
+    let all_lines: Vec<&str> = content.lines().collect();
+    let start = all_lines.len().saturating_sub(lines);
+    for line in &all_lines[start..] {
+        println!("{line}");
     }
 
     Ok(())

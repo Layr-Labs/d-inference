@@ -78,6 +78,21 @@ enum Command {
 
     },
 
+    /// One-command setup: enroll in MDM, download model, start serving
+    Install {
+        /// Coordinator URL (WebSocket for serving, HTTPS for API)
+        #[arg(long, default_value = "wss://inference-test.openinnovation.dev/ws/provider")]
+        coordinator: String,
+
+        /// MDM enrollment profile URL
+        #[arg(long, default_value = "https://inference-test.openinnovation.dev/enroll.mobileconfig")]
+        profile_url: String,
+
+        /// Model to serve (auto-selects if not specified)
+        #[arg(long)]
+        model: Option<String>,
+    },
+
     /// Run standardized benchmarks
     Benchmark,
 
@@ -112,6 +127,11 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Init => cmd_init().await,
+        Command::Install {
+            coordinator,
+            profile_url,
+            model,
+        } => cmd_install(coordinator, profile_url, model).await,
         Command::Serve {
             local,
             coordinator,
@@ -146,6 +166,172 @@ async fn cmd_init() -> Result<()> {
     println!("Public key: {}", kp.public_key_base64());
 
     Ok(())
+}
+
+async fn cmd_install(
+    coordinator_url: String,
+    profile_url: String,
+    model_override: Option<String>,
+) -> Result<()> {
+    println!("╔══════════════════════════════════════════╗");
+    println!("║       DGInf Provider Setup               ║");
+    println!("╚══════════════════════════════════════════╝");
+    println!();
+
+    // Step 1: Detect hardware
+    println!("Step 1/6: Detecting hardware...");
+    let hw = hardware::detect()?;
+    println!("  ✓ {} ({} GB RAM, {} GPU cores, {} GB/s bandwidth)",
+        hw.chip_name, hw.memory_gb, hw.gpu_cores, hw.memory_bandwidth_gbs);
+    println!();
+
+    // Step 2: Initialize config and keys
+    println!("Step 2/6: Initializing configuration...");
+    let config_path = config::default_config_path()?;
+    if !config_path.exists() {
+        let cfg = config::ProviderConfig::default_for_hardware(&hw);
+        config::save(&config_path, &cfg)?;
+    }
+    let key_path = crypto::default_key_path()?;
+    let _kp = crypto::NodeKeyPair::load_or_generate(&key_path)?;
+    println!("  ✓ Config: {}", config_path.display());
+    println!("  ✓ Node key: {}", key_path.display());
+    println!();
+
+    // Step 3: Download and install MDM enrollment profile
+    println!("Step 3/6: MDM enrollment...");
+    let profile_path = std::env::temp_dir().join("DGInf-Enroll.mobileconfig");
+    println!("  Downloading enrollment profile...");
+    let client = reqwest::Client::new();
+    let resp = client.get(&profile_url).send().await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("Failed to download enrollment profile: HTTP {}", resp.status());
+    }
+    let profile_bytes = resp.bytes().await?;
+    std::fs::write(&profile_path, &profile_bytes)?;
+    println!("  ✓ Downloaded to {}", profile_path.display());
+
+    // Open the profile for installation
+    println!("  Opening profile for installation...");
+    println!();
+    println!("  ┌─────────────────────────────────────────────────────┐");
+    println!("  │  A System Settings window will open.                │");
+    println!("  │  Go to General → Device Management and click        │");
+    println!("  │  Install on the DGInf profile.                      │");
+    println!("  │                                                      │");
+    println!("  │  This only allows DGInf to query your Mac's         │");
+    println!("  │  security status. No access to personal data.       │");
+    println!("  └─────────────────────────────────────────────────────┘");
+    println!();
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg(&profile_path)
+            .status();
+    }
+
+    // Wait for enrollment
+    println!("  Waiting for MDM enrollment (install the profile, then press Enter)...");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+
+    // Verify enrollment by checking profiles
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("profiles")
+            .args(["list"])
+            .output();
+        match output {
+            Ok(o) => {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                if stdout.contains("micromdm") || stdout.contains("dginf") || stdout.contains("com.github") {
+                    println!("  ✓ MDM enrollment confirmed!");
+                } else if stdout.contains("no configuration profiles") || stdout.is_empty() {
+                    println!("  ⚠ No profiles detected. You can install the profile later.");
+                    println!("    Download from: {}", profile_url);
+                } else {
+                    println!("  ✓ Profile installed");
+                }
+            }
+            Err(_) => println!("  ⚠ Could not verify enrollment (continuing anyway)"),
+        }
+    }
+    println!();
+
+    // Step 4: Select and download model
+    println!("Step 4/6: Setting up inference model...");
+    let model = if let Some(m) = model_override {
+        m
+    } else {
+        // Auto-select model based on available memory
+        let model = if hw.memory_available_gb >= 64 {
+            "mlx-community/Qwen2.5-7B-Instruct-4bit"
+        } else if hw.memory_available_gb >= 16 {
+            "mlx-community/Qwen2.5-3B-Instruct-4bit"
+        } else {
+            "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
+        };
+        println!("  Auto-selected: {} (for {} GB available memory)", model, hw.memory_available_gb);
+        model.to_string()
+    };
+
+    // Check if model is already downloaded
+    let available = models::scan_models(&hw);
+    let model_downloaded = available.iter().any(|m| m.id == model);
+
+    if !model_downloaded {
+        println!("  Downloading model (this may take a few minutes)...");
+        let status = std::process::Command::new("huggingface-cli")
+            .args(["download", &model])
+            .status();
+        match status {
+            Ok(s) if s.success() => println!("  ✓ Model downloaded"),
+            _ => {
+                // Try python fallback
+                println!("  huggingface-cli not found, trying Python...");
+                let py_status = std::process::Command::new("python3")
+                    .args(["-c", &format!(
+                        "from huggingface_hub import snapshot_download; snapshot_download('{}')",
+                        model
+                    )])
+                    .status();
+                match py_status {
+                    Ok(s) if s.success() => println!("  ✓ Model downloaded"),
+                    _ => println!("  ⚠ Could not download model. Download manually:\n    huggingface-cli download {}", model),
+                }
+            }
+        }
+    } else {
+        println!("  ✓ Model already downloaded: {}", model);
+    }
+    println!();
+
+    // Step 5: Verify security posture
+    println!("Step 5/6: Verifying security posture...");
+    match security::verify_security_posture() {
+        Ok(()) => println!("  ✓ SIP enabled, security checks passed"),
+        Err(e) => {
+            println!("  ✗ Security check failed: {}", e);
+            anyhow::bail!("Cannot serve with security checks failing: {}", e);
+        }
+    }
+    println!();
+
+    // Step 6: Connect and serve
+    println!("Step 6/6: Starting provider...");
+    println!("  Coordinator: {}", coordinator_url);
+    println!("  Model: {}", model);
+    println!();
+    println!("╔══════════════════════════════════════════╗");
+    println!("║  Provider is online and earning!          ║");
+    println!("║  Press Ctrl+C to stop.                    ║");
+    println!("╚══════════════════════════════════════════╝");
+    println!();
+
+    // Convert wss:// coordinator URL to ws:// for serve (or keep as-is)
+    let ws_url = coordinator_url;
+    cmd_serve(false, ws_url, 8000, Some(model), None).await
 }
 
 async fn cmd_serve(

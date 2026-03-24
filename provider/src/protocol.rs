@@ -22,7 +22,7 @@ use crate::models::ModelInfo;
 use serde::{Deserialize, Serialize};
 
 /// Messages sent from provider to coordinator.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProviderMessage {
     Register {
@@ -34,9 +34,11 @@ pub enum ProviderMessage {
         /// Ethereum-format hex wallet address for Tempo blockchain payouts (pathUSD).
         #[serde(skip_serializing_if = "Option::is_none")]
         wallet_address: Option<String>,
-        /// Signed Secure Enclave attestation blob (JSON value from Swift CLI tool).
+        /// Signed Secure Enclave attestation blob (raw JSON from Swift CLI tool).
+        /// Uses RawValue to preserve exact byte encoding from Swift's JSONEncoder,
+        /// which is critical for signature verification.
         #[serde(skip_serializing_if = "Option::is_none")]
-        attestation: Option<serde_json::Value>,
+        attestation: Option<Box<serde_json::value::RawValue>>,
         /// Benchmark: prefill tokens per second.
         #[serde(skip_serializing_if = "Option::is_none")]
         prefill_tps: Option<f64>,

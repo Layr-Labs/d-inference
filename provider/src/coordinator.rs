@@ -53,7 +53,7 @@ pub struct CoordinatorClient {
     heartbeat_interval: Duration,
     public_key: Option<String>,
     wallet_address: Option<String>,
-    attestation: Option<serde_json::Value>,
+    attestation: Option<Box<serde_json::value::RawValue>>,
 }
 
 impl CoordinatorClient {
@@ -83,8 +83,8 @@ impl CoordinatorClient {
         self
     }
 
-    /// Set the signed Secure Enclave attestation blob.
-    pub fn with_attestation(mut self, attestation: Option<serde_json::Value>) -> Self {
+    /// Set the signed Secure Enclave attestation blob (raw JSON bytes preserved).
+    pub fn with_attestation(mut self, attestation: Option<Box<serde_json::value::RawValue>>) -> Self {
         self.attestation = attestation;
         self
     }
@@ -402,7 +402,7 @@ pub fn build_register_message_with_wallet(
     backend_name: &str,
     public_key: Option<String>,
     wallet_address: Option<String>,
-    attestation: Option<serde_json::Value>,
+    attestation: Option<Box<serde_json::value::RawValue>>,
 ) -> ProviderMessage {
     ProviderMessage::Register {
         hardware: hardware.clone(),

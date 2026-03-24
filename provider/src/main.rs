@@ -874,9 +874,17 @@ async fn handle_inprocess_request(
 /// regenerated. This avoids providers registering with unverifiable attestations.
 ///
 /// Returns None if the CLI tool is not available or fails (graceful degradation).
-fn generate_attestation(encryption_key_base64: &str, binary_hash: Option<&str>) -> Option<serde_json::Value> {
+fn generate_attestation(encryption_key_base64: &str, binary_hash: Option<&str>) -> Option<Box<serde_json::value::RawValue>> {
     // Look for the enclave CLI binary in common locations
+    // Check ~/.dginf/bin first (standard install location)
+    let home_bin = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".dginf/bin/dginf-enclave");
+    let home_bin_str = home_bin.to_string_lossy().to_string();
+
     let binary_paths = [
+        // Standard install location
+        home_bin_str.as_str(),
         // Built in the enclave directory (development)
         "../enclave/.build/release/dginf-enclave",
         // System-wide install
@@ -959,8 +967,10 @@ fn generate_attestation(encryption_key_base64: &str, binary_hash: Option<&str>) 
             return None;
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let json: serde_json::Value = match serde_json::from_str(&stdout) {
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        // Validate it's valid JSON with a signature field
+        let check: serde_json::Value = match serde_json::from_str(&stdout) {
             Ok(j) => j,
             Err(e) => {
                 tracing::warn!("Failed to parse attestation JSON: {e}");
@@ -968,8 +978,7 @@ fn generate_attestation(encryption_key_base64: &str, binary_hash: Option<&str>) 
             }
         };
 
-        // Check signature is non-empty
-        if let Some(sig) = json.get("signature").and_then(|s| s.as_str()) {
+        if let Some(sig) = check.get("signature").and_then(|s| s.as_str()) {
             if sig.is_empty() {
                 tracing::warn!("Attestation has empty signature");
                 if attempt == 0 {
@@ -979,8 +988,20 @@ fn generate_attestation(encryption_key_base64: &str, binary_hash: Option<&str>) 
             }
         }
 
-        tracing::info!("Secure Enclave attestation generated successfully");
-        return Some(json);
+        // Return as RawValue to preserve exact Swift JSON encoding.
+        // This is critical: the signature was computed over Swift's specific
+        // JSON byte encoding. Re-serializing through serde_json::Value
+        // changes the bytes and breaks signature verification.
+        match serde_json::value::RawValue::from_string(stdout) {
+            Ok(raw) => {
+                tracing::info!("Secure Enclave attestation generated successfully (raw bytes preserved)");
+                return Some(raw);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create RawValue: {e}");
+                return None;
+            }
+        }
     }
 
     None

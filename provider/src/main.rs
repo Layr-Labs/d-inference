@@ -968,13 +968,12 @@ fn generate_attestation(encryption_key_base64: &str, binary_hash: Option<&str>) 
             }
         };
 
-        // Self-verify: check the attestation has a valid signature field
-        // and the public key matches what we expect. If the SE key was stale,
-        // the coordinator would reject it — better to catch it here.
+        // Check signature is non-empty
         if let Some(sig) = json.get("signature").and_then(|s| s.as_str()) {
             if sig.is_empty() {
-                tracing::warn!("Attestation has empty signature, key may be stale");
+                tracing::warn!("Attestation has empty signature");
                 if attempt == 0 {
+                    tracing::info!("Retrying with fresh enclave key...");
                     continue;
                 }
             }
@@ -985,6 +984,98 @@ fn generate_attestation(encryption_key_base64: &str, binary_hash: Option<&str>) 
     }
 
     None
+}
+
+/// Self-verify an attestation's P-256 ECDSA signature using macOS security tools.
+/// Returns true if the signature is valid, false if stale/invalid.
+fn self_verify_attestation(attestation_json: &serde_json::Value) -> bool {
+    use base64::Engine;
+
+    let signature_b64 = match attestation_json.get("signature").and_then(|s| s.as_str()) {
+        Some(s) if !s.is_empty() => s,
+        _ => return false,
+    };
+
+    let attestation_blob = match attestation_json.get("attestation") {
+        Some(blob) => blob,
+        None => return false,
+    };
+
+    let public_key_b64 = match attestation_blob.get("publicKey").and_then(|p| p.as_str()) {
+        Some(p) => p,
+        None => return false,
+    };
+
+    // Re-encode the attestation blob as sorted JSON (matching what was signed)
+    let blob_json = match serde_json::to_string(attestation_blob) {
+        Ok(j) => j,
+        Err(_) => return false,
+    };
+
+    // Decode base64 values
+    let sig_bytes = match base64::engine::general_purpose::STANDARD.decode(signature_b64) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let pubkey_bytes = match base64::engine::general_purpose::STANDARD.decode(public_key_b64) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+
+    // Write temp files for openssl verification
+    let tmp_dir = std::env::temp_dir();
+    let sig_path = tmp_dir.join("dginf-verify-sig.der");
+    let data_path = tmp_dir.join("dginf-verify-data.bin");
+    let pubkey_path = tmp_dir.join("dginf-verify-pubkey.der");
+
+    // Write signature and raw data (openssl dgst will hash it)
+    if std::fs::write(&sig_path, &sig_bytes).is_err() { return false; }
+    if std::fs::write(&data_path, blob_json.as_bytes()).is_err() { return false; }
+
+    // Build DER-encoded SubjectPublicKeyInfo for P-256
+    // ASN.1: SEQUENCE { SEQUENCE { OID ecPublicKey, OID prime256v1 }, BIT STRING { pubkey } }
+    let mut spki = vec![
+        0x30, 0x59, // SEQUENCE, length 89
+        0x30, 0x13, // SEQUENCE, length 19
+        0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, // OID 1.2.840.10045.2.1 (ecPublicKey)
+        0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, // OID 1.2.840.10045.3.1.7 (prime256v1)
+        0x03, 0x42, 0x00, // BIT STRING, length 66, no unused bits
+    ];
+    // pubkey_bytes should be 65 bytes (0x04 + 32 X + 32 Y) or 64 bytes (raw X||Y)
+    if pubkey_bytes.len() == 64 {
+        spki.push(0x04); // uncompressed point prefix
+    }
+    spki.extend_from_slice(&pubkey_bytes);
+    // Fix SPKI length if pubkey was 64 bytes (we added 0x04, total = 90)
+    if pubkey_bytes.len() == 64 {
+        spki[1] = 0x5a; // outer SEQUENCE length = 90
+        spki[24] = 0x43; // BIT STRING length = 67
+    }
+
+    if std::fs::write(&pubkey_path, &spki).is_err() { return false; }
+
+    // Verify with openssl
+    let result = std::process::Command::new("/usr/bin/openssl")
+        .args([
+            "dgst", "-sha256", "-verify", &pubkey_path.to_string_lossy(),
+            "-signature", &sig_path.to_string_lossy(),
+            "-keyform", "DER",
+            &data_path.to_string_lossy().into_owned(),
+        ])
+        .output();
+
+    // Cleanup
+    let _ = std::fs::remove_file(&sig_path);
+    let _ = std::fs::remove_file(&data_path);
+    let _ = std::fs::remove_file(&pubkey_path);
+
+    match result {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout.contains("Verified OK")
+        }
+        Err(_) => false,
+    }
 }
 
 async fn cmd_enroll(profile_url: String) -> Result<()> {

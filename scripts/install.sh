@@ -54,9 +54,10 @@ PYTHONHOME="$DGINF_DIR/python" "$DGINF_DIR/python/bin/python3.12" -c \
     "import vllm_mlx; print(f'→ vllm-mlx {vllm_mlx.__version__} ✓')" 2>/dev/null \
     || echo "→ vllm-mlx ✓"
 
-# Secure Enclave
+# Secure Enclave — always regenerate key on install for clean attestation
+rm -f "$DGINF_DIR/enclave_key.data" 2>/dev/null
 "$BIN_DIR/dginf-enclave" info >/dev/null 2>&1 \
-    && echo "→ Secure Enclave ✓" \
+    && echo "→ Secure Enclave ✓ (fresh key)" \
     || echo "→ Secure Enclave ⚠ (attestation skipped)"
 
 # Model suggestions

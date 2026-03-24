@@ -43,3 +43,5 @@ build/
 # Keys (never commit)
 *.pem
 enclave_key.data
+
+d-inf-docs/

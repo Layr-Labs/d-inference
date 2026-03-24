@@ -42,6 +42,7 @@ import (
 // and Swift's JSONEncoder with .sortedKeys uses alphabetical order.
 // Keeping them aligned ensures both produce identical JSON.
 type AttestationBlob struct {
+	BinaryHash             string `json:"binaryHash,omitempty"`
 	ChipName               string `json:"chipName"`
 	EncryptionPublicKey    string `json:"encryptionPublicKey,omitempty"`
 	HardwareModel          string `json:"hardwareModel"`
@@ -87,6 +88,7 @@ type VerificationResult struct {
 	Valid                  bool
 	PublicKey              string
 	EncryptionPublicKey    string
+	BinaryHash             string
 	HardwareModel          string
 	ChipName               string
 	SecureEnclaveAvailable bool
@@ -114,6 +116,7 @@ func Verify(signed SignedAttestation) VerificationResult {
 	result := VerificationResult{
 		PublicKey:              signed.Attestation.PublicKey,
 		EncryptionPublicKey:    signed.Attestation.EncryptionPublicKey,
+		BinaryHash:            signed.Attestation.BinaryHash,
 		HardwareModel:          signed.Attestation.HardwareModel,
 		ChipName:               signed.Attestation.ChipName,
 		SecureEnclaveAvailable: signed.Attestation.SecureEnclaveAvailable,
@@ -278,8 +281,11 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 		"timestamp":              blob.Timestamp,
 	}
 
-	// Only include encryptionPublicKey if set (Swift's JSONEncoder with
+	// Only include optional fields if set (Swift's JSONEncoder with
 	// .sortedKeys omits nil optionals, so we must match that behavior).
+	if blob.BinaryHash != "" {
+		m["binaryHash"] = blob.BinaryHash
+	}
 	if blob.EncryptionPublicKey != "" {
 		m["encryptionPublicKey"] = blob.EncryptionPublicKey
 	}

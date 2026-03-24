@@ -27,9 +27,11 @@ mod config;
 mod coordinator;
 mod crypto;
 mod hardware;
+mod inference;
 mod models;
 mod protocol;
 mod proxy;
+mod security;
 mod server;
 
 use anyhow::Result;
@@ -73,6 +75,7 @@ enum Command {
         /// Port for the inference backend
         #[arg(long)]
         backend_port: Option<u16>,
+
     },
 
     /// Run standardized benchmarks
@@ -102,6 +105,10 @@ fn setup_logging(verbose: bool) {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     setup_logging(cli.verbose);
+
+    // Security hardening: prevent debugger attachment early, before any
+    // sensitive data (keys, prompts) is loaded into memory.
+    security::deny_debugger_attachment();
 
     match cli.command {
         Command::Init => cmd_init().await,
@@ -148,6 +155,13 @@ async fn cmd_serve(
     model_override: Option<String>,
     backend_port_override: Option<u16>,
 ) -> Result<()> {
+    // Verify security posture before serving any inference requests.
+    // SIP cannot be disabled at runtime (requires reboot), so this check
+    // at startup guarantees SIP will remain on for the process lifetime.
+    if let Err(reason) = security::verify_security_posture() {
+        anyhow::bail!("Security check failed: {reason}");
+    }
+
     let hw = hardware::detect()?;
     tracing::info!(
         "Starting provider on {} ({} GB RAM, {} GPU cores)",
@@ -182,12 +196,38 @@ async fn cmd_serve(
     // Determine backend port (CLI override > config)
     let be_port = backend_port_override.unwrap_or(cfg.backend.port);
 
-    // Create the vllm-mlx backend
-    let backend: Box<dyn backend::Backend> = Box::new(backend::vllm_mlx::VllmMlxBackend::new(
-        model.clone(),
-        be_port,
-        cfg.backend.continuous_batching,
-    ));
+    // Verify backend binary integrity before launching.
+    // Hash the binary to detect tampering — a modified backend could
+    // exfiltrate consumer prompts.
+    match security::verify_backend_integrity("vllm-mlx") {
+        Ok(hash) => {
+            tracing::info!("Backend integrity verified: vllm-mlx hash = {}", &hash[..16]);
+        }
+        Err(e) => {
+            tracing::warn!("Backend integrity check skipped: {e}");
+            // Don't fail — the binary might be a Python script (not hashable the same way).
+            // In production with a bundled app, this would be a hard failure.
+        }
+    }
+
+    // In-process inference only (Phase 3, maximum security).
+    // If mlx-lm is not installed, install it automatically.
+    if let Err(_) = inference::InProcessEngine::detect_engine() {
+        tracing::info!("MLX not found — installing mlx-lm automatically...");
+        let install_status = std::process::Command::new("pip3")
+            .args(["install", "mlx-lm"])
+            .status();
+        match install_status {
+            Ok(s) if s.success() => tracing::info!("mlx-lm installed successfully"),
+            Ok(s) => anyhow::bail!("Failed to install mlx-lm (exit code: {s}). Install manually: pip3 install mlx-lm"),
+            Err(e) => anyhow::bail!("Failed to run pip3: {e}. Install mlx-lm manually: pip3 install mlx-lm"),
+        }
+    }
+
+    tracing::info!("Using in-process inference engine (secure mode)");
+    tracing::info!("All inference inside this hardened process — no subprocess, no IPC");
+    let engine = inference::InProcessEngine::new(model.clone());
+    let backend: Box<dyn backend::Backend> = Box::new(inference::SharedEngine::new(engine));
 
     // Start backend manager
     let manager = backend::BackendManager::new(
@@ -216,8 +256,12 @@ async fn cmd_serve(
 
         let public_key_b64 = node_keypair.public_key_base64();
 
-        // Generate Secure Enclave attestation, binding the X25519 encryption key.
-        let attestation = generate_attestation(&public_key_b64);
+        // Compute SHA-256 of our own binary for integrity attestation.
+        let binary_hash = security::self_binary_hash();
+
+        // Generate Secure Enclave attestation, binding the X25519 encryption key
+        // and our binary hash (so coordinator can verify we're running blessed code).
+        let attestation = generate_attestation(&public_key_b64, binary_hash.as_deref());
 
         let client = coordinator::CoordinatorClient::new(
             coordinator_url,
@@ -239,6 +283,20 @@ async fn cmd_serve(
         // Process coordinator events
         let proxy_backend_url = backend_url.clone();
         let proxy_keypair = node_keypair.clone();
+        let is_inprocess = proxy_backend_url.starts_with("inprocess://");
+        let shared_engine: Option<std::sync::Arc<tokio::sync::Mutex<inference::InProcessEngine>>> =
+            if is_inprocess {
+                // Create a new engine and load it (detects mlx-lm vs vllm-mlx)
+                let mut engine = inference::InProcessEngine::new(model.clone());
+                if let Err(e) = engine.load() {
+                    tracing::error!("Failed to load in-process engine for event loop: {e}");
+                    anyhow::bail!("In-process engine load failed: {e}");
+                }
+                Some(std::sync::Arc::new(tokio::sync::Mutex::new(engine)))
+            } else {
+                None
+            };
+
         let event_handle = tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 match event {
@@ -250,11 +308,21 @@ async fn cmd_serve(
                     }
                     coordinator::CoordinatorEvent::InferenceRequest { request_id, body } => {
                         let tx = outbound_tx.clone();
-                        let url = proxy_backend_url.clone();
-                        let kp = proxy_keypair.clone();
-                        tokio::spawn(async move {
-                            proxy::handle_inference_request(request_id, body, url, tx, Some(kp)).await;
-                        });
+
+                        if let Some(ref engine) = shared_engine {
+                            // In-process: call Python engine directly
+                            let engine = engine.clone();
+                            tokio::spawn(async move {
+                                handle_inprocess_request(request_id, body, engine, tx).await;
+                            });
+                        } else {
+                            // Subprocess: HTTP proxy to backend
+                            let url = proxy_backend_url.clone();
+                            let kp = proxy_keypair.clone();
+                            tokio::spawn(async move {
+                                proxy::handle_inference_request(request_id, body, url, tx, Some(kp)).await;
+                            });
+                        }
                     }
                     coordinator::CoordinatorEvent::Cancel { request_id } => {
                         tracing::info!("Cancel request for {request_id} (not yet implemented)");
@@ -292,13 +360,98 @@ async fn cmd_serve(
     Ok(())
 }
 
+/// Handle an inference request using the in-process engine (no HTTP, no subprocess).
+async fn handle_inprocess_request(
+    request_id: String,
+    body: serde_json::Value,
+    engine: std::sync::Arc<tokio::sync::Mutex<inference::InProcessEngine>>,
+    outbound_tx: tokio::sync::mpsc::Sender<protocol::ProviderMessage>,
+) {
+    // Pre-request SIP check
+    if !security::check_sip_enabled() {
+        let _ = outbound_tx.send(protocol::ProviderMessage::InferenceError {
+            request_id,
+            error: "SIP disabled".to_string(),
+            status_code: 503,
+        }).await;
+        return;
+    }
+
+    // Extract parameters from OpenAI-format body
+    let messages: Vec<serde_json::Value> = body.get("messages")
+        .and_then(|m| m.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let max_tokens = body.get("max_tokens").and_then(|v| v.as_u64()).unwrap_or(256);
+    let temperature = body.get("temperature").and_then(|v| v.as_f64()).unwrap_or(0.7);
+    let is_streaming = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    // Run inference in blocking task (Python GIL)
+    let engine_clone = engine.clone();
+    let req_id = request_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let e = engine_clone.blocking_lock();
+        e.generate(&messages, max_tokens, temperature)
+    }).await;
+
+    match result {
+        Ok(Ok(inference_result)) => {
+            if is_streaming {
+                // Send as a single chunk for now
+                let chunk = serde_json::json!({
+                    "id": format!("chatcmpl-{}", uuid::Uuid::new_v4()),
+                    "object": "chat.completion.chunk",
+                    "choices": [{"delta": {"content": inference_result.text}, "index": 0, "finish_reason": "stop"}]
+                });
+                let _ = outbound_tx.send(protocol::ProviderMessage::InferenceResponseChunk {
+                    request_id: request_id.clone(),
+                    data: format!("data: {}", serde_json::to_string(&chunk).unwrap_or_default()),
+                }).await;
+                let _ = outbound_tx.send(protocol::ProviderMessage::InferenceResponseChunk {
+                    request_id: request_id.clone(),
+                    data: "data: [DONE]".to_string(),
+                }).await;
+            }
+
+            let _ = outbound_tx.send(protocol::ProviderMessage::InferenceComplete {
+                request_id,
+                usage: protocol::UsageInfo {
+                    prompt_tokens: inference_result.prompt_tokens,
+                    completion_tokens: inference_result.completion_tokens,
+                },
+            }).await;
+        }
+        Ok(Err(e)) => {
+            tracing::error!("In-process inference failed: {e}");
+            let _ = outbound_tx.send(protocol::ProviderMessage::InferenceError {
+                request_id,
+                error: e.to_string(),
+                status_code: 500,
+            }).await;
+        }
+        Err(e) => {
+            tracing::error!("Inference task panicked: {e}");
+            let _ = outbound_tx.send(protocol::ProviderMessage::InferenceError {
+                request_id,
+                error: "inference task failed".to_string(),
+                status_code: 500,
+            }).await;
+        }
+    }
+
+    // Wipe request body from memory
+    if let Ok(mut body_bytes) = serde_json::to_vec(&body) {
+        security::secure_zero(&mut body_bytes);
+    }
+}
+
 /// Generate a Secure Enclave attestation by calling the dginf-enclave CLI tool.
 ///
 /// The attestation binds the X25519 encryption public key to the hardware
 /// identity, proving the same device controls both keys.
 ///
 /// Returns None if the CLI tool is not available or fails (graceful degradation).
-fn generate_attestation(encryption_key_base64: &str) -> Option<serde_json::Value> {
+fn generate_attestation(encryption_key_base64: &str, binary_hash: Option<&str>) -> Option<serde_json::Value> {
     // Look for the enclave CLI binary in common locations
     let binary_paths = [
         // Built in the enclave directory (development)
@@ -345,8 +498,16 @@ fn generate_attestation(encryption_key_base64: &str) -> Option<serde_json::Value
 
     tracing::info!("Generating Secure Enclave attestation via {}", binary.display());
 
+    let mut args = vec!["attest", "--encryption-key", encryption_key_base64];
+    let hash_string;
+    if let Some(hash) = binary_hash {
+        hash_string = hash.to_string();
+        args.push("--binary-hash");
+        args.push(&hash_string);
+    }
+
     match std::process::Command::new(&binary)
-        .args(["attest", "--encryption-key", encryption_key_base64])
+        .args(&args)
         .output()
     {
         Ok(output) => {

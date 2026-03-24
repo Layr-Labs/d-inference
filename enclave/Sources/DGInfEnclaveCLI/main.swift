@@ -7,11 +7,15 @@ import Foundation
 /// Command-line tool that generates and outputs a signed attestation.
 ///
 /// Usage:
-///   dginf-enclave attest [--encryption-key <base64>]
+///   dginf-enclave attest [--encryption-key <base64>] [--binary-hash <hex>]
 ///
 /// The --encryption-key flag binds an X25519 encryption public key to the
 /// attestation, proving the same hardware identity controls both the
 /// Secure Enclave signing key and the E2E encryption key.
+///
+/// The --binary-hash flag includes the SHA-256 hash of the provider binary
+/// in the attestation, allowing the coordinator to verify the provider is
+/// running the expected (blessed) version.
 
 let identityPath: URL = {
     let home = FileManager.default.homeDirectoryForCurrentUser
@@ -53,11 +57,12 @@ func printUsage() {
 
     Options for 'attest':
       --encryption-key <base64>    Bind an X25519 encryption public key to the attestation
+      --binary-hash <hex>          Include SHA-256 hash of provider binary for integrity verification
     """
     fputs(usage + "\n", stderr)
 }
 
-func cmdAttest(encryptionKey: String?) throws {
+func cmdAttest(encryptionKey: String?, binaryHash: String?) throws {
     guard SecureEnclave.isAvailable else {
         fputs("error: Secure Enclave is not available on this device\n", stderr)
         exit(1)
@@ -65,7 +70,7 @@ func cmdAttest(encryptionKey: String?) throws {
 
     let identity = try loadOrCreateIdentity()
     let service = AttestationService(identity: identity)
-    let signed = try service.createAttestation(encryptionPublicKey: encryptionKey)
+    let signed = try service.createAttestation(encryptionPublicKey: encryptionKey, binaryHash: binaryHash)
 
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
@@ -115,10 +120,14 @@ do {
     switch command {
     case "attest":
         var encryptionKey: String? = nil
+        var binaryHash: String? = nil
         var i = 2
         while i < args.count {
             if args[i] == "--encryption-key" && i + 1 < args.count {
                 encryptionKey = args[i + 1]
+                i += 2
+            } else if args[i] == "--binary-hash" && i + 1 < args.count {
+                binaryHash = args[i + 1]
                 i += 2
             } else {
                 fputs("error: unknown option \(args[i])\n", stderr)
@@ -126,7 +135,7 @@ do {
                 exit(1)
             }
         }
-        try cmdAttest(encryptionKey: encryptionKey)
+        try cmdAttest(encryptionKey: encryptionKey, binaryHash: binaryHash)
 
     case "info":
         try cmdInfo()

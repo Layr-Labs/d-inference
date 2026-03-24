@@ -280,6 +280,9 @@ func (s *Server) handleAttestationResponse(providerID string, provider *registry
 }
 
 // verifyChallengeResponse verifies a challenge response from a provider.
+// In addition to verifying the nonce and signature, it checks the fresh
+// SIP status reported by the provider. If SIP has been disabled since
+// registration, the provider is marked untrusted immediately.
 func (s *Server) verifyChallengeResponse(providerID string, provider *registry.Provider, pc *pendingChallenge, resp *protocol.AttestationResponseMessage) {
 	// Verify the nonce matches.
 	if resp.Nonce != pc.nonce {
@@ -304,10 +307,36 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		return
 	}
 
+	// Verify fresh SIP status. If the provider reports SIP disabled,
+	// they've rebooted since registration and are no longer trustworthy.
+	// SIP cannot be disabled at runtime — a reboot into Recovery Mode is
+	// required. So SIP=false means the provider deliberately weakened
+	// their security posture.
+	if resp.SIPEnabled != nil && !*resp.SIPEnabled {
+		s.logger.Error("provider SIP disabled in challenge response — marking untrusted",
+			"provider_id", providerID,
+		)
+		s.registry.MarkUntrusted(providerID)
+		s.handleChallengeFailure(providerID, "SIP disabled")
+		return
+	}
+
+	// Verify fresh Secure Boot status.
+	if resp.SecureBootEnabled != nil && !*resp.SecureBootEnabled {
+		s.logger.Error("provider Secure Boot disabled in challenge response — marking untrusted",
+			"provider_id", providerID,
+		)
+		s.registry.MarkUntrusted(providerID)
+		s.handleChallengeFailure(providerID, "Secure Boot disabled")
+		return
+	}
+
 	// Challenge passed.
 	s.registry.RecordChallengeSuccess(providerID)
 	s.logger.Info("attestation challenge verified",
 		"provider_id", providerID,
+		"sip_enabled", resp.SIPEnabled,
+		"secure_boot_enabled", resp.SecureBootEnabled,
 	)
 }
 

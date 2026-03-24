@@ -64,10 +64,19 @@ pub enum ProviderMessage {
         status_code: u16,
     },
     /// Response to an attestation challenge from the coordinator.
+    /// Includes a fresh SIP status check — the coordinator verifies this
+    /// hasn't changed since registration.
     AttestationResponse {
         nonce: String,
         signature: String,
         public_key: String,
+        /// Fresh SIP status at time of challenge response.
+        /// If false, coordinator should mark provider untrusted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sip_enabled: Option<bool>,
+        /// Fresh Secure Boot status at time of challenge response.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        secure_boot_enabled: Option<bool>,
     },
 }
 
@@ -403,6 +412,8 @@ mod tests {
             nonce: "dGVzdG5vbmNl".to_string(),
             signature: "c2lnbmF0dXJl".to_string(),
             public_key: "cHVia2V5".to_string(),
+            sip_enabled: Some(true),
+            secure_boot_enabled: Some(true),
         };
 
         let json = serde_json::to_string(&msg).unwrap();

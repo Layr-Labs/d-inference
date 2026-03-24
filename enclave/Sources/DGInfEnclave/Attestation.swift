@@ -42,6 +42,7 @@ import Foundation
 /// Managed Device Attestation (MDA) which provides hardware-attested
 /// evidence. The software checks here are a development placeholder.
 public struct AttestationBlob: Codable {
+    public let binaryHash: String?             // SHA-256 of the provider binary, for integrity verification
     public let chipName: String                // e.g. "Apple M3 Max"
     public let encryptionPublicKey: String?    // base64 X25519 public key, bound to this identity
     public let hardwareModel: String           // e.g. "Mac15,8"
@@ -86,12 +87,15 @@ public final class AttestationService {
     /// then signed with the Secure Enclave P-256 key. The coordinator
     /// reproduces the same JSON encoding to verify the signature.
     ///
-    /// - Parameter encryptionPublicKey: Optional base64-encoded X25519 public
-    ///   key to bind to this attestation. When set, the coordinator verifies
-    ///   that this key matches the public_key in the Register message, proving
-    ///   the same device controls both keys.
-    public func createAttestation(encryptionPublicKey: String? = nil) throws -> SignedAttestation {
+    /// - Parameters:
+    ///   - encryptionPublicKey: Optional base64-encoded X25519 public key to bind
+    ///     to this attestation.
+    ///   - binaryHash: Optional SHA-256 hex hash of the provider binary. The
+    ///     coordinator verifies this matches the expected blessed version, preventing
+    ///     providers from running modified binaries.
+    public func createAttestation(encryptionPublicKey: String? = nil, binaryHash: String? = nil) throws -> SignedAttestation {
         let blob = AttestationBlob(
+            binaryHash: binaryHash,
             chipName: getChipName(),
             encryptionPublicKey: encryptionPublicKey,
             hardwareModel: getHardwareModel(),

@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 
 use crate::crypto::NodeKeyPair;
 use crate::protocol::{ProviderMessage, UsageInfo};
+use crate::security;
 
 /// Handle an inference request by forwarding it to the local backend
 /// and streaming responses back via the outbound channel.
@@ -37,6 +38,21 @@ pub async fn handle_inference_request(
     outbound_tx: mpsc::Sender<ProviderMessage>,
     _node_keypair: Option<Arc<NodeKeyPair>>,
 ) {
+    // Pre-request SIP check: verify SIP is still enabled before processing
+    // any consumer data. SIP can't be disabled at runtime (requires reboot),
+    // so this is defense-in-depth on top of the startup check.
+    if !security::check_sip_enabled() {
+        tracing::error!("SIP disabled — refusing inference request {request_id}");
+        let _ = outbound_tx
+            .send(ProviderMessage::InferenceError {
+                request_id,
+                error: "provider security check failed: SIP disabled".to_string(),
+                status_code: 503,
+            })
+            .await;
+        return;
+    }
+
     let is_streaming = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let result = if is_streaming {
@@ -54,6 +70,13 @@ pub async fn handle_inference_request(
                 status_code: 500,
             })
             .await;
+    }
+
+    // Wipe the request body from memory after processing.
+    // The body contains the consumer's prompts — we don't want them
+    // lingering in process memory after the job completes.
+    if let Ok(mut body_bytes) = serde_json::to_vec(&body) {
+        security::secure_zero(&mut body_bytes);
     }
 }
 
@@ -107,6 +130,11 @@ async fn handle_non_streaming_request(
         })
         .await
         .ok();
+
+    // Wipe response data from memory — contains consumer's inference output.
+    if let Ok(mut resp_bytes) = serde_json::to_vec(&response_json) {
+        security::secure_zero(&mut resp_bytes);
+    }
 
     Ok(())
 }

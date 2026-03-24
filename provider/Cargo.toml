@@ -55,6 +55,11 @@ dirs = "6"
 crypto_box = "0.9"
 base64 = "0.22"
 
+# Embedded Python — for in-process inference (Phase 3)
+# Links the Python interpreter directly into our binary so inference
+# happens in our hardened process. No subprocess, no IPC, no sniffable channel.
+pyo3 = { version = "0.24", features = ["auto-initialize"] }
+
 [dev-dependencies]
 tempfile = "3"
 assert_cmd = "2"

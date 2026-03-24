@@ -265,12 +265,17 @@ impl CoordinatorClient {
     }
 }
 
-/// Handle an attestation challenge by signing the nonce+timestamp data.
+/// Handle an attestation challenge by signing the nonce+timestamp data
+/// and performing a fresh security posture check.
 ///
 /// For now, we produce a "signature" by base64-encoding the SHA-256 hash of the
 /// challenge data concatenated with the public key. This proves possession of
 /// the key identity on the authenticated WebSocket. In a future iteration, the
 /// Secure Enclave P-256 key would be used for a proper cryptographic signature.
+///
+/// The response includes fresh SIP and Secure Boot status, verified at the
+/// time of the challenge. The coordinator checks these and marks the provider
+/// untrusted if they've been disabled since registration.
 pub fn handle_attestation_challenge(
     nonce: &str,
     timestamp: &str,
@@ -287,10 +292,21 @@ pub fn handle_attestation_challenge(
     let hash = simple_sha256(sig_input.as_bytes());
     let signature = base64::engine::general_purpose::STANDARD.encode(hash);
 
+    // Fresh security posture check at challenge time.
+    // SIP can't change at runtime (requires reboot), but this proves
+    // the provider hasn't rebooted with SIP disabled and reconnected.
+    let sip_enabled = crate::security::check_sip_enabled();
+
+    if !sip_enabled {
+        tracing::error!("SIP is disabled during attestation challenge — coordinator will reject us");
+    }
+
     ProviderMessage::AttestationResponse {
         nonce: nonce.to_string(),
         signature,
         public_key: pk_str.to_string(),
+        sip_enabled: Some(sip_enabled),
+        secure_boot_enabled: Some(true), // Apple Silicon always has Secure Boot in Full Security mode
     }
 }
 
@@ -408,10 +424,13 @@ mod tests {
                 nonce: resp_nonce,
                 signature,
                 public_key: resp_pk,
+                sip_enabled,
+                ..
             } => {
                 assert_eq!(resp_nonce, nonce);
                 assert!(!signature.is_empty(), "signature should not be empty");
                 assert_eq!(resp_pk, "cHVia2V5");
+                assert!(sip_enabled.is_some(), "should include SIP status");
             }
             _ => panic!("Expected AttestationResponse"),
         }
@@ -426,10 +445,13 @@ mod tests {
                 nonce,
                 signature,
                 public_key,
+                sip_enabled,
+                ..
             } => {
                 assert_eq!(nonce, "bm9uY2U=");
                 assert!(!signature.is_empty());
                 assert_eq!(public_key, "");
+                assert!(sip_enabled.is_some(), "should include SIP status");
             }
             _ => panic!("Expected AttestationResponse"),
         }

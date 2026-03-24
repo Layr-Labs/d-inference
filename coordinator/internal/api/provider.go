@@ -604,10 +604,13 @@ func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Prov
 		"mdm_auth_root_volume", mdmResult.MDMAuthRootVolume,
 	)
 
-	// Step 2: Apple Device Attestation (MDA) — cryptographic proof from Apple.
-	// This is stronger than SecurityInfo: Apple's servers sign the device properties,
-	// so even a fully compromised OS cannot forge them.
-	s.verifyAppleDeviceAttestation(providerID, provider, attestResult, mdmResult.UDID)
+	// MDA (Apple Device Attestation) is implemented but disabled.
+	// It requires Apple Business Manager enrollment which isn't practical
+	// for a decentralized provider network. The SecurityInfo path above
+	// is self-reinforcing: spoofing it requires SIP to be off, which means
+	// privacy is already compromised anyway. Enable MDA for managed fleets:
+	//
+	// s.verifyAppleDeviceAttestation(providerID, provider, attestResult, mdmResult.UDID)
 }
 
 // verifyAppleDeviceAttestation sends a DeviceInformation command requesting

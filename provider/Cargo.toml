@@ -58,7 +58,12 @@ base64 = "0.22"
 # Embedded Python — for in-process inference (Phase 3)
 # Links the Python interpreter directly into our binary so inference
 # happens in our hardened process. No subprocess, no IPC, no sniffable channel.
-pyo3 = { version = "0.24", features = ["auto-initialize"] }
+# Behind a feature flag so `cargo test` doesn't need Python linked.
+pyo3 = { version = "0.24", features = ["auto-initialize"], optional = true }
+
+[features]
+default = ["python"]
+python = ["pyo3"]
 
 [dev-dependencies]
 tempfile = "3"

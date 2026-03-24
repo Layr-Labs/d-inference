@@ -27,12 +27,14 @@ mod config;
 mod coordinator;
 mod crypto;
 mod hardware;
+#[cfg(feature = "python")]
 mod inference;
 mod models;
 mod protocol;
 mod proxy;
 mod security;
 mod server;
+mod wallet;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -132,6 +134,9 @@ enum Command {
         #[arg(long, default_value_t = 50)]
         lines: usize,
     },
+
+    /// Show or create provider wallet (stored in macOS Keychain)
+    Wallet,
 }
 
 fn setup_logging(verbose: bool) {
@@ -178,6 +183,7 @@ async fn main() -> Result<()> {
         Command::Earnings { coordinator } => cmd_earnings(coordinator).await,
         Command::Doctor { coordinator } => cmd_doctor(coordinator).await,
         Command::Logs { lines } => cmd_logs(lines).await,
+        Command::Wallet => cmd_wallet().await,
     }
 }
 
@@ -221,7 +227,7 @@ async fn cmd_install(
         hw.chip_name, hw.memory_gb, hw.gpu_cores, hw.memory_bandwidth_gbs);
     println!();
 
-    // Step 2: Initialize config and keys
+    // Step 2: Initialize config, keys, and wallet
     println!("Step 2/6: Initializing configuration...");
     let config_path = config::default_config_path()?;
     if !config_path.exists() {
@@ -230,8 +236,10 @@ async fn cmd_install(
     }
     let key_path = crypto::default_key_path()?;
     let _kp = crypto::NodeKeyPair::load_or_generate(&key_path)?;
+    let w = wallet::Wallet::load_or_create()?;
     println!("  ✓ Config: {}", config_path.display());
     println!("  ✓ Node key: {}", key_path.display());
+    println!("  ✓ Wallet: {} (stored in Keychain)", w.address());
     println!();
 
     // Step 3: Download and install MDM enrollment profile
@@ -449,24 +457,34 @@ async fn cmd_serve(
         }
     }
 
-    // In-process inference only (Phase 3, maximum security).
-    // If mlx-lm is not installed, install it automatically.
-    if let Err(_) = inference::InProcessEngine::detect_engine() {
-        tracing::info!("MLX not found — installing mlx-lm automatically...");
-        let install_status = std::process::Command::new("pip3")
-            .args(["install", "mlx-lm"])
-            .status();
-        match install_status {
-            Ok(s) if s.success() => tracing::info!("mlx-lm installed successfully"),
-            Ok(s) => anyhow::bail!("Failed to install mlx-lm (exit code: {s}). Install manually: pip3 install mlx-lm"),
-            Err(e) => anyhow::bail!("Failed to run pip3: {e}. Install mlx-lm manually: pip3 install mlx-lm"),
+    // Create backend: in-process (with Python feature) or subprocess fallback
+    #[cfg(feature = "python")]
+    let backend: Box<dyn backend::Backend> = {
+        // In-process inference (Phase 3, maximum security).
+        // If mlx-lm is not installed, install it automatically.
+        if let Err(_) = inference::InProcessEngine::detect_engine() {
+            tracing::info!("MLX not found — installing mlx-lm automatically...");
+            let install_status = std::process::Command::new("pip3")
+                .args(["install", "mlx-lm"])
+                .status();
+            match install_status {
+                Ok(s) if s.success() => tracing::info!("mlx-lm installed successfully"),
+                Ok(s) => anyhow::bail!("Failed to install mlx-lm (exit code: {s}). Install manually: pip3 install mlx-lm"),
+                Err(e) => anyhow::bail!("Failed to run pip3: {e}. Install mlx-lm manually: pip3 install mlx-lm"),
+            }
         }
-    }
+        tracing::info!("Using in-process inference engine (secure mode)");
+        let engine = inference::InProcessEngine::new(model.clone());
+        Box::new(inference::SharedEngine::new(engine))
+    };
 
-    tracing::info!("Using in-process inference engine (secure mode)");
-    tracing::info!("All inference inside this hardened process — no subprocess, no IPC");
-    let engine = inference::InProcessEngine::new(model.clone());
-    let backend: Box<dyn backend::Backend> = Box::new(inference::SharedEngine::new(engine));
+    #[cfg(not(feature = "python"))]
+    let backend: Box<dyn backend::Backend> = {
+        tracing::info!("Using subprocess backend (built without python feature)");
+        Box::new(backend::vllm_mlx::VllmMlxBackend::new(
+            model.clone(), be_port, cfg.backend.continuous_batching,
+        ))
+    };
 
     // Start backend manager
     let manager = backend::BackendManager::new(
@@ -510,7 +528,12 @@ async fn cmd_serve(
             std::time::Duration::from_secs(cfg.coordinator.heartbeat_interval_secs),
             Some(public_key_b64),
         )
-        .with_attestation(attestation);
+        .with_attestation(attestation)
+        .with_wallet_address(
+            wallet::Wallet::load_or_create()
+                .ok()
+                .map(|w| w.address.clone())
+        );
 
         // Spawn coordinator connection
         let coordinator_handle = tokio::spawn(async move {
@@ -523,9 +546,10 @@ async fn cmd_serve(
         let proxy_backend_url = backend_url.clone();
         let proxy_keypair = node_keypair.clone();
         let is_inprocess = proxy_backend_url.starts_with("inprocess://");
+
+        #[cfg(feature = "python")]
         let shared_engine: Option<std::sync::Arc<tokio::sync::Mutex<inference::InProcessEngine>>> =
             if is_inprocess {
-                // Create a new engine and load it (detects mlx-lm vs vllm-mlx)
                 let mut engine = inference::InProcessEngine::new(model.clone());
                 if let Err(e) = engine.load() {
                     tracing::error!("Failed to load in-process engine for event loop: {e}");
@@ -548,14 +572,22 @@ async fn cmd_serve(
                     coordinator::CoordinatorEvent::InferenceRequest { request_id, body } => {
                         let tx = outbound_tx.clone();
 
+                        #[cfg(feature = "python")]
                         if let Some(ref engine) = shared_engine {
-                            // In-process: call Python engine directly
                             let engine = engine.clone();
                             tokio::spawn(async move {
                                 handle_inprocess_request(request_id, body, engine, tx).await;
                             });
                         } else {
-                            // Subprocess: HTTP proxy to backend
+                            let url = proxy_backend_url.clone();
+                            let kp = proxy_keypair.clone();
+                            tokio::spawn(async move {
+                                proxy::handle_inference_request(request_id, body, url, tx, Some(kp)).await;
+                            });
+                        }
+
+                        #[cfg(not(feature = "python"))]
+                        {
                             let url = proxy_backend_url.clone();
                             let kp = proxy_keypair.clone();
                             tokio::spawn(async move {
@@ -600,6 +632,7 @@ async fn cmd_serve(
 }
 
 /// Handle an inference request using the in-process engine (no HTTP, no subprocess).
+#[cfg(feature = "python")]
 async fn handle_inprocess_request(
     request_id: String,
     body: serde_json::Value,
@@ -839,6 +872,7 @@ async fn cmd_unenroll() -> Result<()> {
     println!("  - Config: ~/.config/dginf/");
     println!("  - Node key: ~/.dginf/node_key");
     println!("  - Enclave key: ~/.dginf/enclave_key.data");
+    println!("  - Wallet key from Keychain");
     println!();
     println!("Type 'yes' to confirm:");
     let mut input = String::new();
@@ -848,7 +882,8 @@ async fn cmd_unenroll() -> Result<()> {
         let _ = std::fs::remove_dir_all(home.join(".config/dginf"));
         let _ = std::fs::remove_file(home.join(".dginf/node_key"));
         let _ = std::fs::remove_file(home.join(".dginf/enclave_key.data"));
-        println!("  ✓ Local data cleaned up");
+        let _ = wallet::Wallet::delete();
+        println!("  ✓ Local data and wallet cleaned up");
     } else {
         println!("  Skipped cleanup");
     }
@@ -1000,37 +1035,56 @@ async fn cmd_earnings(coordinator_url: String) -> Result<()> {
     println!("DGInf Earnings");
     println!();
 
-    // Load config for API key
-    let config_path = config::default_config_path()?;
-    if !config_path.exists() {
-        println!("Not configured yet. Run: dginf-provider install");
-        return Ok(());
-    }
+    // Load wallet
+    let w = wallet::Wallet::load_or_create()?;
+    println!("Wallet: {}", w.address());
+    println!();
 
-    // Try to get earnings from coordinator
-    let client = reqwest::Client::new();
-    let health = client.get(format!("{}/health", coordinator_url))
-        .send().await;
+    // Query coordinator for balance
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
 
+    let health = client.get(format!("{}/health", coordinator_url)).send().await;
     match health {
         Ok(resp) if resp.status().is_success() => {
             let body: serde_json::Value = resp.json().await?;
-            println!("Coordinator: {} (online, {} providers)", coordinator_url, body["providers"]);
+            println!("Coordinator: online ({} providers connected)", body["providers"]);
         }
         _ => {
-            println!("Coordinator: {} (offline or unreachable)", coordinator_url);
+            println!("Coordinator: offline or unreachable ({})", coordinator_url);
+            println!();
+            println!("Cannot fetch earnings while coordinator is offline.");
+            return Ok(());
+        }
+    }
+
+    // Query provider balance from the coordinator's ledger
+    // The coordinator tracks provider earnings by wallet address
+    let balance_resp = client.get(format!("{}/v1/payments/balance", coordinator_url))
+        .header("X-Provider-Wallet", w.address())
+        .send().await;
+
+    println!();
+    match balance_resp {
+        Ok(resp) if resp.status().is_success() => {
+            let body: serde_json::Value = resp.json().await?;
+            let balance_usd = body["balance_usd"].as_str().unwrap_or("0.000000");
+            let balance_micro = body["balance_micro_usd"].as_i64().unwrap_or(0);
+            println!("Earnings:");
+            println!("  Balance:    ${}", balance_usd);
+            println!("  Micro-USD:  {}", balance_micro);
+        }
+        _ => {
+            println!("Earnings: not yet available");
+            println!("  Earnings accumulate as you serve inference requests.");
+            println!("  The coordinator credits your wallet after each job.");
         }
     }
 
     println!();
-    println!("Earnings tracking requires provider wallet configuration.");
-    println!("This feature will show:");
-    println!("  - Total earnings (USD)");
-    println!("  - Jobs completed");
-    println!("  - Tokens generated");
-    println!("  - Average earnings per hour");
-    println!();
-    println!("Coming soon. For now, check the coordinator dashboard.");
+    println!("Payout: earnings are settled to your wallet address");
+    println!("  via Stripe (USD) or Tempo blockchain (pathUSD).");
 
     Ok(())
 }
@@ -1197,6 +1251,23 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
             println!("  {}. {}", i + 1, issue);
         }
     }
+
+    Ok(())
+}
+
+async fn cmd_wallet() -> Result<()> {
+    println!("DGInf Provider Wallet");
+    println!();
+
+    let w = wallet::Wallet::load_or_create()?;
+    println!("Address:  {}", w.address());
+    println!("Storage:  macOS Keychain (io.dginf.provider)");
+    println!();
+    println!("This wallet receives your inference earnings.");
+    println!("The private key is stored securely in the macOS Keychain");
+    println!("and never leaves your machine.");
+    println!();
+    println!("To delete: dginf-provider unenroll (removes wallet + all data)");
 
     Ok(())
 }

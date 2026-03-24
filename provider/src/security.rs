@@ -103,6 +103,76 @@ pub fn verify_security_posture() -> Result<(), String> {
     Ok(())
 }
 
+/// Check if this Mac is enrolled in DGInf MDM.
+///
+/// Tries multiple detection methods since system-level profiles
+/// require sudo to see via `profiles list`. This is the single
+/// source of truth for MDM enrollment status — all commands
+/// should call this instead of implementing their own check.
+pub fn check_mdm_enrolled() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // Method 1: Check if the system profiles marker file exists.
+        // This file is created when any configuration profile is installed
+        // at the system level, even if `profiles list` can't show it without sudo.
+        if std::path::Path::new("/var/db/ConfigurationProfiles/Settings/.profilesAreInstalled").exists() {
+            tracing::debug!("MDM check: profiles marker file exists");
+            return true;
+        }
+
+        // Method 2: Try `profiles list` (works for user-level profiles)
+        let check_profiles = |args: &[&str]| -> bool {
+            Command::new("profiles")
+                .args(args)
+                .output()
+                .map(|o| {
+                    let combined = format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&o.stdout),
+                        String::from_utf8_lossy(&o.stderr)
+                    ).to_lowercase();
+                    // Positive signals
+                    let has_profile = combined.contains("micromdm") ||
+                        combined.contains("com.github.micromdm") ||
+                        combined.contains("dginf") ||
+                        combined.contains("attribute: profileidentifier");
+                    // Negative signal
+                    let no_profiles = combined.contains("no configuration profiles");
+                    has_profile || (!no_profiles && combined.contains("profileidentifier"))
+                })
+                .unwrap_or(false)
+        };
+
+        if check_profiles(&["list"]) {
+            tracing::debug!("MDM check: found via profiles list");
+            return true;
+        }
+        if check_profiles(&["list", "-type", "enrollment"]) {
+            tracing::debug!("MDM check: found via profiles list -type enrollment");
+            return true;
+        }
+
+        // Method 3: Check if mdmclient shows enrollment
+        if let Ok(output) = Command::new("/usr/libexec/mdmclient")
+            .args(["QueryDeviceInformation"])
+            .output()
+        {
+            let out = String::from_utf8_lossy(&output.stdout).to_lowercase();
+            if out.contains("enrolled") || out.contains("serverurl") {
+                tracing::debug!("MDM check: found via mdmclient");
+                return true;
+            }
+        }
+
+        false
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 /// Zero out a byte buffer to prevent sensitive data from persisting in memory.
 ///
 /// Uses volatile writes to prevent the compiler from optimizing away

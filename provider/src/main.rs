@@ -245,34 +245,7 @@ async fn cmd_install(
     // Step 3: MDM enrollment (skip if already enrolled)
     println!("Step 3/6: MDM enrollment...");
 
-    let already_enrolled = {
-        #[cfg(target_os = "macos")]
-        {
-            let check = |args: &[&str]| -> bool {
-                std::process::Command::new("profiles")
-                    .args(args)
-                    .output()
-                    .map(|o| {
-                        let out = String::from_utf8_lossy(&o.stdout).to_lowercase();
-                        let err = String::from_utf8_lossy(&o.stderr).to_lowercase();
-                        let combined = format!("{}{}", out, err);
-                        // Enrolled if output mentions any profile identifier or enrollment
-                        (combined.contains("micromdm") || combined.contains("com.github") ||
-                         combined.contains("dginf") || combined.contains("mdm")) &&
-                        !combined.contains("no configuration profiles")
-                    })
-                    .unwrap_or(false)
-            };
-            // Try multiple detection methods
-            check(&["list"]) ||                          // user profiles
-            check(&["list", "-type", "enrollment"]) ||   // enrollment profiles
-            check(&["show", "-type", "enrollment"]) ||   // alternate syntax
-            // Also try checking if the MDM checkin file exists
-            std::path::Path::new("/var/db/ConfigurationProfiles/Settings/.profilesAreInstalled").exists()
-        }
-        #[cfg(not(target_os = "macos"))]
-        { false }
-    };
+    let already_enrolled = security::check_mdm_enrolled();
 
     if already_enrolled {
         println!("  ✓ Already enrolled in MDM — skipping");
@@ -907,28 +880,20 @@ async fn cmd_unenroll() -> Result<()> {
     println!("DGInf Unenrollment");
     println!();
 
-    #[cfg(target_os = "macos")]
-    {
-        // Check if enrolled
-        let output = std::process::Command::new("profiles").args(["list"]).output();
-        match output {
-            Ok(o) => {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                if stdout.contains("micromdm") || stdout.contains("com.github") || stdout.contains("MDM") || stdout.contains("Device Management") {
-                    println!("MDM profile found. To remove:");
-                    println!("  System Settings → General → Device Management");
-                    println!("  Click on the DGInf profile → Remove");
-                    println!();
-                    println!("Opening System Settings...");
-                    let _ = std::process::Command::new("open")
-                        .arg("x-apple.systempreferences:com.apple.preferences.configurationprofiles")
-                        .status();
-                } else {
-                    println!("No DGInf MDM profile found. Nothing to remove.");
-                }
-            }
-            Err(_) => println!("Could not check profiles."),
+    if security::check_mdm_enrolled() {
+        println!("MDM profile found. To remove:");
+        println!("  System Settings → General → Device Management");
+        println!("  Click on the DGInf profile → Remove");
+        println!();
+        #[cfg(target_os = "macos")]
+        {
+            println!("Opening System Settings...");
+            let _ = std::process::Command::new("open")
+                .arg("x-apple.systempreferences:com.apple.preferences.configurationprofiles")
+                .status();
         }
+    } else {
+        println!("No DGInf MDM profile found. Nothing to remove.");
     }
 
     // Clean up local data
@@ -1028,16 +993,7 @@ async fn cmd_status() -> Result<()> {
     println!("  SIP:              {}", if sip { "✓ Enabled" } else { "✗ DISABLED" });
     println!("  Secure Enclave:   ✓ Available (Apple Silicon)");
 
-    // Check MDM enrollment
-    #[cfg(target_os = "macos")]
-    {
-        let output = std::process::Command::new("profiles").args(["list"]).output();
-        let enrolled = output.map(|o| {
-            let s = String::from_utf8_lossy(&o.stdout);
-            s.contains("micromdm") || s.contains("com.github") || s.contains("dginf") || s.contains("MDM") || s.contains("Device Management")
-        }).unwrap_or(false);
-        println!("  MDM enrolled:     {}", if enrolled { "✓ Yes" } else { "✗ No" });
-    }
+    println!("  MDM enrolled:     {}", if security::check_mdm_enrolled() { "✓ Yes" } else { "✗ No" });
     println!();
 
     // Config
@@ -1215,39 +1171,20 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
 
     // 4. MDM enrollment
     print!("4. MDM enrollment.............. ");
-    #[cfg(target_os = "macos")]
-    {
-        // Check both user and system domains
-        let user_output = std::process::Command::new("profiles").args(["list"]).output();
-        let system_output = std::process::Command::new("profiles").args(["list", "-type", "enrollment"]).output();
-        let check_output = |o: std::io::Result<std::process::Output>| -> bool {
-            o.map(|o| {
-                let s = String::from_utf8_lossy(&o.stdout);
-                let e = String::from_utf8_lossy(&o.stderr);
-                let combined = format!("{}{}", s, e);
-                combined.contains("micromdm") || combined.contains("com.github") ||
-                combined.contains("dginf") || combined.contains("MDM") ||
-                combined.contains("Device Management") || combined.contains("configuration profiles installed")
-            }).unwrap_or(false)
-        };
-        // "configuration profiles installed" means profiles exist (even if we can't see details without sudo)
-        let has_profiles = user_output.as_ref().map(|o| {
-            let s = String::from_utf8_lossy(&o.stdout);
-            !s.contains("no configuration profiles") && s.contains("attribute")
-        }).unwrap_or(false);
-
-        if check_output(user_output) || check_output(system_output) || has_profiles {
-            println!("✓ Enrolled");
-            passed += 1;
-        } else {
+    if security::check_mdm_enrolled() {
+        println!("✓ Enrolled");
+        passed += 1;
+    } else {
+        #[cfg(target_os = "macos")]
+        {
             println!("✗ Not enrolled");
             issues.push("Run: dginf-provider enroll".to_string());
         }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        println!("- Not applicable (non-macOS)");
-        passed += 1;
+        #[cfg(not(target_os = "macos"))]
+        {
+            println!("- Not applicable (non-macOS)");
+            passed += 1;
+        }
     }
 
     // 5. Python + MLX

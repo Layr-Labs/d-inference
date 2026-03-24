@@ -265,12 +265,16 @@ async fn cmd_install(
         m
     } else {
         // Auto-select model based on available memory
-        let model = if hw.memory_available_gb >= 64 {
-            "mlx-community/Qwen2.5-7B-Instruct-4bit"
+        // Uses latest Qwen3.5 MoE models where possible — small active params
+        // (3-10B) make them fast on unified memory hardware.
+        let model = if hw.memory_available_gb >= 100 {
+            "mlx-community/Qwen3.5-122B-A10B-MLX-4bit"  // 122B MoE, 10B active, ~76GB
+        } else if hw.memory_available_gb >= 48 {
+            "mlx-community/Qwen3.5-35B-A3B-MLX-4bit"    // 35B MoE, 3B active, ~22GB
         } else if hw.memory_available_gb >= 16 {
-            "mlx-community/Qwen2.5-3B-Instruct-4bit"
+            "mlx-community/Qwen3.5-9B-MLX-4bit"         // 9B dense, ~6GB
         } else {
-            "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
+            "mlx-community/Qwen3.5-4B-MLX-4bit"         // 4B dense, ~2.5GB
         };
         println!("  Auto-selected: {} (for {} GB available memory)", model, hw.memory_available_gb);
         model.to_string()
@@ -377,7 +381,7 @@ async fn cmd_serve(
     // Determine model (CLI override > config > default)
     let model = model_override
         .or(cfg.backend.model.clone())
-        .unwrap_or_else(|| "mlx-community/Qwen2.5-7B-Instruct-4bit".to_string());
+        .unwrap_or_else(|| "mlx-community/Qwen3.5-9B-MLX-4bit".to_string());
 
     // Determine backend port (CLI override > config)
     let be_port = backend_port_override.unwrap_or(cfg.backend.port);
@@ -740,7 +744,7 @@ async fn cmd_models() -> Result<()> {
     if models.is_empty() {
         println!("No MLX models found in HuggingFace cache.");
         println!("Download models with: huggingface-cli download <model-name>");
-        println!("Example: huggingface-cli download mlx-community/Qwen2.5-7B-Instruct-4bit");
+        println!("Example: huggingface-cli download mlx-community/Qwen3.5-9B-MLX-4bit");
     } else {
         println!("Available models ({} found):\n", models.len());
         for model in &models {

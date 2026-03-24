@@ -76,6 +76,14 @@ func main() {
 	}
 
 	reg := registry.New(logger)
+
+	// Set minimum trust level for routing. Default: hardware (production).
+	// Set DGINF_MIN_TRUST=none or DGINF_MIN_TRUST=self_signed for testing.
+	if minTrust := os.Getenv("DGINF_MIN_TRUST"); minTrust != "" {
+		reg.MinTrustLevel = registry.TrustLevel(minTrust)
+		logger.Info("minimum trust level override", "level", minTrust)
+	}
+
 	srv := api.NewServer(reg, st, logger)
 
 	// Configure MDM client for provider security verification.

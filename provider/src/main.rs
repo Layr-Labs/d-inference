@@ -558,6 +558,25 @@ async fn cmd_serve(
     }
     tracing::info!("Primary model: {}", model);
 
+    // Kill any existing process on our backend port to avoid EADDRINUSE
+    if let Ok(output) = std::process::Command::new("lsof")
+        .args(["-ti", &format!(":{}", be_port)])
+        .output()
+    {
+        let pids = String::from_utf8_lossy(&output.stdout);
+        for pid in pids.split_whitespace() {
+            if let Ok(pid_num) = pid.parse::<u32>() {
+                if pid_num != std::process::id() {
+                    tracing::info!("Killing existing process on port {}: PID {}", be_port, pid_num);
+                    let _ = std::process::Command::new("kill").arg(pid).output();
+                }
+            }
+        }
+        if !pids.trim().is_empty() {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    }
+
     // Find bundled Python at ~/.dginf/python (standalone Python 3.12 + vllm-mlx)
     let dginf_dir = dirs::home_dir().unwrap_or_default().join(".dginf");
     let bundled_python = dginf_dir.join("python/bin/python3.12");
@@ -1323,24 +1342,49 @@ async fn cmd_earnings(coordinator_url: String) -> Result<()> {
         }
     }
 
-    // Query provider balance from the coordinator's ledger
-    // The coordinator tracks provider earnings by wallet address
-    let balance_resp = client.get(format!("{}/v1/payments/balance", coordinator_url))
-        .header("X-Provider-Wallet", w.address())
-        .send().await;
+    // Query provider earnings from the coordinator's ledger
+    // Uses the provider-specific endpoint that looks up by wallet address
+    let earnings_url = format!("{}/v1/provider/earnings?wallet={}", coordinator_url, w.address());
+    let earnings_resp = client.get(&earnings_url).send().await;
 
     println!();
-    match balance_resp {
+    match earnings_resp {
         Ok(resp) if resp.status().is_success() => {
             let body: serde_json::Value = resp.json().await?;
             let balance_usd = body["balance_usd"].as_str().unwrap_or("0.000000");
-            let balance_micro = body["balance_micro_usd"].as_i64().unwrap_or(0);
+            let total_earned_usd = body["total_earned_usd"].as_str().unwrap_or("0.000000");
+            let total_jobs = body["total_jobs"].as_i64().unwrap_or(0);
+
             println!("Earnings:");
-            println!("  Balance:    ${}", balance_usd);
-            println!("  Micro-USD:  {}", balance_micro);
+            println!("  Balance:       ${}", balance_usd);
+            println!("  Total earned:  ${}", total_earned_usd);
+            println!("  Jobs served:   {}", total_jobs);
+
+            // Show recent payouts
+            if let Some(payouts) = body["payouts"].as_array() {
+                let recent: Vec<_> = payouts.iter().rev().take(5).collect();
+                if !recent.is_empty() {
+                    println!();
+                    println!("Recent payouts:");
+                    for p in recent {
+                        let amount = p["amount_micro_usd"].as_i64().unwrap_or(0);
+                        let model = p["model"].as_str().unwrap_or("unknown");
+                        let amount_usd = amount as f64 / 1_000_000.0;
+                        println!("  ${:.6}  {}", amount_usd, model);
+                    }
+                }
+            }
         }
-        _ => {
-            println!("Earnings: not yet available");
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            println!("Earnings: could not fetch (HTTP {})", status);
+            if !body.is_empty() {
+                println!("  {}", body);
+            }
+        }
+        Err(e) => {
+            println!("Earnings: not yet available ({})", e);
             println!("  Earnings accumulate as you serve inference requests.");
             println!("  The coordinator credits your wallet after each job.");
         }
@@ -1348,7 +1392,7 @@ async fn cmd_earnings(coordinator_url: String) -> Result<()> {
 
     println!();
     println!("Payout: earnings are settled to your wallet address");
-    println!("  via Stripe (USD) or Tempo blockchain (pathUSD).");
+    println!("  via Stripe (USD) or Tempo blockchain (pathUSD) in the future.");
 
     Ok(())
 }

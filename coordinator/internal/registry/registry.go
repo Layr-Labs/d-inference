@@ -139,15 +139,32 @@ type Registry struct {
 	// queue manages requests waiting for a provider to become available.
 	queue *RequestQueue
 
+	// MinTrustLevel is the minimum trust level required for routing.
+	// Defaults to TrustHardware. Set to TrustNone for testing.
+	MinTrustLevel TrustLevel
+
 	logger *slog.Logger
 }
 
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
-		providers: make(map[string]*Provider),
-		queue:     NewRequestQueue(10, 30*time.Second),
-		logger:    logger,
+		providers:     make(map[string]*Provider),
+		queue:         NewRequestQueue(10, 30*time.Second),
+		MinTrustLevel: TrustHardware,
+		logger:        logger,
+	}
+}
+
+// trustMeetsMinimum returns true if the given trust level meets the minimum.
+func (r *Registry) trustMeetsMinimum(level TrustLevel) bool {
+	switch r.MinTrustLevel {
+	case TrustNone:
+		return true
+	case TrustSelfSigned:
+		return level == TrustSelfSigned || level == TrustHardware
+	default: // TrustHardware
+		return level == TrustHardware
 	}
 }
 
@@ -379,8 +396,7 @@ func (r *Registry) FindProvider(model string) *Provider {
 		if p.Status != StatusOnline {
 			continue
 		}
-		// Only route to hardware-trusted (MDM-verified) providers.
-		if p.TrustLevel != TrustHardware {
+		if !r.trustMeetsMinimum(p.TrustLevel) {
 			continue
 		}
 		for _, m := range p.Models {
@@ -424,8 +440,7 @@ func (r *Registry) SetProviderIdle(id string) {
 	p.mu.Unlock()
 
 	// Check if there are queued requests for any model this provider serves.
-	// Only hardware-trusted providers can be assigned queued requests.
-	if r.queue != nil && p.Status == StatusOnline && p.TrustLevel == TrustHardware {
+	if r.queue != nil && p.Status == StatusOnline && r.trustMeetsMinimum(p.TrustLevel) {
 		for _, m := range p.Models {
 			if r.queue.TryAssign(m.ID, p) {
 				break
@@ -477,8 +492,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		if p.Status == StatusOffline || p.Status == StatusUntrusted {
 			continue
 		}
-		// Only list models from hardware-trusted providers.
-		if p.TrustLevel != TrustHardware {
+		if !r.trustMeetsMinimum(p.TrustLevel) {
 			continue
 		}
 		for _, m := range p.Models {

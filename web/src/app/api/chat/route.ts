@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   respHeaders.set("Connection", "keep-alive");
   respHeaders.set("X-Accel-Buffering", "no");
 
-  for (const h of ["x-provider-attested", "x-provider-trust-level", "x-provider-secure-enclave", "x-request-id"]) {
+  for (const h of ["x-provider-attested", "x-provider-trust-level", "x-provider-secure-enclave", "x-provider-mda-verified", "x-request-id"]) {
     const v = upstream.headers.get(h);
     if (v) respHeaders.set(h, v);
   }

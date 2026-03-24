@@ -34,6 +34,7 @@ import (
 	"github.com/dginf/coordinator/internal/payments"
 	"github.com/dginf/coordinator/internal/protocol"
 	"github.com/dginf/coordinator/internal/registry"
+	"github.com/dginf/coordinator/internal/store"
 	"github.com/google/uuid"
 	"nhooyr.io/websocket"
 )
@@ -429,6 +430,12 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		s.ledger.CreditProvider(providerWallet, providerPayout, pr.Model, msg.RequestID)
 	}
 
+	// Record platform fee as a separate ledger entry for accounting.
+	platformFee := payments.PlatformFee(totalCost)
+	if platformFee > 0 {
+		_ = s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID)
+	}
+
 	// Mark provider idle if no more pending requests.
 	s.registry.SetProviderIdle(providerID)
 
@@ -587,7 +594,7 @@ func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Prov
 		return
 	}
 
-	// MDM verification passed — upgrade trust level
+	// MDM SecurityInfo verification passed — upgrade trust level
 	provider.TrustLevel = registry.TrustHardware
 	s.logger.Info("MDM verification passed — upgraded to hardware trust",
 		"provider_id", providerID,
@@ -595,6 +602,84 @@ func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Prov
 		"mdm_sip", mdmResult.MDMSIPEnabled,
 		"mdm_secure_boot", mdmResult.MDMSecureBootFull,
 		"mdm_auth_root_volume", mdmResult.MDMAuthRootVolume,
+	)
+
+	// Step 2: Apple Device Attestation (MDA) — cryptographic proof from Apple.
+	// This is stronger than SecurityInfo: Apple's servers sign the device properties,
+	// so even a fully compromised OS cannot forge them.
+	s.verifyAppleDeviceAttestation(providerID, provider, attestResult, mdmResult.UDID)
+}
+
+// verifyAppleDeviceAttestation sends a DeviceInformation command requesting
+// DevicePropertiesAttestation and verifies the Apple-signed certificate chain.
+func (s *Server) verifyAppleDeviceAttestation(providerID string, provider *registry.Provider, attestResult attestation.VerificationResult, udid string) {
+	if udid == "" {
+		s.logger.Warn("no UDID for MDA verification", "provider_id", providerID)
+		return
+	}
+
+	s.logger.Info("requesting Apple Device Attestation (MDA)",
+		"provider_id", providerID,
+		"udid", udid,
+	)
+
+	// Send DeviceInformation command requesting DevicePropertiesAttestation
+	_, err := s.mdmClient.SendDeviceAttestationCommand(udid)
+	if err != nil {
+		s.logger.Warn("failed to send DeviceInformation attestation command",
+			"provider_id", providerID,
+			"error", err,
+		)
+		return
+	}
+
+	// Wait for Apple's response (device contacts Apple's servers — may take longer)
+	attestResp, err := s.mdmClient.WaitForDeviceAttestation(udid, 60*time.Second)
+	if err != nil {
+		s.logger.Warn("DevicePropertiesAttestation response timeout",
+			"provider_id", providerID,
+			"error", err,
+		)
+		return
+	}
+
+	// Verify the certificate chain against Apple's Enterprise Attestation Root CA
+	mdaResult, err := attestation.VerifyMDADeviceAttestation(attestResp.CertChain)
+	if err != nil {
+		s.logger.Error("MDA certificate chain parse error",
+			"provider_id", providerID,
+			"error", err,
+		)
+		return
+	}
+
+	if !mdaResult.Valid {
+		s.logger.Warn("MDA certificate chain verification FAILED — Apple did not attest this device",
+			"provider_id", providerID,
+			"error", mdaResult.Error,
+		)
+		return
+	}
+
+	// Cross-check: MDA serial must match the provider's self-reported serial
+	if mdaResult.DeviceSerial != "" && mdaResult.DeviceSerial != attestResult.SerialNumber {
+		s.logger.Error("MDA serial mismatch — provider is impersonating another device",
+			"provider_id", providerID,
+			"mda_serial", mdaResult.DeviceSerial,
+			"attestation_serial", attestResult.SerialNumber,
+		)
+		s.registry.MarkUntrusted(providerID)
+		return
+	}
+
+	// Apple Device Attestation verified
+	provider.MDAVerified = true
+	s.logger.Info("Apple Device Attestation (MDA) verified — Apple CA confirmed device identity",
+		"provider_id", providerID,
+		"mda_serial", mdaResult.DeviceSerial,
+		"mda_udid", mdaResult.DeviceUDID,
+		"mda_os_version", mdaResult.OSVersion,
+		"mda_sepos_version", mdaResult.SepOSVersion,
 	)
 }
 

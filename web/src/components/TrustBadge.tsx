@@ -4,6 +4,14 @@ import { Shield, ShieldCheck, ShieldAlert } from "lucide-react";
 import type { TrustMetadata } from "@/lib/api";
 
 const config = {
+  hardware_mda: {
+    icon: ShieldCheck,
+    label: "Apple Attested",
+    color: "text-accent-green",
+    bg: "bg-accent-green-dim/40",
+    border: "border-accent-green/30",
+    glow: "trust-glow-hardware",
+  },
   hardware: {
     icon: ShieldCheck,
     label: "Hardware Attested",
@@ -37,14 +45,18 @@ export function TrustBadge({
   trust: TrustMetadata;
   compact?: boolean;
 }) {
-  const c = config[trust.trustLevel] || config.none;
+  const level =
+    trust.trustLevel === "hardware" && trust.mdaVerified
+      ? "hardware_mda"
+      : trust.trustLevel;
+  const c = config[level] || config.none;
   const Icon = c.icon;
 
   if (compact) {
     return (
       <span
         className={`inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-wider ${c.color} ${c.glow}`}
-        title={`${c.label}${trust.secureEnclave ? " · Secure Enclave" : ""}`}
+        title={`${c.label}${trust.secureEnclave ? " · Secure Enclave" : ""}${trust.mdaVerified ? " · Apple MDA" : ""}`}
       >
         <Icon size={12} />
       </span>
@@ -59,6 +71,9 @@ export function TrustBadge({
       {c.label}
       {trust.secureEnclave && (
         <span className="opacity-60">· SE</span>
+      )}
+      {trust.mdaVerified && (
+        <span className="opacity-60">· MDA</span>
       )}
     </span>
   );

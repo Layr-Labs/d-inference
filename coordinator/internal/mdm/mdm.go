@@ -27,14 +27,22 @@ import (
 	"time"
 )
 
+// DeviceAttestationResponse contains the DER-encoded certificate chain
+// from Apple's DevicePropertiesAttestation response.
+type DeviceAttestationResponse struct {
+	UDID      string
+	CertChain [][]byte // DER-encoded certificates, leaf first
+}
+
 // Client talks to the MicroMDM API.
 type Client struct {
 	baseURL  string
 	apiKey   string
 	client   *http.Client
 	logger   *slog.Logger
-	// Webhook responses arrive asynchronously. This channel receives them.
-	responses chan *SecurityInfoResponse
+	// Webhook responses arrive asynchronously.
+	responses       chan *SecurityInfoResponse
+	attestResponses chan *DeviceAttestationResponse
 }
 
 // NewClient creates an MDM client.
@@ -50,11 +58,12 @@ func NewClient(baseURL, apiKey string, logger *slog.Logger) *Client {
 		}
 	}
 	return &Client{
-		baseURL:   baseURL,
-		apiKey:    apiKey,
-		client:    httpClient,
-		logger:    logger,
-		responses: make(chan *SecurityInfoResponse, 16),
+		baseURL:         baseURL,
+		apiKey:          apiKey,
+		client:          httpClient,
+		logger:          logger,
+		responses:       make(chan *SecurityInfoResponse, 16),
+		attestResponses: make(chan *DeviceAttestationResponse, 16),
 	}
 }
 
@@ -159,8 +168,62 @@ func (c *Client) SendSecurityInfoCommand(udid string) (string, error) {
 	return result.Payload.CommandUUID, nil
 }
 
+// SendDeviceAttestationCommand sends a DeviceInformation command requesting
+// DevicePropertiesAttestation from Apple. The device contacts Apple's servers,
+// which return a DER-encoded certificate chain signed by Apple's Enterprise
+// Attestation Root CA. This is the real MDA — Apple vouches for the device.
+func (c *Client) SendDeviceAttestationCommand(udid string) (string, error) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"udid":         udid,
+		"request_type": "DeviceInformation",
+		"queries":      []string{"DevicePropertiesAttestation"},
+	})
+	req, err := http.NewRequest("POST", c.baseURL+"/v1/commands", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.SetBasicAuth("micromdm", c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("mdm send DeviceInformation command failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Payload struct {
+			CommandUUID string `json:"command_uuid"`
+		} `json:"payload"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("mdm DeviceInformation response decode failed: %w", err)
+	}
+
+	return result.Payload.CommandUUID, nil
+}
+
+// WaitForDeviceAttestation waits for a DevicePropertiesAttestation response.
+func (c *Client) WaitForDeviceAttestation(udid string, timeout time.Duration) (*DeviceAttestationResponse, error) {
+	deadline := time.After(timeout)
+	for {
+		select {
+		case resp := <-c.attestResponses:
+			if resp.UDID == udid {
+				return resp, nil
+			}
+			select {
+			case c.attestResponses <- resp:
+			default:
+			}
+		case <-deadline:
+			return nil, fmt.Errorf("timeout waiting for DevicePropertiesAttestation from %s", udid)
+		}
+	}
+}
+
 // HandleWebhook processes a MicroMDM webhook payload and extracts
-// SecurityInfo responses. Call this from your webhook HTTP handler.
+// SecurityInfo and DevicePropertiesAttestation responses.
 func (c *Client) HandleWebhook(body []byte) {
 	var webhook struct {
 		Topic string `json:"topic"`
@@ -201,6 +264,24 @@ func (c *Client) HandleWebhook(body []byte) {
 		case c.responses <- secInfo:
 		default:
 			c.logger.Warn("mdm response channel full, dropping")
+		}
+	}
+
+	// Parse the plist for DevicePropertiesAttestation
+	attestCerts := parseDeviceAttestationPlist(plistData)
+	if attestCerts != nil {
+		resp := &DeviceAttestationResponse{
+			UDID:      webhook.Event.UDID,
+			CertChain: attestCerts,
+		}
+		c.logger.Info("mdm DevicePropertiesAttestation received",
+			"udid", resp.UDID,
+			"cert_count", len(resp.CertChain),
+		)
+		select {
+		case c.attestResponses <- resp:
+		default:
+			c.logger.Warn("mdm attestation response channel full, dropping")
 		}
 	}
 }
@@ -347,4 +428,68 @@ func parseSecurityInfoPlist(data []byte) *SecurityInfoResponse {
 		return nil
 	}
 	return result
+}
+
+// parseDeviceAttestationPlist extracts the DER certificate chain from a
+// DeviceInformation response containing DevicePropertiesAttestation.
+//
+// The plist format is:
+//   <key>DevicePropertiesAttestation</key>
+//   <array>
+//     <data>...base64 DER cert...</data>
+//     <data>...base64 DER cert...</data>
+//   </array>
+func parseDeviceAttestationPlist(data []byte) [][]byte {
+	// Find DevicePropertiesAttestation key
+	marker := []byte("<key>DevicePropertiesAttestation</key>")
+	idx := bytes.Index(data, marker)
+	if idx < 0 {
+		return nil
+	}
+
+	rest := data[idx+len(marker):]
+
+	// Find the <array> element
+	arrStart := bytes.Index(rest, []byte("<array>"))
+	if arrStart < 0 {
+		return nil
+	}
+	rest = rest[arrStart:]
+
+	arrEnd := bytes.Index(rest, []byte("</array>"))
+	if arrEnd < 0 {
+		return nil
+	}
+	arrayContent := rest[:arrEnd]
+
+	// Extract all <data>...</data> elements
+	var certs [][]byte
+	remaining := arrayContent
+	for {
+		dataStart := bytes.Index(remaining, []byte("<data>"))
+		if dataStart < 0 {
+			break
+		}
+		remaining = remaining[dataStart+6:]
+
+		dataEnd := bytes.Index(remaining, []byte("</data>"))
+		if dataEnd < 0 {
+			break
+		}
+
+		b64Data := string(bytes.TrimSpace(remaining[:dataEnd]))
+		remaining = remaining[dataEnd+7:]
+
+		// Decode base64 to get DER bytes
+		derBytes, err := base64.StdEncoding.DecodeString(b64Data)
+		if err != nil {
+			continue
+		}
+		certs = append(certs, derBytes)
+	}
+
+	if len(certs) == 0 {
+		return nil
+	}
+	return certs
 }

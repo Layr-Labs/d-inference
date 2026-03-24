@@ -60,6 +60,7 @@ export interface TrustMetadata {
   attested: boolean;
   trustLevel: "none" | "self_signed" | "hardware";
   secureEnclave: boolean;
+  mdaVerified: boolean;
 }
 
 export interface StreamCallbacks {
@@ -155,6 +156,7 @@ export async function streamChat(
     attested: res.headers.get("x-provider-attested") === "true",
     trustLevel: (res.headers.get("x-provider-trust-level") as TrustMetadata["trustLevel"]) || "none",
     secureEnclave: res.headers.get("x-provider-secure-enclave") === "true",
+    mdaVerified: res.headers.get("x-provider-mda-verified") === "true",
   };
 
   const reader = res.body?.getReader();

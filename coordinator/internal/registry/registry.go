@@ -71,6 +71,7 @@ type Provider struct {
 	Attested          bool   // true if attestation was verified successfully
 	AttestationResult *attestation.VerificationResult
 	TrustLevel        TrustLevel // attestation trust level
+	MDAVerified       bool       // true if Apple Device Attestation cert chain verified
 	Status            ProviderStatus
 	Conn              *websocket.Conn
 	LastHeartbeat     time.Time

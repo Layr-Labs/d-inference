@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/dginf/coordinator/internal/e2e"
+	"github.com/dginf/coordinator/internal/payments"
 	"github.com/dginf/coordinator/internal/protocol"
 	"github.com/dginf/coordinator/internal/registry"
 	"github.com/google/uuid"
@@ -238,6 +239,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		} else {
 			w.Header().Set("X-Provider-Secure-Enclave", "false")
 		}
+	}
+	if provider.MDAVerified {
+		w.Header().Set("X-Provider-MDA-Verified", "true")
 	}
 
 	if req.Stream {
@@ -767,6 +771,53 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"usage": entries,
+	})
+}
+
+// handleProviderEarnings handles GET /v1/provider/earnings?wallet=0x...
+//
+// Returns the provider's balance and payout history by wallet address.
+// No API key auth required — providers identify by wallet address.
+// The wallet address is the same one sent during WebSocket registration.
+func (s *Server) handleProviderEarnings(w http.ResponseWriter, r *http.Request) {
+	wallet := r.URL.Query().Get("wallet")
+	if wallet == "" {
+		wallet = r.Header.Get("X-Provider-Wallet")
+	}
+	if wallet == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "wallet address required (query param ?wallet=0x... or X-Provider-Wallet header)"))
+		return
+	}
+
+	// Look up balance by wallet address (same account ID used in CreditProvider)
+	balance := s.ledger.Balance(wallet)
+	history := s.ledger.LedgerHistory(wallet)
+	payouts := s.ledger.AllPayouts()
+
+	// Filter payouts to this wallet
+	var walletPayouts []payments.Payout
+	var totalEarned int64
+	var totalJobs int
+	for _, p := range payouts {
+		if p.ProviderAddress == wallet {
+			walletPayouts = append(walletPayouts, p)
+			totalEarned += p.AmountMicroUSD
+			totalJobs++
+		}
+	}
+	if walletPayouts == nil {
+		walletPayouts = []payments.Payout{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"wallet_address":         wallet,
+		"balance_micro_usd":     balance,
+		"balance_usd":           fmt.Sprintf("%.6f", float64(balance)/1_000_000),
+		"total_earned_micro_usd": totalEarned,
+		"total_earned_usd":      fmt.Sprintf("%.6f", float64(totalEarned)/1_000_000),
+		"total_jobs":            totalJobs,
+		"payouts":               walletPayouts,
+		"ledger":                history,
 	})
 }
 

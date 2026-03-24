@@ -15,6 +15,7 @@ package mdm
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
@@ -22,6 +23,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -37,12 +39,20 @@ type Client struct {
 
 // NewClient creates an MDM client.
 func NewClient(baseURL, apiKey string, logger *slog.Logger) *Client {
+	httpClient := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	// When talking to localhost MDM, skip TLS verification since the cert
+	// is issued for the public domain, not localhost/127.0.0.1.
+	if strings.Contains(baseURL, "localhost") || strings.Contains(baseURL, "127.0.0.1") {
+		httpClient.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
 	return &Client{
-		baseURL: baseURL,
-		apiKey:  apiKey,
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		baseURL:   baseURL,
+		apiKey:    apiKey,
+		client:    httpClient,
 		logger:    logger,
 		responses: make(chan *SecurityInfoResponse, 16),
 	}

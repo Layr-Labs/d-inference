@@ -128,6 +128,14 @@ func TestProviderWebSocketMultiple(t *testing.T) {
 		t.Errorf("provider count = %d, want 2", reg.ProviderCount())
 	}
 
+	// Upgrade both providers to hardware trust for routing eligibility.
+	for _, id := range reg.ProviderIDs() {
+		p := reg.GetProvider(id)
+		if p != nil {
+			p.TrustLevel = registry.TrustHardware
+		}
+	}
+
 	models := reg.ListModels()
 	if len(models) != 1 {
 		t.Fatalf("models = %d, want 1 (deduplicated)", len(models))
@@ -166,6 +174,12 @@ func TestProviderInferenceError(t *testing.T) {
 	regData, _ := json.Marshal(regMsg)
 	conn.Write(ctx, websocket.MessageText, regData)
 	time.Sleep(100 * time.Millisecond)
+
+	// Upgrade provider to hardware trust for routing.
+	p := findProviderByModel(reg, "error-model")
+	if p != nil {
+		p.TrustLevel = registry.TrustHardware
+	}
 
 	// Provider goroutine — respond with error.
 	go func() {
@@ -320,6 +334,12 @@ func TestProviderRegistrationWithValidAttestation(t *testing.T) {
 		t.Fatalf("provider count = %d, want 1", reg.ProviderCount())
 	}
 
+	// Upgrade to hardware trust (simulates MDM verification completing).
+	p := findProviderByModel(reg, "attested-model")
+	if p != nil {
+		p.TrustLevel = registry.TrustHardware
+	}
+
 	models := reg.ListModels()
 	if len(models) != 1 {
 		t.Fatalf("models = %d, want 1", len(models))
@@ -364,18 +384,15 @@ func TestProviderRegistrationWithInvalidAttestation(t *testing.T) {
 	conn.Write(ctx, websocket.MessageText, regData)
 	time.Sleep(200 * time.Millisecond)
 
-	// Provider should still be registered (Open Mode)
+	// Provider should still be registered but not routable (no hardware trust).
 	if reg.ProviderCount() != 1 {
 		t.Fatalf("provider count = %d, want 1", reg.ProviderCount())
 	}
 
+	// Without hardware trust, models should not be listed.
 	models := reg.ListModels()
-	if len(models) != 1 {
-		t.Fatalf("models = %d, want 1", len(models))
-	}
-	// But should not be attested
-	if models[0].AttestedProviders != 0 {
-		t.Errorf("attested_providers = %d, want 0", models[0].AttestedProviders)
+	if len(models) != 0 {
+		t.Fatalf("models = %d, want 0 (invalid attestation, no hardware trust)", len(models))
 	}
 }
 
@@ -415,12 +432,10 @@ func TestProviderRegistrationWithoutAttestation(t *testing.T) {
 		t.Fatalf("provider count = %d, want 1", reg.ProviderCount())
 	}
 
+	// Without attestation, provider has no hardware trust and should not be listed.
 	models := reg.ListModels()
-	if len(models) != 1 {
-		t.Fatalf("models = %d, want 1", len(models))
-	}
-	if models[0].AttestedProviders != 0 {
-		t.Errorf("attested_providers = %d, want 0 (Open Mode)", models[0].AttestedProviders)
+	if len(models) != 0 {
+		t.Fatalf("models = %d, want 0 (no attestation, no hardware trust)", len(models))
 	}
 }
 
@@ -458,6 +473,12 @@ func TestListModelsWithAttestationInfo(t *testing.T) {
 	regData, _ := json.Marshal(regMsg)
 	conn.Write(ctx, websocket.MessageText, regData)
 	time.Sleep(200 * time.Millisecond)
+
+	// Upgrade to hardware trust for model listing.
+	p := findProviderByModel(reg, "attested-model")
+	if p != nil {
+		p.TrustLevel = registry.TrustHardware
+	}
 
 	// Check /v1/models
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -721,6 +742,12 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 		conn.Write(ctx, websocket.MessageText, completeData)
 	}()
 
+	// Upgrade provider to hardware trust so it's eligible for routing.
+	p := findProviderByModel(reg, "trust-model")
+	if p != nil {
+		p.TrustLevel = registry.TrustHardware
+	}
+
 	chatBody := `{"model":"trust-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	httpReq, _ := newAuthRequest(t, ctx, ts.URL+"/v1/chat/completions", chatBody, "test-key")
 	resp, err := ts.Client().Do(httpReq)
@@ -734,8 +761,8 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 	}
 
 	trustLevel := resp.Header.Get("X-Provider-Trust-Level")
-	if trustLevel != "self_signed" {
-		t.Errorf("X-Provider-Trust-Level = %q, want self_signed", trustLevel)
+	if trustLevel != "hardware" {
+		t.Errorf("X-Provider-Trust-Level = %q, want hardware", trustLevel)
 	}
 
 	attested := resp.Header.Get("X-Provider-Attested")
@@ -776,6 +803,12 @@ func TestTrustLevelInModelsList(t *testing.T) {
 	conn.Write(ctx, websocket.MessageText, regData)
 	time.Sleep(200 * time.Millisecond)
 
+	// Upgrade provider to hardware trust so it appears in model list.
+	p := findProviderByModel(reg, "trust-list-model")
+	if p != nil {
+		p.TrustLevel = registry.TrustHardware
+	}
+
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer test-key")
 	w := httptest.NewRecorder()
@@ -795,25 +828,22 @@ func TestTrustLevelInModelsList(t *testing.T) {
 	model := data[0].(map[string]any)
 	metadata := model["metadata"].(map[string]any)
 	trustLevel := metadata["trust_level"]
-	if trustLevel != "self_signed" {
-		t.Errorf("trust_level = %v, want self_signed", trustLevel)
+	if trustLevel != "hardware" {
+		t.Errorf("trust_level = %v, want hardware", trustLevel)
 	}
 }
 
 // findProviderByModel returns the first provider offering the given model.
 func findProviderByModel(reg *registry.Registry, model string) *registry.Provider {
-	// Use FindProvider but we need to check without marking as serving.
-	// Instead, list models and check.
-	models := reg.ListModels()
-	for _, m := range models {
-		if m.ID == model && m.Providers > 0 {
-			// Find the provider by iterating
-			// We can't easily access this, so just call FindProvider
-			p := reg.FindProvider(model)
-			if p != nil {
-				reg.SetProviderIdle(p.ID)
+	for _, id := range reg.ProviderIDs() {
+		p := reg.GetProvider(id)
+		if p == nil {
+			continue
+		}
+		for _, m := range p.Models {
+			if m.ID == model {
+				return p
 			}
-			return p
 		}
 	}
 	return nil

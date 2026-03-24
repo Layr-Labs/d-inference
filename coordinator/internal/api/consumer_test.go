@@ -243,6 +243,14 @@ func TestStreamingE2E(t *testing.T) {
 	// Give the server a moment to process registration.
 	time.Sleep(100 * time.Millisecond)
 
+	// Upgrade provider to hardware trust for routing eligibility.
+	for _, id := range reg.ProviderIDs() {
+		p := reg.GetProvider(id)
+		if p != nil {
+			p.TrustLevel = registry.TrustHardware
+		}
+	}
+
 	// Start a goroutine to handle inference on the provider side.
 	providerDone := make(chan struct{})
 	go func() {
@@ -369,6 +377,14 @@ func TestNonStreamingE2E(t *testing.T) {
 	regData, _ := json.Marshal(regMsg)
 	conn.Write(ctx, websocket.MessageText, regData)
 	time.Sleep(100 * time.Millisecond)
+
+	// Upgrade provider to hardware trust for routing eligibility.
+	for _, id := range reg.ProviderIDs() {
+		p := reg.GetProvider(id)
+		if p != nil {
+			p.TrustLevel = registry.TrustHardware
+		}
+	}
 
 	// Provider goroutine.
 	providerDone := make(chan struct{})

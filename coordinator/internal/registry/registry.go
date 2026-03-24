@@ -369,6 +369,7 @@ func ScoreProvider(p *Provider, model string) float64 {
 // FindProvider selects an available provider for the given model using
 // intelligent scoring based on benchmark data, trust level, reputation,
 // and warm model cache. Picks the highest-scoring idle provider.
+// Only providers with hardware trust (MDM-verified) are eligible.
 func (r *Registry) FindProvider(model string) *Provider {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -376,6 +377,10 @@ func (r *Registry) FindProvider(model string) *Provider {
 	var candidates []*Provider
 	for _, p := range r.providers {
 		if p.Status != StatusOnline {
+			continue
+		}
+		// Only route to hardware-trusted (MDM-verified) providers.
+		if p.TrustLevel != TrustHardware {
 			continue
 		}
 		for _, m := range p.Models {
@@ -419,7 +424,8 @@ func (r *Registry) SetProviderIdle(id string) {
 	p.mu.Unlock()
 
 	// Check if there are queued requests for any model this provider serves.
-	if r.queue != nil && p.Status == StatusOnline {
+	// Only hardware-trusted providers can be assigned queued requests.
+	if r.queue != nil && p.Status == StatusOnline && p.TrustLevel == TrustHardware {
 		for _, m := range p.Models {
 			if r.queue.TryAssign(m.ID, p) {
 				break
@@ -469,6 +475,10 @@ func (r *Registry) ListModels() []AggregateModel {
 	agg := make(map[modelKey]*modelAgg)
 	for _, p := range r.providers {
 		if p.Status == StatusOffline || p.Status == StatusUntrusted {
+			continue
+		}
+		// Only list models from hardware-trusted providers.
+		if p.TrustLevel != TrustHardware {
 			continue
 		}
 		for _, m := range p.Models {
@@ -562,6 +572,17 @@ func (r *Registry) ProviderCount() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.providers)
+}
+
+// ProviderIDs returns the IDs of all registered providers.
+func (r *Registry) ProviderIDs() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := make([]string, 0, len(r.providers))
+	for id := range r.providers {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // StartEvictionLoop starts a background goroutine that removes providers

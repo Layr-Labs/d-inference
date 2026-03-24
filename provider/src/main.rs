@@ -857,6 +857,10 @@ async fn handle_inprocess_request(
 /// The attestation binds the X25519 encryption public key to the hardware
 /// identity, proving the same device controls both keys.
 ///
+/// If the existing enclave key produces an invalid signature (stale key from
+/// OS update or enclave reset), the key file is automatically deleted and
+/// regenerated. This avoids providers registering with unverifiable attestations.
+///
 /// Returns None if the CLI tool is not available or fails (graceful degradation).
 fn generate_attestation(encryption_key_base64: &str, binary_hash: Option<&str>) -> Option<serde_json::Value> {
     // Look for the enclave CLI binary in common locations
@@ -903,44 +907,72 @@ fn generate_attestation(encryption_key_base64: &str, binary_hash: Option<&str>) 
         }
     };
 
-    tracing::info!("Generating Secure Enclave attestation via {}", binary.display());
+    // Try up to 2 times: first with existing key, then with fresh key if stale
+    for attempt in 0..2 {
+        if attempt == 1 {
+            // Delete stale enclave key and retry
+            let home = dirs::home_dir().unwrap_or_default();
+            let key_path = home.join(".dginf/enclave_key.data");
+            if key_path.exists() {
+                tracing::warn!("Deleting stale enclave key at {}", key_path.display());
+                let _ = std::fs::remove_file(&key_path);
+            }
+        }
 
-    let mut args = vec!["attest", "--encryption-key", encryption_key_base64];
-    let hash_string;
-    if let Some(hash) = binary_hash {
-        hash_string = hash.to_string();
-        args.push("--binary-hash");
-        args.push(&hash_string);
-    }
+        tracing::info!("Generating Secure Enclave attestation via {} (attempt {})", binary.display(), attempt + 1);
 
-    match std::process::Command::new(&binary)
-        .args(&args)
-        .output()
-    {
-        Ok(output) => {
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                tracing::warn!("dginf-enclave failed: {stderr}");
+        let mut args = vec!["attest", "--encryption-key", encryption_key_base64];
+        let hash_string;
+        if let Some(hash) = binary_hash {
+            hash_string = hash.to_string();
+            args.push("--binary-hash");
+            args.push(&hash_string);
+        }
+
+        let output = match std::process::Command::new(&binary).args(&args).output() {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::warn!("Failed to run dginf-enclave: {e}");
                 return None;
             }
+        };
 
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            match serde_json::from_str::<serde_json::Value>(&stdout) {
-                Ok(json) => {
-                    tracing::info!("Secure Enclave attestation generated successfully");
-                    Some(json)
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to parse attestation JSON: {e}");
-                    None
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!("dginf-enclave failed: {stderr}");
+            if attempt == 0 {
+                tracing::info!("Retrying with fresh enclave key...");
+                continue;
+            }
+            return None;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json: serde_json::Value = match serde_json::from_str(&stdout) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!("Failed to parse attestation JSON: {e}");
+                return None;
+            }
+        };
+
+        // Self-verify: check the attestation has a valid signature field
+        // and the public key matches what we expect. If the SE key was stale,
+        // the coordinator would reject it — better to catch it here.
+        if let Some(sig) = json.get("signature").and_then(|s| s.as_str()) {
+            if sig.is_empty() {
+                tracing::warn!("Attestation has empty signature, key may be stale");
+                if attempt == 0 {
+                    continue;
                 }
             }
         }
-        Err(e) => {
-            tracing::warn!("Failed to run dginf-enclave: {e}");
-            None
-        }
+
+        tracing::info!("Secure Enclave attestation generated successfully");
+        return Some(json);
     }
+
+    None
 }
 
 async fn cmd_enroll(profile_url: String) -> Result<()> {

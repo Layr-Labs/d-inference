@@ -126,7 +126,8 @@ func TestDisconnectUnknown(t *testing.T) {
 func TestFindProvider(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
+	p1 := reg.Register("p1", nil, msg)
+	p1.TrustLevel = TrustHardware
 
 	p := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if p == nil {
@@ -154,7 +155,8 @@ func TestFindProviderNoMatch(t *testing.T) {
 func TestFindProviderSkipsServing(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
+	p1 := reg.Register("p1", nil, msg)
+	p1.TrustLevel = TrustHardware
 
 	// First call marks p1 as serving.
 	p := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -177,9 +179,11 @@ func TestFindProviderScoreBased(t *testing.T) {
 	// p2 has higher decode_tps, so it should be preferred.
 	p1 := reg.Register("p1", nil, msg)
 	p1.DecodeTPS = 50.0
+	p1.TrustLevel = TrustHardware
 
 	p2 := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 100.0
+	p2.TrustLevel = TrustHardware
 
 	// First call should pick p2 (higher score).
 	first := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -206,7 +210,8 @@ func TestFindProviderScoreBased(t *testing.T) {
 func TestSetProviderIdle(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
+	p1 := reg.Register("p1", nil, msg)
+	p1.TrustLevel = TrustHardware
 
 	// Mark as serving.
 	reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -224,8 +229,10 @@ func TestSetProviderIdle(t *testing.T) {
 func TestListModels(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
-	reg.Register("p2", nil, msg)
+	p1 := reg.Register("p1", nil, msg)
+	p1.TrustLevel = TrustHardware
+	p2 := reg.Register("p2", nil, msg)
+	p2.TrustLevel = TrustHardware
 
 	models := reg.ListModels()
 	if len(models) != 1 {
@@ -246,8 +253,9 @@ func TestListModelsWithAttestedProvider(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 
-	// Register one attested and one unattested provider
+	// Register one attested and one unattested provider (both hardware-trusted)
 	p1 := reg.Register("p1", nil, msg)
+	p1.TrustLevel = TrustHardware
 	p1.Attested = true
 	p1.AttestationResult = &attestation.VerificationResult{
 		Valid:                  true,
@@ -256,7 +264,8 @@ func TestListModelsWithAttestedProvider(t *testing.T) {
 		SecureBootEnabled:      true,
 	}
 
-	reg.Register("p2", nil, msg)
+	p2 := reg.Register("p2", nil, msg)
+	p2.TrustLevel = TrustHardware
 
 	models := reg.ListModels()
 	if len(models) != 1 {
@@ -360,7 +369,7 @@ func TestListModelsWithTrustLevel(t *testing.T) {
 	msg := testRegisterMessage()
 
 	p1 := reg.Register("p1", nil, msg)
-	p1.TrustLevel = TrustSelfSigned
+	p1.TrustLevel = TrustHardware
 	p1.Attested = true
 	p1.AttestationResult = &attestation.VerificationResult{
 		Valid:                  true,
@@ -369,15 +378,46 @@ func TestListModelsWithTrustLevel(t *testing.T) {
 		SecureBootEnabled:      true,
 	}
 
+	// self_signed provider should NOT appear in model list
 	p2 := reg.Register("p2", nil, msg)
-	p2.TrustLevel = TrustNone
+	p2.TrustLevel = TrustSelfSigned
 
 	models := reg.ListModels()
 	if len(models) != 1 {
 		t.Fatalf("models len = %d, want 1", len(models))
 	}
-	if models[0].TrustLevel != TrustSelfSigned {
-		t.Errorf("trust_level = %q, want %q", models[0].TrustLevel, TrustSelfSigned)
+	if models[0].TrustLevel != TrustHardware {
+		t.Errorf("trust_level = %q, want %q", models[0].TrustLevel, TrustHardware)
+	}
+	if models[0].Providers != 1 {
+		t.Errorf("providers = %d, want 1 (only hardware-trusted)", models[0].Providers)
+	}
+}
+
+func TestListModelsExcludesSelfSigned(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+
+	// Only self_signed provider — should NOT appear
+	p1 := reg.Register("p1", nil, msg)
+	p1.TrustLevel = TrustSelfSigned
+
+	models := reg.ListModels()
+	if len(models) != 0 {
+		t.Errorf("models len = %d, want 0 (self_signed excluded)", len(models))
+	}
+}
+
+func TestFindProviderSkipsSelfSigned(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+
+	p1 := reg.Register("p1", nil, msg)
+	p1.TrustLevel = TrustSelfSigned
+
+	p := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if p != nil {
+		t.Error("FindProvider should skip self_signed providers")
 	}
 }
 
@@ -487,9 +527,11 @@ func TestScoringHigherDecodeTPS(t *testing.T) {
 
 	p1 := reg.Register("p1", nil, msg)
 	p1.DecodeTPS = 50.0
+	p1.TrustLevel = TrustHardware
 
 	p2 := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 200.0
+	p2.TrustLevel = TrustHardware
 
 	// p2 should be selected (higher decode_tps).
 	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -505,14 +547,15 @@ func TestScoringTrustedPreferred(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 
-	// Both have the same decode_tps.
+	// p1 is not hardware-trusted — should be excluded entirely.
 	p1 := reg.Register("p1", nil, msg)
 	p1.DecodeTPS = 100.0
-	p1.TrustLevel = TrustNone // multiplier 0.5
+	p1.TrustLevel = TrustSelfSigned // excluded from routing
 
+	// p2 is hardware-trusted — should be the only candidate.
 	p2 := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 100.0
-	p2.TrustLevel = TrustHardware // multiplier 1.0
+	p2.TrustLevel = TrustHardware
 
 	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if selected == nil {
@@ -530,9 +573,11 @@ func TestScoringIdlePreferredOverServing(t *testing.T) {
 	// p1 has higher decode_tps but is serving.
 	p1 := reg.Register("p1", nil, msg)
 	p1.DecodeTPS = 200.0
+	p1.TrustLevel = TrustHardware
 
 	p2 := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 100.0
+	p2.TrustLevel = TrustHardware
 
 	// Mark p1 as serving.
 	reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -554,9 +599,11 @@ func TestScoringWarmModelPreferred(t *testing.T) {
 	// Both have same decode_tps and trust, but p2 has the model warm.
 	p1 := reg.Register("p1", nil, msg)
 	p1.DecodeTPS = 100.0
+	p1.TrustLevel = TrustHardware
 
 	p2 := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 100.0
+	p2.TrustLevel = TrustHardware
 	p2.WarmModels = []string{"mlx-community/Qwen3.5-9B-Instruct-4bit"}
 
 	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -678,6 +725,7 @@ func TestSetProviderIdleDrainsQueue(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	p := reg.Register("p1", nil, msg)
+	p.TrustLevel = TrustHardware
 
 	// Mark provider as serving.
 	reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")

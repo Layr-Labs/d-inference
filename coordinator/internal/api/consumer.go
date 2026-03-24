@@ -77,22 +77,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find a provider that serves the requested model. The registry uses
-	// intelligent scoring based on benchmark data, trust, and reputation.
+	// Find a provider that serves the requested model. The registry only
+	// routes to hardware-trusted (MDM-verified) providers.
 	provider := s.registry.FindProvider(req.Model)
 	if provider == nil {
-		// No idle provider — try queueing the request and waiting.
+		// No idle hardware-trusted provider — try queueing the request.
 		queuedReq := &registry.QueuedRequest{
 			RequestID:  uuid.New().String(),
 			Model:      req.Model,
 			ResponseCh: make(chan *registry.Provider, 1),
 		}
 		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no provider available for model %q and queue is full", req.Model)))
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider available for model %q and queue is full", req.Model)))
 			return
 		}
 
-		s.logger.Info("request queued, waiting for provider",
+		s.logger.Info("request queued, waiting for hardware-trusted provider",
 			"model", req.Model,
 			"queue_request_id", queuedReq.RequestID,
 		)
@@ -100,7 +100,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		var err error
 		provider, err = s.registry.Queue().WaitForProvider(queuedReq)
 		if err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no provider became available for model %q (queue timeout)", req.Model)))
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider became available for model %q (queue timeout)", req.Model)))
 			return
 		}
 	}
@@ -276,8 +276,9 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 				flusher.Flush()
 				return
 			}
-			// The chunk data from the provider already includes the "data: ..." SSE format.
-			fmt.Fprint(w, chunk)
+			// The chunk data from the provider includes the "data: ..." SSE prefix.
+			// Append \n\n to form a valid SSE event boundary.
+			fmt.Fprintf(w, "%s\n\n", chunk)
 			flusher.Flush()
 
 		case errMsg := <-pr.ErrorCh:

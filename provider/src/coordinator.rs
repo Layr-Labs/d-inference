@@ -111,8 +111,9 @@ impl CoordinatorClient {
 
             match self.connect_and_run(&event_tx, &mut outbound_rx, &mut shutdown_rx).await {
                 Ok(()) => {
-                    tracing::info!("Coordinator connection closed normally");
-                    break;
+                    tracing::info!("Coordinator connection closed, reconnecting...");
+                    backoff.reset();
+                    continue;
                 }
                 Err(e) => {
                     let _ = event_tx.send(CoordinatorEvent::Disconnected).await;

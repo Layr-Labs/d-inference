@@ -477,89 +477,51 @@ async fn cmd_serve(
     // Determine backend port (CLI override > config)
     let be_port = backend_port_override.unwrap_or(cfg.backend.port);
 
-    // Verify backend binary integrity before launching.
-    // Hash the binary to detect tampering — a modified backend could
-    // exfiltrate consumer prompts.
-    match security::verify_backend_integrity("vllm-mlx") {
-        Ok(hash) => {
-            tracing::info!("Backend integrity verified: vllm-mlx hash = {}", &hash[..16]);
+    // Find the bundled or system Python
+    let dginf_dir = dirs::home_dir().unwrap_or_default().join(".dginf");
+    let bundled_python = dginf_dir.join("python/bin/python3");
+    let python_cmd = if bundled_python.exists() {
+        tracing::info!("Using bundled Python: {}", bundled_python.display());
+        // Set PYTHONHOME for bundled Python
+        unsafe { std::env::set_var("PYTHONHOME", dginf_dir.join("python")); }
+        bundled_python.to_string_lossy().to_string()
+    } else {
+        tracing::info!("Using system Python");
+        "python3".to_string()
+    };
+
+    // Start mlx_lm.server as the inference backend
+    tracing::info!("Starting mlx_lm.server for model: {}", model);
+    let mlx_serve = std::process::Command::new(&python_cmd)
+        .args(["-m", "mlx_lm.server", "--model", &model, "--port", &be_port.to_string()])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+    match mlx_serve {
+        Ok(child) => {
+            tracing::info!("mlx_lm.server started (PID: {:?}) on port {}", child.id(), be_port);
         }
-        Err(e) => {
-            tracing::warn!("Backend integrity check skipped: {e}");
-            // Don't fail — the binary might be a Python script (not hashable the same way).
-            // In production with a bundled app, this would be a hard failure.
+        Err(e) => anyhow::bail!(
+            "Failed to start mlx_lm.server: {e}.\n\
+             Reinstall: curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash"
+        ),
+    }
+
+    // Wait for model to load
+    tracing::info!("Waiting for model to load...");
+    let backend_url_str = format!("http://127.0.0.1:{}", be_port);
+    for i in 0..30 {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if backend::check_health(&backend_url_str).await {
+            tracing::info!("Backend ready after {}s", (i + 1) * 2);
+            break;
+        }
+        if i == 29 {
+            tracing::warn!("Backend health check timed out after 60s — continuing anyway");
         }
     }
 
-    // Create backend: in-process (with Python feature) or subprocess fallback
-    #[cfg(feature = "python")]
-    let backend: Box<dyn backend::Backend> = {
-        // In-process inference (Phase 3, maximum security).
-        // If mlx-lm is not installed, install it automatically.
-        if let Err(_) = inference::InProcessEngine::detect_engine() {
-            tracing::info!("MLX not found — installing mlx-lm automatically...");
-            let install_status = std::process::Command::new("pip3")
-                .args(["install", "mlx-lm"])
-                .status();
-            match install_status {
-                Ok(s) if s.success() => tracing::info!("mlx-lm installed successfully"),
-                Ok(s) => anyhow::bail!("Failed to install mlx-lm (exit code: {s}). Install manually: pip3 install mlx-lm"),
-                Err(e) => anyhow::bail!("Failed to run pip3: {e}. Install mlx-lm manually: pip3 install mlx-lm"),
-            }
-        }
-        tracing::info!("Using in-process inference engine (secure mode)");
-        let engine = inference::InProcessEngine::new(model.clone());
-        Box::new(inference::SharedEngine::new(engine))
-    };
-
-    #[cfg(not(feature = "python"))]
-    let backend: Box<dyn backend::Backend> = {
-        // Find the bundled Python (shipped with the DGInf bundle)
-        let dginf_dir = dirs::home_dir().unwrap_or_default().join(".dginf");
-        let bundled_python = dginf_dir.join("python/bin/python3");
-        let python_cmd = if bundled_python.exists() {
-            tracing::info!("Using bundled Python: {}", bundled_python.display());
-            bundled_python.to_string_lossy().to_string()
-        } else {
-            tracing::info!("Using system Python");
-            "python3".to_string()
-        };
-
-        // Set PYTHONHOME for bundled Python
-        if bundled_python.exists() {
-            unsafe { std::env::set_var("PYTHONHOME", dginf_dir.join("python")); }
-        }
-
-        tracing::info!("Starting mlx_lm.server for model: {}", model);
-        let mlx_serve = std::process::Command::new(&python_cmd)
-            .args(["-m", "mlx_lm.server", "--model", &model, "--port", &be_port.to_string()])
-            .spawn();
-        match mlx_serve {
-            Ok(child) => {
-                tracing::info!("mlx_lm.server started (PID: {:?}) on port {}", child.id(), be_port);
-            }
-            Err(e) => anyhow::bail!(
-                "Failed to start mlx_lm.server: {e}.\n\
-                 If using the DGInf bundle, reinstall: curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash\n\
-                 If using system Python: pip3 install mlx-lm"
-            ),
-        }
-        // Give it time to load the model
-        tracing::info!("Waiting for model to load...");
-        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-        Box::new(backend::vllm_mlx::VllmMlxBackend::new(
-            model.clone(), be_port, cfg.backend.continuous_batching,
-        ))
-    };
-
-    // Start backend manager
-    let manager = backend::BackendManager::new(
-        backend,
-        std::time::Duration::from_secs(5),
-    );
-    manager.start().await?;
-
-    let backend_url = manager.base_url().await;
+    let backend_url = backend_url_str.clone();
     tracing::info!("Backend URL: {backend_url}");
 
     if local {
@@ -691,8 +653,9 @@ async fn cmd_serve(
         event_handle.abort();
     }
 
-    // Clean up backend
-    manager.stop().await?;
+    // Clean up mlx_lm.server
+    #[cfg(unix)]
+    { let _ = std::process::Command::new("pkill").args(["-f", "mlx_lm.server"]).status(); }
 
     Ok(())
 }

@@ -289,7 +289,7 @@ async fn cmd_install(
         match output {
             Ok(o) => {
                 let stdout = String::from_utf8_lossy(&o.stdout);
-                if stdout.contains("micromdm") || stdout.contains("dginf") || stdout.contains("com.github") {
+                if stdout.contains("micromdm") || stdout.contains("dginf") || stdout.contains("com.github") || stdout.contains("MDM") || stdout.contains("Device Management") {
                     println!("  ✓ MDM enrollment confirmed!");
                 } else if stdout.contains("no configuration profiles") || stdout.is_empty() {
                     println!("  ⚠ No profiles detected. You can install the profile later.");
@@ -849,7 +849,7 @@ async fn cmd_unenroll() -> Result<()> {
         match output {
             Ok(o) => {
                 let stdout = String::from_utf8_lossy(&o.stdout);
-                if stdout.contains("micromdm") || stdout.contains("com.github") {
+                if stdout.contains("micromdm") || stdout.contains("com.github") || stdout.contains("MDM") || stdout.contains("Device Management") {
                     println!("MDM profile found. To remove:");
                     println!("  System Settings → General → Device Management");
                     println!("  Click on the DGInf profile → Remove");
@@ -969,7 +969,7 @@ async fn cmd_status() -> Result<()> {
         let output = std::process::Command::new("profiles").args(["list"]).output();
         let enrolled = output.map(|o| {
             let s = String::from_utf8_lossy(&o.stdout);
-            s.contains("micromdm") || s.contains("com.github") || s.contains("dginf")
+            s.contains("micromdm") || s.contains("com.github") || s.contains("dginf") || s.contains("MDM") || s.contains("Device Management")
         }).unwrap_or(false);
         println!("  MDM enrolled:     {}", if enrolled { "✓ Yes" } else { "✗ No" });
     }
@@ -1152,12 +1152,26 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
     print!("4. MDM enrollment.............. ");
     #[cfg(target_os = "macos")]
     {
-        let output = std::process::Command::new("profiles").args(["list"]).output();
-        let enrolled = output.map(|o| {
+        // Check both user and system domains
+        let user_output = std::process::Command::new("profiles").args(["list"]).output();
+        let system_output = std::process::Command::new("profiles").args(["list", "-type", "enrollment"]).output();
+        let check_output = |o: std::io::Result<std::process::Output>| -> bool {
+            o.map(|o| {
+                let s = String::from_utf8_lossy(&o.stdout);
+                let e = String::from_utf8_lossy(&o.stderr);
+                let combined = format!("{}{}", s, e);
+                combined.contains("micromdm") || combined.contains("com.github") ||
+                combined.contains("dginf") || combined.contains("MDM") ||
+                combined.contains("Device Management") || combined.contains("configuration profiles installed")
+            }).unwrap_or(false)
+        };
+        // "configuration profiles installed" means profiles exist (even if we can't see details without sudo)
+        let has_profiles = user_output.as_ref().map(|o| {
             let s = String::from_utf8_lossy(&o.stdout);
-            s.contains("micromdm") || s.contains("com.github") || s.contains("dginf")
+            !s.contains("no configuration profiles") && s.contains("attribute")
         }).unwrap_or(false);
-        if enrolled {
+
+        if check_output(user_output) || check_output(system_output) || has_profiles {
             println!("✓ Enrolled");
             passed += 1;
         } else {

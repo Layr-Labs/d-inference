@@ -91,11 +91,19 @@ type RegisterMessage struct {
 
 // HeartbeatMessage is sent periodically by connected providers.
 type HeartbeatMessage struct {
-	Type        string          `json:"type"`
-	Status      string          `json:"status"`
-	ActiveModel *string         `json:"active_model"`
-	Stats       HeartbeatStats  `json:"stats"`
-	WarmModels  []string        `json:"warm_models,omitempty"` // models currently loaded in memory
+	Type          string          `json:"type"`
+	Status        string          `json:"status"`
+	ActiveModel   *string         `json:"active_model"`
+	Stats         HeartbeatStats  `json:"stats"`
+	WarmModels    []string        `json:"warm_models,omitempty"`           // models currently loaded in memory
+	SystemMetrics SystemMetrics   `json:"system_metrics"`                   // live resource utilization
+}
+
+// SystemMetrics contains live resource utilization reported by a provider.
+type SystemMetrics struct {
+	MemoryPressure float64 `json:"memory_pressure"` // 0.0 to 1.0
+	CPUUsage       float64 `json:"cpu_usage"`        // 0.0 to 1.0
+	ThermalState   string  `json:"thermal_state"`    // nominal, fair, serious, critical
 }
 
 // HeartbeatStats contains counters reported in heartbeats.

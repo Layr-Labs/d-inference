@@ -1,30 +1,9 @@
 /// MenuBarView — The dropdown UI shown when clicking the DGInf menu bar icon.
 ///
-/// Displays at-a-glance provider status: hardware info, current model,
-/// throughput, and session stats. Provides quick actions to start/stop
-/// the provider, open the dashboard, and access settings.
-///
-/// Layout:
-///   ┌──────────────────────────────────────┐
-///   │  DGInf                    ● Online   │
-///   │                                      │
-///   │  Apple M3 Max · 64 GB               │
-///   │  Model: Qwen3.5-4B                  │
-///   │  Status: Serving · 94 tok/s          │
-///   │                                      │
-///   │  Today: 142 requests · 48.2K tokens │
-///   │                                      │
-///   │  ─────────────────────────────────── │
-///   │  Start / Pause                       │
-///   │  Dashboard...                        │
-///   │  Settings...                         │
-///   │  ─────────────────────────────────── │
-///   │  Quit DGInf                          │
-///   └──────────────────────────────────────┘
+/// Shows at-a-glance provider status with quick actions.
 
 import SwiftUI
 
-/// The menu bar dropdown content view.
 struct MenuBarView: View {
     @ObservedObject var viewModel: StatusViewModel
     @Environment(\.openWindow) private var openWindow
@@ -32,10 +11,14 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Header
+            // Header with connectivity dot
             HStack {
                 Text("DGInf")
                     .font(.headline)
+                Circle()
+                    .fill(viewModel.coordinatorConnected ? Color.green : Color.red)
+                    .frame(width: 6, height: 6)
+                    .help(viewModel.coordinatorConnected ? "Coordinator connected" : "Coordinator offline")
                 Spacer()
                 statusBadge
             }
@@ -64,6 +47,28 @@ struct MenuBarView: View {
             }
             .font(.subheadline)
 
+            // Trust level
+            HStack(spacing: 4) {
+                Text("Trust:")
+                    .foregroundColor(.secondary)
+                Image(systemName: viewModel.securityManager.trustLevel.iconName)
+                    .foregroundColor(trustColor)
+                Text(viewModel.securityManager.trustLevel.displayName)
+                    .foregroundColor(trustColor)
+            }
+            .font(.subheadline)
+
+            // Warning if not hardware trusted
+            if viewModel.securityManager.trustLevel != .hardware && viewModel.hasCompletedSetup {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    Text("Setup needed for inference routing")
+                        .foregroundColor(.orange)
+                }
+                .font(.caption)
+            }
+
             Divider()
 
             // Stats
@@ -77,8 +82,17 @@ struct MenuBarView: View {
                     Text(formatTokenCount(viewModel.tokensGenerated))
                 }
                 .font(.subheadline)
+            }
 
-                Divider()
+            // Earnings
+            if !viewModel.earningsBalance.isEmpty {
+                HStack {
+                    Text("Earnings:")
+                        .foregroundColor(.secondary)
+                    Text(viewModel.earningsBalance)
+                        .fontWeight(.medium)
+                }
+                .font(.subheadline)
             }
 
             // Uptime
@@ -89,9 +103,9 @@ struct MenuBarView: View {
                     Text(formatUptime(viewModel.uptimeSeconds))
                 }
                 .font(.subheadline)
-
-                Divider()
             }
+
+            Divider()
 
             // Actions
             if viewModel.isOnline {
@@ -125,12 +139,49 @@ struct MenuBarView: View {
             }
             .buttonStyle(.plain)
 
+            Button(action: { openWindow(id: "wallet") }) {
+                Label("Wallet...", systemImage: "wallet.pass")
+            }
+            .buttonStyle(.plain)
+
+            Button(action: { openWindow(id: "benchmark") }) {
+                Label("Benchmark...", systemImage: "gauge.with.dots.needle.bottom.50percent")
+            }
+            .buttonStyle(.plain)
+
+            Button(action: { openWindow(id: "logs") }) {
+                Label("Logs...", systemImage: "doc.text")
+            }
+            .buttonStyle(.plain)
+
+            if !viewModel.hasCompletedSetup {
+                Button(action: { openWindow(id: "setup") }) {
+                    Label("Setup Wizard...", systemImage: "wrench")
+                }
+                .buttonStyle(.plain)
+            }
+
             Button(action: { openSettings() }) {
                 Label("Settings...", systemImage: "gear")
             }
             .buttonStyle(.plain)
 
             Divider()
+
+            // Version + update
+            HStack {
+                Text("v\(viewModel.updateManager.currentVersion)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                if viewModel.updateManager.updateAvailable {
+                    Text("Update available")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+
+                Spacer()
+            }
 
             Button(action: {
                 NSApplication.shared.terminate(nil)
@@ -140,12 +191,11 @@ struct MenuBarView: View {
             .buttonStyle(.plain)
         }
         .padding(12)
-        .frame(width: 280)
+        .frame(width: 300)
     }
 
     // MARK: - Subviews
 
-    /// The colored status badge (green dot = online, gray = offline, yellow = paused).
     private var statusBadge: some View {
         HStack(spacing: 4) {
             Circle()
@@ -154,6 +204,14 @@ struct MenuBarView: View {
             Text(statusLabel)
                 .font(.caption)
                 .foregroundColor(.secondary)
+        }
+    }
+
+    private var trustColor: Color {
+        switch viewModel.securityManager.trustLevel {
+        case .hardware: return .green
+        case .selfSigned: return .yellow
+        case .none: return .red
         }
     }
 
@@ -169,7 +227,6 @@ struct MenuBarView: View {
         return "Offline"
     }
 
-    /// Status text showing serving state and throughput.
     private var statusText: some View {
         Group {
             if viewModel.isPaused {
@@ -194,25 +251,16 @@ struct MenuBarView: View {
         }
     }
 
-    // MARK: - Formatting
-
-    /// Format a token count for display (e.g., 48200 -> "48.2K").
     private func formatTokenCount(_ count: Int) -> String {
-        if count >= 1_000_000 {
-            return String(format: "%.1fM tokens", Double(count) / 1_000_000)
-        } else if count >= 1_000 {
-            return String(format: "%.1fK tokens", Double(count) / 1_000)
-        }
+        if count >= 1_000_000 { return String(format: "%.1fM tokens", Double(count) / 1_000_000) }
+        if count >= 1_000 { return String(format: "%.1fK tokens", Double(count) / 1_000) }
         return "\(count) tokens"
     }
 
-    /// Format uptime seconds into a human-readable string (e.g., "2h 34m").
     private func formatUptime(_ seconds: Int) -> String {
         let hours = seconds / 3600
         let minutes = (seconds % 3600) / 60
-        if hours > 0 {
-            return "\(hours)h \(minutes)m"
-        }
+        if hours > 0 { return "\(hours)h \(minutes)m" }
         return "\(minutes)m"
     }
 }

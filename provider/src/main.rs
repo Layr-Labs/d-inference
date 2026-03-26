@@ -691,6 +691,10 @@ async fn cmd_serve(
         let proxy_backend_url = backend_url.clone();
         let proxy_keypair = node_keypair.clone();
         let is_inprocess = proxy_backend_url.starts_with("inprocess://");
+        let idle_model = model.clone();
+        let idle_python_cmd = python_cmd.clone();
+        let idle_be_port = be_port;
+        let idle_backend_name = backend_name.to_string();
 
         #[cfg(feature = "python")]
         let shared_engine: Option<std::sync::Arc<tokio::sync::Mutex<inference::InProcessEngine>>> =
@@ -706,52 +710,148 @@ async fn cmd_serve(
             };
 
         let event_handle = tokio::spawn(async move {
-            while let Some(event) = event_rx.recv().await {
-                match event {
-                    coordinator::CoordinatorEvent::Connected => {
-                        tracing::info!("Connected to coordinator");
-                    }
-                    coordinator::CoordinatorEvent::Disconnected => {
-                        tracing::warn!("Disconnected from coordinator");
-                    }
-                    coordinator::CoordinatorEvent::InferenceRequest { request_id, body } => {
-                        let tx = outbound_tx.clone();
+            use std::collections::HashMap;
+            use tokio_util::sync::CancellationToken;
 
-                        #[cfg(feature = "python")]
-                        if let Some(ref engine) = shared_engine {
-                            let engine = engine.clone();
-                            tokio::spawn(async move {
-                                handle_inprocess_request(request_id, body, engine, tx).await;
-                            });
-                        } else {
-                            let url = proxy_backend_url.clone();
-                            let kp = proxy_keypair.clone();
-                            tokio::spawn(async move {
-                                proxy::handle_inference_request(request_id, body, url, tx, Some(kp)).await;
-                            });
-                        }
+            // Track in-flight inference tasks so we can cancel them on
+            // coordinator disconnect or explicit cancel messages.
+            let mut inflight: HashMap<String, (CancellationToken, tokio::task::JoinHandle<()>)> =
+                HashMap::new();
+            let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<String>(64);
 
-                        #[cfg(not(feature = "python"))]
-                        {
-                            let url = proxy_backend_url.clone();
-                            let kp = proxy_keypair.clone();
-                            tokio::spawn(async move {
-                                proxy::handle_inference_request(request_id, body, url, tx, Some(kp)).await;
-                            });
+            // Idle timeout: shut down the backend after 10 minutes of no
+            // requests to free GPU memory. Lazy-reload on next request.
+            const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+            let mut last_request_time = tokio::time::Instant::now();
+            let mut backend_running = true;
+
+            loop {
+                let idle_sleep = async {
+                    if backend_running && inflight.is_empty() {
+                        tokio::time::sleep_until(last_request_time + IDLE_TIMEOUT).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                };
+
+                tokio::select! {
+                    event = event_rx.recv() => {
+                        let Some(event) = event else { break };
+                        match event {
+                            coordinator::CoordinatorEvent::Connected => {
+                                tracing::info!("Connected to coordinator");
+                            }
+                            coordinator::CoordinatorEvent::Disconnected => {
+                                let count = inflight.len();
+                                if count > 0 {
+                                    tracing::warn!(
+                                        "Disconnected from coordinator — aborting {count} in-flight request(s)"
+                                    );
+                                    for (rid, (token, handle)) in inflight.drain() {
+                                        tracing::info!("Aborting request {rid} (coordinator disconnected)");
+                                        token.cancel();
+                                        handle.abort();
+                                    }
+                                } else {
+                                    tracing::warn!("Disconnected from coordinator");
+                                }
+                            }
+                            coordinator::CoordinatorEvent::InferenceRequest { request_id, body } => {
+                                last_request_time = tokio::time::Instant::now();
+
+                                // Reload backend if it was idle-shutdown
+                                if !backend_running {
+                                    tracing::info!("Backend idle-shutdown — reloading for incoming request");
+                                    match reload_backend(
+                                        &idle_python_cmd,
+                                        &idle_backend_name,
+                                        &idle_model,
+                                        idle_be_port,
+                                    ).await {
+                                        Ok(()) => {
+                                            backend_running = true;
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to reload backend: {e}");
+                                            let _ = outbound_tx.send(
+                                                protocol::ProviderMessage::InferenceError {
+                                                    request_id,
+                                                    error: format!("backend reload failed: {e}"),
+                                                    status_code: 503,
+                                                }
+                                            ).await;
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                let tx = outbound_tx.clone();
+                                let cancel_token = CancellationToken::new();
+                                let token_clone = cancel_token.clone();
+                                let done_tx = done_tx.clone();
+                                let rid = request_id.clone();
+
+                                let handle = {
+                                    #[cfg(feature = "python")]
+                                    if let Some(ref engine) = shared_engine {
+                                        let engine = engine.clone();
+                                        let rid2 = rid.clone();
+                                        tokio::spawn(async move {
+                                            handle_inprocess_request(rid2, body, engine, tx).await;
+                                            let _ = done_tx.send(rid).await;
+                                        })
+                                    } else {
+                                        let url = proxy_backend_url.clone();
+                                        let kp = proxy_keypair.clone();
+                                        let rid2 = rid.clone();
+                                        tokio::spawn(async move {
+                                            proxy::handle_inference_request(rid2, body, url, tx, Some(kp), token_clone).await;
+                                            let _ = done_tx.send(rid).await;
+                                        })
+                                    }
+
+                                    #[cfg(not(feature = "python"))]
+                                    {
+                                        let url = proxy_backend_url.clone();
+                                        let kp = proxy_keypair.clone();
+                                        let rid2 = rid.clone();
+                                        tokio::spawn(async move {
+                                            proxy::handle_inference_request(rid2, body, url, tx, Some(kp), token_clone).await;
+                                            let _ = done_tx.send(rid).await;
+                                        })
+                                    }
+                                };
+
+                                inflight.insert(request_id, (cancel_token, handle));
+                            }
+                            coordinator::CoordinatorEvent::Cancel { request_id } => {
+                                if let Some((token, _handle)) = inflight.remove(&request_id) {
+                                    tracing::info!("Cancelling request {request_id}");
+                                    token.cancel();
+                                } else {
+                                    tracing::warn!("Cancel for unknown request {request_id}");
+                                }
+                            }
+                            coordinator::CoordinatorEvent::AttestationChallenge { nonce, timestamp } => {
+                                tracing::debug!(
+                                    "Attestation challenge event received (nonce={}, ts={})",
+                                    &nonce[..8.min(nonce.len())],
+                                    timestamp
+                                );
+                            }
                         }
                     }
-                    coordinator::CoordinatorEvent::Cancel { request_id } => {
-                        tracing::info!("Cancel request for {request_id} (not yet implemented)");
+                    Some(rid) = done_rx.recv() => {
+                        if inflight.remove(&rid).is_some() {
+                            tracing::debug!("Request {rid} completed, removed from tracker ({} in-flight)", inflight.len());
+                        }
                     }
-                    coordinator::CoordinatorEvent::AttestationChallenge { nonce, timestamp } => {
-                        // Attestation challenges are handled inline in the coordinator
-                        // connection loop (coordinator.rs). This event variant exists for
-                        // completeness but the challenge response is sent directly.
-                        tracing::debug!(
-                            "Attestation challenge event received (nonce={}, ts={})",
-                            &nonce[..8.min(nonce.len())],
-                            timestamp
+                    _ = idle_sleep => {
+                        tracing::info!(
+                            "No requests for 10 minutes — shutting down backend to free GPU memory"
                         );
+                        shutdown_backend().await;
+                        backend_running = false;
                     }
                 }
             }
@@ -776,6 +876,54 @@ async fn cmd_serve(
         let _ = std::process::Command::new("pkill").args(["-f", "vllm_mlx"]).status(); }
 
     Ok(())
+}
+
+/// Kill the inference backend process to free GPU memory.
+async fn shutdown_backend() {
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("pkill").args(["-f", "vllm_mlx"]).status();
+        let _ = std::process::Command::new("pkill").args(["-f", "mlx_lm.server"]).status();
+    }
+    // Give processes time to exit and release GPU memory
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    tracing::info!("Backend processes terminated — GPU memory freed");
+}
+
+/// Restart the inference backend and wait for it to become healthy.
+async fn reload_backend(
+    python_cmd: &str,
+    backend_name: &str,
+    model: &str,
+    port: u16,
+) -> anyhow::Result<()> {
+    let module = if backend_name == "vllm-mlx" || backend_name == "vllm_mlx" {
+        "vllm_mlx.server"
+    } else {
+        "mlx_lm.server"
+    };
+
+    tracing::info!("Reloading backend: {module} for model {model} on port {port}");
+
+    let child = std::process::Command::new(python_cmd)
+        .args(["-m", module, "--model", model, "--port", &port.to_string()])
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("failed to spawn backend: {e}"))?;
+
+    tracing::info!("Backend process started (PID: {:?}), waiting for model to load...", child.id());
+
+    let backend_url = format!("http://127.0.0.1:{}", port);
+    for i in 0..30 {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if backend::check_health(&backend_url).await {
+            tracing::info!("Backend reloaded and ready after {}s", (i + 1) * 2);
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!("backend did not become healthy within 60s after reload")
 }
 
 /// Handle an inference request using the in-process engine (no HTTP, no subprocess).

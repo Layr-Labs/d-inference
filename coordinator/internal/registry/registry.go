@@ -85,6 +85,9 @@ type Provider struct {
 	WarmModels   []string // models currently loaded in provider's memory
 	CurrentModel string   // model currently being served
 
+	// Live system metrics from heartbeats
+	SystemMetrics protocol.SystemMetrics
+
 	// Reputation tracking
 	Reputation Reputation
 
@@ -223,6 +226,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	p.mu.Lock()
 	p.LastHeartbeat = time.Now()
 	p.Stats = msg.Stats
+	p.SystemMetrics = msg.SystemMetrics
 	// Update warm models from heartbeat
 	if len(msg.WarmModels) > 0 {
 		p.WarmModels = msg.WarmModels
@@ -381,7 +385,32 @@ func ScoreProvider(p *Provider, model string) float64 {
 		warmBonus = 1.5
 	}
 
-	return (1.0 - load) * decodeTPS * trustMul * repScore * warmBonus
+	// Health factor from live system metrics
+	m := p.SystemMetrics
+
+	// Memory pressure: linear penalty. At 0.9 -> factor 0.1
+	memFactor := 1.0 - m.MemoryPressure
+	if memFactor < 0.1 {
+		memFactor = 0.1
+	}
+
+	// CPU usage: gentle penalty (max 50% reduction at full load)
+	cpuFactor := 1.0 - (m.CPUUsage * 0.5)
+
+	// Thermal: step penalties
+	thermalFactor := 1.0
+	switch m.ThermalState {
+	case "fair":
+		thermalFactor = 0.8
+	case "serious":
+		thermalFactor = 0.4
+	case "critical":
+		thermalFactor = 0.0
+	}
+
+	healthFactor := memFactor * cpuFactor * thermalFactor
+
+	return (1.0 - load) * decodeTPS * trustMul * repScore * warmBonus * healthFactor
 }
 
 // FindProvider selects an available provider for the given model using

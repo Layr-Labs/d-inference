@@ -1,18 +1,13 @@
 /// DashboardView — Detailed statistics window for the DGInf provider.
 ///
-/// Shows a comprehensive overview of the provider's operation:
-///   - Hardware information (chip, memory, GPU cores, bandwidth)
-///   - Current session stats (uptime, requests, tokens, throughput)
-///   - Provider status and model info
-///   - Trust/attestation status
-///
-/// Opened from the menu bar dropdown via the "Dashboard..." button.
+/// Shows hardware info, session stats, provider status, and live
+/// security/trust posture from SecurityManager.
 
 import SwiftUI
 
-/// The dashboard statistics window.
 struct DashboardView: View {
     @ObservedObject var viewModel: StatusViewModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         ScrollView {
@@ -23,9 +18,14 @@ struct DashboardView: View {
                         Text("DGInf Provider Dashboard")
                             .font(.title2)
                             .fontWeight(.bold)
-                        Text("Decentralized GPU Inference Network")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+                        HStack(spacing: 4) {
+                            Text("Decentralized Private Inference")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                            Text("v\(viewModel.updateManager.currentVersion)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
                     Spacer()
                     statusIndicator
@@ -37,7 +37,6 @@ struct DashboardView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 8) {
                         sectionHeader("Hardware")
-
                         infoRow("Chip", viewModel.chipName)
                         infoRow("Unified Memory", "\(viewModel.memoryGB) GB")
                         infoRow("GPU Cores", viewModel.gpuCores > 0 ? "\(viewModel.gpuCores)" : "Detecting...")
@@ -49,10 +48,19 @@ struct DashboardView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 8) {
                         sectionHeader("Provider Status")
-
                         infoRow("Status", providerStatusText)
                         infoRow("Model", viewModel.currentModel)
-                        infoRow("Coordinator", viewModel.coordinatorURL)
+
+                        HStack {
+                            Text("Coordinator")
+                                .foregroundColor(.secondary)
+                                .frame(width: 140, alignment: .leading)
+                            Circle()
+                                .fill(viewModel.coordinatorConnected ? Color.green : Color.red)
+                                .frame(width: 8, height: 8)
+                            Text(viewModel.coordinatorConnected ? "Connected" : "Disconnected")
+                                .foregroundColor(viewModel.coordinatorConnected ? .green : .red)
+                        }
 
                         if viewModel.isServing {
                             infoRow("Throughput", String(format: "%.1f tok/s", viewModel.tokensPerSecond))
@@ -60,45 +68,107 @@ struct DashboardView: View {
                     }
                 }
 
-                // Session stats section
+                // Session stats
                 GroupBox {
                     VStack(alignment: .leading, spacing: 8) {
                         sectionHeader("Session Statistics")
-
                         infoRow("Uptime", formatUptime(viewModel.uptimeSeconds))
                         infoRow("Requests Served", "\(viewModel.requestsServed)")
                         infoRow("Tokens Generated", formatTokenCount(viewModel.tokensGenerated))
+
+                        if !viewModel.earningsBalance.isEmpty {
+                            infoRow("Earnings", viewModel.earningsBalance)
+                        }
                     }
                 }
 
-                // Trust section
+                // Trust & Security section (live data from SecurityManager)
                 GroupBox {
                     VStack(alignment: .leading, spacing: 8) {
-                        sectionHeader("Trust & Attestation")
-
                         HStack {
-                            Text("Secure Enclave")
-                                .foregroundColor(.secondary)
-                                .frame(width: 140, alignment: .leading)
-                            Image(systemName: "checkmark.shield.fill")
-                                .foregroundColor(.green)
-                            Text("Available")
-                                .foregroundColor(.green)
+                            sectionHeader("Trust & Attestation")
+                            Spacer()
+                            if viewModel.securityManager.isChecking {
+                                ProgressView().controlSize(.small)
+                            }
+                            Button {
+                                Task { await viewModel.securityManager.refresh() }
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .buttonStyle(.borderless)
                         }
 
-                        infoRow("Identity", "Hardware-bound P-256 key")
-                        infoRow("Attestation", viewModel.isOnline ? "Active" : "Inactive")
+                        // Trust level badge
+                        HStack {
+                            Text("Trust Level")
+                                .foregroundColor(.secondary)
+                                .frame(width: 140, alignment: .leading)
+                            Image(systemName: viewModel.securityManager.trustLevel.iconName)
+                                .foregroundColor(trustColor)
+                            Text(viewModel.securityManager.trustLevel.displayName)
+                                .foregroundColor(trustColor)
+                                .fontWeight(.medium)
+                        }
+
+                        securityRow("Secure Enclave", viewModel.securityManager.secureEnclaveAvailable)
+                        securityRow("SIP", viewModel.securityManager.sipEnabled)
+                        securityRow("Secure Boot", viewModel.securityManager.secureBootEnabled)
+                        securityRow("MDM Enrolled", viewModel.securityManager.mdmEnrolled)
+                        securityRow("Node Key", viewModel.securityManager.nodeKeyExists)
+                    }
+                }
+
+                // Action buttons
+                HStack(spacing: 12) {
+                    Button {
+                        openWindow(id: "doctor")
+                    } label: {
+                        Label("Diagnostics", systemImage: "stethoscope")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        openWindow(id: "logs")
+                    } label: {
+                        Label("Logs", systemImage: "doc.text")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        openWindow(id: "benchmark")
+                    } label: {
+                        Label("Benchmark", systemImage: "gauge.with.dots.needle.bottom.50percent")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        openWindow(id: "wallet")
+                    } label: {
+                        Label("Wallet", systemImage: "wallet.pass")
+                    }
+                    .buttonStyle(.bordered)
+
+                    if !viewModel.hasCompletedSetup {
+                        Button {
+                            openWindow(id: "setup")
+                        } label: {
+                            Label("Setup", systemImage: "wrench")
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
                 }
             }
             .padding(20)
         }
-        .frame(minWidth: 500, minHeight: 500)
+        .frame(minWidth: 550, minHeight: 600)
+        .task {
+            await viewModel.securityManager.refresh()
+        }
     }
 
     // MARK: - Subviews
 
-    /// Large status indicator in the header.
     private var statusIndicator: some View {
         VStack {
             Circle()
@@ -107,6 +177,14 @@ struct DashboardView: View {
             Text(statusLabel)
                 .font(.caption)
                 .foregroundColor(.secondary)
+        }
+    }
+
+    private var trustColor: Color {
+        switch viewModel.securityManager.trustLevel {
+        case .hardware: return .green
+        case .selfSigned: return .yellow
+        case .none: return .red
         }
     }
 
@@ -131,14 +209,12 @@ struct DashboardView: View {
         return "Stopped"
     }
 
-    /// Section header label.
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
             .font(.headline)
             .padding(.bottom, 4)
     }
 
-    /// A labeled info row: "Label    Value"
     private func infoRow(_ label: String, _ value: String) -> some View {
         HStack {
             Text(label)
@@ -149,26 +225,30 @@ struct DashboardView: View {
         .font(.body)
     }
 
-    // MARK: - Formatting
+    private func securityRow(_ label: String, _ enabled: Bool) -> some View {
+        HStack {
+            Text(label)
+                .foregroundColor(.secondary)
+                .frame(width: 140, alignment: .leading)
+            Image(systemName: enabled ? "checkmark.circle.fill" : "xmark.circle")
+                .foregroundColor(enabled ? .green : .red)
+            Text(enabled ? "Yes" : "No")
+                .foregroundColor(enabled ? .primary : .red)
+        }
+    }
 
     private func formatUptime(_ seconds: Int) -> String {
         let hours = seconds / 3600
         let minutes = (seconds % 3600) / 60
         let secs = seconds % 60
-        if hours > 0 {
-            return "\(hours)h \(minutes)m \(secs)s"
-        } else if minutes > 0 {
-            return "\(minutes)m \(secs)s"
-        }
+        if hours > 0 { return "\(hours)h \(minutes)m \(secs)s" }
+        if minutes > 0 { return "\(minutes)m \(secs)s" }
         return "\(secs)s"
     }
 
     private func formatTokenCount(_ count: Int) -> String {
-        if count >= 1_000_000 {
-            return String(format: "%.1fM", Double(count) / 1_000_000)
-        } else if count >= 1_000 {
-            return String(format: "%.1fK", Double(count) / 1_000)
-        }
+        if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }
+        if count >= 1_000 { return String(format: "%.1fK", Double(count) / 1_000) }
         return "\(count)"
     }
 }

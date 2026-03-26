@@ -536,6 +536,8 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		"secure_enclave", result.SecureEnclaveAvailable,
 		"sip_enabled", result.SIPEnabled,
 		"secure_boot", result.SecureBootEnabled,
+		"authenticated_root", result.AuthenticatedRootEnabled,
+		"system_volume_hash", result.SystemVolumeHash,
 		"trust_level", provider.TrustLevel,
 	)
 

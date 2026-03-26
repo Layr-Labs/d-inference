@@ -545,6 +545,56 @@ func TestAttestationResponseMessageMarshal(t *testing.T) {
 	}
 }
 
+func TestHeartbeatWithSystemMetricsMarshal(t *testing.T) {
+	msg := HeartbeatMessage{
+		Type:   TypeHeartbeat,
+		Status: "idle",
+		Stats:  HeartbeatStats{RequestsServed: 5, TokensGenerated: 200},
+		SystemMetrics: SystemMetrics{
+			MemoryPressure: 0.65,
+			CPUUsage:       0.3,
+			ThermalState:   "nominal",
+		},
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if decoded.SystemMetrics.MemoryPressure != 0.65 {
+		t.Errorf("memory_pressure = %f, want 0.65", decoded.SystemMetrics.MemoryPressure)
+	}
+	if decoded.SystemMetrics.CPUUsage != 0.3 {
+		t.Errorf("cpu_usage = %f, want 0.3", decoded.SystemMetrics.CPUUsage)
+	}
+	if decoded.SystemMetrics.ThermalState != "nominal" {
+		t.Errorf("thermal_state = %q, want nominal", decoded.SystemMetrics.ThermalState)
+	}
+}
+
+func TestProviderMessageUnmarshalHeartbeatWithMetrics(t *testing.T) {
+	raw := `{"type":"heartbeat","status":"idle","active_model":null,"stats":{"requests_served":0,"tokens_generated":0},"system_metrics":{"memory_pressure":0.42,"cpu_usage":0.15,"thermal_state":"fair"}}`
+
+	var pm ProviderMessage
+	if err := json.Unmarshal([]byte(raw), &pm); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	hb := pm.Payload.(*HeartbeatMessage)
+	if hb.SystemMetrics.MemoryPressure != 0.42 {
+		t.Errorf("memory_pressure = %f, want 0.42", hb.SystemMetrics.MemoryPressure)
+	}
+	if hb.SystemMetrics.ThermalState != "fair" {
+		t.Errorf("thermal_state = %q, want fair", hb.SystemMetrics.ThermalState)
+	}
+}
+
 func TestProviderMessageUnmarshalAttestationResponse(t *testing.T) {
 	raw := `{"type":"attestation_response","nonce":"bm9uY2U=","signature":"c2ln","public_key":"a2V5"}`
 

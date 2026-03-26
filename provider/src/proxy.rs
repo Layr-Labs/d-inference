@@ -17,6 +17,7 @@
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::crypto::NodeKeyPair;
 use crate::protocol::{ProviderMessage, UsageInfo};
@@ -37,6 +38,7 @@ pub async fn handle_inference_request(
     backend_url: String,
     outbound_tx: mpsc::Sender<ProviderMessage>,
     _node_keypair: Option<Arc<NodeKeyPair>>,
+    cancel_token: CancellationToken,
 ) {
     // Pre-request SIP check: verify SIP is still enabled before processing
     // any consumer data. SIP can't be disabled at runtime (requires reboot),
@@ -56,20 +58,24 @@ pub async fn handle_inference_request(
     let is_streaming = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let result = if is_streaming {
-        handle_streaming_request(&request_id, &body, &backend_url, &outbound_tx).await
+        handle_streaming_request(&request_id, &body, &backend_url, &outbound_tx, &cancel_token).await
     } else {
-        handle_non_streaming_request(&request_id, &body, &backend_url, &outbound_tx).await
+        handle_non_streaming_request(&request_id, &body, &backend_url, &outbound_tx, &cancel_token).await
     };
 
     if let Err(e) = result {
-        tracing::error!("Inference request {request_id} failed: {e}");
-        let _ = outbound_tx
-            .send(ProviderMessage::InferenceError {
-                request_id,
-                error: e.to_string(),
-                status_code: 500,
-            })
-            .await;
+        if cancel_token.is_cancelled() {
+            tracing::info!("Inference request {request_id} cancelled");
+        } else {
+            tracing::error!("Inference request {request_id} failed: {e}");
+            let _ = outbound_tx
+                .send(ProviderMessage::InferenceError {
+                    request_id,
+                    error: e.to_string(),
+                    status_code: 500,
+                })
+                .await;
+        }
     }
 
     // Wipe the request body from memory after processing.
@@ -90,16 +96,19 @@ async fn handle_non_streaming_request(
     body: &serde_json::Value,
     backend_url: &str,
     outbound_tx: &mpsc::Sender<ProviderMessage>,
+    cancel_token: &CancellationToken,
 ) -> Result<()> {
     let url = format!("{backend_url}/v1/chat/completions");
     let client = reqwest::Client::new();
 
-    let response = client
-        .post(&url)
-        .json(body)
-        .send()
-        .await
-        .context("failed to send request to backend")?;
+    let response = tokio::select! {
+        result = client.post(&url).json(body).send() => {
+            result.context("failed to send request to backend")?
+        }
+        _ = cancel_token.cancelled() => {
+            anyhow::bail!("request cancelled");
+        }
+    };
 
     let status = response.status();
     if !status.is_success() {
@@ -115,10 +124,14 @@ async fn handle_non_streaming_request(
         return Ok(());
     }
 
-    let response_json: serde_json::Value = response
-        .json()
-        .await
-        .context("failed to parse backend response as JSON")?;
+    let response_json: serde_json::Value = tokio::select! {
+        result = response.json() => {
+            result.context("failed to parse backend response as JSON")?
+        }
+        _ = cancel_token.cancelled() => {
+            anyhow::bail!("request cancelled");
+        }
+    };
 
     // Extract token usage info for billing
     let usage = extract_usage(&response_json);
@@ -154,16 +167,19 @@ async fn handle_streaming_request(
     body: &serde_json::Value,
     backend_url: &str,
     outbound_tx: &mpsc::Sender<ProviderMessage>,
+    cancel_token: &CancellationToken,
 ) -> Result<()> {
     let url = format!("{backend_url}/v1/chat/completions");
     let client = reqwest::Client::new();
 
-    let response = client
-        .post(&url)
-        .json(body)
-        .send()
-        .await
-        .context("failed to send streaming request to backend")?;
+    let response = tokio::select! {
+        result = client.post(&url).json(body).send() => {
+            result.context("failed to send streaming request to backend")?
+        }
+        _ = cancel_token.cancelled() => {
+            anyhow::bail!("request cancelled");
+        }
+    };
 
     let status = response.status();
     if !status.is_success() {
@@ -179,7 +195,10 @@ async fn handle_streaming_request(
         return Ok(());
     }
 
-    // Read the SSE stream chunk by chunk
+    // Read the SSE stream chunk by chunk.
+    // The cancel_token select! branch ensures that when the coordinator
+    // disconnects or sends a cancel, we drop `stream` immediately —
+    // this closes the HTTP connection and vllm-mlx stops generating.
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     let mut total_completion_tokens: u64 = 0;
@@ -187,7 +206,16 @@ async fn handle_streaming_request(
 
     use futures_util::StreamExt;
 
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let chunk = tokio::select! {
+            chunk = stream.next() => chunk,
+            _ = cancel_token.cancelled() => {
+                // Drop stream → close HTTP connection → vllm-mlx sees disconnect
+                anyhow::bail!("request cancelled");
+            }
+        };
+
+        let Some(chunk) = chunk else { break };
         let bytes = chunk.context("error reading SSE chunk")?;
         let text = String::from_utf8_lossy(&bytes);
         buffer.push_str(&text);
@@ -418,6 +446,7 @@ mod tests {
             format!("http://127.0.0.1:{}", addr.port()),
             tx,
             None,
+            CancellationToken::new(),
         )
         .await;
 
@@ -457,6 +486,7 @@ mod tests {
             format!("http://127.0.0.1:{}", addr.port()),
             tx,
             None,
+            CancellationToken::new(),
         )
         .await;
 
@@ -523,6 +553,7 @@ mod tests {
             format!("http://127.0.0.1:{}", addr.port()),
             tx,
             None,
+            CancellationToken::new(),
         )
         .await;
 
@@ -544,5 +575,91 @@ mod tests {
             "Expected InferenceComplete as last message, got {:?}",
             last
         );
+    }
+
+    #[tokio::test]
+    async fn test_streaming_cancel_stops_early() {
+        use axum::{
+            body::Body,
+            http::StatusCode,
+            response::Response,
+            routing::post,
+            Router,
+        };
+
+        // Slow SSE backend: sends chunks with delays
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                let stream = futures_util::stream::unfold(0u32, |i| async move {
+                    if i >= 100 {
+                        return None;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    let chunk = format!(
+                        "data: {{\"choices\":[{{\"delta\":{{\"content\":\"tok-{i}\"}}}}]}}\n\n"
+                    );
+                    Some((Ok::<_, std::convert::Infallible>(chunk), i + 1))
+                });
+
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from_stream(stream))
+                    .unwrap()
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(128);
+        let body = serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true
+        });
+
+        let cancel_token = CancellationToken::new();
+        let token_clone = cancel_token.clone();
+
+        // Spawn inference and cancel after 200ms
+        let handle = tokio::spawn(async move {
+            handle_inference_request(
+                "req-cancel".to_string(),
+                body,
+                format!("http://127.0.0.1:{}", addr.port()),
+                tx,
+                None,
+                token_clone,
+            )
+            .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        cancel_token.cancel();
+
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
+
+        // Collect messages — should have some chunks but NOT all 100,
+        // and NO InferenceError (cancelled requests don't send errors)
+        let mut chunks = 0;
+        let mut got_error = false;
+        while let Ok(Some(msg)) =
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await
+        {
+            match msg {
+                ProviderMessage::InferenceResponseChunk { .. } => chunks += 1,
+                ProviderMessage::InferenceError { .. } => got_error = true,
+                _ => {}
+            }
+        }
+
+        assert!(chunks < 50, "Expected early stop, got {chunks} chunks (should be << 100)");
+        assert!(!got_error, "Cancelled request should not send InferenceError");
     }
 }

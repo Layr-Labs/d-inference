@@ -1,16 +1,13 @@
 /// SettingsView — Configuration window for the DGInf provider.
 ///
-/// Provides three tabs:
-///   - **General**: Coordinator URL, API key, auto-start on login
-///   - **Availability**: Idle timeout slider, availability schedule
-///   - **Model**: Select which model to serve, download new models
-///
-/// All settings are persisted via UserDefaults through the StatusViewModel's
-/// published properties (which write to UserDefaults in their didSet).
+/// Tabs:
+///   - General: Coordinator URL, API key, auto-start on login
+///   - Availability: Idle timeout, schedule
+///   - Model: Full model catalog with fit indicators and download/remove
+///   - Security: Security posture overview
 
 import SwiftUI
 
-/// The settings window with tabbed sections.
 struct SettingsView: View {
     @ObservedObject var viewModel: StatusViewModel
 
@@ -26,18 +23,22 @@ struct SettingsView: View {
                     Label("Availability", systemImage: "clock")
                 }
 
-            ModelTab(viewModel: viewModel)
+            ModelCatalogView(viewModel: viewModel)
                 .tabItem {
                     Label("Model", systemImage: "cpu")
                 }
+
+            SecurityTab(viewModel: viewModel)
+                .tabItem {
+                    Label("Security", systemImage: "shield")
+                }
         }
-        .frame(width: 480, height: 320)
+        .frame(width: 550, height: 420)
     }
 }
 
 // MARK: - General Tab
 
-/// Coordinator connection and startup settings.
 private struct GeneralTab: View {
     @ObservedObject var viewModel: StatusViewModel
 
@@ -56,6 +57,14 @@ private struct GeneralTab: View {
 
             Section {
                 Toggle("Start DGInf when you log in", isOn: $viewModel.autoStart)
+
+                HStack {
+                    Text("LaunchAgent:")
+                        .foregroundColor(.secondary)
+                    Text(LaunchAgentManager.isInstalled ? "Installed" : "Not installed")
+                        .font(.caption)
+                        .foregroundColor(LaunchAgentManager.isInstalled ? .green : .secondary)
+                }
             } header: {
                 Text("Startup")
                     .font(.headline)
@@ -65,14 +74,28 @@ private struct GeneralTab: View {
                 HStack {
                     Text("Provider Binary:")
                         .foregroundColor(.secondary)
-                    if let path = ProviderManager.resolveBinaryPath() {
+                    if let path = CLIRunner.resolveBinaryPath() {
                         Text(path)
                             .font(.caption)
                             .foregroundColor(.green)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     } else {
                         Text("Not found")
                             .font(.caption)
                             .foregroundColor(.red)
+                    }
+                }
+
+                HStack {
+                    Text("Version:")
+                        .foregroundColor(.secondary)
+                    Text("v\(viewModel.updateManager.currentVersion)")
+                        .font(.caption)
+                    if viewModel.updateManager.updateAvailable {
+                        Text("(update available)")
+                            .font(.caption)
+                            .foregroundColor(.orange)
                     }
                 }
             } header: {
@@ -86,7 +109,6 @@ private struct GeneralTab: View {
 
 // MARK: - Availability Tab
 
-/// Idle timeout and availability schedule settings.
 private struct AvailabilityTab: View {
     @ObservedObject var viewModel: StatusViewModel
     @State private var selectedTimeout: TimeInterval = 300
@@ -112,15 +134,6 @@ private struct AvailabilityTab: View {
                 Text("Idle Detection")
                     .font(.headline)
             }
-
-            Section {
-                Text("Schedule support coming soon. Currently the provider runs whenever started and pauses only based on idle detection.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            } header: {
-                Text("Schedule")
-                    .font(.headline)
-            }
         }
         .padding()
         .onAppear {
@@ -129,113 +142,95 @@ private struct AvailabilityTab: View {
     }
 }
 
-// MARK: - Model Tab
+// MARK: - Security Tab
 
-/// Model selection and download interface.
-private struct ModelTab: View {
+private struct SecurityTab: View {
     @ObservedObject var viewModel: StatusViewModel
-    @State private var newModelId = ""
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Model")
-                .font(.headline)
-
-            // Currently selected model
+        VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("Active:")
-                    .foregroundColor(.secondary)
-                Text(viewModel.currentModel)
-                    .fontWeight(.medium)
-            }
-
-            Divider()
-
-            // Available models list
-            Text("Available Models")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-
-            if viewModel.modelManager.availableModels.isEmpty {
-                Text("No models found in ~/.cache/huggingface/hub/")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .padding(.vertical, 4)
-            } else {
-                List(viewModel.modelManager.availableModels) { model in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(model.name)
-                                .fontWeight(.medium)
-                            Text(model.id)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-
-                        Spacer()
-
-                        Text(ModelManager.formatSize(model.sizeBytes))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-
-                        if model.isMLX {
-                            Text("MLX")
-                                .font(.caption2)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.blue.opacity(0.2))
-                                .cornerRadius(4)
-                        }
-
-                        if viewModel.currentModel == model.id {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                        } else {
-                            Button("Select") {
-                                viewModel.currentModel = model.id
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-                    }
+                Text("Security Posture")
+                    .font(.headline)
+                Spacer()
+                if viewModel.securityManager.isChecking {
+                    ProgressView().controlSize(.small)
                 }
-                .frame(height: 120)
-            }
-
-            Divider()
-
-            // Download new model
-            HStack {
-                TextField("Model ID (e.g., mlx-community/Qwen3.5-4B-4bit)", text: $newModelId)
-                    .textFieldStyle(.roundedBorder)
-
-                Button("Download") {
-                    guard !newModelId.isEmpty else { return }
-                    viewModel.modelManager.downloadModel(newModelId)
-                    newModelId = ""
+                Button("Refresh") {
+                    Task { await viewModel.securityManager.refresh() }
                 }
-                .disabled(viewModel.modelManager.isDownloading || newModelId.isEmpty)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
 
-            if viewModel.modelManager.isDownloading {
-                HStack {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(viewModel.modelManager.downloadStatus)
+            // Trust level
+            HStack(spacing: 8) {
+                Image(systemName: viewModel.securityManager.trustLevel.iconName)
+                    .font(.title2)
+                    .foregroundColor(trustColor)
+                VStack(alignment: .leading) {
+                    Text(viewModel.securityManager.trustLevel.displayName)
+                        .font(.title3)
+                        .fontWeight(.bold)
+                        .foregroundColor(trustColor)
+                    Text(trustDescription)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
             }
 
-            Button("Refresh Model List") {
-                viewModel.modelManager.scanModels()
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                checkRow("SIP", viewModel.securityManager.sipEnabled)
+                checkRow("Secure Enclave", viewModel.securityManager.secureEnclaveAvailable)
+                checkRow("Secure Boot", viewModel.securityManager.secureBootEnabled)
+                checkRow("MDM Enrolled", viewModel.securityManager.mdmEnrolled)
+                checkRow("Node Key", viewModel.securityManager.nodeKeyExists)
+                checkRow("Provider Binary", viewModel.securityManager.binaryFound)
+            }
+
+            Spacer()
+
+            Button {
+                openWindow(id: "doctor")
+            } label: {
+                Label("Run Full Diagnostics...", systemImage: "stethoscope")
             }
             .buttonStyle(.bordered)
-            .controlSize(.small)
         }
         .padding()
-        .onAppear {
-            viewModel.modelManager.scanModels()
+        .task {
+            await viewModel.securityManager.refresh()
+        }
+    }
+
+    private var trustColor: Color {
+        switch viewModel.securityManager.trustLevel {
+        case .hardware: return .green
+        case .selfSigned: return .yellow
+        case .none: return .red
+        }
+    }
+
+    private var trustDescription: String {
+        switch viewModel.securityManager.trustLevel {
+        case .hardware: return "All security checks pass. Your provider will receive inference requests."
+        case .selfSigned: return "Partial verification. Complete MDM enrollment for hardware trust."
+        case .none: return "Not verified. Complete the setup wizard to enable inference routing."
+        }
+    }
+
+    private func checkRow(_ label: String, _ enabled: Bool) -> some View {
+        HStack {
+            Image(systemName: enabled ? "checkmark.circle.fill" : "xmark.circle")
+                .foregroundColor(enabled ? .green : .red)
+            Text(label)
+            Spacer()
+            Text(enabled ? "OK" : "Missing")
+                .font(.caption)
+                .foregroundColor(enabled ? .secondary : .red)
         }
     }
 }

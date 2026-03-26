@@ -1,20 +1,23 @@
 /// DGInfApp — Main entry point for the DGInf macOS menu bar application.
 ///
-/// This is a menu-bar-only app (no dock icon) that wraps the Rust
-/// `dginf-provider` binary and makes it invisible to non-technical users.
-/// It uses SwiftUI's MenuBarExtra (macOS 13+) to show a status icon in
-/// the menu bar with a dropdown panel for quick actions.
+/// Menu-bar-only app (no dock icon) that wraps the Rust `dginf-provider`
+/// binary. Uses SwiftUI's MenuBarExtra (macOS 13+) for the status icon.
 ///
 /// Scenes:
-///   - MenuBarExtra: The persistent menu bar icon and dropdown panel
+///   - MenuBarExtra: Persistent menu bar icon and dropdown
 ///   - Settings: Standard macOS settings window (Cmd+,)
 ///   - Dashboard: Detailed statistics window
+///   - Setup: First-run onboarding wizard
+///   - Doctor: Diagnostic results
+///   - Logs: Streaming log viewer
+///   - Wallet: Wallet and earnings display
 
 import SwiftUI
 
 @main
 struct DGInfApp: App {
     @StateObject private var viewModel = StatusViewModel()
+    @State private var showSetup = false
 
     var body: some Scene {
         MenuBarExtra {
@@ -31,20 +34,54 @@ struct DGInfApp: App {
         Window("Dashboard", id: "dashboard") {
             DashboardView(viewModel: viewModel)
         }
+
+        Window("Setup", id: "setup") {
+            SetupWizardView(viewModel: viewModel)
+        }
+
+        Window("Diagnostics", id: "doctor") {
+            DoctorView(viewModel: viewModel)
+        }
+
+        Window("Logs", id: "logs") {
+            LogViewerView(viewModel: viewModel)
+        }
+
+        Window("Wallet", id: "wallet") {
+            WalletView(viewModel: viewModel)
+        }
+
+        Window("Benchmark", id: "benchmark") {
+            BenchmarkView(viewModel: viewModel)
+        }
     }
 
-    /// The menu bar icon and optional throughput text.
-    ///
-    /// Shows a filled green circle when online, a hollow gray circle
-    /// when offline, and appends the current tok/s when actively serving.
     private var menuBarLabel: some View {
         HStack(spacing: 4) {
-            Image(systemName: viewModel.isOnline ? "circle.fill" : "circle")
-                .foregroundColor(viewModel.isOnline ? .green : .gray)
+            Image(systemName: menuBarIcon)
+                .foregroundColor(menuBarColor)
             if viewModel.isServing {
                 Text("\(viewModel.tokensPerSecond, specifier: "%.0f") tok/s")
                     .font(.caption)
             }
+            if viewModel.updateManager.updateAvailable {
+                Circle()
+                    .fill(.orange)
+                    .frame(width: 6, height: 6)
+            }
         }
+    }
+
+    private var menuBarIcon: String {
+        if viewModel.isPaused { return "pause.circle.fill" }
+        if viewModel.isServing { return "bolt.circle.fill" }
+        if viewModel.isOnline { return "circle.fill" }
+        return "circle"
+    }
+
+    private var menuBarColor: Color {
+        if viewModel.isPaused { return .yellow }
+        if viewModel.isOnline { return .green }
+        return .gray
     }
 }

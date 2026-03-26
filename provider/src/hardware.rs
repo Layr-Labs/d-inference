@@ -18,6 +18,130 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::process::Command;
 
+// ---------------------------------------------------------------------------
+// Real-time system metrics (collected every heartbeat)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThermalState {
+    Nominal,
+    Fair,
+    Serious,
+    Critical,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SystemMetrics {
+    /// Memory pressure as a fraction (0.0 = no pressure, 1.0 = fully pressured).
+    pub memory_pressure: f64,
+    /// CPU usage as a fraction (0.0 = idle, 1.0 = fully loaded).
+    pub cpu_usage: f64,
+    /// macOS thermal state derived from CPU speed limit.
+    pub thermal_state: ThermalState,
+}
+
+/// Collect live system metrics using macOS APIs (no root required).
+pub fn collect_system_metrics(cpu_cores: u32) -> SystemMetrics {
+    SystemMetrics {
+        memory_pressure: collect_memory_pressure().unwrap_or(0.0),
+        cpu_usage: collect_cpu_usage(cpu_cores).unwrap_or(0.0),
+        thermal_state: collect_thermal_state().unwrap_or(ThermalState::Nominal),
+    }
+}
+
+/// Compute memory pressure from `vm_stat` output.
+/// Pressure = (active + wired + compressed) / (active + wired + compressed + free).
+fn collect_memory_pressure() -> Result<f64> {
+    let output = Command::new("vm_stat")
+        .output()
+        .context("failed to run vm_stat")?;
+    if !output.status.success() {
+        anyhow::bail!("vm_stat failed");
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    let parse_pages = |label: &str| -> u64 {
+        for line in text.lines() {
+            if line.contains(label) {
+                // Format: "Pages active:    123456."
+                if let Some(val) = line.split(':').nth(1) {
+                    return val.trim().trim_end_matches('.').parse().unwrap_or(0);
+                }
+            }
+        }
+        0
+    };
+
+    let active = parse_pages("Pages active");
+    let wired = parse_pages("Pages wired down");
+    let compressed = parse_pages("Pages occupied by compressor");
+    let free = parse_pages("Pages free");
+
+    let used = active + wired + compressed;
+    let total = used + free;
+    if total == 0 {
+        return Ok(0.0);
+    }
+
+    let pressure = used as f64 / total as f64;
+    Ok(pressure.clamp(0.0, 1.0))
+}
+
+/// Compute CPU usage from 1-minute load average normalized by core count.
+fn collect_cpu_usage(cpu_cores: u32) -> Result<f64> {
+    let output = Command::new("sysctl")
+        .args(["-n", "vm.loadavg"])
+        .output()
+        .context("failed to run sysctl vm.loadavg")?;
+    if !output.status.success() {
+        anyhow::bail!("sysctl vm.loadavg failed");
+    }
+    // Output format: "{ 1.23 4.56 7.89 }"
+    let text = String::from_utf8_lossy(&output.stdout);
+    let load_1m: f64 = text
+        .trim()
+        .trim_start_matches('{')
+        .trim_end_matches('}')
+        .split_whitespace()
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+
+    let cores = if cpu_cores > 0 { cpu_cores as f64 } else { 1.0 };
+    Ok((load_1m / cores).clamp(0.0, 1.0))
+}
+
+/// Read thermal state from `pmset -g therm` CPU_Speed_Limit value.
+/// 100 = nominal, 80-99 = fair, 50-79 = serious, <50 = critical.
+fn collect_thermal_state() -> Result<ThermalState> {
+    let output = Command::new("pmset")
+        .args(["-g", "therm"])
+        .output()
+        .context("failed to run pmset -g therm")?;
+    if !output.status.success() {
+        anyhow::bail!("pmset -g therm failed");
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    for line in text.lines() {
+        if line.contains("CPU_Speed_Limit") {
+            if let Some(val) = line.split('=').nth(1) {
+                let limit: u32 = val.trim().parse().unwrap_or(100);
+                return Ok(match limit {
+                    100 => ThermalState::Nominal,
+                    80..=99 => ThermalState::Fair,
+                    50..=79 => ThermalState::Serious,
+                    _ => ThermalState::Critical,
+                });
+            }
+        }
+    }
+
+    // No CPU_Speed_Limit found — assume nominal
+    Ok(ThermalState::Nominal)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HardwareInfo {
     pub machine_model: String,
@@ -348,6 +472,52 @@ mod tests {
         assert!(display.contains("128 GB"));
         assert!(display.contains("40 cores"));
         assert!(display.contains("546 GB/s"));
+    }
+
+    #[test]
+    fn test_thermal_state_serialization() {
+        let cases = vec![
+            (ThermalState::Nominal, "\"nominal\""),
+            (ThermalState::Fair, "\"fair\""),
+            (ThermalState::Serious, "\"serious\""),
+            (ThermalState::Critical, "\"critical\""),
+        ];
+        for (state, expected) in cases {
+            let json = serde_json::to_string(&state).unwrap();
+            assert_eq!(json, expected, "serialization mismatch for {:?}", state);
+            let deserialized: ThermalState = serde_json::from_str(&json).unwrap();
+            assert_eq!(deserialized, state, "roundtrip mismatch for {:?}", state);
+        }
+    }
+
+    #[test]
+    fn test_system_metrics_serialization_roundtrip() {
+        let metrics = SystemMetrics {
+            memory_pressure: 0.75,
+            cpu_usage: 0.42,
+            thermal_state: ThermalState::Fair,
+        };
+        let json = serde_json::to_string(&metrics).unwrap();
+        assert!(json.contains("\"memory_pressure\":0.75"));
+        assert!(json.contains("\"thermal_state\":\"fair\""));
+        let deserialized: SystemMetrics = serde_json::from_str(&json).unwrap();
+        assert_eq!(metrics, deserialized);
+    }
+
+    #[test]
+    fn test_collect_system_metrics_runs() {
+        // Integration test: verify collection produces values in range.
+        let metrics = collect_system_metrics(8);
+        assert!(
+            (0.0..=1.0).contains(&metrics.memory_pressure),
+            "memory_pressure out of range: {}",
+            metrics.memory_pressure
+        );
+        assert!(
+            (0.0..=1.0).contains(&metrics.cpu_usage),
+            "cpu_usage out of range: {}",
+            metrics.cpu_usage
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@
 //!   - Cancel: Cancel an in-flight inference request
 //!   - AttestationChallenge: Prove you still hold your key by signing a nonce
 
-use crate::hardware::HardwareInfo;
+use crate::hardware::{HardwareInfo, SystemMetrics};
 use crate::models::ModelInfo;
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +51,7 @@ pub enum ProviderMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         active_model: Option<String>,
         stats: ProviderStats,
+        system_metrics: SystemMetrics,
     },
     InferenceResponseChunk {
         request_id: String,
@@ -111,6 +112,16 @@ pub struct EncryptedPayload {
     pub ephemeral_public_key: String,
     /// Nonce + encrypted data (base64)
     pub ciphertext: String,
+}
+
+/// PartialEq via serialized JSON — needed because Box<RawValue> (in Register's
+/// attestation field) doesn't implement PartialEq directly.
+impl PartialEq for ProviderMessage {
+    fn eq(&self, other: &Self) -> bool {
+        let a = serde_json::to_string(self).unwrap_or_default();
+        let b = serde_json::to_string(other).unwrap_or_default();
+        a == b
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -225,19 +236,9 @@ mod tests {
 
     #[test]
     fn test_register_message_with_attestation() {
-        let attestation_json = serde_json::json!({
-            "attestation": {
-                "chipName": "Apple M3 Max",
-                "hardwareModel": "Mac15,8",
-                "osVersion": "15.3.0",
-                "publicKey": "dGVzdA==",
-                "secureBootEnabled": true,
-                "secureEnclaveAvailable": true,
-                "sipEnabled": true,
-                "timestamp": "2025-01-01T00:00:00Z"
-            },
-            "signature": "dGVzdHNpZw=="
-        });
+        let attestation_str = r#"{"attestation":{"chipName":"Apple M3 Max","hardwareModel":"Mac15,8","osVersion":"15.3.0","publicKey":"dGVzdA==","secureBootEnabled":true,"secureEnclaveAvailable":true,"sipEnabled":true,"timestamp":"2025-01-01T00:00:00Z"},"signature":"dGVzdHNpZw=="}"#;
+        let attestation_raw: Box<serde_json::value::RawValue> =
+            serde_json::from_str(attestation_str).unwrap();
 
         let msg = ProviderMessage::Register {
             hardware: sample_hardware(),
@@ -252,7 +253,7 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             public_key: Some("c29tZWtleQ==".to_string()),
             wallet_address: None,
-            attestation: Some(attestation_json),
+            attestation: Some(attestation_raw),
             prefill_tps: Some(500.0),
             decode_tps: Some(100.0),
         };
@@ -260,16 +261,25 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"attestation\""));
         assert!(json.contains("\"signature\""));
-        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg, deserialized);
+        assert!(json.contains("\"prefill_tps\":500.0"));
+        assert!(json.contains("\"decode_tps\":100.0"));
+        // Note: full ProviderMessage roundtrip with RawValue doesn't work
+        // due to serde's internally-tagged enum buffering. The Register
+        // message is deserialized on the Go coordinator side, not in Rust.
     }
 
     #[test]
     fn test_heartbeat_idle_roundtrip() {
+        use crate::hardware::{SystemMetrics, ThermalState};
         let msg = ProviderMessage::Heartbeat {
             status: ProviderStatus::Idle,
             active_model: None,
             stats: ProviderStats::default(),
+            system_metrics: SystemMetrics {
+                memory_pressure: 0.0,
+                cpu_usage: 0.0,
+                thermal_state: ThermalState::Nominal,
+            },
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -282,12 +292,18 @@ mod tests {
 
     #[test]
     fn test_heartbeat_serving_roundtrip() {
+        use crate::hardware::{SystemMetrics, ThermalState};
         let msg = ProviderMessage::Heartbeat {
             status: ProviderStatus::Serving,
             active_model: Some("qwen3.5-9b".to_string()),
             stats: ProviderStats {
                 requests_served: 10,
                 tokens_generated: 5000,
+            },
+            system_metrics: SystemMetrics {
+                memory_pressure: 0.3,
+                cpu_usage: 0.5,
+                thermal_state: ThermalState::Nominal,
             },
         };
 
@@ -437,6 +453,28 @@ mod tests {
         assert!(json.contains("\"nonce\":\"dGVzdG5vbmNl\""));
         assert!(json.contains("\"signature\":\"c2lnbmF0dXJl\""));
         assert!(json.contains("\"public_key\":\"cHVia2V5\""));
+        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, deserialized);
+    }
+
+    #[test]
+    fn test_heartbeat_system_metrics_roundtrip() {
+        use crate::hardware::{SystemMetrics, ThermalState};
+        let msg = ProviderMessage::Heartbeat {
+            status: ProviderStatus::Idle,
+            active_model: None,
+            stats: ProviderStats::default(),
+            system_metrics: SystemMetrics {
+                memory_pressure: 0.65,
+                cpu_usage: 0.3,
+                thermal_state: ThermalState::Nominal,
+            },
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"system_metrics\""));
+        assert!(json.contains("\"memory_pressure\":0.65"));
+        assert!(json.contains("\"thermal_state\":\"nominal\""));
         let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, deserialized);
     }

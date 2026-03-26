@@ -1,87 +1,71 @@
 /// StatusViewModel — Observable state for the DGInf menu bar UI.
 ///
-/// This view model centralizes all provider state that the UI needs to display:
-/// online/serving status, hardware info, throughput metrics, and session stats.
-/// It bridges between the ProviderManager (subprocess control), IdleDetector
-/// (user activity monitoring), and the SwiftUI views.
+/// Centralizes all provider state: online/serving status, hardware info,
+/// throughput metrics, session stats, security posture, wallet/earnings.
 ///
 /// State flow:
 ///   ProviderManager stdout → StatusViewModel properties → SwiftUI views
 ///   IdleDetector events → StatusViewModel.pause()/resume() → ProviderManager
-///
-/// All published properties are updated on the main actor to ensure
-/// thread-safe UI updates.
+///   SecurityManager → trust/security display
+///   CLIRunner → wallet, earnings, coordinator connectivity
 
 import Combine
 import Foundation
 import SwiftUI
 
-/// Centralizes provider state for the menu bar UI.
-///
-/// Published properties drive SwiftUI updates. The view model owns both
-/// the ProviderManager (subprocess lifecycle) and IdleDetector (user
-/// activity monitoring), coordinating between them.
 @MainActor
 final class StatusViewModel: ObservableObject {
 
     // MARK: - Provider State
 
-    /// Whether the provider is connected to the coordinator and accepting work.
     @Published var isOnline = false
-
-    /// Whether the provider is actively serving an inference request right now.
     @Published var isServing = false
-
-    /// Whether the provider is paused because the user is active at the keyboard.
     @Published var isPaused = false
-
-    /// The model currently loaded for inference (e.g., "mlx-community/Qwen3.5-4B-4bit").
     @Published var currentModel = "None"
-
-    /// Current inference throughput in tokens per second.
     @Published var tokensPerSecond: Double = 0
-
-    /// Total inference requests served in this session.
     @Published var requestsServed = 0
-
-    /// Total tokens generated in this session.
     @Published var tokensGenerated = 0
-
-    /// Seconds since the provider was started.
     @Published var uptimeSeconds = 0
 
     // MARK: - Hardware Info
 
-    /// The Apple Silicon chip name (e.g., "Apple M3 Max").
     @Published var chipName = "Detecting..."
-
-    /// Total unified memory in gigabytes.
     @Published var memoryGB = 0
-
-    /// Number of GPU cores.
     @Published var gpuCores = 0
-
-    /// Memory bandwidth in GB/s (estimated from chip).
     @Published var memoryBandwidthGBs = 0
+
+    // MARK: - Wallet & Earnings
+
+    @Published var walletAddress = ""
+    @Published var earningsBalance = ""
+
+    // MARK: - Connectivity
+
+    @Published var coordinatorConnected = false
+
+    // MARK: - Setup
+
+    @Published var hasCompletedSetup: Bool {
+        didSet { UserDefaults.standard.set(hasCompletedSetup, forKey: "hasCompletedSetup") }
+    }
 
     // MARK: - Settings (persisted via UserDefaults)
 
-    /// The coordinator URL the provider connects to.
     @Published var coordinatorURL: String {
         didSet { UserDefaults.standard.set(coordinatorURL, forKey: "coordinatorURL") }
     }
 
-    /// API key for authenticating with the coordinator.
     @Published var apiKey: String {
         didSet { UserDefaults.standard.set(apiKey, forKey: "apiKey") }
     }
 
-    /// Whether to start the provider automatically on login.
     @Published var autoStart: Bool {
-        didSet { UserDefaults.standard.set(autoStart, forKey: "autoStart") }
+        didSet {
+            UserDefaults.standard.set(autoStart, forKey: "autoStart")
+            LaunchAgentManager.sync(autoStart: autoStart)
+        }
     }
 
-    /// Idle timeout in seconds before the provider resumes serving.
     @Published var idleTimeoutSeconds: TimeInterval {
         didSet {
             UserDefaults.standard.set(idleTimeoutSeconds, forKey: "idleTimeoutSeconds")
@@ -89,34 +73,40 @@ final class StatusViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Internal
+    // MARK: - Managers
 
     let providerManager = ProviderManager()
     let idleDetector = IdleDetector()
     let modelManager = ModelManager()
+    let securityManager = SecurityManager()
+    let notificationManager = NotificationManager()
+    let updateManager = UpdateManager()
+
     private var uptimeTimer: Timer?
+    private var earningsTimer: Timer?
+    private var connectivityTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Init
 
     init() {
-        // Load persisted settings with defaults
+        // Load persisted settings
         self.coordinatorURL = UserDefaults.standard.string(forKey: "coordinatorURL")
-            ?? "https://coordinator.dginf.io"
+            ?? "wss://inference-test.openinnovation.dev/ws/provider"
         self.apiKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
         self.autoStart = UserDefaults.standard.bool(forKey: "autoStart")
         self.idleTimeoutSeconds = UserDefaults.standard.double(forKey: "idleTimeoutSeconds")
+        self.hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
 
-        // Default idle timeout to 5 minutes if not set
         if idleTimeoutSeconds == 0 {
             idleTimeoutSeconds = 300
         }
         idleDetector.idleTimeoutSeconds = idleTimeoutSeconds
 
-        // Detect hardware on init
         detectHardware()
+        notificationManager.requestAuthorization()
 
-        // Observe idle state changes
+        // Observe idle state
         idleDetector.$isUserIdle
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isIdle in
@@ -129,8 +119,15 @@ final class StatusViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Observe provider output for status updates
+        // Observe provider output (both stdout and stderr — tracing uses stderr)
         providerManager.$lastOutputLine
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] line in
+                self?.parseProviderOutput(line)
+            }
+            .store(in: &cancellables)
+
+        providerManager.$lastError
             .receive(on: DispatchQueue.main)
             .sink { [weak self] line in
                 self?.parseProviderOutput(line)
@@ -141,18 +138,27 @@ final class StatusViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] running in
                 guard let self = self else { return }
-                if !running {
+                if !running && self.isOnline {
                     self.isOnline = false
                     self.isServing = false
                     self.tokensPerSecond = 0
+                    self.notificationManager.notifyProviderOffline()
                 }
             }
             .store(in: &cancellables)
+
+        // Periodic background tasks
+        startPeriodicTasks()
+
+        // Initial security check
+        Task {
+            await securityManager.refresh()
+            await refreshWallet()
+        }
     }
 
     // MARK: - Actions
 
-    /// Start the provider subprocess and begin serving.
     func start() {
         guard !providerManager.isRunning else { return }
 
@@ -165,7 +171,6 @@ final class StatusViewModel: ObservableObject {
         isPaused = false
         uptimeSeconds = 0
 
-        // Start uptime counter
         uptimeTimer?.invalidate()
         uptimeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -173,11 +178,10 @@ final class StatusViewModel: ObservableObject {
             }
         }
 
-        // Start monitoring user activity
         idleDetector.start()
+        notificationManager.notifyProviderOnline(model: currentModel)
     }
 
-    /// Stop the provider subprocess.
     func stop() {
         providerManager.stop()
         idleDetector.stop()
@@ -189,41 +193,99 @@ final class StatusViewModel: ObservableObject {
         tokensPerSecond = 0
     }
 
-    /// Pause the provider (user became active).
+    /// Pause the provider — stops the subprocess (clean restart on resume).
     func pauseProvider() {
         isPaused = true
-        // The provider finishes its current job but stops accepting new ones.
-        // In the real implementation, this would send a signal/API call to the
-        // provider binary. For now we track the state.
+        providerManager.stop()
     }
 
-    /// Resume the provider (user went idle).
+    /// Resume the provider — restart the subprocess.
     func resumeProvider() {
         isPaused = false
+        if !providerManager.isRunning {
+            providerManager.start(
+                model: currentModel,
+                coordinatorURL: coordinatorURL,
+                port: 8321
+            )
+            isOnline = true
+        }
+    }
+
+    // MARK: - Wallet & Earnings
+
+    func refreshWallet() async {
+        do {
+            let result = try await CLIRunner.run(["wallet"])
+            if result.success {
+                // Parse "Address: 0x..." from output
+                for line in result.output.components(separatedBy: "\n") {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if trimmed.lowercased().hasPrefix("address:") {
+                        walletAddress = trimmed.components(separatedBy: ":").last?
+                            .trimmingCharacters(in: .whitespaces) ?? ""
+                        break
+                    }
+                    // Also match "0x..." directly
+                    if trimmed.hasPrefix("0x") && trimmed.count >= 40 {
+                        walletAddress = trimmed
+                        break
+                    }
+                }
+            }
+        } catch {}
+    }
+
+    func refreshEarnings() async {
+        let baseURL = coordinatorURL
+            .replacingOccurrences(of: "ws://", with: "http://")
+            .replacingOccurrences(of: "wss://", with: "https://")
+            .replacingOccurrences(of: "/ws/provider", with: "")
+
+        do {
+            let result = try await CLIRunner.run(["earnings", "--coordinator", baseURL])
+            if result.success {
+                for line in result.output.components(separatedBy: "\n") {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if trimmed.lowercased().contains("balance") || trimmed.contains("$") {
+                        earningsBalance = trimmed.components(separatedBy: ":").last?
+                            .trimmingCharacters(in: .whitespaces) ?? trimmed
+                        break
+                    }
+                }
+            }
+        } catch {}
+    }
+
+    // MARK: - Connectivity
+
+    func checkCoordinatorConnectivity() async {
+        let baseURL = coordinatorURL
+            .replacingOccurrences(of: "ws://", with: "http://")
+            .replacingOccurrences(of: "wss://", with: "https://")
+            .replacingOccurrences(of: "/ws/provider", with: "")
+
+        guard let url = URL(string: "\(baseURL)/health") else {
+            coordinatorConnected = false
+            return
+        }
+
+        do {
+            let (_, response) = try await URLSession.shared.data(from: url)
+            coordinatorConnected = (response as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            coordinatorConnected = false
+        }
     }
 
     // MARK: - Hardware Detection
 
-    /// Detect the local hardware: chip name, memory, GPU cores.
-    ///
-    /// Uses sysctl for memory and system_profiler for chip name.
-    /// This runs once at init time.
     private func detectHardware() {
-        // Memory via sysctl
         var memSize: UInt64 = 0
         var size = MemoryLayout<UInt64>.size
         sysctlbyname("hw.memsize", &memSize, &size, nil, 0)
         memoryGB = Int(memSize / (1024 * 1024 * 1024))
 
-        // GPU cores via sysctl (Apple Silicon reports this via hw.perflevel0.logicalcpu on some versions)
-        var gpuCount: Int32 = 0
-        var gpuSize = MemoryLayout<Int32>.size
-        // Metal GPU core count isn't directly available via sysctl, use a reasonable approach
-        if sysctlbyname("hw.logicalcpu", &gpuCount, &gpuSize, nil, 0) == 0 {
-            // This gives CPU cores, not GPU cores. We'll parse system_profiler for GPU.
-        }
-
-        // Chip name and GPU cores from system_profiler (async to avoid blocking init)
         Task { [weak self] in
             let (chip, cores, bandwidth) = await Self.getHardwareInfo()
             await MainActor.run {
@@ -234,16 +296,11 @@ final class StatusViewModel: ObservableObject {
         }
     }
 
-    /// Parse system_profiler output for chip name and GPU core count.
-    ///
-    /// Runs system_profiler SPHardwareDataType and SPDisplaysDataType.
-    /// Returns (chipName, gpuCores, bandwidthGBs).
     private static func getHardwareInfo() async -> (String, Int, Int) {
         var chipName = "Unknown"
         var gpuCores = 0
         var bandwidth = 0
 
-        // Get chip name
         let hardwarePipe = Pipe()
         let hardwareProcess = Process()
         hardwareProcess.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
@@ -263,8 +320,6 @@ final class StatusViewModel: ObservableObject {
                     .trimmingCharacters(in: .whitespaces) ?? "Unknown"
             }
             if trimmed.contains("Total Number of Cores") && trimmed.contains("GPU") {
-                // e.g., "Total Number of Cores: 40 (12 performance and 4 efficiency and 24 GPU)"
-                // or a separate GPU line
                 let parts = trimmed.components(separatedBy: " ")
                 for (i, part) in parts.enumerated() {
                     if part == "GPU" || part == "GPU)" {
@@ -276,7 +331,7 @@ final class StatusViewModel: ObservableObject {
             }
         }
 
-        // Estimate bandwidth from chip name (rough values)
+        // Bandwidth estimates by chip
         if chipName.contains("M4 Max") { bandwidth = 546 }
         else if chipName.contains("M4 Pro") { bandwidth = 273 }
         else if chipName.contains("M4") { bandwidth = 120 }
@@ -292,7 +347,6 @@ final class StatusViewModel: ObservableObject {
         else if chipName.contains("M1 Pro") { bandwidth = 200 }
         else if chipName.contains("M1") { bandwidth = 68 }
 
-        // Get GPU cores from displays data if not found above
         if gpuCores == 0 {
             let displayPipe = Pipe()
             let displayProcess = Process()
@@ -323,47 +377,85 @@ final class StatusViewModel: ObservableObject {
 
     // MARK: - Provider Output Parsing
 
-    /// Parse a line of stdout from the provider binary to update state.
+    /// Parse tracing-formatted output from the provider binary.
     ///
-    /// The provider binary outputs structured status lines that we parse
-    /// to update the UI. Expected formats:
-    ///   - `[STATUS] online` / `[STATUS] offline`
-    ///   - `[SERVING] model=... tokens/s=...`
-    ///   - `[DONE] requests=... tokens=...`
+    /// The Rust binary uses `tracing` which outputs lines like:
+    ///   2026-03-24T10:00:00.123Z  INFO dginf_provider: Connected to coordinator
+    ///   2026-03-24T10:00:01.234Z  INFO dginf_provider: Received inference request: req-abc
     private func parseProviderOutput(_ line: String) {
         guard !line.isEmpty else { return }
+        let lower = line.lowercased()
 
-        if line.contains("[STATUS] online") {
+        // Connection status
+        if lower.contains("connected to coordinator") || lower.contains("registered with coordinator") {
             isOnline = true
-        } else if line.contains("[STATUS] offline") {
+        } else if lower.contains("disconnected") || lower.contains("connection error") ||
+                  lower.contains("connection closed") {
             isOnline = false
-        } else if line.contains("[SERVING]") {
+            isServing = false
+        }
+
+        // Inference lifecycle
+        if lower.contains("received inference request") || lower.contains("handling inference") {
             isServing = true
-            // Parse tokens/s if present
-            if let range = line.range(of: "tokens/s=") {
-                let rest = line[range.upperBound...]
-                if let spaceIdx = rest.firstIndex(of: " ") {
-                    if let tps = Double(rest[rest.startIndex..<spaceIdx]) {
-                        tokensPerSecond = tps
-                    }
-                } else if let tps = Double(rest) {
-                    tokensPerSecond = tps
-                }
-            }
-        } else if line.contains("[DONE]") {
+        } else if lower.contains("inferencecomplete") || lower.contains("inference complete") ||
+                  lower.contains("request completed") {
             isServing = false
             requestsServed += 1
-            // Parse tokens generated
-            if let range = line.range(of: "tokens=") {
-                let rest = line[range.upperBound...]
-                if let spaceIdx = rest.firstIndex(of: " ") {
-                    if let count = Int(rest[rest.startIndex..<spaceIdx]) {
-                        tokensGenerated += count
-                    }
-                } else if let count = Int(rest) {
+            notificationManager.notifyInferenceCompleted(requestCount: requestsServed)
+        } else if lower.contains("inference error") || lower.contains("inferenceerror") {
+            isServing = false
+        }
+
+        // Throughput parsing — look for "tok/s" or "tokens/s" or "tps"
+        if let range = line.range(of: #"(\d+\.?\d*)\s*(tok/s|tokens/s|tps)"#, options: .regularExpression) {
+            let match = String(line[range])
+            let numStr = match.components(separatedBy: CharacterSet.decimalDigits.inverted.subtracting(CharacterSet(charactersIn: ".")))
+                .joined()
+            if let tps = Double(numStr) {
+                tokensPerSecond = tps
+            }
+        }
+
+        // Token count from completion messages
+        if lower.contains("tokens=") || lower.contains("completion_tokens") {
+            if let range = line.range(of: #"tokens[=:]\s*(\d+)"#, options: .regularExpression) {
+                let match = String(line[range])
+                let numStr = match.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
+                if let count = Int(numStr), count > 0 {
                     tokensGenerated += count
                 }
             }
+        }
+
+        // Legacy format support
+        if line.contains("[STATUS] online") { isOnline = true }
+        if line.contains("[STATUS] offline") { isOnline = false }
+        if line.contains("[SERVING]") { isServing = true }
+        if line.contains("[DONE]") { isServing = false; requestsServed += 1 }
+    }
+
+    // MARK: - Periodic Tasks
+
+    private func startPeriodicTasks() {
+        // Earnings refresh every 5 minutes
+        earningsTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                await self?.refreshEarnings()
+            }
+        }
+
+        // Coordinator connectivity check every 30 seconds
+        connectivityTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                await self?.checkCoordinatorConnectivity()
+            }
+        }
+
+        // Initial connectivity check
+        Task {
+            await checkCoordinatorConnectivity()
+            await updateManager.checkForUpdates(coordinatorURL: coordinatorURL)
         }
     }
 }

@@ -755,6 +755,115 @@ func TestSetProviderIdleDrainsQueue(t *testing.T) {
 	}
 }
 
+func TestScoringWithHighMemoryPressure(t *testing.T) {
+	healthy := &Provider{
+		DecodeTPS:  100.0,
+		TrustLevel: TrustHardware,
+		Status:     StatusOnline,
+		Reputation: NewReputation(),
+		SystemMetrics: protocol.SystemMetrics{
+			MemoryPressure: 0.1,
+			CPUUsage:       0.1,
+			ThermalState:   "nominal",
+		},
+	}
+	pressured := &Provider{
+		DecodeTPS:  100.0,
+		TrustLevel: TrustHardware,
+		Status:     StatusOnline,
+		Reputation: NewReputation(),
+		SystemMetrics: protocol.SystemMetrics{
+			MemoryPressure: 0.9,
+			CPUUsage:       0.1,
+			ThermalState:   "nominal",
+		},
+	}
+
+	healthyScore := ScoreProvider(healthy, "test-model")
+	pressuredScore := ScoreProvider(pressured, "test-model")
+
+	if pressuredScore >= healthyScore {
+		t.Errorf("pressured score (%f) should be less than healthy score (%f)", pressuredScore, healthyScore)
+	}
+}
+
+func TestScoringWithThermalThrottling(t *testing.T) {
+	p := &Provider{
+		DecodeTPS:  100.0,
+		TrustLevel: TrustHardware,
+		Status:     StatusOnline,
+		Reputation: NewReputation(),
+		SystemMetrics: protocol.SystemMetrics{
+			MemoryPressure: 0.1,
+			CPUUsage:       0.1,
+			ThermalState:   "critical",
+		},
+	}
+
+	score := ScoreProvider(p, "test-model")
+	if score != 0 {
+		t.Errorf("critical thermal score = %f, want 0", score)
+	}
+}
+
+func TestFindProviderPrefersHealthy(t *testing.T) {
+	reg := New(testLogger())
+	reg.MinTrustLevel = TrustNone
+	msg := testRegisterMessage()
+
+	p1 := reg.Register("p1", nil, msg)
+	p1.DecodeTPS = 100.0
+	p1.TrustLevel = TrustHardware
+	p1.SystemMetrics = protocol.SystemMetrics{
+		MemoryPressure: 0.85,
+		CPUUsage:       0.7,
+		ThermalState:   "serious",
+	}
+
+	p2 := reg.Register("p2", nil, msg)
+	p2.DecodeTPS = 100.0
+	p2.TrustLevel = TrustHardware
+	p2.SystemMetrics = protocol.SystemMetrics{
+		MemoryPressure: 0.1,
+		CPUUsage:       0.05,
+		ThermalState:   "nominal",
+	}
+
+	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if selected == nil {
+		t.Fatal("FindProvider returned nil")
+	}
+	if selected.ID != "p2" {
+		t.Errorf("expected p2 (healthy), got %q", selected.ID)
+	}
+}
+
+func TestHeartbeatUpdatesSystemMetrics(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	reg.Register("p1", nil, msg)
+
+	hb := &protocol.HeartbeatMessage{
+		Type:   protocol.TypeHeartbeat,
+		Status: "idle",
+		Stats:  protocol.HeartbeatStats{},
+		SystemMetrics: protocol.SystemMetrics{
+			MemoryPressure: 0.55,
+			CPUUsage:       0.22,
+			ThermalState:   "fair",
+		},
+	}
+	reg.Heartbeat("p1", hb)
+
+	p := reg.GetProvider("p1")
+	if p.SystemMetrics.MemoryPressure != 0.55 {
+		t.Errorf("memory_pressure = %f, want 0.55", p.SystemMetrics.MemoryPressure)
+	}
+	if p.SystemMetrics.ThermalState != "fair" {
+		t.Errorf("thermal_state = %q, want fair", p.SystemMetrics.ThermalState)
+	}
+}
+
 func TestPendingRequests(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()

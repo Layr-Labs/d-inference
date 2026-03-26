@@ -1,32 +1,43 @@
 #!/bin/bash
 #
-# Bundle DGInf provider into a signed macOS app with Hardened Runtime.
+# Bundle DGInf into a self-contained, code-signed macOS .app
 #
-# This script creates a self-contained DGInf.app that includes:
-#   - dginf-provider (Rust binary)
-#   - dginf-enclave (Swift CLI for Secure Enclave attestation)
-#   - vllm-mlx + Python + MLX (bundled inference engine)
+# Creates DGInf.app containing:
+#   Contents/
+#     Info.plist
+#     MacOS/
+#       DGInf                  ← Swift menu bar app (main executable)
+#       dginf-provider         ← Rust CLI binary
+#       dginf-enclave          ← Swift Secure Enclave CLI
+#     Frameworks/
+#       python/                ← python-build-standalone 3.12
+#         bin/python3.12
+#         bin/vllm-mlx
+#         lib/python3.12/site-packages/
+#           mlx/
+#           mlx_lm/
+#           vllm_mlx/
+#     Resources/
+#       AppIcon.icns
+#       integrity-manifest.json
 #
-# The entire app is code-signed with Hardened Runtime. Any modification
-# to ANY file in the bundle invalidates the code signature. With SIP
-# enabled, macOS refuses to run binaries with invalid signatures.
-#
-# This means: the provider (machine owner) CANNOT modify the inference
-# backend without breaking the app. A modified app won't launch.
+# The entire bundle is code-signed with Hardened Runtime.
+# Any file modification invalidates the signature → macOS refuses to launch.
 #
 # Usage:
-#   ./scripts/bundle-app.sh                    # Build with ad-hoc signing
-#   ./scripts/bundle-app.sh "Developer ID Application: YourOrg"  # Production signing
+#   ./scripts/bundle-app.sh                                    # Ad-hoc signing (testing)
+#   ./scripts/bundle-app.sh "Developer ID Application: Org"    # Production
+#   ./scripts/bundle-app.sh "Developer ID Application: Org" --notarize  # + Apple notarization
 #
 # Prerequisites:
-#   - cargo build --release (provider)
-#   - swift build -c release (enclave)
-#   - pip install vllm-mlx (or standalone vllm-mlx install)
-#   - Python 3.11+ with MLX installed
+#   cargo build --release --no-default-features   (provider)
+#   swift build -c release                         (enclave + app)
+#   Python bundle at ~/.dginf/python/              (from install.sh)
 
 set -euo pipefail
 
 IDENTITY="${1:--}"
+NOTARIZE="${2:-}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_DIR/build"
@@ -37,16 +48,29 @@ RESOURCES="$CONTENTS/Resources"
 FRAMEWORKS="$CONTENTS/Frameworks"
 ENTITLEMENTS="$SCRIPT_DIR/entitlements.plist"
 
-echo "=== DGInf App Bundle Builder ==="
-echo "Identity: $IDENTITY"
+VERSION="0.1.0"
+BUNDLE_ID="io.dginf.provider"
+
+echo "╔══════════════════════════════════════════════════╗"
+echo "║  DGInf App Bundle Builder                        ║"
+echo "╚══════════════════════════════════════════════════╝"
+echo ""
+echo "Version:    $VERSION"
+echo "Identity:   $IDENTITY"
+echo "Output:     $APP_DIR"
 echo ""
 
-# Clean previous build
+# ─────────────────────────────────────────────────────────
+# 0. Clean
+# ─────────────────────────────────────────────────────────
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS" "$RESOURCES" "$FRAMEWORKS"
 
-# Create Info.plist
-cat > "$CONTENTS/Info.plist" << 'PLIST'
+# ─────────────────────────────────────────────────────────
+# 1. Info.plist
+# ─────────────────────────────────────────────────────────
+echo "1. Creating Info.plist..."
+cat > "$CONTENTS/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -54,133 +78,234 @@ cat > "$CONTENTS/Info.plist" << 'PLIST'
     <key>CFBundleName</key>
     <string>DGInf</string>
     <key>CFBundleDisplayName</key>
-    <string>DGInf Provider</string>
+    <string>DGInf</string>
     <key>CFBundleIdentifier</key>
-    <string>io.dginf.provider</string>
+    <string>${BUNDLE_ID}</string>
     <key>CFBundleVersion</key>
-    <string>0.1.0</string>
+    <string>${VERSION}</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>${VERSION}</string>
     <key>CFBundleExecutable</key>
-    <string>dginf-provider</string>
+    <string>DGInf</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
 </dict>
 </plist>
 PLIST
 
-# Create entitlements if not already present
-if [ ! -f "$ENTITLEMENTS" ]; then
-    cat > "$ENTITLEMENTS" << 'ENT'
+# ─────────────────────────────────────────────────────────
+# 2. Entitlements
+# ─────────────────────────────────────────────────────────
+cat > "$ENTITLEMENTS" << 'ENT'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- NO get-task-allow → blocks debugger attachment under Hardened Runtime -->
     <key>com.apple.security.network.client</key>
     <true/>
     <key>com.apple.security.network.server</key>
     <true/>
+    <!-- Keychain access for wallet storage -->
+    <key>com.apple.security.keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)io.dginf.provider</string>
+    </array>
 </dict>
 </plist>
 ENT
-fi
 
-echo "1. Copying dginf-provider..."
-PROVIDER_BIN="$PROJECT_DIR/provider/target/release/dginf-provider"
-if [ -f "$PROVIDER_BIN" ]; then
-    cp "$PROVIDER_BIN" "$MACOS/dginf-provider"
-    echo "   Copied from $PROVIDER_BIN"
-else
-    echo "   ERROR: Build first with: cd provider && cargo build --release"
+# ─────────────────────────────────────────────────────────
+# 3. Build Swift app
+# ─────────────────────────────────────────────────────────
+echo "2. Building Swift app..."
+cd "$PROJECT_DIR/app/DGInf"
+swift build -c release 2>&1 | tail -3
+APP_BIN=$(swift build -c release --show-bin-path)/DGInf
+if [ ! -f "$APP_BIN" ]; then
+    echo "   ERROR: Swift build failed. Run: cd app/DGInf && swift build -c release"
     exit 1
 fi
+cp "$APP_BIN" "$MACOS/DGInf"
+echo "   ✓ DGInf ($(du -h "$MACOS/DGInf" | cut -f1))"
 
-echo "2. Copying dginf-enclave..."
-ENCLAVE_BIN="$PROJECT_DIR/enclave/.build/release/dginf-enclave"
+# ─────────────────────────────────────────────────────────
+# 4. Build + copy Rust provider
+# ─────────────────────────────────────────────────────────
+echo "3. Building dginf-provider..."
+cd "$PROJECT_DIR/provider"
+if [ ! -f "target/release/dginf-provider" ]; then
+    cargo build --release --no-default-features 2>&1 | tail -3
+fi
+cp "target/release/dginf-provider" "$MACOS/dginf-provider"
+echo "   ✓ dginf-provider ($(du -h "$MACOS/dginf-provider" | cut -f1))"
+
+# ─────────────────────────────────────────────────────────
+# 5. Build + copy enclave CLI
+# ─────────────────────────────────────────────────────────
+echo "4. Building dginf-enclave..."
+cd "$PROJECT_DIR/enclave"
+swift build -c release 2>&1 | tail -3
+ENCLAVE_BIN=".build/release/dginf-enclave"
 if [ -f "$ENCLAVE_BIN" ]; then
     cp "$ENCLAVE_BIN" "$MACOS/dginf-enclave"
-    echo "   Copied from $ENCLAVE_BIN"
+    echo "   ✓ dginf-enclave ($(du -h "$MACOS/dginf-enclave" | cut -f1))"
 else
-    echo "   WARNING: dginf-enclave not found, skipping"
+    echo "   ⚠ dginf-enclave not found (attestation will be unavailable)"
 fi
 
-echo "3. Bundling Python + vllm-mlx..."
-PYTHON_BUNDLE="$FRAMEWORKS/python"
-mkdir -p "$PYTHON_BUNDLE"
+# ─────────────────────────────────────────────────────────
+# 6. Bundle Python + inference runtime
+# ─────────────────────────────────────────────────────────
+echo "5. Bundling Python runtime..."
+PYTHON_SRC="$HOME/.dginf/python"
+PYTHON_DST="$RESOURCES/python"
 
-# Find the vllm-mlx installation
-VLLM_MLX_PATH=$(python3 -c "import vllm_mlx; print(vllm_mlx.__path__[0])" 2>/dev/null || echo "")
-MLX_PATH=$(python3 -c "import mlx; print(mlx.__path__[0])" 2>/dev/null || echo "")
+if [ -d "$PYTHON_SRC" ]; then
+    echo "   Copying from $PYTHON_SRC..."
+    cp -a "$PYTHON_SRC" "$PYTHON_DST"
 
-if [ -n "$VLLM_MLX_PATH" ]; then
-    echo "   Found vllm-mlx at: $VLLM_MLX_PATH"
+    # Fix shebangs to point inside the app bundle
+    echo "   Fixing shebangs..."
+    for script in "$PYTHON_DST/bin/"*; do
+        if [ -f "$script" ] && head -1 "$script" | grep -q "^#!.*python"; then
+            # macOS sed -i requires backup extension
+            sed -i '' "1s|^#!.*python.*|#!/usr/bin/env python3|" "$script" 2>/dev/null || true
+        fi
+    done
 
-    # Copy the vllm-mlx binary/script
-    VLLM_MLX_BIN=$(which vllm-mlx 2>/dev/null || echo "")
-    if [ -n "$VLLM_MLX_BIN" ]; then
-        cp "$VLLM_MLX_BIN" "$MACOS/vllm-mlx"
-        echo "   Copied vllm-mlx binary"
+    # Report what's included
+    PYTHON_SIZE=$(du -sh "$PYTHON_DST" | cut -f1)
+    echo "   ✓ Python bundle ($PYTHON_SIZE)"
+
+    # Check for key packages
+    for pkg in mlx mlx_lm vllm_mlx; do
+        if [ -d "$PYTHON_DST/lib/python3.12/site-packages/$pkg" ] || \
+           [ -d "$PYTHON_DST/lib/python3.12/site-packages/${pkg/-/_}" ]; then
+            echo "     ✓ $pkg"
+        else
+            echo "     ⚠ $pkg not found"
+        fi
+    done
+else
+    echo "   ⚠ No Python bundle at $PYTHON_SRC"
+    echo "     Run install.sh first, or install manually:"
+    echo "     curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash"
+fi
+
+# ─────────────────────────────────────────────────────────
+# 7. Generate a placeholder app icon
+# ─────────────────────────────────────────────────────────
+echo "6. App icon..."
+if [ -f "$PROJECT_DIR/resources/AppIcon.icns" ]; then
+    cp "$PROJECT_DIR/resources/AppIcon.icns" "$RESOURCES/AppIcon.icns"
+    echo "   ✓ Custom icon"
+else
+    # Generate a simple icon using sips (built into macOS)
+    ICON_TMP=$(mktemp -d)
+    # Create a 512x512 PNG with a colored background
+    python3 -c "
+import struct, zlib
+
+def create_png(width, height, color):
+    def chunk(tag, data):
+        c = tag + data
+        return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+
+    raw = b''
+    for y in range(height):
+        raw += b'\x00'  # filter byte
+        for x in range(width):
+            # Simple circle with gradient
+            cx, cy = width/2, height/2
+            dx, dy = x - cx, y - cy
+            dist = (dx*dx + dy*dy) ** 0.5
+            radius = min(width, height) * 0.4
+            if dist < radius:
+                raw += bytes(color) + b'\xff'
+            else:
+                raw += b'\x00\x00\x00\x00'
+
+    ihdr = struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)
+    return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
+
+with open('$ICON_TMP/icon_512.png', 'wb') as f:
+    f.write(create_png(512, 512, (46, 204, 113)))  # Green circle
+" 2>/dev/null || true
+
+    if [ -f "$ICON_TMP/icon_512.png" ]; then
+        mkdir -p "$ICON_TMP/AppIcon.iconset"
+        sips -z 16 16 "$ICON_TMP/icon_512.png" --out "$ICON_TMP/AppIcon.iconset/icon_16x16.png" >/dev/null 2>&1 || true
+        sips -z 32 32 "$ICON_TMP/icon_512.png" --out "$ICON_TMP/AppIcon.iconset/icon_32x32.png" >/dev/null 2>&1 || true
+        sips -z 128 128 "$ICON_TMP/icon_512.png" --out "$ICON_TMP/AppIcon.iconset/icon_128x128.png" >/dev/null 2>&1 || true
+        sips -z 256 256 "$ICON_TMP/icon_512.png" --out "$ICON_TMP/AppIcon.iconset/icon_256x256.png" >/dev/null 2>&1 || true
+        cp "$ICON_TMP/icon_512.png" "$ICON_TMP/AppIcon.iconset/icon_512x512.png"
+        iconutil -c icns "$ICON_TMP/AppIcon.iconset" -o "$RESOURCES/AppIcon.icns" 2>/dev/null || true
+        rm -rf "$ICON_TMP"
+        echo "   ✓ Generated placeholder icon"
+    else
+        echo "   ⚠ No icon (app will use default)"
     fi
-
-    # Generate integrity manifest of all bundled files
-    echo "4. Generating integrity manifest..."
-    MANIFEST="$RESOURCES/integrity-manifest.json"
-    python3 -c "
-import hashlib, json, os
-
-manifest = {}
-app_dir = '$APP_DIR'
-for root, dirs, files in os.walk(app_dir):
-    # Skip the manifest itself
-    for f in files:
-        if f == 'integrity-manifest.json':
-            continue
-        path = os.path.join(root, f)
-        rel = os.path.relpath(path, app_dir)
-        with open(path, 'rb') as fh:
-            h = hashlib.sha256(fh.read()).hexdigest()
-        manifest[rel] = h
-
-with open('$MANIFEST', 'w') as f:
-    json.dump(manifest, f, indent=2, sort_keys=True)
-print(f'   {len(manifest)} files hashed')
-"
-else
-    echo "   WARNING: vllm-mlx not installed. Bundle will not include inference engine."
-    echo "   Install with: pip install vllm-mlx"
-    echo ""
-    echo "4. Generating integrity manifest..."
-    MANIFEST="$RESOURCES/integrity-manifest.json"
-    python3 -c "
-import hashlib, json, os
-
-manifest = {}
-app_dir = '$APP_DIR'
-for root, dirs, files in os.walk(app_dir):
-    for f in files:
-        if f == 'integrity-manifest.json':
-            continue
-        path = os.path.join(root, f)
-        rel = os.path.relpath(path, app_dir)
-        with open(path, 'rb') as fh:
-            h = hashlib.sha256(fh.read()).hexdigest()
-        manifest[rel] = h
-
-with open('$MANIFEST', 'w') as f:
-    json.dump(manifest, f, indent=2, sort_keys=True)
-print(f'   {len(manifest)} files hashed')
-"
 fi
 
-echo "5. Signing with Hardened Runtime..."
+# ─────────────────────────────────────────────────────────
+# 8. Integrity manifest
+# ─────────────────────────────────────────────────────────
+echo "7. Generating integrity manifest..."
+MANIFEST="$RESOURCES/integrity-manifest.json"
+python3 -c "
+import hashlib, json, os
 
-# Sign all executables in the bundle
+manifest = {}
+app_dir = '$APP_DIR'
+for root, dirs, files in os.walk(app_dir):
+    for f in files:
+        if f == 'integrity-manifest.json':
+            continue
+        path = os.path.join(root, f)
+        rel = os.path.relpath(path, app_dir)
+        with open(path, 'rb') as fh:
+            h = hashlib.sha256(fh.read()).hexdigest()
+        manifest[rel] = h
+
+with open('$MANIFEST', 'w') as f:
+    json.dump(manifest, f, indent=2, sort_keys=True)
+print(f'   ✓ {len(manifest)} files hashed')
+"
+
+# ─────────────────────────────────────────────────────────
+# 9. Code sign with Hardened Runtime
+# ─────────────────────────────────────────────────────────
+echo "8. Code signing with Hardened Runtime..."
+
+# Sign all .so and .dylib inside the Python framework first
+if [ -d "$RESOURCES/python" ]; then
+    SO_COUNT=0
+    find "$RESOURCES/python" -type f \( -name "*.so" -o -name "*.dylib" \) | while read lib; do
+        codesign --force --sign "$IDENTITY" "$lib" 2>/dev/null || true
+    done
+    SO_COUNT=$(find "$RESOURCES/python" -type f \( -name "*.so" -o -name "*.dylib" \) | wc -l | tr -d ' ')
+    echo "   ✓ Signed $SO_COUNT Python native libraries"
+
+    # Sign Python interpreter binary
+    PYTHON_BIN="$RESOURCES/python/bin/python3.12"
+    if [ -f "$PYTHON_BIN" ]; then
+        codesign --force --options runtime --sign "$IDENTITY" "$PYTHON_BIN" 2>/dev/null || true
+        echo "   ✓ Signed python3.12 interpreter"
+    fi
+fi
+
+# Sign executables in MacOS/
 for bin in "$MACOS"/*; do
     if [ -f "$bin" ] && [ -x "$bin" ]; then
         echo "   Signing $(basename "$bin")..."
@@ -191,33 +316,117 @@ for bin in "$MACOS"/*; do
     fi
 done
 
-# Sign the entire app bundle
-echo "   Signing DGInf.app bundle..."
-codesign --force --deep --options runtime \
+# Sign the app bundle itself — use --no-strict to handle non-standard
+# framework layout (Python bundle is not a real macOS framework)
+echo "   Signing DGInf.app..."
+codesign --force --options runtime --no-strict \
     --entitlements "$ENTITLEMENTS" \
     --sign "$IDENTITY" \
     "$APP_DIR"
 
-echo ""
-echo "6. Verifying..."
+# ─────────────────────────────────────────────────────────
+# 10. Verify
+# ─────────────────────────────────────────────────────────
+echo "9. Verifying..."
 codesign --verify --verbose=2 "$APP_DIR" 2>&1 | head -5
 echo ""
 
-echo "=== Bundle complete ==="
-echo "Output: $APP_DIR"
+# ─────────────────────────────────────────────────────────
+# 11. Notarize (optional)
+# ─────────────────────────────────────────────────────────
+if [ "$NOTARIZE" = "--notarize" ] && [ "$IDENTITY" != "-" ]; then
+    echo "10. Notarizing..."
+
+    # Create a zip for notarization
+    NOTARIZE_ZIP="$BUILD_DIR/DGInf-notarize.zip"
+    ditto -c -k --keepParent "$APP_DIR" "$NOTARIZE_ZIP"
+
+    echo "   Submitting to Apple..."
+    echo "   (You'll need APPLE_ID and TEAM_ID environment variables)"
+    APPLE_ID="${APPLE_ID:-}"
+    TEAM_ID="${TEAM_ID:-}"
+
+    if [ -n "$APPLE_ID" ] && [ -n "$TEAM_ID" ]; then
+        xcrun notarytool submit "$NOTARIZE_ZIP" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$TEAM_ID" \
+            --keychain-profile "notarytool-profile" \
+            --wait
+
+        echo "   Stapling notarization ticket..."
+        xcrun stapler staple "$APP_DIR"
+        echo "   ✓ Notarized and stapled"
+    else
+        echo "   ⚠ Set APPLE_ID and TEAM_ID env vars for notarization"
+        echo "     First run: xcrun notarytool store-credentials notarytool-profile"
+    fi
+
+    rm -f "$NOTARIZE_ZIP"
+fi
+
+# ─────────────────────────────────────────────────────────
+# 12. Create DMG (for distribution)
+# ─────────────────────────────────────────────────────────
 echo ""
-echo "Files in bundle:"
-find "$APP_DIR" -type f | sort | while read f; do
-    size=$(stat -f%z "$f" 2>/dev/null || stat --format=%s "$f" 2>/dev/null || echo "?")
-    rel=$(echo "$f" | sed "s|$APP_DIR/||")
-    echo "  $rel ($size bytes)"
-done
+echo "11. Creating DMG..."
+DMG_PATH="$BUILD_DIR/DGInf-${VERSION}.dmg"
+rm -f "$DMG_PATH"
+
+# Create a temporary DMG directory with app + Applications symlink
+DMG_TMP="$BUILD_DIR/dmg-staging"
+rm -rf "$DMG_TMP"
+mkdir -p "$DMG_TMP"
+cp -a "$APP_DIR" "$DMG_TMP/"
+ln -s /Applications "$DMG_TMP/Applications"
+
+hdiutil create -volname "DGInf" -srcfolder "$DMG_TMP" \
+    -ov -format UDZO "$DMG_PATH" >/dev/null 2>&1
+
+rm -rf "$DMG_TMP"
+
+if [ -f "$DMG_PATH" ]; then
+    DMG_SIZE=$(du -h "$DMG_PATH" | cut -f1)
+    echo "   ✓ $DMG_PATH ($DMG_SIZE)"
+fi
+
+# ─────────────────────────────────────────────────────────
+# Summary
+# ─────────────────────────────────────────────────────────
 echo ""
-echo "Security properties:"
-echo "  - Hardened Runtime: YES (--options runtime)"
-echo "  - get-task-allow: NO (debugger attachment blocked)"
-echo "  - Code signed: entire bundle (any modification breaks signature)"
-echo "  - SIP enforcement: macOS refuses to run modified binaries"
+echo "════════════════════════════════════════════════════"
 echo ""
-echo "To verify integrity at any time:"
-echo "  codesign --verify --verbose=2 $APP_DIR"
+APP_SIZE=$(du -sh "$APP_DIR" | cut -f1)
+echo "  DGInf.app    $APP_SIZE"
+echo ""
+echo "  Contents:"
+echo "    MacOS/DGInf              SwiftUI menu bar app"
+echo "    MacOS/dginf-provider     Rust inference provider"
+echo "    MacOS/dginf-enclave      Secure Enclave attestation"
+echo "    Resources/python/        Python 3.12 + MLX + vllm-mlx"
+echo ""
+echo "  Security:"
+echo "    Hardened Runtime          YES"
+echo "    get-task-allow            NO (debugger blocked)"
+echo "    Code signature            Entire bundle"
+echo "    SIP enforcement           Any modification → won't launch"
+echo ""
+echo "  Install:"
+echo "    open $APP_DIR"
+echo "    # or drag DGInf.app from DMG to /Applications"
+echo ""
+echo "  Distribute:"
+if [ "$IDENTITY" = "-" ]; then
+    echo "    ⚠ Ad-hoc signed — works on this Mac only"
+    echo "    For distribution, sign with Developer ID:"
+    echo "    ./scripts/bundle-app.sh \"Developer ID Application: YourOrg\""
+else
+    echo "    ✓ Signed with: $IDENTITY"
+    if [ "$NOTARIZE" = "--notarize" ]; then
+        echo "    ✓ Notarized with Apple"
+    else
+        echo "    Run with --notarize for Gatekeeper approval:"
+        echo "    ./scripts/bundle-app.sh \"$IDENTITY\" --notarize"
+    fi
+fi
+echo ""
+echo "════════════════════════════════════════════════════"

@@ -125,6 +125,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/payments/balance", s.requireAuth(s.handleBalance))
 	s.mux.HandleFunc("GET /v1/payments/usage", s.requireAuth(s.handleUsage))
 	s.mux.HandleFunc("POST /v1/payments/withdraw", s.requireAuth(s.handleWithdraw))
+
+	// Provider earnings — no API key auth (providers identify by wallet address).
+	s.mux.HandleFunc("GET /v1/provider/earnings", s.handleProviderEarnings)
 }
 
 // Handler returns the root http.Handler with global middleware applied.

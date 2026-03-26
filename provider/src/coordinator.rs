@@ -179,10 +179,14 @@ impl CoordinatorClient {
 
                 // Heartbeat tick
                 _ = heartbeat_interval.tick() => {
+                    let metrics = crate::hardware::collect_system_metrics(
+                        self.hardware.cpu_cores.total,
+                    );
                     let heartbeat = ProviderMessage::Heartbeat {
                         status: ProviderStatus::Idle,
                         active_model: None,
                         stats: ProviderStats::default(),
+                        system_metrics: metrics,
                     };
                     let json = serde_json::to_string(&heartbeat)?;
                     write.send(Message::Text(json.into())).await?;

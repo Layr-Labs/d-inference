@@ -502,13 +502,9 @@ func (r *Registry) ListModels() []AggregateModel {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	type modelKey struct {
-		id           string
-		modelType    string
-		quantization string
-	}
-
 	type modelAgg struct {
+		modelType         string
+		quantization      string
 		count             int
 		attestedCount     int
 		highestTrust      TrustLevel
@@ -517,7 +513,10 @@ func (r *Registry) ListModels() []AggregateModel {
 		secureBoot        bool
 	}
 
-	agg := make(map[modelKey]*modelAgg)
+	// Aggregate by model ID only — consumers request by ID, so providers
+	// offering the same model ID should be counted together regardless of
+	// minor metadata differences.
+	agg := make(map[string]*modelAgg)
 	for _, p := range r.providers {
 		if p.Status == StatusOffline || p.Status == StatusUntrusted {
 			continue
@@ -526,10 +525,14 @@ func (r *Registry) ListModels() []AggregateModel {
 			continue
 		}
 		for _, m := range p.Models {
-			k := modelKey{id: m.ID, modelType: m.ModelType, quantization: m.Quantization}
+			k := m.ID
 			a, ok := agg[k]
 			if !ok {
-				a = &modelAgg{highestTrust: TrustNone}
+				a = &modelAgg{
+					modelType:    m.ModelType,
+					quantization: m.Quantization,
+					highestTrust: TrustNone,
+				}
 				agg[k] = a
 			}
 			a.count++
@@ -551,9 +554,9 @@ func (r *Registry) ListModels() []AggregateModel {
 	models := make([]AggregateModel, 0, len(agg))
 	for k, a := range agg {
 		am := AggregateModel{
-			ID:                k.id,
-			ModelType:         k.modelType,
-			Quantization:      k.quantization,
+			ID:                k,
+			ModelType:         a.modelType,
+			Quantization:      a.quantization,
 			Providers:         a.count,
 			AttestedProviders: a.attestedCount,
 			TrustLevel:        a.highestTrust,

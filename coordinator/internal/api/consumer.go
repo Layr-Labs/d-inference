@@ -39,7 +39,8 @@ const (
 	// inferenceTimeout is the maximum time to wait between chunks (streaming)
 	// or for the full response (non-streaming). For streaming, the deadline
 	// resets on each received chunk so long-running generations don't time out.
-	inferenceTimeout = 120 * time.Second
+	// 10 minutes allows 32k tokens at ~55 tok/s on slower hardware.
+	inferenceTimeout = 600 * time.Second
 
 	// chunkBufferSize is the channel buffer size for SSE chunks flowing from
 	// the provider to the consumer. A larger buffer prevents dropped chunks

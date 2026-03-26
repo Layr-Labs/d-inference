@@ -256,13 +256,16 @@ func checkSecureBootEnabled() -> Bool {
 /// Check if Authenticated Root Volume (ARV) is enabled.
 ///
 /// ARV seals the system volume with a cryptographic hash. Any modification
-/// to system files breaks the seal and the volume won't mount. This is
-/// verified via `csrutil authenticated-root status`.
+/// to system files breaks the seal and the volume won't mount.
+///
+/// Detection: checks `diskutil info /` for "Sealed: Yes" which works
+/// reliably on all macOS configurations including multi-boot EC2 Macs
+/// where `csrutil authenticated-root status` prompts interactively.
 func checkAuthenticatedRootEnabled() -> Bool {
     let pipe = Pipe()
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/csrutil")
-    process.arguments = ["authenticated-root", "status"]
+    process.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
+    process.arguments = ["info", "/"]
     process.standardOutput = pipe
     process.standardError = Pipe()
     try? process.run()
@@ -270,7 +273,14 @@ func checkAuthenticatedRootEnabled() -> Bool {
 
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     let output = String(data: data, encoding: .utf8) ?? ""
-    return output.contains("enabled")
+
+    for line in output.components(separatedBy: "\n") {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("Sealed:") {
+            return trimmed.contains("Yes")
+        }
+    }
+    return false
 }
 
 /// Get the Authenticated Root Volume snapshot hash.

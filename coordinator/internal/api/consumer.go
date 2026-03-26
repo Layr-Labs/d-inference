@@ -36,9 +36,10 @@ import (
 )
 
 const (
-	// inferenceTimeout is the maximum time to wait for a provider to complete
-	// an inference request before timing out the consumer's HTTP response.
-	inferenceTimeout = 30 * time.Second
+	// inferenceTimeout is the maximum time to wait between chunks (streaming)
+	// or for the full response (non-streaming). For streaming, the deadline
+	// resets on each received chunk so long-running generations don't time out.
+	inferenceTimeout = 120 * time.Second
 
 	// chunkBufferSize is the channel buffer size for SSE chunks flowing from
 	// the provider to the consumer. A larger buffer prevents dropped chunks
@@ -244,6 +245,26 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Provider-MDA-Verified", "true")
 	}
 
+	// When this function returns (consumer disconnect, timeout, or completion),
+	// send a cancel to the provider so it stops generating tokens.
+	defer func() {
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+
+		// Send cancel to provider — if the request already completed this is a no-op
+		// on the provider side (unknown request_id).
+		cancelMsg := protocol.CancelMessage{
+			Type:      protocol.TypeCancel,
+			RequestID: requestID,
+		}
+		cancelData, _ := json.Marshal(cancelMsg)
+		if err := provider.Conn.Write(context.Background(), websocket.MessageText, cancelData); err != nil {
+			s.logger.Debug("failed to send cancel (provider may have disconnected)", "request_id", requestID, "error", err)
+		} else {
+			s.logger.Info("sent cancel to provider", "request_id", requestID)
+		}
+	}()
+
 	if req.Stream {
 		s.handleStreamingResponse(w, r, pr)
 	} else {
@@ -268,8 +289,10 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	ctx, cancel := context.WithTimeout(r.Context(), inferenceTimeout)
-	defer cancel()
+	// Use a timer that resets on each chunk so long-running generations
+	// (e.g. chain-of-thought models) don't hit a global timeout.
+	timer := time.NewTimer(inferenceTimeout)
+	defer timer.Stop()
 
 	for {
 		select {
@@ -285,6 +308,15 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 			fmt.Fprintf(w, "%s\n\n", chunk)
 			flusher.Flush()
 
+			// Reset the timer — as long as chunks keep flowing, don't timeout.
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(inferenceTimeout)
+
 		case errMsg := <-pr.ErrorCh:
 			// Write error as SSE event so the consumer can handle it gracefully.
 			errData, _ := json.Marshal(map[string]any{
@@ -297,9 +329,12 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 			flusher.Flush()
 			return
 
-		case <-ctx.Done():
+		case <-timer.C:
 			fmt.Fprintf(w, "data: {\"error\":{\"message\":\"request timed out\",\"type\":\"timeout\"}}\n\n")
 			flusher.Flush()
+			return
+
+		case <-r.Context().Done():
 			return
 		}
 	}

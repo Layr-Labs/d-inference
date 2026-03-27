@@ -149,7 +149,7 @@ impl ExponentialBackoff {
     pub fn new() -> Self {
         Self {
             current: Duration::from_secs(1),
-            max: Duration::from_secs(60),
+            max: Duration::from_secs(5),
         }
     }
 
@@ -207,11 +207,8 @@ mod tests {
         assert_eq!(backoff.next_delay(), Duration::from_secs(1));
         assert_eq!(backoff.next_delay(), Duration::from_secs(2));
         assert_eq!(backoff.next_delay(), Duration::from_secs(4));
-        assert_eq!(backoff.next_delay(), Duration::from_secs(8));
-        assert_eq!(backoff.next_delay(), Duration::from_secs(16));
-        assert_eq!(backoff.next_delay(), Duration::from_secs(32));
-        assert_eq!(backoff.next_delay(), Duration::from_secs(60)); // capped
-        assert_eq!(backoff.next_delay(), Duration::from_secs(60)); // stays capped
+        assert_eq!(backoff.next_delay(), Duration::from_secs(5)); // capped at 5s
+        assert_eq!(backoff.next_delay(), Duration::from_secs(5)); // stays capped
     }
 
     #[test]

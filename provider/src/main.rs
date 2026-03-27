@@ -649,7 +649,18 @@ async fn cmd_serve(
         // Coordinator mode: connect WebSocket + proxy
         tracing::info!("Connecting to coordinator: {coordinator_url}");
 
-        let available_models = models::scan_models(&hw);
+        // Only advertise the model we're actually serving. The provider
+        // can only serve one model at a time (the one loaded in vllm-mlx).
+        // Advertising all cached models causes routing failures when the
+        // coordinator sends requests for a model that isn't loaded.
+        let all_models = models::scan_models(&hw);
+        let available_models: Vec<_> = all_models
+            .into_iter()
+            .filter(|m| m.id == model)
+            .collect();
+        if available_models.is_empty() {
+            tracing::warn!("Active model {model} not found in scanned models — registering with ID only");
+        }
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
         let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(64);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -684,6 +695,49 @@ async fn cmd_serve(
         let coordinator_handle = tokio::spawn(async move {
             if let Err(e) = client.run(event_tx, outbound_rx, shutdown_rx).await {
                 tracing::error!("Coordinator connection error: {e}");
+            }
+        });
+
+        // Spawn backend health monitor — detects crashes and auto-restarts.
+        let health_url = backend_url_str.clone();
+        let health_python = python_cmd.clone();
+        let health_backend = backend_name.to_string();
+        let health_model = model.clone();
+        let health_port = be_port;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            let mut consecutive_failures = 0u32;
+            loop {
+                interval.tick().await;
+                if backend::check_health(&health_url).await {
+                    if consecutive_failures > 0 {
+                        tracing::info!("Backend recovered after {} failed health checks", consecutive_failures);
+                        consecutive_failures = 0;
+                    }
+                } else {
+                    consecutive_failures += 1;
+                    tracing::warn!("Backend health check failed ({consecutive_failures} consecutive)");
+                    if consecutive_failures >= 3 {
+                        tracing::error!("Backend appears crashed — restarting...");
+                        // Kill any zombie processes
+                        #[cfg(unix)]
+                        {
+                            let _ = std::process::Command::new("pkill").args(["-f", "vllm_mlx"]).status();
+                            let _ = std::process::Command::new("pkill").args(["-f", "mlx_lm.server"]).status();
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                        match reload_backend(&health_python, &health_backend, &health_model, health_port).await {
+                            Ok(()) => {
+                                tracing::info!("Backend auto-restarted successfully");
+                                consecutive_failures = 0;
+                            }
+                            Err(e) => {
+                                tracing::error!("Backend auto-restart failed: {e}");
+                            }
+                        }
+                    }
+                }
             }
         });
 

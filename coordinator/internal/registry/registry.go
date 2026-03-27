@@ -352,13 +352,20 @@ func TrustMultiplier(t TrustLevel) float64 {
 	}
 }
 
+// MaxConcurrentRequests is the maximum number of simultaneous inference
+// requests a provider can handle. vllm-mlx serializes them internally
+// but queuing at the provider avoids coordinator-side queue timeouts.
+const MaxConcurrentRequests = 4
+
 // ScoreProvider calculates a routing score for a provider.
 // Higher scores indicate better routing candidates.
 // Score = (1 - load) * decode_tps * trust_multiplier * reputation * warm_bonus
 func ScoreProvider(p *Provider, model string) float64 {
-	// Load: 0.0 for idle, 1.0 for serving
-	var load float64
-	if p.Status == StatusServing {
+	// Load: gradient from 0.0 (idle) to 1.0 (at max concurrency).
+	// Providers with fewer in-flight requests score higher.
+	pending := float64(p.PendingCount())
+	load := pending / float64(MaxConcurrentRequests)
+	if load > 1.0 {
 		load = 1.0
 	}
 
@@ -415,18 +422,23 @@ func ScoreProvider(p *Provider, model string) float64 {
 
 // FindProvider selects an available provider for the given model using
 // intelligent scoring based on benchmark data, trust level, reputation,
-// and warm model cache. Picks the highest-scoring idle provider.
-// Only providers with hardware trust (MDM-verified) are eligible.
+// and warm model cache. Picks the highest-scoring provider that has
+// concurrency headroom (pending requests < MaxConcurrentRequests).
 func (r *Registry) FindProvider(model string) *Provider {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	var candidates []*Provider
 	for _, p := range r.providers {
-		if p.Status != StatusOnline {
+		// Skip offline/untrusted providers
+		if p.Status == StatusOffline || p.Status == StatusUntrusted {
 			continue
 		}
 		if !r.trustMeetsMinimum(p.TrustLevel) {
+			continue
+		}
+		// Skip providers at max concurrency
+		if p.PendingCount() >= MaxConcurrentRequests {
 			continue
 		}
 		for _, m := range p.Models {
@@ -442,6 +454,7 @@ func (r *Registry) FindProvider(model string) *Provider {
 	}
 
 	// Sort candidates by score descending (highest score first).
+	// Providers with fewer pending requests score higher due to load factor.
 	sort.Slice(candidates, func(i, j int) bool {
 		return ScoreProvider(candidates[i], model) > ScoreProvider(candidates[j], model)
 	})
@@ -452,9 +465,10 @@ func (r *Registry) FindProvider(model string) *Provider {
 	return selected
 }
 
-// SetProviderIdle marks a provider as idle (available for new requests).
-// If there are queued requests for any model this provider serves, the
-// first matching queued request is assigned to this provider.
+// SetProviderIdle updates a provider's status after a request completes.
+// If pending count reaches zero, status goes back to online. If there are
+// queued requests and the provider has concurrency headroom, the next
+// queued request is assigned immediately.
 func (r *Registry) SetProviderIdle(id string) {
 	r.mu.RLock()
 	p, ok := r.providers[id]
@@ -469,8 +483,9 @@ func (r *Registry) SetProviderIdle(id string) {
 	}
 	p.mu.Unlock()
 
-	// Check if there are queued requests for any model this provider serves.
-	if r.queue != nil && p.Status == StatusOnline && r.trustMeetsMinimum(p.TrustLevel) {
+	// Check if there are queued requests and this provider has headroom.
+	hasCap := p.PendingCount() < MaxConcurrentRequests
+	if r.queue != nil && hasCap && r.trustMeetsMinimum(p.TrustLevel) {
 		for _, m := range p.Models {
 			if r.queue.TryAssign(m.ID, p) {
 				break

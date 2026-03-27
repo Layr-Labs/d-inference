@@ -211,10 +211,9 @@ func Verify(signed SignedAttestation) VerificationResult {
 		result.Valid = false
 		result.Error = "Secure Boot not enabled"
 	}
-	if !signed.Attestation.AuthenticatedRootEnabled {
-		result.Valid = false
-		result.Error = "Authenticated Root Volume not enabled — system volume may be tampered"
-	}
+	// ARV is informational — not all environments report it reliably
+	// (e.g. multi-boot Macs, older macOS). Logged but not enforced.
+	result.AuthenticatedRootEnabled = signed.Attestation.AuthenticatedRootEnabled
 
 	return result
 }

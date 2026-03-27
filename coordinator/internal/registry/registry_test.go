@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"testing"
@@ -152,22 +153,28 @@ func TestFindProviderNoMatch(t *testing.T) {
 	}
 }
 
-func TestFindProviderSkipsServing(t *testing.T) {
+func TestFindProviderSkipsAtMaxConcurrency(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	p1 := reg.Register("p1", nil, msg)
 	p1.TrustLevel = TrustHardware
 
-	// First call marks p1 as serving.
-	p := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
-	if p == nil {
-		t.Fatal("first FindProvider returned nil")
+	// Fill up the provider to max concurrency by adding pending requests.
+	for i := 0; i < MaxConcurrentRequests; i++ {
+		p1.AddPending(&PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
 	}
 
-	// Second call should return nil since p1 is serving and no other providers.
-	p2 := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
-	if p2 != nil {
-		t.Error("should return nil when only provider is serving")
+	// FindProvider should return nil since p1 is at max concurrency.
+	p := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if p != nil {
+		t.Error("should return nil when provider is at max concurrency")
+	}
+
+	// Remove one pending request — should be routable again.
+	p1.RemovePending("req-0")
+	p = reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if p == nil {
+		t.Error("should return provider after freeing a slot")
 	}
 }
 
@@ -566,23 +573,24 @@ func TestScoringTrustedPreferred(t *testing.T) {
 	}
 }
 
-func TestScoringIdlePreferredOverServing(t *testing.T) {
+func TestScoringIdlePreferredOverBusy(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 
-	// p1 has higher decode_tps but is serving.
+	// Both providers have equal decode_tps. p1 already has pending requests.
 	p1 := reg.Register("p1", nil, msg)
-	p1.DecodeTPS = 200.0
+	p1.DecodeTPS = 100.0
 	p1.TrustLevel = TrustHardware
 
 	p2 := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 100.0
 	p2.TrustLevel = TrustHardware
 
-	// Mark p1 as serving.
-	reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	// Give p1 pending requests so it has load.
+	p1.AddPending(&PendingRequest{RequestID: "busy-1"})
+	p1.AddPending(&PendingRequest{RequestID: "busy-2"})
 
-	// p2 should be selected because p1 is serving (status != Online).
+	// p2 should be selected because it's idle (score is higher with no load).
 	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if selected == nil {
 		t.Fatal("FindProvider returned nil")
@@ -628,13 +636,17 @@ func TestScoreProviderFunction(t *testing.T) {
 		t.Errorf("score = %f, should be positive", score)
 	}
 
-	// Serving provider should have zero score.
+	// Provider with pending requests should have a lower score (load penalty).
 	p.Status = StatusServing
-	servingScore := ScoreProvider(p, "test-model")
-	// Note: ScoreProvider itself doesn't check status — FindProvider filters.
-	// But the (1-load) factor does apply. Serving = load 1.0 -> score 0.
-	if servingScore != 0 {
-		t.Errorf("serving score = %f, want 0", servingScore)
+	p.mu.Lock()
+	p.pendingReqs = map[string]*PendingRequest{"r1": {RequestID: "r1"}}
+	p.mu.Unlock()
+	busyScore := ScoreProvider(p, "test-model")
+	if busyScore >= score {
+		t.Errorf("busy score (%f) should be less than idle score (%f)", busyScore, score)
+	}
+	if busyScore <= 0 {
+		t.Errorf("busy score = %f, should still be positive (has concurrency headroom)", busyScore)
 	}
 }
 

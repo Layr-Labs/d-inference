@@ -169,12 +169,31 @@ impl CoordinatorClient {
         let mut heartbeat_interval = tokio::time::interval(self.heartbeat_interval);
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+        // WebSocket ping every 10s to detect dead connections fast.
+        // If no pong comes back within 30s, the connection is dead.
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(10));
+        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_pong = tokio::time::Instant::now();
+        let pong_timeout = Duration::from_secs(30);
+
         loop {
+            // Check pong timeout
+            if last_pong.elapsed() > pong_timeout {
+                anyhow::bail!("WebSocket pong timeout (no response in {pong_timeout:?})");
+            }
+
             tokio::select! {
                 _ = shutdown_rx.changed() => {
                     tracing::info!("Shutting down coordinator connection");
                     let _ = write.close().await;
                     return Ok(());
+                }
+
+                // WebSocket ping to detect dead connections
+                _ = ping_interval.tick() => {
+                    if let Err(e) = write.send(Message::Ping("dginf".into())).await {
+                        anyhow::bail!("Failed to send ping: {e}");
+                    }
                 }
 
                 // Heartbeat tick
@@ -267,6 +286,9 @@ impl CoordinatorClient {
                         Some(Ok(Message::Ping(data))) => {
                             let _ = write.send(Message::Pong(data)).await;
                         }
+                        Some(Ok(Message::Pong(_))) => {
+                            last_pong = tokio::time::Instant::now();
+                        }
                         Some(Ok(Message::Close(_))) => {
                             tracing::info!("Coordinator sent close frame");
                             anyhow::bail!("connection closed by coordinator");
@@ -277,7 +299,7 @@ impl CoordinatorClient {
                         None => {
                             anyhow::bail!("WebSocket stream ended");
                         }
-                        _ => {} // Binary, Pong, Frame — ignore
+                        _ => {} // Binary, Frame — ignore
                     }
                 }
             }

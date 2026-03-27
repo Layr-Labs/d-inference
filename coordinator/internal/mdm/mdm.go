@@ -34,6 +34,10 @@ type DeviceAttestationResponse struct {
 	CertChain [][]byte // DER-encoded certificates, leaf first
 }
 
+// OnMDACallback is called when a DevicePropertiesAttestation response arrives.
+// The UDID identifies the device; certChain is the DER-encoded Apple cert chain.
+type OnMDACallback func(udid string, certChain [][]byte)
+
 // Client talks to the MicroMDM API.
 type Client struct {
 	baseURL  string
@@ -43,6 +47,8 @@ type Client struct {
 	// Webhook responses arrive asynchronously.
 	responses       chan *SecurityInfoResponse
 	attestResponses chan *DeviceAttestationResponse
+	// Callback for MDA certs that arrive after the initial wait times out.
+	onMDA OnMDACallback
 }
 
 // NewClient creates an MDM client.
@@ -65,6 +71,11 @@ func NewClient(baseURL, apiKey string, logger *slog.Logger) *Client {
 		responses:       make(chan *SecurityInfoResponse, 16),
 		attestResponses: make(chan *DeviceAttestationResponse, 16),
 	}
+}
+
+// SetOnMDA registers a callback for late-arriving MDA attestation certs.
+func (c *Client) SetOnMDA(fn OnMDACallback) {
+	c.onMDA = fn
 }
 
 // DeviceInfo from MicroMDM's device list.
@@ -239,6 +250,13 @@ func (c *Client) HandleWebhook(body []byte) {
 		return
 	}
 
+	c.logger.Info("mdm webhook parsed",
+		"topic", webhook.Topic,
+		"udid", webhook.Event.UDID,
+		"status", webhook.Event.Status,
+		"has_payload", webhook.Event.RawPayload != "",
+	)
+
 	if webhook.Event.Status != "Acknowledged" || webhook.Event.RawPayload == "" {
 		return
 	}
@@ -249,6 +267,16 @@ func (c *Client) HandleWebhook(body []byte) {
 		c.logger.Debug("mdm webhook base64 decode failed", "error", err)
 		return
 	}
+
+	// Log what the plist contains for debugging
+	hasSecInfo := bytes.Contains(plistData, []byte("SecurityInfo"))
+	hasDeviceAttest := bytes.Contains(plistData, []byte("DevicePropertiesAttestation"))
+	c.logger.Info("mdm webhook plist content",
+		"size", len(plistData),
+		"has_security_info", hasSecInfo,
+		"has_device_attestation", hasDeviceAttest,
+		"preview", string(plistData[:min(len(plistData), 2000)]),
+	)
 
 	// Parse the plist for SecurityInfo
 	secInfo := parseSecurityInfoPlist(plistData)
@@ -281,7 +309,12 @@ func (c *Client) HandleWebhook(body []byte) {
 		select {
 		case c.attestResponses <- resp:
 		default:
-			c.logger.Warn("mdm attestation response channel full, dropping")
+			// Channel full or nobody waiting — use callback instead
+			if c.onMDA != nil {
+				c.onMDA(resp.UDID, resp.CertChain)
+			} else {
+				c.logger.Warn("mdm attestation response dropped (no waiter, no callback)")
+			}
 		}
 	}
 }
@@ -477,7 +510,16 @@ func parseDeviceAttestationPlist(data []byte) [][]byte {
 			break
 		}
 
-		b64Data := string(bytes.TrimSpace(remaining[:dataEnd]))
+		// Strip ALL whitespace (tabs, newlines) from the base64 data —
+		// Apple's plist format includes formatting whitespace inside <data> tags.
+		raw := bytes.TrimSpace(remaining[:dataEnd])
+		var cleaned []byte
+		for _, b := range raw {
+			if b != '\n' && b != '\r' && b != '\t' && b != ' ' {
+				cleaned = append(cleaned, b)
+			}
+		}
+		b64Data := string(cleaned)
 		remaining = remaining[dataEnd+7:]
 
 		// Decode base64 to get DER bytes

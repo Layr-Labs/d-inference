@@ -128,6 +128,7 @@ func VerifyMDADeviceAttestation(certChainDER [][]byte) (*MDAResult, error) {
 	opts := x509.VerifyOptions{
 		Roots:         roots,
 		Intermediates: intermediates,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
 	}
 
 	// Verify the certificate chain against Apple's Root CA.

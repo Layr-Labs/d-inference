@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/dginf/coordinator/internal/api"
+	"github.com/dginf/coordinator/internal/attestation"
 	"github.com/dginf/coordinator/internal/mdm"
 	"github.com/dginf/coordinator/internal/registry"
 	"github.com/dginf/coordinator/internal/store"
@@ -95,6 +96,36 @@ func main() {
 			mdmKey = "dginf-micromdm-api" // default
 		}
 		mdmClient := mdm.NewClient(mdmURL, mdmKey, logger)
+
+		// Register callback for late-arriving MDA certs — stores them
+		// on the provider so users can verify via the attestation API.
+		mdmClient.SetOnMDA(func(udid string, certChain [][]byte) {
+			// Find the provider with this UDID and store the cert chain
+			reg.ForEachProvider(func(p *registry.Provider) {
+				if p.AttestationResult == nil {
+					return
+				}
+				// Match by checking if this provider's MDM UDID matches
+				// (UDID is set during MDM verification)
+				mdaResult, err := attestation.VerifyMDADeviceAttestation(certChain)
+				if err != nil {
+					logger.Error("late MDA cert parse error", "udid", udid, "error", err)
+					return
+				}
+				if mdaResult.Valid && (mdaResult.DeviceSerial == p.AttestationResult.SerialNumber) {
+					p.MDAVerified = true
+					p.MDACertChain = certChain
+					p.MDAResult = mdaResult
+					logger.Info("late MDA cert stored on provider",
+						"provider_id", p.ID,
+						"serial", mdaResult.DeviceSerial,
+						"udid", mdaResult.DeviceUDID,
+						"os_version", mdaResult.OSVersion,
+					)
+				}
+			})
+		})
+
 		srv.SetMDMClient(mdmClient)
 		logger.Info("MDM verification enabled", "url", mdmURL)
 	}

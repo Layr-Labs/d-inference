@@ -96,6 +96,7 @@ func (s *Server) HandleMDMWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	s.logger.Debug("mdm webhook received", "body_size", len(body), "body_preview", string(body[:min(len(body), 500)]))
 	if s.mdmClient != nil {
 		s.mdmClient.HandleWebhook(body)
 	}

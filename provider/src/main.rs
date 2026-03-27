@@ -101,9 +101,9 @@ enum Command {
 
     /// Enroll this Mac in DGInf MDM (without starting to serve)
     Enroll {
-        /// MDM enrollment profile URL
-        #[arg(long, default_value = "https://inference-test.openinnovation.dev/enroll.mobileconfig")]
-        profile_url: String,
+        /// Coordinator URL for device attestation enrollment
+        #[arg(long, default_value = "https://inference-test.openinnovation.dev")]
+        coordinator: String,
     },
 
     /// Remove MDM enrollment and clean up DGInf data
@@ -202,7 +202,7 @@ async fn main() -> Result<()> {
             backend_port,
             all_models,
         } => cmd_serve(local, coordinator, port, model, backend_port, all_models).await,
-        Command::Enroll { profile_url } => cmd_enroll(profile_url).await,
+        Command::Enroll { coordinator } => cmd_enroll(coordinator).await,
         Command::Unenroll => cmd_unenroll().await,
         Command::Benchmark => cmd_benchmark().await,
         Command::Status => cmd_status().await,
@@ -1301,34 +1301,67 @@ fn self_verify_attestation(attestation_json: &serde_json::Value) -> bool {
     }
 }
 
-async fn cmd_enroll(profile_url: String) -> Result<()> {
-    println!("DGInf MDM Enrollment");
+async fn cmd_enroll(coordinator_url: String) -> Result<()> {
+    println!("DGInf Device Attestation Enrollment");
     println!();
 
-    // Download profile
-    let profile_path = std::env::temp_dir().join("DGInf-Enroll.mobileconfig");
-    println!("Downloading enrollment profile...");
+    // Read serial number from hardware
+    let serial = get_serial_number()?;
+    println!("→ Device serial: {serial}");
+
+    // Request per-device ACME profile from coordinator
+    println!("→ Requesting attestation profile from coordinator...");
+    let enroll_url = format!("{coordinator_url}/v1/enroll");
     let client = reqwest::Client::new();
-    let resp = client.get(&profile_url).send().await?;
+    let resp = client
+        .post(&enroll_url)
+        .json(&serde_json::json!({"serial_number": serial}))
+        .send()
+        .await?;
+
     if !resp.status().is_success() {
-        anyhow::bail!("Failed to download profile: HTTP {}", resp.status());
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Failed to get enrollment profile: {body}");
     }
+
     let bytes = resp.bytes().await?;
+    let profile_path = std::env::temp_dir().join(format!("DGInf-Enroll-{serial}.mobileconfig"));
     std::fs::write(&profile_path, &bytes)?;
-    println!("  Downloaded to {}", profile_path.display());
 
     // Open for install
     #[cfg(target_os = "macos")]
     {
+        println!("→ Opening attestation profile...");
         println!();
-        println!("Opening System Settings → Profiles...");
-        println!("Click Install on the DGInf profile.");
+        println!("  Install it in System Settings → General → Device Management");
+        println!("  This will:");
+        println!("    1. Generate a key in your Secure Enclave");
+        println!("    2. Apple verifies your device is genuine hardware");
+        println!("    3. A certificate is issued binding the SE key to your device");
         println!();
         let _ = std::process::Command::new("open").arg(&profile_path).status();
     }
 
     println!("After installing, verify with: dginf-provider doctor");
     Ok(())
+}
+
+/// Read the hardware serial number via ioreg.
+fn get_serial_number() -> Result<String> {
+    let output = std::process::Command::new("ioreg")
+        .args(["-c", "IOPlatformExpertDevice", "-d", "2"])
+        .output()
+        .map_err(|e| anyhow::anyhow!("failed to run ioreg: {e}"))?;
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        if line.contains("IOPlatformSerialNumber") {
+            if let Some(serial) = line.split('"').nth(3) {
+                return Ok(serial.to_string());
+            }
+        }
+    }
+    anyhow::bail!("could not read serial number from ioreg")
 }
 
 async fn cmd_unenroll() -> Result<()> {

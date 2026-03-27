@@ -130,6 +130,10 @@ func (s *Server) routes() {
 	// Provider earnings — no API key auth (providers identify by wallet address).
 	s.mux.HandleFunc("GET /v1/provider/earnings", s.handleProviderEarnings)
 
+	// ACME enrollment — generates per-device .mobileconfig for device-attest-01.
+	// No auth needed — security comes from Apple's attestation during ACME challenge.
+	s.mux.HandleFunc("POST /v1/enroll", s.handleEnroll)
+
 	// Attestation verification — public, no auth needed.
 	// Users can independently verify Apple's MDA certificate chain.
 	s.mux.HandleFunc("GET /v1/providers/attestation", s.handleProviderAttestation)

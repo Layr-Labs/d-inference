@@ -89,8 +89,8 @@
 }
 
 \author{
-    \textbf{Gajesh Naik}\textsuperscript{1} \qquad \textbf{Claude Opus}\textsuperscript{2} \\[4pt]
-    {\small\textsuperscript{1}Eigen Labs \quad \textsuperscript{2}Anthropic} \\[2pt]
+    \textbf{Gajesh Naik} \\[4pt]
+    {\small Eigen Labs} \\[2pt]
     {\small\texttt{gajesh@eigenlabs.org}}
 }
 
@@ -618,6 +618,20 @@ The \texttt{SecurityInfo} command returns the following fields, verified by the 
 
 For DGInf, the critical fields are \texttt{SIPEnabled} (must be true for all our kernel-level protections to hold), \texttt{SecureBootLevel} (must be ``full''), and \texttt{AuthRootVolume} (ensures the OS hasn't been tampered with).
 
+\subsection{Apple Device Attestation (MDA)}
+
+After SecurityInfo verification, the coordinator requests \texttt{DevicePropertiesAttestation} via the MDM \texttt{DeviceInformation} command. The device contacts Apple's attestation servers, which return a DER-encoded X.509 certificate chain:
+
+\begin{itemize}[leftmargin=*,itemsep=1pt]
+    \item \textbf{Leaf certificate}: Device identity with Apple-assigned OIDs encoding the serial number (1.2.840.113635.100.8.9.1), UDID (100.8.9.2), OS version (100.8.10.1), SepOS version (100.8.10.2), and Secure Boot level (100.8.13.2).
+    \item \textbf{Intermediate}: Apple Enterprise Attestation Sub CA~1 (P-384).
+    \item \textbf{Root}: Apple Enterprise Attestation Root CA (P-384, valid until 2047).
+\end{itemize}
+
+This is the strongest verification available: Apple's own servers cryptographically attest the device's identity and security properties. A compromised OS cannot forge this certificate chain---the private key for Apple's root CA exists only inside Apple's infrastructure.
+
+The coordinator verifies the chain against the embedded Apple root CA, extracts the OID-encoded properties, and cross-checks the serial number against the provider's self-reported attestation. The full certificate chain is stored and exposed via \texttt{GET /v1/providers/attestation}, enabling users to independently verify each provider against Apple's publicly available root CA.
+
 \subsection{Challenge-Response with SIP Re-Verification}
 
 Every 5 minutes, the coordinator sends a 32-byte nonce. The provider signs it and includes \emph{fresh} SIP and Secure Boot status. If either is reported as disabled, the provider is \textbf{immediately} marked untrusted---no three-strike rule, because disabled SIP or Secure Boot indicates a deliberate reboot with weakened security.
@@ -678,36 +692,40 @@ $ dginf-provider serve --model Qwen3.5-9B-MLX-4bit
 
 \subsection{End-to-End Validation}
 
-We validated on AWS \texttt{mac2-m2.metal} (Apple M2, 24\,GB unified memory, macOS 14.8.4, SIP enabled):
+We validated on two Apple Silicon Macs simultaneously: AWS \texttt{mac2-m2.metal} (Apple M2, 24\,GB, macOS 14.8.4) and an M4 Max (48\,GB, macOS 26.3):
 
 \begin{enumerate}[leftmargin=*,itemsep=1pt]
-    \item Provider enrolled in MDM (AccessRights=1041: query-only, no erase/lock/install)
-    \item Provider generated Secure Enclave attestation (serial: FV0FJ93J4D)
-    \item Coordinator (running on EigenCompute, Intel TDX TEE) verified SE signature
-    \item Coordinator queried MicroMDM; SecurityInfo confirmed SIP=true, SecureBoot=full, AuthenticatedRootVolume=true
-    \item Cross-check passed: SE attestation matches MDM --- provider verified
-    \item Consumer request routed to provider
-    \item In-process MLX inference generated correct response (``Two.'' for ``What is 2+2?'')
-    \item Memory wiped after completion
+    \item Both providers enrolled in MDM (AccessRights=1041: query-only, no erase/lock/install)
+    \item Both generated Secure Enclave attestation (serials: FV0FJ93J4D, F46GTCP40H)
+    \item Coordinator verified SE signatures $\to$ \texttt{self\_signed} trust
+    \item Coordinator queried MicroMDM; SecurityInfo confirmed SIP=true, SecureBoot=full, AuthenticatedRootVolume=true for both $\to$ \texttt{hardware} trust
+    \item Coordinator requested \texttt{DevicePropertiesAttestation} via MDM; Apple's servers returned DER certificate chains signed by Apple Enterprise Attestation Root CA for both devices $\to$ \texttt{mda\_verified}
+    \item Apple certificate chains verified against embedded root CA; serial numbers cross-checked against attestation blobs
+    \item Two simultaneous consumer requests routed to both providers (health-aware scoring with concurrent batching)
+    \item M4 Max: 92\,tok/s streaming (Qwen3.5 9B); M2: 22\,tok/s. 6,517 tokens generated in 76.2\,s with zero errors
+    \item 8 concurrent requests completed with 100\% success rate across both providers
+    \item Consumer disconnect triggered cancel propagation: coordinator $\to$ provider $\to$ HTTP connection dropped $\to$ backend stopped generating within 1\,s
+    \item Full attestation proof exposed at \texttt{GET /v1/providers/attestation} for independent user verification against Apple's public Enterprise Attestation Root CA
 \end{enumerate}
 
 \subsection{Security and Performance}
 
 \begin{table}[h]
 \centering
-\caption{Security verification and performance overhead on AWS Mac M2.}
+\caption{Security verification and performance on two providers (M4 Max + M2).}
 \vspace{4pt}
 \small
 \begin{tabular}{@{}ll|lr@{}}
 \toprule
-\textbf{Security Check} & \textbf{Result} & \textbf{Overhead} & \textbf{Value} \\
+\textbf{Security Check} & \textbf{Result} & \textbf{Performance} & \textbf{Value} \\
 \midrule
-PT\_DENY\_ATTACH & lldb denied & Model load & 0.5\,s \\
-SIP status & Enabled & First token & 0.2\,s \\
-Secure Boot & Full & Generation & 60\,tok/s \\
-Auth Root Volume & Enabled & SIP check & 12\,ms \\
-MDM $\leftrightarrow$ attestation & Match & Mem wipe & $<$1\,ms \\
-Provider status & Verified & Total overhead & $<$0.5\% \\
+PT\_DENY\_ATTACH & lldb denied & Streaming (9B, M4 Max) & 92\,tok/s \\
+SIP status & Enabled & Streaming (9B, M2) & 22\,tok/s \\
+Secure Boot & Full & Time to first token & 1.4\,s \\
+Auth Root Volume & Enabled & Reconnect after restart & $<$1\,s \\
+MDM SecurityInfo & Match & Concurrent requests & 4/provider \\
+Apple MDA cert chain & Verified & 8 concurrent, 0 failures & 100\% \\
+Provider trust & \texttt{hardware} & SIP check & 12\,ms \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -729,7 +747,7 @@ where $P_{\text{elec}}$ is electricity (\$/hr) and $R_{\text{tok}}$ is decode th
 
 \begin{table}[h]
 \centering
-\caption{Decode throughput (tok/s, Q4 quantization) on Apple Silicon. $\dagger$\,=\,measured benchmark; others bandwidth-scaled at 65\% efficiency.}
+\caption{Decode throughput (tok/s, Q4 quantization) on Apple Silicon. $\dagger$\,=\,measured on live DGInf network; others bandwidth-scaled at 65\% efficiency.}
 \vspace{4pt}
 \small
 \begin{tabular}{@{}llrrr@{}}
@@ -737,7 +755,7 @@ where $P_{\text{elec}}$ is electricity (\$/hr) and $R_{\text{tok}}$ is decode th
 \textbf{Model} & \textbf{Arch} & \textbf{M4 Max} & \textbf{M3 Ultra} \\
 & & 546\,GB/s & 819\,GB/s \\
 \midrule
-Qwen3.5 9B & Dense & 62 & 94 \\
+Qwen3.5 9B & Dense & 92$\dagger$ & 94 \\
 Qwen3.5 27B & Dense & 21 & 32 \\
 Qwen3.5 35B-A3B & MoE (3B) & 101 & 152 \\
 Llama 3.1 70B & Dense & 8 & 13 \\

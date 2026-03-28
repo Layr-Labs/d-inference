@@ -173,6 +173,48 @@ export function VerificationPanel({ trust }: { trust: TrustMetadata }) {
                 : "This provider has not been verified. Responses should not be trusted with sensitive data."}
             </p>
           </div>
+
+          {isHardware && (
+            <div className="mt-3 pt-2 border-t border-border-dim/50">
+              <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider mb-2">
+                Verify Yourself
+              </p>
+              <div className="space-y-2 text-[10px] text-text-tertiary leading-relaxed">
+                <p>
+                  <span className="text-text-secondary font-medium">1.</span> Visit{" "}
+                  <a
+                    href="/providers"
+                    className="text-accent-purple hover:underline"
+                  >
+                    /providers
+                  </a>{" "}
+                  and expand the Security Verification panel
+                </p>
+                <p>
+                  <span className="text-text-secondary font-medium">2.</span> Click{" "}
+                  <span className="text-accent-purple font-medium">Verify Apple Attestation</span>{" "}
+                  to check the certificate chain in your browser
+                </p>
+                <p>
+                  <span className="text-text-secondary font-medium">3.</span> For manual verification: download the MDA cert chain (base64 DER),
+                  decode it, and verify against{" "}
+                  <a
+                    href="https://www.apple.com/certificateauthority/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-accent-purple hover:underline"
+                  >
+                    Apple&apos;s Enterprise Attestation Root CA
+                  </a>
+                </p>
+                <p>
+                  <span className="text-text-secondary font-medium">4.</span> Every inference response includes an{" "}
+                  <span className="font-mono text-text-secondary">se_signature</span>{" "}
+                  signed by the provider&apos;s Secure Enclave key, verifiable against the SE public key shown on the providers page
+                </p>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

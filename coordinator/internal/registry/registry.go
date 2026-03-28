@@ -44,8 +44,9 @@ type TrustLevel string
 
 const (
 	TrustNone       TrustLevel = "none"        // No attestation provided
-	TrustSelfSigned TrustLevel = "self_signed"  // Attestation signed by provider's own key (current)
-	TrustHardware   TrustLevel = "hardware"     // MDA certificate chain verified (future)
+	TrustSelfSigned TrustLevel = "self_signed"  // Attestation signed by provider's own key
+	TrustHardware   TrustLevel = "hardware"     // MDM + MDA verified by Apple
+	TrustAppleGrade TrustLevel = "apple_grade"  // ACME SE key verified + managed app (full Apple chain)
 )
 
 // PendingRequest is a channel-based handle for an in-flight inference request.
@@ -167,14 +168,7 @@ func New(logger *slog.Logger) *Registry {
 
 // trustMeetsMinimum returns true if the given trust level meets the minimum.
 func (r *Registry) trustMeetsMinimum(level TrustLevel) bool {
-	switch r.MinTrustLevel {
-	case TrustNone:
-		return true
-	case TrustSelfSigned:
-		return level == TrustSelfSigned || level == TrustHardware
-	default: // TrustHardware
-		return level == TrustHardware
-	}
+	return trustRank(level) >= trustRank(r.MinTrustLevel)
 }
 
 // Queue returns the registry's request queue.
@@ -348,6 +342,8 @@ func (r *Registry) RecordChallengeFailure(providerID string) int {
 // TrustMultiplier returns the trust multiplier for routing score calculation.
 func TrustMultiplier(t TrustLevel) float64 {
 	switch t {
+	case TrustAppleGrade:
+		return 1.2 // Premium — full Apple SE key chain
 	case TrustHardware:
 		return 1.0
 	case TrustSelfSigned:
@@ -597,6 +593,8 @@ func (r *Registry) ListModels() []AggregateModel {
 // trustRank returns a numeric rank for trust levels (higher = more trusted).
 func trustRank(t TrustLevel) int {
 	switch t {
+	case TrustAppleGrade:
+		return 3
 	case TrustHardware:
 		return 2
 	case TrustSelfSigned:

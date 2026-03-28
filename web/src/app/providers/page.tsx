@@ -17,7 +17,8 @@ import {
   Server,
 } from "lucide-react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://inference-test.openinnovation.dev";
+// Attestation API is public (no auth) — always use the coordinator directly
+const ATTESTATION_API = "https://inference-test.openinnovation.dev";
 
 interface Provider {
   provider_id: string;
@@ -374,7 +375,7 @@ export default function ProvidersPage() {
   useEffect(() => {
     async function fetchProviders() {
       try {
-        const res = await fetch(`${API_BASE}/v1/providers/attestation`);
+        const res = await fetch(`${ATTESTATION_API}/v1/providers/attestation`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
         setData(json);

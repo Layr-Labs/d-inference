@@ -18,10 +18,12 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -140,65 +142,52 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	inferenceBody, _ := json.Marshal(plainBody)
 
-	// E2E encrypt the request body if the provider has a public key.
-	// This prevents the provider from reading prompts via MITM on their
-	// own network — only the hardened process can decrypt with its private key.
-	var wireMsg map[string]any
-	var sessionKeys *e2e.SessionKeys
-
-	if provider.PublicKey != "" {
-		providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
-		if err != nil {
-			s.logger.Warn("provider public key invalid, sending unencrypted",
-				"provider_id", provider.ID, "error", err)
-			wireMsg = map[string]any{
-				"type":       protocol.TypeInferenceRequest,
-				"request_id": requestID,
-				"body":       json.RawMessage(inferenceBody),
-			}
-		} else {
-			session, err := e2e.GenerateSessionKeys()
-			if err != nil {
-				s.logger.Error("failed to generate session keys", "error", err)
-				wireMsg = map[string]any{
-					"type":       protocol.TypeInferenceRequest,
-					"request_id": requestID,
-					"body":       json.RawMessage(inferenceBody),
-				}
-			} else {
-				sessionKeys = session
-				encrypted, err := e2e.Encrypt(inferenceBody, providerPubKey, session)
-				if err != nil {
-					s.logger.Error("failed to encrypt request", "error", err)
-					wireMsg = map[string]any{
-						"type":       protocol.TypeInferenceRequest,
-						"request_id": requestID,
-						"body":       json.RawMessage(inferenceBody),
-					}
-				} else {
-					wireMsg = map[string]any{
-						"type":       protocol.TypeInferenceRequest,
-						"request_id": requestID,
-						"encrypted_body": map[string]string{
-							"ephemeral_public_key": encrypted.EphemeralPublicKey,
-							"ciphertext":           encrypted.Ciphertext,
-						},
-					}
-					s.logger.Debug("request encrypted for provider",
-						"request_id", requestID,
-						"provider_id", provider.ID,
-					)
-				}
-			}
-		}
-	} else {
-		// No public key — send unencrypted (provider registered without key)
-		wireMsg = map[string]any{
-			"type":       protocol.TypeInferenceRequest,
-			"request_id": requestID,
-			"body":       json.RawMessage(inferenceBody),
-		}
+	// E2E encryption is mandatory. Providers without a public key cannot
+	// receive inference requests — consumer prompts must never travel in plaintext.
+	if provider.PublicKey == "" {
+		s.registry.SetProviderIdle(provider.ID)
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
+			"no provider with E2E encryption available for this model — prompt data requires encryption"))
+		return
 	}
+
+	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
+	if err != nil {
+		s.registry.SetProviderIdle(provider.ID)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
+			"provider public key invalid"))
+		return
+	}
+
+	sessionKeys, err := e2e.GenerateSessionKeys()
+	if err != nil {
+		s.registry.SetProviderIdle(provider.ID)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
+			"failed to generate session keys"))
+		return
+	}
+
+	encrypted, err := e2e.Encrypt(inferenceBody, providerPubKey, sessionKeys)
+	if err != nil {
+		s.registry.SetProviderIdle(provider.ID)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
+			"failed to encrypt request"))
+		return
+	}
+
+	wireMsg := map[string]any{
+		"type":       protocol.TypeInferenceRequest,
+		"request_id": requestID,
+		"encrypted_body": map[string]string{
+			"ephemeral_public_key": encrypted.EphemeralPublicKey,
+			"ciphertext":           encrypted.Ciphertext,
+		},
+	}
+
+	s.logger.Debug("request encrypted for provider",
+		"request_id", requestID,
+		"provider_id", provider.ID,
+	)
 
 	// Create pending request channels. These channels connect the provider's
 	// WebSocket read loop to this HTTP handler, allowing chunks to flow from
@@ -213,10 +202,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		CompleteCh:  make(chan protocol.UsageInfo, 1),
 		ErrorCh:     make(chan protocol.InferenceErrorMessage, 1),
 	}
-	// Store session key for decrypting encrypted responses
-	if sessionKeys != nil {
-		pr.SessionPrivKey = &sessionKeys.PrivateKey
-	}
+	pr.SessionPrivKey = &sessionKeys.PrivateKey
 	provider.AddPending(pr)
 
 	// Send the inference request to the provider via WebSocket.
@@ -295,6 +281,193 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.handleStreamingResponse(w, r, pr)
 	} else {
 		s.handleNonStreamingResponse(w, r, pr)
+	}
+}
+
+// handleTranscriptions handles POST /v1/audio/transcriptions.
+//
+// This is the OpenAI-compatible audio transcription endpoint. It accepts
+// multipart/form-data with an audio file and routes it to an STT-capable
+// provider.
+func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
+	// Parse multipart form (max 25MB audio)
+	if err := r.ParseMultipartForm(25 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid multipart form: "+err.Error()))
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "file field is required"))
+		return
+	}
+	defer file.Close()
+
+	model := r.FormValue("model")
+	if model == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
+		return
+	}
+
+	language := r.FormValue("language")
+
+	// Read the audio file into memory
+	audioBytes, err := io.ReadAll(file)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "failed to read audio file"))
+		return
+	}
+
+	// Determine audio format from filename extension
+	ext := strings.TrimPrefix(filepath.Ext(header.Filename), ".")
+	if ext == "" {
+		ext = "wav"
+	}
+
+	// Find a provider that serves the requested STT model.
+	provider := s.registry.FindProviderWithTrust(model, "")
+	if provider == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
+			fmt.Sprintf("no provider available for STT model %q", model)))
+		return
+	}
+
+	// Build the transcription request.
+	requestID := uuid.New().String()
+	consumerKey := consumerKeyFromContext(r.Context())
+
+	transcriptionBody := protocol.TranscriptionRequestBody{
+		Model:  model,
+		Audio:  base64.StdEncoding.EncodeToString(audioBytes),
+		Format: ext,
+	}
+	if language != "" {
+		transcriptionBody.Language = &language
+	}
+
+	bodyJSON, _ := json.Marshal(transcriptionBody)
+
+	// E2E encryption is mandatory for audio data. Providers without a public
+	// key cannot receive transcription requests.
+	if provider.PublicKey == "" {
+		s.registry.SetProviderIdle(provider.ID)
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
+			"no provider with E2E encryption available for this model — audio data requires encryption"))
+		return
+	}
+
+	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
+	if err != nil {
+		s.registry.SetProviderIdle(provider.ID)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
+			"provider public key invalid"))
+		return
+	}
+
+	sessionKeys, err := e2e.GenerateSessionKeys()
+	if err != nil {
+		s.registry.SetProviderIdle(provider.ID)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
+			"failed to generate session keys"))
+		return
+	}
+
+	encrypted, err := e2e.Encrypt(bodyJSON, providerPubKey, sessionKeys)
+	if err != nil {
+		s.registry.SetProviderIdle(provider.ID)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
+			"failed to encrypt transcription request"))
+		return
+	}
+
+	wireMsg := map[string]any{
+		"type":       protocol.TypeTranscriptionRequest,
+		"request_id": requestID,
+		"encrypted_body": map[string]string{
+			"ephemeral_public_key": encrypted.EphemeralPublicKey,
+			"ciphertext":           encrypted.Ciphertext,
+		},
+	}
+
+	s.logger.Debug("transcription request encrypted for provider",
+		"request_id", requestID,
+		"provider_id", provider.ID,
+	)
+
+	// Create pending request with transcription channel.
+	pr := &registry.PendingRequest{
+		RequestID:       requestID,
+		ProviderID:      provider.ID,
+		Model:           model,
+		ConsumerKey:     consumerKey,
+		ChunkCh:         make(chan string, 1),
+		CompleteCh:      make(chan protocol.UsageInfo, 1),
+		ErrorCh:         make(chan protocol.InferenceErrorMessage, 1),
+		TranscriptionCh: make(chan *protocol.TranscriptionCompleteMessage, 1),
+	}
+	if sessionKeys != nil {
+		pr.SessionPrivKey = &sessionKeys.PrivateKey
+	}
+	provider.AddPending(pr)
+
+	// Send the request to the provider.
+	data, err := json.Marshal(wireMsg)
+	if err != nil {
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal request"))
+		return
+	}
+	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+		s.logger.Error("failed to send transcription request", "request_id", requestID, "error", err)
+		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
+		return
+	}
+
+	s.logger.Info("transcription request dispatched",
+		"request_id", requestID,
+		"model", model,
+		"provider_id", provider.ID,
+		"audio_size", len(audioBytes),
+		"format", ext,
+	)
+
+	// Cleanup on return.
+	defer func() {
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+	}()
+
+	// Wait for the transcription result.
+	ctx, cancel := context.WithTimeout(r.Context(), inferenceTimeout)
+	defer cancel()
+
+	select {
+	case result := <-pr.TranscriptionCh:
+		// Build OpenAI-compatible transcription response.
+		resp := map[string]any{
+			"text": result.Text,
+		}
+		if len(result.Segments) > 0 {
+			resp["segments"] = result.Segments
+		}
+		if result.Language != "" {
+			resp["language"] = result.Language
+		}
+		resp["duration"] = result.Usage.AudioSeconds
+		writeJSON(w, http.StatusOK, resp)
+
+	case errMsg := <-pr.ErrorCh:
+		statusCode := errMsg.StatusCode
+		if statusCode == 0 {
+			statusCode = http.StatusBadGateway
+		}
+		writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+
+	case <-ctx.Done():
+		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "transcription request timed out"))
 	}
 }
 

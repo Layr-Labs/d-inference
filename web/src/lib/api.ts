@@ -120,6 +120,42 @@ export async function healthCheck(): Promise<{ status: string; providers: number
   return res.json();
 }
 
+export interface TranscriptionResult {
+  text: string;
+  language?: string;
+  duration?: number;
+  segments?: { start: number; end: number; text: string }[];
+}
+
+export async function transcribeAudio(
+  file: File | Blob,
+  model: string,
+  language?: string
+): Promise<TranscriptionResult> {
+  const { apiKey, baseUrl } = getConfig();
+
+  const form = new FormData();
+  form.append("file", file, file instanceof File ? file.name : "recording.wav");
+  form.append("model", model);
+  if (language) form.append("language", language);
+
+  const res = await fetch("/api/transcribe", {
+    method: "POST",
+    headers: {
+      "x-coordinator-url": baseUrl,
+      ...(apiKey ? { "x-api-key": apiKey } : {}),
+    },
+    body: form,
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Transcription failed (${res.status}): ${text}`);
+  }
+
+  return res.json();
+}
+
 export async function streamChat(
   messages: ChatMessage[],
   model: string,

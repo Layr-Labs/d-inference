@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import { TrustBadge } from "./TrustBadge";
 import { VerificationPanel } from "./VerificationPanel";
 import type { Message } from "@/lib/store";
-import { User, Bot, Copy, Check, ChevronRight, Brain } from "lucide-react";
+import { User, Bot, Copy, Check, ChevronRight, Brain, Volume2 } from "lucide-react";
 import { useState, useCallback } from "react";
 
 function CodeBlock({
@@ -147,6 +147,24 @@ export function ChatMessage({ message }: { message: Message }) {
               </span>
               {message.trust && <TrustBadge trust={message.trust} />}
             </div>
+
+            {/* Audio player for messages with audio */}
+            {message.audioUrl && (
+              <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg bg-bg-tertiary border border-border-dim">
+                <Volume2 size={14} className="text-accent-purple shrink-0" />
+                <audio
+                  controls
+                  src={message.audioUrl}
+                  className="h-8 flex-1"
+                  style={{ minWidth: 0 }}
+                />
+                {message.audioDuration != null && (
+                  <span className="text-[10px] font-mono text-text-tertiary shrink-0">
+                    {Math.round(message.audioDuration)}s
+                  </span>
+                )}
+              </div>
+            )}
 
             {/* Thinking block */}
             {hasThinking && (

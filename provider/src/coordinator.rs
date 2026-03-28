@@ -24,6 +24,7 @@ use crate::hardware::HardwareInfo;
 use crate::models::ModelInfo;
 use crate::protocol::{
     CoordinatorMessage, ProviderMessage, ProviderStats, ProviderStatus,
+    TranscriptionRequestBody,
 };
 
 /// Messages from coordinator connection to the main loop.
@@ -34,6 +35,10 @@ pub enum CoordinatorEvent {
     InferenceRequest {
         request_id: String,
         body: serde_json::Value,
+    },
+    TranscriptionRequest {
+        request_id: String,
+        body: TranscriptionRequestBody,
     },
     Cancel {
         request_id: String,
@@ -254,6 +259,36 @@ impl CoordinatorClient {
                                         request_id,
                                         body: decrypted_body,
                                     }).await;
+                                }
+                                Ok(CoordinatorMessage::TranscriptionRequest { request_id, body, encrypted_body }) => {
+                                    tracing::info!("Received transcription request: {request_id}");
+
+                                    // Decrypt E2E encrypted body if present
+                                    let decrypted_body = if let Some(enc) = encrypted_body {
+                                        tracing::info!("Decrypting E2E encrypted transcription request");
+                                        match decrypt_request_body(&enc, self.public_key.as_deref()) {
+                                            Ok(b) => b,
+                                            Err(e) => {
+                                                tracing::error!("Failed to decrypt transcription request: {e}");
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        body
+                                    };
+
+                                    // Parse the transcription body
+                                    match serde_json::from_value::<TranscriptionRequestBody>(decrypted_body) {
+                                        Ok(parsed_body) => {
+                                            let _ = event_tx.send(CoordinatorEvent::TranscriptionRequest {
+                                                request_id,
+                                                body: parsed_body,
+                                            }).await;
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to parse transcription body: {e}");
+                                        }
+                                    }
                                 }
                                 Ok(CoordinatorMessage::Cancel { request_id }) => {
                                     tracing::info!("Received cancel for: {request_id}");

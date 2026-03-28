@@ -164,12 +164,13 @@ func TestProviderInferenceError(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Register.
+	// Register (with public key — encryption is mandatory).
 	regMsg := protocol.RegisterMessage{
-		Type:    protocol.TypeRegister,
-		Hardware: protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
-		Models:  []protocol.ModelInfo{{ID: "error-model", ModelType: "test", Quantization: "4bit"}},
-		Backend: "test",
+		Type:      protocol.TypeRegister,
+		Hardware:  protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
+		Models:    []protocol.ModelInfo{{ID: "error-model", ModelType: "test", Quantization: "4bit"}},
+		Backend:   "test",
+		PublicKey: "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
 	}
 	regData, _ := json.Marshal(regMsg)
 	conn.Write(ctx, websocket.MessageText, regData)
@@ -711,6 +712,7 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 		Hardware:    protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:      []protocol.ModelInfo{{ID: "trust-model", ModelType: "test", Quantization: "4bit"}},
 		Backend:     "test",
+		PublicKey:   "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
 		Attestation: attestationJSON,
 	}
 	regData, _ := json.Marshal(regMsg)
@@ -718,6 +720,8 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Provider goroutine — respond with completion.
+	// Note: with mandatory E2E encryption, the request body arrives encrypted.
+	// For this test we just parse the wire message to get the request_id.
 	go func() {
 		_, data, err := conn.Read(ctx)
 		if err != nil {

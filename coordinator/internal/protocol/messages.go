@@ -33,11 +33,13 @@ const (
 	TypeInferenceComplete     = "inference_complete"
 	TypeInferenceError        = "inference_error"
 	TypeAttestationResponse   = "attestation_response"
+	TypeTranscriptionComplete = "transcription_complete"
 
 	// Coordinator → Provider
-	TypeInferenceRequest      = "inference_request"
-	TypeCancel                = "cancel"
-	TypeAttestationChallenge  = "attestation_challenge"
+	TypeInferenceRequest        = "inference_request"
+	TypeCancel                  = "cancel"
+	TypeAttestationChallenge    = "attestation_challenge"
+	TypeTranscriptionRequest    = "transcription_request"
 )
 
 // ---------------------------------------------------------------------------
@@ -209,6 +211,52 @@ type AttestationResponseMessage struct {
 }
 
 // ---------------------------------------------------------------------------
+// STT (Speech-to-Text) messages
+// ---------------------------------------------------------------------------
+
+// TranscriptionRequestBody is the body sent inside a TranscriptionRequest.
+type TranscriptionRequestBody struct {
+	Model    string  `json:"model"`
+	Audio    string  `json:"audio"`              // base64-encoded audio data
+	Language *string `json:"language,omitempty"`  // ISO 639-1 language code (e.g. "en")
+	Format   string  `json:"format,omitempty"`    // audio format hint: "mp3", "wav", etc.
+}
+
+// TranscriptionRequestMessage tells a provider to transcribe audio.
+// When E2E encryption is enabled, Body is empty and EncryptedBody contains
+// the NaCl Box encrypted request (same as InferenceRequestMessage).
+type TranscriptionRequestMessage struct {
+	Type          string                   `json:"type"`
+	RequestID     string                   `json:"request_id"`
+	Body          TranscriptionRequestBody `json:"body,omitempty"`
+	EncryptedBody *EncryptedPayload        `json:"encrypted_body,omitempty"`
+}
+
+// TranscriptionSegment is a timed segment within a transcription.
+type TranscriptionSegment struct {
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+	Text  string  `json:"text"`
+}
+
+// TranscriptionUsage carries usage info for billing STT requests.
+type TranscriptionUsage struct {
+	AudioSeconds     float64 `json:"audio_seconds"`
+	GenerationTokens int     `json:"generation_tokens"`
+}
+
+// TranscriptionCompleteMessage signals the provider finished transcribing.
+type TranscriptionCompleteMessage struct {
+	Type         string                 `json:"type"`
+	RequestID    string                 `json:"request_id"`
+	Text         string                 `json:"text"`
+	Segments     []TranscriptionSegment `json:"segments,omitempty"`
+	Language     string                 `json:"language,omitempty"`
+	Usage        TranscriptionUsage     `json:"usage"`
+	DurationSecs float64               `json:"duration_secs"` // processing time
+}
+
+// ---------------------------------------------------------------------------
 // Envelope: generic unmarshalling for provider messages
 // ---------------------------------------------------------------------------
 
@@ -270,6 +318,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg AttestationResponseMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal attestation_response: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeTranscriptionComplete:
+		var msg TranscriptionCompleteMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal transcription_complete: %w", err)
 		}
 		pm.Payload = &msg
 

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useCallback, useState } from "react";
 import { useStore } from "@/lib/store";
-import { streamChat, fetchModels } from "@/lib/api";
+import { streamChat, fetchModels, transcribeAudio } from "@/lib/api";
 import { useToastStore } from "@/hooks/useToast";
 import { ChatMessage } from "@/components/ChatMessage";
 import { ChatInput } from "@/components/ChatInput";
@@ -25,6 +25,7 @@ export default function ChatPage() {
     appendToThinking,
     updateChatTitle,
     selectedModel,
+    models,
     setModels,
   } = useStore();
 
@@ -32,6 +33,7 @@ export default function ChatPage() {
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
 
   const activeChat = chats.find((c) => c.id === activeChatId);
 
@@ -196,6 +198,94 @@ export default function ChatPage() {
     setIsStreaming(false);
   }, []);
 
+  const handleAudio = useCallback(
+    async (blob: Blob, duration: number) => {
+      let chatId = activeChatId;
+      if (!chatId) {
+        chatId = createChat();
+      }
+
+      const chat = useStore.getState().chats.find((c) => c.id === chatId);
+      if (chat && chat.messages.length === 0) {
+        updateChatTitle(chatId, "Audio transcription");
+      }
+
+      // Create a URL for the audio blob so we can play it back
+      const audioUrl = URL.createObjectURL(blob);
+
+      // Add user message showing audio was sent
+      const userMsg: Message = {
+        id: generateId(),
+        role: "user",
+        content: `[Audio: ${Math.round(duration)}s]`,
+        audioUrl,
+        audioDuration: duration,
+        timestamp: Date.now(),
+      };
+      addMessage(chatId, userMsg);
+
+      // Add assistant placeholder for transcription result
+      const assistantId = generateId();
+      const assistantMsg: Message = {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        streaming: true,
+        timestamp: Date.now(),
+      };
+      addMessage(chatId, assistantMsg);
+
+      setIsTranscribing(true);
+
+      try {
+        // Find an STT model, or use the selected model
+        const sttModel =
+          models.find((m) => m.model_type === "stt")?.id || selectedModel;
+
+        const result = await transcribeAudio(blob, sttModel);
+
+        updateMessage(chatId, assistantId, {
+          content: result.text,
+          streaming: false,
+        });
+
+        // If we got a transcription, also update the user message with the text
+        if (result.text) {
+          updateMessage(chatId, userMsg.id, {
+            content: result.text,
+            audioUrl,
+            audioDuration: result.duration || duration,
+          });
+          // Update chat title with first bit of transcription
+          const title =
+            result.text.length > 40
+              ? result.text.slice(0, 40) + "..."
+              : result.text;
+          updateChatTitle(chatId, title);
+        }
+      } catch (err) {
+        const msg = (err as Error).message;
+        updateMessage(chatId, assistantId, {
+          content: `Transcription error: ${msg}`,
+          streaming: false,
+        });
+        addToast(`Transcription error: ${msg}`);
+      } finally {
+        setIsTranscribing(false);
+      }
+    },
+    [
+      activeChatId,
+      createChat,
+      addMessage,
+      updateMessage,
+      updateChatTitle,
+      selectedModel,
+      models,
+      addToast,
+    ]
+  );
+
   return (
     <div className="flex flex-col h-full">
       <TopBar />
@@ -247,7 +337,9 @@ export default function ChatPage() {
       <ChatInput
         onSend={handleSend}
         onStop={handleStop}
+        onAudio={handleAudio}
         isStreaming={isStreaming}
+        isTranscribing={isTranscribing}
       />
     </div>
   );

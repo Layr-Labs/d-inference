@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"crypto/rand"
+	"encoding/base64"
+
 	"github.com/dginf/coordinator/internal/protocol"
 	"github.com/dginf/coordinator/internal/registry"
 	"github.com/dginf/coordinator/internal/store"
@@ -199,6 +202,13 @@ func TestCORSPreflight(t *testing.T) {
 	}
 }
 
+// testPublicKeyB64 generates a random 32-byte X25519 public key for tests.
+func testPublicKeyB64() string {
+	key := make([]byte, 32)
+	rand.Read(key)
+	return base64.StdEncoding.EncodeToString(key)
+}
+
 // TestStreamingE2E sets up a full end-to-end streaming test with a simulated
 // provider connected via WebSocket.
 func TestStreamingE2E(t *testing.T) {
@@ -222,7 +232,7 @@ func TestStreamingE2E(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Send register message.
+	// Send register message (with public key — encryption is mandatory).
 	regMsg := protocol.RegisterMessage{
 		Type: protocol.TypeRegister,
 		Hardware: protocol.Hardware{
@@ -233,7 +243,8 @@ func TestStreamingE2E(t *testing.T) {
 		Models: []protocol.ModelInfo{
 			{ID: "test-model", SizeBytes: 1000, ModelType: "test", Quantization: "4bit"},
 		},
-		Backend: "test",
+		Backend:   "test",
+		PublicKey: testPublicKeyB64(),
 	}
 	regData, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
@@ -367,12 +378,13 @@ func TestNonStreamingE2E(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Register.
+	// Register (with public key — encryption is mandatory).
 	regMsg := protocol.RegisterMessage{
-		Type:    protocol.TypeRegister,
-		Hardware: protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
-		Models:  []protocol.ModelInfo{{ID: "test-model", ModelType: "test", Quantization: "4bit"}},
-		Backend: "test",
+		Type:      protocol.TypeRegister,
+		Hardware:  protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
+		Models:    []protocol.ModelInfo{{ID: "test-model", ModelType: "test", Quantization: "4bit"}},
+		Backend:   "test",
+		PublicKey: testPublicKeyB64(),
 	}
 	regData, _ := json.Marshal(regMsg)
 	conn.Write(ctx, websocket.MessageText, regData)

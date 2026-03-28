@@ -641,6 +641,61 @@ async fn cmd_serve(
     let backend_url = backend_url_str.clone();
     tracing::info!("Backend URL: {backend_url}");
 
+    // Start STT backend (continuous-batching stt_server.py) on be_port + 1 if available.
+    // Set DGINF_STT_MODEL to a local path or HuggingFace repo ID to enable STT.
+    let stt_port = be_port + 1;
+    let stt_model_id = std::env::var("DGINF_STT_MODEL")
+        .unwrap_or_default();
+    let stt_available = if !stt_model_id.is_empty() {
+        tracing::info!("Starting STT backend on port {stt_port} for model: {stt_model_id}");
+
+        // Find stt_server.py relative to the binary or in standard locations
+        let stt_server_script = find_stt_server_script();
+        if stt_server_script.is_none() {
+            tracing::warn!("stt_server.py not found — STT will not be available");
+            false
+        } else {
+            let script = stt_server_script.unwrap();
+            let stt_result = std::process::Command::new(&python_cmd)
+                .args([
+                    &script,
+                    "--model", &stt_model_id,
+                    "--port", &stt_port.to_string(),
+                    "--host", "127.0.0.1",
+                    "--max-batch-size", "16",
+                    "--max-wait-ms", "100",
+                ])
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .spawn();
+            match stt_result {
+                Ok(child) => {
+                    tracing::info!("STT server started (PID: {:?}) on port {stt_port}", child.id());
+                    // Wait for STT backend to be ready (model loading can take a few seconds)
+                    let stt_url = format!("http://127.0.0.1:{stt_port}");
+                    for i in 0..30 {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        if backend::check_health(&stt_url).await {
+                            tracing::info!("STT backend ready after {}s", (i + 1) * 2);
+                            break;
+                        }
+                        if i == 29 {
+                            tracing::warn!("STT backend health check timed out after 60s");
+                        }
+                    }
+                    true
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to start STT backend: {e} — STT will not be available");
+                    false
+                }
+            }
+        }
+    } else {
+        tracing::info!("No STT model configured (set DGINF_STT_MODEL to enable)");
+        false
+    };
+
     if local {
         // Local-only mode: just start the HTTP server
         tracing::info!("Local-only mode on port {port}");
@@ -654,12 +709,25 @@ async fn cmd_serve(
         // Advertising all cached models causes routing failures when the
         // coordinator sends requests for a model that isn't loaded.
         let all_models = models::scan_models(&hw);
-        let available_models: Vec<_> = all_models
+        let mut available_models: Vec<_> = all_models
             .into_iter()
             .filter(|m| m.id == model)
             .collect();
         if available_models.is_empty() {
             tracing::warn!("Active model {model} not found in scanned models — registering with ID only");
+        }
+
+        // Advertise STT model if available
+        if stt_available && !stt_model_id.is_empty() {
+            available_models.push(models::ModelInfo {
+                id: stt_model_id.clone(),
+                model_type: Some("stt".to_string()),
+                parameters: None,
+                quantization: None,
+                size_bytes: 0,
+                estimated_memory_gb: 4.0,
+            });
+            tracing::info!("Advertising STT model: {stt_model_id}");
         }
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
         let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(64);
@@ -878,6 +946,28 @@ async fn cmd_serve(
 
                                 inflight.insert(request_id, (cancel_token, handle));
                             }
+                            coordinator::CoordinatorEvent::TranscriptionRequest { request_id, body } => {
+                                last_request_time = tokio::time::Instant::now();
+
+                                let tx = outbound_tx.clone();
+                                let cancel_token = CancellationToken::new();
+                                let token_clone = cancel_token.clone();
+                                let done_tx = done_tx.clone();
+                                let rid = request_id.clone();
+                                let stt_url = proxy_backend_url.clone().replace(
+                                    &format!(":{}", be_port),
+                                    &format!(":{}", be_port + 1),
+                                );
+
+                                let handle = tokio::spawn(async move {
+                                    proxy::handle_transcription_request(
+                                        rid.clone(), body, stt_url, tx, token_clone,
+                                    ).await;
+                                    let _ = done_tx.send(rid).await;
+                                });
+
+                                inflight.insert(request_id, (cancel_token, handle));
+                            }
                             coordinator::CoordinatorEvent::Cancel { request_id } => {
                                 if let Some((token, _handle)) = inflight.remove(&request_id) {
                                     tracing::info!("Cancelling request {request_id}");
@@ -1082,6 +1172,28 @@ async fn handle_inprocess_request(
 /// regenerated. This avoids providers registering with unverifiable attestations.
 ///
 /// Returns None if the CLI tool is not available or fails (graceful degradation).
+/// Find the stt_server.py script in standard locations.
+fn find_stt_server_script() -> Option<String> {
+    let candidates = [
+        // Next to the binary
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("stt_server.py")))
+            .unwrap_or_default(),
+        // In the provider source directory (development)
+        std::path::PathBuf::from("stt_server.py"),
+        // In ~/.dginf
+        dirs::home_dir().unwrap_or_default().join(".dginf/stt_server.py"),
+    ];
+
+    for path in &candidates {
+        if path.exists() {
+            return Some(path.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
 fn generate_attestation(encryption_key_base64: &str, binary_hash: Option<&str>) -> Option<Box<serde_json::value::RawValue>> {
     // Look for the enclave CLI binary in common locations
     // Check ~/.dginf/bin first (standard install location)

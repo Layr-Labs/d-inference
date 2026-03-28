@@ -60,6 +60,9 @@ type PendingRequest struct {
 	SessionPrivKey *[32]byte               // E2E session private key for decrypting responses
 	SESignature    string                  // SE signature over response hash
 	ResponseHash   string                  // SHA-256 of response data
+
+	// STT transcription result (nil for inference requests)
+	TranscriptionCh chan *protocol.TranscriptionCompleteMessage
 }
 
 // Provider represents a connected provider agent.

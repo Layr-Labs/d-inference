@@ -73,6 +73,18 @@ pub enum ProviderMessage {
         error: String,
         status_code: u16,
     },
+    /// Transcription result — full text and optional segments.
+    TranscriptionComplete {
+        request_id: String,
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        segments: Option<Vec<TranscriptionSegment>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        language: Option<String>,
+        usage: TranscriptionUsage,
+        /// Processing time in seconds.
+        duration_secs: f64,
+    },
     /// Response to an attestation challenge from the coordinator.
     /// Includes a fresh SIP status check — the coordinator verifies this
     /// hasn't changed since registration.
@@ -102,6 +114,15 @@ pub enum CoordinatorMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         encrypted_body: Option<EncryptedPayload>,
     },
+    /// Transcription request — provider should transcribe the audio data.
+    TranscriptionRequest {
+        request_id: String,
+        #[serde(default)]
+        body: serde_json::Value,
+        /// E2E encrypted transcription body — same encryption as inference requests
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_body: Option<EncryptedPayload>,
+    },
     Cancel {
         request_id: String,
     },
@@ -110,6 +131,20 @@ pub enum CoordinatorMessage {
         nonce: String,
         timestamp: String,
     },
+}
+
+/// Body of a transcription request from the coordinator.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TranscriptionRequestBody {
+    pub model: String,
+    /// Base64-encoded audio data.
+    pub audio: String,
+    /// ISO 639-1 language code (e.g. "en"). Optional — model may auto-detect.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Audio format hint: "mp3", "wav", "webm", etc.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub format: String,
 }
 
 /// NaCl Box encrypted payload for E2E encryption.
@@ -157,6 +192,21 @@ impl Default for ProviderStats {
 pub struct UsageInfo {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+}
+
+/// A timed segment within a transcription result.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TranscriptionSegment {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
+
+/// Usage info for billing STT requests.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TranscriptionUsage {
+    pub audio_seconds: f64,
+    pub generation_tokens: u64,
 }
 
 #[cfg(test)]
@@ -498,6 +548,88 @@ mod tests {
                 assert_eq!(timestamp, "2025-06-01T00:00:00Z");
             }
             _ => panic!("expected AttestationChallenge"),
+        }
+    }
+
+    #[test]
+    fn test_transcription_request_roundtrip() {
+        let body = serde_json::json!({
+            "model": "CohereLabs/cohere-transcribe",
+            "audio": "SGVsbG8=",
+            "language": "en",
+            "format": "wav"
+        });
+        let msg = CoordinatorMessage::TranscriptionRequest {
+            request_id: "stt-123".to_string(),
+            body,
+            encrypted_body: None,
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"transcription_request\""));
+        assert!(json.contains("\"request_id\":\"stt-123\""));
+        assert!(json.contains("\"model\":\"CohereLabs/cohere-transcribe\""));
+        assert!(json.contains("\"audio\":\"SGVsbG8=\""));
+        let deserialized: CoordinatorMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, deserialized);
+    }
+
+    #[test]
+    fn test_transcription_complete_roundtrip() {
+        let msg = ProviderMessage::TranscriptionComplete {
+            request_id: "stt-456".to_string(),
+            text: "Hello world".to_string(),
+            segments: Some(vec![TranscriptionSegment {
+                start: 0.0,
+                end: 5.0,
+                text: "Hello world".to_string(),
+            }]),
+            language: Some("en".to_string()),
+            usage: TranscriptionUsage {
+                audio_seconds: 5.0,
+                generation_tokens: 10,
+            },
+            duration_secs: 0.5,
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"transcription_complete\""));
+        assert!(json.contains("\"text\":\"Hello world\""));
+        assert!(json.contains("\"audio_seconds\":5.0"));
+        assert!(json.contains("\"duration_secs\":0.5"));
+        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, deserialized);
+    }
+
+    #[test]
+    fn test_deserialize_transcription_request_from_go_json() {
+        // This is the JSON format that Go coordinator would produce (plaintext)
+        let raw = r#"{"type":"transcription_request","request_id":"go-req-1","body":{"model":"cohere-transcribe","audio":"dGVzdA==","language":"en","format":"mp3"}}"#;
+        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
+        match msg {
+            CoordinatorMessage::TranscriptionRequest { request_id, body, encrypted_body } => {
+                assert_eq!(request_id, "go-req-1");
+                assert_eq!(body["model"], "cohere-transcribe");
+                assert_eq!(body["audio"], "dGVzdA==");
+                assert!(encrypted_body.is_none());
+            }
+            _ => panic!("expected TranscriptionRequest"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_transcription_request_encrypted() {
+        // When E2E encrypted, body is empty and encrypted_body is present
+        let raw = r#"{"type":"transcription_request","request_id":"enc-1","encrypted_body":{"ephemeral_public_key":"a2V5","ciphertext":"Y2lwaGVy"}}"#;
+        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
+        match msg {
+            CoordinatorMessage::TranscriptionRequest { request_id, encrypted_body, .. } => {
+                assert_eq!(request_id, "enc-1");
+                let enc = encrypted_body.unwrap();
+                assert_eq!(enc.ephemeral_public_key, "a2V5");
+                assert_eq!(enc.ciphertext, "Y2lwaGVy");
+            }
+            _ => panic!("expected TranscriptionRequest"),
         }
     }
 }

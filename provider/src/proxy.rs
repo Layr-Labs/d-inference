@@ -20,7 +20,9 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::crypto::NodeKeyPair;
-use crate::protocol::{ProviderMessage, UsageInfo};
+use crate::protocol::{
+    ProviderMessage, TranscriptionRequestBody, TranscriptionSegment, TranscriptionUsage, UsageInfo,
+};
 use crate::security;
 
 /// Handle an inference request by forwarding it to the local backend
@@ -338,6 +340,212 @@ async fn handle_streaming_request(
         .ok();
 
     Ok(())
+}
+
+/// Handle a transcription request by forwarding audio to the local STT backend.
+///
+/// Decodes base64 audio, writes it to a temp file, POSTs it as multipart/form-data
+/// to the mlx-audio server's /v1/audio/transcriptions endpoint, and sends the
+/// result back as a TranscriptionComplete message.
+pub async fn handle_transcription_request(
+    request_id: String,
+    body: TranscriptionRequestBody,
+    stt_backend_url: String,
+    outbound_tx: mpsc::Sender<ProviderMessage>,
+    cancel_token: CancellationToken,
+) {
+    let start = std::time::Instant::now();
+
+    let result =
+        do_transcription(&request_id, &body, &stt_backend_url, &outbound_tx, &cancel_token, start).await;
+
+    if let Err(e) = result {
+        if cancel_token.is_cancelled() {
+            tracing::info!("Transcription request {request_id} cancelled");
+        } else {
+            tracing::error!("Transcription request {request_id} failed: {e}");
+            let _ = outbound_tx
+                .send(ProviderMessage::InferenceError {
+                    request_id: request_id.clone(),
+                    error: e.to_string(),
+                    status_code: 500,
+                })
+                .await;
+        }
+    }
+
+    tracing::info!(
+        "Transcription request {request_id} finished in {:.2}s",
+        start.elapsed().as_secs_f64()
+    );
+}
+
+async fn do_transcription(
+    request_id: &str,
+    body: &TranscriptionRequestBody,
+    stt_backend_url: &str,
+    outbound_tx: &mpsc::Sender<ProviderMessage>,
+    cancel_token: &CancellationToken,
+    start: std::time::Instant,
+) -> Result<()> {
+    use base64::Engine;
+
+    // Decode base64 audio
+    let audio_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&body.audio)
+        .context("invalid base64 audio data")?;
+
+    let audio_seconds = estimate_audio_duration(&audio_bytes, &body.format);
+
+    // Determine file extension from format hint
+    let ext = if body.format.is_empty() { "wav" } else { &body.format };
+
+    // Write to temp file for multipart upload
+    let tmp_path = format!("/tmp/dginf-stt-{request_id}.{ext}");
+    tokio::fs::write(&tmp_path, &audio_bytes)
+        .await
+        .context("failed to write temp audio file")?;
+
+    // Build multipart form
+    let file_bytes = tokio::fs::read(&tmp_path)
+        .await
+        .context("failed to read temp audio file")?;
+
+    let file_part = reqwest::multipart::Part::bytes(file_bytes)
+        .file_name(format!("audio.{ext}"))
+        .mime_str(&format!("audio/{ext}"))
+        .unwrap_or_else(|_| {
+            reqwest::multipart::Part::bytes(vec![])
+                .file_name("audio.wav")
+        });
+
+    let mut form = reqwest::multipart::Form::new()
+        .part("file", file_part)
+        .text("model", body.model.clone());
+
+    if let Some(ref lang) = body.language {
+        form = form.text("language", lang.clone());
+    }
+
+    let url = format!("{stt_backend_url}/v1/audio/transcriptions");
+    let client = reqwest::Client::new();
+
+    let response = tokio::select! {
+        result = client.post(&url).multipart(form).send() => {
+            result.context("failed to send transcription request to STT backend")?
+        }
+        _ = cancel_token.cancelled() => {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            anyhow::bail!("request cancelled");
+        }
+    };
+
+    // Clean up temp file
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_body = response.text().await.unwrap_or_default();
+        outbound_tx
+            .send(ProviderMessage::InferenceError {
+                request_id: request_id.to_string(),
+                error: error_body,
+                status_code: status.as_u16(),
+            })
+            .await
+            .ok();
+        return Ok(());
+    }
+
+    // mlx-audio returns NDJSON; read the full response
+    let response_text = response.text().await.context("failed to read STT response")?;
+
+    // Parse the NDJSON response (may have multiple lines)
+    let mut text = String::new();
+    let mut segments = Vec::new();
+    let mut language = None;
+    let mut generation_tokens: u64 = 0;
+
+    for line in response_text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+            // Full result format
+            if let Some(t) = json.get("text").and_then(|v| v.as_str()) {
+                text = t.to_string();
+            }
+            if let Some(lang) = json.get("language").and_then(|v| v.as_str()) {
+                language = Some(lang.to_string());
+            }
+            if let Some(gt) = json.get("generation_tokens").and_then(|v| v.as_u64()) {
+                generation_tokens = gt;
+            }
+            if let Some(segs) = json.get("segments").and_then(|v| v.as_array()) {
+                for seg in segs {
+                    if let (Some(start), Some(end), Some(seg_text)) = (
+                        seg.get("start").and_then(|v| v.as_f64()),
+                        seg.get("end").and_then(|v| v.as_f64()),
+                        seg.get("text").and_then(|v| v.as_str()),
+                    ) {
+                        segments.push(TranscriptionSegment {
+                            start,
+                            end,
+                            text: seg_text.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    outbound_tx
+        .send(ProviderMessage::TranscriptionComplete {
+            request_id: request_id.to_string(),
+            text,
+            segments: if segments.is_empty() { None } else { Some(segments) },
+            language,
+            usage: TranscriptionUsage {
+                audio_seconds,
+                generation_tokens,
+            },
+            duration_secs: start.elapsed().as_secs_f64(),
+        })
+        .await
+        .ok();
+
+    Ok(())
+}
+
+/// Estimate audio duration from raw bytes and format.
+/// This is approximate — mainly for billing. Exact duration comes from the STT result.
+fn estimate_audio_duration(bytes: &[u8], format: &str) -> f64 {
+    match format {
+        "wav" => {
+            // WAV: sample_rate at offset 24, bits_per_sample at 34, data starts at 44
+            if bytes.len() > 44 {
+                let sample_rate = u32::from_le_bytes(
+                    bytes[24..28].try_into().unwrap_or([0; 4]),
+                ) as f64;
+                let bits = u16::from_le_bytes(
+                    bytes[34..36].try_into().unwrap_or([0; 2]),
+                ) as f64;
+                let channels = u16::from_le_bytes(
+                    bytes[22..24].try_into().unwrap_or([0; 2]),
+                ) as f64;
+                if sample_rate > 0.0 && bits > 0.0 && channels > 0.0 {
+                    let data_bytes = (bytes.len() - 44) as f64;
+                    return data_bytes / (sample_rate * channels * bits / 8.0);
+                }
+            }
+            0.0
+        }
+        "mp3" => {
+            // Rough estimate: ~128kbps MP3
+            (bytes.len() as f64 * 8.0) / 128_000.0
+        }
+        _ => 0.0,
+    }
 }
 
 /// Extract usage info from a non-streaming response JSON body.

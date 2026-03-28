@@ -1034,12 +1034,18 @@ async fn handle_inprocess_request(
                 }).await;
             }
 
+            let sign_data = format!("{}:{}:{}", request_id, inference_result.completion_tokens, "inprocess");
+            let response_hash = security::sha256_hex(sign_data.as_bytes());
+            let se_signature = security::se_sign(response_hash.as_bytes());
+
             let _ = outbound_tx.send(protocol::ProviderMessage::InferenceComplete {
                 request_id,
                 usage: protocol::UsageInfo {
                     prompt_tokens: inference_result.prompt_tokens,
                     completion_tokens: inference_result.completion_tokens,
                 },
+                se_signature,
+                response_hash: Some(response_hash),
             }).await;
         }
         Ok(Err(e)) => {

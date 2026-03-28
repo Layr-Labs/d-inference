@@ -140,6 +140,30 @@ do {
     case "info":
         try cmdInfo()
 
+    case "sign":
+        // Sign arbitrary data with the SE key
+        var dataB64: String? = nil
+        var i = 2
+        while i < args.count {
+            if args[i] == "--data" && i + 1 < args.count {
+                dataB64 = args[i + 1]
+                i += 2
+            } else {
+                i += 1
+            }
+        }
+        guard let dataB64 = dataB64 else {
+            fputs("error: --data <base64> required\n", stderr)
+            exit(1)
+        }
+        guard let data = Data(base64Encoded: dataB64) else {
+            fputs("error: invalid base64 data\n", stderr)
+            exit(1)
+        }
+        let signIdentity = try loadOrCreateIdentity()
+        let signature = try signIdentity.sign(data)
+        print(signature.base64EncodedString())
+
     case "tls-bridge":
         // WebSocket bridge with TLS client cert from managed profile
         var coordinatorURL = "wss://inference-test.openinnovation.dev/ws/provider"

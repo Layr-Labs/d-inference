@@ -14,6 +14,8 @@
 //!   - No other process can read this process's memory
 //!   - SIP cannot be disabled without rebooting (which kills the process)
 
+use base64::Engine;
+use std::io::Write;
 use std::process::Command;
 
 /// Prevent debugger attachment using ptrace(PT_DENY_ATTACH).
@@ -429,5 +431,96 @@ mod tests {
     fn test_verify_security_posture() {
         // Just verify it doesn't panic
         let _ = verify_security_posture();
+    }
+}
+
+/// Sign data with the Secure Enclave key via dginf-enclave CLI.
+/// Returns the base64-encoded DER ECDSA signature.
+pub fn se_sign(data: &[u8]) -> Option<String> {
+    use std::io::Write;
+
+    let dginf_dir = dirs::home_dir()?.join(".dginf");
+    let enclave_bin = dginf_dir.join("bin/dginf-enclave");
+
+    if !enclave_bin.exists() {
+        return None;
+    }
+
+    // Write data to a temp file (dginf-enclave reads from stdin)
+    let data_b64 = base64::engine::general_purpose::STANDARD.encode(data);
+
+    let output = Command::new(&enclave_bin)
+        .args(["sign", "--data", &data_b64])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let sig = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if sig.is_empty() {
+        return None;
+    }
+
+    Some(sig)
+}
+
+/// Compute SHA-256 hash of data, return as hex string.
+pub fn sha256_hex(data: &[u8]) -> String {
+    use std::fmt::Write;
+    // Simple SHA-256 using the same approach as self_binary_hash
+    let hash = {
+        use std::io::Read;
+        let mut hasher = Sha256Hasher::new();
+        hasher.update(data);
+        hasher.finalize()
+    };
+    hash.iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{:02x}", b);
+        s
+    })
+}
+
+/// Minimal SHA-256 implementation (avoids adding a dependency).
+struct Sha256Hasher {
+    data: Vec<u8>,
+}
+
+impl Sha256Hasher {
+    fn new() -> Self {
+        Self { data: Vec::new() }
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        self.data.extend_from_slice(data);
+    }
+
+    fn finalize(&self) -> [u8; 32] {
+        // Use the system's openssl/shasum for simplicity
+        use std::process::Command;
+        let output = Command::new("shasum")
+            .args(["-a", "256"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                child.stdin.take().unwrap().write_all(&self.data).ok();
+                child.wait_with_output()
+            });
+
+        if let Ok(out) = output {
+            let hex = String::from_utf8_lossy(&out.stdout);
+            let hash_hex = hex.split_whitespace().next().unwrap_or("");
+            let mut result = [0u8; 32];
+            for (i, chunk) in hash_hex.as_bytes().chunks(2).enumerate() {
+                if i >= 32 { break; }
+                let byte_str = std::str::from_utf8(chunk).unwrap_or("00");
+                result[i] = u8::from_str_radix(byte_str, 16).unwrap_or(0);
+            }
+            return result;
+        }
+
+        [0u8; 32]
     }
 }

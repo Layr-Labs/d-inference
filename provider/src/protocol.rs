@@ -60,6 +60,13 @@ pub enum ProviderMessage {
     InferenceComplete {
         request_id: String,
         usage: UsageInfo,
+        /// SE signature over SHA-256(request_id || completion_tokens || response_hash).
+        /// Consumers can verify this against the provider's SE public key.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        se_signature: Option<String>,
+        /// SHA-256 hash of all response content (for signature verification).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response_hash: Option<String>,
     },
     InferenceError {
         request_id: String,
@@ -336,6 +343,8 @@ mod tests {
                 prompt_tokens: 50,
                 completion_tokens: 100,
             },
+            se_signature: None,
+            response_hash: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();

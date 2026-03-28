@@ -136,10 +136,17 @@ async fn handle_non_streaming_request(
     // Extract token usage info for billing
     let usage = extract_usage(&response_json);
 
+    // Sign the response with the Secure Enclave key
+    let sign_data = format!("{}:{}:{}", request_id, usage.completion_tokens, "non_stream");
+    let response_hash = security::sha256_hex(sign_data.as_bytes());
+    let se_signature = security::se_sign(response_hash.as_bytes());
+
     outbound_tx
         .send(ProviderMessage::InferenceComplete {
             request_id: request_id.to_string(),
             usage,
+            se_signature,
+            response_hash: Some(response_hash),
         })
         .await
         .ok();
@@ -233,7 +240,11 @@ async fn handle_streaming_request(
                 let data = &line[6..];
 
                 if data == "[DONE]" {
-                    // Stream complete — send final usage info
+                    // Stream complete — sign and send final usage info
+                    let sign_data = format!("{}:{}:{}", request_id, total_completion_tokens, "stream_done");
+                    let response_hash = security::sha256_hex(sign_data.as_bytes());
+                    let se_signature = security::se_sign(response_hash.as_bytes());
+
                     outbound_tx
                         .send(ProviderMessage::InferenceComplete {
                             request_id: request_id.to_string(),
@@ -241,6 +252,8 @@ async fn handle_streaming_request(
                                 prompt_tokens,
                                 completion_tokens: total_completion_tokens,
                             },
+                            se_signature,
+                            response_hash: Some(response_hash),
                         })
                         .await
                         .ok();
@@ -288,6 +301,11 @@ async fn handle_streaming_request(
     }
 
     // If we get here without [DONE], send completion with what we have
+    // Sign the response with the Secure Enclave key
+    let sign_data = format!("{}:{}:{}", request_id, total_completion_tokens, "stream_end");
+    let response_hash = security::sha256_hex(sign_data.as_bytes());
+    let se_signature = security::se_sign(response_hash.as_bytes());
+
     outbound_tx
         .send(ProviderMessage::InferenceComplete {
             request_id: request_id.to_string(),
@@ -295,6 +313,8 @@ async fn handle_streaming_request(
                 prompt_tokens,
                 completion_tokens: total_completion_tokens,
             },
+            se_signature,
+            response_hash: Some(response_hash),
         })
         .await
         .ok();
@@ -452,7 +472,7 @@ mod tests {
 
         let msg = rx.recv().await.unwrap();
         match msg {
-            ProviderMessage::InferenceComplete { request_id, usage } => {
+            ProviderMessage::InferenceComplete { request_id, usage, .. } => {
                 assert_eq!(request_id, "req-1");
                 assert_eq!(usage.prompt_tokens, 10);
                 assert_eq!(usage.completion_tokens, 5);

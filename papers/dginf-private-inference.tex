@@ -776,7 +776,7 @@ Providers can unenroll at any time via System Settings, which removes the profil
 \section{Consumer-Selectable Trust Tiers}
 \label{sec:trust-tiers}
 
-The four-layer attestation architecture (Section~\ref{sec:attestation}) and the ACME enrollment protocol (Section~\ref{sec:enrollment}) establish a spectrum of verifiable trust guarantees. We formalize this spectrum into \emph{trust tiers} that consumers can select at inference time, enabling a market-driven equilibrium between privacy assurance and provider participation.
+The four-layer attestation architecture (Section~\ref{sec:attestation}) and the ACME enrollment protocol (Section~\ref{sec:enrollment}) establish a spectrum of verifiable trust guarantees. We formalize this spectrum into \emph{trust tiers} that consumers can select at inference time, allowing each request to specify the minimum acceptable level of cryptographic assurance.
 
 \subsection{Tier Definitions}
 
@@ -816,7 +816,7 @@ The tiers correspond to progressively stronger cryptographic claims about the pr
 
 The transition from Tier~2 to Tier~3 requires the provider to grant an additional MDM permission: bit~12 (\texttt{InstallManagedApplications}). This enables the coordinator to install a signed, notarized application bundle that can access the ACME-attested key from the managed profile keychain---a macOS restriction that prevents non-managed applications from accessing profile-provisioned cryptographic identities.
 
-This design creates a natural separation of concerns:
+This design separates the permission requirements by tier:
 
 \begin{itemize}[leftmargin=*,itemsep=1pt]
     \item \textbf{Tier~2 providers} grant only read-only query permissions (bits 0, 4, 10). The MDM server cannot install software, modify settings, lock, or erase the device.
@@ -827,9 +827,9 @@ Providers can revoke Tier~3 status at any time by removing the MDM profile, whic
 
 \subsection{Consumer-Side Selection}
 
-Consumers specify their minimum trust tier in the API request. The coordinator's routing algorithm filters providers by trust tier before applying the composite scoring function (Section~\ref{sec:scoring}). Tier~3 providers receive a $1.2\times$ scoring multiplier, creating an economic incentive for providers to opt into the higher trust level.
+Consumers specify their minimum trust tier as a parameter in the inference request. The coordinator's routing algorithm filters the candidate provider set by trust tier before applying the composite scoring function (Section~\ref{sec:scoring}). Tier~3 providers receive a $1.2\times$ scoring multiplier, reflecting the stronger cryptographic guarantees they provide.
 
-This mechanism enables privacy-sensitive workloads (medical, legal, financial inference) to require \texttt{apple\_grade} trust, ensuring that every token in the response is signed by a key whose Secure Enclave residency is cryptographically verified by Apple. Less sensitive workloads can accept \texttt{hardware} trust, expanding the available provider pool.
+Workloads with stringent privacy requirements (e.g., processing protected health information or privileged legal documents) can require \texttt{apple\_grade} trust, ensuring that every token in the response is signed by a key whose Secure Enclave residency is cryptographically verified by Apple. Workloads with lower sensitivity can accept \texttt{hardware} trust, which broadens the available provider set while still requiring Apple-verified security posture.
 
 \subsection{Comparison of Trust Properties}
 

@@ -93,6 +93,7 @@ export function Sidebar() {
       <nav className="p-3 border-t border-border-dim space-y-0.5">
         {[
           { href: "/models", icon: Cpu, label: "Models" },
+          { href: "/providers", icon: Shield, label: "Providers" },
           { href: "/billing", icon: CreditCard, label: "Billing" },
           { href: "/settings", icon: Settings, label: "Settings" },
         ].map(({ href, icon: Icon, label }) => (

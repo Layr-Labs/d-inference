@@ -9,7 +9,6 @@ export async function POST(req: NextRequest) {
   const coordUrl = req.headers.get("x-coordinator-url") || defaultCoord;
   const apiKey = req.headers.get("x-api-key") || "";
 
-  // Forward the multipart form data directly to the coordinator
   const formData = await req.formData();
 
   const upstream = await fetch(`${coordUrl}/v1/audio/transcriptions`, {
@@ -22,10 +21,7 @@ export async function POST(req: NextRequest) {
 
   if (!upstream.ok) {
     const text = await upstream.text();
-    return NextResponse.json(
-      { error: text },
-      { status: upstream.status }
-    );
+    return NextResponse.json({ error: text }, { status: upstream.status });
   }
 
   const data = await upstream.json();

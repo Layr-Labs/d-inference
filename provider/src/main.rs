@@ -642,12 +642,16 @@ async fn cmd_serve(
     tracing::info!("Backend URL: {backend_url}");
 
     // Start STT backend (continuous-batching stt_server.py) on be_port + 1 if available.
-    // Set DGINF_STT_MODEL to a local path or HuggingFace repo ID to enable STT.
+    // DGINF_STT_MODEL: local path or HuggingFace repo ID for the STT model.
+    // DGINF_STT_MODEL_ID: clean model name for coordinator registration (optional,
+    //   defaults to "CohereLabs/cohere-transcribe-03-2026").
     let stt_port = be_port + 1;
-    let stt_model_id = std::env::var("DGINF_STT_MODEL")
+    let stt_model_path = std::env::var("DGINF_STT_MODEL")
         .unwrap_or_default();
-    let stt_available = if !stt_model_id.is_empty() {
-        tracing::info!("Starting STT backend on port {stt_port} for model: {stt_model_id}");
+    let stt_model_id = std::env::var("DGINF_STT_MODEL_ID")
+        .unwrap_or_else(|_| "CohereLabs/cohere-transcribe-03-2026".to_string());
+    let stt_available = if !stt_model_path.is_empty() {
+        tracing::info!("Starting STT backend on port {stt_port} for model: {stt_model_path}");
 
         // Find stt_server.py relative to the binary or in standard locations
         let stt_server_script = find_stt_server_script();
@@ -659,7 +663,7 @@ async fn cmd_serve(
             let stt_result = std::process::Command::new(&python_cmd)
                 .args([
                     &script,
-                    "--model", &stt_model_id,
+                    "--model", &stt_model_path,
                     "--port", &stt_port.to_string(),
                     "--host", "127.0.0.1",
                     "--max-batch-size", "16",

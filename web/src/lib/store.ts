@@ -19,6 +19,8 @@ export interface Message {
   timestamp: number;
   // Audio transcription
   audioUrl?: string;
+  audioBase64?: string; // persists across reloads for retry
+  audioMimeType?: string;
   audioDuration?: number;
 }
 

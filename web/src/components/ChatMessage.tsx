@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import { TrustBadge } from "./TrustBadge";
 import { VerificationPanel } from "./VerificationPanel";
 import type { Message } from "@/lib/store";
-import { User, Bot, Copy, Check, ChevronRight, Brain, Volume2 } from "lucide-react";
+import { User, Bot, Copy, Check, ChevronRight, Brain, Volume2, RotateCcw } from "lucide-react";
 import { useState, useCallback } from "react";
 
 function CodeBlock({
@@ -115,10 +115,11 @@ const markdownComponents: any = {
   },
 };
 
-export function ChatMessage({ message }: { message: Message }) {
+export function ChatMessage({ message, onRetry }: { message: Message; onRetry?: () => void }) {
   const isUser = message.role === "user";
   const hasThinking = !isUser && message.thinking && message.thinking.length > 0;
   const isThinking = message.streaming && !message.content && !!message.thinking;
+  const isError = !isUser && !message.streaming && message.content.startsWith("Error:") || message.content.startsWith("Transcription error:") || message.content.startsWith("Connection error:");
 
   return (
     <div className={`message-animate py-5`}>
@@ -198,6 +199,17 @@ export function ChatMessage({ message }: { message: Message }) {
                 <span className="text-text-tertiary text-sm streaming-cursor" />
               ) : null}
             </div>
+
+            {/* Retry button on error messages */}
+            {isError && onRetry && (
+              <button
+                onClick={onRetry}
+                className="mt-2 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-mono text-text-tertiary hover:text-accent-purple hover:bg-accent-purple/10 border border-border-dim hover:border-accent-purple/30 transition-all"
+              >
+                <RotateCcw size={12} />
+                Retry
+              </button>
+            )}
           </div>
         </div>
       </div>

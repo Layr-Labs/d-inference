@@ -3,16 +3,15 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { Send, Square, ChevronDown, Mic, MicOff, Paperclip } from "lucide-react";
 import { useStore } from "@/lib/store";
+import { transcribeAudio } from "@/lib/api";
 
 interface ChatInputProps {
   onSend: (content: string) => void;
   onStop: () => void;
-  onAudio: (blob: Blob, duration: number) => void;
   isStreaming: boolean;
-  isTranscribing: boolean;
 }
 
-export function ChatInput({ onSend, onStop, onAudio, isStreaming, isTranscribing }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, isStreaming }: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -22,6 +21,7 @@ export function ChatInput({ onSend, onStop, onAudio, isStreaming, isTranscribing
   // Recording state
   const [recording, setRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -63,6 +63,28 @@ export function ChatInput({ onSend, onStop, onAudio, isStreaming, isTranscribing
     return () => document.removeEventListener("click", handler);
   }, [modelOpen]);
 
+  // Transcribe audio and put text in the input box
+  const doTranscribe = useCallback(
+    async (blob: Blob) => {
+      setIsTranscribing(true);
+      try {
+        const sttModel =
+          models.find((m) => m.model_type === "stt")?.id ||
+          "CohereLabs/cohere-transcribe-03-2026";
+        const result = await transcribeAudio(blob, sttModel);
+        if (result.text) {
+          setInput((prev) => (prev ? prev + " " + result.text : result.text));
+          setTimeout(() => textareaRef.current?.focus(), 100);
+        }
+      } catch (err) {
+        setInput(`[Transcription failed: ${(err as Error).message}]`);
+      } finally {
+        setIsTranscribing(false);
+      }
+    },
+    [models, selectedModel]
+  );
+
   // Recording controls
   const startRecording = useCallback(async () => {
     try {
@@ -82,12 +104,11 @@ export function ChatInput({ onSend, onStop, onAudio, isStreaming, isTranscribing
 
       mediaRecorder.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        const duration = (Date.now() - startTimeRef.current) / 1000;
         stream.getTracks().forEach((t) => t.stop());
-        onAudio(blob, duration);
+        doTranscribe(blob);
       };
 
-      mediaRecorder.start(250); // collect chunks every 250ms
+      mediaRecorder.start(250);
       setRecording(true);
       setRecordingDuration(0);
       timerRef.current = setInterval(() => {
@@ -96,7 +117,7 @@ export function ChatInput({ onSend, onStop, onAudio, isStreaming, isTranscribing
     } catch {
       // Permission denied or no mic
     }
-  }, [onAudio]);
+  }, [doTranscribe]);
 
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current?.state === "recording") {
@@ -115,13 +136,11 @@ export function ChatInput({ onSend, onStop, onAudio, isStreaming, isTranscribing
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      // Estimate duration from file size (rough: ~128kbps for mp3)
-      const estimatedDuration = (file.size * 8) / 128000;
-      onAudio(file, estimatedDuration);
+      doTranscribe(file);
       // Reset file input
       if (fileInputRef.current) fileInputRef.current.value = "";
     },
-    [onAudio]
+    [doTranscribe]
   );
 
   const displayModel = selectedModel

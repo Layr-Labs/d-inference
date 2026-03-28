@@ -225,19 +225,45 @@ async def transcribe(
     # Read uploaded audio to temp file
     data = await file.read()
     ext = Path(file.filename or "audio.wav").suffix or ".wav"
-    tmp_path = f"/tmp/dginf-stt-{id(data)}-{time.monotonic_ns()}{ext}"
+    raw_path = f"/tmp/dginf-stt-raw-{id(data)}-{time.monotonic_ns()}{ext}"
+    tmp_path = f"/tmp/dginf-stt-{id(data)}-{time.monotonic_ns()}.wav"
 
-    # Write using soundfile to normalize format
+    # Write raw upload, then convert to wav via ffmpeg for format compatibility.
+    # Browser MediaRecorder produces webm/opus which soundfile can't read.
+    with open(raw_path, "wb") as f:
+        f.write(data)
+
+    import subprocess
     try:
-        from mlx_audio.audio_io import read as audio_read, write as audio_write
-        buf = io.BytesIO(data)
-        audio, sr = audio_read(buf, always_2d=False)
-        audio_write(tmp_path, audio, sr)
-        audio_seconds = len(audio) / sr if audio.ndim == 1 else audio.shape[0] / sr
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", raw_path, "-ar", "16000", "-ac", "1", tmp_path],
+            capture_output=True, timeout=60,
+        )
+    except FileNotFoundError:
+        # No ffmpeg — try soundfile directly
+        pass
+    finally:
+        try:
+            os.remove(raw_path)
+        except OSError:
+            pass
+
+    if not os.path.exists(tmp_path):
+        # ffmpeg failed or not installed — try soundfile as fallback
+        try:
+            from mlx_audio.audio_io import read as audio_read, write as audio_write
+            buf = io.BytesIO(data)
+            audio, sr = audio_read(buf, always_2d=False)
+            audio_write(tmp_path, audio, sr)
+        except Exception:
+            raise HTTPException(status_code=400, detail="could not decode audio file — install ffmpeg for webm/opus support")
+
+    # Estimate audio duration from the wav file
+    try:
+        import soundfile as sf
+        info = sf.info(tmp_path)
+        audio_seconds = info.duration
     except Exception:
-        # Fallback: write raw bytes and let the model handle it
-        with open(tmp_path, "wb") as f:
-            f.write(data)
         audio_seconds = 0.0
 
     # Submit to batch scheduler

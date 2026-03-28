@@ -57,12 +57,24 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     export PATH="$BIN_DIR:$PATH"
 fi
 
-# ─── Step 2: Verify Python + MLX ───────────────────────────────
+# ─── Step 2: Verify Python + MLX + STT deps ──────────────────
 echo ""
 echo "→ [2/4] Verifying inference runtime..."
 PYTHONHOME="$DGINF_DIR/python" "$DGINF_DIR/python/bin/python3.12" -c \
     "import vllm_mlx; print(f'  vllm-mlx {vllm_mlx.__version__} ✓')" 2>/dev/null \
     || echo "  vllm-mlx ✓"
+
+# Ensure ffmpeg is available (needed for audio transcription)
+if ! command -v ffmpeg &>/dev/null; then
+    echo "  Installing ffmpeg for audio support..."
+    if command -v brew &>/dev/null; then
+        brew install ffmpeg -q 2>/dev/null && echo "  ffmpeg ✓" || echo "  ⚠ ffmpeg install failed"
+    else
+        echo "  ⚠ ffmpeg not found (install Homebrew, then: brew install ffmpeg)"
+    fi
+else
+    echo "  ffmpeg ✓"
+fi
 
 # ─── Step 3: Secure Enclave identity ───────────────────────────
 echo ""

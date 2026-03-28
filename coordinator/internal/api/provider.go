@@ -716,6 +716,12 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		HardwareModel string `json:"hardware_model"`
 		SerialNumber  string `json:"serial_number"`
 		TrustLevel    string `json:"trust_level"`
+		Status        string `json:"status"`
+
+		// Hardware specs
+		MemoryGB         int      `json:"memory_gb"`
+		GPUCores         int      `json:"gpu_cores"`
+		Models           []string `json:"models"`
 
 		// Secure Enclave attestation (self-signed)
 		SecureEnclave        bool   `json:"secure_enclave"`
@@ -724,14 +730,16 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		AuthenticatedRoot    bool   `json:"authenticated_root_enabled"`
 		SystemVolumeHash     string `json:"system_volume_hash,omitempty"`
 		SEPublicKey          string `json:"se_public_key"`
-		AttestationSignature string `json:"attestation_signature,omitempty"`
 
 		// MDM SecurityInfo (verified by Apple's MDM framework)
 		MDMVerified bool `json:"mdm_verified"`
 
+		// ACME device-attest-01 (SE key proven by Apple)
+		ACMEVerified  bool `json:"acme_verified"`
+
 		// Apple Device Attestation (MDA) — certificate chain signed by Apple
 		MDAVerified   bool     `json:"mda_verified"`
-		MDACertChain  []string `json:"mda_cert_chain_b64,omitempty"` // base64 DER certs, leaf first
+		MDACertChain  []string `json:"mda_cert_chain_b64,omitempty"`
 		MDASerial     string   `json:"mda_serial,omitempty"`
 		MDAUDID       string   `json:"mda_udid,omitempty"`
 		MDAOSVersion  string   `json:"mda_os_version,omitempty"`
@@ -742,10 +750,18 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 
 	s.registry.ForEachProvider(func(p *registry.Provider) {
 		pa := providerAttestation{
-			ProviderID: p.ID,
-			TrustLevel: string(p.TrustLevel),
-			MDMVerified: p.TrustLevel == registry.TrustHardware,
-			MDAVerified: p.MDAVerified,
+			ProviderID:   p.ID,
+			TrustLevel:   string(p.TrustLevel),
+			Status:       string(p.Status),
+			MemoryGB:     p.Hardware.MemoryGB,
+			GPUCores:     p.Hardware.GPUCores,
+			MDMVerified:  p.TrustLevel == registry.TrustHardware,
+			MDAVerified:  p.MDAVerified,
+			ACMEVerified: p.ACMEVerified,
+		}
+
+		for _, m := range p.Models {
+			pa.Models = append(pa.Models, m.ID)
 		}
 
 		if p.AttestationResult != nil {

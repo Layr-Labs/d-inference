@@ -143,6 +143,21 @@ impl CoordinatorClient {
         outbound_rx: &mut mpsc::Receiver<ProviderMessage>,
         shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<()> {
+        // Try to connect via the TLS bridge subprocess (uses ACME-attested SE cert).
+        // Falls back to direct WebSocket if the bridge binary isn't available.
+        let bridge_path = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".dginf/bin/dginf-enclave");
+        let use_bridge = bridge_path.exists() && self.url.starts_with("wss://");
+
+        if use_bridge {
+            tracing::info!("Using TLS bridge for Apple-attested client cert auth");
+            return self
+                .connect_via_bridge(&bridge_path, event_tx, outbound_rx, shutdown_rx)
+                .await;
+        }
+
+        // Direct WebSocket (fallback)
         let (ws_stream, _) = tokio_tungstenite::connect_async(&self.url)
             .await
             .context("failed to connect to coordinator WebSocket")?;
@@ -300,6 +315,183 @@ impl CoordinatorClient {
                             anyhow::bail!("WebSocket stream ended");
                         }
                         _ => {} // Binary, Frame — ignore
+                    }
+                }
+            }
+        }
+    }
+
+    /// Connect via the dginf-enclave TLS bridge subprocess.
+    /// The bridge uses URLSession which can present the ACME-attested SE cert
+    /// for TLS client auth. Communication is via stdin/stdout line protocol.
+    async fn connect_via_bridge(
+        &self,
+        bridge_path: &std::path::Path,
+        event_tx: &mpsc::Sender<CoordinatorEvent>,
+        outbound_rx: &mut mpsc::Receiver<ProviderMessage>,
+        shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::process::Command as TokioCommand;
+
+        let mut child = TokioCommand::new(bridge_path)
+            .args(["tls-bridge", "--url", &self.url])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .context("failed to spawn TLS bridge")?;
+
+        let mut stdin = child.stdin.take().context("no stdin on bridge")?;
+        let stdout = child.stdout.take().context("no stdout on bridge")?;
+        let stderr = child.stderr.take().context("no stderr on bridge")?;
+
+        // Log bridge stderr in background
+        let stderr_reader = BufReader::new(stderr);
+        tokio::spawn(async move {
+            let mut lines = stderr_reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::debug!("bridge: {line}");
+            }
+        });
+
+        // Wait for bridge to connect (read first stdout message or timeout)
+        let mut stdout_reader = BufReader::new(stdout);
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        // Send registration
+        let register = ProviderMessage::Register {
+            hardware: self.hardware.clone(),
+            models: self.models.clone(),
+            backend: self.backend_name.clone(),
+            public_key: self.public_key.clone(),
+            wallet_address: self.wallet_address.clone(),
+            attestation: self.attestation.clone(),
+            prefill_tps: None,
+            decode_tps: None,
+        };
+        let mut register_json = serde_json::to_string(&register)?;
+        register_json.push('\n');
+        stdin.write_all(register_json.as_bytes()).await?;
+        stdin.flush().await?;
+        tracing::info!("Sent registration via TLS bridge");
+
+        let _ = event_tx.send(CoordinatorEvent::Connected).await;
+
+        let mut heartbeat_interval = tokio::time::interval(self.heartbeat_interval);
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(10));
+        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            let mut line = String::new();
+
+            tokio::select! {
+                _ = shutdown_rx.changed() => {
+                    tracing::info!("Shutting down bridge connection");
+                    drop(stdin);
+                    let _ = child.kill().await;
+                    return Ok(());
+                }
+
+                _ = heartbeat_interval.tick() => {
+                    let metrics = crate::hardware::collect_system_metrics(
+                        self.hardware.cpu_cores.total,
+                    );
+                    let heartbeat = ProviderMessage::Heartbeat {
+                        status: ProviderStatus::Idle,
+                        active_model: None,
+                        stats: ProviderStats::default(),
+                        system_metrics: metrics,
+                    };
+                    let mut json = serde_json::to_string(&heartbeat)?;
+                    json.push('\n');
+                    stdin.write_all(json.as_bytes()).await?;
+                    stdin.flush().await?;
+                }
+
+                _ = ping_interval.tick() => {
+                    // Bridge handles keep-alive internally
+                }
+
+                msg = outbound_rx.recv() => {
+                    match msg {
+                        Some(provider_msg) => {
+                            let mut json = serde_json::to_string(&provider_msg)?;
+                            json.push('\n');
+                            stdin.write_all(json.as_bytes()).await?;
+                            stdin.flush().await?;
+                        }
+                        None => {
+                            tracing::info!("Outbound channel closed");
+                            drop(stdin);
+                            let _ = child.kill().await;
+                            return Ok(());
+                        }
+                    }
+                }
+
+                result = stdout_reader.read_line(&mut line) => {
+                    match result {
+                        Ok(0) => {
+                            anyhow::bail!("TLS bridge stdout closed");
+                        }
+                        Ok(_) => {
+                            let text = line.trim();
+                            if text.is_empty() { continue; }
+
+                            match serde_json::from_str::<CoordinatorMessage>(text) {
+                                Ok(CoordinatorMessage::InferenceRequest { request_id, body, encrypted_body }) => {
+                                    tracing::info!("Received inference request: {request_id}");
+                                    let decrypted_body = if let Some(enc) = encrypted_body {
+                                        tracing::info!("Decrypting E2E encrypted request");
+                                        match decrypt_request_body(&enc, self.public_key.as_deref()) {
+                                            Ok(b) => b,
+                                            Err(e) => {
+                                                tracing::error!("Failed to decrypt request: {e}");
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        body
+                                    };
+                                    let _ = event_tx.send(CoordinatorEvent::InferenceRequest {
+                                        request_id,
+                                        body: decrypted_body,
+                                    }).await;
+                                }
+                                Ok(CoordinatorMessage::Cancel { request_id }) => {
+                                    tracing::info!("Received cancel for: {request_id}");
+                                    let _ = event_tx.send(CoordinatorEvent::Cancel {
+                                        request_id,
+                                    }).await;
+                                }
+                                Ok(CoordinatorMessage::AttestationChallenge { nonce, timestamp }) => {
+                                    tracing::info!("Received attestation challenge");
+                                    let response = handle_attestation_challenge(
+                                        &nonce,
+                                        &timestamp,
+                                        self.public_key.as_deref(),
+                                    );
+                                    let mut json = serde_json::to_string(&response)
+                                        .unwrap_or_default();
+                                    json.push('\n');
+                                    if let Err(e) = stdin.write_all(json.as_bytes()).await {
+                                        tracing::warn!("Failed to send attestation response: {e}");
+                                    } else {
+                                        stdin.flush().await.ok();
+                                        tracing::info!("Sent attestation response");
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::debug!("Bridge message parse: {e} — {text}");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            anyhow::bail!("TLS bridge read error: {e}");
+                        }
                     }
                 }
             }

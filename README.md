@@ -46,30 +46,41 @@ response = client.chat.completions.create(
 ### Provider
 
 ```bash
-# Install and initialize
-curl -fsSL https://dginf.io/install.sh | bash
-dginf-provider init
+# Install (downloads provider binary, enclave helper, and Python/MLX runtime)
+curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash
 
-# Start serving (in-process inference, auto-installs mlx-lm if needed)
-dginf-provider serve --coordinator wss://coordinator.dginf.io/ws/provider
+# Start serving
+dginf-provider serve --model mlx-community/Qwen3.5-9B-MLX-4bit
+
+# Or use the background daemon
+dginf-provider start
+
+# Check for updates
+dginf-provider update
+
+# Diagnostics
+dginf-provider doctor
+dginf-provider status
 ```
 
 The provider agent:
 1. Detects your Apple Silicon hardware
-2. Generates a Secure Enclave identity key
-3. Loads the model directly in-process via MLX
-4. Connects to the coordinator and starts accepting jobs
+2. Generates a Secure Enclave identity key (P-256 ECDSA)
+3. Enrolls in MDM for hardware-verified security posture
+4. Verifies RDMA is disabled (Thunderbolt 5 remote memory access protection)
+5. Loads the model via vllm-mlx with continuous batching
+6. Connects to the coordinator and starts accepting jobs
 
 ## Architecture
 
 | Component | Language | What It Does |
 |-----------|----------|-------------|
-| **Coordinator** (`coordinator/`) | Go | Control plane: routing, attestation verification, payments, API |
-| **Provider Agent** (`provider/`) | Rust + Python (PyO3) | Inference agent: in-process MLX, security hardening, attestation |
-| **Consumer SDK** (`sdk/`) | Python | OpenAI-compatible client library and CLI |
+| **Coordinator** (`coordinator/`) | Go | Control plane: routing, attestation verification, payments, stats API |
+| **Provider Agent** (`provider/`) | Rust | Inference agent: security hardening, attestation, WebSocket client, self-update |
+| **Web Frontend** (`web/`) | Next.js | Verification panel, stats dashboard, chat interface |
 | **macOS App** (`app/DGInf/`) | Swift/SwiftUI | Menu bar app with idle detection, earnings dashboard |
 | **Secure Enclave** (`enclave/`) | Swift | Hardware-bound P-256 identity, signed attestation blobs |
-| **Scripts** (`scripts/`) | Bash | Hardened Runtime signing, app bundling |
+| **Scripts** (`scripts/`) | Bash | Hardened Runtime signing, app bundling, installer |
 
 ## Security Model
 
@@ -85,8 +96,10 @@ DGInf prevents providers from reading consumer prompts through multiple layers:
 | **Signed app bundle** | Any file modification breaks code signature; SIP refuses to run modified bundle |
 | **Binary hash attestation** | Coordinator verifies provider runs the expected blessed binary version |
 | **SIP re-verification** | Checked at startup, before every request, and in every 5-min challenge-response |
+| **RDMA detection** | Detects Thunderbolt 5 RDMA via `rdma_ctl status`; refuses to serve if enabled (bypasses all software protections) |
 | **Memory wiping** | Volatile-zeros prompt/response buffers after each request |
 | **MDM SecurityInfo** | Hardware-verified SIP, Secure Boot, and system integrity via Apple MDM |
+| **E2E encryption** | Consumer requests encrypted with provider's X25519 public key (NaCl box); coordinator never sees plaintext prompts |
 
 **Remaining attack surface:** Physical memory probing on soldered LPDDR5x — same threat model as Apple Private Cloud Compute.
 
@@ -111,14 +124,12 @@ Infrastructure: MicroMDM + SCEP + step-ca (ACME with device-attest-01) on AWS.
 
 ## Inference
 
-DGInf runs inference **in-process** via PyO3 (embedded Python). The MLX engine loads directly inside the hardened Rust process — no subprocess, no HTTP, no Unix socket.
-
 | Backend | Status | Use |
 |---------|--------|-----|
-| **mlx-lm** (in-process) | Primary | Embedded via PyO3, single-process security |
-| **vllm-mlx** (in-process) | Preferred when available | Continuous batching + prefix caching |
+| **vllm-mlx** | Primary | Continuous batching + prefix caching, launched as subprocess |
+| **cohere-transcribe** | STT | Speech-to-text via custom stt_server.py |
 
-Auto-installs mlx-lm if not present. No subprocess fallback — in-process is the only mode.
+Models are downloaded from the DGInf S3 CDN (`s3://dginf-models/`, no auth required) or HuggingFace as fallback.
 
 ## Payments
 
@@ -130,22 +141,23 @@ Auto-installs mlx-lm if not present. No subprocess fallback — in-process is th
 ## Development
 
 ```bash
-# Build all components
-cd coordinator && go build ./...
-cd provider && cargo build --release
+# Coordinator (Go)
+cd coordinator && go build ./... && go test ./...
+
+# Provider (Rust) — requires PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 on Python 3.14+
+cd provider && cargo build --release && cargo test
+
+# Provider without Python feature (for distribution bundles)
+cd provider && cargo build --release --no-default-features
+
+# Enclave helper (Swift)
 cd enclave && swift build -c release
-cd sdk && pip install -e .
 
-# Run tests
-cd coordinator && go test ./...
-cd provider && cargo test
-cd enclave && swift test
+# Web frontend (Next.js)
+cd web && npm run dev
 
-# Sign binaries with Hardened Runtime
-./scripts/sign-hardened.sh
-
-# Build signed app bundle
-./scripts/bundle-app.sh
+# Deploy coordinator
+cd coordinator && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dginf-coordinator-linux ./cmd/coordinator
 ```
 
 ## Hardware Support
@@ -160,6 +172,17 @@ Any Apple Silicon Mac (M1 or later):
 | M3 Pro/Max | 18-128 GB | 150-400 GB/s | 8B-122B |
 | M3 Ultra | 96-256 GB | 819 GB/s | 8B-230B |
 | M4 Pro/Max | 24-128 GB | 273-546 GB/s | 8B-122B |
+| M4 Ultra | 256-512 GB | 819 GB/s | 8B-400B+ |
+
+## Infrastructure
+
+| Component | Location | Details |
+|-----------|----------|---------|
+| Coordinator | AWS EC2 (`34.197.17.112`) | systemd service, nginx + Let's Encrypt TLS |
+| Domain | `inference-test.openinnovation.dev` | API, WebSocket, provider downloads |
+| MDM | MicroMDM on same EC2 | SCEP + APNs for device attestation |
+| Models | S3 (`dginf-models`) | Public read, no auth required |
+| Provider install | `curl -fsSL https://inference-test.openinnovation.dev/install.sh \| bash` | Downloads tarball from `/dl/` |
 
 ## License
 

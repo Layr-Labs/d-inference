@@ -174,16 +174,6 @@ Any Apple Silicon Mac (M1 or later):
 | M4 Pro/Max | 24-128 GB | 273-546 GB/s | 8B-122B |
 | M4 Ultra | 256-512 GB | 819 GB/s | 8B-400B+ |
 
-## Infrastructure
-
-| Component | Location | Details |
-|-----------|----------|---------|
-| Coordinator | AWS EC2 (`34.197.17.112`) | systemd service, nginx + Let's Encrypt TLS |
-| Domain | `inference-test.openinnovation.dev` | API, WebSocket, provider downloads |
-| MDM | MicroMDM on same EC2 | SCEP + APNs for device attestation |
-| Models | S3 (`dginf-models`) | Public read, no auth required |
-| Provider install | `curl -fsSL https://inference-test.openinnovation.dev/install.sh \| bash` | Downloads tarball from `/dl/` |
-
 ## License
 
 Proprietary. All rights reserved.

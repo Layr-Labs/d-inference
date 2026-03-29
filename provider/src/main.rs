@@ -511,23 +511,10 @@ async fn cmd_serve(
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
-    // Create hypervisor VM with a pre-allocated memory pool for
-    // hardware memory isolation. The pool is sized to fit the model
-    // weights + activations + KV cache. This must happen before
-    // verify_security_posture() so the RDMA policy check knows
-    // whether hypervisor protection is available.
-    //
-    // Pool size: 90% of physical RAM — the model, activations, and
-    // KV cache all need to fit. The remaining 10% is for the OS,
-    // the provider binary, and other processes.
-    let pool_gb = (hardware::total_memory_gb() as f64 * 0.9) as usize;
-    let pool_bytes = pool_gb * 1024 * 1024 * 1024;
-    match hypervisor::create_vm(pool_bytes) {
-        Ok(()) => tracing::info!(
-            "Hypervisor memory isolation enabled ({} GB pool, {} GB capacity)",
-            pool_gb,
-            hypervisor::pool_capacity() / 1024 / 1024 / 1024
-        ),
+    // Create the hypervisor VM (no pool yet — we don't know the model
+    // size). The pool is created after model selection below.
+    match hypervisor::create_vm(0) {
+        Ok(()) => {}
         Err(e) => tracing::warn!(
             "Hypervisor not available: {e} — \
              running with software-only memory protection"
@@ -589,6 +576,34 @@ async fn cmd_serve(
         }
     }
     tracing::info!("Primary model: {}", model);
+
+    // Now that we know the model, size and allocate the hypervisor
+    // memory pool. Pool = 2x model file size to cover weights +
+    // activations + KV cache. If the pool can't be allocated, the
+    // provider continues with software-only protection (but will
+    // refuse to serve if RDMA is enabled — fail closed).
+    if hypervisor::is_active() {
+        let model_bytes = available_models
+            .iter()
+            .find(|m| m.id == model)
+            .map(|m| m.size_bytes)
+            .unwrap_or(0);
+
+        if model_bytes > 0 {
+            let pool_bytes = model_bytes as usize * 2;
+            match hypervisor::allocate_pool(pool_bytes) {
+                Ok(()) => {
+                    let cap_gb = hypervisor::pool_capacity() as f64 / (1024.0 * 1024.0 * 1024.0);
+                    tracing::info!(
+                        "Hypervisor memory pool: {:.1} GB (2x model size {:.1} GB)",
+                        cap_gb,
+                        model_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+                    );
+                }
+                Err(e) => tracing::warn!("Hypervisor pool allocation failed: {e}"),
+            }
+        }
+    }
 
     // Kill any existing process on our backend port to avoid EADDRINUSE
     if let Ok(output) = std::process::Command::new("lsof")

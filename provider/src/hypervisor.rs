@@ -89,22 +89,20 @@ static POOL: Mutex<Option<PoolState>> = Mutex::new(None);
 
 // ── Public API ──────────────────────────────────────────────
 
-/// Create a Hypervisor VM and pre-allocate a VM-mapped memory pool.
+/// Create a Hypervisor VM for memory isolation.
 ///
-/// `pool_bytes` is the desired pool size (will be rounded up to 16 MB).
-/// The pool is backed by anonymous mmap and VM-mapped in 16 MB chunks.
-/// Subsequent calls to `alloc_buffer()` return pointers within this
-/// pool — all inheriting hypervisor Stage 2 isolation.
+/// The VM has no vCPUs and no guest OS. It exists solely for its Stage 2
+/// page tables. Call `allocate_pool()` after model selection to create
+/// the VM-mapped memory pool sized to the model.
 ///
 /// Safe to call multiple times (subsequent calls are no-ops).
-pub fn create_vm(pool_bytes: usize) -> Result<(), String> {
+pub fn create_vm(_pool_bytes: usize) -> Result<(), String> {
     if ACTIVE.load(Ordering::Relaxed) {
         return Ok(());
     }
 
     #[cfg(target_os = "macos")]
     {
-        // 1. Create the VM
         let result = unsafe { ffi::hv_vm_create(std::ptr::null()) };
         if result != ffi::HV_SUCCESS {
             return Err(format!(
@@ -112,8 +110,41 @@ pub fn create_vm(pool_bytes: usize) -> Result<(), String> {
                  hypervisor entitlement may be missing"
             ));
         }
+        ACTIVE.store(true, Ordering::Release);
+        tracing::info!("Hypervisor VM created — call allocate_pool() to set up memory isolation");
+        Ok(())
+    }
 
-        // 2. Allocate the pool with extra room for 16 MB alignment
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Hypervisor.framework is only available on macOS".to_string())
+    }
+}
+
+/// Allocate a VM-mapped memory pool sized to fit the model.
+///
+/// `pool_bytes` is the desired pool size (rounded up to 16 MB chunks).
+/// The pool is backed by anonymous mmap and VM-mapped in 16 MB chunks.
+/// All subsequent `alloc_buffer()` calls return pointers within this pool.
+///
+/// **Security invariant:** Once the pool is allocated, ALL inference
+/// memory MUST come from the pool. If the pool is exhausted, inference
+/// requests MUST be refused rather than falling back to unprotected
+/// memory. This is enforced by the inference engine checking
+/// `pool_has_capacity()` before each allocation.
+pub fn allocate_pool(pool_bytes: usize) -> Result<(), String> {
+    if !is_active() {
+        return Err("hypervisor VM not active — call create_vm() first".to_string());
+    }
+
+    // Don't re-allocate if pool already exists
+    if POOL.lock().unwrap().is_some() {
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // Allocate with extra room for 16 MB alignment
         let mmap_size = pool_bytes + CHUNK_SIZE;
         let pool = unsafe {
             libc::mmap(
@@ -126,19 +157,18 @@ pub fn create_vm(pool_bytes: usize) -> Result<(), String> {
             )
         };
         if pool == libc::MAP_FAILED {
-            unsafe { ffi::hv_vm_destroy() };
             return Err("mmap failed for hypervisor memory pool".to_string());
         }
         let pool = pool as *mut u8;
 
-        // 3. Find the first 16 MB-aligned address
+        // Find the first 16 MB-aligned address
         let pool_addr = pool as usize;
         let aligned_addr = (pool_addr + CHUNK_SIZE - 1) & !(CHUNK_SIZE - 1);
         let aligned_base = aligned_addr as *mut u8;
         let usable_size = mmap_size - (aligned_addr - pool_addr);
         let num_chunks = usable_size / CHUNK_SIZE;
 
-        // 4. VM-map each 16 MB chunk
+        // VM-map each 16 MB chunk
         let flags = ffi::HV_MEMORY_READ | ffi::HV_MEMORY_WRITE;
         let mut gpa = GPA_BASE;
         let mut mapped_chunks = 0;
@@ -153,7 +183,8 @@ pub fn create_vm(pool_bytes: usize) -> Result<(), String> {
                 gpa += CHUNK_SIZE as u64;
             } else {
                 tracing::warn!(
-                    "hv_vm_map chunk {i} failed (err={r:#x}), mapped {mapped_chunks}/{num_chunks}"
+                    "hv_vm_map chunk {i} failed (err={r:#x}), \
+                     mapped {mapped_chunks}/{num_chunks}"
                 );
                 break;
             }
@@ -161,11 +192,9 @@ pub fn create_vm(pool_bytes: usize) -> Result<(), String> {
 
         let mapped_mb = mapped_chunks * CHUNK_SIZE / (1024 * 1024);
         tracing::info!(
-            "Hypervisor VM created — {mapped_mb} MB pool VM-mapped \
-             ({mapped_chunks} x 16 MB chunks)"
+            "Hypervisor pool: {mapped_mb} MB VM-mapped ({mapped_chunks} x 16 MB chunks)"
         );
 
-        ACTIVE.store(true, Ordering::Release);
         *POOL.lock().unwrap() = Some(PoolState {
             pool_base: pool,
             pool_mmap_size: mmap_size,
@@ -181,7 +210,7 @@ pub fn create_vm(pool_bytes: usize) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = pool_bytes;
-        Err("Hypervisor.framework is only available on macOS".to_string())
+        Ok(())
     }
 }
 
@@ -226,6 +255,23 @@ pub fn alloc_buffer(size: usize) -> Result<*mut u8, String> {
     let ptr = unsafe { pool.aligned_base.add(aligned_offset) };
     pool.alloc_offset = aligned_offset + size;
     Ok(ptr)
+}
+
+/// Check if the pool has capacity for an allocation of `size` bytes.
+///
+/// Used by the inference engine to enforce the fail-closed invariant:
+/// if this returns false, the request MUST be refused rather than
+/// letting MLX allocate from unprotected memory.
+pub fn pool_has_capacity(size: usize) -> bool {
+    POOL.lock()
+        .ok()
+        .and_then(|p| {
+            p.as_ref().map(|p| {
+                let aligned = (p.alloc_offset + 4095) & !4095;
+                aligned + size <= p.mapped_chunks * CHUNK_SIZE
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// Total bytes allocated from the VM-mapped pool.

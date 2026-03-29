@@ -128,6 +128,15 @@ pub fn check_rdma_disabled() -> bool {
     }
 }
 
+/// Check if hypervisor memory isolation is active.
+///
+/// When active, inference memory is protected by Stage 2 page tables
+/// and is invisible to RDMA. This allows providers to serve even when
+/// RDMA is enabled (required for multi-node inference).
+pub fn check_hypervisor_active() -> bool {
+    crate::hypervisor::is_active()
+}
+
 /// Verify all security prerequisites before accepting inference work.
 ///
 /// Returns Ok(()) if all checks pass, Err with reason if any fail.
@@ -140,7 +149,21 @@ pub fn verify_security_posture() -> Result<(), String> {
     }
 
     if !check_rdma_disabled() {
-        return Err("RDMA is enabled — remote memory access possible, refusing to serve".to_string());
+        // RDMA is enabled — only acceptable if hypervisor is active.
+        // The hypervisor's Stage 2 page tables make inference memory
+        // invisible to RDMA, so RDMA + hypervisor is safe.
+        if check_hypervisor_active() {
+            tracing::info!(
+                "RDMA is enabled but hypervisor memory isolation is active — \
+                 inference memory is hardware-protected"
+            );
+        } else {
+            return Err(
+                "RDMA is enabled without hypervisor memory isolation — \
+                 remote memory access possible, refusing to serve"
+                    .to_string(),
+            );
+        }
     }
 
     // Verify app bundle signature if running from a .app bundle.

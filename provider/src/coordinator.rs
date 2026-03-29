@@ -418,18 +418,23 @@ pub fn handle_attestation_challenge(
     // the provider hasn't rebooted with SIP disabled and reconnected.
     let sip_enabled = crate::security::check_sip_enabled();
     let rdma_disabled = crate::security::check_rdma_disabled();
+    let hypervisor_active = crate::security::check_hypervisor_active();
 
     if !sip_enabled {
         tracing::error!("SIP is disabled during attestation challenge — coordinator will reject us");
     }
-    if !rdma_disabled {
-        tracing::error!("RDMA is enabled during attestation challenge — coordinator will reject us");
+    if !rdma_disabled && !hypervisor_active {
+        tracing::error!(
+            "RDMA is enabled without hypervisor during attestation challenge — \
+             coordinator will reject us"
+        );
     }
 
     ProviderMessage::AttestationResponse {
         nonce: nonce.to_string(),
         signature,
         public_key: pk_str.to_string(),
+        hypervisor_active: Some(hypervisor_active),
         rdma_disabled: Some(rdma_disabled),
         sip_enabled: Some(sip_enabled),
         secure_boot_enabled: Some(true), // Apple Silicon always has Secure Boot in Full Security mode

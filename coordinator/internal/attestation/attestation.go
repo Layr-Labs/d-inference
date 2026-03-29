@@ -47,6 +47,7 @@ type AttestationBlob struct {
 	ChipName                 string `json:"chipName"`
 	EncryptionPublicKey      string `json:"encryptionPublicKey,omitempty"`
 	HardwareModel            string `json:"hardwareModel"`
+	HypervisorActive         bool   `json:"hypervisorActive"`
 	OSVersion                string `json:"osVersion"`
 	PublicKey                string `json:"publicKey"`
 	RDMADisabled             bool   `json:"rdmaDisabled"`
@@ -99,6 +100,7 @@ type VerificationResult struct {
 	SecureEnclaveAvailable   bool
 	SIPEnabled               bool
 	SecureBootEnabled        bool
+	HypervisorActive         bool
 	RDMADisabled             bool
 	AuthenticatedRootEnabled bool
 	SystemVolumeHash         string
@@ -131,6 +133,7 @@ func Verify(signed SignedAttestation) VerificationResult {
 		SecureEnclaveAvailable:  signed.Attestation.SecureEnclaveAvailable,
 		SIPEnabled:              signed.Attestation.SIPEnabled,
 		SecureBootEnabled:       signed.Attestation.SecureBootEnabled,
+		HypervisorActive:        signed.Attestation.HypervisorActive,
 		RDMADisabled:            signed.Attestation.RDMADisabled,
 		AuthenticatedRootEnabled: signed.Attestation.AuthenticatedRootEnabled,
 		SystemVolumeHash:        signed.Attestation.SystemVolumeHash,
@@ -293,6 +296,7 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 		"authenticatedRootEnabled": blob.AuthenticatedRootEnabled,
 		"chipName":                 blob.ChipName,
 		"hardwareModel":            blob.HardwareModel,
+		"hypervisorActive":         blob.HypervisorActive,
 		"osVersion":                blob.OSVersion,
 		"publicKey":                blob.PublicKey,
 		"rdmaDisabled":             blob.RDMADisabled,

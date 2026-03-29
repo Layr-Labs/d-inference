@@ -366,12 +366,21 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		return
 	}
 	if !*resp.RDMADisabled {
-		s.logger.Error("provider RDMA enabled in challenge response — remote memory access possible, marking untrusted",
+		// RDMA is enabled — only acceptable if hypervisor memory isolation
+		// is active. The hypervisor's Stage 2 page tables make inference
+		// memory invisible to RDMA DMA transfers.
+		hvActive := resp.HypervisorActive != nil && *resp.HypervisorActive
+		if !hvActive {
+			s.logger.Error("provider RDMA enabled without hypervisor — remote memory access possible, marking untrusted",
+				"provider_id", providerID,
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "RDMA enabled without hypervisor memory isolation")
+			return
+		}
+		s.logger.Info("provider RDMA enabled with hypervisor isolation — acceptable",
 			"provider_id", providerID,
 		)
-		s.registry.MarkUntrusted(providerID)
-		s.handleChallengeFailure(providerID, "RDMA enabled")
-		return
 	}
 
 	// Challenge passed.
@@ -381,6 +390,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		"sip_enabled", resp.SIPEnabled,
 		"secure_boot_enabled", resp.SecureBootEnabled,
 		"rdma_disabled", resp.RDMADisabled,
+		"hypervisor_active", resp.HypervisorActive,
 	)
 }
 

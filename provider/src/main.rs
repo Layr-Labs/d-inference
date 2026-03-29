@@ -27,6 +27,7 @@ mod config;
 mod coordinator;
 mod crypto;
 mod hardware;
+mod hypervisor;
 #[cfg(feature = "python")]
 mod inference;
 mod models;
@@ -508,6 +509,17 @@ async fn cmd_serve(
         let _ = std::process::Command::new("pkill").args(["-f", "vllm_mlx"]).status();
         // Small delay to let ports free up
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+
+    // Create hypervisor VM for hardware memory isolation. This must
+    // happen before verify_security_posture() so the RDMA policy check
+    // knows whether hypervisor protection is available.
+    match hypervisor::create_vm() {
+        Ok(()) => tracing::info!("Hypervisor memory isolation enabled"),
+        Err(e) => tracing::warn!(
+            "Hypervisor not available: {e} — \
+             running with software-only memory protection"
+        ),
     }
 
     // Verify security posture before serving any inference requests.

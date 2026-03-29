@@ -40,8 +40,22 @@ build/
 # Config (local dev)
 *.local.toml
 
-# Keys (never commit)
+# Keys and certificates (never commit)
 *.pem
+*.csr
+*.p12
 enclave_key.data
+
+# Compiled binaries (coordinator)
+coordinator/dginf-coordinator
+coordinator/dginf-coordinator-linux
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+
+# Temp directories
+tmp/
 
 d-inf-docs/

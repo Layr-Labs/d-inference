@@ -239,6 +239,13 @@ pub fn detect() -> Result<HardwareInfo> {
     })
 }
 
+/// Get total physical memory in GB. Falls back to 16 GB if detection fails.
+pub fn total_memory_gb() -> u64 {
+    sysctl_u64("hw.memsize")
+        .map(|bytes| bytes / (1024 * 1024 * 1024))
+        .unwrap_or(16)
+}
+
 fn sysctl_string(key: &str) -> Result<String> {
     let output = Command::new("sysctl")
         .arg("-n")

@@ -202,13 +202,14 @@ type AttestationChallengeMessage struct {
 // attestation challenge. The signature covers nonce + timestamp.
 // Includes fresh security posture fields verified at challenge time.
 type AttestationResponseMessage struct {
-	Type             string `json:"type"`
-	Nonce            string `json:"nonce"`                         // echoed back from the challenge
-	Signature        string `json:"signature"`                     // base64-encoded signature of nonce+timestamp
-	PublicKey        string `json:"public_key"`                    // base64-encoded public key
-	RDMADisabled     *bool  `json:"rdma_disabled,omitempty"`       // fresh RDMA status (true = safe, false = remote memory access possible)
-	SIPEnabled       *bool  `json:"sip_enabled,omitempty"`         // fresh SIP status at challenge time
-	SecureBootEnabled *bool `json:"secure_boot_enabled,omitempty"` // fresh Secure Boot status
+	Type              string `json:"type"`
+	Nonce             string `json:"nonce"`                          // echoed back from the challenge
+	Signature         string `json:"signature"`                      // base64-encoded signature of nonce+timestamp
+	PublicKey         string `json:"public_key"`                     // base64-encoded public key
+	HypervisorActive  *bool  `json:"hypervisor_active,omitempty"`   // hypervisor memory isolation active (Stage 2 page tables)
+	RDMADisabled      *bool  `json:"rdma_disabled,omitempty"`       // fresh RDMA status (true = safe, false = remote memory access possible)
+	SIPEnabled        *bool  `json:"sip_enabled,omitempty"`         // fresh SIP status at challenge time
+	SecureBootEnabled *bool  `json:"secure_boot_enabled,omitempty"` // fresh Secure Boot status
 }
 
 // ---------------------------------------------------------------------------

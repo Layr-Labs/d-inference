@@ -1,17 +1,17 @@
 # DGInf — Decentralized Private Inference
 
-A platform for private, decentralized AI inference on Apple Silicon Macs. Mac owners rent out idle compute. Consumers get private inference on open-source models with hardware-backed trust from Apple's Secure Enclave.
+A platform for private, decentralized AI inference on Apple Silicon Macs. Mac owners rent out idle GPU compute. Consumers get private inference on open-source models with hardware-backed trust from Apple's Secure Enclave.
 
-**Privacy claim:** Nobody in the chain can see your prompts — not the coordinator (runs in a hardware-encrypted Confidential VM), not the provider (SIP + Hardened Runtime + in-process inference prevent memory inspection), and not DGInf as a company.
+**Privacy claim:** Nobody in the chain can see your prompts — not the coordinator, not the provider (SIP + Hardened Runtime + in-process inference prevent memory inspection), and not DGInf as a company.
 
 ## How It Works
 
 ```
-Consumer (Python SDK / CLI)
+Consumer (Web UI / Python SDK)
     │
     │  HTTPS + OpenAI-compatible API
     ▼
-Coordinator (Go, GCP Confidential VM — AMD SEV-SNP)
+Coordinator (Go)
     │
     │  WebSocket (outbound from provider, no port forwarding needed)
     ▼
@@ -22,69 +22,142 @@ Provider Agent (Rust, hardened process)
 MLX inference engine → Metal → Apple Silicon GPU
 ```
 
-## Quick Start
+## Become a Provider
 
-### Consumer
+Earn money by serving AI inference on your idle Mac.
+
+### Requirements
+
+- Any Apple Silicon Mac (M1 or later)
+- macOS 13 (Ventura) or later
+- 8 GB+ unified memory (16 GB+ recommended)
+
+### Install
 
 ```bash
-pip install dginf
-
-# One-shot inference
-dginf configure --url https://coordinator.dginf.io --api-key dginf-...
-dginf ask "Explain quantum computing"
-
-# Or use the Python SDK (OpenAI-compatible drop-in)
-from dginf import DGInf
-client = DGInf()
-response = client.chat.completions.create(
-    model="mlx-community/Qwen2.5-7B-Instruct-4bit",
-    messages=[{"role": "user", "content": "Hello"}],
-    stream=True,
-)
+curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash
 ```
 
-### Provider
+The installer will:
+1. Download the provider binary, Secure Enclave helper, and Python/MLX runtime (~107 MB)
+2. Add `~/.dginf/bin` to your PATH
+3. Verify the inference runtime (vllm-mlx, ffmpeg)
+4. Generate a Secure Enclave identity key (P-256 ECDSA, hardware-bound)
+5. Prompt you to install the DGInf enrollment profile (read-only security verification — DGInf cannot erase, lock, or control your Mac; removable anytime from System Settings > Device Management)
+6. Suggest a model based on your available memory
+
+### Start Serving
 
 ```bash
-# Install (downloads provider binary, enclave helper, and Python/MLX runtime)
-curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash
-
-# Start serving
+# Start serving with the recommended model for your hardware
 dginf-provider serve --model mlx-community/Qwen3.5-9B-MLX-4bit
 
-# Or use the background daemon
-dginf-provider start
-
-# Check for updates
-dginf-provider update
-
-# Diagnostics
-dginf-provider doctor
-dginf-provider status
+# Or run in the background
+dginf-provider start --model mlx-community/Qwen3.5-9B-MLX-4bit
 ```
 
-The provider agent:
-1. Detects your Apple Silicon hardware
-2. Generates a Secure Enclave identity key (P-256 ECDSA)
-3. Enrolls in MDM for hardware-verified security posture
-4. Verifies RDMA is disabled (Thunderbolt 5 remote memory access protection)
-5. Loads the model via vllm-mlx with continuous batching
-6. Connects to the coordinator and starts accepting jobs
+**Recommended models by memory:**
+
+| Memory | Model | Parameters |
+|--------|-------|------------|
+| 8 GB | `mlx-community/Qwen2.5-0.5B-Instruct-4bit` | 0.5B |
+| 16 GB | `mlx-community/Qwen3.5-9B-MLX-4bit` | 9B |
+| 32 GB | `mlx-community/Qwen3.5-14B-Instruct-4bit` | 14B |
+| 64 GB+ | `mlx-community/Qwen3.5-32B-Instruct-4bit` | 32B |
+
+### Provider CLI Reference
+
+```bash
+dginf-provider init          # Detect hardware, create config
+dginf-provider serve         # Start serving (foreground)
+dginf-provider start         # Start serving (background daemon)
+dginf-provider stop          # Stop the background daemon
+dginf-provider status        # Show hardware and connection status
+dginf-provider doctor        # Diagnose issues (SIP, Enclave, MDM, connectivity)
+dginf-provider models list   # List downloaded models
+dginf-provider models download  # Download a model
+dginf-provider earnings      # Show earnings and usage history
+dginf-provider wallet        # Show or create provider wallet (macOS Keychain)
+dginf-provider benchmark     # Run standardized benchmarks
+dginf-provider logs -w       # Stream logs in real-time
+dginf-provider update        # Check for and install updates
+dginf-provider enroll        # Enroll in MDM (without serving)
+dginf-provider unenroll      # Remove MDM enrollment
+```
+
+### What Happens When You Serve
+
+1. Your Apple Silicon hardware is detected (chip, memory, GPU cores, bandwidth)
+2. A Secure Enclave identity key is generated (P-256 ECDSA, non-extractable from hardware)
+3. SIP, Secure Boot, and RDMA status are verified
+4. The model is loaded via vllm-mlx with continuous batching
+5. A WebSocket connection is opened to the coordinator (outbound — no port forwarding needed)
+6. Periodic challenge-response attestation runs every 5 minutes (fresh SIP/SecureBoot checks)
+7. Inference requests arrive from the coordinator and are processed locally on your GPU
+8. After 10 minutes of no requests, the model is unloaded to free GPU memory (auto-reloads on next request)
+
+### macOS Menu Bar App
+
+A native SwiftUI menu bar app is also available as an alternative to the CLI:
+
+- Status indicator (green = online, yellow = paused, gray = offline)
+- Real-time tokens/second display
+- Idle detection (pauses when you're using your Mac)
+- Earnings dashboard and wallet
+- Auto-start at login via Launch Agent
+- Diagnostics, benchmarks, and log viewer
+
+Build from source:
+```bash
+cd app/DGInf && swift build -c release
+```
+
+## Consumer API
+
+The coordinator exposes an OpenAI-compatible API.
+
+```bash
+# Create an API key
+curl -X POST https://inference-test.openinnovation.dev/v1/auth/keys
+
+# Chat completion
+curl https://inference-test.openinnovation.dev/v1/chat/completions \
+  -H "Authorization: Bearer dginf-..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "mlx-community/Qwen3.5-9B-MLX-4bit",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "stream": true
+  }'
+
+# List available models
+curl https://inference-test.openinnovation.dev/v1/models \
+  -H "Authorization: Bearer dginf-..."
+
+# Audio transcription
+curl https://inference-test.openinnovation.dev/v1/audio/transcriptions \
+  -H "Authorization: Bearer dginf-..." \
+  -F file=@audio.mp3
+```
+
+### Web Interface
+
+A web chat interface is available at the coordinator URL with model browsing, provider verification, billing, and network stats.
 
 ## Architecture
 
 | Component | Language | What It Does |
 |-----------|----------|-------------|
-| **Coordinator** (`coordinator/`) | Go | Control plane: routing, attestation verification, payments, stats API |
-| **Provider Agent** (`provider/`) | Rust | Inference agent: security hardening, attestation, WebSocket client, self-update |
-| **Web Frontend** (`web/`) | Next.js | Verification panel, stats dashboard, chat interface |
-| **macOS App** (`app/DGInf/`) | Swift/SwiftUI | Menu bar app with idle detection, earnings dashboard |
+| **Coordinator** (`coordinator/`) | Go | Control plane: request routing, attestation verification, scoring, payments, OpenAI-compatible API |
+| **Provider Agent** (`provider/`) | Rust | Inference agent: hardware detection, security hardening, attestation, WebSocket client, in-process MLX inference |
+| **Web Frontend** (`web/`) | Next.js 15 / React 19 | Chat interface, model browser, provider verification, billing dashboard |
+| **macOS App** (`app/DGInf/`) | Swift / SwiftUI | Menu bar app: status, earnings, idle detection, diagnostics |
 | **Secure Enclave** (`enclave/`) | Swift | Hardware-bound P-256 identity, signed attestation blobs |
-| **Scripts** (`scripts/`) | Bash | Hardened Runtime signing, app bundling, installer |
+| **Scripts** (`scripts/`) | Bash | Installer, Hardened Runtime code signing, app bundling, DMG distribution |
 
 ## Security Model
 
-DGInf prevents providers from reading consumer prompts through multiple layers:
+DGInf prevents anyone — including providers — from reading consumer prompts through multiple defense layers:
 
 | Protection | What It Blocks |
 |---|---|
@@ -92,14 +165,15 @@ DGInf prevents providers from reading consumer prompts through multiple layers:
 | **Hardened Runtime** | External process memory reads (task_for_pid, mach_vm_read) |
 | **SIP enforcement** | Kernel-level enforcement of the above; cannot be disabled without reboot |
 | **In-process inference** | No subprocess or IPC channel to sniff — all inference inside hardened process |
-| **Python path locking** | Only loads from signed app bundle, not system packages (prevents malicious vllm-mlx) |
+| **Python path locking** | Only loads from signed app bundle, not system packages |
 | **Signed app bundle** | Any file modification breaks code signature; SIP refuses to run modified bundle |
 | **Binary hash attestation** | Coordinator verifies provider runs the expected blessed binary version |
 | **SIP re-verification** | Checked at startup, before every request, and in every 5-min challenge-response |
-| **RDMA detection** | Detects Thunderbolt 5 RDMA via `rdma_ctl status`; refuses to serve if enabled (bypasses all software protections) |
+| **RDMA detection** | Detects Thunderbolt 5 RDMA; refuses to serve if enabled (bypasses software protections) |
+| **Hypervisor memory isolation** | Stage 2 page tables protect inference memory if RDMA is present |
 | **Memory wiping** | Volatile-zeros prompt/response buffers after each request |
 | **MDM SecurityInfo** | Hardware-verified SIP, Secure Boot, and system integrity via Apple MDM |
-| **E2E encryption** | Consumer requests encrypted with provider's X25519 public key (NaCl box); coordinator never sees plaintext prompts |
+| **E2E encryption** | Consumer requests encrypted with provider's X25519 public key (NaCl box); coordinator never sees plaintext |
 
 **Remaining attack surface:** Physical memory probing on soldered LPDDR5x — same threat model as Apple Private Cloud Compute.
 
@@ -108,35 +182,57 @@ DGInf prevents providers from reading consumer prompts through multiple layers:
 | Level | Name | How Achieved |
 |-------|------|-------------|
 | `none` | Open Mode | No attestation |
-| `self_signed` | Self-Attested | Secure Enclave P-256 signature verified + periodic challenge-response |
+| `self_signed` | Self-Attested | Secure Enclave P-256 signature verified + periodic challenge-response with SIP/SecureBoot checks |
 | `hardware` | Hardware-Attested | MDA certificate chain from Apple Enterprise Attestation Root CA (via MDM) |
 
-## MDM Infrastructure
+### Attestation Chain
 
-DGInf uses Apple MDM (MicroMDM) to query provider security posture:
+```
+Secure Enclave P-256 key (non-extractable from hardware)
+    ↓ Signs attestation blob (hardware info + SIP + binary hash)
+Coordinator verifies ECDSA signature
+    ↓ Cross-checks via MDM SecurityInfo query
+MDM returns: SIP status, Secure Boot level, FileVault, Authenticated Root Volume
+    ↓ Optional: Apple Device Attestation (MDA)
+Apple Enterprise Attestation Root CA certificate chain
+    ↓ Public verification endpoint
+GET /v1/providers/attestation — anyone can independently verify the chain
+```
 
-- **Enrollment:** Provider installs a `.mobileconfig` profile (one click, minimal permissions)
-- **Access Rights:** Query device info + security info only (AccessRights=1041). No erase, lock, or app management.
-- **SecurityInfo query returns:** SIP status, Secure Boot level, Authenticated Root Volume, FileVault status
-- **Push notifications:** APNs for on-demand attestation queries
+## Provider Scoring
 
-Infrastructure: MicroMDM + SCEP + step-ca (ACME with device-attest-01) on AWS.
+Providers are ranked by a composite score:
 
-## Inference
+```
+score = (1 - load) × decode_tps × trust_multiplier × reputation × warm_model_bonus × health_factor
+```
 
-| Backend | Status | Use |
-|---------|--------|-----|
-| **vllm-mlx** | Primary | Continuous batching + prefix caching, launched as subprocess |
-| **cohere-transcribe** | STT | Speech-to-text via custom stt_server.py |
-
-Models are downloaded from the DGInf S3 CDN (`s3://dginf-models/`, no auth required) or HuggingFace as fallback.
+- **decode_tps** — measured throughput during inference
+- **trust_multiplier** — higher for hardware-attested providers
+- **reputation** — 40% job success + 30% uptime + 20% attestation + 10% response time
+- **warm_model_bonus** — preference for providers with the model already loaded
+- **health_factor** — live system metrics (memory pressure, CPU usage, thermal state) from heartbeats
 
 ## Payments
 
 - Internal micro-USD ledger (1 USD = 1,000,000 micro-USD)
 - $0.50 per 1M output tokens, 10% platform fee
-- Consumer deposits via Stripe (MVP) or Tempo blockchain settlement
 - Provider payouts: 90% of inference charges
+- Provider wallet: secp256k1 key stored in macOS Keychain
+
+## Hardware Support
+
+Any Apple Silicon Mac (M1 or later):
+
+| Chip | Memory | Bandwidth | Best Models |
+|------|--------|-----------|-------------|
+| M1 | 8–16 GB | 68 GB/s | 0.5B–8B |
+| M1 Pro/Max | 16–64 GB | 200–400 GB/s | 8B–33B |
+| M2 Pro/Max | 16–96 GB | 200–400 GB/s | 8B–70B |
+| M3 Pro/Max | 18–128 GB | 150–400 GB/s | 8B–122B |
+| M3 Ultra | 96–256 GB | 819 GB/s | 8B–230B |
+| M4 Pro/Max | 24–128 GB | 273–546 GB/s | 8B–122B |
+| M4 Ultra | 256–512 GB | 819 GB/s | 8B–400B+ |
 
 ## Development
 
@@ -153,26 +249,12 @@ cd provider && cargo build --release --no-default-features
 # Enclave helper (Swift)
 cd enclave && swift build -c release
 
+# macOS App (Swift)
+cd app/DGInf && swift build -c release && swift test
+
 # Web frontend (Next.js)
-cd web && npm run dev
-
-# Deploy coordinator
-cd coordinator && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dginf-coordinator-linux ./cmd/coordinator
+cd web && npm install && npm run dev
 ```
-
-## Hardware Support
-
-Any Apple Silicon Mac (M1 or later):
-
-| Chip | Memory | Bandwidth | Best Models |
-|------|--------|-----------|-------------|
-| M1 | 8-16 GB | 68 GB/s | 3B-8B |
-| M1 Pro/Max | 16-64 GB | 200-400 GB/s | 8B-33B |
-| M2 Pro/Max | 16-96 GB | 200-400 GB/s | 8B-70B |
-| M3 Pro/Max | 18-128 GB | 150-400 GB/s | 8B-122B |
-| M3 Ultra | 96-256 GB | 819 GB/s | 8B-230B |
-| M4 Pro/Max | 24-128 GB | 273-546 GB/s | 8B-122B |
-| M4 Ultra | 256-512 GB | 819 GB/s | 8B-400B+ |
 
 ## License
 

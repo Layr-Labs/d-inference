@@ -172,10 +172,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/billing/stripe/webhook", s.handleStripeWebhook) // no auth — Stripe signs it
 	s.mux.HandleFunc("GET /v1/billing/stripe/session", s.requireAuth(s.handleStripeSessionStatus))
 
-	// EVM (Ethereum, Tempo, Base)
-	s.mux.HandleFunc("POST /v1/billing/deposit/evm", s.requireAuth(s.handleEVMDeposit))
-	s.mux.HandleFunc("POST /v1/billing/withdraw/evm", s.requireAuth(s.handleEVMWithdraw))
-
 	// Solana
 	s.mux.HandleFunc("POST /v1/billing/deposit/solana", s.requireAuth(s.handleSolanaDeposit))
 	s.mux.HandleFunc("POST /v1/billing/withdraw/solana", s.requireAuth(s.handleSolanaWithdraw))

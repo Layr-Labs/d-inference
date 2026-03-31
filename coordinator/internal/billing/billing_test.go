@@ -216,9 +216,6 @@ func TestDepositAddressesEmpty(t *testing.T) {
 	svc, _ := newTestService(t)
 
 	addrs := svc.DepositAddresses()
-	if len(addrs.EVM) != 0 {
-		t.Fatalf("expected no EVM addresses, got %d", len(addrs.EVM))
-	}
 	if addrs.Solana != "" {
 		t.Fatalf("expected empty Solana address, got %s", addrs.Solana)
 	}
@@ -399,32 +396,3 @@ func TestStripeWebhookInvalidSignature(t *testing.T) {
 	}
 }
 
-// --- EVM Helpers Tests ---
-
-func TestTopicToAddress(t *testing.T) {
-	// Standard 32-byte padded topic with address in last 20 bytes
-	topic := "0x000000000000000000000000dac17f958d2ee523a2206206994597c13d831ec7"
-	addr := topicToAddress(topic)
-	if addr != "0xdac17f958d2ee523a2206206994597c13d831ec7" {
-		t.Fatalf("expected 0xdac17f958d2ee523a2206206994597c13d831ec7, got %s", addr)
-	}
-}
-
-func TestHexToInt64(t *testing.T) {
-	if hexToInt64("0xa") != 10 {
-		t.Fatal("expected 10")
-	}
-	if hexToInt64("0xff") != 255 {
-		t.Fatal("expected 255")
-	}
-	if hexToInt64("0x100") != 256 {
-		t.Fatal("expected 256")
-	}
-}
-
-func TestHexToBigInt(t *testing.T) {
-	n := hexToBigInt("0xf4240") // 1,000,000
-	if n.Int64() != 1_000_000 {
-		t.Fatalf("expected 1000000, got %d", n.Int64())
-	}
-}

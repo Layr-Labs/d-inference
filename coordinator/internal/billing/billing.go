@@ -1,9 +1,8 @@
 // Package billing provides unified payment processing for the DGInf coordinator.
 //
-// Three payment methods are supported as parallel work streams:
-//   - Stripe: Fiat checkout sessions with webhook confirmation
-//   - EVM:    On-chain deposits/withdrawals on Ethereum-compatible chains (Tempo, Ethereum, Base)
-//   - Solana: On-chain deposits/withdrawals using SPL tokens (USDC)
+// Two payment methods are supported:
+//   - Stripe: Fiat checkout sessions with webhook confirmation (not day-1)
+//   - Solana: On-chain deposits/withdrawals using USDC-SPL
 //
 // All payment methods ultimately credit the same internal micro-USD ledger.
 // A referral system allows accounts to earn a share of platform fees for
@@ -11,7 +10,6 @@
 package billing
 
 import (
-	"fmt"
 	"log/slog"
 
 	"github.com/dginf/coordinator/internal/payments"
@@ -23,7 +21,6 @@ type PaymentMethod string
 
 const (
 	MethodStripe PaymentMethod = "stripe"
-	MethodEVM    PaymentMethod = "evm"
 	MethodSolana PaymentMethod = "solana"
 )
 
@@ -31,47 +28,30 @@ const (
 type Chain string
 
 const (
-	ChainEthereum Chain = "ethereum"
-	ChainTempo    Chain = "tempo"
-	ChainBase     Chain = "base"
-	ChainSolana   Chain = "solana"
+	ChainSolana Chain = "solana"
 )
 
 // Config holds billing service configuration, typically from environment variables.
 type Config struct {
-	// Stripe
-	StripeSecretKey    string
+	// Stripe — present but not activated day-1 (set env vars to enable)
+	StripeSecretKey     string
 	StripeWebhookSecret string
-	StripeSuccessURL   string // redirect URL after successful payment
-	StripeCancelURL    string // redirect URL after cancelled payment
+	StripeSuccessURL    string // redirect URL after successful payment
+	StripeCancelURL     string // redirect URL after cancelled payment
 
-	// EVM chains
-	EVMChains []EVMChainConfig
-
-	// Solana
-	SolanaRPCURL        string
+	// Solana — primary payment rail for launch
+	SolanaRPCURL         string
 	SolanaDepositAddress string
-	SolanaUSDCMint      string
-	SolanaPrivateKey    string // hot wallet for withdrawals (base58)
+	SolanaUSDCMint       string
+	SolanaPrivateKey     string // hot wallet for withdrawals (base58)
 
 	// Referral
 	ReferralSharePercent int64 // percentage of platform fee going to referrer (default 20)
 }
 
-// EVMChainConfig configures a single EVM-compatible chain.
-type EVMChainConfig struct {
-	Chain          Chain
-	RPCURL         string
-	DepositAddress string
-	USDCContract   string // ERC-20 contract address for the stablecoin
-	PrivateKey     string // hot wallet for withdrawals (hex, no 0x prefix)
-	ChainID        int64
-}
-
-// DepositAddresses returns the deposit addresses for all configured chains.
+// DepositAddresses returns the deposit addresses for configured chains.
 type DepositAddresses struct {
-	EVM    map[Chain]string `json:"evm,omitempty"`
-	Solana string           `json:"solana,omitempty"`
+	Solana string `json:"solana,omitempty"`
 }
 
 // Service is the unified billing orchestrator. It delegates to chain-specific
@@ -83,7 +63,6 @@ type Service struct {
 	config   Config
 
 	stripe   *StripeProcessor
-	evm      map[Chain]*EVMProcessor
 	solana   *SolanaProcessor
 	referral *ReferralService
 
@@ -103,7 +82,6 @@ func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cf
 		ledger:            ledger,
 		logger:            logger,
 		config:            cfg,
-		evm:               make(map[Chain]*EVMProcessor),
 		referral:          NewReferralService(st, ledger, logger, cfg.ReferralSharePercent),
 		processedTxHashes: make(map[string]bool),
 	}
@@ -113,14 +91,6 @@ func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cf
 		svc.stripe = NewStripeProcessor(cfg.StripeSecretKey, cfg.StripeWebhookSecret,
 			cfg.StripeSuccessURL, cfg.StripeCancelURL, logger)
 		logger.Info("billing: Stripe processor enabled")
-	}
-
-	// Initialize EVM chain processors
-	for _, chainCfg := range cfg.EVMChains {
-		if chainCfg.RPCURL != "" {
-			svc.evm[chainCfg.Chain] = NewEVMProcessor(chainCfg, logger)
-			logger.Info("billing: EVM processor enabled", "chain", chainCfg.Chain)
-		}
 	}
 
 	// Initialize Solana processor
@@ -136,9 +106,6 @@ func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cf
 // Stripe returns the Stripe processor, or nil if not configured.
 func (s *Service) Stripe() *StripeProcessor { return s.stripe }
 
-// EVM returns the EVM processor for a specific chain, or nil if not configured.
-func (s *Service) EVM(chain Chain) *EVMProcessor { return s.evm[chain] }
-
 // Solana returns the Solana processor, or nil if not configured.
 func (s *Service) Solana() *SolanaProcessor { return s.solana }
 
@@ -153,12 +120,7 @@ func (s *Service) Ledger() *payments.Ledger { return s.ledger }
 
 // DepositAddresses returns all configured deposit addresses.
 func (s *Service) DepositAddresses() DepositAddresses {
-	addrs := DepositAddresses{
-		EVM: make(map[Chain]string),
-	}
-	for chain, proc := range s.evm {
-		addrs.EVM[chain] = proc.DepositAddress()
-	}
+	var addrs DepositAddresses
 	if s.solana != nil {
 		addrs.Solana = s.solana.DepositAddress()
 	}
@@ -174,16 +136,6 @@ func (s *Service) SupportedMethods() []PaymentMethodInfo {
 			Method:      MethodStripe,
 			DisplayName: "Credit/Debit Card (Stripe)",
 			Currencies:  []string{"USD"},
-		})
-	}
-
-	for chain, proc := range s.evm {
-		methods = append(methods, PaymentMethodInfo{
-			Method:         MethodEVM,
-			Chain:          chain,
-			DisplayName:    fmt.Sprintf("Stablecoin on %s", chain),
-			DepositAddress: proc.DepositAddress(),
-			Currencies:     []string{"USDC", "pathUSD"},
 		})
 	}
 
@@ -210,8 +162,7 @@ func (s *Service) MarkProcessedTx(txHash string) {
 	s.processedTxHashes[txHash] = true
 }
 
-// CreditDeposit credits a consumer's balance after a verified deposit and
-// handles referral rewards if applicable.
+// CreditDeposit credits a consumer's balance after a verified deposit.
 func (s *Service) CreditDeposit(accountID string, amountMicroUSD int64, entryType store.LedgerEntryType, reference string) error {
 	return s.store.Credit(accountID, amountMicroUSD, entryType, reference)
 }

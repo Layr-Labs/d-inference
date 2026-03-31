@@ -87,6 +87,22 @@ type Store interface {
 	// has already been completed. Used to prevent double-crediting the same on-chain tx.
 	IsExternalIDProcessed(externalID string) bool
 
+	// --- Custom Pricing ---
+
+	// SetModelPrice sets a custom price override for a model on an account.
+	// Input and output prices are in micro-USD per 1M tokens.
+	SetModelPrice(accountID, model string, inputPrice, outputPrice int64) error
+
+	// GetModelPrice returns the custom price for a model on an account.
+	// Returns (0, 0, false) if no custom price is set.
+	GetModelPrice(accountID, model string) (inputPrice, outputPrice int64, ok bool)
+
+	// ListModelPrices returns all custom price overrides for an account.
+	ListModelPrices(accountID string) []ModelPrice
+
+	// DeleteModelPrice removes a custom price override.
+	DeleteModelPrice(accountID, model string) error
+
 	// --- Users (Privy) ---
 
 	// CreateUser creates a new user record linked to a Privy identity.
@@ -158,6 +174,14 @@ type ReferralStats struct {
 	Code                 string `json:"code"`
 	TotalReferred        int    `json:"total_referred"`
 	TotalRewardsMicroUSD int64  `json:"total_rewards_micro_usd"`
+}
+
+// ModelPrice represents a custom per-model price override for an account.
+type ModelPrice struct {
+	AccountID   string `json:"account_id"`
+	Model       string `json:"model"`
+	InputPrice  int64  `json:"input_price"`  // micro-USD per 1M tokens
+	OutputPrice int64  `json:"output_price"` // micro-USD per 1M tokens
 }
 
 // User represents a consumer account linked to a Privy identity.

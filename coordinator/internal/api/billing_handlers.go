@@ -21,6 +21,7 @@ import (
 
 	"github.com/dginf/coordinator/internal/auth"
 	"github.com/dginf/coordinator/internal/billing"
+	"github.com/dginf/coordinator/internal/payments"
 	"github.com/dginf/coordinator/internal/store"
 	"github.com/google/uuid"
 )
@@ -396,8 +397,21 @@ func (s *Server) handleReferralRegister(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "referral system not available"))
 		return
 	}
+
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		return
+	}
+	if req.Code == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "code is required — choose your own referral code (3-20 chars, alphanumeric)"))
+		return
+	}
+
 	accountID := s.resolveAccountID(r)
-	referrer, err := s.billing.Referral().Register(accountID)
+	referrer, err := s.billing.Referral().Register(accountID, req.Code)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("referral_error", err.Error()))
 		return
@@ -467,6 +481,127 @@ func (s *Server) handleReferralInfo(w http.ResponseWriter, r *http.Request) {
 		"code":          referrer.Code,
 		"share_percent": s.billing.Referral().SharePercent(),
 		"referred_by":   referredBy,
+	})
+}
+
+// --- Pricing ---
+
+// handleGetPricing handles GET /v1/pricing.
+// Returns platform default prices plus any custom overrides for the authenticated user.
+func (s *Server) handleGetPricing(w http.ResponseWriter, r *http.Request) {
+	defaults := payments.DefaultPrices()
+
+	type priceEntry struct {
+		Model       string  `json:"model"`
+		InputPrice  int64   `json:"input_price"`  // micro-USD per 1M tokens
+		OutputPrice int64   `json:"output_price"` // micro-USD per 1M tokens
+		InputUSD    string  `json:"input_usd"`    // human-readable
+		OutputUSD   string  `json:"output_usd"`
+		Custom      bool    `json:"custom"`
+	}
+
+	// Start with defaults.
+	priceMap := make(map[string]priceEntry)
+	for model, prices := range defaults {
+		priceMap[model] = priceEntry{
+			Model:       model,
+			InputPrice:  prices[0],
+			OutputPrice: prices[1],
+			InputUSD:    fmt.Sprintf("$%.4f", float64(prices[0])/1_000_000),
+			OutputUSD:   fmt.Sprintf("$%.4f", float64(prices[1])/1_000_000),
+		}
+	}
+
+	// Overlay custom prices if authenticated.
+	accountID := s.resolveAccountID(r)
+	if accountID != "" {
+		customs := s.store.ListModelPrices(accountID)
+		for _, mp := range customs {
+			priceMap[mp.Model] = priceEntry{
+				Model:       mp.Model,
+				InputPrice:  mp.InputPrice,
+				OutputPrice: mp.OutputPrice,
+				InputUSD:    fmt.Sprintf("$%.4f", float64(mp.InputPrice)/1_000_000),
+				OutputUSD:   fmt.Sprintf("$%.4f", float64(mp.OutputPrice)/1_000_000),
+				Custom:      true,
+			}
+		}
+	}
+
+	// Convert to sorted list.
+	var prices []priceEntry
+	for _, p := range priceMap {
+		prices = append(prices, p)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"prices": prices,
+		"note":   "Prices are in micro-USD per 1M tokens. Use PUT /v1/pricing to set custom prices.",
+	})
+}
+
+// handleSetPricing handles PUT /v1/pricing.
+// Sets a custom price override for a model on the authenticated user's account.
+func (s *Server) handleSetPricing(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Model       string `json:"model"`
+		InputPrice  int64  `json:"input_price"`  // micro-USD per 1M tokens
+		OutputPrice int64  `json:"output_price"` // micro-USD per 1M tokens
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		return
+	}
+	if req.Model == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
+		return
+	}
+	if req.InputPrice <= 0 || req.OutputPrice <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "input_price and output_price must be positive (micro-USD per 1M tokens)"))
+		return
+	}
+
+	accountID := s.resolveAccountID(r)
+	if err := s.store.SetModelPrice(accountID, req.Model, req.InputPrice, req.OutputPrice); err != nil {
+		s.logger.Error("pricing: set failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to set price"))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":       "updated",
+		"model":        req.Model,
+		"input_price":  req.InputPrice,
+		"output_price": req.OutputPrice,
+		"input_usd":    fmt.Sprintf("$%.4f per 1M tokens", float64(req.InputPrice)/1_000_000),
+		"output_usd":   fmt.Sprintf("$%.4f per 1M tokens", float64(req.OutputPrice)/1_000_000),
+	})
+}
+
+// handleDeletePricing handles DELETE /v1/pricing.
+// Removes a custom price override, reverting to platform defaults.
+func (s *Server) handleDeletePricing(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		return
+	}
+	if req.Model == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
+		return
+	}
+
+	accountID := s.resolveAccountID(r)
+	if err := s.store.DeleteModelPrice(accountID, req.Model); err != nil {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", err.Error()))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "deleted",
+		"model":  req.Model,
 	})
 }
 

@@ -184,6 +184,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/billing/withdraw/solana", s.requireAuth(s.handleSolanaWithdraw))
 	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
 
+	// Pricing
+	s.mux.HandleFunc("GET /v1/pricing", s.requireAuth(s.handleGetPricing))
+	s.mux.HandleFunc("PUT /v1/pricing", s.requireAuth(s.handleSetPricing))
+	s.mux.HandleFunc("DELETE /v1/pricing", s.requireAuth(s.handleDeletePricing))
+
 	// Payment methods info
 	s.mux.HandleFunc("GET /v1/billing/methods", s.handleBillingMethods) // no auth needed
 

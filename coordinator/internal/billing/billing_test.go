@@ -27,30 +27,64 @@ func newTestService(t *testing.T) (*Service, store.Store) {
 func TestReferralRegister(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	referrer, err := svc.Referral().Register("consumer-123")
+	referrer, err := svc.Referral().Register("consumer-123", "ALPHA")
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if referrer.Code == "" {
-		t.Fatal("expected non-empty referral code")
+	if referrer.Code != "ALPHA" {
+		t.Fatalf("expected ALPHA, got %s", referrer.Code)
 	}
 	if referrer.AccountID != "consumer-123" {
 		t.Fatalf("expected account consumer-123, got %s", referrer.AccountID)
 	}
 
-	again, err := svc.Referral().Register("consumer-123")
+	// Registering again should return the existing code (ignores new code)
+	again, err := svc.Referral().Register("consumer-123", "BETA")
 	if err != nil {
 		t.Fatalf("re-register: %v", err)
 	}
-	if again.Code != referrer.Code {
-		t.Fatalf("expected same code %s, got %s", referrer.Code, again.Code)
+	if again.Code != "ALPHA" {
+		t.Fatalf("expected same code ALPHA, got %s", again.Code)
+	}
+}
+
+func TestReferralCodeValidation(t *testing.T) {
+	svc, _ := newTestService(t)
+
+	// Too short
+	if _, err := svc.Referral().Register("a1", "AB"); err == nil {
+		t.Fatal("expected error for 2-char code")
+	}
+	// Too long
+	if _, err := svc.Referral().Register("a2", "ABCDEFGHIJKLMNOPQRSTU"); err == nil {
+		t.Fatal("expected error for 21-char code")
+	}
+	// Invalid chars
+	if _, err := svc.Referral().Register("a3", "NO SPACES"); err == nil {
+		t.Fatal("expected error for spaces")
+	}
+	// Leading hyphen
+	if _, err := svc.Referral().Register("a4", "-BAD"); err == nil {
+		t.Fatal("expected error for leading hyphen")
+	}
+	// Valid with hyphen
+	ref, err := svc.Referral().Register("a5", "my-code")
+	if err != nil {
+		t.Fatalf("valid code with hyphen: %v", err)
+	}
+	if ref.Code != "MY-CODE" {
+		t.Fatalf("expected MY-CODE, got %s", ref.Code)
+	}
+	// Duplicate code
+	if _, err := svc.Referral().Register("a6", "MY-CODE"); err == nil {
+		t.Fatal("expected error for duplicate code")
 	}
 }
 
 func TestReferralApply(t *testing.T) {
 	svc, st := newTestService(t)
 
-	referrer, err := svc.Referral().Register("referrer-account")
+	referrer, err := svc.Referral().Register("referrer-account", "REF1")
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -71,7 +105,7 @@ func TestReferralApply(t *testing.T) {
 
 func TestReferralSelfReferralBlocked(t *testing.T) {
 	svc, _ := newTestService(t)
-	referrer, _ := svc.Referral().Register("same-account")
+	referrer, _ := svc.Referral().Register("same-account", "SELF")
 	err := svc.Referral().Apply("same-account", referrer.Code)
 	if err == nil {
 		t.Fatal("expected self-referral to be blocked")
@@ -80,8 +114,8 @@ func TestReferralSelfReferralBlocked(t *testing.T) {
 
 func TestReferralDoubleApplyBlocked(t *testing.T) {
 	svc, _ := newTestService(t)
-	ref1, _ := svc.Referral().Register("referrer-1")
-	ref2, _ := svc.Referral().Register("referrer-2")
+	ref1, _ := svc.Referral().Register("referrer-1", "CODE-A")
+	ref2, _ := svc.Referral().Register("referrer-2", "CODE-B")
 	_ = svc.Referral().Apply("consumer", ref1.Code)
 	err := svc.Referral().Apply("consumer", ref2.Code)
 	if err == nil {
@@ -100,7 +134,7 @@ func TestReferralInvalidCode(t *testing.T) {
 func TestReferralRewardDistribution(t *testing.T) {
 	svc, st := newTestService(t)
 
-	referrer, _ := svc.Referral().Register("referrer-wallet")
+	referrer, _ := svc.Referral().Register("referrer-wallet", "EARN")
 	_ = svc.Referral().Apply("consumer-key", referrer.Code)
 
 	platformFee := int64(100)
@@ -131,7 +165,7 @@ func TestReferralRewardNoReferrer(t *testing.T) {
 func TestReferralStats(t *testing.T) {
 	svc, _ := newTestService(t)
 
-	referrer, _ := svc.Referral().Register("referrer-account")
+	referrer, _ := svc.Referral().Register("referrer-account", "STATS")
 	_ = svc.Referral().Apply("consumer-1", referrer.Code)
 	_ = svc.Referral().Apply("consumer-2", referrer.Code)
 	_ = svc.Referral().DistributeReferralReward("consumer-1", 100, "job-1")

@@ -40,6 +40,9 @@ type MemoryStore struct {
 	// Billing sessions
 	billingSessions map[string]*BillingSession // sessionID → session
 
+	// Custom pricing
+	modelPrices map[string]ModelPrice // "accountID:model" → price
+
 	// Users (Privy)
 	usersByPrivyID   map[string]*User // privyUserID → user
 	usersByAccountID map[string]*User // accountID → user
@@ -59,6 +62,7 @@ func NewMemory(adminKey string) *MemoryStore {
 		referrals:          make(map[string]string),
 		referralCounts:     make(map[string]int),
 		billingSessions:    make(map[string]*BillingSession),
+		modelPrices:      make(map[string]ModelPrice),
 		usersByPrivyID:   make(map[string]*User),
 		usersByAccountID: make(map[string]*User),
 	}
@@ -385,6 +389,58 @@ func (s *MemoryStore) IsExternalIDProcessed(externalID string) bool {
 		}
 	}
 	return false
+}
+
+// --- Custom Pricing ---
+
+func (s *MemoryStore) SetModelPrice(accountID, model string, inputPrice, outputPrice int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := accountID + ":" + model
+	s.modelPrices[key] = ModelPrice{
+		AccountID:   accountID,
+		Model:       model,
+		InputPrice:  inputPrice,
+		OutputPrice: outputPrice,
+	}
+	return nil
+}
+
+func (s *MemoryStore) GetModelPrice(accountID, model string) (int64, int64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	mp, ok := s.modelPrices[accountID+":"+model]
+	if !ok {
+		return 0, 0, false
+	}
+	return mp.InputPrice, mp.OutputPrice, true
+}
+
+func (s *MemoryStore) ListModelPrices(accountID string) []ModelPrice {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var prices []ModelPrice
+	for _, mp := range s.modelPrices {
+		if mp.AccountID == accountID {
+			prices = append(prices, mp)
+		}
+	}
+	return prices
+}
+
+func (s *MemoryStore) DeleteModelPrice(accountID, model string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := accountID + ":" + model
+	if _, ok := s.modelPrices[key]; !ok {
+		return fmt.Errorf("no custom price for model %q", model)
+	}
+	delete(s.modelPrices, key)
+	return nil
 }
 
 // --- Users (Privy) ---

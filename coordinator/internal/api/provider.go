@@ -456,7 +456,8 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	s.store.RecordUsage(providerID, pr.ConsumerKey, pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
 
 	// Calculate cost and process payment.
-	totalCost := payments.CalculateCost(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
+	customIn, customOut, hasCustom := s.store.GetModelPrice(pr.ConsumerKey, pr.Model)
+	totalCost := payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
 	providerPayout := payments.ProviderPayout(totalCost)
 
 	// Attempt to charge the consumer (best-effort for MVP — inference already completed).

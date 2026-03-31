@@ -1,8 +1,6 @@
 package billing
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -54,19 +52,23 @@ func (r *ReferralService) SharePercent() int64 {
 	return r.referralSharePercent
 }
 
-// Register creates a referral code for an account. If the account already
-// has a code, it returns the existing one.
-func (r *ReferralService) Register(accountID string) (*store.Referrer, error) {
-	// Check if already registered
+// Register creates a referral code for an account. The user provides their
+// desired code. If the account already has a code, it returns the existing one.
+func (r *ReferralService) Register(accountID, desiredCode string) (*store.Referrer, error) {
+	// Check if already registered.
 	existing, err := r.store.GetReferrerByAccount(accountID)
 	if err == nil {
 		return existing, nil
 	}
 
-	// Generate a unique referral code
-	code, err := generateReferralCode()
+	code, err := validateReferralCode(desiredCode)
 	if err != nil {
-		return nil, fmt.Errorf("referral: generate code: %w", err)
+		return nil, err
+	}
+
+	// Check uniqueness.
+	if _, err := r.store.GetReferrerByCode(code); err == nil {
+		return nil, fmt.Errorf("referral: code %q is already taken", code)
 	}
 
 	if err := r.store.CreateReferrer(accountID, code); err != nil {
@@ -82,6 +84,31 @@ func (r *ReferralService) Register(accountID string) (*store.Referrer, error) {
 		AccountID: accountID,
 		Code:      code,
 	}, nil
+}
+
+// validateReferralCode normalizes and validates a user-chosen referral code.
+// Rules: 3-20 characters, alphanumeric and hyphens only, uppercased.
+func validateReferralCode(code string) (string, error) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if code == "" {
+		return "", fmt.Errorf("referral: code is required")
+	}
+	if len(code) < 3 {
+		return "", fmt.Errorf("referral: code must be at least 3 characters")
+	}
+	if len(code) > 20 {
+		return "", fmt.Errorf("referral: code must be at most 20 characters")
+	}
+	for _, ch := range code {
+		if !unicode.IsLetter(ch) && !unicode.IsDigit(ch) && ch != '-' {
+			return "", fmt.Errorf("referral: code can only contain letters, numbers, and hyphens")
+		}
+	}
+	// No leading/trailing hyphens.
+	if code[0] == '-' || code[len(code)-1] == '-' {
+		return "", fmt.Errorf("referral: code cannot start or end with a hyphen")
+	}
+	return code, nil
 }
 
 // Apply links an account to a referral code. The account must not already
@@ -202,26 +229,6 @@ type ReferralStatsResponse struct {
 	BalanceUSD           string `json:"balance_usd"`
 }
 
-// generateReferralCode creates a random alphanumeric referral code.
-// Format: DGINF-XXXXXX (uppercase alphanumeric, 6 random chars)
-func generateReferralCode() (string, error) {
-	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	raw := hex.EncodeToString(b)
-
-	// Convert to uppercase and filter to alphanumeric
-	var code strings.Builder
-	code.WriteString("DGINF-")
-	for _, ch := range strings.ToUpper(raw) {
-		if unicode.IsLetter(ch) || unicode.IsDigit(ch) {
-			code.WriteRune(ch)
-		}
-	}
-
-	return code.String(), nil
-}
 
 // truncateID shortens an ID for logging (shows first 8 chars).
 func truncateID(id string) string {

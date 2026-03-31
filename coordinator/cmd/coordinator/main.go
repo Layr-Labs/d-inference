@@ -27,12 +27,18 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"strconv"
+
 	"github.com/dginf/coordinator/internal/api"
 	"github.com/dginf/coordinator/internal/attestation"
+	"github.com/dginf/coordinator/internal/auth"
+	"github.com/dginf/coordinator/internal/billing"
 	"github.com/dginf/coordinator/internal/mdm"
+	"github.com/dginf/coordinator/internal/payments"
 	"github.com/dginf/coordinator/internal/registry"
 	"github.com/dginf/coordinator/internal/store"
 )
@@ -88,6 +94,71 @@ func main() {
 	}
 
 	srv := api.NewServer(reg, st, logger)
+
+	// Configure billing service.
+	//
+	// Day-1 launch: Solana USDC (via Privy embedded wallets) + Referrals.
+	// Users sign their own USDC transfers in the frontend, then submit the
+	// tx signature here. We verify on-chain and credit their balance.
+	// Stripe is wired but not activated until we flip the env vars on.
+	billingCfg := billing.Config{
+		// Solana — primary payment rail
+		SolanaRPCURL:             os.Getenv("DGINF_SOLANA_RPC_URL"),
+		SolanaUSDCMint:           envOr("DGINF_SOLANA_USDC_MINT", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), // mainnet USDC
+		SolanaCoordinatorAddress: os.Getenv("DGINF_SOLANA_COORDINATOR_ADDRESS"),                                     // address that receives USDC
+
+		// Stripe — present but not activated day-1 (set env vars to enable)
+		StripeSecretKey:     os.Getenv("DGINF_STRIPE_SECRET_KEY"),
+		StripeWebhookSecret: os.Getenv("DGINF_STRIPE_WEBHOOK_SECRET"),
+		StripeSuccessURL:    envOr("DGINF_STRIPE_SUCCESS_URL", "https://inference-test.openinnovation.dev/billing/success"),
+		StripeCancelURL:     envOr("DGINF_STRIPE_CANCEL_URL", "https://inference-test.openinnovation.dev/billing/cancel"),
+	}
+
+	// Parse referral share percentage
+	if refShareStr := os.Getenv("DGINF_REFERRAL_SHARE_PCT"); refShareStr != "" {
+		if v, err := strconv.ParseInt(refShareStr, 10, 64); err == nil {
+			billingCfg.ReferralSharePercent = v
+		}
+	}
+
+	ledger := payments.NewLedger(st)
+	billingSvc := billing.NewService(st, ledger, logger, billingCfg)
+	srv.SetBilling(billingSvc)
+
+	// Configure admin accounts.
+	if adminEmails := os.Getenv("DGINF_ADMIN_EMAILS"); adminEmails != "" {
+		emails := strings.Split(adminEmails, ",")
+		srv.SetAdminEmails(emails)
+		logger.Info("admin accounts configured", "emails", emails)
+	}
+
+	// Configure Privy authentication.
+	if privyAppID := os.Getenv("DGINF_PRIVY_APP_ID"); privyAppID != "" {
+		privyVerificationKey := os.Getenv("DGINF_PRIVY_VERIFICATION_KEY")
+		privyAppSecret := os.Getenv("DGINF_PRIVY_APP_SECRET")
+
+		privyAuth, err := auth.NewPrivyAuth(auth.Config{
+			AppID:           privyAppID,
+			AppSecret:       privyAppSecret,
+			VerificationKey: privyVerificationKey,
+		}, st, logger)
+		if err != nil {
+			logger.Error("failed to initialize Privy auth", "error", err)
+		} else {
+			srv.SetPrivyAuth(privyAuth)
+			logger.Info("Privy authentication enabled", "app_id", privyAppID)
+		}
+	}
+
+	// Log which billing methods are active
+	methods := billingSvc.SupportedMethods()
+	if len(methods) > 0 {
+		var names []string
+		for _, m := range methods {
+			names = append(names, string(m.Method))
+		}
+		logger.Info("billing enabled", "methods", names, "referral_share_pct", billingCfg.ReferralSharePercent)
+	}
 
 	// Configure MDM client for provider security verification.
 	// When set, the coordinator independently verifies SIP/SecureBoot via MicroMDM

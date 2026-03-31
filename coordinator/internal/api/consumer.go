@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dginf/coordinator/internal/auth"
 	"github.com/dginf/coordinator/internal/e2e"
 	"github.com/dginf/coordinator/internal/payments"
 	"github.com/dginf/coordinator/internal/protocol"
@@ -693,14 +694,25 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCreateKey handles POST /v1/auth/keys — creates a new consumer API key.
-// This is an admin endpoint used for bootstrapping new consumers.
+// Requires Privy authentication. The key is linked to the user's account so
+// requests made with the key are billed to the same account.
 func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
-	key, err := s.store.CreateKey()
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error",
+			"API key creation requires a Privy account — authenticate with a Privy access token"))
+		return
+	}
+
+	key, err := s.store.CreateKeyForAccount(user.AccountID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to create key"))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"api_key": key})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"api_key":    key,
+		"account_id": user.AccountID,
+	})
 }
 
 // handleHealth handles GET /health.

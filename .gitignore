@@ -39,6 +39,8 @@ build/
 
 # Config (local dev)
 *.local.toml
+.env
+.env.*
 
 # Keys and certificates (never commit)
 *.pem

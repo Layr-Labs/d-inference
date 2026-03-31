@@ -455,8 +455,17 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// Record usage.
 	s.store.RecordUsage(providerID, pr.ConsumerKey, pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
 
-	// Calculate cost and process payment.
-	totalCost := payments.CalculateCost(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
+	// Calculate cost — check provider's custom price, then platform DB price,
+	// then hardcoded defaults.
+	providerWalletForPricing := ""
+	if p := s.registry.GetProvider(providerID); p != nil {
+		providerWalletForPricing = p.WalletAddress
+	}
+	customIn, customOut, hasCustom := s.store.GetModelPrice(providerWalletForPricing, pr.Model)
+	if !hasCustom {
+		customIn, customOut, hasCustom = s.store.GetModelPrice("platform", pr.Model)
+	}
+	totalCost := payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
 	providerPayout := payments.ProviderPayout(totalCost)
 
 	// Attempt to charge the consumer (best-effort for MVP — inference already completed).
@@ -487,9 +496,14 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		s.ledger.CreditProvider(providerWallet, providerPayout, pr.Model, msg.RequestID)
 	}
 
-	// Record platform fee as a separate ledger entry for accounting.
+	// Record platform fee, distributing referral rewards if applicable.
 	platformFee := payments.PlatformFee(totalCost)
 	if platformFee > 0 {
+		// Check if consumer has a referrer and distribute reward.
+		// The referral service deducts the referrer's share from the platform fee.
+		if s.billing != nil && s.billing.Referral() != nil {
+			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
+		}
 		_ = s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID)
 	}
 

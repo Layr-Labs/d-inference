@@ -90,6 +90,37 @@ func CalculateCost(model string, promptTokens, completionTokens int) int64 {
 	return cost
 }
 
+// CalculateCostWithOverrides is like CalculateCost but uses custom per-account
+// prices if set, falling back to platform defaults.
+func CalculateCostWithOverrides(model string, promptTokens, completionTokens int, customInput, customOutput int64, hasCustom bool) int64 {
+	var inputRate, outputRate int64
+	if hasCustom {
+		inputRate = customInput
+		outputRate = customOutput
+	} else {
+		inputRate = InputPricePerMillion(model)
+		outputRate = OutputPricePerMillion(model)
+	}
+
+	inputCost := int64(promptTokens) * inputRate / 1_000_000
+	outputCost := int64(completionTokens) * outputRate / 1_000_000
+	cost := inputCost + outputCost
+
+	if cost < minimumChargeMicroUSD {
+		cost = minimumChargeMicroUSD
+	}
+	return cost
+}
+
+// DefaultPrices returns the platform default pricing table.
+func DefaultPrices() map[string][2]int64 {
+	result := make(map[string][2]int64, len(modelPricing))
+	for model, price := range modelPricing {
+		result[model] = [2]int64{price.input, price.output}
+	}
+	return result
+}
+
 // PlatformFee returns DGInf's routing fee (5%).
 func PlatformFee(totalCost int64) int64 {
 	return totalCost * platformFeePercent / 100

@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dginf/coordinator/internal/auth"
+	"github.com/dginf/coordinator/internal/billing"
 	"github.com/dginf/coordinator/internal/mdm"
 	"github.com/dginf/coordinator/internal/payments"
 	"github.com/dginf/coordinator/internal/registry"
@@ -54,15 +56,18 @@ func consumerKeyFromContext(ctx context.Context) string {
 var LatestProviderVersion = "0.2.0"
 
 // Server is the main HTTP/WS server for the coordinator. It ties together
-// the provider registry, key store, payment ledger, and HTTP routing.
+// the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
 	registry          *registry.Registry
 	store             store.Store
 	ledger            *payments.Ledger
+	billing           *billing.Service
 	logger            *slog.Logger
 	mux               *http.ServeMux
 	challengeInterval time.Duration // 0 means use DefaultChallengeInterval
 	settlementURL     string        // URL of the settlement sidecar (e.g. "http://localhost:8090")
+	privyAuth              *auth.PrivyAuth     // Privy JWT authentication (nil if not configured)
+	adminEmails            map[string]bool     // emails that have admin access
 	mdmClient              *mdm.Client        // MicroMDM client for provider security verification
 	stepCARootCert         *x509.Certificate  // step-ca root CA for ACME cert verification
 	stepCAIntermediateCert *x509.Certificate  // step-ca intermediate CA
@@ -95,6 +100,24 @@ func (s *Server) SetStepCACerts(root, intermediate *x509.Certificate) {
 	s.stepCAIntermediateCert = intermediate
 }
 
+// SetBilling configures the billing service for multi-chain payments and referrals.
+func (s *Server) SetBilling(svc *billing.Service) {
+	s.billing = svc
+}
+
+// SetPrivyAuth configures Privy JWT authentication for consumer endpoints.
+func (s *Server) SetPrivyAuth(pa *auth.PrivyAuth) {
+	s.privyAuth = pa
+}
+
+// SetAdminEmails configures which Privy accounts have admin access.
+func (s *Server) SetAdminEmails(emails []string) {
+	s.adminEmails = make(map[string]bool, len(emails))
+	for _, e := range emails {
+		s.adminEmails[strings.ToLower(strings.TrimSpace(e))] = true
+	}
+}
+
 // SetMDMClient configures the MicroMDM client for provider verification.
 // When set, providers are verified against MDM on registration.
 func (s *Server) SetMDMClient(client *mdm.Client) {
@@ -124,8 +147,8 @@ func (s *Server) routes() {
 	// Provider WebSocket — no API key auth (providers authenticate differently).
 	s.mux.HandleFunc("GET /ws/provider", s.handleProviderWS)
 
-	// Key generation — open access for testing. In production, gate behind admin auth.
-	s.mux.HandleFunc("POST /v1/auth/keys", s.handleCreateKey)
+	// Key generation — requires Privy auth, key is linked to account.
+	s.mux.HandleFunc("POST /v1/auth/keys", s.requireAuth(s.handleCreateKey))
 
 	// Consumer endpoints — API key auth required.
 	s.mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.handleChatCompletions))
@@ -157,6 +180,33 @@ func (s *Server) routes() {
 
 	// Provider version check — no auth needed. Providers call this to check for updates.
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)
+
+	// --- Billing endpoints (multi-chain payments + referrals) ---
+
+	// Stripe
+	s.mux.HandleFunc("POST /v1/billing/stripe/create-session", s.requireAuth(s.handleStripeCreateSession))
+	s.mux.HandleFunc("POST /v1/billing/stripe/webhook", s.handleStripeWebhook) // no auth — Stripe signs it
+	s.mux.HandleFunc("GET /v1/billing/stripe/session", s.requireAuth(s.handleStripeSessionStatus))
+
+	// Solana deposits and withdrawals
+	s.mux.HandleFunc("POST /v1/billing/deposit", s.requireAuth(s.handleSolanaDeposit))
+	s.mux.HandleFunc("POST /v1/billing/withdraw/solana", s.requireAuth(s.handleSolanaWithdraw))
+	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
+
+	// Pricing — GET is public, PUT/DELETE require auth
+	s.mux.HandleFunc("GET /v1/pricing", s.handleGetPricing)                         // public
+	s.mux.HandleFunc("PUT /v1/pricing", s.requireAuth(s.handleSetPricing))          // provider sets own prices
+	s.mux.HandleFunc("DELETE /v1/pricing", s.requireAuth(s.handleDeletePricing))    // revert to default
+	s.mux.HandleFunc("PUT /v1/admin/pricing", s.requireAuth(s.handleAdminPricing)) // platform sets defaults
+
+	// Payment methods info
+	s.mux.HandleFunc("GET /v1/billing/methods", s.handleBillingMethods) // no auth needed
+
+	// Referral system
+	s.mux.HandleFunc("POST /v1/referral/register", s.requireAuth(s.handleReferralRegister))
+	s.mux.HandleFunc("POST /v1/referral/apply", s.requireAuth(s.handleReferralApply))
+	s.mux.HandleFunc("GET /v1/referral/stats", s.requireAuth(s.handleReferralStats))
+	s.mux.HandleFunc("GET /v1/referral/info", s.requireAuth(s.handleReferralInfo))
 }
 
 // Handler returns the root http.Handler with global middleware applied.
@@ -164,22 +214,54 @@ func (s *Server) Handler() http.Handler {
 	return s.corsMiddleware(s.loggingMiddleware(s.mux))
 }
 
-// requireAuth wraps a handler with API key validation. It extracts the
-// Bearer token from the Authorization header, validates it against the
-// key store, and stores the key in the request context for downstream use.
+// requireAuth wraps a handler with authentication. It tries Privy JWT first
+// (if configured), then falls back to API key validation. The authenticated
+// identity is stored in the request context for downstream use.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		key := extractBearerToken(r)
-		if key == "" {
-			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing API key — use Authorization: Bearer <key>"))
+		token := extractBearerToken(r)
+		if token == "" {
+			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing credentials — use Authorization: Bearer <token>"))
 			return
 		}
-		if !s.store.ValidateKey(key) {
+
+		// Try Privy JWT first (JWTs start with "eyJ").
+		if s.privyAuth != nil && strings.HasPrefix(token, "eyJ") {
+			privyUserID, err := s.privyAuth.VerifyToken(token)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "invalid Privy token"))
+				return
+			}
+			user, err := s.privyAuth.GetOrCreateUser(privyUserID)
+			if err != nil {
+				s.logger.Error("privy: user resolution failed", "error", err)
+				writeJSON(w, http.StatusInternalServerError, errorResponse("auth_error", "failed to resolve user"))
+				return
+			}
+			ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
+			ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+			next(w, r.WithContext(ctx))
+			return
+		}
+
+		// Fall back to API key auth.
+		if !s.store.ValidateKey(token) {
 			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "invalid API key"))
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), ctxKeyConsumer, key)
+		// Resolve key → account. If the key is linked to a Privy account,
+		// use that account ID and load the user.
+		accountID := token
+		ctx := r.Context()
+		if ownerID := s.store.GetKeyAccount(token); ownerID != "" {
+			accountID = ownerID
+			if user, err := s.store.GetUserByAccountID(ownerID); err == nil {
+				ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+			}
+		}
+
+		ctx = context.WithValue(ctx, ctxKeyConsumer, accountID)
 		next(w, r.WithContext(ctx))
 	}
 }

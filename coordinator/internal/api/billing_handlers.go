@@ -10,6 +10,10 @@ package api
 //   5. Credits internal balance
 //
 // The user controls their own keys. We only verify what happened on-chain.
+//
+// Endpoints that modify account state (referral, pricing, deposits) require
+// Privy authentication to prevent spam. API key auth is accepted for
+// read-only endpoints and inference.
 
 import (
 	"encoding/json"
@@ -215,6 +219,9 @@ func (s *Server) handleSolanaDeposit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Solana payments not configured"))
 		return
 	}
+	if s.requirePrivyUser(w, r) == nil {
+		return
+	}
 
 	var req struct {
 		TxSignature  string `json:"tx_signature"`
@@ -397,6 +404,9 @@ func (s *Server) handleReferralRegister(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "referral system not available"))
 		return
 	}
+	if s.requirePrivyUser(w, r) == nil {
+		return
+	}
 
 	var req struct {
 		Code string `json:"code"`
@@ -426,6 +436,9 @@ func (s *Server) handleReferralRegister(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleReferralApply(w http.ResponseWriter, r *http.Request) {
 	if s.billing == nil || s.billing.Referral() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "referral system not available"))
+		return
+	}
+	if s.requirePrivyUser(w, r) == nil {
 		return
 	}
 	var req struct {
@@ -543,6 +556,9 @@ func (s *Server) handleGetPricing(w http.ResponseWriter, r *http.Request) {
 // handleSetPricing handles PUT /v1/pricing.
 // Sets a custom price override for a model on the authenticated user's account.
 func (s *Server) handleSetPricing(w http.ResponseWriter, r *http.Request) {
+	if s.requirePrivyUser(w, r) == nil {
+		return
+	}
 	var req struct {
 		Model       string `json:"model"`
 		InputPrice  int64  `json:"input_price"`  // micro-USD per 1M tokens
@@ -581,6 +597,9 @@ func (s *Server) handleSetPricing(w http.ResponseWriter, r *http.Request) {
 // handleDeletePricing handles DELETE /v1/pricing.
 // Removes a custom price override, reverting to platform defaults.
 func (s *Server) handleDeletePricing(w http.ResponseWriter, r *http.Request) {
+	if s.requirePrivyUser(w, r) == nil {
+		return
+	}
 	var req struct {
 		Model string `json:"model"`
 	}
@@ -633,4 +652,16 @@ func (s *Server) resolveAccountID(r *http.Request) string {
 		return user.AccountID
 	}
 	return consumerKeyFromContext(r.Context())
+}
+
+// requirePrivyUser checks that the request is authenticated via Privy (not just API key).
+// Returns the user or writes a 401 error and returns nil.
+func (s *Server) requirePrivyUser(w http.ResponseWriter, r *http.Request) *store.User {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error",
+			"this endpoint requires a Privy account — authenticate with a Privy access token"))
+		return nil
+	}
+	return user
 }

@@ -38,25 +38,15 @@ Earn money by serving AI inference on your idle Mac.
 curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash
 ```
 
-The installer will:
-1. Download the provider binary, Secure Enclave helper, and Python/MLX runtime (~107 MB)
-2. Add `~/.dginf/bin` to your PATH
-3. Verify the inference runtime (vllm-mlx, ffmpeg)
-4. Generate a Secure Enclave identity key (P-256 ECDSA, hardware-bound)
-5. Prompt you to install the DGInf enrollment profile (read-only security verification — DGInf cannot erase, lock, or control your Mac; removable anytime from System Settings > Device Management)
-6. Suggest a model based on your available memory
+That's it. The installer will:
+1. Download the provider binary, Python/MLX runtime, and ffmpeg (zero prerequisites)
+2. Set up Secure Enclave identity and enrollment profile
+3. Download the best model for your hardware (auto-selected by RAM)
+4. Start the provider in the background
 
-### Start Serving
+Your Mac is serving inference within minutes.
 
-```bash
-# Start serving with the recommended model for your hardware
-dginf-provider serve --model mlx-community/Qwen3.5-9B-MLX-4bit
-
-# Or run in the background
-dginf-provider start --model mlx-community/Qwen3.5-9B-MLX-4bit
-```
-
-**Recommended models by memory:**
+**Models by memory** (auto-selected during install):
 
 | Memory | Model | Parameters |
 |--------|-------|------------|

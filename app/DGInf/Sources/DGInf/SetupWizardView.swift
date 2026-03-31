@@ -19,25 +19,40 @@ struct SetupWizardView: View {
     @State private var errorMessage = ""
     @State private var selectedModelId = ""
     @State private var doctorOutput = ""
+    @State private var isInstallingCLI = false
+    @State private var isDownloadingModel = false
+    @State private var downloadStatus = ""
 
     private let totalSteps = 6
 
     var body: some View {
         VStack(spacing: 0) {
-            // Progress bar
-            ProgressView(value: Double(currentStep), total: Double(totalSteps - 1))
-                .padding(.horizontal, 24)
+            // Progress bar + step indicator
+            if #available(macOS 26.0, *) {
+                HStack {
+                    Text("Step \(currentStep + 1) of \(totalSteps)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    ProgressView(value: Double(currentStep), total: Double(totalSteps - 1))
+                }
+                .padding(8)
+                .padding(.horizontal, 16)
                 .padding(.top, 16)
+                .glassEffect(in: .rect(cornerRadius: 8))
+            } else {
+                ProgressView(value: Double(currentStep), total: Double(totalSteps - 1))
+                    .padding(.horizontal, 24)
+                    .padding(.top, 16)
 
-            // Step indicator
-            HStack {
-                Text("Step \(currentStep + 1) of \(totalSteps)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Spacer()
+                HStack {
+                    Text("Step \(currentStep + 1) of \(totalSteps)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 4)
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 4)
 
             // Step content
             Group {
@@ -72,24 +87,42 @@ struct SetupWizardView: View {
                     Text(errorMessage)
                         .font(.caption)
                         .foregroundColor(.red)
-                        .lineLimit(2)
-                        .frame(maxWidth: 300)
+                        .lineLimit(10)
+                        .frame(maxWidth: 400)
                 }
 
                 Spacer()
 
                 if currentStep < totalSteps - 1 {
-                    Button("Continue") {
-                        Task { await advanceStep() }
+                    if #available(macOS 26.0, *) {
+                        Button("Continue") {
+                            Task { await advanceStep() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isProcessing || isDownloadingModel || isInstallingCLI)
+                        .glassEffect(.regular.interactive(), in: .capsule)
+                    } else {
+                        Button("Continue") {
+                            Task { await advanceStep() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isProcessing || isDownloadingModel || isInstallingCLI)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isProcessing)
                 } else {
-                    Button("Done") {
-                        viewModel.hasCompletedSetup = true
-                        dismiss()
+                    if #available(macOS 26.0, *) {
+                        Button("Done") {
+                            viewModel.hasCompletedSetup = true
+                            dismiss()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .glassEffect(.regular.interactive(), in: .capsule)
+                    } else {
+                        Button("Done") {
+                            viewModel.hasCompletedSetup = true
+                            dismiss()
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
-                    .buttonStyle(.borderedProminent)
                 }
             }
             .padding(16)
@@ -130,9 +163,35 @@ struct SetupWizardView: View {
             .font(.subheadline)
 
             if !viewModel.securityManager.binaryFound {
-                Label("dginf-provider binary not found. Install it first.", systemImage: "exclamationmark.triangle")
-                    .foregroundColor(.orange)
-                    .font(.subheadline)
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("dginf-provider binary not found.", systemImage: "exclamationmark.triangle")
+                        .foregroundColor(.orange)
+                        .font(.subheadline)
+
+                    if isInstallingCLI {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Installing...")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                    } else {
+                        Button("Install Now") {
+                            Task {
+                                isInstallingCLI = true
+                                let result = await CLIRunner.shell("curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash")
+                                if result.success {
+                                    viewModel.securityManager.binaryFound = CLIRunner.resolveBinaryPath() != nil
+                                } else {
+                                    errorMessage = result.stderr.isEmpty ? "Installation failed" : result.stderr
+                                }
+                                isInstallingCLI = false
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                }
             }
 
             Spacer()
@@ -247,6 +306,21 @@ struct SetupWizardView: View {
                         modelRow(model)
                     }
                 }
+            }
+
+            if isDownloadingModel {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(downloadStatus)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if !downloadStatus.isEmpty && !isDownloadingModel {
+                Text(downloadStatus)
+                    .font(.caption)
+                    .foregroundColor(downloadStatus.contains("\u{2713}") ? .green : .red)
             }
 
             if isProcessing {
@@ -382,10 +456,11 @@ struct SetupWizardView: View {
                 Button("Select") {
                     selectedModelId = model.id
                     viewModel.currentModel = model.id
+                    Task { await downloadModelIfNeeded(model) }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(!fits)
+                .disabled(!fits || isDownloadingModel)
             }
         }
         .padding(8)
@@ -404,7 +479,7 @@ struct SetupWizardView: View {
             // Security — refresh and advance
             await viewModel.securityManager.refresh()
             if !viewModel.securityManager.sipEnabled {
-                errorMessage = "SIP must be enabled. Reboot into Recovery Mode to enable it."
+                errorMessage = "SIP must be enabled to serve inference safely.\nTo enable SIP:\n1. Shut down your Mac completely\n2. Press and hold the power button until \"Loading startup options\" appears\n3. Select Options \u{2192} Continue\n4. From the menu bar: Utilities \u{2192} Terminal\n5. Type: csrutil enable\n6. Restart your Mac"
                 return
             }
             currentStep += 1
@@ -459,5 +534,38 @@ struct SetupWizardView: View {
             doctorOutput = "Failed to run doctor: \(error.localizedDescription)"
         }
         isProcessing = false
+    }
+
+    private func downloadModelIfNeeded(_ model: ModelCatalog.Entry) async {
+        // Check if model is already downloaded
+        let alreadyDownloaded = viewModel.modelManager.availableModels.contains { $0.id == model.id }
+        if alreadyDownloaded {
+            downloadStatus = ""
+            return
+        }
+
+        isDownloadingModel = true
+        downloadStatus = "Downloading \(model.name) (\(String(format: "%.1f", model.sizeGB)) GB)... This may take several minutes."
+
+        do {
+            let result = try await CLIRunner.run(["models", "download", "--model", model.id])
+            if result.success {
+                downloadStatus = "Download complete \u{2713}"
+                viewModel.modelManager.scanModels()
+            } else {
+                // Fallback: download from S3
+                let s3Result = try await CLIRunner.run(["models", "download-s3", "--model", model.id])
+                if s3Result.success {
+                    downloadStatus = "Download complete \u{2713}"
+                    viewModel.modelManager.scanModels()
+                } else {
+                    downloadStatus = "Download failed: \(result.stderr)"
+                }
+            }
+        } catch {
+            downloadStatus = "Download failed: \(error.localizedDescription)"
+        }
+
+        isDownloadingModel = false
     }
 }

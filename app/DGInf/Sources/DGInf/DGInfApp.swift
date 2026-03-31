@@ -17,7 +17,6 @@ import SwiftUI
 @main
 struct DGInfApp: App {
     @StateObject private var viewModel = StatusViewModel()
-    @State private var showSetup = false
 
     var body: some Scene {
         MenuBarExtra {
@@ -60,9 +59,12 @@ struct DGInfApp: App {
         HStack(spacing: 4) {
             Image(systemName: menuBarIcon)
                 .foregroundColor(menuBarColor)
+                .symbolEffect(.pulse, isActive: viewModel.isServing)
             if viewModel.isServing {
-                Text("\(viewModel.tokensPerSecond, specifier: "%.0f") tok/s")
+                Text(formatThroughput(viewModel.tokensPerSecond))
                     .font(.caption)
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
             }
             if viewModel.updateManager.updateAvailable {
                 Circle()
@@ -70,6 +72,8 @@ struct DGInfApp: App {
                     .frame(width: 6, height: 6)
             }
         }
+        .animation(.smooth, value: viewModel.isServing)
+        .animation(.smooth, value: viewModel.tokensPerSecond)
     }
 
     private var menuBarIcon: String {
@@ -83,5 +87,10 @@ struct DGInfApp: App {
         if viewModel.isPaused { return .yellow }
         if viewModel.isOnline { return .green }
         return .gray
+    }
+
+    private func formatThroughput(_ tps: Double) -> String {
+        if tps >= 1000 { return String(format: "%.1fK tok/s", tps / 1000) }
+        return String(format: "%.0f tok/s", tps)
     }
 }

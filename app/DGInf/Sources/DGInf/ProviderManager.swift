@@ -15,6 +15,7 @@
 
 import Combine
 import Foundation
+import UserNotifications
 
 /// Manages the dginf-provider subprocess lifecycle.
 ///
@@ -236,6 +237,17 @@ final class ProviderManager: ObservableObject {
                     if self.autoRestartEnabled {
                         self.spawnProcess()
                     }
+                } else if self.autoRestartEnabled
+                    && terminatedProcess.terminationStatus != 0
+                    && self.restartCount >= self.maxRestarts
+                {
+                    self.autoRestartEnabled = false
+                    let content = UNMutableNotificationContent()
+                    content.title = "DGInf Provider Stopped"
+                    content.body = "Provider crashed \(self.maxRestarts) times. Check logs: dginf-provider logs"
+                    content.sound = .default
+                    let request = UNNotificationRequest(identifier: "crash-limit", content: content, trigger: nil)
+                    try? await UNUserNotificationCenter.current().add(request)
                 }
             }
         }

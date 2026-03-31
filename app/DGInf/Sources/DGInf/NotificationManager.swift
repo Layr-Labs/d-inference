@@ -56,16 +56,57 @@ final class NotificationManager: ObservableObject {
         )
     }
 
-    /// Notify an inference completion.
+    /// Notify an inference completion with milestone celebrations.
     func notifyInferenceCompleted(requestCount: Int) {
-        // Only notify on milestones (10, 50, 100, 500, 1000...)
-        let milestones = [10, 50, 100, 500, 1000, 5000, 10000]
+        if requestCount == 1 {
+            send(
+                title: "First Inference Served!",
+                body: "Your Mac just served its first AI request. You're earning now.",
+                identifier: "milestone-first"
+            )
+            return
+        }
+
+        let milestones = [10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000]
         guard milestones.contains(requestCount) else { return }
 
+        let formatted = requestCount >= 1000
+            ? String(format: "%.0fK", Double(requestCount) / 1000)
+            : "\(requestCount)"
         send(
-            title: "Milestone Reached",
-            body: "You've served \(requestCount) inference requests!",
+            title: "\(formatted) Requests Served!",
+            body: "Your Mac has served \(formatted) inference requests. Keep it up!",
             identifier: "milestone-\(requestCount)"
+        )
+    }
+
+    /// Notify earnings milestones in dollars.
+    func notifyEarningsMilestone(_ amount: Double) {
+        let milestones: [Double] = [1, 5, 10, 25, 50, 100, 250, 500, 1000]
+        guard milestones.contains(amount) else { return }
+
+        send(
+            title: "You've earned $\(Int(amount))!",
+            body: "Your Mac has earned $\(Int(amount)) serving private inference.",
+            identifier: "earnings-\(Int(amount))"
+        )
+    }
+
+    /// Notify token generation milestones.
+    func notifyTokenMilestone(_ count: Int) {
+        let milestones = [100_000, 1_000_000, 10_000_000, 100_000_000]
+        guard milestones.contains(count) else { return }
+
+        let formatted: String
+        if count >= 1_000_000 {
+            formatted = String(format: "%.0fM", Double(count) / 1_000_000)
+        } else {
+            formatted = String(format: "%.0fK", Double(count) / 1_000)
+        }
+        send(
+            title: "\(formatted) Tokens Generated!",
+            body: "Your Mac has generated \(formatted) tokens of AI inference.",
+            identifier: "tokens-\(count)"
         )
     }
 

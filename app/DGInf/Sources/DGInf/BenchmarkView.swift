@@ -101,30 +101,40 @@ struct BenchmarkView: View {
 
     // MARK: - Metric Card
 
+    @ViewBuilder
     private func metricCard(_ title: String, value: Double, unit: String, icon: String) -> some View {
-        GroupBox {
-            VStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.title2)
-                    .foregroundColor(.accentColor)
-                Text(title)
-                    .font(.caption)
+        let content = VStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.title2)
+                .foregroundColor(.accentColor)
+                .symbolEffect(.bounce, value: value)
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            if value > 0 {
+                Text(String(format: "%.1f", value))
+                    .font(.title)
+                    .fontWeight(.bold)
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                Text(unit)
+                    .font(.caption2)
                     .foregroundColor(.secondary)
-                if value > 0 {
-                    Text(String(format: "%.1f", value))
-                        .font(.title)
-                        .fontWeight(.bold)
-                    Text(unit)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                } else {
-                    Text("--")
-                        .font(.title)
-                        .foregroundColor(.secondary)
-                }
+            } else {
+                Text("--")
+                    .font(.title)
+                    .foregroundColor(.secondary)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 4)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+
+        if #available(macOS 26.0, *) {
+            content
+                .padding(4)
+                .glassEffect(in: .rect(cornerRadius: 12))
+        } else {
+            GroupBox { content }
         }
     }
 

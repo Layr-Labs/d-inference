@@ -165,18 +165,37 @@ private struct SecurityTab: View {
             }
 
             // Trust level
-            HStack(spacing: 8) {
-                Image(systemName: viewModel.securityManager.trustLevel.iconName)
-                    .font(.title2)
-                    .foregroundColor(trustColor)
-                VStack(alignment: .leading) {
-                    Text(viewModel.securityManager.trustLevel.displayName)
-                        .font(.title3)
-                        .fontWeight(.bold)
+            if #available(macOS 26.0, *) {
+                HStack(spacing: 8) {
+                    Image(systemName: viewModel.securityManager.trustLevel.iconName)
+                        .font(.title2)
                         .foregroundColor(trustColor)
-                    Text(trustDescription)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    VStack(alignment: .leading) {
+                        Text(viewModel.securityManager.trustLevel.displayName)
+                            .font(.title3)
+                            .fontWeight(.bold)
+                            .foregroundColor(trustColor)
+                        Text(trustDescription)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(12)
+                .glassEffect(.regular.tint(trustColor.opacity(0.15)), in: .rect(cornerRadius: 12))
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: viewModel.securityManager.trustLevel.iconName)
+                        .font(.title2)
+                        .foregroundColor(trustColor)
+                    VStack(alignment: .leading) {
+                        Text(viewModel.securityManager.trustLevel.displayName)
+                            .font(.title3)
+                            .fontWeight(.bold)
+                            .foregroundColor(trustColor)
+                        Text(trustDescription)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
 
@@ -231,6 +250,19 @@ private struct SecurityTab: View {
             Text(enabled ? "OK" : "Missing")
                 .font(.caption)
                 .foregroundColor(enabled ? .secondary : .red)
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        .modifier(GlassRowModifier())
+    }
+
+    private struct GlassRowModifier: ViewModifier {
+        func body(content: Content) -> some View {
+            if #available(macOS 26.0, *) {
+                content.glassEffect(in: .rect(cornerRadius: 8))
+            } else {
+                content
+            }
         }
     }
 }

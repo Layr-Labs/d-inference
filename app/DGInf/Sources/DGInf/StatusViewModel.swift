@@ -11,6 +11,7 @@
 
 import Combine
 import Foundation
+import Security
 import SwiftUI
 
 @MainActor
@@ -56,7 +57,7 @@ final class StatusViewModel: ObservableObject {
     }
 
     @Published var apiKey: String {
-        didSet { UserDefaults.standard.set(apiKey, forKey: "apiKey") }
+        didSet { saveKeychainItem(key: "apiKey", value: apiKey) }
     }
 
     @Published var autoStart: Bool {
@@ -85,6 +86,7 @@ final class StatusViewModel: ObservableObject {
     private var uptimeTimer: Timer?
     private var earningsTimer: Timer?
     private var connectivityTimer: Timer?
+    private var caffeinateProcess: Process?
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Init
@@ -93,7 +95,7 @@ final class StatusViewModel: ObservableObject {
         // Load persisted settings
         self.coordinatorURL = UserDefaults.standard.string(forKey: "coordinatorURL")
             ?? "wss://inference-test.openinnovation.dev/ws/provider"
-        self.apiKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
+        self.apiKey = Self.loadKeychainItem(key: "apiKey") ?? ""
         self.autoStart = UserDefaults.standard.bool(forKey: "autoStart")
         self.idleTimeoutSeconds = UserDefaults.standard.double(forKey: "idleTimeoutSeconds")
         self.hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
@@ -179,6 +181,7 @@ final class StatusViewModel: ObservableObject {
         }
 
         idleDetector.start()
+        startCaffeinate()
         notificationManager.notifyProviderOnline(model: currentModel)
     }
 
@@ -187,10 +190,21 @@ final class StatusViewModel: ObservableObject {
         idleDetector.stop()
         uptimeTimer?.invalidate()
         uptimeTimer = nil
+        caffeinateProcess?.terminate()
+        caffeinateProcess = nil
         isOnline = false
         isServing = false
         isPaused = false
         tokensPerSecond = 0
+    }
+
+    /// Spawn caffeinate to prevent system sleep while the provider is running.
+    private func startCaffeinate() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
+        process.arguments = ["-s", "-i"]  // prevent system sleep + idle sleep
+        try? process.run()
+        caffeinateProcess = process
     }
 
     /// Pause the provider — stops the subprocess (clean restart on resume).
@@ -424,6 +438,7 @@ final class StatusViewModel: ObservableObject {
                 let numStr = match.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
                 if let count = Int(numStr), count > 0 {
                     tokensGenerated += count
+                    notificationManager.notifyTokenMilestone(tokensGenerated)
                 }
             }
         }
@@ -457,5 +472,33 @@ final class StatusViewModel: ObservableObject {
             await checkCoordinatorConnectivity()
             await updateManager.checkForUpdates(coordinatorURL: coordinatorURL)
         }
+    }
+
+    // MARK: - Keychain
+
+    private static func loadKeychainItem(key: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "io.dginf.provider",
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func saveKeychainItem(key: String, value: String) {
+        let data = value.data(using: .utf8)!
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "io.dginf.provider",
+            kSecAttrAccount as String: key,
+            kSecValueData as String: data,
+        ]
+        SecItemDelete(query as CFDictionary)
+        SecItemAdd(query as CFDictionary, nil)
     }
 }

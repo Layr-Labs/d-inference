@@ -374,59 +374,69 @@ async fn cmd_install(
     let model_downloaded = available.iter().any(|m| m.id == model);
 
     if !model_downloaded {
-        // Find S3 name for this model
+        // Download from DGInf CDN (S3) — no HuggingFace account needed
         let s3_name = catalog.iter()
             .find(|(id, _, _, _, _, _)| *id == model)
             .map(|(_, s3, _, _, _, _)| *s3)
-            .unwrap_or("");
+            .unwrap_or_else(|| model.split('/').last().unwrap_or(&model));
 
-        let s3_url = format!("https://dginf-models.s3.amazonaws.com/{}", s3_name);
         let cache_dir = dirs::home_dir().unwrap_or_default()
             .join(".cache/huggingface/hub")
             .join(format!("models--{}", model.replace('/', "--")))
             .join("snapshots/main");
-
-        println!("  Downloading model from DGInf CDN...");
         std::fs::create_dir_all(&cache_dir)?;
 
-        // Download model files from S3
-        let status = std::process::Command::new("curl")
-            .args(["-fsSL", &format!("{}/config.json", s3_url), "-o", &cache_dir.join("config.json").to_string_lossy()])
+        let base_url = coordinator_url
+            .replace("wss://", "https://")
+            .replace("/ws/provider", "");
+
+        // Try pre-packaged tarball first (fastest)
+        println!("  Downloading from DGInf CDN...");
+        let tarball_url = format!("{}/dl/models/{}.tar.gz", base_url, s3_name);
+        let tar_status = std::process::Command::new("bash")
+            .args(["-c", &format!(
+                "curl -f#L '{}' | tar xz -C '{}'",
+                tarball_url, cache_dir.display()
+            )])
             .status();
 
-        if status.map(|s| s.success()).unwrap_or(false) {
-            // Use aws s3 sync if available, otherwise curl individual files
-            let aws_status = std::process::Command::new("aws")
-                .args(["s3", "sync", &format!("s3://dginf-models/{}/", s3_name), &cache_dir.to_string_lossy(), "--region", "us-east-1", "--no-sign-request"])
-                .status();
+        match tar_status {
+            Ok(s) if s.success() => println!("  ✓ Model downloaded"),
+            _ => {
+                // Fallback: download individual files from S3
+                println!("  Trying individual files from S3...");
+                let s3_http = format!("https://dginf-models.s3.amazonaws.com/{}", s3_name);
+                let config_ok = std::process::Command::new("curl")
+                    .args(["-fsSL", &format!("{}/config.json", s3_http),
+                           "-o", &cache_dir.join("config.json").to_string_lossy()])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
 
-            match aws_status {
-                Ok(s) if s.success() => println!("  ✓ Model downloaded from DGInf CDN"),
-                _ => {
-                    println!("  AWS CLI not available. Trying HuggingFace...");
-                    let hf_status = std::process::Command::new("python3")
-                        .args(["-c", &format!(
-                            "from huggingface_hub import snapshot_download; snapshot_download('{}')",
-                            model
-                        )])
-                        .status();
-                    match hf_status {
-                        Ok(s) if s.success() => println!("  ✓ Model downloaded from HuggingFace"),
-                        _ => println!("  ⚠ Could not download model. Download manually:\n    aws s3 sync s3://dginf-models/{}/ ~/.cache/huggingface/hub/models--{}--/snapshots/main/ --no-sign-request", s3_name, model.replace('/', "--")),
+                if config_ok {
+                    // Download tokenizer + weights
+                    for f in &["tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"] {
+                        let _ = std::process::Command::new("curl")
+                            .args(["-fsSL", &format!("{}/{}", s3_http, f),
+                                   "-o", &cache_dir.join(f).to_string_lossy()])
+                            .status();
                     }
+                    // Try single weight file, then sharded
+                    let weight_ok = std::process::Command::new("curl")
+                        .args(["-f#L", &format!("{}/model.safetensors", s3_http),
+                               "-o", &cache_dir.join("model.safetensors").to_string_lossy()])
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false);
+
+                    if weight_ok {
+                        println!("  ✓ Model downloaded");
+                    } else {
+                        println!("  ⚠ Could not download model weights. Retry with:\n    dginf-provider models download");
+                    }
+                } else {
+                    println!("  ⚠ Model not available on CDN. Retry with:\n    dginf-provider models download");
                 }
-            }
-        } else {
-            println!("  Model not yet available on DGInf CDN. Trying HuggingFace...");
-            let hf_status = std::process::Command::new("python3")
-                .args(["-c", &format!(
-                    "from huggingface_hub import snapshot_download; snapshot_download('{}')",
-                    model
-                )])
-                .status();
-            match hf_status {
-                Ok(s) if s.success() => println!("  ✓ Model downloaded from HuggingFace"),
-                _ => println!("  ⚠ Could not download model. It may require HuggingFace authentication.\n    Run: huggingface-cli login\n    Then: huggingface-cli download {}", model),
             }
         }
     } else {
@@ -1043,7 +1053,8 @@ async fn cmd_serve(
                     }
                     _ = idle_sleep => {
                         tracing::info!(
-                            "No requests for 10 minutes — shutting down backend to free GPU memory"
+                            "No requests for 10 minutes — shutting down backend to free GPU memory. \
+                             Next request will reload the model (~10-30s)."
                         );
                         shutdown_backend().await;
                         backend_running = false;
@@ -1745,42 +1756,55 @@ async fn cmd_models(action: String) -> Result<()> {
                 .filter_map(|s| s.trim().parse::<usize>().ok())
                 .collect();
 
-            let dginf_dir = dirs::home_dir().unwrap_or_default().join(".dginf");
-            let bundled_python = dginf_dir.join("python/bin/python3");
-            let python_cmd = if bundled_python.exists() {
-                bundled_python.to_string_lossy().to_string()
-            } else {
-                "python3".to_string()
-            };
+            let base_url = "https://inference-test.openinnovation.dev";
 
             for sel in selections {
                 if let Some((_, name, _, id)) = available.iter().find(|(i, _, _, _)| *i == sel) {
                     println!();
                     println!("  Downloading {}...", name);
 
-                    // Try S3 first, then HuggingFace
                     let s3_name = id.split('/').last().unwrap_or(id);
-                    let s3_sync = std::process::Command::new("aws")
-                        .args(["s3", "sync",
-                            &format!("s3://dginf-models/{}/", s3_name),
-                            &format!("{}/.cache/huggingface/hub/models--{}/snapshots/main/",
-                                dirs::home_dir().unwrap_or_default().display(),
-                                id.replace('/', "--")),
-                            "--region", "us-east-1", "--no-sign-request"])
+                    let cache_dir = dirs::home_dir().unwrap_or_default()
+                        .join(".cache/huggingface/hub")
+                        .join(format!("models--{}", id.replace('/', "--")))
+                        .join("snapshots/main");
+                    let _ = std::fs::create_dir_all(&cache_dir);
+
+                    // Try pre-packaged tarball from CDN first (no HF account needed)
+                    let tarball_url = format!("{}/dl/models/{}.tar.gz", base_url, s3_name);
+                    let tar_status = std::process::Command::new("bash")
+                        .args(["-c", &format!(
+                            "curl -f#L '{}' | tar xz -C '{}'",
+                            tarball_url, cache_dir.display()
+                        )])
                         .status();
 
-                    match s3_sync {
-                        Ok(s) if s.success() => println!("  ✓ {} downloaded from DGInf CDN", name),
+                    match tar_status {
+                        Ok(s) if s.success() => println!("  ✓ {} downloaded", name),
                         _ => {
-                            // Fallback to HuggingFace
-                            let hf = std::process::Command::new(&python_cmd)
-                                .args(["-c", &format!(
-                                    "from huggingface_hub import snapshot_download; snapshot_download('{}')", id
-                                )])
-                                .status();
-                            match hf {
-                                Ok(s) if s.success() => println!("  ✓ {} downloaded", name),
-                                _ => println!("  ✗ Failed to download {}", name),
+                            // Fallback: individual files from S3
+                            let s3_http = format!("https://dginf-models.s3.amazonaws.com/{}", s3_name);
+                            let config_ok = std::process::Command::new("curl")
+                                .args(["-fsSL", &format!("{}/config.json", s3_http),
+                                       "-o", &cache_dir.join("config.json").to_string_lossy()])
+                                .status()
+                                .map(|s| s.success())
+                                .unwrap_or(false);
+
+                            if config_ok {
+                                for f in &["tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"] {
+                                    let _ = std::process::Command::new("curl")
+                                        .args(["-fsSL", &format!("{}/{}", s3_http, f),
+                                               "-o", &cache_dir.join(f).to_string_lossy()])
+                                        .status();
+                                }
+                                let _ = std::process::Command::new("curl")
+                                    .args(["-f#L", &format!("{}/model.safetensors", s3_http),
+                                           "-o", &cache_dir.join("model.safetensors").to_string_lossy()])
+                                    .status();
+                                println!("  ✓ {} downloaded", name);
+                            } else {
+                                println!("  ✗ {} not available on CDN", name);
                             }
                         }
                     }
@@ -1941,7 +1965,15 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
         passed += 1;
     } else {
         println!("✗ DISABLED — provider cannot serve safely");
-        issues.push("SIP is disabled. Enable via Recovery Mode: csrutil enable".to_string());
+        issues.push(
+            "SIP is disabled. To enable:\n\
+             \x20    1. Shut down your Mac completely\n\
+             \x20    2. Press and hold the power button until \"Loading startup options\" appears\n\
+             \x20    3. Select Options → Continue → Utilities → Terminal\n\
+             \x20    4. Type: csrutil enable\n\
+             \x20    5. Restart your Mac"
+                .to_string(),
+        );
     }
 
     // 3. Secure Enclave
@@ -1991,20 +2023,50 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
         }
     }
 
-    // 5. Python + MLX
-    print!("5. Python + mlx-lm............. ");
-    let mlx_ok = std::process::Command::new("python3")
-        .args(["-c", "import mlx_lm; print(mlx_lm.__version__)"])
-        .output();
+    // 5. Inference runtime (vllm-mlx / mlx-lm)
+    print!("5. Inference runtime........... ");
+    let dginf_dir = dirs::home_dir().unwrap_or_default().join(".dginf");
+    let bundled_python = dginf_dir.join("python/bin/python3.12");
+    let (python_cmd, python_home) = if bundled_python.exists() {
+        (bundled_python.to_string_lossy().to_string(), Some(dginf_dir.join("python")))
+    } else {
+        ("python3".to_string(), None)
+    };
+
+    let mut mlx_check = std::process::Command::new(&python_cmd);
+    mlx_check.args(["-c", "import vllm_mlx; print(f'vllm-mlx {vllm_mlx.__version__}')"]);
+    if let Some(ref home) = python_home {
+        mlx_check.env("PYTHONHOME", home);
+    }
+    let mlx_ok = mlx_check.output();
     match mlx_ok {
         Ok(o) if o.status.success() => {
             let ver = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            println!("✓ mlx-lm {ver}");
+            println!("✓ {ver}");
             passed += 1;
         }
         _ => {
-            println!("✗ Not installed");
-            issues.push("Install: pip3 install mlx-lm".to_string());
+            // Fallback: try mlx_lm
+            let mut fallback = std::process::Command::new(&python_cmd);
+            fallback.args(["-c", "import mlx_lm; print(f'mlx-lm {mlx_lm.__version__}')"]);
+            if let Some(ref home) = python_home {
+                fallback.env("PYTHONHOME", home);
+            }
+            match fallback.output() {
+                Ok(o) if o.status.success() => {
+                    let ver = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    println!("✓ {ver}");
+                    passed += 1;
+                }
+                _ => {
+                    println!("✗ Not installed");
+                    issues.push(
+                        "Inference runtime not found. Reinstall:\n\
+                         \x20    curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash"
+                            .to_string(),
+                    );
+                }
+            }
         }
     }
 
@@ -2022,8 +2084,8 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
         println!("✓ {} model(s) found", model_count);
         passed += 1;
     } else {
-        println!("✗ No models");
-        issues.push("Download: huggingface-cli download mlx-community/Qwen3.5-9B-MLX-4bit".to_string());
+        println!("✗ No models downloaded");
+        issues.push("Download a model: dginf-provider models download".to_string());
     }
 
     // 7. Node key
@@ -2134,12 +2196,32 @@ async fn cmd_start(coordinator_url: String, model_override: Option<String>) -> R
         .stdin(std::process::Stdio::null())
         .spawn()?;
 
-    std::fs::write(&pid_path, child.id().to_string())?;
+    let provider_pid = child.id();
+    std::fs::write(&pid_path, provider_pid.to_string())?;
+
+    // Prevent system sleep while provider is running.
+    // caffeinate -s (system sleep) -i (idle sleep) -w PID (exit when PID dies)
+    let caffeinate_pid_path = dirs::home_dir().unwrap_or_default().join(".dginf/caffeinate.pid");
+    match std::process::Command::new("/usr/bin/caffeinate")
+        .args(["-s", "-i", "-w", &provider_pid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(caf) => {
+            std::fs::write(&caffeinate_pid_path, caf.id().to_string())?;
+        }
+        Err(e) => {
+            eprintln!("  ⚠ Could not prevent sleep: {e}");
+        }
+    }
 
     println!("Provider started in background");
-    println!("  PID:   {}", child.id());
+    println!("  PID:   {}", provider_pid);
     println!("  Model: {}", model);
     println!("  Logs:  {}", log_path.display());
+    println!("  Sleep: prevented (caffeinate active)");
     println!();
     println!("  dginf-provider stop    Stop the provider");
     println!("  dginf-provider logs    View logs");
@@ -2149,7 +2231,20 @@ async fn cmd_start(coordinator_url: String, model_override: Option<String>) -> R
 }
 
 async fn cmd_stop() -> Result<()> {
-    let pid_path = dirs::home_dir().unwrap_or_default().join(".dginf/provider.pid");
+    let dginf_dir = dirs::home_dir().unwrap_or_default().join(".dginf");
+    let pid_path = dginf_dir.join("provider.pid");
+    let caffeinate_pid_path = dginf_dir.join("caffeinate.pid");
+
+    // Stop caffeinate (re-allow system sleep)
+    if caffeinate_pid_path.exists() {
+        if let Ok(pid_str) = std::fs::read_to_string(&caffeinate_pid_path) {
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                #[cfg(unix)]
+                unsafe { libc::kill(pid, libc::SIGTERM); }
+            }
+        }
+        let _ = std::fs::remove_file(&caffeinate_pid_path);
+    }
 
     if pid_path.exists() {
         let pid_str = std::fs::read_to_string(&pid_path)?.trim().to_string();
@@ -2169,7 +2264,7 @@ async fn cmd_stop() -> Result<()> {
                     }
                     // Kill mlx_lm.server too
                     let _ = std::process::Command::new("pkill").args(["-f", "mlx_lm.server"]).status();
-        let _ = std::process::Command::new("pkill").args(["-f", "vllm_mlx"]).status();
+                    let _ = std::process::Command::new("pkill").args(["-f", "vllm_mlx"]).status();
                     let _ = std::fs::remove_file(&pid_path);
                     println!("Provider stopped.");
                     return Ok(());

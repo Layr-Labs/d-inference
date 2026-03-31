@@ -145,7 +145,18 @@ pub fn check_hypervisor_active() -> bool {
 ///   2. Before each inference request (belt-and-suspenders with startup check)
 pub fn verify_security_posture() -> Result<(), String> {
     if !check_sip_enabled() {
-        return Err("SIP is disabled — cannot safely serve inference requests".to_string());
+        return Err(
+            "SIP is disabled — cannot safely serve inference requests.\n\n\
+             To enable SIP:\n\
+             1. Shut down your Mac completely\n\
+             2. Press and hold the power button until \"Loading startup options\" appears\n\
+             3. Select Options, then Continue\n\
+             4. From the menu bar: Utilities → Terminal\n\
+             5. Type: csrutil enable\n\
+             6. Restart your Mac\n\n\
+             Then retry: dginf-provider serve"
+                .to_string(),
+        );
     }
 
     if !check_rdma_disabled() {
@@ -160,7 +171,11 @@ pub fn verify_security_posture() -> Result<(), String> {
         } else {
             return Err(
                 "RDMA is enabled without hypervisor memory isolation — \
-                 remote memory access possible, refusing to serve"
+                 remote memory access possible, refusing to serve.\n\n\
+                 To disable RDMA:\n\
+                 1. Open System Settings → Sharing\n\
+                 2. Disable Remote Direct Memory Access\n\n\
+                 Then retry: dginf-provider serve"
                     .to_string(),
             );
         }

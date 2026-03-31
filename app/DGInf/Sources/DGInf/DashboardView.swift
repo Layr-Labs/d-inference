@@ -2,6 +2,7 @@
 ///
 /// Shows hardware info, session stats, provider status, and live
 /// security/trust posture from SecurityManager.
+/// Uses Liquid Glass on macOS 26+, GroupBox on older versions.
 
 import SwiftUI
 
@@ -33,126 +34,92 @@ struct DashboardView: View {
 
                 Divider()
 
-                // Hardware section
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 8) {
-                        sectionHeader("Hardware")
-                        infoRow("Chip", viewModel.chipName)
-                        infoRow("Unified Memory", "\(viewModel.memoryGB) GB")
-                        infoRow("GPU Cores", viewModel.gpuCores > 0 ? "\(viewModel.gpuCores)" : "Detecting...")
-                        infoRow("Memory Bandwidth", viewModel.memoryBandwidthGBs > 0 ? "\(viewModel.memoryBandwidthGBs) GB/s" : "Detecting...")
-                    }
+                // Hardware
+                glassSection("Hardware") {
+                    infoRow("Chip", viewModel.chipName)
+                    infoRow("Unified Memory", "\(viewModel.memoryGB) GB")
+                    infoRow("GPU Cores", viewModel.gpuCores > 0 ? "\(viewModel.gpuCores)" : "Detecting...")
+                    infoRow("Memory Bandwidth", viewModel.memoryBandwidthGBs > 0 ? "\(viewModel.memoryBandwidthGBs) GB/s" : "Detecting...")
                 }
 
-                // Provider status section
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 8) {
-                        sectionHeader("Provider Status")
-                        infoRow("Status", providerStatusText)
-                        infoRow("Model", viewModel.currentModel)
+                // Provider Status
+                glassSection("Provider Status") {
+                    infoRow("Status", providerStatusText)
+                    infoRow("Model", viewModel.currentModel)
 
+                    HStack {
+                        Text("Coordinator")
+                            .foregroundColor(.secondary)
+                            .frame(width: 140, alignment: .leading)
+                        Circle()
+                            .fill(viewModel.coordinatorConnected ? Color.green : Color.red)
+                            .frame(width: 8, height: 8)
+                        Text(viewModel.coordinatorConnected ? "Connected" : "Disconnected")
+                            .foregroundColor(viewModel.coordinatorConnected ? .green : .red)
+                    }
+
+                    if viewModel.isServing {
                         HStack {
-                            Text("Coordinator")
+                            Text("Throughput")
                                 .foregroundColor(.secondary)
                                 .frame(width: 140, alignment: .leading)
-                            Circle()
-                                .fill(viewModel.coordinatorConnected ? Color.green : Color.red)
-                                .frame(width: 8, height: 8)
-                            Text(viewModel.coordinatorConnected ? "Connected" : "Disconnected")
-                                .foregroundColor(viewModel.coordinatorConnected ? .green : .red)
-                        }
-
-                        if viewModel.isServing {
-                            infoRow("Throughput", String(format: "%.1f tok/s", viewModel.tokensPerSecond))
-                        }
-                    }
-                }
-
-                // Session stats
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 8) {
-                        sectionHeader("Session Statistics")
-                        infoRow("Uptime", formatUptime(viewModel.uptimeSeconds))
-                        infoRow("Requests Served", "\(viewModel.requestsServed)")
-                        infoRow("Tokens Generated", formatTokenCount(viewModel.tokensGenerated))
-
-                        if !viewModel.earningsBalance.isEmpty {
-                            infoRow("Earnings", viewModel.earningsBalance)
-                        }
-                    }
-                }
-
-                // Trust & Security section (live data from SecurityManager)
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            sectionHeader("Trust & Attestation")
-                            Spacer()
-                            if viewModel.securityManager.isChecking {
-                                ProgressView().controlSize(.small)
-                            }
-                            Button {
-                                Task { await viewModel.securityManager.refresh() }
-                            } label: {
-                                Image(systemName: "arrow.clockwise")
-                            }
-                            .buttonStyle(.borderless)
-                        }
-
-                        // Trust level badge
-                        HStack {
-                            Text("Trust Level")
-                                .foregroundColor(.secondary)
-                                .frame(width: 140, alignment: .leading)
-                            Image(systemName: viewModel.securityManager.trustLevel.iconName)
-                                .foregroundColor(trustColor)
-                            Text(viewModel.securityManager.trustLevel.displayName)
-                                .foregroundColor(trustColor)
+                            Text(String(format: "%.1f tok/s", viewModel.tokensPerSecond))
+                                .monospacedDigit()
+                                .foregroundStyle(.green)
                                 .fontWeight(.medium)
+                                .contentTransition(.numericText())
                         }
-
-                        securityRow("Secure Enclave", viewModel.securityManager.secureEnclaveAvailable)
-                        securityRow("SIP", viewModel.securityManager.sipEnabled)
-                        securityRow("Secure Boot", viewModel.securityManager.secureBootEnabled)
-                        securityRow("MDM Enrolled", viewModel.securityManager.mdmEnrolled)
-                        securityRow("Node Key", viewModel.securityManager.nodeKeyExists)
+                        .font(.body)
                     }
                 }
+
+                // Session Stats
+                glassSection("Session Statistics") {
+                    infoRow("Uptime", formatUptime(viewModel.uptimeSeconds))
+                    HStack {
+                        Text("Requests Served")
+                            .foregroundColor(.secondary)
+                            .frame(width: 140, alignment: .leading)
+                        Text("\(viewModel.requestsServed)")
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                    }
+                    .font(.body)
+                    HStack {
+                        Text("Tokens Generated")
+                            .foregroundColor(.secondary)
+                            .frame(width: 140, alignment: .leading)
+                        Text(formatTokenCount(viewModel.tokensGenerated))
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                    }
+                    .font(.body)
+
+                    if !viewModel.earningsBalance.isEmpty {
+                        HStack {
+                            Text("Earnings")
+                                .foregroundColor(.secondary)
+                                .frame(width: 140, alignment: .leading)
+                            Text(viewModel.earningsBalance)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.green)
+                        }
+                        .font(.body)
+                    }
+                }
+
+                // Trust & Security
+                trustSection
 
                 // Action buttons
                 HStack(spacing: 12) {
-                    Button {
-                        openWindow(id: "doctor")
-                    } label: {
-                        Label("Diagnostics", systemImage: "stethoscope")
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button {
-                        openWindow(id: "logs")
-                    } label: {
-                        Label("Logs", systemImage: "doc.text")
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button {
-                        openWindow(id: "benchmark")
-                    } label: {
-                        Label("Benchmark", systemImage: "gauge.with.dots.needle.bottom.50percent")
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button {
-                        openWindow(id: "wallet")
-                    } label: {
-                        Label("Wallet", systemImage: "wallet.pass")
-                    }
-                    .buttonStyle(.bordered)
+                    actionButton("Diagnostics", icon: "stethoscope", window: "doctor")
+                    actionButton("Logs", icon: "doc.text", window: "logs")
+                    actionButton("Benchmark", icon: "gauge.with.dots.needle.bottom.50percent", window: "benchmark")
+                    actionButton("Wallet", icon: "wallet.pass", window: "wallet")
 
                     if !viewModel.hasCompletedSetup {
-                        Button {
-                            openWindow(id: "setup")
-                        } label: {
+                        Button { openWindow(id: "setup") } label: {
                             Label("Setup", systemImage: "wrench")
                         }
                         .buttonStyle(.borderedProminent)
@@ -160,11 +127,106 @@ struct DashboardView: View {
                 }
             }
             .padding(20)
+            .animation(.smooth, value: viewModel.requestsServed)
+            .animation(.smooth, value: viewModel.tokensGenerated)
         }
         .frame(minWidth: 550, minHeight: 600)
         .task {
             await viewModel.securityManager.refresh()
         }
+    }
+
+    // MARK: - Glass Section Builder
+
+    @ViewBuilder
+    private func glassSection<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        if #available(macOS 26.0, *) {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionHeader(title)
+                content()
+            }
+            .padding(12)
+            .glassEffect(in: .rect(cornerRadius: 12))
+        } else {
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    sectionHeader(title)
+                    content()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var trustSection: some View {
+        if #available(macOS 26.0, *) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    sectionHeader("Trust & Attestation")
+                    Spacer()
+                    refreshButton
+                }
+                trustContent
+            }
+            .padding(12)
+            .glassEffect(in: .rect(cornerRadius: 12))
+        } else {
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        sectionHeader("Trust & Attestation")
+                        Spacer()
+                        refreshButton
+                    }
+                    trustContent
+                }
+            }
+        }
+    }
+
+    private var refreshButton: some View {
+        HStack(spacing: 8) {
+            if viewModel.securityManager.isChecking {
+                ProgressView().controlSize(.small)
+            }
+            Button {
+                Task { await viewModel.securityManager.refresh() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+        }
+    }
+
+    @ViewBuilder
+    private var trustContent: some View {
+        HStack {
+            Text("Trust Level")
+                .foregroundColor(.secondary)
+                .frame(width: 140, alignment: .leading)
+            Image(systemName: viewModel.securityManager.trustLevel.iconName)
+                .foregroundColor(trustColor)
+                .symbolEffect(.bounce, value: viewModel.securityManager.trustLevel.displayName)
+            Text(viewModel.securityManager.trustLevel.displayName)
+                .foregroundColor(trustColor)
+                .fontWeight(.medium)
+        }
+
+        securityRow("Secure Enclave", viewModel.securityManager.secureEnclaveAvailable)
+        securityRow("SIP", viewModel.securityManager.sipEnabled)
+        securityRow("Secure Boot", viewModel.securityManager.secureBootEnabled)
+        securityRow("MDM Enrolled", viewModel.securityManager.mdmEnrolled)
+        securityRow("Node Key", viewModel.securityManager.nodeKeyExists)
+    }
+
+    private func actionButton(_ title: String, icon: String, window: String) -> some View {
+        Button { openWindow(id: window) } label: {
+            Label(title, systemImage: icon)
+        }
+        .buttonStyle(.bordered)
     }
 
     // MARK: - Subviews
@@ -174,10 +236,12 @@ struct DashboardView: View {
             Circle()
                 .fill(statusColor)
                 .frame(width: 16, height: 16)
+                .shadow(color: statusColor.opacity(0.5), radius: 4)
             Text(statusLabel)
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
+        .animation(.easeInOut(duration: 0.5), value: statusLabel)
     }
 
     private var trustColor: Color {
@@ -232,6 +296,7 @@ struct DashboardView: View {
                 .frame(width: 140, alignment: .leading)
             Image(systemName: enabled ? "checkmark.circle.fill" : "xmark.circle")
                 .foregroundColor(enabled ? .green : .red)
+                .symbolEffect(.bounce, value: enabled)
             Text(enabled ? "Yes" : "No")
                 .foregroundColor(enabled ? .primary : .red)
         }

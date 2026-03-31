@@ -31,25 +31,24 @@ enum LaunchAgentManager {
             withIntermediateDirectories: true
         )
 
-        // Find the app bundle path
-        let appPath: String
-        if let bundlePath = Bundle.main.bundlePath as String?,
-           bundlePath.hasSuffix(".app") {
-            appPath = bundlePath
-        } else {
-            // Development: use the binary path directly
-            appPath = Bundle.main.executablePath ?? ""
-        }
+        // Find the app bundle path — use full path to avoid ambiguity
+        let appPath = Bundle.main.bundlePath
+
+        // Ensure ~/.dginf/ directory exists for log files
+        let dginfDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".dginf")
+        try FileManager.default.createDirectory(
+            at: dginfDir,
+            withIntermediateDirectories: true
+        )
 
         let plist: [String: Any] = [
             "Label": "io.dginf.provider",
-            "ProgramArguments": ["/usr/bin/open", "-a", appPath],
+            "ProgramArguments": ["/usr/bin/open", appPath],
             "RunAtLoad": true,
             "KeepAlive": false,
-            "StandardOutPath": FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".dginf/launchagent.log").path,
-            "StandardErrorPath": FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".dginf/launchagent.log").path,
+            "StandardOutPath": dginfDir.appendingPathComponent("launchagent.log").path,
+            "StandardErrorPath": dginfDir.appendingPathComponent("launchagent.log").path,
         ]
 
         let data = try PropertyListSerialization.data(

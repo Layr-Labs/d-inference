@@ -86,13 +86,37 @@ curl -s http://34.197.17.112:8080/health
 ## Building & Uploading Provider Bundle
 
 The provider bundle is a self-contained tarball with:
-- `dginf-provider` (Rust binary)
-- `dginf-enclave` (Swift CLI)
-- `python/` (Python 3.12 venv with vllm-mlx, mlx, mlx-lm, transformers)
+- `dginf-provider` (Rust binary, built with `--no-default-features` to avoid PyO3 linking)
+- `dginf-enclave` (Swift Secure Enclave CLI)
+- `ffmpeg` (static binary for audio transcription — no Homebrew needed)
+- `stt_server.py` (speech-to-text server script)
+- `python/` (Python 3.12 venv with vllm-mlx, mlx, mlx-lm, transformers, huggingface_hub)
+
+### Automated build (recommended)
+
+```bash
+# Build everything and create tarball
+./scripts/build-bundle.sh
+
+# Build and upload to server
+./scripts/build-bundle.sh --upload
+
+# Skip Rust/Swift builds (reuse existing binaries)
+./scripts/build-bundle.sh --skip-build --upload
+```
+
+The script handles: building binaries, creating the Python venv, stripping bloat,
+including ffmpeg and stt_server.py, creating the tarball, and optionally uploading.
+
+**ffmpeg:** Place a static macOS arm64 binary at `vendor/ffmpeg` or `/tmp/ffmpeg-macos-arm64`
+before running `build-bundle.sh`. If not found, the script falls back to the system ffmpeg.
+The installer will also attempt to download ffmpeg from the CDN if not bundled.
+
+### Manual build (reference)
 
 ```bash
 # 1. Build binaries (must be on macOS ARM)
-cd provider && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo build --release
+cd provider && cargo build --release --no-default-features
 cd ../enclave && swift build -c release
 
 # 2. Create Python venv with inference deps
@@ -109,32 +133,28 @@ rm -rf torch* gradio* opencv* cv2* pandas* pyarrow* PIL* pillow* \
        sympy* networkx* mcp* miniaudio* pydub* datasets* Pillow*
 find "$BUNDLE_DIR/python" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
 
-# 4. Copy binaries into bundle
+# 4. Copy binaries + assets into bundle
 cp provider/target/release/dginf-provider "$BUNDLE_DIR/dginf-provider"
 cp enclave/.build/release/dginf-enclave "$BUNDLE_DIR/dginf-enclave"
+cp provider/stt_server.py "$BUNDLE_DIR/stt_server.py"
+cp vendor/ffmpeg "$BUNDLE_DIR/ffmpeg"  # static macOS arm64 binary
 
 # 5. Create tarball
 cd /tmp && tar czf dginf-bundle-macos-arm64.tar.gz -C dginf-bundle .
 
-# 6. Upload to server
-scp -i ~/.ssh/dginf-infra /tmp/dginf-bundle-macos-arm64.tar.gz \
-  ubuntu@34.197.17.112:/tmp/
-ssh -i ~/.ssh/dginf-infra ubuntu@34.197.17.112 '
-  sudo cp /tmp/dginf-bundle-macos-arm64.tar.gz /var/www/html/dl/
-  sudo chmod 644 /var/www/html/dl/dginf-bundle-macos-arm64.tar.gz
-'
-
-# 7. Update install script if changed
-scp -i ~/.ssh/dginf-infra scripts/install.sh ubuntu@34.197.17.112:/tmp/
-ssh -i ~/.ssh/dginf-infra ubuntu@34.197.17.112 '
-  sudo cp /tmp/install.sh /var/www/html/install.sh
-'
+# 6. Upload bundle + install script to server
+./scripts/build-bundle.sh --skip-build --upload
 ```
 
-Providers install with:
+### What happens on install
+
 ```bash
 curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash
 ```
+
+The installer automatically: downloads the bundle, verifies the runtime, sets up
+Secure Enclave identity, opens the MDM enrollment profile, downloads the best model
+for the user's hardware, and starts the provider in the background.
 
 ## Provider Trust Levels
 

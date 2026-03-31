@@ -59,7 +59,13 @@ mv "$DGINF_DIR/dginf-enclave" "$BIN_DIR/" 2>/dev/null || true
 chmod +x "$BIN_DIR/dginf-provider" "$BIN_DIR/dginf-enclave"
 rm -f /tmp/dginf-bundle.tar.gz
 
-# Add to PATH if not already there
+# Make dginf-provider available system-wide via /usr/local/bin symlink
+# This works immediately — no need to restart the terminal
+mkdir -p /usr/local/bin 2>/dev/null || true
+ln -sf "$BIN_DIR/dginf-provider" /usr/local/bin/dginf-provider 2>/dev/null || true
+ln -sf "$BIN_DIR/dginf-enclave" /usr/local/bin/dginf-enclave 2>/dev/null || true
+
+# Also add to PATH in shell rc for environments where /usr/local/bin isn't in PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     RC="$HOME/.zshrc"
     [ -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ] && RC="$HOME/.bashrc"

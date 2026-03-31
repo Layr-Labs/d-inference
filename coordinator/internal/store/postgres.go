@@ -145,16 +145,15 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_billing_sessions_account ON billing_sessions(account_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_billing_sessions_external ON billing_sessions(external_id)`,
 
-		// Deposit addresses — unique per-consumer addresses for each chain
-		`CREATE TABLE IF NOT EXISTS deposit_addresses (
-			account_id TEXT NOT NULL,
-			chain TEXT NOT NULL,
-			address TEXT NOT NULL,
-			encrypted_key TEXT NOT NULL DEFAULT '',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			PRIMARY KEY (account_id, chain)
+		// Users — Privy identity → internal account mapping
+		`CREATE TABLE IF NOT EXISTS users (
+			account_id TEXT PRIMARY KEY,
+			privy_user_id TEXT UNIQUE NOT NULL,
+			solana_wallet_address TEXT NOT NULL DEFAULT '',
+			solana_wallet_id TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_deposit_addr ON deposit_addresses(address, chain)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy ON users(privy_user_id)`,
 	}
 
 	for _, m := range migrations {
@@ -641,53 +640,52 @@ func (s *PostgresStore) IsExternalIDProcessed(externalID string) bool {
 	return count > 0
 }
 
-// --- Deposit Addresses ---
+// --- Users (Privy) ---
 
-// SetDepositAddress stores a consumer's unique deposit address for a chain.
-func (s *PostgresStore) SetDepositAddress(accountID, chain, address, encryptedKey string) error {
+// CreateUser creates a new user record linked to a Privy identity.
+func (s *PostgresStore) CreateUser(user *User) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO deposit_addresses (account_id, chain, address, encrypted_key)
-		 VALUES ($1, $2, $3, $4)
-		 ON CONFLICT (account_id, chain) DO NOTHING`,
-		accountID, chain, address, encryptedKey,
+		`INSERT INTO users (account_id, privy_user_id, solana_wallet_address, solana_wallet_id)
+		 VALUES ($1, $2, $3, $4)`,
+		user.AccountID, user.PrivyUserID, user.SolanaWalletAddress, user.SolanaWalletID,
 	)
 	if err != nil {
-		return fmt.Errorf("store: set deposit address: %w", err)
+		return fmt.Errorf("store: create user: %w", err)
 	}
 	return nil
 }
 
-// GetDepositAddress returns the deposit address for a consumer on a chain.
-func (s *PostgresStore) GetDepositAddress(accountID, chain string) (string, error) {
+// GetUserByPrivyID returns the user for a Privy DID.
+func (s *PostgresStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var address string
+	var u User
 	err := s.pool.QueryRow(ctx,
-		`SELECT address FROM deposit_addresses WHERE account_id = $1 AND chain = $2`,
-		accountID, chain,
-	).Scan(&address)
+		`SELECT account_id, privy_user_id, solana_wallet_address, solana_wallet_id, created_at
+		 FROM users WHERE privy_user_id = $1`, privyUserID,
+	).Scan(&u.AccountID, &u.PrivyUserID, &u.SolanaWalletAddress, &u.SolanaWalletID, &u.CreatedAt)
 	if err != nil {
-		return "", fmt.Errorf("store: deposit address not found: %w", err)
+		return nil, fmt.Errorf("store: user not found: %w", err)
 	}
-	return address, nil
+	return &u, nil
 }
 
-// GetAccountByDepositAddress looks up which consumer owns a deposit address.
-func (s *PostgresStore) GetAccountByDepositAddress(address, chain string) (string, error) {
+// GetUserByAccountID returns the user for an internal account ID.
+func (s *PostgresStore) GetUserByAccountID(accountID string) (*User, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var accountID string
+	var u User
 	err := s.pool.QueryRow(ctx,
-		`SELECT account_id FROM deposit_addresses WHERE address = $1 AND chain = $2`,
-		address, chain,
-	).Scan(&accountID)
+		`SELECT account_id, privy_user_id, solana_wallet_address, solana_wallet_id, created_at
+		 FROM users WHERE account_id = $1`, accountID,
+	).Scan(&u.AccountID, &u.PrivyUserID, &u.SolanaWalletAddress, &u.SolanaWalletID, &u.CreatedAt)
 	if err != nil {
-		return "", fmt.Errorf("store: account not found for deposit address: %w", err)
+		return nil, fmt.Errorf("store: user not found: %w", err)
 	}
-	return accountID, nil
+	return &u, nil
 }

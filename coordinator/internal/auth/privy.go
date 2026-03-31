@@ -1,0 +1,215 @@
+// Package auth provides Privy-based authentication for the DGInf coordinator.
+//
+// Privy issues ES256 (ECDSA P-256) JWTs to authenticated users. The coordinator
+// verifies these tokens using the app's verification key from the Privy dashboard.
+// On first authentication, the coordinator auto-creates a user record by fetching
+// wallet details from the Privy REST API.
+package auth
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/dginf/coordinator/internal/store"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+)
+
+// PrivyAuth handles JWT verification and user provisioning via Privy.
+type PrivyAuth struct {
+	appID           string
+	appSecret       string
+	verificationKey *ecdsa.PublicKey
+	store           store.Store
+	logger          *slog.Logger
+	httpClient      *http.Client
+}
+
+// Config holds Privy authentication configuration.
+type Config struct {
+	AppID           string // Privy app ID (also used as JWT audience)
+	AppSecret       string // Privy app secret (for REST API basic auth)
+	VerificationKey string // PEM-encoded ES256 public key from Privy dashboard
+}
+
+// NewPrivyAuth creates a new Privy authenticator.
+func NewPrivyAuth(cfg Config, st store.Store, logger *slog.Logger) (*PrivyAuth, error) {
+	if cfg.AppID == "" || cfg.VerificationKey == "" {
+		return nil, fmt.Errorf("privy: app_id and verification_key are required")
+	}
+
+	// Parse the PEM-encoded ES256 verification key.
+	block, _ := pem.Decode([]byte(cfg.VerificationKey))
+	if block == nil {
+		return nil, fmt.Errorf("privy: failed to decode verification key PEM")
+	}
+
+	pubKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("privy: parse verification key: %w", err)
+	}
+
+	ecKey, ok := pubKey.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("privy: verification key is not an ECDSA key")
+	}
+
+	return &PrivyAuth{
+		appID:           cfg.AppID,
+		appSecret:       cfg.AppSecret,
+		verificationKey: ecKey,
+		store:           st,
+		logger:          logger,
+		httpClient:      &http.Client{Timeout: 10 * time.Second},
+	}, nil
+}
+
+// PrivyClaims represents the JWT claims from a Privy access token.
+type PrivyClaims struct {
+	jwt.RegisteredClaims
+	SessionID string `json:"sid,omitempty"`
+}
+
+// VerifyToken verifies a Privy access token and returns the user's Privy DID.
+func (p *PrivyAuth) VerifyToken(tokenStr string) (string, error) {
+	token, err := jwt.ParseWithClaims(tokenStr, &PrivyClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if token.Method.Alg() != "ES256" {
+			return nil, fmt.Errorf("privy: unexpected signing method %v", token.Header["alg"])
+		}
+		return p.verificationKey, nil
+	},
+		jwt.WithIssuer("privy.io"),
+		jwt.WithAudience(p.appID),
+		jwt.WithExpirationRequired(),
+	)
+	if err != nil {
+		return "", fmt.Errorf("privy: token verification failed: %w", err)
+	}
+
+	claims, ok := token.Claims.(*PrivyClaims)
+	if !ok || claims.Subject == "" {
+		return "", fmt.Errorf("privy: invalid token claims")
+	}
+
+	return claims.Subject, nil // subject is the Privy DID (e.g. "did:privy:abc123")
+}
+
+// GetOrCreateUser looks up an existing user by Privy DID, or creates one by
+// fetching wallet details from Privy's REST API.
+func (p *PrivyAuth) GetOrCreateUser(privyUserID string) (*store.User, error) {
+	// Try existing user first.
+	user, err := p.store.GetUserByPrivyID(privyUserID)
+	if err == nil {
+		return user, nil
+	}
+
+	// Fetch user details from Privy to get wallet info.
+	walletAddr, walletID, err := p.fetchUserWallets(privyUserID)
+	if err != nil {
+		p.logger.Error("privy: failed to fetch user wallets", "privy_user_id", privyUserID, "error", err)
+		// Create user without wallet — they can link one later.
+		walletAddr = ""
+		walletID = ""
+	}
+
+	user = &store.User{
+		AccountID:           uuid.New().String(),
+		PrivyUserID:         privyUserID,
+		SolanaWalletAddress: walletAddr,
+		SolanaWalletID:      walletID,
+	}
+
+	if err := p.store.CreateUser(user); err != nil {
+		// Race condition: another request created the user first.
+		if existing, err2 := p.store.GetUserByPrivyID(privyUserID); err2 == nil {
+			return existing, nil
+		}
+		return nil, fmt.Errorf("privy: create user: %w", err)
+	}
+
+	p.logger.Info("privy: created user",
+		"privy_user_id", privyUserID,
+		"account_id", user.AccountID,
+		"has_wallet", walletAddr != "",
+	)
+
+	return user, nil
+}
+
+// privyUserResponse represents the relevant fields from GET /api/v1/users/{id}.
+type privyUserResponse struct {
+	ID             string          `json:"id"`
+	LinkedAccounts []linkedAccount `json:"linked_accounts"`
+}
+
+type linkedAccount struct {
+	Type      string `json:"type"`
+	Address   string `json:"address,omitempty"`
+	ChainType string `json:"chain_type,omitempty"`
+	WalletID  string `json:"wallet_client_type,omitempty"`
+	// For embedded wallets, the ID is in a nested field.
+	ID string `json:"id,omitempty"`
+}
+
+// fetchUserWallets calls Privy's REST API to get the user's embedded Solana wallet.
+func (p *PrivyAuth) fetchUserWallets(privyUserID string) (address, walletID string, err error) {
+	if p.appSecret == "" {
+		return "", "", fmt.Errorf("privy: app_secret required for REST API calls")
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), "GET",
+		"https://auth.privy.io/api/v1/users/"+privyUserID, nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.SetBasicAuth(p.appID, p.appSecret)
+	req.Header.Set("privy-app-id", p.appID)
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("privy: API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", "", fmt.Errorf("privy: API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var userResp privyUserResponse
+	if err := json.NewDecoder(resp.Body).Decode(&userResp); err != nil {
+		return "", "", fmt.Errorf("privy: decode user response: %w", err)
+	}
+
+	// Find the embedded Solana wallet.
+	for _, acct := range userResp.LinkedAccounts {
+		if acct.Type == "wallet" && acct.ChainType == "solana" {
+			return acct.Address, acct.ID, nil
+		}
+	}
+
+	return "", "", fmt.Errorf("privy: no Solana wallet found for user %s", privyUserID)
+}
+
+// ContextKey for storing user in request context.
+type ContextKey int
+
+// CtxKeyUser is the context key for the authenticated User.
+const CtxKeyUser ContextKey = iota
+
+// UserFromContext retrieves the authenticated User from the request context.
+func UserFromContext(ctx context.Context) *store.User {
+	if u, ok := ctx.Value(CtxKeyUser).(*store.User); ok {
+		return u
+	}
+	return nil
+}
+

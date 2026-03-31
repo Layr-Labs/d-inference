@@ -264,6 +264,48 @@ type SolanaWithdrawResult struct {
 	AmountMicroUSD int64  `json:"amount_micro_usd"`
 }
 
+// GetTokenBalance returns the USDC token balance for a wallet address.
+// Returns the balance in raw token units (6 decimals for USDC = micro-USD).
+func (p *SolanaProcessor) GetTokenBalance(walletAddress string) (uint64, error) {
+	// Use getTokenAccountsByOwner to find the USDC token account.
+	result, err := p.rpcCall("getTokenAccountsByOwner", []any{
+		walletAddress,
+		map[string]any{"mint": p.usdcMint},
+		map[string]any{"encoding": "jsonParsed"},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("getTokenAccountsByOwner: %w", err)
+	}
+
+	var resp struct {
+		Value []struct {
+			Account struct {
+				Data struct {
+					Parsed struct {
+						Info struct {
+							TokenAmount struct {
+								Amount string `json:"amount"`
+							} `json:"tokenAmount"`
+						} `json:"info"`
+					} `json:"parsed"`
+				} `json:"data"`
+			} `json:"account"`
+		} `json:"value"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return 0, fmt.Errorf("parse token accounts: %w", err)
+	}
+
+	if len(resp.Value) == 0 {
+		return 0, nil // no token account = zero balance
+	}
+
+	var balance uint64
+	amountStr := resp.Value[0].Account.Data.Parsed.Info.TokenAmount.Amount
+	fmt.Sscanf(amountStr, "%d", &balance)
+	return balance, nil
+}
+
 // SendWithdrawal initiates a USDC-SPL transfer on Solana. In production this
 // would construct and sign a token transfer instruction. For now, it calls the
 // settlement sidecar service.

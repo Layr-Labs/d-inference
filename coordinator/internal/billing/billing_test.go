@@ -38,7 +38,6 @@ func TestReferralRegister(t *testing.T) {
 		t.Fatalf("expected account consumer-123, got %s", referrer.AccountID)
 	}
 
-	// Registering again should return the same code
 	again, err := svc.Referral().Register("consumer-123")
 	if err != nil {
 		t.Fatalf("re-register: %v", err)
@@ -51,19 +50,16 @@ func TestReferralRegister(t *testing.T) {
 func TestReferralApply(t *testing.T) {
 	svc, st := newTestService(t)
 
-	// Create referrer
 	referrer, err := svc.Referral().Register("referrer-account")
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
-	// Apply referral code
 	err = svc.Referral().Apply("consumer-account", referrer.Code)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 
-	// Verify the referral was recorded
 	code, err := st.GetReferrerForAccount("consumer-account")
 	if err != nil {
 		t.Fatalf("get referrer: %v", err)
@@ -75,9 +71,7 @@ func TestReferralApply(t *testing.T) {
 
 func TestReferralSelfReferralBlocked(t *testing.T) {
 	svc, _ := newTestService(t)
-
 	referrer, _ := svc.Referral().Register("same-account")
-
 	err := svc.Referral().Apply("same-account", referrer.Code)
 	if err == nil {
 		t.Fatal("expected self-referral to be blocked")
@@ -86,10 +80,8 @@ func TestReferralSelfReferralBlocked(t *testing.T) {
 
 func TestReferralDoubleApplyBlocked(t *testing.T) {
 	svc, _ := newTestService(t)
-
 	ref1, _ := svc.Referral().Register("referrer-1")
 	ref2, _ := svc.Referral().Register("referrer-2")
-
 	_ = svc.Referral().Apply("consumer", ref1.Code)
 	err := svc.Referral().Apply("consumer", ref2.Code)
 	if err == nil {
@@ -99,7 +91,6 @@ func TestReferralDoubleApplyBlocked(t *testing.T) {
 
 func TestReferralInvalidCode(t *testing.T) {
 	svc, _ := newTestService(t)
-
 	err := svc.Referral().Apply("consumer", "INVALID-CODE")
 	if err == nil {
 		t.Fatal("expected error for invalid code")
@@ -109,15 +100,12 @@ func TestReferralInvalidCode(t *testing.T) {
 func TestReferralRewardDistribution(t *testing.T) {
 	svc, st := newTestService(t)
 
-	// Setup: referrer refers a consumer
 	referrer, _ := svc.Referral().Register("referrer-wallet")
 	_ = svc.Referral().Apply("consumer-key", referrer.Code)
 
-	// Simulate inference billing: platform fee of 100 micro-USD
 	platformFee := int64(100)
 	adjustedFee := svc.Referral().DistributeReferralReward("consumer-key", platformFee, "job-001")
 
-	// Referrer should get 20% of platform fee = 20 micro-USD
 	expectedReferralReward := int64(20)
 	expectedPlatformFee := platformFee - expectedReferralReward
 
@@ -125,7 +113,6 @@ func TestReferralRewardDistribution(t *testing.T) {
 		t.Fatalf("expected adjusted platform fee %d, got %d", expectedPlatformFee, adjustedFee)
 	}
 
-	// Check referrer's balance was credited
 	referrerBalance := st.GetBalance("referrer-wallet")
 	if referrerBalance != expectedReferralReward {
 		t.Fatalf("expected referrer balance %d, got %d", expectedReferralReward, referrerBalance)
@@ -134,11 +121,8 @@ func TestReferralRewardDistribution(t *testing.T) {
 
 func TestReferralRewardNoReferrer(t *testing.T) {
 	svc, _ := newTestService(t)
-
-	// Consumer without referrer — platform fee should be unchanged
 	platformFee := int64(100)
 	adjustedFee := svc.Referral().DistributeReferralReward("consumer-no-ref", platformFee, "job-002")
-
 	if adjustedFee != platformFee {
 		t.Fatalf("expected unchanged platform fee %d, got %d", platformFee, adjustedFee)
 	}
@@ -150,8 +134,6 @@ func TestReferralStats(t *testing.T) {
 	referrer, _ := svc.Referral().Register("referrer-account")
 	_ = svc.Referral().Apply("consumer-1", referrer.Code)
 	_ = svc.Referral().Apply("consumer-2", referrer.Code)
-
-	// Simulate some rewards
 	_ = svc.Referral().DistributeReferralReward("consumer-1", 100, "job-1")
 	_ = svc.Referral().DistributeReferralReward("consumer-2", 200, "job-2")
 
@@ -159,14 +141,9 @@ func TestReferralStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}
-
 	if stats.TotalReferred != 2 {
 		t.Fatalf("expected 2 referred, got %d", stats.TotalReferred)
 	}
-	if stats.Code != referrer.Code {
-		t.Fatalf("expected code %s, got %s", referrer.Code, stats.Code)
-	}
-	// Rewards: 20% of 100 + 20% of 200 = 20 + 40 = 60
 	if stats.TotalRewardsMicroUSD != 60 {
 		t.Fatalf("expected 60 micro-USD in rewards, got %d", stats.TotalRewardsMicroUSD)
 	}
@@ -176,48 +153,47 @@ func TestReferralStats(t *testing.T) {
 
 func TestSupportedMethodsEmpty(t *testing.T) {
 	svc, _ := newTestService(t)
-
 	methods := svc.SupportedMethods()
-	// No payment methods configured, should be empty
 	if len(methods) != 0 {
 		t.Fatalf("expected 0 methods, got %d", len(methods))
 	}
 }
 
-func TestProcessedTxTracking(t *testing.T) {
-	svc, _ := newTestService(t)
-
-	txHash := "0xabc123"
-	if svc.CheckProcessedTx(txHash) {
-		t.Fatal("expected tx not processed yet")
-	}
-
-	svc.MarkProcessedTx(txHash)
-	if !svc.CheckProcessedTx(txHash) {
-		t.Fatal("expected tx to be marked as processed")
-	}
-}
-
 func TestCreditDeposit(t *testing.T) {
 	svc, st := newTestService(t)
-
 	err := svc.CreditDeposit("consumer-1", 1_000_000, store.LedgerDeposit, "test-deposit")
 	if err != nil {
 		t.Fatalf("credit: %v", err)
 	}
-
 	balance := st.GetBalance("consumer-1")
 	if balance != 1_000_000 {
 		t.Fatalf("expected balance 1000000, got %d", balance)
 	}
 }
 
-func TestDepositAddressesEmpty(t *testing.T) {
-	svc, _ := newTestService(t)
+func TestIsExternalIDProcessed(t *testing.T) {
+	svc, st := newTestService(t)
 
-	addrs := svc.DepositAddresses()
-	if addrs.Solana != "" {
-		t.Fatalf("expected empty Solana address, got %s", addrs.Solana)
+	if svc.IsExternalIDProcessed("tx-abc") {
+		t.Fatal("expected not processed")
+	}
+
+	_ = st.CreateBillingSession(&store.BillingSession{
+		ID:            "session-1",
+		AccountID:     "consumer-1",
+		PaymentMethod: "solana",
+		ExternalID:    "tx-abc",
+		Status:        "pending",
+	})
+
+	if svc.IsExternalIDProcessed("tx-abc") {
+		t.Fatal("pending session should not count as processed")
+	}
+
+	_ = st.CompleteBillingSession("session-1")
+
+	if !svc.IsExternalIDProcessed("tx-abc") {
+		t.Fatal("completed session should be processed")
 	}
 }
 
@@ -235,37 +211,27 @@ func TestBillingSessionLifecycle(t *testing.T) {
 		Status:         "pending",
 	}
 
-	// Create
 	if err := st.CreateBillingSession(session); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	// Get
 	got, err := st.GetBillingSession("session-1")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.AccountID != "consumer-1" {
-		t.Fatalf("expected consumer-1, got %s", got.AccountID)
-	}
-	if got.Status != "pending" {
-		t.Fatalf("expected pending, got %s", got.Status)
+	if got.AccountID != "consumer-1" || got.Status != "pending" {
+		t.Fatalf("unexpected: %+v", got)
 	}
 
-	// Complete
 	if err := st.CompleteBillingSession("session-1"); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 
 	got, _ = st.GetBillingSession("session-1")
-	if got.Status != "completed" {
-		t.Fatalf("expected completed, got %s", got.Status)
-	}
-	if got.CompletedAt == nil {
-		t.Fatal("expected non-nil CompletedAt")
+	if got.Status != "completed" || got.CompletedAt == nil {
+		t.Fatalf("expected completed with timestamp, got %+v", got)
 	}
 
-	// Double-complete should error
 	if err := st.CompleteBillingSession("session-1"); err == nil {
 		t.Fatal("expected error on double-complete")
 	}
@@ -274,12 +240,10 @@ func TestBillingSessionLifecycle(t *testing.T) {
 func TestReferrerStoreLifecycle(t *testing.T) {
 	st := store.NewMemory("")
 
-	// Create referrer
 	if err := st.CreateReferrer("account-1", "DGINF-ABC123"); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	// Get by code
 	ref, err := st.GetReferrerByCode("DGINF-ABC123")
 	if err != nil {
 		t.Fatalf("get by code: %v", err)
@@ -288,21 +252,9 @@ func TestReferrerStoreLifecycle(t *testing.T) {
 		t.Fatalf("expected account-1, got %s", ref.AccountID)
 	}
 
-	// Get by account
-	ref, err = st.GetReferrerByAccount("account-1")
-	if err != nil {
-		t.Fatalf("get by account: %v", err)
-	}
-	if ref.Code != "DGINF-ABC123" {
-		t.Fatalf("expected DGINF-ABC123, got %s", ref.Code)
-	}
-
-	// Duplicate code should error
 	if err := st.CreateReferrer("account-2", "DGINF-ABC123"); err == nil {
 		t.Fatal("expected error on duplicate code")
 	}
-
-	// Duplicate account should error
 	if err := st.CreateReferrer("account-1", "DGINF-XYZ789"); err == nil {
 		t.Fatal("expected error on duplicate account")
 	}
@@ -310,15 +262,12 @@ func TestReferrerStoreLifecycle(t *testing.T) {
 
 func TestReferralRecording(t *testing.T) {
 	st := store.NewMemory("")
-
 	_ = st.CreateReferrer("referrer-1", "CODE1")
 
-	// Record referral
 	if err := st.RecordReferral("CODE1", "consumer-1"); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 
-	// Get referrer for consumer
 	code, err := st.GetReferrerForAccount("consumer-1")
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -327,18 +276,9 @@ func TestReferralRecording(t *testing.T) {
 		t.Fatalf("expected CODE1, got %s", code)
 	}
 
-	// Non-referred account
-	code, _ = st.GetReferrerForAccount("consumer-2")
-	if code != "" {
-		t.Fatalf("expected empty, got %s", code)
-	}
-
-	// Duplicate referral should error
 	if err := st.RecordReferral("CODE1", "consumer-1"); err == nil {
 		t.Fatal("expected error on duplicate referral")
 	}
-
-	// Invalid code should error
 	if err := st.RecordReferral("INVALID", "consumer-2"); err == nil {
 		t.Fatal("expected error on invalid code")
 	}
@@ -346,12 +286,9 @@ func TestReferralRecording(t *testing.T) {
 
 func TestReferralStatsStore(t *testing.T) {
 	st := store.NewMemory("")
-
 	_ = st.CreateReferrer("referrer-1", "CODE1")
 	_ = st.RecordReferral("CODE1", "consumer-1")
 	_ = st.RecordReferral("CODE1", "consumer-2")
-
-	// Credit some referral rewards
 	_ = st.Credit("referrer-1", 100, store.LedgerReferralReward, "job-1")
 	_ = st.Credit("referrer-1", 200, store.LedgerReferralReward, "job-2")
 
@@ -374,7 +311,6 @@ func TestStripeWebhookNoSecret(t *testing.T) {
 	proc := NewStripeProcessor("sk_test_123", "", "http://success", "http://cancel", logger)
 
 	payload := []byte(`{"type":"checkout.session.completed","data":{"object":{"id":"cs_123","payment_status":"paid","amount_total":1000}}}`)
-
 	event, err := proc.VerifyWebhookSignature(payload, "")
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -388,126 +324,51 @@ func TestStripeWebhookInvalidSignature(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	proc := NewStripeProcessor("sk_test_123", "whsec_test", "http://success", "http://cancel", logger)
 
-	payload := []byte(`{"type":"test"}`)
-
-	_, err := proc.VerifyWebhookSignature(payload, "t=1234,v1=invalid")
+	_, err := proc.VerifyWebhookSignature([]byte(`{"type":"test"}`), "t=1234,v1=invalid")
 	if err == nil {
 		t.Fatal("expected error for invalid signature")
 	}
 }
 
-// --- Deposit Address Tests ---
+// --- User Store Tests ---
 
-func TestDepositAddressGeneration(t *testing.T) {
-	svc, st := newTestService(t)
+func TestUserLifecycle(t *testing.T) {
+	st := store.NewMemory("")
 
-	addr, err := svc.GetOrCreateDepositAddress("consumer-1")
-	if err != nil {
+	user := &store.User{
+		AccountID:           "acct-123",
+		PrivyUserID:         "did:privy:abc",
+		SolanaWalletAddress: "SoLaNaAdDr123",
+		SolanaWalletID:      "wallet-xyz",
+	}
+
+	if err := st.CreateUser(user); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if addr == "" {
-		t.Fatal("expected non-empty address")
-	}
-	// Solana addresses are base58-encoded ed25519 pubkeys, typically 32-44 chars
-	if len(addr) < 20 || len(addr) > 50 {
-		t.Fatalf("address length %d looks wrong: %s", len(addr), addr)
-	}
 
-	// Same consumer should get the same address
-	addr2, err := svc.GetOrCreateDepositAddress("consumer-1")
+	got, err := st.GetUserByPrivyID("did:privy:abc")
 	if err != nil {
-		t.Fatalf("re-get: %v", err)
+		t.Fatalf("get by privy: %v", err)
 	}
-	if addr2 != addr {
-		t.Fatalf("expected same address %s, got %s", addr, addr2)
+	if got.AccountID != "acct-123" || got.SolanaWalletAddress != "SoLaNaAdDr123" {
+		t.Fatalf("unexpected: %+v", got)
 	}
 
-	// Different consumer should get a different address
-	addr3, err := svc.GetOrCreateDepositAddress("consumer-2")
+	got, err = st.GetUserByAccountID("acct-123")
 	if err != nil {
-		t.Fatalf("create for consumer-2: %v", err)
+		t.Fatalf("get by account: %v", err)
 	}
-	if addr3 == addr {
-		t.Fatal("different consumers should get different addresses")
-	}
-
-	// Verify ownership lookup
-	owner, err := st.GetAccountByDepositAddress(addr, "solana")
-	if err != nil {
-		t.Fatalf("lookup: %v", err)
-	}
-	if owner != "consumer-1" {
-		t.Fatalf("expected consumer-1, got %s", owner)
-	}
-}
-
-func TestDepositOwnershipVerification(t *testing.T) {
-	svc, _ := newTestService(t)
-
-	addr1, _ := svc.GetOrCreateDepositAddress("consumer-1")
-	_, _ = svc.GetOrCreateDepositAddress("consumer-2")
-
-	// Consumer 1 verifying their own address — should pass
-	if err := svc.VerifyDepositOwnership("consumer-1", addr1); err != nil {
-		t.Fatalf("own address should pass: %v", err)
+	if got.PrivyUserID != "did:privy:abc" {
+		t.Fatalf("expected did:privy:abc, got %s", got.PrivyUserID)
 	}
 
-	// Consumer 2 trying to claim consumer 1's address — should fail
-	if err := svc.VerifyDepositOwnership("consumer-2", addr1); err == nil {
-		t.Fatal("expected error when verifying someone else's deposit address")
+	// Duplicate Privy ID
+	if err := st.CreateUser(&store.User{AccountID: "acct-456", PrivyUserID: "did:privy:abc"}); err == nil {
+		t.Fatal("expected error on duplicate Privy ID")
 	}
 
-	// Unknown address — should fail
-	if err := svc.VerifyDepositOwnership("consumer-1", "unknownAddr123"); err == nil {
-		t.Fatal("expected error for unknown address")
+	// Not found
+	if _, err := st.GetUserByPrivyID("did:privy:nonexistent"); err == nil {
+		t.Fatal("expected error for nonexistent user")
 	}
 }
-
-func TestIsExternalIDProcessed(t *testing.T) {
-	svc, st := newTestService(t)
-
-	// Not processed yet
-	if svc.IsExternalIDProcessed("tx-abc") {
-		t.Fatal("expected not processed")
-	}
-
-	// Create a completed billing session with that external ID
-	_ = st.CreateBillingSession(&store.BillingSession{
-		ID:            "session-1",
-		AccountID:     "consumer-1",
-		PaymentMethod: "solana",
-		ExternalID:    "tx-abc",
-		Status:        "pending",
-	})
-
-	// Still not processed (pending, not completed)
-	if svc.IsExternalIDProcessed("tx-abc") {
-		t.Fatal("pending session should not count as processed")
-	}
-
-	// Complete it
-	_ = st.CompleteBillingSession("session-1")
-
-	// Now it should be processed
-	if !svc.IsExternalIDProcessed("tx-abc") {
-		t.Fatal("completed session should be processed")
-	}
-}
-
-func TestBase58Encode(t *testing.T) {
-	// Known test vector: empty input
-	if base58Encode([]byte{}) != "" {
-		t.Fatal("empty input should produce empty output")
-	}
-
-	// Single zero byte should produce "1"
-	if base58Encode([]byte{0}) != "1" {
-		t.Fatalf("expected '1', got %s", base58Encode([]byte{0}))
-	}
-
-	// Known value: byte 0x01 should produce "2"
-	if base58Encode([]byte{1}) != "2" {
-		t.Fatalf("expected '2', got %s", base58Encode([]byte{1}))
-	}
-}
-

@@ -2,9 +2,14 @@ package api
 
 // Billing API handlers for Stripe, Solana payments and referral system.
 //
-// These handlers extend the existing payment endpoints with Solana USDC
-// support and a referral code system. All payment methods credit the same
-// internal micro-USD ledger.
+// Consumer payment flow (Privy auth + client-side Solana signing):
+//   1. User authenticates via Privy JWT → we know their wallet address
+//   2. User signs a USDC transfer to coordinator address in the frontend
+//   3. User submits tx signature to POST /v1/billing/deposit
+//   4. Backend verifies on-chain that the tx came FROM the user's wallet
+//   5. Credits internal balance
+//
+// The user controls their own keys. We only verify what happened on-chain.
 
 import (
 	"encoding/json"
@@ -14,6 +19,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/dginf/coordinator/internal/auth"
 	"github.com/dginf/coordinator/internal/billing"
 	"github.com/dginf/coordinator/internal/store"
 	"github.com/google/uuid"
@@ -22,7 +28,6 @@ import (
 // --- Stripe Handlers ---
 
 // handleStripeCreateSession handles POST /v1/billing/stripe/create-session.
-// Creates a Stripe Checkout Session and returns the payment URL.
 func (s *Server) handleStripeCreateSession(w http.ResponseWriter, r *http.Request) {
 	if s.billing == nil || s.billing.Stripe() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Stripe payments not configured"))
@@ -46,24 +51,21 @@ func (s *Server) handleStripeCreateSession(w http.ResponseWriter, r *http.Reques
 	}
 
 	amountCents := int64(amountFloat * 100)
-	consumerKey := consumerKeyFromContext(r.Context())
+	accountID := s.resolveAccountID(r)
 
-	// Validate referral code if provided
 	if req.ReferralCode != "" {
-		_, err := s.billing.Store().GetReferrerByCode(req.ReferralCode)
-		if err != nil {
+		if _, err := s.billing.Store().GetReferrerByCode(req.ReferralCode); err != nil {
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid referral code"))
 			return
 		}
 	}
 
-	// Create billing session record
 	sessionID := uuid.New().String()
 	amountMicroUSD := int64(amountFloat * 1_000_000)
 
 	billingSession := &store.BillingSession{
 		ID:             sessionID,
-		AccountID:      consumerKey,
+		AccountID:      accountID,
 		PaymentMethod:  "stripe",
 		AmountMicroUSD: amountMicroUSD,
 		Status:         "pending",
@@ -71,14 +73,13 @@ func (s *Server) handleStripeCreateSession(w http.ResponseWriter, r *http.Reques
 		CreatedAt:      time.Now(),
 	}
 
-	// Create Stripe Checkout Session
 	stripeResp, err := s.billing.Stripe().CreateCheckoutSession(billing.CheckoutSessionRequest{
 		AmountCents:   amountCents,
 		Currency:      "usd",
 		CustomerEmail: req.Email,
 		Metadata: map[string]string{
 			"billing_session_id": sessionID,
-			"consumer_key":      consumerKey,
+			"consumer_key":      accountID,
 			"referral_code":     req.ReferralCode,
 		},
 	})
@@ -94,25 +95,22 @@ func (s *Server) handleStripeCreateSession(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"session_id":      sessionID,
-		"stripe_session":  stripeResp.SessionID,
-		"url":             stripeResp.URL,
-		"amount_usd":      req.AmountUSD,
+		"session_id":       sessionID,
+		"stripe_session":   stripeResp.SessionID,
+		"url":              stripeResp.URL,
+		"amount_usd":       req.AmountUSD,
 		"amount_micro_usd": amountMicroUSD,
 	})
 }
 
 // handleStripeWebhook handles POST /v1/billing/stripe/webhook.
-// Verifies the Stripe signature and credits the consumer's balance.
-// No API key auth — Stripe sends this directly.
 func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	if s.billing == nil || s.billing.Stripe() == nil {
 		http.Error(w, "Stripe not configured", http.StatusServiceUnavailable)
 		return
 	}
 
-	// Read the raw body for signature verification
-	payload, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB max
+	payload, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
@@ -126,7 +124,6 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only handle checkout.session.completed
 	if event.Type != "checkout.session.completed" {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -139,7 +136,6 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract metadata
 	billingSessionID := session.Object.Metadata["billing_session_id"]
 	consumerKey := session.Object.Metadata["consumer_key"]
 	referralCode := session.Object.Metadata["referral_code"]
@@ -150,20 +146,16 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prevent double-crediting via billing session
 	if billingSessionID != "" {
 		bs, err := s.billing.Store().GetBillingSession(billingSessionID)
 		if err == nil && bs.Status == "completed" {
-			s.logger.Warn("stripe: billing session already completed", "session_id", billingSessionID)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 	}
 
-	// Convert cents to micro-USD (1 cent = 10,000 micro-USD)
 	amountMicroUSD := session.Object.AmountTotal * 10_000
 
-	// Credit the consumer's balance
 	if err := s.billing.CreditDeposit(consumerKey, amountMicroUSD, store.LedgerStripeDeposit,
 		"stripe:"+session.Object.ID); err != nil {
 		s.logger.Error("stripe: credit balance failed", "error", err)
@@ -171,12 +163,9 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mark billing session as completed
 	if billingSessionID != "" {
 		_ = s.billing.Store().CompleteBillingSession(billingSessionID)
 	}
-
-	// Apply referral code if present and not already applied
 	if referralCode != "" {
 		_ = s.billing.Referral().Apply(consumerKey, referralCode)
 	}
@@ -184,9 +173,7 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("stripe: deposit credited",
 		"consumer_key", consumerKey[:min(8, len(consumerKey))]+"...",
 		"amount_micro_usd", amountMicroUSD,
-		"stripe_session", session.Object.ID,
 	)
-
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -205,20 +192,29 @@ func (s *Server) handleStripeSessionStatus(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"session_id":      bs.ID,
-		"payment_method":  bs.PaymentMethod,
+		"session_id":       bs.ID,
+		"payment_method":   bs.PaymentMethod,
 		"amount_micro_usd": bs.AmountMicroUSD,
-		"status":          bs.Status,
-		"created_at":      bs.CreatedAt,
-		"completed_at":    bs.CompletedAt,
+		"status":           bs.Status,
+		"created_at":       bs.CreatedAt,
+		"completed_at":     bs.CompletedAt,
 	})
 }
 
-// --- Solana Deposit/Withdraw Handlers ---
+// --- Solana Deposit (client-side signed) ---
 
-// handleSolanaDeposit handles POST /v1/billing/deposit/solana.
-// Verifies a Solana USDC-SPL transfer to the consumer's unique deposit address.
+// handleSolanaDeposit handles POST /v1/billing/deposit.
+// The user signs a USDC transfer in their frontend wallet, then submits the
+// tx signature here. We verify on-chain that:
+//   1. The tx contains a USDC transfer TO our coordinator address
+//   2. The tx sender matches the authenticated user's wallet
+//   3. The tx hasn't been submitted before (double-spend protection)
 func (s *Server) handleSolanaDeposit(w http.ResponseWriter, r *http.Request) {
+	if s.billing == nil || s.billing.Solana() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Solana payments not configured"))
+		return
+	}
+
 	var req struct {
 		TxSignature  string `json:"tx_signature"`
 		ReferralCode string `json:"referral_code,omitempty"`
@@ -227,51 +223,46 @@ func (s *Server) handleSolanaDeposit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
 		return
 	}
-
 	if req.TxSignature == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "tx_signature is required"))
 		return
 	}
 
-	if s.billing == nil || s.billing.Solana() == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Solana payments not configured"))
-		return
-	}
-
-	// Check for double-crediting — DB-backed, survives restarts
+	// Double-spend check (DB-backed, survives restarts).
 	if s.billing.IsExternalIDProcessed(req.TxSignature) {
-		writeJSON(w, http.StatusConflict, errorResponse("duplicate_deposit", "tx_signature has already been processed"))
+		writeJSON(w, http.StatusConflict, errorResponse("duplicate_deposit", "this transaction has already been credited"))
 		return
 	}
 
-	consumerKey := consumerKeyFromContext(r.Context())
-
-	// Verify on-chain
+	// Verify the on-chain transaction.
 	result, err := s.billing.Solana().VerifyDeposit(req.TxSignature)
 	if err != nil {
-		s.logger.Error("solana: deposit verification failed", "tx_sig", req.TxSignature, "error", err)
+		s.logger.Error("deposit: verification failed", "tx_sig", req.TxSignature, "error", err)
 		writeJSON(w, http.StatusBadRequest, errorResponse("verification_failed", err.Error()))
 		return
 	}
 
-	// Verify the deposit went to THIS consumer's deposit address — prevents
-	// claiming someone else's transaction.
-	if err := s.billing.VerifyDepositOwnership(consumerKey, result.To); err != nil {
-		s.logger.Warn("solana: deposit ownership check failed",
-			"consumer_key", consumerKey[:min(8, len(consumerKey))]+"...",
-			"tx_to", result.To,
-			"error", err,
-		)
-		writeJSON(w, http.StatusForbidden, errorResponse("ownership_error",
-			"this transaction was sent to a deposit address that does not belong to your account"))
-		return
+	// Auth binding: verify the sender matches the authenticated user's wallet.
+	accountID := s.resolveAccountID(r)
+	user := auth.UserFromContext(r.Context())
+	if user != nil && user.SolanaWalletAddress != "" {
+		if result.From != user.SolanaWalletAddress {
+			s.logger.Warn("deposit: sender mismatch",
+				"expected", user.SolanaWalletAddress,
+				"got", result.From,
+				"account", accountID[:min(8, len(accountID))]+"...",
+			)
+			writeJSON(w, http.StatusForbidden, errorResponse("sender_mismatch",
+				"transaction sender does not match your authenticated wallet"))
+			return
+		}
 	}
 
-	// Create billing session (marks external_id as processed in DB)
+	// Create billing session (marks external_id as processed).
 	sessionID := uuid.New().String()
 	if err := s.billing.Store().CreateBillingSession(&store.BillingSession{
 		ID:             sessionID,
-		AccountID:      consumerKey,
+		AccountID:      accountID,
 		PaymentMethod:  "solana",
 		Chain:          "solana",
 		AmountMicroUSD: result.AmountMicroUSD,
@@ -280,26 +271,24 @@ func (s *Server) handleSolanaDeposit(w http.ResponseWriter, r *http.Request) {
 		ReferralCode:   req.ReferralCode,
 		CreatedAt:      time.Now(),
 	}); err != nil {
-		// If session creation fails due to duplicate external_id, it's a race condition double-submit
-		writeJSON(w, http.StatusConflict, errorResponse("duplicate_deposit", "tx_signature has already been processed"))
+		writeJSON(w, http.StatusConflict, errorResponse("duplicate_deposit", "this transaction has already been credited"))
 		return
 	}
 
-	// Credit balance
-	if err := s.billing.CreditDeposit(consumerKey, result.AmountMicroUSD, store.LedgerDeposit,
+	// Credit balance.
+	if err := s.billing.CreditDeposit(accountID, result.AmountMicroUSD, store.LedgerDeposit,
 		"solana:"+req.TxSignature); err != nil {
-		s.logger.Error("solana: credit balance failed", "error", err)
+		s.logger.Error("deposit: credit failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to credit balance"))
 		return
 	}
 
-	// Apply referral code if present
 	if req.ReferralCode != "" {
-		_ = s.billing.Referral().Apply(consumerKey, req.ReferralCode)
+		_ = s.billing.Referral().Apply(accountID, req.ReferralCode)
 	}
 
-	s.logger.Info("solana: deposit credited",
-		"consumer_key", consumerKey[:min(8, len(consumerKey))]+"...",
+	s.logger.Info("deposit: credited",
+		"account", accountID[:min(8, len(accountID))]+"...",
 		"tx_sig", req.TxSignature,
 		"amount_micro_usd", result.AmountMicroUSD,
 		"from", result.From,
@@ -307,14 +296,43 @@ func (s *Server) handleSolanaDeposit(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":           "deposited",
-		"chain":            "solana",
 		"tx_signature":     req.TxSignature,
 		"from":             result.From,
 		"amount_micro_usd": result.AmountMicroUSD,
 		"amount_usd":       fmt.Sprintf("%.6f", float64(result.AmountMicroUSD)/1_000_000),
-		"balance_micro_usd": s.billing.Ledger().Balance(consumerKey),
+		"balance_micro_usd": s.billing.Ledger().Balance(accountID),
 	})
 }
+
+// handleWalletBalance handles GET /v1/billing/wallet/balance.
+func (s *Server) handleWalletBalance(w http.ResponseWriter, r *http.Request) {
+	accountID := s.resolveAccountID(r)
+
+	resp := map[string]any{
+		"credit_balance_micro_usd": s.billing.Ledger().Balance(accountID),
+	}
+
+	if user := auth.UserFromContext(r.Context()); user != nil && user.SolanaWalletAddress != "" {
+		resp["wallet_address"] = user.SolanaWalletAddress
+
+		if s.billing != nil && s.billing.Solana() != nil {
+			balance, err := s.billing.Solana().GetTokenBalance(user.SolanaWalletAddress)
+			if err == nil {
+				resp["wallet_usdc_balance"] = balance
+				resp["wallet_usdc_usd"] = fmt.Sprintf("%.6f", float64(balance)/1_000_000)
+			}
+		}
+	}
+
+	// Also return the coordinator address so the frontend knows where to send USDC.
+	if s.billing != nil && s.billing.CoordinatorAddress() != "" {
+		resp["coordinator_address"] = s.billing.CoordinatorAddress()
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// --- Withdraw ---
 
 // handleSolanaWithdraw handles POST /v1/billing/withdraw/solana.
 func (s *Server) handleSolanaWithdraw(w http.ResponseWriter, r *http.Request) {
@@ -326,12 +344,10 @@ func (s *Server) handleSolanaWithdraw(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
 		return
 	}
-
 	if req.WalletAddress == "" || req.AmountUSD == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "wallet_address and amount_usd are required"))
 		return
 	}
-
 	if s.billing == nil || s.billing.Solana() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Solana payments not configured"))
 		return
@@ -344,99 +360,60 @@ func (s *Server) handleSolanaWithdraw(w http.ResponseWriter, r *http.Request) {
 	}
 
 	amountMicroUSD := int64(amountFloat * 1_000_000)
-	consumerKey := consumerKeyFromContext(r.Context())
+	accountID := s.resolveAccountID(r)
 
-	// Debit balance
-	if err := s.billing.Ledger().Charge(consumerKey, amountMicroUSD, "withdraw:solana:"+req.WalletAddress); err != nil {
+	if err := s.billing.Ledger().Charge(accountID, amountMicroUSD, "withdraw:solana:"+req.WalletAddress); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("insufficient_funds", err.Error()))
 		return
 	}
 
-	// Send on-chain
 	result, err := s.billing.Solana().SendWithdrawal(billing.SolanaWithdrawRequest{
 		ToAddress:      req.WalletAddress,
 		AmountMicroUSD: amountMicroUSD,
 	}, s.settlementURL)
 	if err != nil {
-		// Re-credit on failure
-		_ = s.billing.Ledger().Deposit(consumerKey, amountMicroUSD)
+		_ = s.billing.Ledger().Deposit(accountID, amountMicroUSD)
 		s.logger.Error("solana: withdrawal failed, re-credited", "error", err)
 		writeJSON(w, http.StatusBadGateway, errorResponse("settlement_error", err.Error()))
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":          "withdrawn",
-		"chain":           "solana",
-		"wallet_address":  req.WalletAddress,
-		"amount_usd":      req.AmountUSD,
+		"status":           "withdrawn",
+		"chain":            "solana",
+		"wallet_address":   req.WalletAddress,
+		"amount_usd":       req.AmountUSD,
 		"amount_micro_usd": amountMicroUSD,
-		"tx_signature":    result.TxSignature,
-		"balance_micro_usd": s.billing.Ledger().Balance(consumerKey),
-	})
-}
-
-// --- Deposit Addresses ---
-
-// handleDepositAddresses handles GET /v1/billing/deposit/addresses.
-// Returns the consumer's unique deposit address, generating one if needed.
-// Each consumer gets their own Solana address so deposits can't be stolen.
-func (s *Server) handleDepositAddresses(w http.ResponseWriter, r *http.Request) {
-	if s.billing == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "billing not configured"))
-		return
-	}
-
-	consumerKey := consumerKeyFromContext(r.Context())
-
-	addr, err := s.billing.GetOrCreateDepositAddress(consumerKey)
-	if err != nil {
-		s.logger.Error("billing: create deposit address failed", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to create deposit address"))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"solana": addr,
-		"chain":  "solana",
-		"token":  "USDC",
-		"note":   "Send USDC to this address. After sending, submit the transaction signature to POST /v1/billing/deposit/solana to credit your account.",
+		"tx_signature":     result.TxSignature,
+		"balance_micro_usd": s.billing.Ledger().Balance(accountID),
 	})
 }
 
 // --- Referral Handlers ---
 
-// handleReferralRegister handles POST /v1/referral/register.
-// Registers the consumer as a referrer and returns their unique referral code.
 func (s *Server) handleReferralRegister(w http.ResponseWriter, r *http.Request) {
 	if s.billing == nil || s.billing.Referral() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "referral system not available"))
 		return
 	}
-
-	consumerKey := consumerKeyFromContext(r.Context())
-	referrer, err := s.billing.Referral().Register(consumerKey)
+	accountID := s.resolveAccountID(r)
+	referrer, err := s.billing.Referral().Register(accountID)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("referral_error", err.Error()))
 		return
 	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"code":          referrer.Code,
-		"account_id":    referrer.AccountID[:min(8, len(referrer.AccountID))] + "...",
 		"share_percent": s.billing.Referral().SharePercent(),
 		"message":       fmt.Sprintf("Share your code %s — you earn %d%% of the platform fee on every inference by referred users.", referrer.Code, s.billing.Referral().SharePercent()),
 	})
 }
 
-// handleReferralApply handles POST /v1/referral/apply.
-// Links the consumer's account to a referral code.
 func (s *Server) handleReferralApply(w http.ResponseWriter, r *http.Request) {
 	if s.billing == nil || s.billing.Referral() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "referral system not available"))
 		return
 	}
-
 	var req struct {
 		Code string `json:"code"`
 	}
@@ -444,18 +421,15 @@ func (s *Server) handleReferralApply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
 		return
 	}
-
 	if req.Code == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "code is required"))
 		return
 	}
-
-	consumerKey := consumerKeyFromContext(r.Context())
-	if err := s.billing.Referral().Apply(consumerKey, req.Code); err != nil {
+	accountID := s.resolveAccountID(r)
+	if err := s.billing.Referral().Apply(accountID, req.Code); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("referral_error", err.Error()))
 		return
 	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "applied",
 		"code":    req.Code,
@@ -463,42 +437,32 @@ func (s *Server) handleReferralApply(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleReferralStats handles GET /v1/referral/stats.
-// Returns referral statistics and earnings for the authenticated user.
 func (s *Server) handleReferralStats(w http.ResponseWriter, r *http.Request) {
 	if s.billing == nil || s.billing.Referral() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "referral system not available"))
 		return
 	}
-
-	consumerKey := consumerKeyFromContext(r.Context())
-	stats, err := s.billing.Referral().Stats(consumerKey)
+	accountID := s.resolveAccountID(r)
+	stats, err := s.billing.Referral().Stats(accountID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, errorResponse("referral_error", err.Error()))
 		return
 	}
-
 	writeJSON(w, http.StatusOK, stats)
 }
 
-// handleReferralInfo handles GET /v1/referral/info.
-// Returns the consumer's referral code if they are a registered referrer.
 func (s *Server) handleReferralInfo(w http.ResponseWriter, r *http.Request) {
 	if s.billing == nil || s.billing.Referral() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "referral system not available"))
 		return
 	}
-
-	consumerKey := consumerKeyFromContext(r.Context())
-	referrer, err := s.billing.Store().GetReferrerByAccount(consumerKey)
+	accountID := s.resolveAccountID(r)
+	referrer, err := s.billing.Store().GetReferrerByAccount(accountID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, errorResponse("referral_error", "not a registered referrer — use POST /v1/referral/register"))
 		return
 	}
-
-	// Also check if this account was referred by someone
-	referredBy, _ := s.billing.Store().GetReferrerForAccount(consumerKey)
-
+	referredBy, _ := s.billing.Store().GetReferrerForAccount(accountID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"code":          referrer.Code,
 		"share_percent": s.billing.Referral().SharePercent(),
@@ -508,21 +472,30 @@ func (s *Server) handleReferralInfo(w http.ResponseWriter, r *http.Request) {
 
 // --- Payment Methods ---
 
-// handleBillingMethods handles GET /v1/billing/methods.
-// Returns all supported payment methods and their configuration.
 func (s *Server) handleBillingMethods(w http.ResponseWriter, r *http.Request) {
 	if s.billing == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"methods": []any{}})
 		return
 	}
-
 	methods := s.billing.SupportedMethods()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"methods": methods,
-		"referral": map[string]any{
+	resp := map[string]any{"methods": methods}
+	if s.billing.Referral() != nil {
+		resp["referral"] = map[string]any{
 			"enabled":       true,
 			"share_percent": s.billing.Referral().SharePercent(),
-			"description":   "Earn a share of platform fees for every user you refer.",
-		},
-	})
+		}
+	}
+	if s.billing.CoordinatorAddress() != "" {
+		resp["coordinator_address"] = s.billing.CoordinatorAddress()
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// resolveAccountID returns the internal account ID for the current request.
+// Prefers the Privy user's account ID, falls back to API key.
+func (s *Server) resolveAccountID(r *http.Request) string {
+	if user := auth.UserFromContext(r.Context()); user != nil {
+		return user.AccountID
+	}
+	return consumerKeyFromContext(r.Context())
 }

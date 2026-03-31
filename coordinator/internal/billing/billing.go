@@ -1,12 +1,17 @@
 // Package billing provides unified payment processing for the DGInf coordinator.
 //
-// Two payment methods are supported:
-//   - Stripe: Fiat checkout sessions with webhook confirmation (not day-1)
-//   - Solana: On-chain deposits/withdrawals using USDC-SPL
+// Payment flow (Privy auth + client-side Solana signing):
+//  1. User authenticates via Privy → gets embedded Solana wallet
+//  2. User deposits USDC into their Privy wallet (from exchange, etc.)
+//  3. User signs a USDC transfer to the coordinator address in the frontend
+//  4. User submits the tx signature to POST /v1/billing/deposit
+//  5. Backend verifies the on-chain tx came FROM the user's wallet, credits balance
 //
-// All payment methods ultimately credit the same internal micro-USD ledger.
-// A referral system allows accounts to earn a share of platform fees for
-// users they refer.
+// The user controls their own keys at all times. The backend never signs
+// transactions — it only verifies what happened on-chain.
+//
+// Stripe checkout is wired but not activated for day-1 launch.
+// A referral system allows accounts to earn a share of platform fees.
 package billing
 
 import (
@@ -36,22 +41,16 @@ type Config struct {
 	// Stripe — present but not activated day-1 (set env vars to enable)
 	StripeSecretKey     string
 	StripeWebhookSecret string
-	StripeSuccessURL    string // redirect URL after successful payment
-	StripeCancelURL     string // redirect URL after cancelled payment
+	StripeSuccessURL    string
+	StripeCancelURL     string
 
 	// Solana — primary payment rail for launch
-	SolanaRPCURL         string
-	SolanaDepositAddress string
-	SolanaUSDCMint       string
-	SolanaPrivateKey     string // hot wallet for withdrawals (base58)
+	SolanaRPCURL             string
+	SolanaUSDCMint           string
+	SolanaCoordinatorAddress string // address that receives USDC deposits
 
 	// Referral
 	ReferralSharePercent int64 // percentage of platform fee going to referrer (default 20)
-}
-
-// DepositAddresses returns the deposit addresses for configured chains.
-type DepositAddresses struct {
-	Solana string `json:"solana,omitempty"`
 }
 
 // Service is the unified billing orchestrator. It delegates to chain-specific
@@ -65,25 +64,20 @@ type Service struct {
 	stripe   *StripeProcessor
 	solana   *SolanaProcessor
 	referral *ReferralService
-
-	// processedTxHashes prevents double-crediting the same on-chain tx.
-	// In production, this should be backed by the database.
-	processedTxHashes map[string]bool
 }
 
 // NewService creates a new billing service from the given configuration.
 func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cfg Config) *Service {
 	if cfg.ReferralSharePercent == 0 {
-		cfg.ReferralSharePercent = 20 // default: referrer gets 20% of platform fee
+		cfg.ReferralSharePercent = 20
 	}
 
 	svc := &Service{
-		store:             st,
-		ledger:            ledger,
-		logger:            logger,
-		config:            cfg,
-		referral:          NewReferralService(st, ledger, logger, cfg.ReferralSharePercent),
-		processedTxHashes: make(map[string]bool),
+		store:    st,
+		ledger:   ledger,
+		logger:   logger,
+		config:   cfg,
+		referral: NewReferralService(st, ledger, logger, cfg.ReferralSharePercent),
 	}
 
 	// Initialize Stripe if configured
@@ -95,9 +89,11 @@ func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cf
 
 	// Initialize Solana processor
 	if cfg.SolanaRPCURL != "" {
-		svc.solana = NewSolanaProcessor(cfg.SolanaRPCURL, cfg.SolanaDepositAddress,
-			cfg.SolanaUSDCMint, cfg.SolanaPrivateKey, logger)
-		logger.Info("billing: Solana processor enabled")
+		svc.solana = NewSolanaProcessor(cfg.SolanaRPCURL, cfg.SolanaCoordinatorAddress,
+			cfg.SolanaUSDCMint, "", logger)
+		logger.Info("billing: Solana processor enabled",
+			"coordinator_address", cfg.SolanaCoordinatorAddress,
+		)
 	}
 
 	return svc
@@ -118,14 +114,8 @@ func (s *Service) Store() store.Store { return s.store }
 // Ledger returns the underlying ledger for direct access.
 func (s *Service) Ledger() *payments.Ledger { return s.ledger }
 
-// DepositAddresses returns all configured deposit addresses.
-func (s *Service) DepositAddresses() DepositAddresses {
-	var addrs DepositAddresses
-	if s.solana != nil {
-		addrs.Solana = s.solana.DepositAddress()
-	}
-	return addrs
-}
+// CoordinatorAddress returns the Solana address that receives USDC payments.
+func (s *Service) CoordinatorAddress() string { return s.config.SolanaCoordinatorAddress }
 
 // SupportedMethods returns which payment methods are configured and available.
 func (s *Service) SupportedMethods() []PaymentMethodInfo {
@@ -141,25 +131,20 @@ func (s *Service) SupportedMethods() []PaymentMethodInfo {
 
 	if s.solana != nil {
 		methods = append(methods, PaymentMethodInfo{
-			Method:         MethodSolana,
-			Chain:          ChainSolana,
-			DisplayName:    "USDC on Solana",
-			DepositAddress: s.solana.DepositAddress(),
-			Currencies:     []string{"USDC"},
+			Method:      MethodSolana,
+			Chain:       ChainSolana,
+			DisplayName: "USDC on Solana",
+			Currencies:  []string{"USDC"},
 		})
 	}
 
 	return methods
 }
 
-// CheckProcessedTx returns true if this tx hash has already been credited.
-func (s *Service) CheckProcessedTx(txHash string) bool {
-	return s.processedTxHashes[txHash]
-}
-
-// MarkProcessedTx marks a tx hash as processed to prevent double-crediting.
-func (s *Service) MarkProcessedTx(txHash string) {
-	s.processedTxHashes[txHash] = true
+// IsExternalIDProcessed checks the database for whether a tx signature has
+// already been credited. Survives coordinator restarts.
+func (s *Service) IsExternalIDProcessed(externalID string) bool {
+	return s.store.IsExternalIDProcessed(externalID)
 }
 
 // CreditDeposit credits a consumer's balance after a verified deposit.
@@ -169,9 +154,8 @@ func (s *Service) CreditDeposit(accountID string, amountMicroUSD int64, entryTyp
 
 // PaymentMethodInfo describes a supported payment method for the API.
 type PaymentMethodInfo struct {
-	Method         PaymentMethod `json:"method"`
-	Chain          Chain         `json:"chain,omitempty"`
-	DisplayName    string        `json:"display_name"`
-	DepositAddress string        `json:"deposit_address,omitempty"`
-	Currencies     []string      `json:"currencies"`
+	Method      PaymentMethod `json:"method"`
+	Chain       Chain         `json:"chain,omitempty"`
+	DisplayName string        `json:"display_name"`
+	Currencies  []string      `json:"currencies"`
 }

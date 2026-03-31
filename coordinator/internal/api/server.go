@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dginf/coordinator/internal/auth"
 	"github.com/dginf/coordinator/internal/billing"
 	"github.com/dginf/coordinator/internal/mdm"
 	"github.com/dginf/coordinator/internal/payments"
@@ -65,6 +66,7 @@ type Server struct {
 	mux               *http.ServeMux
 	challengeInterval time.Duration // 0 means use DefaultChallengeInterval
 	settlementURL     string        // URL of the settlement sidecar (e.g. "http://localhost:8090")
+	privyAuth              *auth.PrivyAuth     // Privy JWT authentication (nil if not configured)
 	mdmClient              *mdm.Client        // MicroMDM client for provider security verification
 	stepCARootCert         *x509.Certificate  // step-ca root CA for ACME cert verification
 	stepCAIntermediateCert *x509.Certificate  // step-ca intermediate CA
@@ -100,6 +102,11 @@ func (s *Server) SetStepCACerts(root, intermediate *x509.Certificate) {
 // SetBilling configures the billing service for multi-chain payments and referrals.
 func (s *Server) SetBilling(svc *billing.Service) {
 	s.billing = svc
+}
+
+// SetPrivyAuth configures Privy JWT authentication for consumer endpoints.
+func (s *Server) SetPrivyAuth(pa *auth.PrivyAuth) {
+	s.privyAuth = pa
 }
 
 // SetMDMClient configures the MicroMDM client for provider verification.
@@ -172,12 +179,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/billing/stripe/webhook", s.handleStripeWebhook) // no auth — Stripe signs it
 	s.mux.HandleFunc("GET /v1/billing/stripe/session", s.requireAuth(s.handleStripeSessionStatus))
 
-	// Solana
-	s.mux.HandleFunc("POST /v1/billing/deposit/solana", s.requireAuth(s.handleSolanaDeposit))
+	// Solana deposits and withdrawals
+	s.mux.HandleFunc("POST /v1/billing/deposit", s.requireAuth(s.handleSolanaDeposit))
 	s.mux.HandleFunc("POST /v1/billing/withdraw/solana", s.requireAuth(s.handleSolanaWithdraw))
-
-	// Deposit address (per-consumer unique address)
-	s.mux.HandleFunc("GET /v1/billing/deposit/addresses", s.requireAuth(s.handleDepositAddresses))
+	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
 
 	// Payment methods info
 	s.mux.HandleFunc("GET /v1/billing/methods", s.handleBillingMethods) // no auth needed
@@ -194,22 +199,43 @@ func (s *Server) Handler() http.Handler {
 	return s.corsMiddleware(s.loggingMiddleware(s.mux))
 }
 
-// requireAuth wraps a handler with API key validation. It extracts the
-// Bearer token from the Authorization header, validates it against the
-// key store, and stores the key in the request context for downstream use.
+// requireAuth wraps a handler with authentication. It tries Privy JWT first
+// (if configured), then falls back to API key validation. The authenticated
+// identity is stored in the request context for downstream use.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		key := extractBearerToken(r)
-		if key == "" {
-			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing API key — use Authorization: Bearer <key>"))
+		token := extractBearerToken(r)
+		if token == "" {
+			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing credentials — use Authorization: Bearer <token>"))
 			return
 		}
-		if !s.store.ValidateKey(key) {
+
+		// Try Privy JWT first (JWTs start with "eyJ").
+		if s.privyAuth != nil && strings.HasPrefix(token, "eyJ") {
+			privyUserID, err := s.privyAuth.VerifyToken(token)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "invalid Privy token"))
+				return
+			}
+			user, err := s.privyAuth.GetOrCreateUser(privyUserID)
+			if err != nil {
+				s.logger.Error("privy: user resolution failed", "error", err)
+				writeJSON(w, http.StatusInternalServerError, errorResponse("auth_error", "failed to resolve user"))
+				return
+			}
+			ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
+			ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+			next(w, r.WithContext(ctx))
+			return
+		}
+
+		// Fall back to API key auth.
+		if !s.store.ValidateKey(token) {
 			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "invalid API key"))
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), ctxKeyConsumer, key)
+		ctx := context.WithValue(r.Context(), ctxKeyConsumer, token)
 		next(w, r.WithContext(ctx))
 	}
 }

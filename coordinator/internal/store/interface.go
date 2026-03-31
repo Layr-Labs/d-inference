@@ -87,17 +87,16 @@ type Store interface {
 	// has already been completed. Used to prevent double-crediting the same on-chain tx.
 	IsExternalIDProcessed(externalID string) bool
 
-	// --- Deposit Addresses ---
+	// --- Users (Privy) ---
 
-	// SetDepositAddress stores a consumer's unique deposit address for a chain.
-	// The encryptedKey is the private key (encrypted) needed for future sweeping.
-	SetDepositAddress(accountID, chain, address, encryptedKey string) error
+	// CreateUser creates a new user record linked to a Privy identity.
+	CreateUser(user *User) error
 
-	// GetDepositAddress returns the deposit address for a consumer on a chain.
-	GetDepositAddress(accountID, chain string) (string, error)
+	// GetUserByPrivyID returns the user for a Privy DID.
+	GetUserByPrivyID(privyUserID string) (*User, error)
 
-	// GetAccountByDepositAddress looks up which consumer owns a deposit address.
-	GetAccountByDepositAddress(address, chain string) (string, error)
+	// GetUserByAccountID returns the user for an internal account ID.
+	GetUserByAccountID(accountID string) (*User, error)
 }
 
 // UsageRecord captures a single inference usage event.
@@ -161,13 +160,13 @@ type ReferralStats struct {
 	TotalRewardsMicroUSD int64  `json:"total_rewards_micro_usd"`
 }
 
-// DepositAddress is a unique per-consumer deposit address for a specific chain.
-type DepositAddress struct {
-	AccountID    string    `json:"account_id"`
-	Chain        string    `json:"chain"`
-	Address      string    `json:"address"`
-	EncryptedKey string    `json:"-"` // never exposed via API
-	CreatedAt    time.Time `json:"created_at"`
+// User represents a consumer account linked to a Privy identity.
+type User struct {
+	AccountID           string    `json:"account_id"`            // internal account ID (used in ledger)
+	PrivyUserID         string    `json:"privy_user_id"`         // Privy DID (e.g. "did:privy:abc123")
+	SolanaWalletAddress string    `json:"solana_wallet_address"` // embedded wallet public address
+	SolanaWalletID      string    `json:"solana_wallet_id"`      // Privy's internal wallet ID (for signing API)
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 // BillingSession tracks an in-progress payment via any method (Stripe, EVM, Solana).

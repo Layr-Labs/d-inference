@@ -34,6 +34,7 @@ import (
 
 	"github.com/dginf/coordinator/internal/api"
 	"github.com/dginf/coordinator/internal/attestation"
+	"github.com/dginf/coordinator/internal/auth"
 	"github.com/dginf/coordinator/internal/billing"
 	"github.com/dginf/coordinator/internal/mdm"
 	"github.com/dginf/coordinator/internal/payments"
@@ -95,16 +96,15 @@ func main() {
 
 	// Configure billing service.
 	//
-	// Day-1 launch: Solana USDC + Referrals only.
+	// Day-1 launch: Solana USDC (via Privy embedded wallets) + Referrals.
+	// Users sign their own USDC transfers in the frontend, then submit the
+	// tx signature here. We verify on-chain and credit their balance.
 	// Stripe is wired but not activated until we flip the env vars on.
-	// EVM support (Tempo, Ethereum, Base) is in the code at tag evm-full-billing
-	// but not configured here — re-enable by setting DGINF_TEMPO_RPC_URL etc.
 	billingCfg := billing.Config{
-		// Solana — primary payment rail for launch
-		SolanaRPCURL:         os.Getenv("DGINF_SOLANA_RPC_URL"),
-		SolanaDepositAddress: os.Getenv("DGINF_SOLANA_DEPOSIT_ADDRESS"),
-		SolanaUSDCMint:       envOr("DGINF_SOLANA_USDC_MINT", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), // mainnet USDC
-		SolanaPrivateKey:     os.Getenv("DGINF_SOLANA_PRIVATE_KEY"),
+		// Solana — primary payment rail
+		SolanaRPCURL:             os.Getenv("DGINF_SOLANA_RPC_URL"),
+		SolanaUSDCMint:           envOr("DGINF_SOLANA_USDC_MINT", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), // mainnet USDC
+		SolanaCoordinatorAddress: os.Getenv("DGINF_SOLANA_COORDINATOR_ADDRESS"),                                     // address that receives USDC
 
 		// Stripe — present but not activated day-1 (set env vars to enable)
 		StripeSecretKey:     os.Getenv("DGINF_STRIPE_SECRET_KEY"),
@@ -123,6 +123,24 @@ func main() {
 	ledger := payments.NewLedger(st)
 	billingSvc := billing.NewService(st, ledger, logger, billingCfg)
 	srv.SetBilling(billingSvc)
+
+	// Configure Privy authentication.
+	if privyAppID := os.Getenv("DGINF_PRIVY_APP_ID"); privyAppID != "" {
+		privyVerificationKey := os.Getenv("DGINF_PRIVY_VERIFICATION_KEY")
+		privyAppSecret := os.Getenv("DGINF_PRIVY_APP_SECRET")
+
+		privyAuth, err := auth.NewPrivyAuth(auth.Config{
+			AppID:           privyAppID,
+			AppSecret:       privyAppSecret,
+			VerificationKey: privyVerificationKey,
+		}, st, logger)
+		if err != nil {
+			logger.Error("failed to initialize Privy auth", "error", err)
+		} else {
+			srv.SetPrivyAuth(privyAuth)
+			logger.Info("Privy authentication enabled", "app_id", privyAppID)
+		}
+	}
 
 	// Log which billing methods are active
 	methods := billingSvc.SupportedMethods()

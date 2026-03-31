@@ -40,9 +40,9 @@ type MemoryStore struct {
 	// Billing sessions
 	billingSessions map[string]*BillingSession // sessionID → session
 
-	// Deposit addresses
-	depositAddresses    map[string]DepositAddress // "accountID:chain" → address
-	depositAddrToAcct   map[string]string         // "address:chain" → accountID
+	// Users (Privy)
+	usersByPrivyID   map[string]*User // privyUserID → user
+	usersByAccountID map[string]*User // accountID → user
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -59,8 +59,8 @@ func NewMemory(adminKey string) *MemoryStore {
 		referrals:          make(map[string]string),
 		referralCounts:     make(map[string]int),
 		billingSessions:    make(map[string]*BillingSession),
-		depositAddresses:   make(map[string]DepositAddress),
-		depositAddrToAcct:  make(map[string]string),
+		usersByPrivyID:   make(map[string]*User),
+		usersByAccountID: make(map[string]*User),
 	}
 	if adminKey != "" {
 		s.keys[adminKey] = true
@@ -387,46 +387,49 @@ func (s *MemoryStore) IsExternalIDProcessed(externalID string) bool {
 	return false
 }
 
-// --- Deposit Addresses ---
+// --- Users (Privy) ---
 
-// SetDepositAddress stores a consumer's unique deposit address for a chain.
-func (s *MemoryStore) SetDepositAddress(accountID, chain, address, encryptedKey string) error {
+// CreateUser creates a new user record linked to a Privy identity.
+func (s *MemoryStore) CreateUser(user *User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	key := accountID + ":" + chain
-	s.depositAddresses[key] = DepositAddress{
-		AccountID:    accountID,
-		Chain:        chain,
-		Address:      address,
-		EncryptedKey: encryptedKey,
-		CreatedAt:    time.Now(),
+	if _, exists := s.usersByPrivyID[user.PrivyUserID]; exists {
+		return fmt.Errorf("user with Privy ID %q already exists", user.PrivyUserID)
 	}
-	s.depositAddrToAcct[address+":"+chain] = accountID
+	if _, exists := s.usersByAccountID[user.AccountID]; exists {
+		return fmt.Errorf("user with account ID %q already exists", user.AccountID)
+	}
+
+	copy := *user
+	copy.CreatedAt = time.Now()
+	s.usersByPrivyID[user.PrivyUserID] = &copy
+	s.usersByAccountID[user.AccountID] = &copy
 	return nil
 }
 
-// GetDepositAddress returns the deposit address for a consumer on a chain.
-func (s *MemoryStore) GetDepositAddress(accountID, chain string) (string, error) {
+// GetUserByPrivyID returns the user for a Privy DID.
+func (s *MemoryStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	key := accountID + ":" + chain
-	da, ok := s.depositAddresses[key]
+	u, ok := s.usersByPrivyID[privyUserID]
 	if !ok {
-		return "", fmt.Errorf("no deposit address for account %q on chain %q", accountID, chain)
+		return nil, fmt.Errorf("user with Privy ID %q not found", privyUserID)
 	}
-	return da.Address, nil
+	copy := *u
+	return &copy, nil
 }
 
-// GetAccountByDepositAddress looks up which consumer owns a deposit address.
-func (s *MemoryStore) GetAccountByDepositAddress(address, chain string) (string, error) {
+// GetUserByAccountID returns the user for an internal account ID.
+func (s *MemoryStore) GetUserByAccountID(accountID string) (*User, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	acct, ok := s.depositAddrToAcct[address+":"+chain]
+	u, ok := s.usersByAccountID[accountID]
 	if !ok {
-		return "", fmt.Errorf("no account found for deposit address %q on chain %q", address, chain)
+		return nil, fmt.Errorf("user with account ID %q not found", accountID)
 	}
-	return acct, nil
+	copy := *u
+	return &copy, nil
 }

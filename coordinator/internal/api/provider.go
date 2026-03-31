@@ -455,8 +455,16 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// Record usage.
 	s.store.RecordUsage(providerID, pr.ConsumerKey, pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
 
-	// Calculate cost and process payment.
-	customIn, customOut, hasCustom := s.store.GetModelPrice(pr.ConsumerKey, pr.Model)
+	// Calculate cost — check provider's custom price, then platform DB price,
+	// then hardcoded defaults.
+	providerWalletForPricing := ""
+	if p := s.registry.GetProvider(providerID); p != nil {
+		providerWalletForPricing = p.WalletAddress
+	}
+	customIn, customOut, hasCustom := s.store.GetModelPrice(providerWalletForPricing, pr.Model)
+	if !hasCustom {
+		customIn, customOut, hasCustom = s.store.GetModelPrice("platform", pr.Model)
+	}
 	totalCost := payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
 	providerPayout := payments.ProviderPayout(totalCost)
 

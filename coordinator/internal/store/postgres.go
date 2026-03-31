@@ -74,9 +74,14 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS api_keys (
 			key_hash TEXT PRIMARY KEY,
 			raw_prefix TEXT NOT NULL,
+			owner_account_id TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			active BOOLEAN NOT NULL DEFAULT TRUE
 		)`,
+		`DO $$ BEGIN
+			ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS owner_account_id TEXT NOT NULL DEFAULT '';
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
 		`CREATE TABLE IF NOT EXISTS usage (
 			id BIGSERIAL PRIMARY KEY,
 			provider_id TEXT NOT NULL,
@@ -231,6 +236,46 @@ func (s *PostgresStore) SeedKey(rawKey string) error {
 		return fmt.Errorf("store: seed key: %w", err)
 	}
 	return nil
+}
+
+// CreateKeyForAccount generates a new API key linked to a specific account.
+func (s *PostgresStore) CreateKeyForAccount(accountID string) (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("store: generate key: %w", err)
+	}
+	raw := "dginf-" + hex.EncodeToString(b)
+	h := hashKey(raw)
+	prefix := keyPrefix(raw)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO api_keys (key_hash, raw_prefix, owner_account_id) VALUES ($1, $2, $3)`,
+		h, prefix, accountID,
+	)
+	if err != nil {
+		return "", fmt.Errorf("store: insert key: %w", err)
+	}
+	return raw, nil
+}
+
+// GetKeyAccount returns the account ID that owns this key, or "" if unlinked.
+func (s *PostgresStore) GetKeyAccount(key string) string {
+	h := hashKey(key)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var accountID string
+	err := s.pool.QueryRow(ctx,
+		`SELECT owner_account_id FROM api_keys WHERE key_hash = $1 AND active = TRUE`, h,
+	).Scan(&accountID)
+	if err != nil {
+		return ""
+	}
+	return accountID
 }
 
 // ValidateKey returns true if the given key exists and is active.

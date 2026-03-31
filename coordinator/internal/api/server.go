@@ -138,8 +138,8 @@ func (s *Server) routes() {
 	// Provider WebSocket — no API key auth (providers authenticate differently).
 	s.mux.HandleFunc("GET /ws/provider", s.handleProviderWS)
 
-	// Key generation — open access for testing. In production, gate behind admin auth.
-	s.mux.HandleFunc("POST /v1/auth/keys", s.handleCreateKey)
+	// Key generation — requires Privy auth, key is linked to account.
+	s.mux.HandleFunc("POST /v1/auth/keys", s.requireAuth(s.handleCreateKey))
 
 	// Consumer endpoints — API key auth required.
 	s.mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.handleChatCompletions))
@@ -184,10 +184,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/billing/withdraw/solana", s.requireAuth(s.handleSolanaWithdraw))
 	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
 
-	// Pricing
-	s.mux.HandleFunc("GET /v1/pricing", s.requireAuth(s.handleGetPricing))
-	s.mux.HandleFunc("PUT /v1/pricing", s.requireAuth(s.handleSetPricing))
-	s.mux.HandleFunc("DELETE /v1/pricing", s.requireAuth(s.handleDeletePricing))
+	// Pricing — GET is public, PUT/DELETE require auth
+	s.mux.HandleFunc("GET /v1/pricing", s.handleGetPricing)                         // public
+	s.mux.HandleFunc("PUT /v1/pricing", s.requireAuth(s.handleSetPricing))          // provider sets own prices
+	s.mux.HandleFunc("DELETE /v1/pricing", s.requireAuth(s.handleDeletePricing))    // revert to default
+	s.mux.HandleFunc("PUT /v1/admin/pricing", s.requireAuth(s.handleAdminPricing)) // platform sets defaults
 
 	// Payment methods info
 	s.mux.HandleFunc("GET /v1/billing/methods", s.handleBillingMethods) // no auth needed
@@ -240,7 +241,18 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), ctxKeyConsumer, token)
+		// Resolve key → account. If the key is linked to a Privy account,
+		// use that account ID and load the user.
+		accountID := token
+		ctx := r.Context()
+		if ownerID := s.store.GetKeyAccount(token); ownerID != "" {
+			accountID = ownerID
+			if user, err := s.store.GetUserByAccountID(ownerID); err == nil {
+				ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+			}
+		}
+
+		ctx = context.WithValue(ctx, ctxKeyConsumer, accountID)
 		next(w, r.WithContext(ctx))
 	}
 }

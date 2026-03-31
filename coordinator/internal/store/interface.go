@@ -20,8 +20,14 @@ type Store interface {
 	// CreateKey generates a new API key, persists it, and returns it.
 	CreateKey() (string, error)
 
+	// CreateKeyForAccount generates a new API key linked to a specific account.
+	CreateKeyForAccount(accountID string) (string, error)
+
 	// ValidateKey returns true if the given key exists and is active.
 	ValidateKey(key string) bool
+
+	// GetKeyAccount returns the account ID that owns this key, or "" if unlinked.
+	GetKeyAccount(key string) string
 
 	// RevokeKey deactivates a key. Returns true if the key existed.
 	RevokeKey(key string) bool

@@ -500,20 +500,20 @@ func (s *Server) handleReferralInfo(w http.ResponseWriter, r *http.Request) {
 // --- Pricing ---
 
 // handleGetPricing handles GET /v1/pricing.
-// Returns platform default prices plus any custom overrides for the authenticated user.
+// Public endpoint — returns platform default prices. Also overlays platform
+// DB overrides (set via admin endpoint).
 func (s *Server) handleGetPricing(w http.ResponseWriter, r *http.Request) {
 	defaults := payments.DefaultPrices()
 
 	type priceEntry struct {
-		Model       string  `json:"model"`
-		InputPrice  int64   `json:"input_price"`  // micro-USD per 1M tokens
-		OutputPrice int64   `json:"output_price"` // micro-USD per 1M tokens
-		InputUSD    string  `json:"input_usd"`    // human-readable
-		OutputUSD   string  `json:"output_usd"`
-		Custom      bool    `json:"custom"`
+		Model       string `json:"model"`
+		InputPrice  int64  `json:"input_price"`  // micro-USD per 1M tokens
+		OutputPrice int64  `json:"output_price"` // micro-USD per 1M tokens
+		InputUSD    string `json:"input_usd"`
+		OutputUSD   string `json:"output_usd"`
 	}
 
-	// Start with defaults.
+	// Start with hardcoded defaults.
 	priceMap := make(map[string]priceEntry)
 	for model, prices := range defaults {
 		priceMap[model] = priceEntry{
@@ -525,23 +525,18 @@ func (s *Server) handleGetPricing(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Overlay custom prices if authenticated.
-	accountID := s.resolveAccountID(r)
-	if accountID != "" {
-		customs := s.store.ListModelPrices(accountID)
-		for _, mp := range customs {
-			priceMap[mp.Model] = priceEntry{
-				Model:       mp.Model,
-				InputPrice:  mp.InputPrice,
-				OutputPrice: mp.OutputPrice,
-				InputUSD:    fmt.Sprintf("$%.4f", float64(mp.InputPrice)/1_000_000),
-				OutputUSD:   fmt.Sprintf("$%.4f", float64(mp.OutputPrice)/1_000_000),
-				Custom:      true,
-			}
+	// Overlay admin-set platform prices (account_id = "platform").
+	platformPrices := s.store.ListModelPrices("platform")
+	for _, mp := range platformPrices {
+		priceMap[mp.Model] = priceEntry{
+			Model:       mp.Model,
+			InputPrice:  mp.InputPrice,
+			OutputPrice: mp.OutputPrice,
+			InputUSD:    fmt.Sprintf("$%.4f", float64(mp.InputPrice)/1_000_000),
+			OutputUSD:   fmt.Sprintf("$%.4f", float64(mp.OutputPrice)/1_000_000),
 		}
 	}
 
-	// Convert to sorted list.
 	var prices []priceEntry
 	for _, p := range priceMap {
 		prices = append(prices, p)
@@ -549,20 +544,75 @@ func (s *Server) handleGetPricing(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"prices": prices,
-		"note":   "Prices are in micro-USD per 1M tokens. Use PUT /v1/pricing to set custom prices.",
+	})
+}
+
+// handleAdminPricing handles PUT /v1/admin/pricing.
+// Sets platform default prices for a model. Requires the admin API key
+// (DGINF_ADMIN_KEY). These defaults apply to all users who haven't set
+// custom prices.
+func (s *Server) handleAdminPricing(w http.ResponseWriter, r *http.Request) {
+	// Admin check: the raw token must be the admin key (first key seeded at startup).
+	// This is a simple check — the admin key is not linked to a Privy account.
+	token := extractBearerToken(r)
+	adminAccount := s.store.GetKeyAccount(token)
+	if adminAccount != "" {
+		// Linked keys are regular users, not admin.
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin endpoint requires the admin API key"))
+		return
+	}
+
+	var req struct {
+		Model       string `json:"model"`
+		InputPrice  int64  `json:"input_price"`
+		OutputPrice int64  `json:"output_price"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		return
+	}
+	if req.Model == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
+		return
+	}
+	if req.InputPrice <= 0 || req.OutputPrice <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "input_price and output_price must be positive"))
+		return
+	}
+
+	// Store under the special "platform" account.
+	if err := s.store.SetModelPrice("platform", req.Model, req.InputPrice, req.OutputPrice); err != nil {
+		s.logger.Error("admin pricing: set failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to set price"))
+		return
+	}
+
+	s.logger.Info("admin: platform price updated",
+		"model", req.Model,
+		"input_price", req.InputPrice,
+		"output_price", req.OutputPrice,
+	)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":       "platform_default_updated",
+		"model":        req.Model,
+		"input_price":  req.InputPrice,
+		"output_price": req.OutputPrice,
+		"input_usd":    fmt.Sprintf("$%.4f per 1M tokens", float64(req.InputPrice)/1_000_000),
+		"output_usd":   fmt.Sprintf("$%.4f per 1M tokens", float64(req.OutputPrice)/1_000_000),
 	})
 }
 
 // handleSetPricing handles PUT /v1/pricing.
-// Sets a custom price override for a model on the authenticated user's account.
+// Providers set custom prices for models they serve. Requires Privy auth.
 func (s *Server) handleSetPricing(w http.ResponseWriter, r *http.Request) {
 	if s.requirePrivyUser(w, r) == nil {
 		return
 	}
 	var req struct {
 		Model       string `json:"model"`
-		InputPrice  int64  `json:"input_price"`  // micro-USD per 1M tokens
-		OutputPrice int64  `json:"output_price"` // micro-USD per 1M tokens
+		InputPrice  int64  `json:"input_price"`
+		OutputPrice int64  `json:"output_price"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))

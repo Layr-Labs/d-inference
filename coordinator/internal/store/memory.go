@@ -25,6 +25,7 @@ var _ Store = (*MemoryStore)(nil)
 type MemoryStore struct {
 	mu            sync.RWMutex
 	keys          map[string]bool    // key → valid
+	keyAccounts   map[string]string  // key → accountID (owner)
 	usage         []UsageRecord
 	payments      []PaymentRecord
 	balances      map[string]int64   // accountID → micro-USD
@@ -53,6 +54,7 @@ type MemoryStore struct {
 func NewMemory(adminKey string) *MemoryStore {
 	s := &MemoryStore{
 		keys:               make(map[string]bool),
+		keyAccounts:        make(map[string]string),
 		usage:              make([]UsageRecord, 0),
 		payments:           make([]PaymentRecord, 0),
 		balances:           make(map[string]int64),
@@ -88,11 +90,34 @@ func (s *MemoryStore) CreateKey() (string, error) {
 	return key, nil
 }
 
+// CreateKeyForAccount generates a new API key linked to a specific account.
+func (s *MemoryStore) CreateKeyForAccount(accountID string) (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	key := "dginf-" + hex.EncodeToString(b)
+
+	s.mu.Lock()
+	s.keys[key] = true
+	s.keyAccounts[key] = accountID
+	s.mu.Unlock()
+
+	return key, nil
+}
+
 // ValidateKey returns true if the given key exists and is valid.
 func (s *MemoryStore) ValidateKey(key string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.keys[key]
+}
+
+// GetKeyAccount returns the account ID that owns this key, or "" if unlinked.
+func (s *MemoryStore) GetKeyAccount(key string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.keyAccounts[key]
 }
 
 // RevokeKey removes a key from the store. Returns true if the key existed.

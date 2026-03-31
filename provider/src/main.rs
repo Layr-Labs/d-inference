@@ -1485,6 +1485,14 @@ async fn cmd_enroll(coordinator_url: String) -> Result<()> {
     println!("DGInf Device Attestation Enrollment");
     println!();
 
+    // Check if already enrolled
+    if security::check_mdm_enrolled() {
+        println!("✓ Already enrolled — no action needed.");
+        println!();
+        println!("  Verify with: dginf-provider doctor");
+        return Ok(());
+    }
+
     // Read serial number from hardware
     let serial = get_serial_number()?;
     println!("→ Device serial: {serial}");

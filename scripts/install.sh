@@ -120,7 +120,19 @@ rm -f "$DGINF_DIR/enclave_key.data" 2>/dev/null
 # ─── Step 4: Enrollment + device attestation ─────────────────
 echo ""
 echo "→ [4/7] Enrollment + device attestation..."
-if [ -n "$SERIAL" ]; then
+
+# Check if already enrolled before prompting
+ALREADY_ENROLLED=false
+if [ -f "/var/db/ConfigurationProfiles/Settings/.profilesAreInstalled" ]; then
+    # Profile marker file exists — check if it's DGInf/MicroMDM specifically
+    if profiles list 2>&1 | grep -qi -e "micromdm" -e "dginf" -e "com.github.micromdm" 2>/dev/null; then
+        ALREADY_ENROLLED=true
+    fi
+fi
+
+if [ "$ALREADY_ENROLLED" = true ]; then
+    echo "  Already enrolled ✓"
+elif [ -n "$SERIAL" ]; then
     echo "  Requesting enrollment profile..."
     rm -f "/tmp/DGInf-Enroll-${SERIAL}.mobileconfig" 2>/dev/null
     if curl -fsSL -X POST "$BASE_URL/v1/enroll" \

@@ -84,6 +84,9 @@ func main() {
 		logger.Info("using in-memory store")
 	}
 
+	// Seed the model catalog if empty (first startup or fresh DB).
+	seedModelCatalog(st, logger)
+
 	reg := registry.New(logger)
 
 	// Set minimum trust level for routing. Default: hardware (production).
@@ -112,6 +115,12 @@ func main() {
 		StripeWebhookSecret: os.Getenv("DGINF_STRIPE_WEBHOOK_SECRET"),
 		StripeSuccessURL:    envOr("DGINF_STRIPE_SUCCESS_URL", "https://inference-test.openinnovation.dev/billing/success"),
 		StripeCancelURL:     envOr("DGINF_STRIPE_CANCEL_URL", "https://inference-test.openinnovation.dev/billing/cancel"),
+	}
+
+	// Mock billing mode — skips on-chain verification, auto-credits test balance.
+	if os.Getenv("DGINF_BILLING_MOCK") == "true" {
+		billingCfg.MockMode = true
+		logger.Warn("BILLING MOCK MODE ENABLED — deposits skip on-chain verification")
 	}
 
 	// Parse referral share percentage
@@ -282,4 +291,35 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// seedModelCatalog populates the supported model catalog if it's empty.
+// This provides the initial set of models on first startup.
+func seedModelCatalog(st store.Store, logger *slog.Logger) {
+	existing := st.ListSupportedModels()
+	if len(existing) > 0 {
+		logger.Info("model catalog loaded", "count", len(existing))
+		return
+	}
+
+	models := []store.SupportedModel{
+		// --- Transcription (speech-to-text) ---
+		// Small hardware serves specialized models that are genuinely best-in-class.
+		{ID: "CohereLabs/cohere-transcribe-03-2026", S3Name: "cohere-transcribe-03-2026", DisplayName: "Cohere Transcribe", ModelType: "transcription", SizeGB: 4.2, Architecture: "2B conformer", Description: "Best-in-class STT, 27% better than Whisper", MinRAMGB: 8, Active: true},
+
+		// --- Text generation (8-bit quantization) ---
+		// Quality floor: only models that produce output worth paying for.
+		{ID: "mlx-community/Qwen3.5-9B-MLX-8bit", S3Name: "Qwen3.5-9B-MLX-8bit", DisplayName: "Qwen3.5 9B", ModelType: "text", SizeGB: 9.0, Architecture: "9B dense", Description: "Balanced", MinRAMGB: 16, Active: true},
+		{ID: "mlx-community/Qwen3.5-14B-Instruct-8bit", S3Name: "Qwen3.5-14B-Instruct-8bit", DisplayName: "Qwen3.5 14B", ModelType: "text", SizeGB: 14.0, Architecture: "14B dense", Description: "High quality", MinRAMGB: 24, Active: true},
+		{ID: "mlx-community/Qwen3.5-35B-A3B-8bit", S3Name: "Qwen3.5-35B-A3B-8bit", DisplayName: "Qwen3.5 35B-A3B", ModelType: "text", SizeGB: 35.0, Architecture: "35B MoE, 3B active", Description: "Frontier quality, fast inference", MinRAMGB: 36, Active: true},
+		{ID: "mlx-community/Qwen3.5-32B-Instruct-8bit", S3Name: "Qwen3.5-32B-Instruct-8bit", DisplayName: "Qwen3.5 32B", ModelType: "text", SizeGB: 32.0, Architecture: "32B dense", Description: "Premium", MinRAMGB: 48, Active: true},
+		{ID: "mlx-community/Qwen3.5-122B-A10B-8bit", S3Name: "Qwen3.5-122B-A10B-8bit", DisplayName: "Qwen3.5 122B", ModelType: "text", SizeGB: 122.0, Architecture: "122B MoE, 10B active", Description: "Best quality", MinRAMGB: 128, Active: true},
+	}
+
+	for i := range models {
+		if err := st.SetSupportedModel(&models[i]); err != nil {
+			logger.Warn("failed to seed model", "id", models[i].ID, "error", err)
+		}
+	}
+	logger.Info("model catalog seeded", "count", len(models))
 }

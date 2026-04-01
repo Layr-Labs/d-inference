@@ -51,6 +51,10 @@ type Config struct {
 
 	// Referral
 	ReferralSharePercent int64 // percentage of platform fee going to referrer (default 20)
+
+	// MockMode skips on-chain verification and auto-credits test balances.
+	// Set DGINF_BILLING_MOCK=true for testing without real payments.
+	MockMode bool
 }
 
 // Service is the unified billing orchestrator. It delegates to chain-specific
@@ -107,6 +111,9 @@ func (s *Service) Solana() *SolanaProcessor { return s.solana }
 
 // Referral returns the referral service.
 func (s *Service) Referral() *ReferralService { return s.referral }
+
+// MockMode returns true if billing is in mock mode (no on-chain verification).
+func (s *Service) MockMode() bool { return s.config.MockMode }
 
 // Store returns the underlying store for direct access.
 func (s *Service) Store() store.Store { return s.store }

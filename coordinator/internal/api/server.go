@@ -181,6 +181,11 @@ func (s *Server) routes() {
 	// Provider version check — no auth needed. Providers call this to check for updates.
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)
 
+	// Device authorization flow — providers link to user accounts.
+	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)            // no auth — provider not yet authenticated
+	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)          // no auth — polls with device_code secret
+	s.mux.HandleFunc("POST /v1/device/approve", s.requireAuth(s.handleDeviceApprove)) // Privy auth — user approves in browser
+
 	// --- Billing endpoints (multi-chain payments + referrals) ---
 
 	// Stripe
@@ -198,6 +203,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /v1/pricing", s.requireAuth(s.handleSetPricing))          // provider sets own prices
 	s.mux.HandleFunc("DELETE /v1/pricing", s.requireAuth(s.handleDeletePricing))    // revert to default
 	s.mux.HandleFunc("PUT /v1/admin/pricing", s.requireAuth(s.handleAdminPricing)) // platform sets defaults
+
+	// Admin model catalog
+	s.mux.HandleFunc("GET /v1/admin/models", s.requireAuth(s.handleAdminListModels))
+	s.mux.HandleFunc("POST /v1/admin/models", s.requireAuth(s.handleAdminSetModel))
+	s.mux.HandleFunc("DELETE /v1/admin/models", s.requireAuth(s.handleAdminDeleteModel))
+
+	// Public model catalog — providers and install script fetch this
+	s.mux.HandleFunc("GET /v1/models/catalog", s.handleModelCatalog)
 
 	// Payment methods info
 	s.mux.HandleFunc("GET /v1/billing/methods", s.handleBillingMethods) // no auth needed

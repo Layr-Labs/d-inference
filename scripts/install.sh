@@ -52,12 +52,26 @@ echo "→ [1/7] Downloading DGInf..."
 mkdir -p "$DGINF_DIR" "$BIN_DIR"
 curl -f#L "$BASE_URL/dl/dginf-bundle-macos-arm64.tar.gz" -o "/tmp/dginf-bundle.tar.gz"
 
-echo "  Installing..."
+echo "  Installing binaries..."
 tar xzf /tmp/dginf-bundle.tar.gz -C "$DGINF_DIR"
 mv "$DGINF_DIR/dginf-provider" "$BIN_DIR/" 2>/dev/null || true
 mv "$DGINF_DIR/dginf-enclave" "$BIN_DIR/" 2>/dev/null || true
 chmod +x "$BIN_DIR/dginf-provider" "$BIN_DIR/dginf-enclave"
 rm -f /tmp/dginf-bundle.tar.gz
+
+# Download bundled Python runtime (self-contained: Python 3.12 + vllm-mlx + mlx + mlx_lm).
+# This is a complete, standalone Python — no system Python or pip needed.
+if [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "import vllm_mlx" 2>/dev/null; then
+    echo "  Python runtime already installed ✓"
+else
+    echo "  Downloading Python runtime (~105 MB)..."
+    curl -f#L "$BASE_URL/dl/dginf-python-runtime.tar.gz" -o "/tmp/dginf-python.tar.gz"
+    # Remove any existing broken/symlinked Python install
+    rm -rf "$DGINF_DIR/python"
+    tar xzf /tmp/dginf-python.tar.gz -C "$DGINF_DIR"
+    rm -f /tmp/dginf-python.tar.gz
+    echo "  Python runtime installed ✓"
+fi
 
 # Make dginf-provider available system-wide via /usr/local/bin symlink
 # This works immediately — no need to restart the terminal
@@ -79,13 +93,14 @@ echo "  Binaries installed ✓"
 echo ""
 echo "→ [2/7] Verifying inference runtime..."
 
-# Check vllm-mlx
+# Verify bundled Python + vllm-mlx
 if [ -f "$PYTHON_BIN" ]; then
     PYTHONHOME="$DGINF_DIR/python" "$PYTHON_BIN" -c \
         "import vllm_mlx; print(f'  vllm-mlx {vllm_mlx.__version__} ✓')" 2>/dev/null \
-        || echo "  vllm-mlx ✓"
+        || echo "  ⚠ vllm-mlx import failed — inference may fall back to mlx_lm"
 else
-    echo "  ⚠ Bundled Python not found (inference may not work)"
+    echo "  ✗ Bundled Python not found — inference will not work"
+    echo "    Reinstall: curl -fsSL $BASE_URL/install.sh | bash"
 fi
 
 # Ensure ffmpeg is available (needed for audio transcription)
@@ -173,28 +188,71 @@ fi
 echo ""
 echo "→ [5/7] Downloading inference model..."
 
-# Auto-select model based on RAM
-# S3_NAME is the key in our CDN — no HuggingFace account needed
-if [ "$MEM" -ge 64 ]; then
-    MODEL="mlx-community/Qwen3.5-32B-Instruct-4bit"
-    S3_NAME="Qwen3.5-32B-Instruct-4bit"
-    MODEL_NAME="Qwen3.5 32B"
-    MODEL_SIZE="~20 GB"
-elif [ "$MEM" -ge 32 ]; then
-    MODEL="mlx-community/Qwen3.5-14B-Instruct-4bit"
-    S3_NAME="Qwen3.5-14B-Instruct-4bit"
-    MODEL_NAME="Qwen3.5 14B"
-    MODEL_SIZE="~9 GB"
-elif [ "$MEM" -ge 16 ]; then
-    MODEL="mlx-community/Qwen3.5-9B-MLX-4bit"
-    S3_NAME="Qwen3.5-9B-MLX-4bit"
-    MODEL_NAME="Qwen3.5 9B"
-    MODEL_SIZE="~6 GB"
-else
-    MODEL="mlx-community/Qwen2.5-0.5B-Instruct-4bit"
-    S3_NAME="Qwen2.5-0.5B-Instruct-4bit"
-    MODEL_NAME="Qwen2.5 0.5B"
-    MODEL_SIZE="~0.4 GB"
+# Fetch model catalog from coordinator and auto-select by RAM
+# Text models need 16GB+ to produce quality output.
+# Machines with <16GB serve transcription (STT) instead.
+CATALOG_JSON=$(curl -fsSL "$BASE_URL/v1/models/catalog" 2>/dev/null || echo "")
+
+if [ -n "$CATALOG_JSON" ] && echo "$CATALOG_JSON" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+    # Select the best model by type:
+    #   >=16 GB: pick the largest text model that fits
+    #   <16 GB:  pick a transcription model (small, high-quality specialized task)
+    SELECTED=$(echo "$CATALOG_JSON" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+mem = int(sys.argv[1])
+want_type = 'text' if mem >= 16 else 'transcription'
+best = None
+for m in data.get('models', []):
+    if m.get('model_type', 'text') != want_type:
+        continue
+    if m.get('min_ram_gb', 999) <= mem:
+        best = m
+if best:
+    print(best['id'])
+    print(best.get('s3_name', best['id'].split('/')[-1]))
+    print(best.get('display_name', best['id']))
+    print(best.get('size_gb', '?'))
+    print(best.get('model_type', 'text'))
+" "$MEM" 2>/dev/null)
+
+    if [ -n "$SELECTED" ]; then
+        MODEL=$(echo "$SELECTED" | sed -n '1p')
+        S3_NAME=$(echo "$SELECTED" | sed -n '2p')
+        MODEL_NAME=$(echo "$SELECTED" | sed -n '3p')
+        MODEL_SIZE="~$(echo "$SELECTED" | sed -n '4p') GB"
+        MODEL_TYPE=$(echo "$SELECTED" | sed -n '5p')
+    fi
+fi
+
+# Fallback if catalog fetch or parsing failed (8-bit quantization)
+if [ -z "$MODEL" ]; then
+    if [ "$MEM" -ge 48 ]; then
+        MODEL="mlx-community/Qwen3.5-32B-Instruct-8bit"
+        S3_NAME="Qwen3.5-32B-Instruct-8bit"
+        MODEL_NAME="Qwen3.5 32B"
+        MODEL_SIZE="~32 GB"
+    elif [ "$MEM" -ge 36 ]; then
+        MODEL="mlx-community/Qwen3.5-35B-A3B-8bit"
+        S3_NAME="Qwen3.5-35B-A3B-8bit"
+        MODEL_NAME="Qwen3.5 35B-A3B"
+        MODEL_SIZE="~35 GB"
+    elif [ "$MEM" -ge 24 ]; then
+        MODEL="mlx-community/Qwen3.5-14B-Instruct-8bit"
+        S3_NAME="Qwen3.5-14B-Instruct-8bit"
+        MODEL_NAME="Qwen3.5 14B"
+        MODEL_SIZE="~14 GB"
+    elif [ "$MEM" -ge 16 ]; then
+        MODEL="mlx-community/Qwen3.5-9B-MLX-8bit"
+        S3_NAME="Qwen3.5-9B-MLX-8bit"
+        MODEL_NAME="Qwen3.5 9B"
+        MODEL_SIZE="~9 GB"
+    else
+        MODEL="CohereLabs/cohere-transcribe-03-2026"
+        S3_NAME="cohere-transcribe-03-2026"
+        MODEL_NAME="Cohere Transcribe"
+        MODEL_SIZE="~4.2 GB"
+    fi
 fi
 
 echo "  Selected: $MODEL_NAME ($MODEL_SIZE) for ${MEM}GB RAM"
@@ -282,8 +340,21 @@ else
     echo "    dginf-provider start --model $MODEL"
 fi
 
+if [ ! -f "$HOME/.config/dginf/auth_token" ]; then
+    echo ""
+    echo "  ┌──────────────────────────────────────────┐"
+    echo "  │  Link to your account to earn rewards:   │"
+    echo "  │                                          │"
+    echo "  │    dginf-provider login                  │"
+    echo "  │                                          │"
+    echo "  │  Without linking, earnings go to a local │"
+    echo "  │  wallet and cannot be withdrawn.         │"
+    echo "  └──────────────────────────────────────────┘"
+fi
+
 echo ""
 echo "  Commands:"
+echo "    dginf-provider login      Link to your account"
 echo "    dginf-provider status     Show provider status"
 echo "    dginf-provider logs -w    Stream logs"
 echo "    dginf-provider stop       Stop the provider"

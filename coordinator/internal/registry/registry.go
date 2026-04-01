@@ -86,6 +86,9 @@ type Provider struct {
 	LastHeartbeat     time.Time
 	Stats             protocol.HeartbeatStats
 
+	// Account linkage (set when provider authenticates via device auth token)
+	AccountID string // internal account ID (from device auth flow)
+
 	// Benchmark data reported at registration
 	PrefillTPS float64 // prefill tokens per second
 	DecodeTPS  float64 // decode tokens per second

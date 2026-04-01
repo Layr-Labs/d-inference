@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@privy-io/react-auth": "^3.18.0",
     "lucide-react": "^1.0.1",
     "next": "15.3.9",
     "react": "^19.0.0",

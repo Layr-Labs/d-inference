@@ -59,6 +59,7 @@ pub struct CoordinatorClient {
     public_key: Option<String>,
     wallet_address: Option<String>,
     attestation: Option<Box<serde_json::value::RawValue>>,
+    auth_token: Option<String>,
 }
 
 impl CoordinatorClient {
@@ -79,6 +80,7 @@ impl CoordinatorClient {
             public_key,
             wallet_address: None,
             attestation: None,
+            auth_token: None,
         }
     }
 
@@ -91,6 +93,12 @@ impl CoordinatorClient {
     /// Set the signed Secure Enclave attestation blob (raw JSON bytes preserved).
     pub fn with_attestation(mut self, attestation: Option<Box<serde_json::value::RawValue>>) -> Self {
         self.attestation = attestation;
+        self
+    }
+
+    /// Set the device-linked auth token (from `dginf-provider login`).
+    pub fn with_auth_token(mut self, auth_token: Option<String>) -> Self {
+        self.auth_token = auth_token;
         self
     }
 
@@ -164,6 +172,7 @@ impl CoordinatorClient {
             attestation: self.attestation.clone(),
             prefill_tps: None,
             decode_tps: None,
+            auth_token: self.auth_token.clone(),
         };
         let register_json = serde_json::to_string(&register)?;
         write.send(Message::Text(register_json.into())).await?;
@@ -485,6 +494,7 @@ pub fn build_register_message_with_wallet(
         attestation,
         prefill_tps: None,
         decode_tps: None,
+        auth_token: None,
     }
 }
 

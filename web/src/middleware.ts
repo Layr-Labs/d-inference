@@ -10,6 +10,11 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // Allow the device linking page through (users arrive here from CLI)
+  if (request.nextUrl.pathname === "/link") {
+    return NextResponse.next();
+  }
+
   // Allow API routes through (needed for internal proxying)
   if (request.nextUrl.pathname.startsWith("/api/")) {
     return NextResponse.next();

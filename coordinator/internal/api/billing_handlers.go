@@ -216,7 +216,18 @@ func (s *Server) handleStripeSessionStatus(w http.ResponseWriter, r *http.Reques
 //   2. The tx sender matches the authenticated user's wallet
 //   3. The tx hasn't been submitted before (double-spend protection)
 func (s *Server) handleSolanaDeposit(w http.ResponseWriter, r *http.Request) {
-	if s.billing == nil || s.billing.Solana() == nil {
+	if s.billing == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "billing not configured"))
+		return
+	}
+
+	// --- Mock mode: skip on-chain verification, credit directly ---
+	if s.billing.MockMode() {
+		s.handleMockDeposit(w, r)
+		return
+	}
+
+	if s.billing.Solana() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Solana payments not configured"))
 		return
 	}
@@ -718,4 +729,164 @@ func (s *Server) requirePrivyUser(w http.ResponseWriter, r *http.Request) *store
 		return nil
 	}
 	return user
+}
+
+// --- Admin Model Catalog ---
+
+// handleAdminListModels handles GET /v1/admin/models.
+// Returns the full supported model catalog. Requires admin auth.
+func (s *Server) handleAdminListModels(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil || !s.isAdmin(user) {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
+		return
+	}
+
+	models := s.store.ListSupportedModels()
+	if models == nil {
+		models = []store.SupportedModel{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
+// handleAdminSetModel handles POST /v1/admin/models.
+// Adds or updates a model in the catalog. Requires admin auth.
+func (s *Server) handleAdminSetModel(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil || !s.isAdmin(user) {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
+		return
+	}
+
+	var model store.SupportedModel
+	if err := json.NewDecoder(r.Body).Decode(&model); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		return
+	}
+	if model.ID == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "id is required"))
+		return
+	}
+	if model.DisplayName == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "display_name is required"))
+		return
+	}
+
+	if err := s.store.SetSupportedModel(&model); err != nil {
+		s.logger.Error("admin: set model failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to save model"))
+		return
+	}
+
+	s.logger.Info("admin: model catalog updated",
+		"model_id", model.ID,
+		"display_name", model.DisplayName,
+		"active", model.Active,
+	)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "model_saved",
+		"model":  model,
+	})
+}
+
+// handleAdminDeleteModel handles DELETE /v1/admin/models.
+// Removes a model from the catalog. Requires admin auth.
+func (s *Server) handleAdminDeleteModel(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil || !s.isAdmin(user) {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
+		return
+	}
+
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		return
+	}
+	if req.ID == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "id is required"))
+		return
+	}
+
+	if err := s.store.DeleteSupportedModel(req.ID); err != nil {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", err.Error()))
+		return
+	}
+
+	s.logger.Info("admin: model removed from catalog", "model_id", req.ID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "model_deleted",
+		"model_id": req.ID,
+	})
+}
+
+// handleModelCatalog handles GET /v1/models/catalog.
+// Public endpoint — returns active models for providers and the install script.
+func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
+	allModels := s.store.ListSupportedModels()
+
+	// Optional filter: ?type=text or ?type=transcription
+	typeFilter := r.URL.Query().Get("type")
+
+	// Filter to active models only (and by type if specified)
+	var active []store.SupportedModel
+	for _, m := range allModels {
+		if !m.Active {
+			continue
+		}
+		if typeFilter != "" && m.ModelType != typeFilter {
+			continue
+		}
+		active = append(active, m)
+	}
+	if active == nil {
+		active = []store.SupportedModel{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": active})
+}
+
+// handleMockDeposit handles deposits in mock mode: credits the account
+// directly without on-chain verification. For testing only.
+func (s *Server) handleMockDeposit(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AmountUSD    float64 `json:"amount_usd"`
+		ReferralCode string  `json:"referral_code,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		return
+	}
+
+	if req.AmountUSD <= 0 {
+		req.AmountUSD = 100.0 // default $100 test credit
+	}
+
+	accountID := s.resolveAccountID(r)
+	amountMicroUSD := int64(req.AmountUSD * 1_000_000)
+
+	if err := s.billing.CreditDeposit(accountID, amountMicroUSD, store.LedgerDeposit,
+		"mock-deposit"); err != nil {
+		s.logger.Error("mock deposit: credit failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to credit balance"))
+		return
+	}
+
+	s.logger.Info("mock deposit credited",
+		"account_id", accountID,
+		"amount_usd", req.AmountUSD,
+		"amount_micro_usd", amountMicroUSD,
+	)
+
+	balance := s.billing.Ledger().Balance(accountID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":          "credited",
+		"mock":            true,
+		"amount_micro_usd": amountMicroUSD,
+		"amount_usd":      req.AmountUSD,
+		"balance_micro_usd": balance,
+		"balance_usd":     fmt.Sprintf("%.2f", float64(balance)/1_000_000),
+	})
 }

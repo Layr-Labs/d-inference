@@ -41,6 +41,67 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
+/// A model from the coordinator's supported model catalog.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct CatalogModel {
+    id: String,
+    s3_name: String,
+    display_name: String,
+    #[serde(default = "default_model_type")]
+    model_type: String,
+    size_gb: f64,
+    architecture: String,
+    description: String,
+    min_ram_gb: i32,
+}
+
+fn default_model_type() -> String { "text".into() }
+
+/// Hardcoded fallback catalog used when the coordinator is unreachable.
+fn fallback_catalog() -> Vec<CatalogModel> {
+    vec![
+        CatalogModel { id: "CohereLabs/cohere-transcribe-03-2026".into(), s3_name: "cohere-transcribe-03-2026".into(), display_name: "Cohere Transcribe".into(), model_type: "transcription".into(), size_gb: 4.2, architecture: "2B conformer".into(), description: "Best-in-class STT".into(), min_ram_gb: 8 },
+        CatalogModel { id: "mlx-community/Qwen3.5-9B-MLX-8bit".into(), s3_name: "Qwen3.5-9B-MLX-8bit".into(), display_name: "Qwen3.5 9B".into(), model_type: "text".into(), size_gb: 9.0, architecture: "9B dense".into(), description: "Balanced".into(), min_ram_gb: 16 },
+        CatalogModel { id: "mlx-community/Qwen3.5-14B-Instruct-8bit".into(), s3_name: "Qwen3.5-14B-Instruct-8bit".into(), display_name: "Qwen3.5 14B".into(), model_type: "text".into(), size_gb: 14.0, architecture: "14B dense".into(), description: "High quality".into(), min_ram_gb: 24 },
+        CatalogModel { id: "mlx-community/Qwen3.5-35B-A3B-8bit".into(), s3_name: "Qwen3.5-35B-A3B-8bit".into(), display_name: "Qwen3.5 35B-A3B".into(), model_type: "text".into(), size_gb: 35.0, architecture: "35B MoE, 3B active".into(), description: "Frontier quality, fast inference".into(), min_ram_gb: 36 },
+        CatalogModel { id: "mlx-community/Qwen3.5-32B-Instruct-8bit".into(), s3_name: "Qwen3.5-32B-Instruct-8bit".into(), display_name: "Qwen3.5 32B".into(), model_type: "text".into(), size_gb: 32.0, architecture: "32B dense".into(), description: "Premium".into(), min_ram_gb: 48 },
+    ]
+}
+
+/// Fetch the model catalog from the coordinator. Falls back to hardcoded list on failure.
+async fn fetch_catalog(coordinator_url: &str) -> Vec<CatalogModel> {
+    let base_url = coordinator_url
+        .replace("wss://", "https://")
+        .replace("ws://", "http://")
+        .replace("/ws/provider", "");
+
+    let url = format!("{}/v1/models/catalog", base_url);
+    match reqwest::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            #[derive(serde::Deserialize)]
+            struct CatalogResponse {
+                models: Vec<CatalogModel>,
+            }
+            match resp.json::<CatalogResponse>().await {
+                Ok(cr) if !cr.models.is_empty() => cr.models,
+                _ => {
+                    eprintln!("  ⚠ Empty catalog from coordinator, using defaults");
+                    fallback_catalog()
+                }
+            }
+        }
+        _ => {
+            eprintln!("  ⚠ Could not fetch model catalog from coordinator, using defaults");
+            fallback_catalog()
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "dginf-provider", about = "DGInf provider agent for Apple Silicon Macs", version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
@@ -121,6 +182,10 @@ enum Command {
         /// Action: list (default), download, or remove
         #[arg(default_value = "list")]
         action: String,
+
+        /// Coordinator URL to fetch model catalog
+        #[arg(long, default_value = "https://inference-test.openinnovation.dev")]
+        coordinator: String,
     },
 
     /// Show earnings and usage history
@@ -171,6 +236,16 @@ enum Command {
         #[arg(long, default_value = "https://inference-test.openinnovation.dev")]
         coordinator: String,
     },
+
+    /// Link this machine to your EigenInference account
+    Login {
+        /// Coordinator URL
+        #[arg(long, default_value = "https://inference-test.openinnovation.dev")]
+        coordinator: String,
+    },
+
+    /// Unlink this machine from your account
+    Logout,
 }
 
 fn setup_logging(verbose: bool) {
@@ -191,9 +266,10 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     setup_logging(cli.verbose);
 
-    // Security hardening: prevent debugger attachment early, before any
-    // sensitive data (keys, prompts) is loaded into memory.
-    security::deny_debugger_attachment();
+    // NOTE: deny_debugger_attachment() is called AFTER subprocess spawning
+    // in cmd_serve, not here. PT_DENY_ATTACH poisons mach_task_self_ in
+    // the process memory space, causing child processes (Python backend)
+    // to crash with SIGBUS when they try to call mach_task_self_.
 
     match cli.command {
         Command::Init => cmd_init().await,
@@ -214,7 +290,7 @@ async fn main() -> Result<()> {
         Command::Unenroll => cmd_unenroll().await,
         Command::Benchmark => cmd_benchmark().await,
         Command::Status => cmd_status().await,
-        Command::Models { action } => cmd_models(action).await,
+        Command::Models { action, coordinator } => cmd_models(action, coordinator).await,
         Command::Earnings { coordinator } => cmd_earnings(coordinator).await,
         Command::Doctor { coordinator } => cmd_doctor(coordinator).await,
         Command::Start { coordinator, model } => cmd_start(coordinator, model).await,
@@ -222,6 +298,8 @@ async fn main() -> Result<()> {
         Command::Logs { lines, watch } => cmd_logs(lines, watch).await,
         Command::Wallet => cmd_wallet().await,
         Command::Update { coordinator } => cmd_update(coordinator).await,
+        Command::Login { coordinator } => cmd_login(coordinator).await,
+        Command::Logout => cmd_logout().await,
     }
 }
 
@@ -320,30 +398,22 @@ async fn cmd_install(
     println!("  Available memory: {} GB", hw.memory_available_gb);
     println!();
 
-    let catalog = [
-        ("mlx-community/Qwen2.5-0.5B-4bit",          "Qwen2.5-0.5B-4bit",          "Qwen2.5 0.5B",     0.4,  "0.5B dense",          "Tiny (testing)"),
-        ("mlx-community/Qwen2.5-1.5B-4bit",          "Qwen2.5-1.5B-4bit",          "Qwen2.5 1.5B",     1.0,  "1.5B dense",          "Very light"),
-        ("mlx-community/Qwen2.5-3B-4bit",            "Qwen2.5-3B-4bit",            "Qwen2.5 3B",       2.0,  "3B dense",            "Light"),
-        ("mlx-community/Llama-3.2-3B-Instruct-4bit", "Llama-3.2-3B-Instruct-4bit", "Llama 3.2 3B",     2.0,  "3B dense",            "Meta Llama"),
-        ("mlx-community/Qwen3.5-9B-MLX-4bit",        "Qwen3.5-9B-MLX-4bit",        "Qwen3.5 9B",       6.0,  "9B dense",            "Balanced"),
-        ("mlx-community/Qwen3.5-27B-4bit",           "Qwen3.5-27B-4bit",           "Qwen3.5 27B",     17.0,  "27B dense",           "High quality"),
-        ("mlx-community/Qwen3.5-35B-A3B-4bit",       "Qwen3.5-35B-A3B-4bit",       "Qwen3.5 35B-A3B", 22.0,  "35B MoE, 3B active",  "Fast + smart"),
-        ("mlx-community/Qwen3.5-122B-A10B-4bit",     "Qwen3.5-122B-A10B-4bit",     "Qwen3.5 122B",    76.0,  "122B MoE, 10B active", "Best quality"),
-    ];
+    // Fetch supported models from coordinator
+    let catalog = fetch_catalog(&coordinator_url).await;
 
     // Check which models are already downloaded
     let available = models::scan_models(&hw);
 
     let mut selectable: Vec<usize> = Vec::new();
-    for (i, (id, _s3_name, name, size_gb, arch, desc)) in catalog.iter().enumerate() {
-        let fits = hw.memory_available_gb as f64 >= *size_gb;
-        let downloaded = available.iter().any(|m| m.id == *id);
+    for (i, cm) in catalog.iter().enumerate() {
+        let fits = hw.memory_available_gb as f64 >= cm.size_gb;
+        let downloaded = available.iter().any(|m| m.id == cm.id);
         let status = if downloaded { "✓ ready" } else if fits { "  fits" } else { "✗ too large" };
         if fits {
             selectable.push(i);
-            println!("  [{}] {} {:>5.1} GB  {:25} {}  {}", selectable.len(), name, size_gb, arch, desc, status);
+            println!("  [{}] {} {:>5.1} GB  {:25} {}  {}", selectable.len(), cm.display_name, cm.size_gb, cm.architecture, cm.description, status);
         } else {
-            println!("  [-] {} {:>5.1} GB  {:25} {}  {}", name, size_gb, arch, desc, status);
+            println!("  [-] {} {:>5.1} GB  {:25} {}  {}", cm.display_name, cm.size_gb, cm.architecture, cm.description, status);
         }
     }
     println!();
@@ -365,9 +435,9 @@ async fn cmd_install(
         };
 
         let idx = selectable.get(choice.min(selectable.len() - 1)).copied().unwrap_or(0);
-        let (id, _, name, _, _, _) = &catalog[idx];
-        println!("  → Selected: {} ({})", name, id);
-        id.to_string()
+        let cm = &catalog[idx];
+        println!("  → Selected: {} ({})", cm.display_name, cm.id);
+        cm.id.clone()
     };
 
     // Check if already downloaded
@@ -376,8 +446,8 @@ async fn cmd_install(
     if !model_downloaded {
         // Download from DGInf CDN (S3) — no HuggingFace account needed
         let s3_name = catalog.iter()
-            .find(|(id, _, _, _, _, _)| *id == model)
-            .map(|(_, s3, _, _, _, _)| *s3)
+            .find(|cm| cm.id == model)
+            .map(|cm| cm.s3_name.as_str())
             .unwrap_or_else(|| model.split('/').last().unwrap_or(&model));
 
         let cache_dir = dirs::home_dir().unwrap_or_default()
@@ -388,6 +458,7 @@ async fn cmd_install(
 
         let base_url = coordinator_url
             .replace("wss://", "https://")
+            .replace("ws://", "http://")
             .replace("/ws/provider", "");
 
         // Try pre-packaged tarball first (fastest)
@@ -494,7 +565,24 @@ async fn cmd_install(
     println!("  PID:  {}", child.id());
     println!("  Logs: {}", log_path.display());
     println!();
+    // Prompt to link account if not already logged in.
+    if load_auth_token().is_none() {
+        println!("╔══════════════════════════════════════════╗");
+        println!("║  Link to your account to earn rewards     ║");
+        println!("╚══════════════════════════════════════════╝");
+        println!();
+        println!("  Run this command to connect your provider");
+        println!("  to your EigenInference account:");
+        println!();
+        println!("    dginf-provider login");
+        println!();
+        println!("  Without linking, earnings go to a local");
+        println!("  wallet and cannot be withdrawn.");
+        println!();
+    }
+
     println!("Commands:");
+    println!("  dginf-provider login      Link to your account");
     println!("  dginf-provider status     Show provider status");
     println!("  dginf-provider logs       View logs");
     println!("  dginf-provider stop       Stop the provider");
@@ -638,8 +726,17 @@ async fn cmd_serve(
     let dginf_dir = dirs::home_dir().unwrap_or_default().join(".dginf");
     let bundled_python = dginf_dir.join("python/bin/python3.12");
     let python_cmd = if bundled_python.exists() {
-        tracing::info!("Using bundled Python: {}", bundled_python.display());
-        unsafe { std::env::set_var("PYTHONHOME", dginf_dir.join("python")); }
+        // Only set PYTHONHOME if this is a real standalone Python install
+        // (not a symlink to uv/pyenv/system Python). Wrong PYTHONHOME causes
+        // Python to fail to find its stdlib and crash silently.
+        let is_standalone = !bundled_python.is_symlink()
+            && dginf_dir.join("python/lib/python3.12/os.py").exists();
+        if is_standalone {
+            tracing::info!("Using bundled Python: {}", bundled_python.display());
+            unsafe { std::env::set_var("PYTHONHOME", dginf_dir.join("python")); }
+        } else {
+            tracing::info!("Using Python at: {}", bundled_python.display());
+        }
         bundled_python.to_string_lossy().to_string()
     } else {
         tracing::info!("Using system Python (bundled Python not found at ~/.dginf/python)");
@@ -649,10 +746,14 @@ async fn cmd_serve(
     // Start inference backend via bundled Python
     tracing::info!("Starting inference backend for model: {}", model);
 
+    // Backend stdout/stderr is suppressed to prevent prompt content from
+    // leaking into provider logs. vllm_mlx logs request previews at INFO
+    // level, which would expose user prompts to the provider operator.
+    // Health/crash detection uses HTTP health checks, not log parsing.
     let serve_result = std::process::Command::new(&python_cmd)
         .args(["-m", "vllm_mlx.server", "--model", &model, "--port", &be_port.to_string()])
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn();
 
     let backend_name = match serve_result {
@@ -664,8 +765,8 @@ async fn cmd_serve(
             tracing::info!("vllm-mlx CLI failed ({e}), falling back to mlx_lm.server");
             let mlx_serve = std::process::Command::new(&python_cmd)
                 .args(["-m", "mlx_lm.server", "--model", &model, "--port", &be_port.to_string()])
-                .stdout(std::process::Stdio::inherit())
-                .stderr(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .spawn();
             match mlx_serve {
                 Ok(child) => {
@@ -684,15 +785,48 @@ async fn cmd_serve(
     // Wait for model to load
     tracing::info!("Waiting for model to load...");
     let backend_url_str = format!("http://127.0.0.1:{}", be_port);
+    let mut backend_ready = false;
     for i in 0..30 {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         if backend::check_health(&backend_url_str).await {
             tracing::info!("Backend ready after {}s", (i + 1) * 2);
+            backend_ready = true;
             break;
         }
-        if i == 29 {
-            tracing::warn!("Backend health check timed out after 60s — continuing anyway");
+    }
+
+    // If vllm_mlx failed to start (process crashed silently), fall back to mlx_lm.server.
+    if !backend_ready && backend_name == "vllm-mlx" {
+        tracing::warn!("vllm_mlx backend did not become healthy — falling back to mlx_lm.server");
+        #[cfg(unix)]
+        {
+            let _ = std::process::Command::new("pkill").args(["-f", "vllm_mlx"]).status();
         }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let mlx_serve = std::process::Command::new(&python_cmd)
+            .args(["-m", "mlx_lm.server", "--model", &model, "--port", &be_port.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        match mlx_serve {
+            Ok(child) => {
+                tracing::info!("mlx_lm.server started (PID: {:?}) on port {}", child.id(), be_port);
+                // Wait for mlx_lm to load
+                for i in 0..30 {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    if backend::check_health(&backend_url_str).await {
+                        tracing::info!("mlx_lm.server ready after {}s", (i + 1) * 2);
+                        backend_ready = true;
+                        break;
+                    }
+                }
+            }
+            Err(e) => tracing::error!("mlx_lm.server also failed to start: {e}"),
+        }
+    }
+
+    if !backend_ready {
+        tracing::warn!("Backend health check timed out — continuing anyway");
     }
 
     let backend_url = backend_url_str.clone();
@@ -726,8 +860,8 @@ async fn cmd_serve(
                     "--max-batch-size", "16",
                     "--max-wait-ms", "100",
                 ])
-                .stdout(std::process::Stdio::inherit())
-                .stderr(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .spawn();
             match stt_result {
                 Ok(child) => {
@@ -756,6 +890,11 @@ async fn cmd_serve(
         tracing::info!("No STT model configured (set DGINF_STT_MODEL to enable)");
         false
     };
+
+    // Security hardening: prevent debugger attachment AFTER all subprocesses
+    // are spawned. PT_DENY_ATTACH poisons mach_task_self_ in the process
+    // memory, which causes child Python processes to crash with SIGBUS.
+    security::deny_debugger_attachment();
 
     if local {
         // Local-only mode: just start the HTTP server
@@ -805,6 +944,12 @@ async fn cmd_serve(
         // and our binary hash (so coordinator can verify we're running blessed code).
         let attestation = generate_attestation(&public_key_b64, binary_hash.as_deref());
 
+        // Load device auth token if the provider has been linked to an account.
+        let auth_token = load_auth_token();
+        if auth_token.is_some() {
+            tracing::info!("Provider linked to account (auth token loaded)");
+        }
+
         let client = coordinator::CoordinatorClient::new(
             coordinator_url,
             hw.clone(),
@@ -818,7 +963,8 @@ async fn cmd_serve(
             wallet::Wallet::load_or_create()
                 .ok()
                 .map(|w| w.address.clone())
-        );
+        )
+        .with_auth_token(auth_token);
 
         // Spawn coordinator connection
         let coordinator_handle = tokio::spawn(async move {
@@ -826,6 +972,12 @@ async fn cmd_serve(
                 tracing::error!("Coordinator connection error: {e}");
             }
         });
+
+        // Shared flag: true when inference is in progress. Health monitor
+        // skips crash detection while the backend is busy generating tokens,
+        // because the Python GIL blocks /health during inference.
+        let inference_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let health_inference_active = inference_active.clone();
 
         // Spawn backend health monitor — detects crashes and auto-restarts.
         let health_url = backend_url_str.clone();
@@ -838,6 +990,15 @@ async fn cmd_serve(
             let mut consecutive_failures = 0u32;
             loop {
                 interval.tick().await;
+
+                // Skip crash detection while inference is active — the Python
+                // GIL blocks /health while generating tokens, causing false
+                // positives that trigger unnecessary restarts.
+                if health_inference_active.load(std::sync::atomic::Ordering::Relaxed) {
+                    consecutive_failures = 0;
+                    continue;
+                }
+
                 if backend::check_health(&health_url).await {
                     if consecutive_failures > 0 {
                         tracing::info!("Backend recovered after {} failed health checks", consecutive_failures);
@@ -846,7 +1007,7 @@ async fn cmd_serve(
                 } else {
                     consecutive_failures += 1;
                     tracing::warn!("Backend health check failed ({consecutive_failures} consecutive)");
-                    if consecutive_failures >= 3 {
+                    if consecutive_failures >= 8 {
                         tracing::error!("Backend appears crashed — restarting...");
                         // Kill any zombie processes
                         #[cfg(unix)]
@@ -935,12 +1096,14 @@ async fn cmd_serve(
                                         token.cancel();
                                         handle.abort();
                                     }
+                                    inference_active.store(false, std::sync::atomic::Ordering::Relaxed);
                                 } else {
                                     tracing::warn!("Disconnected from coordinator");
                                 }
                             }
                             coordinator::CoordinatorEvent::InferenceRequest { request_id, body } => {
                                 last_request_time = tokio::time::Instant::now();
+                                inference_active.store(true, std::sync::atomic::Ordering::Relaxed);
 
                                 // Reload backend if it was idle-shutdown
                                 if !backend_running {
@@ -1009,6 +1172,7 @@ async fn cmd_serve(
                             }
                             coordinator::CoordinatorEvent::TranscriptionRequest { request_id, body } => {
                                 last_request_time = tokio::time::Instant::now();
+                                inference_active.store(true, std::sync::atomic::Ordering::Relaxed);
 
                                 let tx = outbound_tx.clone();
                                 let cancel_token = CancellationToken::new();
@@ -1033,6 +1197,9 @@ async fn cmd_serve(
                                 if let Some((token, _handle)) = inflight.remove(&request_id) {
                                     tracing::info!("Cancelling request {request_id}");
                                     token.cancel();
+                                    if inflight.is_empty() {
+                                        inference_active.store(false, std::sync::atomic::Ordering::Relaxed);
+                                    }
                                 } else {
                                     tracing::warn!("Cancel for unknown request {request_id}");
                                 }
@@ -1049,6 +1216,9 @@ async fn cmd_serve(
                     Some(rid) = done_rx.recv() => {
                         if inflight.remove(&rid).is_some() {
                             tracing::debug!("Request {rid} completed, removed from tracker ({} in-flight)", inflight.len());
+                            if inflight.is_empty() {
+                                inference_active.store(false, std::sync::atomic::Ordering::Relaxed);
+                            }
                         }
                     }
                     _ = idle_sleep => {
@@ -1113,8 +1283,8 @@ async fn reload_backend(
 
     let child = std::process::Command::new(python_cmd)
         .args(["-m", module, "--model", model, "--port", &port.to_string()])
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| anyhow::anyhow!("failed to spawn backend: {e}"))?;
 
@@ -1695,35 +1865,27 @@ async fn cmd_status() -> Result<()> {
     Ok(())
 }
 
-async fn cmd_models(action: String) -> Result<()> {
+async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
     let hw = hardware::detect()?;
     let downloaded = models::scan_models(&hw);
 
-    let catalog: Vec<(&str, f64, &str)> = vec![
-        ("Qwen2.5-0.5B",     0.4,  "mlx-community/Qwen2.5-0.5B-4bit"),
-        ("Qwen2.5-1.5B",     1.0,  "mlx-community/Qwen2.5-1.5B-4bit"),
-        ("Qwen2.5-3B",       2.0,  "mlx-community/Qwen2.5-3B-4bit"),
-        ("Llama-3.2-3B",     2.0,  "mlx-community/Llama-3.2-3B-Instruct-4bit"),
-        ("Qwen3.5-9B",       6.0,  "mlx-community/Qwen3.5-9B-MLX-4bit"),
-        ("Qwen3.5-27B",     17.0,  "mlx-community/Qwen3.5-27B-4bit"),
-        ("Qwen3.5-35B-A3B", 22.0,  "mlx-community/Qwen3.5-35B-A3B-4bit"),
-        ("Qwen3.5-122B",    76.0,  "mlx-community/Qwen3.5-122B-A10B-4bit"),
-    ];
+    // Fetch model catalog from coordinator
+    let catalog = fetch_catalog(&coordinator_url).await;
 
     match action.as_str() {
         "list" | "ls" => {
             println!("Models for {} ({} GB available):", hw.chip_name, hw.memory_available_gb);
             println!();
-            for (name, size, id) in &catalog {
-                let fits = hw.memory_available_gb as f64 >= *size;
-                let is_downloaded = downloaded.iter().any(|m| m.id == *id);
+            for cm in &catalog {
+                let fits = hw.memory_available_gb as f64 >= cm.size_gb;
+                let is_downloaded = downloaded.iter().any(|m| m.id == cm.id);
                 let status = if is_downloaded { "✓" } else if fits { " " } else { "✗" };
                 let label = if is_downloaded { "downloaded" } else if fits { "available" } else { "too large" };
-                println!("  {} {:>5.1} GB  {:15} {:10} {}", status, size, name, label, id);
+                println!("  {} {:>5.1} GB  {:15} {:10} {}", status, cm.size_gb, cm.display_name, label, cm.id);
             }
             // Show any downloaded models not in catalog
             for m in &downloaded {
-                let in_catalog = catalog.iter().any(|(_, _, id)| *id == m.id);
+                let in_catalog = catalog.iter().any(|cm| cm.id == m.id);
                 if !in_catalog {
                     println!("  ✓ {:>5.1} GB  {:15} {:10} {}", m.estimated_memory_gb, "", "downloaded", m.id);
                 }
@@ -1734,21 +1896,21 @@ async fn cmd_models(action: String) -> Result<()> {
             println!("Select models to download ({} GB available):", hw.memory_available_gb);
             println!();
 
-            let mut available: Vec<(usize, &str, f64, &str)> = Vec::new();
-            for (name, size, id) in &catalog {
-                let fits = hw.memory_available_gb as f64 >= *size;
-                let is_downloaded = downloaded.iter().any(|m| m.id == *id);
+            let mut downloadable: Vec<(usize, &CatalogModel)> = Vec::new();
+            for cm in &catalog {
+                let fits = hw.memory_available_gb as f64 >= cm.size_gb;
+                let is_downloaded = downloaded.iter().any(|m| m.id == cm.id);
                 if is_downloaded {
-                    println!("  [✓] {:>5.1} GB  {} (already downloaded)", size, name);
+                    println!("  [✓] {:>5.1} GB  {} (already downloaded)", cm.size_gb, cm.display_name);
                 } else if fits {
-                    available.push((available.len() + 1, name, *size, id));
-                    println!("  [{}] {:>5.1} GB  {}", available.len(), size, name);
+                    downloadable.push((downloadable.len() + 1, cm));
+                    println!("  [{}] {:>5.1} GB  {}", downloadable.len(), cm.size_gb, cm.display_name);
                 } else {
-                    println!("  [✗] {:>5.1} GB  {} (too large)", size, name);
+                    println!("  [✗] {:>5.1} GB  {} (too large)", cm.size_gb, cm.display_name);
                 }
             }
 
-            if available.is_empty() {
+            if downloadable.is_empty() {
                 println!();
                 println!("All available models are already downloaded!");
                 return Ok(());
@@ -1764,17 +1926,21 @@ async fn cmd_models(action: String) -> Result<()> {
                 .filter_map(|s| s.trim().parse::<usize>().ok())
                 .collect();
 
-            let base_url = "https://inference-test.openinnovation.dev";
+            let base_url = coordinator_url
+                .replace("wss://", "https://")
+                .replace("ws://", "http://")
+                .trim_end_matches('/')
+                .to_string();
 
             for sel in selections {
-                if let Some((_, name, _, id)) = available.iter().find(|(i, _, _, _)| *i == sel) {
+                if let Some((_, cm)) = downloadable.iter().find(|(i, _)| *i == sel) {
                     println!();
-                    println!("  Downloading {}...", name);
+                    println!("  Downloading {}...", cm.display_name);
 
-                    let s3_name = id.split('/').last().unwrap_or(id);
+                    let s3_name = &cm.s3_name;
                     let cache_dir = dirs::home_dir().unwrap_or_default()
                         .join(".cache/huggingface/hub")
-                        .join(format!("models--{}", id.replace('/', "--")))
+                        .join(format!("models--{}", cm.id.replace('/', "--")))
                         .join("snapshots/main");
                     let _ = std::fs::create_dir_all(&cache_dir);
 
@@ -1788,7 +1954,7 @@ async fn cmd_models(action: String) -> Result<()> {
                         .status();
 
                     match tar_status {
-                        Ok(s) if s.success() => println!("  ✓ {} downloaded", name),
+                        Ok(s) if s.success() => println!("  ✓ {} downloaded", cm.display_name),
                         _ => {
                             // Fallback: individual files from S3
                             let s3_http = format!("https://dginf-models.s3.amazonaws.com/{}", s3_name);
@@ -1810,9 +1976,9 @@ async fn cmd_models(action: String) -> Result<()> {
                                     .args(["-f#L", &format!("{}/model.safetensors", s3_http),
                                            "-o", &cache_dir.join("model.safetensors").to_string_lossy()])
                                     .status();
-                                println!("  ✓ {} downloaded", name);
+                                println!("  ✓ {} downloaded", cm.display_name);
                             } else {
-                                println!("  ✗ {} not available on CDN", name);
+                                println!("  ✗ {} not available on CDN", cm.display_name);
                             }
                         }
                     }
@@ -2464,5 +2630,184 @@ async fn cmd_logs(lines: usize, watch: bool) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+// --- Device auth token storage ---
+
+/// Path to the stored auth token file.
+fn auth_token_path() -> std::path::PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("dginf")
+        .join("auth_token")
+}
+
+/// Load the saved auth token, if any.
+fn load_auth_token() -> Option<String> {
+    let path = auth_token_path();
+    std::fs::read_to_string(&path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Save the auth token to disk.
+fn save_auth_token(token: &str) -> Result<()> {
+    let path = auth_token_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, token)?;
+    // Restrict permissions (owner read/write only).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+/// Delete the auth token.
+fn delete_auth_token() -> Result<()> {
+    let path = auth_token_path();
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
+// --- Login / Logout ---
+
+async fn cmd_login(coordinator_url: String) -> Result<()> {
+    // Check if already logged in.
+    if let Some(token) = load_auth_token() {
+        println!("Already logged in (token: {}...)", &token[..std::cmp::min(20, token.len())]);
+        println!("Run 'dginf-provider logout' first to unlink.");
+        return Ok(());
+    }
+
+    println!("╔══════════════════════════════════════════╗");
+    println!("║     Link to EigenInference Account       ║");
+    println!("╚══════════════════════════════════════════╝");
+    println!();
+
+    // Step 1: Request a device code from the coordinator.
+    let client = reqwest::Client::new();
+    let code_url = format!("{}/v1/device/code", coordinator_url);
+
+    let resp = client
+        .post(&code_url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to reach coordinator: {e}"))?;
+
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Failed to get device code: {body}");
+    }
+
+    #[derive(serde::Deserialize)]
+    struct DeviceCodeResponse {
+        device_code: String,
+        user_code: String,
+        verification_uri: String,
+        expires_in: u64,
+        interval: u64,
+    }
+
+    let dc: DeviceCodeResponse = resp.json().await?;
+
+    println!("  To link this machine, open this URL in your browser:");
+    println!();
+    println!("    {}", dc.verification_uri);
+    println!();
+    println!("  Then enter this code:");
+    println!();
+    println!("    ┌──────────────┐");
+    println!("    │  {}  │", dc.user_code);
+    println!("    └──────────────┘");
+    println!();
+    println!("  Waiting for approval (expires in {} minutes)...", dc.expires_in / 60);
+
+    // Try to open the browser automatically.
+    let _ = std::process::Command::new("open")
+        .arg(&dc.verification_uri)
+        .status();
+
+    // Step 2: Poll for approval.
+    let token_url = format!("{}/v1/device/token", coordinator_url);
+    let poll_interval = std::time::Duration::from_secs(dc.interval);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(dc.expires_in);
+
+    loop {
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("Device code expired. Run 'dginf-provider login' again.");
+        }
+
+        tokio::time::sleep(poll_interval).await;
+
+        let poll_resp = client
+            .post(&token_url)
+            .json(&serde_json::json!({ "device_code": dc.device_code }))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await;
+
+        let resp = match poll_resp {
+            Ok(r) => r,
+            Err(_) => continue, // Network error, retry
+        };
+
+        let body: serde_json::Value = match resp.json().await {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let status = body["status"].as_str().unwrap_or("");
+        match status {
+            "authorization_pending" => {
+                // Still waiting — keep polling.
+                print!(".");
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            }
+            "authorized" => {
+                let token = body["token"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Missing token in response"))?;
+
+                save_auth_token(token)?;
+
+                println!();
+                println!();
+                println!("  Account linked successfully!");
+                println!("  Your provider will now be connected to your account.");
+                println!("  Earnings will be credited to your account wallet.");
+                println!();
+                println!("  Start serving with: dginf-provider serve");
+                return Ok(());
+            }
+            _ => {
+                // expired or error
+                let msg = body["error"]["message"]
+                    .as_str()
+                    .unwrap_or("Device code expired or invalid");
+                anyhow::bail!("{msg}");
+            }
+        }
+    }
+}
+
+async fn cmd_logout() -> Result<()> {
+    if load_auth_token().is_none() {
+        println!("Not currently logged in.");
+        return Ok(());
+    }
+
+    delete_auth_token()?;
+    println!("Logged out. This machine is no longer linked to an account.");
+    println!("Provider earnings will use the local wallet until you log in again.");
     Ok(())
 }

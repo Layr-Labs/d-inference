@@ -147,6 +147,24 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			provider = s.registry.Register(providerID, conn, regMsg)
 			s.verifyProviderAttestation(providerID, provider, regMsg)
 
+			// Resolve auth token → account linkage.
+			if regMsg.AuthToken != "" {
+				pt, err := s.store.GetProviderToken(regMsg.AuthToken)
+				if err != nil {
+					s.logger.Warn("provider auth token invalid",
+						"provider_id", providerID,
+						"error", err,
+					)
+				} else {
+					provider.AccountID = pt.AccountID
+					s.logger.Info("provider linked to account",
+						"provider_id", providerID,
+						"account_id", pt.AccountID,
+						"token_label", pt.Label,
+					)
+				}
+			}
+
 			// If ACME client cert was verified, upgrade to hardware trust.
 			// ACME device-attest-01 proves the provider's SE key is Apple-attested.
 			if acmeResult != nil && acmeResult.Valid {
@@ -488,12 +506,15 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	})
 
 	// Credit the provider's pending payout.
-	providerWallet := ""
+	// If the provider is linked to an account (via device auth), credit that account.
+	// Otherwise, fall back to the provider's self-reported wallet address.
 	if p := s.registry.GetProvider(providerID); p != nil {
-		providerWallet = p.WalletAddress
-	}
-	if providerWallet != "" {
-		s.ledger.CreditProvider(providerWallet, providerPayout, pr.Model, msg.RequestID)
+		if p.AccountID != "" {
+			// Provider is linked to an account — credit the account directly.
+			_ = s.store.Credit(p.AccountID, providerPayout, store.LedgerPayout, msg.RequestID)
+		} else if p.WalletAddress != "" {
+			s.ledger.CreditProvider(p.WalletAddress, providerPayout, pr.Model, msg.RequestID)
+		}
 	}
 
 	// Record platform fee, distributing referral rewards if applicable.

@@ -109,6 +109,17 @@ type Store interface {
 	// DeleteModelPrice removes a custom price override.
 	DeleteModelPrice(accountID, model string) error
 
+	// --- Supported Models (admin-managed catalog) ---
+
+	// SetSupportedModel adds or updates a supported model in the catalog.
+	SetSupportedModel(model *SupportedModel) error
+
+	// ListSupportedModels returns all supported models, ordered by min_ram_gb ascending.
+	ListSupportedModels() []SupportedModel
+
+	// DeleteSupportedModel removes a model from the catalog by ID.
+	DeleteSupportedModel(modelID string) error
+
 	// --- Users (Privy) ---
 
 	// CreateUser creates a new user record linked to a Privy identity.
@@ -119,6 +130,34 @@ type Store interface {
 
 	// GetUserByAccountID returns the user for an internal account ID.
 	GetUserByAccountID(accountID string) (*User, error)
+
+	// --- Device Authorization (RFC 8628-style) ---
+
+	// CreateDeviceCode stores a new device authorization request.
+	CreateDeviceCode(dc *DeviceCode) error
+
+	// GetDeviceCode returns a device code by its device_code value.
+	GetDeviceCode(deviceCode string) (*DeviceCode, error)
+
+	// GetDeviceCodeByUserCode returns a device code by its user-facing code.
+	GetDeviceCodeByUserCode(userCode string) (*DeviceCode, error)
+
+	// ApproveDeviceCode links a device code to an account, marking it approved.
+	ApproveDeviceCode(deviceCode, accountID string) error
+
+	// DeleteExpiredDeviceCodes removes device codes that have passed their expiry.
+	DeleteExpiredDeviceCodes() error
+
+	// --- Provider Tokens (device-linked auth) ---
+
+	// CreateProviderToken stores a long-lived provider auth token linked to an account.
+	CreateProviderToken(token *ProviderToken) error
+
+	// GetProviderToken validates a provider token and returns it.
+	GetProviderToken(token string) (*ProviderToken, error)
+
+	// RevokeProviderToken deactivates a provider token.
+	RevokeProviderToken(token string) error
 }
 
 // UsageRecord captures a single inference usage event.
@@ -198,6 +237,48 @@ type User struct {
 	SolanaWalletAddress string    `json:"solana_wallet_address"` // embedded wallet public address
 	SolanaWalletID      string    `json:"solana_wallet_id"`      // Privy's internal wallet ID (for signing API)
 	CreatedAt           time.Time `json:"created_at"`
+}
+
+// SupportedModel represents a model in the admin-managed catalog.
+// The coordinator is the single source of truth for which models providers can serve.
+// SupportedModel represents a model in the admin-managed catalog.
+// The coordinator is the single source of truth for which models providers can serve.
+//
+// ModelType determines routing: "text" for chat/completions, "transcription" for
+// speech-to-text, "embedding" for vector search, etc. Only add models that produce
+// output worth paying for — small chat models (< 7B) are not useful, but small
+// specialized models (transcription, embeddings) can be best-in-class.
+type SupportedModel struct {
+	ID           string  `json:"id"`            // HuggingFace path (e.g. "mlx-community/Qwen3.5-9B-MLX-4bit")
+	S3Name       string  `json:"s3_name"`       // CDN key for download (e.g. "Qwen3.5-9B-MLX-4bit")
+	DisplayName  string  `json:"display_name"`  // Human-readable (e.g. "Qwen3.5 9B")
+	ModelType    string  `json:"model_type"`    // "text", "transcription", "embedding", "tts", "image"
+	SizeGB       float64 `json:"size_gb"`       // Disk/memory size in GB
+	Architecture string  `json:"architecture"`  // e.g. "9B dense", "2B conformer"
+	Description  string  `json:"description"`   // e.g. "Balanced", "Best-in-class STT"
+	MinRAMGB     int     `json:"min_ram_gb"`    // Minimum system RAM for auto-selection
+	Active       bool    `json:"active"`        // Whether available for use
+}
+
+// DeviceCode represents a pending device authorization request (RFC 8628-style).
+// The provider CLI creates one, displays the UserCode, and polls until approved.
+type DeviceCode struct {
+	DeviceCode string    `json:"device_code"` // opaque code for polling (secret, sent only to device)
+	UserCode   string    `json:"user_code"`   // short human-readable code (e.g. "ABCD-1234")
+	AccountID  string    `json:"account_id"`  // set when user approves (empty while pending)
+	Status     string    `json:"status"`      // "pending", "approved", "expired"
+	ExpiresAt  time.Time `json:"expires_at"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// ProviderToken is a long-lived auth token linking a provider machine to an account.
+// Created when a device code is approved; used by the provider on every WebSocket connect.
+type ProviderToken struct {
+	TokenHash string    `json:"token_hash"` // SHA-256 of the raw token
+	AccountID string    `json:"account_id"` // the account this provider is linked to
+	Label     string    `json:"label"`      // human-readable label (e.g. hostname)
+	Active    bool      `json:"active"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // BillingSession tracks an in-progress payment via any method (Stripe, EVM, Solana).

@@ -12,6 +12,7 @@ package store
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"sync"
@@ -44,9 +45,19 @@ type MemoryStore struct {
 	// Custom pricing
 	modelPrices map[string]ModelPrice // "accountID:model" → price
 
+	// Supported models (admin-managed catalog)
+	supportedModels map[string]*SupportedModel // modelID → model
+
 	// Users (Privy)
 	usersByPrivyID   map[string]*User // privyUserID → user
 	usersByAccountID map[string]*User // accountID → user
+
+	// Device authorization
+	deviceCodesByCode     map[string]*DeviceCode // deviceCode → DeviceCode
+	deviceCodesByUserCode map[string]*DeviceCode // userCode → DeviceCode
+
+	// Provider tokens
+	providerTokens map[string]*ProviderToken // tokenHash → ProviderToken
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -65,8 +76,12 @@ func NewMemory(adminKey string) *MemoryStore {
 		referralCounts:     make(map[string]int),
 		billingSessions:    make(map[string]*BillingSession),
 		modelPrices:      make(map[string]ModelPrice),
-		usersByPrivyID:   make(map[string]*User),
-		usersByAccountID: make(map[string]*User),
+		supportedModels: make(map[string]*SupportedModel),
+		usersByPrivyID:        make(map[string]*User),
+		usersByAccountID:      make(map[string]*User),
+		deviceCodesByCode:     make(map[string]*DeviceCode),
+		deviceCodesByUserCode: make(map[string]*DeviceCode),
+		providerTokens:        make(map[string]*ProviderToken),
 	}
 	if adminKey != "" {
 		s.keys[adminKey] = true
@@ -468,6 +483,47 @@ func (s *MemoryStore) DeleteModelPrice(accountID, model string) error {
 	return nil
 }
 
+// --- Supported Models ---
+
+func (s *MemoryStore) SetSupportedModel(model *SupportedModel) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cp := *model
+	s.supportedModels[model.ID] = &cp
+	return nil
+}
+
+func (s *MemoryStore) ListSupportedModels() []SupportedModel {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	models := make([]SupportedModel, 0, len(s.supportedModels))
+	for _, m := range s.supportedModels {
+		models = append(models, *m)
+	}
+	// Sort by MinRAMGB ascending
+	for i := 0; i < len(models); i++ {
+		for j := i + 1; j < len(models); j++ {
+			if models[j].MinRAMGB < models[i].MinRAMGB {
+				models[i], models[j] = models[j], models[i]
+			}
+		}
+	}
+	return models
+}
+
+func (s *MemoryStore) DeleteSupportedModel(modelID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.supportedModels[modelID]; !ok {
+		return fmt.Errorf("model %q not found", modelID)
+	}
+	delete(s.supportedModels, modelID)
+	return nil
+}
+
 // --- Users (Privy) ---
 
 // CreateUser creates a new user record linked to a Privy identity.
@@ -513,4 +569,126 @@ func (s *MemoryStore) GetUserByAccountID(accountID string) (*User, error) {
 	}
 	copy := *u
 	return &copy, nil
+}
+
+// --- Device Authorization ---
+
+func (s *MemoryStore) CreateDeviceCode(dc *DeviceCode) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.deviceCodesByUserCode[dc.UserCode]; exists {
+		return fmt.Errorf("user code %q already exists", dc.UserCode)
+	}
+	copy := *dc
+	s.deviceCodesByCode[dc.DeviceCode] = &copy
+	s.deviceCodesByUserCode[dc.UserCode] = &copy
+	return nil
+}
+
+func (s *MemoryStore) GetDeviceCode(deviceCode string) (*DeviceCode, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	dc, ok := s.deviceCodesByCode[deviceCode]
+	if !ok {
+		return nil, fmt.Errorf("device code not found")
+	}
+	copy := *dc
+	return &copy, nil
+}
+
+func (s *MemoryStore) GetDeviceCodeByUserCode(userCode string) (*DeviceCode, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	dc, ok := s.deviceCodesByUserCode[userCode]
+	if !ok {
+		return nil, fmt.Errorf("user code %q not found", userCode)
+	}
+	copy := *dc
+	return &copy, nil
+}
+
+func (s *MemoryStore) ApproveDeviceCode(deviceCode, accountID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	dc, ok := s.deviceCodesByCode[deviceCode]
+	if !ok {
+		return fmt.Errorf("device code not found")
+	}
+	if dc.Status != "pending" {
+		return fmt.Errorf("device code is %s, not pending", dc.Status)
+	}
+	if time.Now().After(dc.ExpiresAt) {
+		dc.Status = "expired"
+		return fmt.Errorf("device code has expired")
+	}
+	dc.Status = "approved"
+	dc.AccountID = accountID
+	return nil
+}
+
+func (s *MemoryStore) DeleteExpiredDeviceCodes() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	for code, dc := range s.deviceCodesByCode {
+		if now.After(dc.ExpiresAt) {
+			delete(s.deviceCodesByCode, code)
+			delete(s.deviceCodesByUserCode, dc.UserCode)
+		}
+	}
+	return nil
+}
+
+// --- Provider Tokens ---
+
+func (s *MemoryStore) CreateProviderToken(pt *ProviderToken) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.providerTokens[pt.TokenHash]; exists {
+		return fmt.Errorf("provider token already exists")
+	}
+	copy := *pt
+	s.providerTokens[pt.TokenHash] = &copy
+	return nil
+}
+
+func (s *MemoryStore) GetProviderToken(token string) (*ProviderToken, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	h := sha256Hex(token)
+	pt, ok := s.providerTokens[h]
+	if !ok {
+		return nil, fmt.Errorf("provider token not found")
+	}
+	if !pt.Active {
+		return nil, fmt.Errorf("provider token is revoked")
+	}
+	copy := *pt
+	return &copy, nil
+}
+
+func (s *MemoryStore) RevokeProviderToken(token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	h := sha256Hex(token)
+	pt, ok := s.providerTokens[h]
+	if !ok {
+		return fmt.Errorf("provider token not found")
+	}
+	pt.Active = false
+	return nil
+}
+
+// sha256Hex returns the hex-encoded SHA-256 digest of s.
+func sha256Hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
 }

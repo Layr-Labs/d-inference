@@ -174,6 +174,46 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy ON users(privy_user_id)`,
+
+		// Supported models — admin-managed catalog
+		`CREATE TABLE IF NOT EXISTS supported_models (
+			id TEXT PRIMARY KEY,
+			s3_name TEXT NOT NULL DEFAULT '',
+			display_name TEXT NOT NULL DEFAULT '',
+			model_type TEXT NOT NULL DEFAULT 'text',
+			size_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
+			architecture TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
+			min_ram_gb INTEGER NOT NULL DEFAULT 0,
+			active BOOLEAN NOT NULL DEFAULT TRUE,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		// Add model_type column if upgrading from previous schema
+		`DO $$ BEGIN
+			ALTER TABLE supported_models ADD COLUMN IF NOT EXISTS model_type TEXT NOT NULL DEFAULT 'text';
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
+
+		// Device authorization (RFC 8628-style)
+		`CREATE TABLE IF NOT EXISTS device_codes (
+			device_code TEXT PRIMARY KEY,
+			user_code TEXT UNIQUE NOT NULL,
+			account_id TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'pending',
+			expires_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_device_codes_user ON device_codes(user_code)`,
+
+		// Provider tokens — long-lived auth linking provider machines to accounts
+		`CREATE TABLE IF NOT EXISTS provider_tokens (
+			token_hash TEXT PRIMARY KEY,
+			account_id TEXT NOT NULL,
+			label TEXT NOT NULL DEFAULT '',
+			active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_tokens_account ON provider_tokens(account_id)`,
 	}
 
 	for _, m := range migrations {
@@ -823,4 +863,192 @@ func (s *PostgresStore) GetUserByAccountID(accountID string) (*User, error) {
 		return nil, fmt.Errorf("store: user not found: %w", err)
 	}
 	return &u, nil
+}
+
+// --- Supported Models ---
+
+func (s *PostgresStore) SetSupportedModel(model *SupportedModel) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO supported_models (id, s3_name, display_name, model_type, size_gb, architecture, description, min_ram_gb, active, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+		 ON CONFLICT (id) DO UPDATE SET
+		   s3_name = $2, display_name = $3, model_type = $4, size_gb = $5, architecture = $6,
+		   description = $7, min_ram_gb = $8, active = $9, updated_at = NOW()`,
+		model.ID, model.S3Name, model.DisplayName, model.ModelType, model.SizeGB,
+		model.Architecture, model.Description, model.MinRAMGB, model.Active,
+	)
+	if err != nil {
+		return fmt.Errorf("store: set supported model: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) ListSupportedModels() []SupportedModel {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, s3_name, display_name, model_type, size_gb, architecture, description, min_ram_gb, active
+		 FROM supported_models ORDER BY model_type ASC, min_ram_gb ASC, size_gb ASC`,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var models []SupportedModel
+	for rows.Next() {
+		var m SupportedModel
+		if err := rows.Scan(&m.ID, &m.S3Name, &m.DisplayName, &m.ModelType, &m.SizeGB,
+			&m.Architecture, &m.Description, &m.MinRAMGB, &m.Active); err != nil {
+			continue
+		}
+		models = append(models, m)
+	}
+	return models
+}
+
+func (s *PostgresStore) DeleteSupportedModel(modelID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM supported_models WHERE id = $1`, modelID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: delete supported model: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("model %q not found", modelID)
+	}
+	return nil
+}
+
+// --- Device Authorization ---
+
+func (s *PostgresStore) CreateDeviceCode(dc *DeviceCode) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO device_codes (device_code, user_code, account_id, status, expires_at)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		dc.DeviceCode, dc.UserCode, dc.AccountID, dc.Status, dc.ExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: create device code: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetDeviceCode(deviceCode string) (*DeviceCode, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var dc DeviceCode
+	err := s.pool.QueryRow(ctx,
+		`SELECT device_code, user_code, account_id, status, expires_at, created_at
+		 FROM device_codes WHERE device_code = $1`, deviceCode,
+	).Scan(&dc.DeviceCode, &dc.UserCode, &dc.AccountID, &dc.Status, &dc.ExpiresAt, &dc.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("store: device code not found: %w", err)
+	}
+	return &dc, nil
+}
+
+func (s *PostgresStore) GetDeviceCodeByUserCode(userCode string) (*DeviceCode, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var dc DeviceCode
+	err := s.pool.QueryRow(ctx,
+		`SELECT device_code, user_code, account_id, status, expires_at, created_at
+		 FROM device_codes WHERE user_code = $1`, userCode,
+	).Scan(&dc.DeviceCode, &dc.UserCode, &dc.AccountID, &dc.Status, &dc.ExpiresAt, &dc.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("store: user code not found: %w", err)
+	}
+	return &dc, nil
+}
+
+func (s *PostgresStore) ApproveDeviceCode(deviceCode, accountID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE device_codes SET status = 'approved', account_id = $2
+		 WHERE device_code = $1 AND status = 'pending' AND expires_at > NOW()`,
+		deviceCode, accountID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: approve device code: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("device code not found, not pending, or expired")
+	}
+	return nil
+}
+
+func (s *PostgresStore) DeleteExpiredDeviceCodes() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx, `DELETE FROM device_codes WHERE expires_at < NOW()`)
+	if err != nil {
+		return fmt.Errorf("store: delete expired device codes: %w", err)
+	}
+	return nil
+}
+
+// --- Provider Tokens ---
+
+func (s *PostgresStore) CreateProviderToken(pt *ProviderToken) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_tokens (token_hash, account_id, label, active)
+		 VALUES ($1, $2, $3, $4)`,
+		pt.TokenHash, pt.AccountID, pt.Label, pt.Active,
+	)
+	if err != nil {
+		return fmt.Errorf("store: create provider token: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetProviderToken(token string) (*ProviderToken, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	h := hashKey(token)
+	var pt ProviderToken
+	err := s.pool.QueryRow(ctx,
+		`SELECT token_hash, account_id, label, active, created_at
+		 FROM provider_tokens WHERE token_hash = $1 AND active = TRUE`, h,
+	).Scan(&pt.TokenHash, &pt.AccountID, &pt.Label, &pt.Active, &pt.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("store: provider token not found: %w", err)
+	}
+	return &pt, nil
+}
+
+func (s *PostgresStore) RevokeProviderToken(token string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	h := hashKey(token)
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE provider_tokens SET active = FALSE WHERE token_hash = $1`, h,
+	)
+	if err != nil {
+		return fmt.Errorf("store: revoke provider token: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("provider token not found")
+	}
+	return nil
 }

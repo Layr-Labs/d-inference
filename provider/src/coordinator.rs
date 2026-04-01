@@ -23,8 +23,8 @@ use crate::backend::ExponentialBackoff;
 use crate::hardware::HardwareInfo;
 use crate::models::ModelInfo;
 use crate::protocol::{
-    CoordinatorMessage, ProviderMessage, ProviderStats, ProviderStatus,
-    TranscriptionRequestBody,
+    CoordinatorMessage, ImageGenerationRequestBody, ProviderMessage, ProviderStats,
+    ProviderStatus, TranscriptionRequestBody,
 };
 
 /// Messages from coordinator connection to the main loop.
@@ -39,6 +39,10 @@ pub enum CoordinatorEvent {
     TranscriptionRequest {
         request_id: String,
         body: TranscriptionRequestBody,
+    },
+    ImageGenerationRequest {
+        request_id: String,
+        body: ImageGenerationRequestBody,
     },
     Cancel {
         request_id: String,
@@ -296,6 +300,36 @@ impl CoordinatorClient {
                                         }
                                         Err(e) => {
                                             tracing::error!("Failed to parse transcription body: {e}");
+                                        }
+                                    }
+                                }
+                                Ok(CoordinatorMessage::ImageGenerationRequest { request_id, body, encrypted_body }) => {
+                                    tracing::info!("Received image generation request: {request_id}");
+
+                                    // Decrypt E2E encrypted body if present
+                                    let decrypted_body = if let Some(enc) = encrypted_body {
+                                        tracing::info!("Decrypting E2E encrypted image generation request");
+                                        match decrypt_request_body(&enc, self.public_key.as_deref()) {
+                                            Ok(b) => b,
+                                            Err(e) => {
+                                                tracing::error!("Failed to decrypt image generation request: {e}");
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        body
+                                    };
+
+                                    // Parse the image generation body
+                                    match serde_json::from_value::<ImageGenerationRequestBody>(decrypted_body) {
+                                        Ok(parsed_body) => {
+                                            let _ = event_tx.send(CoordinatorEvent::ImageGenerationRequest {
+                                                request_id,
+                                                body: parsed_body,
+                                            }).await;
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to parse image generation body: {e}");
                                         }
                                     }
                                 }

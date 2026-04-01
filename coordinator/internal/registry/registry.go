@@ -63,6 +63,9 @@ type PendingRequest struct {
 
 	// STT transcription result (nil for inference requests)
 	TranscriptionCh chan *protocol.TranscriptionCompleteMessage
+
+	// Image generation result (nil for non-image requests)
+	ImageGenerationCh chan *protocol.ImageGenerationCompleteMessage
 }
 
 // Provider represents a connected provider agent.

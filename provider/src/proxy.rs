@@ -21,7 +21,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::crypto::NodeKeyPair;
 use crate::protocol::{
-    ProviderMessage, TranscriptionRequestBody, TranscriptionSegment, TranscriptionUsage, UsageInfo,
+    ImageDataPayload, ImageGenerationRequestBody, ImageGenerationUsage, ProviderMessage,
+    TranscriptionRequestBody, TranscriptionSegment, TranscriptionUsage, UsageInfo,
 };
 use crate::security;
 
@@ -546,6 +547,159 @@ fn estimate_audio_duration(bytes: &[u8], format: &str) -> f64 {
         }
         _ => 0.0,
     }
+}
+
+/// Handle an image generation request by forwarding it to the local image bridge.
+///
+/// Sends the OpenAI-compatible request body as JSON to the bridge's
+/// /v1/images/generations endpoint, extracts the base64-encoded images from the
+/// response, and sends the result back as an ImageGenerationComplete message.
+pub async fn handle_image_generation_request(
+    request_id: String,
+    body: ImageGenerationRequestBody,
+    image_bridge_url: String,
+    outbound_tx: mpsc::Sender<ProviderMessage>,
+    cancel_token: CancellationToken,
+) {
+    let start = std::time::Instant::now();
+
+    let result = do_image_generation(
+        &request_id, &body, &image_bridge_url, &outbound_tx, &cancel_token, start,
+    )
+    .await;
+
+    if let Err(e) = result {
+        if cancel_token.is_cancelled() {
+            tracing::info!("Image generation request {request_id} cancelled");
+        } else {
+            tracing::error!("Image generation request {request_id} failed: {e}");
+            let _ = outbound_tx
+                .send(ProviderMessage::InferenceError {
+                    request_id: request_id.clone(),
+                    error: e.to_string(),
+                    status_code: 500,
+                })
+                .await;
+        }
+    }
+
+    tracing::info!(
+        "Image generation request {request_id} finished in {:.2}s",
+        start.elapsed().as_secs_f64()
+    );
+}
+
+async fn do_image_generation(
+    request_id: &str,
+    body: &ImageGenerationRequestBody,
+    image_bridge_url: &str,
+    outbound_tx: &mpsc::Sender<ProviderMessage>,
+    cancel_token: &CancellationToken,
+    start: std::time::Instant,
+) -> Result<()> {
+    // Build the request body for the image bridge (OpenAI images format)
+    let req_body = serde_json::json!({
+        "model": body.model,
+        "prompt": body.prompt,
+        "negative_prompt": body.negative_prompt,
+        "n": body.n,
+        "size": body.size,
+        "steps": body.steps,
+        "seed": body.seed,
+        "response_format": "b64_json",
+    });
+
+    let url = format!("{image_bridge_url}/v1/images/generations");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300)) // 5 min timeout for image gen
+        .build()
+        .unwrap_or_default();
+
+    let response = tokio::select! {
+        result = client.post(&url).json(&req_body).send() => {
+            result.context("failed to send image generation request to bridge")?
+        }
+        _ = cancel_token.cancelled() => {
+            anyhow::bail!("request cancelled");
+        }
+    };
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_body = response.text().await.unwrap_or_default();
+        outbound_tx
+            .send(ProviderMessage::InferenceError {
+                request_id: request_id.to_string(),
+                error: error_body,
+                status_code: status.as_u16(),
+            })
+            .await
+            .ok();
+        return Ok(());
+    }
+
+    let response_json: serde_json::Value = response
+        .json()
+        .await
+        .context("failed to parse image bridge response")?;
+
+    // Extract images from OpenAI format: { "data": [{"b64_json": "..."}] }
+    let images: Vec<ImageDataPayload> = response_json
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    item.get("b64_json")
+                        .and_then(|v| v.as_str())
+                        .map(|s| ImageDataPayload {
+                            b64_json: s.to_string(),
+                        })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if images.is_empty() {
+        anyhow::bail!("image bridge returned no images");
+    }
+
+    // Parse size for usage info (default 1024x1024)
+    let (width, height) = body
+        .size
+        .as_deref()
+        .and_then(|s| {
+            let parts: Vec<&str> = s.split('x').collect();
+            if parts.len() == 2 {
+                Some((
+                    parts[0].parse::<u32>().unwrap_or(1024),
+                    parts[1].parse::<u32>().unwrap_or(1024),
+                ))
+            } else {
+                None
+            }
+        })
+        .unwrap_or((1024, 1024));
+
+    let steps = body.steps.unwrap_or(4);
+
+    outbound_tx
+        .send(ProviderMessage::ImageGenerationComplete {
+            request_id: request_id.to_string(),
+            images,
+            usage: ImageGenerationUsage {
+                images_generated: body.n,
+                width,
+                height,
+                steps,
+                model: body.model.clone(),
+            },
+            duration_secs: start.elapsed().as_secs_f64(),
+        })
+        .await
+        .ok();
+
+    Ok(())
 }
 
 /// Extract usage info from a non-streaming response JSON body.

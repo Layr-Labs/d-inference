@@ -1193,6 +1193,28 @@ async fn cmd_serve(
 
                                 inflight.insert(request_id, (cancel_token, handle));
                             }
+                            coordinator::CoordinatorEvent::ImageGenerationRequest { request_id, body } => {
+                                last_request_time = tokio::time::Instant::now();
+
+                                let tx = outbound_tx.clone();
+                                let cancel_token = CancellationToken::new();
+                                let token_clone = cancel_token.clone();
+                                let done_tx = done_tx.clone();
+                                let rid = request_id.clone();
+                                let image_url = proxy_backend_url.clone().replace(
+                                    &format!(":{}", be_port),
+                                    &format!(":{}", be_port + 2),
+                                );
+
+                                let handle = tokio::spawn(async move {
+                                    proxy::handle_image_generation_request(
+                                        rid.clone(), body, image_url, tx, token_clone,
+                                    ).await;
+                                    let _ = done_tx.send(rid).await;
+                                });
+
+                                inflight.insert(request_id, (cancel_token, handle));
+                            }
                             coordinator::CoordinatorEvent::Cancel { request_id } => {
                                 if let Some((token, _handle)) = inflight.remove(&request_id) {
                                     tracing::info!("Cancelling request {request_id}");

@@ -33,13 +33,15 @@ const (
 	TypeInferenceComplete     = "inference_complete"
 	TypeInferenceError        = "inference_error"
 	TypeAttestationResponse   = "attestation_response"
-	TypeTranscriptionComplete = "transcription_complete"
+	TypeTranscriptionComplete      = "transcription_complete"
+	TypeImageGenerationComplete    = "image_generation_complete"
 
 	// Coordinator → Provider
-	TypeInferenceRequest        = "inference_request"
-	TypeCancel                  = "cancel"
-	TypeAttestationChallenge    = "attestation_challenge"
-	TypeTranscriptionRequest    = "transcription_request"
+	TypeInferenceRequest           = "inference_request"
+	TypeCancel                     = "cancel"
+	TypeAttestationChallenge       = "attestation_challenge"
+	TypeTranscriptionRequest       = "transcription_request"
+	TypeImageGenerationRequest     = "image_generation_request"
 )
 
 // ---------------------------------------------------------------------------
@@ -260,6 +262,53 @@ type TranscriptionCompleteMessage struct {
 }
 
 // ---------------------------------------------------------------------------
+// Image Generation messages
+// ---------------------------------------------------------------------------
+
+// ImageGenerationRequestBody is the body sent inside an ImageGenerationRequest.
+type ImageGenerationRequestBody struct {
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	NegativePrompt string `json:"negative_prompt,omitempty"`
+	N              int    `json:"n,omitempty"`              // number of images (default 1)
+	Size           string `json:"size,omitempty"`           // e.g. "1024x1024"
+	Steps          *int   `json:"steps,omitempty"`          // inference steps
+	Seed           *int64 `json:"seed,omitempty"`
+	ResponseFormat string `json:"response_format,omitempty"` // "b64_json" (default) or "url"
+}
+
+// ImageGenerationRequestMessage tells a provider to generate images.
+type ImageGenerationRequestMessage struct {
+	Type          string                       `json:"type"`
+	RequestID     string                       `json:"request_id"`
+	Body          ImageGenerationRequestBody   `json:"body,omitempty"`
+	EncryptedBody *EncryptedPayload            `json:"encrypted_body,omitempty"`
+}
+
+// ImageData is a single generated image in the response.
+type ImageData struct {
+	B64JSON string `json:"b64_json"`
+}
+
+// ImageGenerationUsage carries usage info for billing image generation requests.
+type ImageGenerationUsage struct {
+	ImagesGenerated int    `json:"images_generated"`
+	Width           int    `json:"width"`
+	Height          int    `json:"height"`
+	Steps           int    `json:"steps"`
+	Model           string `json:"model"`
+}
+
+// ImageGenerationCompleteMessage signals the provider finished generating images.
+type ImageGenerationCompleteMessage struct {
+	Type         string               `json:"type"`
+	RequestID    string               `json:"request_id"`
+	Images       []ImageData          `json:"images"`
+	Usage        ImageGenerationUsage `json:"usage"`
+	DurationSecs float64              `json:"duration_secs"` // processing time
+}
+
+// ---------------------------------------------------------------------------
 // Envelope: generic unmarshalling for provider messages
 // ---------------------------------------------------------------------------
 
@@ -328,6 +377,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg TranscriptionCompleteMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal transcription_complete: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeImageGenerationComplete:
+		var msg ImageGenerationCompleteMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal image_generation_complete: %w", err)
 		}
 		pm.Payload = &msg
 

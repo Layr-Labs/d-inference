@@ -89,6 +89,14 @@ pub enum ProviderMessage {
         /// Processing time in seconds.
         duration_secs: f64,
     },
+    /// Image generation result — base64-encoded images.
+    ImageGenerationComplete {
+        request_id: String,
+        images: Vec<ImageDataPayload>,
+        usage: ImageGenerationUsage,
+        /// Processing time in seconds.
+        duration_secs: f64,
+    },
     /// Response to an attestation challenge from the coordinator.
     /// Includes a fresh SIP status check — the coordinator verifies this
     /// hasn't changed since registration.
@@ -134,6 +142,14 @@ pub enum CoordinatorMessage {
         #[serde(default)]
         body: serde_json::Value,
         /// E2E encrypted transcription body — same encryption as inference requests
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_body: Option<EncryptedPayload>,
+    },
+    /// Image generation request — provider should generate images from prompt.
+    ImageGenerationRequest {
+        request_id: String,
+        #[serde(default)]
+        body: serde_json::Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         encrypted_body: Option<EncryptedPayload>,
     },
@@ -221,6 +237,45 @@ pub struct TranscriptionSegment {
 pub struct TranscriptionUsage {
     pub audio_seconds: f64,
     pub generation_tokens: u64,
+}
+
+/// Body of an image generation request from the coordinator.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImageGenerationRequestBody {
+    pub model: String,
+    pub prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub negative_prompt: Option<String>,
+    #[serde(default = "default_image_count")]
+    pub n: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<String>,
+}
+
+fn default_image_count() -> u32 {
+    1
+}
+
+/// A single generated image in base64 format.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImageDataPayload {
+    pub b64_json: String,
+}
+
+/// Usage info for billing image generation requests.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImageGenerationUsage {
+    pub images_generated: u32,
+    pub width: u32,
+    pub height: u32,
+    pub steps: u32,
+    pub model: String,
 }
 
 #[cfg(test)]
@@ -649,6 +704,85 @@ mod tests {
                 assert_eq!(enc.ciphertext, "Y2lwaGVy");
             }
             _ => panic!("expected TranscriptionRequest"),
+        }
+    }
+
+    #[test]
+    fn test_image_generation_request_roundtrip() {
+        let body = serde_json::json!({
+            "model": "flux-klein-4b",
+            "prompt": "a cat wearing a hat",
+            "n": 1,
+            "size": "1024x1024"
+        });
+        let msg = CoordinatorMessage::ImageGenerationRequest {
+            request_id: "img-123".to_string(),
+            body,
+            encrypted_body: None,
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"image_generation_request\""));
+        assert!(json.contains("\"request_id\":\"img-123\""));
+        assert!(json.contains("\"prompt\":\"a cat wearing a hat\""));
+        let deserialized: CoordinatorMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, deserialized);
+    }
+
+    #[test]
+    fn test_image_generation_complete_roundtrip() {
+        let msg = ProviderMessage::ImageGenerationComplete {
+            request_id: "img-456".to_string(),
+            images: vec![ImageDataPayload {
+                b64_json: "iVBORw0KGgo=".to_string(),
+            }],
+            usage: ImageGenerationUsage {
+                images_generated: 1,
+                width: 1024,
+                height: 1024,
+                steps: 4,
+                model: "flux-klein-4b".to_string(),
+            },
+            duration_secs: 7.5,
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"image_generation_complete\""));
+        assert!(json.contains("\"images_generated\":1"));
+        assert!(json.contains("\"duration_secs\":7.5"));
+        assert!(json.contains("\"b64_json\":\"iVBORw0KGgo=\""));
+        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, deserialized);
+    }
+
+    #[test]
+    fn test_deserialize_image_generation_request_from_go_json() {
+        let raw = r#"{"type":"image_generation_request","request_id":"go-img-1","body":{"model":"flux-klein-4b","prompt":"sunset over mountains","n":2,"size":"512x512"}}"#;
+        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
+        match msg {
+            CoordinatorMessage::ImageGenerationRequest { request_id, body, encrypted_body } => {
+                assert_eq!(request_id, "go-img-1");
+                assert_eq!(body["model"], "flux-klein-4b");
+                assert_eq!(body["prompt"], "sunset over mountains");
+                assert_eq!(body["n"], 2);
+                assert!(encrypted_body.is_none());
+            }
+            _ => panic!("expected ImageGenerationRequest"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_image_generation_request_encrypted() {
+        let raw = r#"{"type":"image_generation_request","request_id":"enc-img-1","encrypted_body":{"ephemeral_public_key":"a2V5","ciphertext":"Y2lwaGVy"}}"#;
+        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
+        match msg {
+            CoordinatorMessage::ImageGenerationRequest { request_id, encrypted_body, .. } => {
+                assert_eq!(request_id, "enc-img-1");
+                let enc = encrypted_body.unwrap();
+                assert_eq!(enc.ephemeral_public_key, "a2V5");
+                assert_eq!(enc.ciphertext, "Y2lwaGVy");
+            }
+            _ => panic!("expected ImageGenerationRequest"),
         }
     }
 }

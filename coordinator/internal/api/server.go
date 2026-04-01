@@ -153,6 +153,7 @@ func (s *Server) routes() {
 	// Consumer endpoints — API key auth required.
 	s.mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.handleChatCompletions))
 	s.mux.HandleFunc("POST /v1/audio/transcriptions", s.requireAuth(s.handleTranscriptions))
+	s.mux.HandleFunc("POST /v1/images/generations", s.requireAuth(s.handleImageGenerations))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
 
 	// MDM webhook — MicroMDM sends command responses here.

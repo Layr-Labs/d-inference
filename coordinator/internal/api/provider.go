@@ -201,6 +201,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			tcMsg := msg.Payload.(*protocol.TranscriptionCompleteMessage)
 			s.handleTranscriptionComplete(providerID, provider, tcMsg)
 
+		case protocol.TypeImageGenerationComplete:
+			igMsg := msg.Payload.(*protocol.ImageGenerationCompleteMessage)
+			s.handleImageGenerationComplete(providerID, provider, igMsg)
+
 		case protocol.TypeAttestationResponse:
 			respMsg := msg.Payload.(*protocol.AttestationResponseMessage)
 			s.handleAttestationResponse(providerID, provider, respMsg, tracker)
@@ -559,6 +563,9 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	if pr.TranscriptionCh != nil {
 		close(pr.TranscriptionCh)
 	}
+	if pr.ImageGenerationCh != nil {
+		close(pr.ImageGenerationCh)
+	}
 
 	// Record job failure for reputation tracking.
 	s.registry.RecordJobFailure(providerID)
@@ -607,6 +614,43 @@ func (s *Server) handleTranscriptionComplete(providerID string, provider *regist
 		"generation_tokens", msg.Usage.GenerationTokens,
 		"duration_secs", msg.DurationSecs,
 		"text_length", len(msg.Text),
+	)
+}
+
+func (s *Server) handleImageGenerationComplete(providerID string, provider *registry.Provider, msg *protocol.ImageGenerationCompleteMessage) {
+	if provider == nil {
+		s.logger.Warn("image generation complete from unregistered provider", "provider_id", providerID)
+		return
+	}
+	pr := provider.RemovePending(msg.RequestID)
+	if pr == nil {
+		s.logger.Warn("image generation complete for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
+		return
+	}
+
+	// Send the result to the waiting consumer handler.
+	if pr.ImageGenerationCh != nil {
+		select {
+		case pr.ImageGenerationCh <- msg:
+		default:
+			s.logger.Warn("dropped image generation result, consumer channel full", "request_id", msg.RequestID)
+		}
+	}
+
+	// Record job success.
+	s.registry.RecordJobSuccess(providerID, time.Duration(msg.DurationSecs*float64(time.Second)))
+
+	// Mark provider idle.
+	s.registry.SetProviderIdle(providerID)
+
+	s.logger.Info("image generation complete",
+		"request_id", msg.RequestID,
+		"provider_id", providerID,
+		"images_generated", msg.Usage.ImagesGenerated,
+		"width", msg.Usage.Width,
+		"height", msg.Usage.Height,
+		"steps", msg.Usage.Steps,
+		"duration_secs", msg.DurationSecs,
 	)
 }
 

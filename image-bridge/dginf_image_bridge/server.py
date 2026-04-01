@@ -80,22 +80,20 @@ class MfluxBackend(ImageBackend):
 
     def _load_model(self):
         try:
-            from mflux import Flux1
+            # mflux 0.17+ has model classes under models.common.cli.save
+            from mflux.models.common.cli.save import Flux1, Flux2Klein, ZImageTurbo
 
-            # Map model IDs to mflux model names
+            # Map model IDs to mflux classes and model configs
             model_map = {
-                "flux-klein-4b": "schnell",
-                "flux-schnell": "schnell",
-                "flux-dev": "dev",
-                "z-image-turbo": "schnell",  # fallback
+                "flux-klein-4b": Flux2Klein,
+                "flux-schnell": Flux1,
+                "flux-dev": Flux1,
+                "z-image-turbo": ZImageTurbo,
             }
-            mflux_model = model_map.get(self._model_id, "schnell")
+            model_cls = model_map.get(self._model_id, Flux1)
 
-            logger.info(f"Loading mflux model: {mflux_model} (quantize={self._quantize})")
-            self._flux = Flux1(
-                model_name=mflux_model,
-                quantize=self._quantize,
-            )
+            logger.info(f"Loading mflux model: {model_cls.__name__} (quantize={self._quantize})")
+            self._flux = model_cls(quantize=self._quantize)
             logger.info("mflux model loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load mflux model: {e}")
@@ -120,19 +118,22 @@ class MfluxBackend(ImageBackend):
         if self._flux is None:
             raise RuntimeError("mflux model not loaded")
 
+        import random
+
         images = []
         for i in range(n):
-            current_seed = seed + i if seed is not None else None
-            image = self._flux.generate_image(
+            current_seed = (seed + i) if seed is not None else random.randint(0, 2**32 - 1)
+            generated = self._flux.generate_image(
+                seed=current_seed,
                 prompt=prompt,
+                num_inference_steps=steps,
                 width=width,
                 height=height,
-                num_inference_steps=steps,
-                seed=current_seed,
+                negative_prompt=negative_prompt,
             )
-            # Convert PIL Image to PNG bytes
+            # GeneratedImage has a .image attribute (PIL Image)
             buf = io.BytesIO()
-            image.save(buf, format="PNG")
+            generated.image.save(buf, format="PNG")
             images.append(buf.getvalue())
 
         return images

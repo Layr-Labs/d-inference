@@ -1,5 +1,11 @@
 fastapi>=0.104.0
 uvicorn>=0.24.0
-mflux>=0.9.0
 Pillow>=10.0.0
 httpx>=0.25.0
+numpy>=1.24.0
+# Draw Things gRPC backend
+grpcio>=1.60.0
+flatbuffers>=24.0.0
+protobuf>=4.25.0
+# mflux backend (optional — install separately if using mflux)
+# mflux>=0.9.0

@@ -1,11 +1,11 @@
 """FastAPI server exposing OpenAI-compatible /v1/images/generations endpoint.
 
-Uses mflux (MLX-native diffusion) as the image generation backend.
-The model is loaded once at startup and kept in memory between requests.
+Uses Draw Things gRPCServerCLI as the image generation backend, managed
+as a subprocess. The model stays loaded in gRPCServerCLI between requests.
+Metal FlashAttention provides 43-120% faster generation than alternatives.
 """
 
 import base64
-import io
 import logging
 import time
 from typing import Optional
@@ -42,12 +42,12 @@ class ImageGenerationResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Backend abstraction
+# Backend interface
 # ---------------------------------------------------------------------------
 
 
 class ImageBackend:
-    """Abstract interface for image generation backends."""
+    """Interface for image generation backends."""
 
     def is_ready(self) -> bool:
         raise NotImplementedError
@@ -67,76 +67,6 @@ class ImageBackend:
 
     def model_name(self) -> str:
         raise NotImplementedError
-
-
-class MfluxBackend(ImageBackend):
-    """Image generation backend using mflux (MLX-native FLUX implementation)."""
-
-    def __init__(self, model: str, quantize: Optional[int] = 8):
-        self._model_id = model
-        self._quantize = quantize
-        self._flux = None
-        self._load_model()
-
-    def _load_model(self):
-        try:
-            # mflux 0.17+ has model classes under models.common.cli.save
-            from mflux.models.common.cli.save import Flux1, Flux2Klein, ZImageTurbo
-
-            # Map model IDs to mflux classes and model configs
-            model_map = {
-                "flux-klein-4b": Flux2Klein,
-                "flux-schnell": Flux1,
-                "flux-dev": Flux1,
-                "z-image-turbo": ZImageTurbo,
-            }
-            model_cls = model_map.get(self._model_id, Flux1)
-
-            logger.info(f"Loading mflux model: {model_cls.__name__} (quantize={self._quantize})")
-            self._flux = model_cls(quantize=self._quantize)
-            logger.info("mflux model loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load mflux model: {e}")
-            self._flux = None
-
-    def is_ready(self) -> bool:
-        return self._flux is not None
-
-    def model_name(self) -> str:
-        return self._model_id
-
-    def generate(
-        self,
-        prompt: str,
-        negative_prompt: Optional[str],
-        width: int,
-        height: int,
-        steps: int,
-        seed: Optional[int],
-        n: int,
-    ) -> list[bytes]:
-        if self._flux is None:
-            raise RuntimeError("mflux model not loaded")
-
-        import random
-
-        images = []
-        for i in range(n):
-            current_seed = (seed + i) if seed is not None else random.randint(0, 2**32 - 1)
-            generated = self._flux.generate_image(
-                seed=current_seed,
-                prompt=prompt,
-                num_inference_steps=steps,
-                width=width,
-                height=height,
-                negative_prompt=negative_prompt,
-            )
-            # GeneratedImage has a .image attribute (PIL Image)
-            buf = io.BytesIO()
-            generated.image.save(buf, format="PNG")
-            images.append(buf.getvalue())
-
-        return images
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 """Tests for the image bridge server.
 
-Uses a mock backend so tests run without mflux/GPU dependencies.
+Uses a mock backend so tests run without gRPCServerCLI/GPU dependencies.
 """
 
 import base64

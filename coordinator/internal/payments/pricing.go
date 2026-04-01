@@ -121,6 +121,27 @@ func DefaultPrices() map[string][2]int64 {
 	return result
 }
 
+// CalculateImageCost returns the total cost in micro-USD for an image generation
+// job. Pricing is per-image, scaled by resolution relative to 1024x1024 base.
+// Base price: $0.002 per 1024x1024 image (2000 micro-USD).
+func CalculateImageCost(model string, width, height, count int) int64 {
+	const basePriceMicroUSD int64 = 2_000 // $0.002 per image at 1024x1024
+	const basePixels int64 = 1024 * 1024
+
+	pixels := int64(width) * int64(height)
+	// Scale cost proportionally to pixel count (minimum 1x)
+	scaledPrice := basePriceMicroUSD * pixels / basePixels
+	if scaledPrice < basePriceMicroUSD/2 {
+		scaledPrice = basePriceMicroUSD / 2 // minimum half-price for small images
+	}
+
+	totalCost := scaledPrice * int64(count)
+	if totalCost < minimumChargeMicroUSD {
+		totalCost = minimumChargeMicroUSD
+	}
+	return totalCost
+}
+
 // PlatformFee returns DGInf's routing fee (5%).
 func PlatformFee(totalCost int64) int64 {
 	return totalCost * platformFeePercent / 100

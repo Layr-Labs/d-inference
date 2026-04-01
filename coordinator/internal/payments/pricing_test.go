@@ -239,3 +239,38 @@ func TestAllModelPricesUndercutOpenRouter(t *testing.T) {
 		}
 	}
 }
+
+func TestCalculateImageCost(t *testing.T) {
+	// Base case: 1 image at 1024x1024 = $0.002 = 2000 micro-USD
+	cost := CalculateImageCost("flux-klein-4b", 1024, 1024, 1)
+	if cost != 2000 {
+		t.Errorf("expected 2000 micro-USD for 1x 1024x1024, got %d", cost)
+	}
+
+	// 2 images at base resolution = $0.004
+	cost = CalculateImageCost("flux-klein-4b", 1024, 1024, 2)
+	if cost != 4000 {
+		t.Errorf("expected 4000 micro-USD for 2x 1024x1024, got %d", cost)
+	}
+
+	// Small image (512x512 = 1/4 pixels) should be cheaper but has minimum
+	cost = CalculateImageCost("flux-klein-4b", 512, 512, 1)
+	if cost >= 2000 {
+		t.Errorf("512x512 (%d) should be cheaper than 1024x1024 (2000)", cost)
+	}
+	if cost < 1000 {
+		t.Errorf("512x512 (%d) should be at least 1000 (minimum half-price)", cost)
+	}
+
+	// Large image (2048x2048 = 4x pixels) should cost 4x base
+	cost = CalculateImageCost("flux-klein-4b", 2048, 2048, 1)
+	if cost != 8000 {
+		t.Errorf("expected 8000 micro-USD for 2048x2048, got %d", cost)
+	}
+
+	// Minimum charge applies
+	cost = CalculateImageCost("flux-klein-4b", 64, 64, 1)
+	if cost < 100 {
+		t.Errorf("expected at least minimum charge (100), got %d", cost)
+	}
+}

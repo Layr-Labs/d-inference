@@ -640,6 +640,45 @@ func (s *Server) handleImageGenerationComplete(providerID string, provider *regi
 	// Record job success.
 	s.registry.RecordJobSuccess(providerID, time.Duration(msg.DurationSecs*float64(time.Second)))
 
+	// Calculate per-image cost.
+	totalCost := payments.CalculateImageCost(msg.Usage.Model, msg.Usage.Width, msg.Usage.Height, msg.Usage.ImagesGenerated)
+	providerPayout := payments.ProviderPayout(totalCost)
+
+	// Charge consumer (best-effort — image already generated).
+	if err := s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID); err != nil {
+		s.logger.Warn("could not charge consumer for image generation",
+			"consumer_key", pr.ConsumerKey,
+			"cost_micro_usd", totalCost,
+			"error", err,
+		)
+	}
+
+	// Record usage entry.
+	s.ledger.RecordUsage(pr.ConsumerKey, payments.UsageEntry{
+		JobID:        msg.RequestID,
+		Model:        pr.Model,
+		CostMicroUSD: totalCost,
+		Timestamp:    time.Now(),
+	})
+
+	// Credit the provider.
+	providerWallet := ""
+	if p := s.registry.GetProvider(providerID); p != nil {
+		providerWallet = p.WalletAddress
+	}
+	if providerWallet != "" {
+		s.ledger.CreditProvider(providerWallet, providerPayout, pr.Model, msg.RequestID)
+	}
+
+	// Platform fee with referral distribution.
+	platformFee := payments.PlatformFee(totalCost)
+	if platformFee > 0 {
+		if s.billing != nil && s.billing.Referral() != nil {
+			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
+		}
+		_ = s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID)
+	}
+
 	// Mark provider idle.
 	s.registry.SetProviderIdle(providerID)
 
@@ -651,6 +690,8 @@ func (s *Server) handleImageGenerationComplete(providerID string, provider *regi
 		"height", msg.Usage.Height,
 		"steps", msg.Usage.Steps,
 		"duration_secs", msg.DurationSecs,
+		"cost_micro_usd", totalCost,
+		"provider_payout_micro_usd", providerPayout,
 	)
 }
 

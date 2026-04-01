@@ -1062,4 +1062,180 @@ mod tests {
         assert!(chunks < 50, "Expected early stop, got {chunks} chunks (should be << 100)");
         assert!(!got_error, "Cancelled request should not send InferenceError");
     }
+
+    #[tokio::test]
+    async fn test_handle_image_generation_mock() {
+        use axum::{routing::post, Json, Router};
+
+        // Start a mock image bridge server
+        let app = Router::new().route(
+            "/v1/images/generations",
+            post(|| async {
+                Json(serde_json::json!({
+                    "created": 1234567890,
+                    "data": [
+                        {"b64_json": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg=="}
+                    ]
+                }))
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = ImageGenerationRequestBody {
+            model: "flux-klein-4b".to_string(),
+            prompt: "a cat wearing a hat".to_string(),
+            negative_prompt: None,
+            n: 1,
+            size: Some("1024x1024".to_string()),
+            steps: Some(4),
+            seed: Some(42),
+            response_format: None,
+        };
+
+        handle_image_generation_request(
+            "img-req-1".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            tx,
+            CancellationToken::new(),
+        )
+        .await;
+
+        let msg = rx.recv().await.unwrap();
+        match msg {
+            ProviderMessage::ImageGenerationComplete {
+                request_id,
+                images,
+                usage,
+                duration_secs,
+            } => {
+                assert_eq!(request_id, "img-req-1");
+                assert_eq!(images.len(), 1);
+                assert!(images[0].b64_json.starts_with("iVBOR")); // PNG magic
+                assert_eq!(usage.images_generated, 1);
+                assert_eq!(usage.width, 1024);
+                assert_eq!(usage.height, 1024);
+                assert_eq!(usage.steps, 4);
+                assert_eq!(usage.model, "flux-klein-4b");
+                assert!(duration_secs > 0.0);
+            }
+            other => panic!("Expected ImageGenerationComplete, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_image_generation_error() {
+        use axum::{http::StatusCode, routing::post, Router};
+
+        let app = Router::new().route(
+            "/v1/images/generations",
+            post(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "model not loaded") }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = ImageGenerationRequestBody {
+            model: "flux-klein-4b".to_string(),
+            prompt: "test".to_string(),
+            negative_prompt: None,
+            n: 1,
+            size: None,
+            steps: None,
+            seed: None,
+            response_format: None,
+        };
+
+        handle_image_generation_request(
+            "img-err-1".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            tx,
+            CancellationToken::new(),
+        )
+        .await;
+
+        let msg = rx.recv().await.unwrap();
+        match msg {
+            ProviderMessage::InferenceError {
+                request_id,
+                error,
+                status_code,
+            } => {
+                assert_eq!(request_id, "img-err-1");
+                assert_eq!(status_code, 500);
+                assert!(error.contains("model not loaded"));
+            }
+            other => panic!("Expected InferenceError, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_image_generation_cancel() {
+        use axum::{routing::post, Router};
+
+        // Slow backend that takes 10 seconds
+        let app = Router::new().route(
+            "/v1/images/generations",
+            post(|| async {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                axum::Json(serde_json::json!({"data": []}))
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let cancel_token = CancellationToken::new();
+        let token_clone = cancel_token.clone();
+
+        let body = ImageGenerationRequestBody {
+            model: "flux-klein-4b".to_string(),
+            prompt: "test".to_string(),
+            negative_prompt: None,
+            n: 1,
+            size: None,
+            steps: None,
+            seed: None,
+            response_format: None,
+        };
+
+        let handle = tokio::spawn(async move {
+            handle_image_generation_request(
+                "img-cancel-1".to_string(),
+                body,
+                format!("http://127.0.0.1:{}", addr.port()),
+                tx,
+                token_clone,
+            )
+            .await;
+        });
+
+        // Cancel after 200ms
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        cancel_token.cancel();
+
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
+
+        // Should NOT get an error message (cancelled requests are silent)
+        let msg = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+        assert!(msg.is_err() || msg.unwrap().is_none(), "Cancelled request should not send messages");
+    }
 }

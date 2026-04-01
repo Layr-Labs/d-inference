@@ -99,6 +99,10 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Raise the read limit to 10 MB. The default 32 KB is too small for
+	// image generation responses which carry base64-encoded PNGs (~1-3 MB).
+	conn.SetReadLimit(10 * 1024 * 1024)
+
 	providerID := uuid.New().String()
 	s.logger.Info("provider websocket connected", "provider_id", providerID, "remote", r.RemoteAddr)
 

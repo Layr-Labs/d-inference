@@ -494,6 +494,14 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	if req.N == 0 {
 		req.N = 1
 	}
+	if req.N < 0 || req.N > 4 {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "n must be between 1 and 4"))
+		return
+	}
+	if req.Steps != nil && *req.Steps <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "steps must be positive"))
+		return
+	}
 	if req.Size == "" {
 		req.Size = "1024x1024"
 	}

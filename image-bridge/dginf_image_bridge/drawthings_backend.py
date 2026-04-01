@@ -136,7 +136,12 @@ class DrawThingsBackend(ImageBackend):
             logger.warning("No model_path specified — assuming gRPCServerCLI is already running")
             return
 
-        cmd = [self._grpc_server_binary, self._model_path, "--no-response-compression"]
+        cmd = [
+            self._grpc_server_binary,
+            self._model_path,
+            "--no-response-compression",
+            "--port", str(self._grpc_port),
+        ]
         logger.info(f"Starting gRPCServerCLI: {' '.join(cmd)}")
 
         self._process = subprocess.Popen(

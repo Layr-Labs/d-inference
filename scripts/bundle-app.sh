@@ -148,7 +148,11 @@ if [ ! -f "target/release/dginf-provider" ]; then
     cargo build --release --no-default-features 2>&1 | tail -3
 fi
 cp "target/release/dginf-provider" "$MACOS/dginf-provider"
-echo "   ✓ dginf-provider ($(du -h "$MACOS/dginf-provider" | cut -f1))"
+# Also install to shared path so CLI and app use the same binary
+mkdir -p "$HOME/.dginf/bin"
+cp "target/release/dginf-provider" "$HOME/.dginf/bin/dginf-provider"
+chmod +x "$HOME/.dginf/bin/dginf-provider"
+echo "   ✓ dginf-provider ($(du -h "$MACOS/dginf-provider" | cut -f1)) → also installed to ~/.dginf/bin/"
 
 # ─────────────────────────────────────────────────────────
 # 5. Build + copy enclave CLI

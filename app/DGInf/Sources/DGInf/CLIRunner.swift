@@ -26,21 +26,20 @@ final class CLIRunner {
     /// Resolve the path to the dginf-provider binary.
     ///
     /// Searches in order:
-    ///   1. Inside the app bundle's Resources directory
-    ///   2. Adjacent to the app bundle
-    ///   3. `~/.dginf/bin/dginf-provider`
-    ///   4. PATH lookup
+    ///   1. `~/.dginf/bin/dginf-provider` (shared install, preferred)
+    ///   2. Inside the app bundle (fallback for first-run before CLI install)
+    ///   3. PATH lookup
     static func resolveBinaryPath() -> String? {
         let fm = FileManager.default
 
-        // 1. Inside app bundle Resources
-        if let bundled = Bundle.main.path(forResource: "dginf-provider", ofType: nil) {
-            if fm.isExecutableFile(atPath: bundled) {
-                return bundled
-            }
+        // 1. ~/.dginf/bin/dginf-provider (shared with CLI — single source of truth)
+        let home = fm.homeDirectoryForCurrentUser
+        let homeBin = home.appendingPathComponent(".dginf/bin/dginf-provider").path
+        if fm.isExecutableFile(atPath: homeBin) {
+            return homeBin
         }
 
-        // 2. Adjacent to app bundle
+        // 2. Inside app bundle (fallback)
         if let bundlePath = Bundle.main.executablePath {
             let bundleDir = (bundlePath as NSString).deletingLastPathComponent
             let adjacent = (bundleDir as NSString).appendingPathComponent("dginf-provider")
@@ -49,14 +48,7 @@ final class CLIRunner {
             }
         }
 
-        // 3. ~/.dginf/bin/dginf-provider
-        let home = fm.homeDirectoryForCurrentUser
-        let homeBin = home.appendingPathComponent(".dginf/bin/dginf-provider").path
-        if fm.isExecutableFile(atPath: homeBin) {
-            return homeBin
-        }
-
-        // 4. PATH lookup
+        // 3. PATH lookup
         let whichProcess = Process()
         let whichPipe = Pipe()
         whichProcess.executableURL = URL(fileURLWithPath: "/usr/bin/which")

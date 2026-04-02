@@ -74,6 +74,77 @@ function TrustBadge({ level, mdaVerified }: { level: string; mdaVerified: boolea
   );
 }
 
+function VerifyCertSection({ provider }: { provider: Provider }) {
+  const [showCert, setShowCert] = useState(false);
+  const [showInstructions, setShowInstructions] = useState(false);
+
+  const pemChain = provider.mda_cert_chain_b64!
+    .map((b64) => {
+      const lines = b64.match(/.{1,64}/g) || [];
+      return `-----BEGIN CERTIFICATE-----\n${lines.join("\n")}\n-----END CERTIFICATE-----`;
+    })
+    .join("\n\n");
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setShowInstructions(!showInstructions)}
+          className="text-xs font-medium text-accent-brand hover:underline cursor-pointer inline-flex items-center gap-1"
+        >
+          <ShieldCheck size={12} />
+          Verify this device independently
+          <ChevronDown size={10} className={`transition-transform ${showInstructions ? "rotate-180" : ""}`} />
+        </button>
+      </div>
+
+      {showInstructions && (
+        <div className="rounded-lg bg-bg-tertiary p-3 space-y-3 text-xs text-text-secondary">
+          <p>
+            This provider&apos;s identity is signed by Apple&apos;s Device Attestation certificate authority.
+            You can verify the certificate chain yourself to confirm this is a genuine Apple device.
+          </p>
+
+          <div className="space-y-1">
+            <p className="font-medium text-text-primary">Step 1: Save the certificate chain</p>
+            <p>Click below to view the PEM certificate, then copy it to a file (e.g. <code className="bg-bg-elevated px-1 rounded">provider.pem</code>).</p>
+            <button
+              onClick={() => setShowCert(!showCert)}
+              className="text-accent-brand hover:underline cursor-pointer"
+            >
+              {showCert ? "Hide" : "Show"} certificate chain (PEM)
+            </button>
+            {showCert && (
+              <pre className="mt-1 p-2 bg-bg-elevated rounded text-[10px] font-mono text-text-tertiary overflow-x-auto max-h-40 overflow-y-auto select-all">
+                {pemChain}
+              </pre>
+            )}
+          </div>
+
+          <div className="space-y-1">
+            <p className="font-medium text-text-primary">Step 2: Download Apple&apos;s Root CA</p>
+            <p>
+              Get Apple&apos;s Enterprise Attestation Root CA from{" "}
+              <a href="https://www.apple.com/certificateauthority/private/" target="_blank" rel="noopener noreferrer"
+                className="text-accent-brand hover:underline inline-flex items-center gap-0.5">
+                apple.com/certificateauthority <ExternalLink size={9} />
+              </a>
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <p className="font-medium text-text-primary">Step 3: Verify</p>
+            <pre className="p-2 bg-bg-elevated rounded text-[10px] font-mono text-text-tertiary select-all">
+{`openssl verify -CAfile AppleRootCA.pem provider.pem`}
+            </pre>
+            <p>If valid, this proves the device (serial: <code className="bg-bg-elevated px-1 rounded">{provider.mda_serial}</code>) is a real {provider.chip_name} verified by Apple.</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProviderCard({ provider }: { provider: Provider }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -198,37 +269,11 @@ function ProviderCard({ provider }: { provider: Provider }) {
             </div>
           )}
 
-          <div className="pt-2 border-t border-border-dim/50 space-y-2">
-            {provider.mda_cert_chain_b64 && provider.mda_cert_chain_b64.length > 0 && (
-              <button
-                onClick={() => {
-                  const pem = provider.mda_cert_chain_b64!
-                    .map((b64) => {
-                      const lines = b64.match(/.{1,64}/g) || [];
-                      return `-----BEGIN CERTIFICATE-----\n${lines.join("\n")}\n-----END CERTIFICATE-----`;
-                    })
-                    .join("\n\n");
-                  const blob = new Blob([pem], { type: "application/x-pem-file" });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = `eigeninference-${provider.mda_serial || provider.provider_id}-cert-chain.pem`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                }}
-                className="text-xs text-accent-brand hover:underline inline-flex items-center gap-1 cursor-pointer"
-              >
-                Download certificate chain (PEM)
-              </button>
-            )}
-            <p className="text-xs text-text-tertiary leading-relaxed">
-              Verify independently via{" "}
-              <a href="https://www.apple.com/certificateauthority/" target="_blank" rel="noopener noreferrer"
-                className="text-accent-brand hover:underline inline-flex items-center gap-0.5">
-                Apple&apos;s Root CA <ExternalLink size={10} />
-              </a>
-            </p>
-          </div>
+          {provider.mda_cert_chain_b64 && provider.mda_cert_chain_b64.length > 0 && (
+            <div className="pt-3 border-t border-border-dim/50">
+              <VerifyCertSection provider={provider} />
+            </div>
+          )}
         </div>
       )}
     </div>

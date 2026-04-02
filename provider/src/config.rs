@@ -33,6 +33,11 @@ pub struct BackendSettings {
     pub port: u16,
     pub model: Option<String>,
     pub continuous_batching: bool,
+    /// Which models to advertise to the network. If empty, all downloaded models
+    /// are advertised. If set, only these models are offered (others stay on disk
+    /// but are not served).
+    #[serde(default)]
+    pub enabled_models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -54,6 +59,7 @@ impl ProviderConfig {
                 port: 8100,
                 model: None,
                 continuous_batching: true,
+                enabled_models: Vec::new(),
             },
             coordinator: CoordinatorSettings {
                 url: "ws://localhost:8080/ws/provider".to_string(),

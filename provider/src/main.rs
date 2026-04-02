@@ -56,18 +56,83 @@ struct CatalogModel {
     min_ram_gb: i32,
 }
 
-fn default_model_type() -> String { "text".into() }
+fn default_model_type() -> String {
+    "text".into()
+}
 
 /// Hardcoded fallback catalog used when the coordinator is unreachable.
 fn fallback_catalog() -> Vec<CatalogModel> {
     vec![
-        CatalogModel { id: "CohereLabs/cohere-transcribe-03-2026".into(), s3_name: "cohere-transcribe-03-2026".into(), display_name: "Cohere Transcribe".into(), model_type: "transcription".into(), size_gb: 4.2, architecture: "2B conformer".into(), description: "Best-in-class STT".into(), min_ram_gb: 8 },
-        CatalogModel { id: "flux_2_klein_4b_q8p.ckpt".into(), s3_name: "flux-klein-4b-q8".into(), display_name: "FLUX.2 Klein 4B".into(), model_type: "image".into(), size_gb: 8.1, architecture: "4B diffusion".into(), description: "Fast image gen".into(), min_ram_gb: 16 },
-        CatalogModel { id: "flux_2_klein_9b_q8p.ckpt".into(), s3_name: "flux-klein-9b-q8".into(), display_name: "FLUX.2 Klein 9B".into(), model_type: "image".into(), size_gb: 13.0, architecture: "9B diffusion".into(), description: "Higher quality image gen".into(), min_ram_gb: 24 },
-        CatalogModel { id: "qwen3.5-27b-claude-opus-8bit".into(), s3_name: "qwen35-27b-claude-opus-8bit".into(), display_name: "Qwen3.5 27B Claude Opus".into(), model_type: "text".into(), size_gb: 27.0, architecture: "27B dense, Claude Opus distilled".into(), description: "Frontier quality reasoning".into(), min_ram_gb: 36 },
-        CatalogModel { id: "mlx-community/Trinity-Mini-8bit".into(), s3_name: "Trinity-Mini-8bit".into(), display_name: "Trinity Mini".into(), model_type: "text".into(), size_gb: 26.0, architecture: "27B Adaptive MoE".into(), description: "Fast agentic inference".into(), min_ram_gb: 48 },
-        CatalogModel { id: "mlx-community/Qwen3.5-122B-A10B-8bit".into(), s3_name: "Qwen3.5-122B-A10B-8bit".into(), display_name: "Qwen3.5 122B".into(), model_type: "text".into(), size_gb: 122.0, architecture: "122B MoE, 10B active".into(), description: "Best quality".into(), min_ram_gb: 128 },
-        CatalogModel { id: "mlx-community/MiniMax-M2.5-8bit".into(), s3_name: "MiniMax-M2.5-8bit".into(), display_name: "MiniMax M2.5".into(), model_type: "text".into(), size_gb: 243.0, architecture: "239B MoE, 11B active".into(), description: "SOTA coding, 100 tok/s".into(), min_ram_gb: 256 },
+        CatalogModel {
+            id: "CohereLabs/cohere-transcribe-03-2026".into(),
+            s3_name: "cohere-transcribe-03-2026".into(),
+            display_name: "Cohere Transcribe".into(),
+            model_type: "transcription".into(),
+            size_gb: 4.2,
+            architecture: "2B conformer".into(),
+            description: "Best-in-class STT".into(),
+            min_ram_gb: 8,
+        },
+        CatalogModel {
+            id: "flux_2_klein_4b_q8p.ckpt".into(),
+            s3_name: "flux-klein-4b-q8".into(),
+            display_name: "FLUX.2 Klein 4B".into(),
+            model_type: "image".into(),
+            size_gb: 8.1,
+            architecture: "4B diffusion".into(),
+            description: "Fast image gen".into(),
+            min_ram_gb: 16,
+        },
+        CatalogModel {
+            id: "flux_2_klein_9b_q8p.ckpt".into(),
+            s3_name: "flux-klein-9b-q8".into(),
+            display_name: "FLUX.2 Klein 9B".into(),
+            model_type: "image".into(),
+            size_gb: 13.0,
+            architecture: "9B diffusion".into(),
+            description: "Higher quality image gen".into(),
+            min_ram_gb: 24,
+        },
+        CatalogModel {
+            id: "qwen3.5-27b-claude-opus-8bit".into(),
+            s3_name: "qwen35-27b-claude-opus-8bit".into(),
+            display_name: "Qwen3.5 27B Claude Opus".into(),
+            model_type: "text".into(),
+            size_gb: 27.0,
+            architecture: "27B dense, Claude Opus distilled".into(),
+            description: "Frontier quality reasoning".into(),
+            min_ram_gb: 36,
+        },
+        CatalogModel {
+            id: "mlx-community/Trinity-Mini-8bit".into(),
+            s3_name: "Trinity-Mini-8bit".into(),
+            display_name: "Trinity Mini".into(),
+            model_type: "text".into(),
+            size_gb: 26.0,
+            architecture: "27B Adaptive MoE".into(),
+            description: "Fast agentic inference".into(),
+            min_ram_gb: 48,
+        },
+        CatalogModel {
+            id: "mlx-community/Qwen3.5-122B-A10B-8bit".into(),
+            s3_name: "Qwen3.5-122B-A10B-8bit".into(),
+            display_name: "Qwen3.5 122B".into(),
+            model_type: "text".into(),
+            size_gb: 122.0,
+            architecture: "122B MoE, 10B active".into(),
+            description: "Best quality".into(),
+            min_ram_gb: 128,
+        },
+        CatalogModel {
+            id: "mlx-community/MiniMax-M2.5-8bit".into(),
+            s3_name: "MiniMax-M2.5-8bit".into(),
+            display_name: "MiniMax M2.5".into(),
+            model_type: "text".into(),
+            size_gb: 243.0,
+            architecture: "239B MoE, 11B active".into(),
+            description: "SOTA coding, 100 tok/s".into(),
+            min_ram_gb: 256,
+        },
     ]
 }
 
@@ -92,12 +157,19 @@ fn get_available_disk_gb() -> f64 {
 /// Handles both single-file and sharded safetensors models by checking
 /// for `model.safetensors.index.json` and downloading each shard.
 fn download_model_from_cdn(s3_name: &str, cache_dir: &std::path::Path, display_name: &str) -> bool {
-    let base = format!("https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev/{}", s3_name);
+    let base = format!(
+        "https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev/{}",
+        s3_name
+    );
 
     // 1. Download config.json to verify the model exists on CDN
     let config_ok = std::process::Command::new("curl")
-        .args(["-fsSL", &format!("{}/config.json", base),
-               "-o", &cache_dir.join("config.json").to_string_lossy()])
+        .args([
+            "-fsSL",
+            &format!("{}/config.json", base),
+            "-o",
+            &cache_dir.join("config.json").to_string_lossy(),
+        ])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -108,10 +180,18 @@ fn download_model_from_cdn(s3_name: &str, cache_dir: &std::path::Path, display_n
     }
 
     // 2. Download tokenizer files
-    for f in &["tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"] {
+    for f in &[
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+    ] {
         let _ = std::process::Command::new("curl")
-            .args(["-fsSL", &format!("{}/{}", base, f),
-                   "-o", &cache_dir.join(f).to_string_lossy()])
+            .args([
+                "-fsSL",
+                &format!("{}/{}", base, f),
+                "-o",
+                &cache_dir.join(f).to_string_lossy(),
+            ])
             .status();
     }
 
@@ -127,8 +207,12 @@ fn download_model_from_cdn(s3_name: &str, cache_dir: &std::path::Path, display_n
     if single_ok {
         println!("  Downloading {} weights...", display_name);
         let ok = std::process::Command::new("curl")
-            .args(["-f#L", &format!("{}/model.safetensors", base),
-                   "-o", &cache_dir.join("model.safetensors").to_string_lossy()])
+            .args([
+                "-f#L",
+                &format!("{}/model.safetensors", base),
+                "-o",
+                &cache_dir.join("model.safetensors").to_string_lossy(),
+            ])
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
@@ -141,8 +225,12 @@ fn download_model_from_cdn(s3_name: &str, cache_dir: &std::path::Path, display_n
     // 4. Sharded model: download index, parse shard names, download each
     let index_path = cache_dir.join("model.safetensors.index.json");
     let index_ok = std::process::Command::new("curl")
-        .args(["-fsSL", &format!("{}/model.safetensors.index.json", base),
-               "-o", &index_path.to_string_lossy()])
+        .args([
+            "-fsSL",
+            &format!("{}/model.safetensors.index.json", base),
+            "-o",
+            &index_path.to_string_lossy(),
+        ])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -155,11 +243,17 @@ fn download_model_from_cdn(s3_name: &str, cache_dir: &std::path::Path, display_n
     // Parse the index to get unique shard filenames
     let index_data = match std::fs::read_to_string(&index_path) {
         Ok(d) => d,
-        Err(_) => { println!("  ⚠ Could not read weight index"); return false; }
+        Err(_) => {
+            println!("  ⚠ Could not read weight index");
+            return false;
+        }
     };
     let index_json: serde_json::Value = match serde_json::from_str(&index_data) {
         Ok(v) => v,
-        Err(_) => { println!("  ⚠ Could not parse weight index"); return false; }
+        Err(_) => {
+            println!("  ⚠ Could not parse weight index");
+            return false;
+        }
     };
 
     let mut shards: Vec<String> = Vec::new();
@@ -179,13 +273,21 @@ fn download_model_from_cdn(s3_name: &str, cache_dir: &std::path::Path, display_n
         return false;
     }
 
-    println!("  Downloading {} ({} shards)...", display_name, shards.len());
+    println!(
+        "  Downloading {} ({} shards)...",
+        display_name,
+        shards.len()
+    );
     let mut all_ok = true;
     for (i, shard) in shards.iter().enumerate() {
         println!("  [{}/{}] {}", i + 1, shards.len(), shard);
         let ok = std::process::Command::new("curl")
-            .args(["-f#L", &format!("{}/{}", base, shard),
-                   "-o", &cache_dir.join(shard).to_string_lossy()])
+            .args([
+                "-f#L",
+                &format!("{}/{}", base, shard),
+                "-o",
+                &cache_dir.join(shard).to_string_lossy(),
+            ])
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
@@ -200,6 +302,61 @@ fn download_model_from_cdn(s3_name: &str, cache_dir: &std::path::Path, display_n
         println!("  ✓ {} downloaded ({} shards)", display_name, shards.len());
     }
     all_ok
+}
+
+/// Ensure a model's tokenizer_config.json contains a chat_template.
+///
+/// vllm-mlx calls `tokenizer.apply_chat_template()` which requires this field.
+/// If missing (common with custom quantizations or stripped configs), inject the
+/// standard ChatML template used by Qwen/Llama-family models.
+fn ensure_chat_template(model_path: &str) {
+    let config_path = std::path::Path::new(model_path).join("tokenizer_config.json");
+    if !config_path.exists() {
+        return;
+    }
+
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let mut config: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    if config.get("chat_template").is_some() {
+        return;
+    }
+
+    // Standard ChatML template (compatible with Qwen, Llama, and most instruction-tuned models)
+    let chatml_template = concat!(
+        "{%- if messages[0]['role'] == 'system' %}",
+        "{{- '<|im_start|>system\\n' + messages[0]['content'] + '<|im_end|>\\n' }}",
+        "{%- else %}",
+        "{{- '<|im_start|>system\\nYou are a helpful assistant.<|im_end|>\\n' }}",
+        "{%- endif %}",
+        "{%- for message in messages %}",
+        "{%- if (message.role == 'user') or (message.role == 'system' and not loop.first) or (message.role == 'assistant') %}",
+        "{{- '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}",
+        "{%- endif %}",
+        "{%- endfor %}",
+        "{%- if add_generation_prompt %}",
+        "{{- '<|im_start|>assistant\\n' }}",
+        "{%- endif %}"
+    );
+
+    if let Some(obj) = config.as_object_mut() {
+        obj.insert(
+            "chat_template".to_string(),
+            serde_json::Value::String(chatml_template.to_string()),
+        );
+    }
+
+    match std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap_or_default()) {
+        Ok(()) => tracing::info!("Injected default ChatML template into tokenizer_config.json"),
+        Err(e) => tracing::warn!("Failed to write chat_template to tokenizer config: {e}"),
+    }
 }
 
 /// Fetch the model catalog from the coordinator. Falls back to hardcoded list on failure.
@@ -259,7 +416,10 @@ enum Command {
         local: bool,
 
         /// Coordinator WebSocket URL
-        #[arg(long, default_value = "wss://inference-test.openinnovation.dev/ws/provider")]
+        #[arg(
+            long,
+            default_value = "wss://inference-test.openinnovation.dev/ws/provider"
+        )]
         coordinator: String,
 
         /// Port for local API server
@@ -283,11 +443,17 @@ enum Command {
     /// One-command setup: enroll in MDM, download model, start serving
     Install {
         /// Coordinator URL (WebSocket for serving, HTTPS for API)
-        #[arg(long, default_value = "wss://inference-test.openinnovation.dev/ws/provider")]
+        #[arg(
+            long,
+            default_value = "wss://inference-test.openinnovation.dev/ws/provider"
+        )]
         coordinator: String,
 
         /// MDM enrollment profile URL
-        #[arg(long, default_value = "https://inference-test.openinnovation.dev/enroll.mobileconfig")]
+        #[arg(
+            long,
+            default_value = "https://inference-test.openinnovation.dev/enroll.mobileconfig"
+        )]
         profile_url: String,
 
         /// Model to serve (auto-selects if not specified)
@@ -339,7 +505,10 @@ enum Command {
     /// Start the provider in the background (uses existing config)
     Start {
         /// Coordinator WebSocket URL
-        #[arg(long, default_value = "wss://inference-test.openinnovation.dev/ws/provider")]
+        #[arg(
+            long,
+            default_value = "wss://inference-test.openinnovation.dev/ws/provider"
+        )]
         coordinator: String,
 
         /// Model to serve
@@ -424,7 +593,10 @@ async fn main() -> Result<()> {
         Command::Unenroll => cmd_unenroll().await,
         Command::Benchmark => cmd_benchmark().await,
         Command::Status => cmd_status().await,
-        Command::Models { action, coordinator } => cmd_models(action, coordinator).await,
+        Command::Models {
+            action,
+            coordinator,
+        } => cmd_models(action, coordinator).await,
         Command::Earnings { coordinator } => cmd_earnings(coordinator).await,
         Command::Doctor { coordinator } => cmd_doctor(coordinator).await,
         Command::Start { coordinator, model } => cmd_start(coordinator, model).await,
@@ -473,8 +645,10 @@ async fn cmd_install(
     // Step 1: Detect hardware
     println!("Step 1/6: Detecting hardware...");
     let hw = hardware::detect()?;
-    println!("  ✓ {} ({} GB RAM, {} GPU cores, {} GB/s bandwidth)",
-        hw.chip_name, hw.memory_gb, hw.gpu_cores, hw.memory_bandwidth_gbs);
+    println!(
+        "  ✓ {} ({} GB RAM, {} GPU cores, {} GB/s bandwidth)",
+        hw.chip_name, hw.memory_gb, hw.gpu_cores, hw.memory_bandwidth_gbs
+    );
     println!();
 
     // Step 2: Initialize config, keys, and wallet
@@ -505,7 +679,10 @@ async fn cmd_install(
         let client = reqwest::Client::new();
         let resp = client.get(&profile_url).send().await?;
         if !resp.status().is_success() {
-            println!("  ⚠ Could not download profile (HTTP {}). Skipping MDM enrollment.", resp.status());
+            println!(
+                "  ⚠ Could not download profile (HTTP {}). Skipping MDM enrollment.",
+                resp.status()
+            );
             println!("    You can enroll later: dginf-provider enroll");
         } else {
             let profile_bytes = resp.bytes().await?;
@@ -517,7 +694,9 @@ async fn cmd_install(
                 println!("  Install it in System Settings → General → Device Management");
                 println!("  (Only queries security status — no access to personal data)");
                 println!();
-                let _ = std::process::Command::new("open").arg(&profile_path).status();
+                let _ = std::process::Command::new("open")
+                    .arg(&profile_path)
+                    .status();
             }
 
             println!("  Press Enter after installing (or to skip)...");
@@ -554,24 +733,39 @@ async fn cmd_install(
     };
 
     if ram >= 256 {
-        if let Some(m) = find_model("MiniMax-M2.5") { defaults.push(m); }
+        if let Some(m) = find_model("MiniMax-M2.5") {
+            defaults.push(m);
+        }
     } else if ram >= 128 {
-        if let Some(m) = find_model("Qwen3.5-122B") { defaults.push(m); }
+        if let Some(m) = find_model("Qwen3.5-122B") {
+            defaults.push(m);
+        }
     } else if ram >= 48 {
-        if let Some(m) = find_model("qwen3.5-27b-claude-opus") { defaults.push(m); }
+        if let Some(m) = find_model("qwen3.5-27b-claude-opus") {
+            defaults.push(m);
+        }
     } else if ram >= 36 {
-        if let Some(m) = find_model("qwen3.5-27b-claude-opus") { defaults.push(m); }
+        if let Some(m) = find_model("qwen3.5-27b-claude-opus") {
+            defaults.push(m);
+        }
     } else if ram >= 24 {
-        if let Some(m) = find_model("flux_2_klein_9b") { defaults.push(m); }
+        if let Some(m) = find_model("flux_2_klein_9b") {
+            defaults.push(m);
+        }
     } else if ram >= 16 {
-        if let Some(m) = find_model("flux_2_klein_4b") { defaults.push(m); }
+        if let Some(m) = find_model("flux_2_klein_4b") {
+            defaults.push(m);
+        }
     } else {
-        if let Some(m) = find_model("cohere-transcribe") { defaults.push(m); }
+        if let Some(m) = find_model("cohere-transcribe") {
+            defaults.push(m);
+        }
     }
 
     // Optionals: every catalog model that fits in RAM but isn't already a default
     let default_ids: Vec<&str> = defaults.iter().map(|m| m.id.as_str()).collect();
-    let optionals: Vec<&CatalogModel> = catalog.iter()
+    let optionals: Vec<&CatalogModel> = catalog
+        .iter()
         .filter(|m| m.min_ram_gb <= ram as i32)
         .filter(|m| !default_ids.contains(&m.id.as_str()))
         .collect();
@@ -586,8 +780,13 @@ async fn cmd_install(
         for m in &defaults {
             let downloaded = available.iter().any(|a| a.id == m.id);
             let status = if downloaded { "✓ ready" } else { "  " };
-            println!("    {} {:30} {:>5.1} GB  {:6}  {}", status, m.display_name, m.size_gb, m.model_type, m.description);
-            if !downloaded { total_default_size += m.size_gb; }
+            println!(
+                "    {} {:30} {:>5.1} GB  {:6}  {}",
+                status, m.display_name, m.size_gb, m.model_type, m.description
+            );
+            if !downloaded {
+                total_default_size += m.size_gb;
+            }
         }
         println!();
 
@@ -596,11 +795,17 @@ async fn cmd_install(
 
         if total_default_size > 0.0 {
             if total_default_size > disk_available_gb {
-                println!("  ⚠ Not enough disk space ({:.0} GB needed, {:.0} GB available)", total_default_size, disk_available_gb);
+                println!(
+                    "  ⚠ Not enough disk space ({:.0} GB needed, {:.0} GB available)",
+                    total_default_size, disk_available_gb
+                );
                 println!("  Free up disk space and retry: dginf-provider install");
             } else {
                 use std::io::Write;
-                print!("  Download default models? ({:.0} GB) [Y/n]: ", total_default_size);
+                print!(
+                    "  Download default models? ({:.0} GB) [Y/n]: ",
+                    total_default_size
+                );
                 std::io::stdout().flush()?;
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input)?;
@@ -625,7 +830,15 @@ async fn cmd_install(
             for (i, m) in optionals.iter().enumerate() {
                 let downloaded = available.iter().any(|a| a.id == m.id);
                 let status = if downloaded { "✓" } else { " " };
-                println!("    [{}] {} {:30} {:>5.1} GB  {:6}  {}", i + 1, status, m.display_name, m.size_gb, m.model_type, m.description);
+                println!(
+                    "    [{}] {} {:30} {:>5.1} GB  {:6}  {}",
+                    i + 1,
+                    status,
+                    m.display_name,
+                    m.size_gb,
+                    m.model_type,
+                    m.description
+                );
             }
             println!();
             use std::io::Write;
@@ -656,12 +869,14 @@ async fn cmd_install(
             .replace("/ws/provider", "");
 
         for model_id in &models_to_download {
-            let s3_name = catalog.iter()
+            let s3_name = catalog
+                .iter()
                 .find(|cm| cm.id == *model_id)
                 .map(|cm| cm.s3_name.as_str())
                 .unwrap_or_else(|| model_id.split('/').last().unwrap_or(model_id));
 
-            let display = catalog.iter()
+            let display = catalog
+                .iter()
                 .find(|cm| cm.id == *model_id)
                 .map(|cm| cm.display_name.as_str())
                 .unwrap_or(model_id);
@@ -669,7 +884,8 @@ async fn cmd_install(
             println!();
             println!("  Downloading {}...", display);
 
-            let cache_dir = dirs::home_dir().unwrap_or_default()
+            let cache_dir = dirs::home_dir()
+                .unwrap_or_default()
                 .join(".cache/huggingface/hub")
                 .join(format!("models--{}", model_id.replace('/', "--")))
                 .join("snapshots/main");
@@ -678,10 +894,14 @@ async fn cmd_install(
             // Try pre-packaged tarball first (fastest)
             let tarball_url = format!("{}/dl/models/{}.tar.gz", base_url, s3_name);
             let tar_status = std::process::Command::new("bash")
-                .args(["-c", &format!(
-                    "set -o pipefail; curl -f#L '{}' | tar xz -C '{}'",
-                    tarball_url, cache_dir.display()
-                )])
+                .args([
+                    "-c",
+                    &format!(
+                        "set -o pipefail; curl -f#L '{}' | tar xz -C '{}'",
+                        tarball_url,
+                        cache_dir.display()
+                    ),
+                ])
                 .status();
 
             match tar_status {
@@ -696,7 +916,8 @@ async fn cmd_install(
         if !defaults.is_empty() {
             defaults[0].id.clone()
         } else {
-            catalog.iter()
+            catalog
+                .iter()
                 .filter(|m| hw.memory_available_gb as f64 >= m.size_gb)
                 .last()
                 .map(|m| m.id.clone())
@@ -774,8 +995,12 @@ async fn cmd_serve(
     // Kill any existing provider/mlx_lm processes to avoid "address already in use"
     #[cfg(unix)]
     {
-        let _ = std::process::Command::new("pkill").args(["-f", "mlx_lm.server"]).status();
-        let _ = std::process::Command::new("pkill").args(["-f", "vllm_mlx"]).status();
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "mlx_lm.server"])
+            .status();
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "vllm_mlx"])
+            .status();
         // Small delay to let ports free up
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
@@ -807,7 +1032,10 @@ async fn cmd_serve(
             .stderr(std::process::Stdio::null())
             .spawn()
         {
-            Ok(_) => tracing::info!("Sleep prevention active (caffeinate watching PID {})", our_pid),
+            Ok(_) => tracing::info!(
+                "Sleep prevention active (caffeinate watching PID {})",
+                our_pid
+            ),
             Err(e) => tracing::warn!("Could not prevent sleep: {e}"),
         }
     }
@@ -891,6 +1119,12 @@ async fn cmd_serve(
         }
     }
 
+    // Backend URL is deterministic — set it early so coordinator and proxy
+    // can reference it before the backend process is actually running.
+    let backend_url_str = format!("http://127.0.0.1:{}", be_port);
+    let backend_url = backend_url_str.clone();
+    tracing::info!("Backend URL: {backend_url}");
+
     // Kill any existing process on our backend port to avoid EADDRINUSE
     if let Ok(output) = std::process::Command::new("lsof")
         .args(["-ti", &format!(":{}", be_port)])
@@ -900,7 +1134,11 @@ async fn cmd_serve(
         for pid in pids.split_whitespace() {
             if let Ok(pid_num) = pid.parse::<u32>() {
                 if pid_num != std::process::id() {
-                    tracing::info!("Killing existing process on port {}: PID {}", be_port, pid_num);
+                    tracing::info!(
+                        "Killing existing process on port {}: PID {}",
+                        be_port,
+                        pid_num
+                    );
                     let _ = std::process::Command::new("kill").arg(pid).output();
                 }
             }
@@ -917,11 +1155,13 @@ async fn cmd_serve(
         // Only set PYTHONHOME if this is a real standalone Python install
         // (not a symlink to uv/pyenv/system Python). Wrong PYTHONHOME causes
         // Python to fail to find its stdlib and crash silently.
-        let is_standalone = !bundled_python.is_symlink()
-            && dginf_dir.join("python/lib/python3.12/os.py").exists();
+        let is_standalone =
+            !bundled_python.is_symlink() && dginf_dir.join("python/lib/python3.12/os.py").exists();
         if is_standalone {
             tracing::info!("Using bundled Python: {}", bundled_python.display());
-            unsafe { std::env::set_var("PYTHONHOME", dginf_dir.join("python")); }
+            unsafe {
+                std::env::set_var("PYTHONHOME", dginf_dir.join("python"));
+            }
         } else {
             tracing::info!("Using Python at: {}", bundled_python.display());
         }
@@ -931,34 +1171,235 @@ async fn cmd_serve(
         "python3".to_string()
     };
 
-    // Start inference backend via bundled Python
-    tracing::info!("Starting inference backend for model: {}", model);
+    // =========================================================================
+    // Phase 1: Connect to coordinator IMMEDIATELY with ALL downloaded models.
+    //
+    // The provider registers with every model it has cached locally. The
+    // backend loads in the background — requests will fail with 503 until the
+    // backend is healthy, which is fine because the coordinator won't route
+    // traffic until it sees a healthy heartbeat.
+    // =========================================================================
+    if !local {
+        tracing::info!("Connecting to coordinator: {coordinator_url}");
+    }
+
+    // Advertise downloaded models. If enabled_models is set in config,
+    // only those are offered to the network. Otherwise all downloaded models.
+    let all_scanned = models::scan_models(&hw);
+    let mut advertised_models = if cfg.backend.enabled_models.is_empty() {
+        all_scanned
+    } else {
+        let enabled = &cfg.backend.enabled_models;
+        let filtered: Vec<_> = all_scanned
+            .into_iter()
+            .filter(|m| enabled.iter().any(|e| m.id.contains(e) || e.contains(&m.id)))
+            .collect();
+        if filtered.is_empty() {
+            tracing::warn!("No enabled_models matched downloaded models — advertising all");
+            models::scan_models(&hw)
+        } else {
+            tracing::info!("Advertising {} of {} downloaded models (filtered by enabled_models)", filtered.len(), models::scan_models(&hw).len());
+            filtered
+        }
+    };
+
+    // STT model env vars (needed for both advertising and backend startup)
+    let stt_port = be_port + 1;
+    let stt_model_path = std::env::var("DGINF_STT_MODEL").unwrap_or_default();
+    let stt_model_id = std::env::var("DGINF_STT_MODEL_ID")
+        .unwrap_or_else(|_| "CohereLabs/cohere-transcribe-03-2026".to_string());
+
+    // Image model env vars (needed for both advertising and backend startup)
+    let image_port = be_port + 2;
+    let image_model = std::env::var("DGINF_IMAGE_MODEL").unwrap_or_default();
+    let image_model_id =
+        std::env::var("DGINF_IMAGE_MODEL_ID").unwrap_or_else(|_| image_model.clone());
+    let image_model_path = std::env::var("DGINF_IMAGE_MODEL_PATH").unwrap_or_default();
+
+    // Advertise STT model if configured (backend starts later)
+    if !stt_model_path.is_empty() && !stt_model_id.is_empty() {
+        advertised_models.push(models::ModelInfo {
+            id: stt_model_id.clone(),
+            model_type: Some("stt".to_string()),
+            parameters: None,
+            quantization: None,
+            size_bytes: 0,
+            estimated_memory_gb: 4.0,
+        });
+        tracing::info!("Advertising STT model: {stt_model_id}");
+    }
+
+    // Advertise image model if configured (backend starts later)
+    if !image_model.is_empty() && !image_model_id.is_empty() {
+        advertised_models.push(models::ModelInfo {
+            id: image_model_id.clone(),
+            model_type: Some("image".to_string()),
+            parameters: None,
+            quantization: None,
+            size_bytes: 0,
+            estimated_memory_gb: 8.0,
+        });
+        tracing::info!("Advertising image model: {image_model_id}");
+    }
+
+    // Set up coordinator connection (spawned before backend loading)
+    let coordinator_handle;
+    let event_rx_opt;
+    let outbound_tx_opt;
+    let shutdown_tx_opt;
+    let inference_active_opt;
+    let health_inference_active_opt;
+    let provider_stats_opt;
+
+    if !local {
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
+        let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(64);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let backend_name = "vllm_mlx";
+
+        let public_key_b64 = node_keypair.public_key_base64();
+
+        // Compute SHA-256 of our own binary for integrity attestation.
+        let binary_hash = security::self_binary_hash();
+
+        // Generate Secure Enclave attestation, binding the X25519 encryption key
+        // and our binary hash (so coordinator can verify we're running blessed code).
+        let attestation = generate_attestation(&public_key_b64, binary_hash.as_deref());
+
+        // Load device auth token if the provider has been linked to an account.
+        let auth_token = load_auth_token();
+        if auth_token.is_some() {
+            tracing::info!("Provider linked to account (auth token loaded)");
+        }
+
+        // Shared flag: true when inference is in progress. Health monitor
+        // skips crash detection while the backend is busy generating tokens,
+        // because the Python GIL blocks /health during inference.
+        let inference_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let health_inference_active = inference_active.clone();
+
+        // Shared atomic counters for stats reported in heartbeats.
+        let provider_stats = std::sync::Arc::new(coordinator::AtomicProviderStats::new());
+
+        // Shared current model name for heartbeat reporting.
+        let current_model: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Some(model.clone())));
+
+        let client = coordinator::CoordinatorClient::new(
+            coordinator_url,
+            hw.clone(),
+            advertised_models,
+            backend_name.to_string(),
+            std::time::Duration::from_secs(cfg.coordinator.heartbeat_interval_secs),
+            Some(public_key_b64),
+        )
+        .with_attestation(attestation)
+        .with_wallet_address(
+            wallet::Wallet::load_or_create()
+                .ok()
+                .map(|w| w.address.clone()),
+        )
+        .with_auth_token(auth_token)
+        .with_stats(provider_stats.clone())
+        .with_inference_active(inference_active.clone())
+        .with_current_model(current_model);
+
+        // Spawn coordinator connection — this connects immediately while
+        // the backend is still loading below.
+        let handle = tokio::spawn(async move {
+            if let Err(e) = client.run(event_tx, outbound_rx, shutdown_rx).await {
+                tracing::error!("Coordinator connection error: {e}");
+            }
+        });
+
+        coordinator_handle = Some(handle);
+        event_rx_opt = Some(event_rx);
+        outbound_tx_opt = Some(outbound_tx);
+        shutdown_tx_opt = Some(shutdown_tx);
+        inference_active_opt = Some(inference_active);
+        health_inference_active_opt = Some(health_inference_active);
+        provider_stats_opt = Some(provider_stats);
+    } else {
+        coordinator_handle = None;
+        event_rx_opt = None;
+        outbound_tx_opt = None;
+        shutdown_tx_opt = None;
+        inference_active_opt = None;
+        health_inference_active_opt = None;
+        provider_stats_opt = None;
+    }
+
+    // =========================================================================
+    // Phase 2: Start backend processes in background.
+    //
+    // The coordinator is already connected and advertising our models.
+    // Backend loading happens concurrently — the provider is visible to the
+    // network immediately, and becomes ready to serve once health checks pass.
+    // =========================================================================
+
+    // Resolve model ID to local path on disk so the backend loads from disk
+    // directly instead of trying to download from HuggingFace.
+    let model_path = models::resolve_local_path(&model)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| {
+            tracing::warn!("Could not resolve local path for {model} — using ID directly");
+            model.clone()
+        });
+    tracing::info!("Starting inference backend for model: {} (path: {})", model, model_path);
+
+    // Ensure the model's tokenizer_config.json has a chat_template.
+    // Some models (especially custom quantizations) ship without one,
+    // which causes vllm-mlx to crash with "tokenizer.chat_template is not set".
+    ensure_chat_template(&model_path);
 
     // Backend stdout/stderr is suppressed to prevent prompt content from
     // leaking into provider logs. vllm_mlx logs request previews at INFO
     // level, which would expose user prompts to the provider operator.
     // Health/crash detection uses HTTP health checks, not log parsing.
     let serve_result = std::process::Command::new(&python_cmd)
-        .args(["-m", "vllm_mlx.server", "--model", &model, "--port", &be_port.to_string()])
+        .args([
+            "-m",
+            "vllm_mlx.server",
+            "--model",
+            &model_path,
+            "--port",
+            &be_port.to_string(),
+        ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
 
     let backend_name = match serve_result {
         Ok(child) => {
-            tracing::info!("vllm-mlx started (PID: {:?}) on port {}", child.id(), be_port);
+            tracing::info!(
+                "vllm-mlx started (PID: {:?}) on port {}",
+                child.id(),
+                be_port
+            );
             "vllm-mlx"
         }
         Err(e) => {
             tracing::info!("vllm-mlx CLI failed ({e}), falling back to mlx_lm.server");
             let mlx_serve = std::process::Command::new(&python_cmd)
-                .args(["-m", "mlx_lm.server", "--model", &model, "--port", &be_port.to_string()])
+                .args([
+                    "-m",
+                    "mlx_lm.server",
+                    "--model",
+                    &model_path,
+                    "--port",
+                    &be_port.to_string(),
+                ])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn();
             match mlx_serve {
                 Ok(child) => {
-                    tracing::info!("mlx_lm.server started (PID: {:?}) on port {}", child.id(), be_port);
+                    tracing::info!(
+                        "mlx_lm.server started (PID: {:?}) on port {}",
+                        child.id(),
+                        be_port
+                    );
                     "mlx_lm"
                 }
                 Err(e) => anyhow::bail!(
@@ -972,9 +1413,8 @@ async fn cmd_serve(
 
     // Wait for model to load
     tracing::info!("Waiting for model to load...");
-    let backend_url_str = format!("http://127.0.0.1:{}", be_port);
     let mut backend_ready = false;
-    for i in 0..30 {
+    for i in 0..150 {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         if backend::check_health(&backend_url_str).await {
             tracing::info!("Backend ready after {}s", (i + 1) * 2);
@@ -988,19 +1428,32 @@ async fn cmd_serve(
         tracing::warn!("vllm_mlx backend did not become healthy — falling back to mlx_lm.server");
         #[cfg(unix)]
         {
-            let _ = std::process::Command::new("pkill").args(["-f", "vllm_mlx"]).status();
+            let _ = std::process::Command::new("pkill")
+                .args(["-f", "vllm_mlx"])
+                .status();
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         let mlx_serve = std::process::Command::new(&python_cmd)
-            .args(["-m", "mlx_lm.server", "--model", &model, "--port", &be_port.to_string()])
+            .args([
+                "-m",
+                "mlx_lm.server",
+                "--model",
+                &model_path,
+                "--port",
+                &be_port.to_string(),
+            ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn();
         match mlx_serve {
             Ok(child) => {
-                tracing::info!("mlx_lm.server started (PID: {:?}) on port {}", child.id(), be_port);
+                tracing::info!(
+                    "mlx_lm.server started (PID: {:?}) on port {}",
+                    child.id(),
+                    be_port
+                );
                 // Wait for mlx_lm to load
-                for i in 0..30 {
+                for i in 0..150 {
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     if backend::check_health(&backend_url_str).await {
                         tracing::info!("mlx_lm.server ready after {}s", (i + 1) * 2);
@@ -1017,19 +1470,11 @@ async fn cmd_serve(
         tracing::warn!("Backend health check timed out — continuing anyway");
     }
 
-    let backend_url = backend_url_str.clone();
-    tracing::info!("Backend URL: {backend_url}");
-
     // Start STT backend (continuous-batching stt_server.py) on be_port + 1 if available.
     // DGINF_STT_MODEL: local path or HuggingFace repo ID for the STT model.
     // DGINF_STT_MODEL_ID: clean model name for coordinator registration (optional,
     //   defaults to "CohereLabs/cohere-transcribe-03-2026").
-    let stt_port = be_port + 1;
-    let stt_model_path = std::env::var("DGINF_STT_MODEL")
-        .unwrap_or_default();
-    let stt_model_id = std::env::var("DGINF_STT_MODEL_ID")
-        .unwrap_or_else(|_| "CohereLabs/cohere-transcribe-03-2026".to_string());
-    let stt_available = if !stt_model_path.is_empty() {
+    let _stt_available = if !stt_model_path.is_empty() {
         tracing::info!("Starting STT backend on port {stt_port} for model: {stt_model_path}");
 
         // Find stt_server.py relative to the binary or in standard locations
@@ -1042,21 +1487,29 @@ async fn cmd_serve(
             let stt_result = std::process::Command::new(&python_cmd)
                 .args([
                     &script,
-                    "--model", &stt_model_path,
-                    "--port", &stt_port.to_string(),
-                    "--host", "127.0.0.1",
-                    "--max-batch-size", "16",
-                    "--max-wait-ms", "100",
+                    "--model",
+                    &stt_model_path,
+                    "--port",
+                    &stt_port.to_string(),
+                    "--host",
+                    "127.0.0.1",
+                    "--max-batch-size",
+                    "16",
+                    "--max-wait-ms",
+                    "100",
                 ])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn();
             match stt_result {
                 Ok(child) => {
-                    tracing::info!("STT server started (PID: {:?}) on port {stt_port}", child.id());
+                    tracing::info!(
+                        "STT server started (PID: {:?}) on port {stt_port}",
+                        child.id()
+                    );
                     // Wait for STT backend to be ready (model loading can take a few seconds)
                     let stt_url = format!("http://127.0.0.1:{stt_port}");
-                    for i in 0..30 {
+                    for i in 0..150 {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                         if backend::check_health(&stt_url).await {
                             tracing::info!("STT backend ready after {}s", (i + 1) * 2);
@@ -1082,12 +1535,7 @@ async fn cmd_serve(
     // Start image generation bridge on be_port + 2 if configured.
     // DGINF_IMAGE_MODEL: model ID for the image bridge (e.g. "flux-klein-4b").
     // DGINF_IMAGE_MODEL_PATH: model directory for gRPCServerCLI (optional).
-    let image_port = be_port + 2;
-    let image_model = std::env::var("DGINF_IMAGE_MODEL").unwrap_or_default();
-    let image_model_id = std::env::var("DGINF_IMAGE_MODEL_ID")
-        .unwrap_or_else(|_| image_model.clone());
-    let image_model_path = std::env::var("DGINF_IMAGE_MODEL_PATH").unwrap_or_default();
-    let image_available = if !image_model.is_empty() {
+    let _image_available = if !image_model.is_empty() {
         tracing::info!("Starting image bridge on port {image_port} for model: {image_model}");
 
         let mut bridge_cmd = std::process::Command::new(&python_cmd);
@@ -1095,9 +1543,10 @@ async fn cmd_serve(
         // Set PYTHONPATH so the image bridge package is importable.
         // Look for it next to the binary, in ~/.dginf, or in the source tree.
         let bridge_paths: Vec<String> = [
-            std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.join("image-bridge").to_string_lossy().to_string())),
+            std::env::current_exe().ok().and_then(|p| {
+                p.parent()
+                    .map(|d| d.join("image-bridge").to_string_lossy().to_string())
+            }),
             dirs::home_dir().map(|d| d.join(".dginf/image-bridge").to_string_lossy().to_string()),
         ]
         .iter()
@@ -1113,9 +1562,12 @@ async fn cmd_serve(
         }
 
         bridge_cmd.args([
-            "-m", "dginf_image_bridge",
-            "--port", &image_port.to_string(),
-            "--model", &image_model,
+            "-m",
+            "dginf_image_bridge",
+            "--port",
+            &image_port.to_string(),
+            "--model",
+            &image_model,
         ]);
         if !image_model_path.is_empty() {
             bridge_cmd.args(["--model-path", &image_model_path]);
@@ -1157,117 +1609,30 @@ async fn cmd_serve(
     // memory, which causes child Python processes to crash with SIGBUS.
     security::deny_debugger_attachment();
 
+    // =========================================================================
+    // Phase 3: Run the main event loop.
+    // =========================================================================
     if local {
         // Local-only mode: just start the HTTP server
         tracing::info!("Local-only mode on port {port}");
         server::start_server(port, backend_url).await?;
     } else {
-        // Coordinator mode: connect WebSocket + proxy
-        tracing::info!("Connecting to coordinator: {coordinator_url}");
-
-        // Only advertise the model we're actually serving. The provider
-        // can only serve one model at a time (the one loaded in vllm-mlx).
-        // Advertising all cached models causes routing failures when the
-        // coordinator sends requests for a model that isn't loaded.
-        let all_models = models::scan_models(&hw);
-        let mut available_models: Vec<_> = all_models
-            .into_iter()
-            .filter(|m| m.id == model)
-            .collect();
-        if available_models.is_empty() {
-            tracing::warn!("Active model {model} not found in scanned models — registering with ID only");
-        }
-
-        // Advertise STT model if available
-        if stt_available && !stt_model_id.is_empty() {
-            available_models.push(models::ModelInfo {
-                id: stt_model_id.clone(),
-                model_type: Some("stt".to_string()),
-                parameters: None,
-                quantization: None,
-                size_bytes: 0,
-                estimated_memory_gb: 4.0,
-            });
-            tracing::info!("Advertising STT model: {stt_model_id}");
-        }
-
-        // Advertise image model if available
-        if image_available && !image_model_id.is_empty() {
-            available_models.push(models::ModelInfo {
-                id: image_model_id.clone(),
-                model_type: Some("image".to_string()),
-                parameters: None,
-                quantization: None,
-                size_bytes: 0,
-                estimated_memory_gb: 8.0,
-            });
-            tracing::info!("Advertising image model: {image_model_id}");
-        }
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
-        let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(64);
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        // Unwrap coordinator state — guaranteed to be Some in non-local mode.
+        let mut event_rx = event_rx_opt.unwrap();
+        let outbound_tx = outbound_tx_opt.unwrap();
+        let shutdown_tx = shutdown_tx_opt.unwrap();
+        let inference_active = inference_active_opt.unwrap();
+        let health_inference_active = health_inference_active_opt.unwrap();
+        let provider_stats = provider_stats_opt.unwrap();
+        let coordinator_handle = coordinator_handle.unwrap();
 
         let backend_name = "vllm_mlx";
-
-        let public_key_b64 = node_keypair.public_key_base64();
-
-        // Compute SHA-256 of our own binary for integrity attestation.
-        let binary_hash = security::self_binary_hash();
-
-        // Generate Secure Enclave attestation, binding the X25519 encryption key
-        // and our binary hash (so coordinator can verify we're running blessed code).
-        let attestation = generate_attestation(&public_key_b64, binary_hash.as_deref());
-
-        // Load device auth token if the provider has been linked to an account.
-        let auth_token = load_auth_token();
-        if auth_token.is_some() {
-            tracing::info!("Provider linked to account (auth token loaded)");
-        }
-
-        // Shared flag: true when inference is in progress. Health monitor
-        // skips crash detection while the backend is busy generating tokens,
-        // because the Python GIL blocks /health during inference.
-        let inference_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let health_inference_active = inference_active.clone();
-
-        // Shared atomic counters for stats reported in heartbeats.
-        let provider_stats = std::sync::Arc::new(coordinator::AtomicProviderStats::new());
-
-        // Shared current model name for heartbeat reporting.
-        let current_model: std::sync::Arc<std::sync::Mutex<Option<String>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(Some(model.clone())));
-
-        let client = coordinator::CoordinatorClient::new(
-            coordinator_url,
-            hw.clone(),
-            available_models,
-            backend_name.to_string(),
-            std::time::Duration::from_secs(cfg.coordinator.heartbeat_interval_secs),
-            Some(public_key_b64),
-        )
-        .with_attestation(attestation)
-        .with_wallet_address(
-            wallet::Wallet::load_or_create()
-                .ok()
-                .map(|w| w.address.clone())
-        )
-        .with_auth_token(auth_token)
-        .with_stats(provider_stats.clone())
-        .with_inference_active(inference_active.clone())
-        .with_current_model(current_model);
-
-        // Spawn coordinator connection
-        let coordinator_handle = tokio::spawn(async move {
-            if let Err(e) = client.run(event_tx, outbound_rx, shutdown_rx).await {
-                tracing::error!("Coordinator connection error: {e}");
-            }
-        });
 
         // Spawn backend health monitor — detects crashes and auto-restarts.
         let health_url = backend_url_str.clone();
         let health_python = python_cmd.clone();
         let health_backend = backend_name.to_string();
-        let health_model = model.clone();
+        let health_model = model_path.clone();
         let health_port = be_port;
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
@@ -1285,23 +1650,39 @@ async fn cmd_serve(
 
                 if backend::check_health(&health_url).await {
                     if consecutive_failures > 0 {
-                        tracing::info!("Backend recovered after {} failed health checks", consecutive_failures);
+                        tracing::info!(
+                            "Backend recovered after {} failed health checks",
+                            consecutive_failures
+                        );
                         consecutive_failures = 0;
                     }
                 } else {
                     consecutive_failures += 1;
-                    tracing::warn!("Backend health check failed ({consecutive_failures} consecutive)");
-                    if consecutive_failures >= 8 {
+                    tracing::warn!(
+                        "Backend health check failed ({consecutive_failures} consecutive)"
+                    );
+                    if consecutive_failures >= 3 {
                         tracing::error!("Backend appears crashed — restarting...");
                         // Kill any zombie processes
                         #[cfg(unix)]
                         {
-                            let _ = std::process::Command::new("pkill").args(["-f", "vllm_mlx"]).status();
-                            let _ = std::process::Command::new("pkill").args(["-f", "mlx_lm.server"]).status();
+                            let _ = std::process::Command::new("pkill")
+                                .args(["-f", "vllm_mlx"])
+                                .status();
+                            let _ = std::process::Command::new("pkill")
+                                .args(["-f", "mlx_lm.server"])
+                                .status();
                         }
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-                        match reload_backend(&health_python, &health_backend, &health_model, health_port).await {
+                        match reload_backend(
+                            &health_python,
+                            &health_backend,
+                            &health_model,
+                            health_port,
+                        )
+                        .await
+                        {
                             Ok(()) => {
                                 tracing::info!("Backend auto-restarted successfully");
                                 consecutive_failures = 0;
@@ -1319,24 +1700,29 @@ async fn cmd_serve(
         let proxy_backend_url = backend_url.clone();
         let proxy_keypair = node_keypair.clone();
         let is_inprocess = proxy_backend_url.starts_with("inprocess://");
-        let idle_model = model.clone();
+        let idle_model = model_path.clone();
         let idle_python_cmd = python_cmd.clone();
         let idle_be_port = be_port;
         let idle_backend_name = backend_name.to_string();
         let proxy_stats = provider_stats.clone();
+        // The backend knows the model by its local path (e.g. /Users/.../.cache/.../snapshots/main/)
+        // but consumer requests use the short model ID (e.g. "qwen3.5-27b-claude-opus-8bit").
+        // We need to rewrite the model field before forwarding to the backend.
+        let backend_model_name = model_path.clone();
 
         #[cfg(feature = "python")]
-        let shared_engine: Option<std::sync::Arc<tokio::sync::Mutex<inference::InProcessEngine>>> =
-            if is_inprocess {
-                let mut engine = inference::InProcessEngine::new(model.clone());
-                if let Err(e) = engine.load() {
-                    tracing::error!("Failed to load in-process engine for event loop: {e}");
-                    anyhow::bail!("In-process engine load failed: {e}");
-                }
-                Some(std::sync::Arc::new(tokio::sync::Mutex::new(engine)))
-            } else {
-                None
-            };
+        let shared_engine: Option<
+            std::sync::Arc<tokio::sync::Mutex<inference::InProcessEngine>>,
+        > = if is_inprocess {
+            let mut engine = inference::InProcessEngine::new(model.clone());
+            if let Err(e) = engine.load() {
+                tracing::error!("Failed to load in-process engine for event loop: {e}");
+                anyhow::bail!("In-process engine load failed: {e}");
+            }
+            Some(std::sync::Arc::new(tokio::sync::Mutex::new(engine)))
+        } else {
+            None
+        };
 
         let event_handle = tokio::spawn(async move {
             use std::collections::HashMap;
@@ -1414,6 +1800,13 @@ async fn cmd_serve(
                                             continue;
                                         }
                                     }
+                                }
+
+                                // Rewrite the model field to match what the backend expects
+                                // (local path instead of short model ID).
+                                let mut body = body;
+                                if let Some(obj) = body.as_object_mut() {
+                                    obj.insert("model".to_string(), serde_json::json!(backend_model_name));
                                 }
 
                                 let tx = outbound_tx.clone();
@@ -1548,18 +1941,20 @@ async fn cmd_serve(
         tracing::info!("Shutting down...");
         let _ = shutdown_tx.send(true);
 
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            coordinator_handle,
-        )
-        .await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), coordinator_handle).await;
         event_handle.abort();
     }
 
     // Clean up mlx_lm.server
     #[cfg(unix)]
-    { let _ = std::process::Command::new("pkill").args(["-f", "mlx_lm.server"]).status();
-        let _ = std::process::Command::new("pkill").args(["-f", "vllm_mlx"]).status(); }
+    {
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "mlx_lm.server"])
+            .status();
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "vllm_mlx"])
+            .status();
+    }
 
     Ok(())
 }
@@ -1568,8 +1963,12 @@ async fn cmd_serve(
 async fn shutdown_backend() {
     #[cfg(unix)]
     {
-        let _ = std::process::Command::new("pkill").args(["-f", "vllm_mlx"]).status();
-        let _ = std::process::Command::new("pkill").args(["-f", "mlx_lm.server"]).status();
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "vllm_mlx"])
+            .status();
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "mlx_lm.server"])
+            .status();
     }
     // Give processes time to exit and release GPU memory
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -1598,26 +1997,32 @@ async fn reload_backend(
         .spawn()
         .map_err(|e| anyhow::anyhow!("failed to spawn backend: {e}"))?;
 
-    tracing::info!("Backend process started (PID: {:?}), waiting for model to load...", child.id());
+    tracing::info!(
+        "Backend process started (PID: {:?}), waiting for model to load...",
+        child.id()
+    );
 
     let backend_url = format!("http://127.0.0.1:{}", port);
 
     // Phase 1: Wait for HTTP server to start listening
     let mut server_up = false;
-    for i in 0..30 {
+    for i in 0..150 {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         if backend::check_health(&backend_url).await {
-            tracing::info!("Backend HTTP server ready after {}s, waiting for model load...", (i + 1) * 2);
+            tracing::info!(
+                "Backend HTTP server ready after {}s, waiting for model load...",
+                (i + 1) * 2
+            );
             server_up = true;
             break;
         }
     }
     if !server_up {
-        anyhow::bail!("backend HTTP server did not start within 60s after reload");
+        anyhow::bail!("backend HTTP server did not start within 300s after reload");
     }
 
     // Phase 2: Wait for model to be fully loaded into GPU memory
-    for i in 0..60 {
+    for i in 0..150 {
         if backend::check_model_loaded(&backend_url).await {
             tracing::info!("Model loaded into GPU memory after {}s total", i * 2);
             break;
@@ -1629,7 +2034,10 @@ async fn reload_backend(
     tracing::info!("Running warmup inference to prime GPU caches...");
     let warmup_start = std::time::Instant::now();
     backend::warmup_backend(&backend_url).await;
-    tracing::info!("Backend fully warm and ready (warmup took {:?})", warmup_start.elapsed());
+    tracing::info!(
+        "Backend fully warm and ready (warmup took {:?})",
+        warmup_start.elapsed()
+    );
 
     Ok(())
 }
@@ -1645,22 +2053,34 @@ async fn handle_inprocess_request(
 ) {
     // Pre-request SIP check
     if !security::check_sip_enabled() {
-        let _ = outbound_tx.send(protocol::ProviderMessage::InferenceError {
-            request_id,
-            error: "SIP disabled".to_string(),
-            status_code: 503,
-        }).await;
+        let _ = outbound_tx
+            .send(protocol::ProviderMessage::InferenceError {
+                request_id,
+                error: "SIP disabled".to_string(),
+                status_code: 503,
+            })
+            .await;
         return;
     }
 
     // Extract parameters from OpenAI-format body
-    let messages: Vec<serde_json::Value> = body.get("messages")
+    let messages: Vec<serde_json::Value> = body
+        .get("messages")
         .and_then(|m| m.as_array())
         .cloned()
         .unwrap_or_default();
-    let max_tokens = body.get("max_tokens").and_then(|v| v.as_u64()).unwrap_or(256);
-    let temperature = body.get("temperature").and_then(|v| v.as_f64()).unwrap_or(0.7);
-    let is_streaming = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    let max_tokens = body
+        .get("max_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(256);
+    let temperature = body
+        .get("temperature")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.7);
+    let is_streaming = body
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     // Run inference in blocking task (Python GIL)
     let engine_clone = engine.clone();
@@ -1668,7 +2088,8 @@ async fn handle_inprocess_request(
     let result = tokio::task::spawn_blocking(move || {
         let e = engine_clone.blocking_lock();
         e.generate(&messages, max_tokens, temperature)
-    }).await;
+    })
+    .await;
 
     match result {
         Ok(Ok(inference_result)) => {
@@ -1679,51 +2100,69 @@ async fn handle_inprocess_request(
                     "object": "chat.completion.chunk",
                     "choices": [{"delta": {"content": inference_result.text}, "index": 0, "finish_reason": "stop"}]
                 });
-                let _ = outbound_tx.send(protocol::ProviderMessage::InferenceResponseChunk {
-                    request_id: request_id.clone(),
-                    data: format!("data: {}", serde_json::to_string(&chunk).unwrap_or_default()),
-                }).await;
-                let _ = outbound_tx.send(protocol::ProviderMessage::InferenceResponseChunk {
-                    request_id: request_id.clone(),
-                    data: "data: [DONE]".to_string(),
-                }).await;
+                let _ = outbound_tx
+                    .send(protocol::ProviderMessage::InferenceResponseChunk {
+                        request_id: request_id.clone(),
+                        data: format!(
+                            "data: {}",
+                            serde_json::to_string(&chunk).unwrap_or_default()
+                        ),
+                    })
+                    .await;
+                let _ = outbound_tx
+                    .send(protocol::ProviderMessage::InferenceResponseChunk {
+                        request_id: request_id.clone(),
+                        data: "data: [DONE]".to_string(),
+                    })
+                    .await;
             }
 
-            let sign_data = format!("{}:{}:{}", request_id, inference_result.completion_tokens, "inprocess");
+            let sign_data = format!(
+                "{}:{}:{}",
+                request_id, inference_result.completion_tokens, "inprocess"
+            );
             let response_hash = security::sha256_hex(sign_data.as_bytes());
             let se_signature = security::se_sign(response_hash.as_bytes());
 
             let completion_tokens = inference_result.completion_tokens;
-            let _ = outbound_tx.send(protocol::ProviderMessage::InferenceComplete {
-                request_id,
-                usage: protocol::UsageInfo {
-                    prompt_tokens: inference_result.prompt_tokens,
-                    completion_tokens,
-                },
-                se_signature,
-                response_hash: Some(response_hash),
-            }).await;
+            let _ = outbound_tx
+                .send(protocol::ProviderMessage::InferenceComplete {
+                    request_id,
+                    usage: protocol::UsageInfo {
+                        prompt_tokens: inference_result.prompt_tokens,
+                        completion_tokens,
+                    },
+                    se_signature,
+                    response_hash: Some(response_hash),
+                })
+                .await;
             // Increment shared stats counters for heartbeat reporting.
             if let Some(s) = &stats {
-                s.requests_served.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                s.tokens_generated.fetch_add(completion_tokens, std::sync::atomic::Ordering::Relaxed);
+                s.requests_served
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                s.tokens_generated
+                    .fetch_add(completion_tokens, std::sync::atomic::Ordering::Relaxed);
             }
         }
         Ok(Err(e)) => {
             tracing::error!("In-process inference failed: {e}");
-            let _ = outbound_tx.send(protocol::ProviderMessage::InferenceError {
-                request_id,
-                error: e.to_string(),
-                status_code: 500,
-            }).await;
+            let _ = outbound_tx
+                .send(protocol::ProviderMessage::InferenceError {
+                    request_id,
+                    error: e.to_string(),
+                    status_code: 500,
+                })
+                .await;
         }
         Err(e) => {
             tracing::error!("Inference task panicked: {e}");
-            let _ = outbound_tx.send(protocol::ProviderMessage::InferenceError {
-                request_id,
-                error: "inference task failed".to_string(),
-                status_code: 500,
-            }).await;
+            let _ = outbound_tx
+                .send(protocol::ProviderMessage::InferenceError {
+                    request_id,
+                    error: "inference task failed".to_string(),
+                    status_code: 500,
+                })
+                .await;
         }
     }
 
@@ -1754,7 +2193,9 @@ fn find_stt_server_script() -> Option<String> {
         // In the provider source directory (development)
         std::path::PathBuf::from("stt_server.py"),
         // In ~/.dginf
-        dirs::home_dir().unwrap_or_default().join(".dginf/stt_server.py"),
+        dirs::home_dir()
+            .unwrap_or_default()
+            .join(".dginf/stt_server.py"),
     ];
 
     for path in &candidates {
@@ -1765,7 +2206,10 @@ fn find_stt_server_script() -> Option<String> {
     None
 }
 
-fn generate_attestation(encryption_key_base64: &str, binary_hash: Option<&str>) -> Option<Box<serde_json::value::RawValue>> {
+fn generate_attestation(
+    encryption_key_base64: &str,
+    binary_hash: Option<&str>,
+) -> Option<Box<serde_json::value::RawValue>> {
     // Look for the enclave CLI binary in common locations
     // Check ~/.dginf/bin first (standard install location)
     let home_bin = dirs::home_dir()
@@ -1830,7 +2274,11 @@ fn generate_attestation(encryption_key_base64: &str, binary_hash: Option<&str>) 
             }
         }
 
-        tracing::info!("Generating Secure Enclave attestation via {} (attempt {})", binary.display(), attempt + 1);
+        tracing::info!(
+            "Generating Secure Enclave attestation via {} (attempt {})",
+            binary.display(),
+            attempt + 1
+        );
 
         let mut args = vec!["attest", "--encryption-key", encryption_key_base64];
         let hash_string;
@@ -1885,7 +2333,9 @@ fn generate_attestation(encryption_key_base64: &str, binary_hash: Option<&str>) 
         // changes the bytes and breaks signature verification.
         match serde_json::value::RawValue::from_string(stdout) {
             Ok(raw) => {
-                tracing::info!("Secure Enclave attestation generated successfully (raw bytes preserved)");
+                tracing::info!(
+                    "Secure Enclave attestation generated successfully (raw bytes preserved)"
+                );
                 return Some(raw);
             }
             Err(e) => {
@@ -1941,16 +2391,22 @@ fn self_verify_attestation(attestation_json: &serde_json::Value) -> bool {
     let pubkey_path = tmp_dir.join("dginf-verify-pubkey.der");
 
     // Write signature and raw data (openssl dgst will hash it)
-    if std::fs::write(&sig_path, &sig_bytes).is_err() { return false; }
-    if std::fs::write(&data_path, blob_json.as_bytes()).is_err() { return false; }
+    if std::fs::write(&sig_path, &sig_bytes).is_err() {
+        return false;
+    }
+    if std::fs::write(&data_path, blob_json.as_bytes()).is_err() {
+        return false;
+    }
 
     // Build DER-encoded SubjectPublicKeyInfo for P-256
     // ASN.1: SEQUENCE { SEQUENCE { OID ecPublicKey, OID prime256v1 }, BIT STRING { pubkey } }
     let mut spki = vec![
         0x30, 0x59, // SEQUENCE, length 89
         0x30, 0x13, // SEQUENCE, length 19
-        0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, // OID 1.2.840.10045.2.1 (ecPublicKey)
-        0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, // OID 1.2.840.10045.3.1.7 (prime256v1)
+        0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
+        0x01, // OID 1.2.840.10045.2.1 (ecPublicKey)
+        0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01,
+        0x07, // OID 1.2.840.10045.3.1.7 (prime256v1)
         0x03, 0x42, 0x00, // BIT STRING, length 66, no unused bits
     ];
     // pubkey_bytes should be 65 bytes (0x04 + 32 X + 32 Y) or 64 bytes (raw X||Y)
@@ -1964,14 +2420,21 @@ fn self_verify_attestation(attestation_json: &serde_json::Value) -> bool {
         spki[24] = 0x43; // BIT STRING length = 67
     }
 
-    if std::fs::write(&pubkey_path, &spki).is_err() { return false; }
+    if std::fs::write(&pubkey_path, &spki).is_err() {
+        return false;
+    }
 
     // Verify with openssl
     let result = std::process::Command::new("/usr/bin/openssl")
         .args([
-            "dgst", "-sha256", "-verify", &pubkey_path.to_string_lossy(),
-            "-signature", &sig_path.to_string_lossy(),
-            "-keyform", "DER",
+            "dgst",
+            "-sha256",
+            "-verify",
+            &pubkey_path.to_string_lossy(),
+            "-signature",
+            &sig_path.to_string_lossy(),
+            "-keyform",
+            "DER",
             &data_path.to_string_lossy().into_owned(),
         ])
         .output();
@@ -2037,7 +2500,9 @@ async fn cmd_enroll(coordinator_url: String) -> Result<()> {
         println!("    3. Apple verifies your device is genuine hardware");
         println!("    4. A certificate is issued binding the SE key to your device");
         println!();
-        let _ = std::process::Command::new("open").arg(&profile_path).status();
+        let _ = std::process::Command::new("open")
+            .arg(&profile_path)
+            .status();
     }
 
     println!("After installing, verify with: dginf-provider doctor");
@@ -2134,7 +2599,10 @@ async fn cmd_benchmark() -> Result<()> {
 
     // Benchmark each available model
     for model in &models {
-        println!("Benchmarking: {} ({:.1} GB)", model.id, model.estimated_memory_gb);
+        println!(
+            "Benchmarking: {} ({:.1} GB)",
+            model.id, model.estimated_memory_gb
+        );
         let output = std::process::Command::new("python3")
             .args(["-c", &format!(
                 "import mlx_lm, time\n\
@@ -2168,7 +2636,10 @@ async fn cmd_status() -> Result<()> {
     // Hardware
     println!("Hardware:");
     println!("  Chip:       {}", hw.chip_name);
-    println!("  Memory:     {} GB total, {} GB available", hw.memory_gb, hw.memory_available_gb);
+    println!(
+        "  Memory:     {} GB total, {} GB available",
+        hw.memory_gb, hw.memory_available_gb
+    );
     println!("  GPU:        {} cores", hw.gpu_cores);
     println!("  Bandwidth:  {} GB/s", hw.memory_bandwidth_gbs);
     println!();
@@ -2176,22 +2647,53 @@ async fn cmd_status() -> Result<()> {
     // Security
     println!("Security:");
     let sip = security::check_sip_enabled();
-    println!("  SIP:              {}", if sip { "✓ Enabled" } else { "✗ DISABLED" });
+    println!(
+        "  SIP:              {}",
+        if sip { "✓ Enabled" } else { "✗ DISABLED" }
+    );
     println!("  Secure Enclave:   ✓ Available (Apple Silicon)");
 
-    println!("  MDM enrolled:     {}", if security::check_mdm_enrolled() { "✓ Yes" } else { "✗ No" });
+    println!(
+        "  MDM enrolled:     {}",
+        if security::check_mdm_enrolled() {
+            "✓ Yes"
+        } else {
+            "✗ No"
+        }
+    );
     println!();
 
     // Config
     let config_path = config::default_config_path()?;
     println!("Config:");
-    println!("  Config file:  {}", if config_path.exists() { config_path.display().to_string() } else { "Not created (run: dginf-provider init)".to_string() });
+    println!(
+        "  Config file:  {}",
+        if config_path.exists() {
+            config_path.display().to_string()
+        } else {
+            "Not created (run: dginf-provider init)".to_string()
+        }
+    );
     let key_path = crypto::default_key_path()?;
-    println!("  Node key:     {}", if key_path.exists() { "✓ Generated" } else { "✗ Not generated" });
+    println!(
+        "  Node key:     {}",
+        if key_path.exists() {
+            "✓ Generated"
+        } else {
+            "✗ Not generated"
+        }
+    );
 
     let home = dirs::home_dir().unwrap_or_default();
     let enclave_key = home.join(".dginf/enclave_key.data");
-    println!("  Enclave key:  {}", if enclave_key.exists() { "✓ Generated" } else { "✗ Not generated" });
+    println!(
+        "  Enclave key:  {}",
+        if enclave_key.exists() {
+            "✓ Generated"
+        } else {
+            "✗ Not generated"
+        }
+    );
     println!();
 
     // Models
@@ -2213,26 +2715,50 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
 
     match action.as_str() {
         "list" | "ls" => {
-            println!("Models for {} ({} GB available):", hw.chip_name, hw.memory_available_gb);
+            println!(
+                "Models for {} ({} GB available):",
+                hw.chip_name, hw.memory_available_gb
+            );
             println!();
             for cm in &catalog {
                 let fits = hw.memory_available_gb as f64 >= cm.size_gb;
                 let is_downloaded = downloaded.iter().any(|m| m.id == cm.id);
-                let status = if is_downloaded { "✓" } else if fits { " " } else { "✗" };
-                let label = if is_downloaded { "downloaded" } else if fits { "available" } else { "too large" };
-                println!("  {} {:>5.1} GB  {:15} {:10} {}", status, cm.size_gb, cm.display_name, label, cm.id);
+                let status = if is_downloaded {
+                    "✓"
+                } else if fits {
+                    " "
+                } else {
+                    "✗"
+                };
+                let label = if is_downloaded {
+                    "downloaded"
+                } else if fits {
+                    "available"
+                } else {
+                    "too large"
+                };
+                println!(
+                    "  {} {:>5.1} GB  {:15} {:10} {}",
+                    status, cm.size_gb, cm.display_name, label, cm.id
+                );
             }
             // Show any downloaded models not in catalog
             for m in &downloaded {
                 let in_catalog = catalog.iter().any(|cm| cm.id == m.id);
                 if !in_catalog {
-                    println!("  ✓ {:>5.1} GB  {:15} {:10} {}", m.estimated_memory_gb, "", "downloaded", m.id);
+                    println!(
+                        "  ✓ {:>5.1} GB  {:15} {:10} {}",
+                        m.estimated_memory_gb, "", "downloaded", m.id
+                    );
                 }
             }
         }
 
         "download" | "add" => {
-            println!("Select models to download ({} GB available):", hw.memory_available_gb);
+            println!(
+                "Select models to download ({} GB available):",
+                hw.memory_available_gb
+            );
             println!();
 
             let mut downloadable: Vec<(usize, &CatalogModel)> = Vec::new();
@@ -2240,12 +2766,23 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
                 let fits = hw.memory_available_gb as f64 >= cm.size_gb;
                 let is_downloaded = downloaded.iter().any(|m| m.id == cm.id);
                 if is_downloaded {
-                    println!("  [✓] {:>5.1} GB  {} (already downloaded)", cm.size_gb, cm.display_name);
+                    println!(
+                        "  [✓] {:>5.1} GB  {} (already downloaded)",
+                        cm.size_gb, cm.display_name
+                    );
                 } else if fits {
                     downloadable.push((downloadable.len() + 1, cm));
-                    println!("  [{}] {:>5.1} GB  {}", downloadable.len(), cm.size_gb, cm.display_name);
+                    println!(
+                        "  [{}] {:>5.1} GB  {}",
+                        downloadable.len(),
+                        cm.size_gb,
+                        cm.display_name
+                    );
                 } else {
-                    println!("  [✗] {:>5.1} GB  {} (too large)", cm.size_gb, cm.display_name);
+                    println!(
+                        "  [✗] {:>5.1} GB  {} (too large)",
+                        cm.size_gb, cm.display_name
+                    );
                 }
             }
 
@@ -2260,7 +2797,8 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
 
-            let selections: Vec<usize> = input.trim()
+            let selections: Vec<usize> = input
+                .trim()
                 .split(',')
                 .filter_map(|s| s.trim().parse::<usize>().ok())
                 .collect();
@@ -2277,7 +2815,8 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
                     println!("  Downloading {}...", cm.display_name);
 
                     let s3_name = &cm.s3_name;
-                    let cache_dir = dirs::home_dir().unwrap_or_default()
+                    let cache_dir = dirs::home_dir()
+                        .unwrap_or_default()
                         .join(".cache/huggingface/hub")
                         .join(format!("models--{}", cm.id.replace('/', "--")))
                         .join("snapshots/main");
@@ -2286,10 +2825,14 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
                     // Try pre-packaged tarball from CDN first
                     let tarball_url = format!("{}/dl/models/{}.tar.gz", base_url, s3_name);
                     let tar_status = std::process::Command::new("bash")
-                        .args(["-c", &format!(
-                            "set -o pipefail; curl -f#L '{}' | tar xz -C '{}'",
-                            tarball_url, cache_dir.display()
-                        )])
+                        .args([
+                            "-c",
+                            &format!(
+                                "set -o pipefail; curl -f#L '{}' | tar xz -C '{}'",
+                                tarball_url,
+                                cache_dir.display()
+                            ),
+                        ])
                         .status();
 
                     match tar_status {
@@ -2319,14 +2862,16 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
 
-            let selections: Vec<usize> = input.trim()
+            let selections: Vec<usize> = input
+                .trim()
                 .split(',')
                 .filter_map(|s| s.trim().parse::<usize>().ok())
                 .collect();
 
             for sel in selections {
                 if let Some(m) = downloaded.get(sel.saturating_sub(1)) {
-                    let cache_dir = dirs::home_dir().unwrap_or_default()
+                    let cache_dir = dirs::home_dir()
+                        .unwrap_or_default()
                         .join(".cache/huggingface/hub")
                         .join(format!("models--{}", m.id.replace('/', "--")));
                     if cache_dir.exists() {
@@ -2359,11 +2904,17 @@ async fn cmd_earnings(coordinator_url: String) -> Result<()> {
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
 
-    let health = client.get(format!("{}/health", coordinator_url)).send().await;
+    let health = client
+        .get(format!("{}/health", coordinator_url))
+        .send()
+        .await;
     match health {
         Ok(resp) if resp.status().is_success() => {
             let body: serde_json::Value = resp.json().await?;
-            println!("Coordinator: online ({} providers connected)", body["providers"]);
+            println!(
+                "Coordinator: online ({} providers connected)",
+                body["providers"]
+            );
         }
         _ => {
             println!("Coordinator: offline or unreachable ({})", coordinator_url);
@@ -2375,7 +2926,11 @@ async fn cmd_earnings(coordinator_url: String) -> Result<()> {
 
     // Query provider earnings from the coordinator's ledger
     // Uses the provider-specific endpoint that looks up by wallet address
-    let earnings_url = format!("{}/v1/provider/earnings?wallet={}", coordinator_url, w.address());
+    let earnings_url = format!(
+        "{}/v1/provider/earnings?wallet={}",
+        coordinator_url,
+        w.address()
+    );
     let earnings_resp = client.get(&earnings_url).send().await;
 
     println!();
@@ -2439,7 +2994,10 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
     print!("1. Hardware detection........... ");
     match hardware::detect() {
         Ok(hw) => {
-            println!("✓ {} ({} GB, {} GPU cores)", hw.chip_name, hw.memory_gb, hw.gpu_cores);
+            println!(
+                "✓ {} ({} GB, {} GPU cores)",
+                hw.chip_name, hw.memory_gb, hw.gpu_cores
+            );
             passed += 1;
         }
         Err(e) => {
@@ -2518,13 +3076,19 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
     let dginf_dir = dirs::home_dir().unwrap_or_default().join(".dginf");
     let bundled_python = dginf_dir.join("python/bin/python3.12");
     let (python_cmd, python_home) = if bundled_python.exists() {
-        (bundled_python.to_string_lossy().to_string(), Some(dginf_dir.join("python")))
+        (
+            bundled_python.to_string_lossy().to_string(),
+            Some(dginf_dir.join("python")),
+        )
     } else {
         ("python3".to_string(), None)
     };
 
     let mut mlx_check = std::process::Command::new(&python_cmd);
-    mlx_check.args(["-c", "import vllm_mlx; print(f'vllm-mlx {vllm_mlx.__version__}')"]);
+    mlx_check.args([
+        "-c",
+        "import vllm_mlx; print(f'vllm-mlx {vllm_mlx.__version__}')",
+    ]);
     if let Some(ref home) = python_home {
         mlx_check.env("PYTHONHOME", home);
     }
@@ -2563,11 +3127,19 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
     // 6. Models
     print!("6. Downloaded models........... ");
     let hw = hardware::detect().unwrap_or_else(|_| hardware::HardwareInfo {
-        machine_model: "unknown".into(), chip_name: "unknown".into(),
-        chip_family: hardware::ChipFamily::Unknown, chip_tier: hardware::ChipTier::Unknown,
-        memory_gb: 0, memory_available_gb: 0,
-        cpu_cores: hardware::CpuCores { total: 0, performance: 0, efficiency: 0 },
-        gpu_cores: 0, memory_bandwidth_gbs: 0,
+        machine_model: "unknown".into(),
+        chip_name: "unknown".into(),
+        chip_family: hardware::ChipFamily::Unknown,
+        chip_tier: hardware::ChipTier::Unknown,
+        memory_gb: 0,
+        memory_available_gb: 0,
+        cpu_cores: hardware::CpuCores {
+            total: 0,
+            performance: 0,
+            efficiency: 0,
+        },
+        gpu_cores: 0,
+        memory_bandwidth_gbs: 0,
     });
     let model_count = models::scan_models(&hw).len();
     if model_count > 0 {
@@ -2594,7 +3166,11 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
-    match client.get(format!("{}/health", coordinator_url)).send().await {
+    match client
+        .get(format!("{}/health", coordinator_url))
+        .send()
+        .await
+    {
         Ok(resp) if resp.status().is_success() => {
             let body: serde_json::Value = resp.json().await.unwrap_or_default();
             println!("✓ Online ({} providers)", body["providers"]);
@@ -2642,19 +3218,31 @@ async fn cmd_start(coordinator_url: String, model_override: Option<String>) -> R
     let model = if let Some(m) = model_override {
         m
     } else {
-        println!("Select a model to serve (available memory: {} GB):", hw.memory_available_gb);
+        println!(
+            "Select a model to serve (available memory: {} GB):",
+            hw.memory_available_gb
+        );
         println!();
 
         let mut total_mem = 0.0_f64;
         for (i, m) in downloaded.iter().enumerate() {
             let fits = (total_mem + m.estimated_memory_gb) <= hw.memory_available_gb as f64;
             let marker = if fits { "  " } else { "✗ " };
-            println!("  {}[{}] {} ({:.1} GB)", marker, i + 1, m.id, m.estimated_memory_gb);
+            println!(
+                "  {}[{}] {} ({:.1} GB)",
+                marker,
+                i + 1,
+                m.id,
+                m.estimated_memory_gb
+            );
         }
 
         println!();
-        println!("  Enter number [1-{}] (or press Enter for [{}] - largest):",
-            downloaded.len(), downloaded.len());
+        println!(
+            "  Enter number [1-{}] (or press Enter for [{}] - largest):",
+            downloaded.len(),
+            downloaded.len()
+        );
 
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
@@ -2663,7 +3251,10 @@ async fn cmd_start(coordinator_url: String, model_override: Option<String>) -> R
         let idx = if input.is_empty() {
             downloaded.len() - 1
         } else {
-            input.parse::<usize>().unwrap_or(downloaded.len()).saturating_sub(1)
+            input
+                .parse::<usize>()
+                .unwrap_or(downloaded.len())
+                .saturating_sub(1)
         };
 
         let idx = idx.min(downloaded.len() - 1);
@@ -2672,7 +3263,9 @@ async fn cmd_start(coordinator_url: String, model_override: Option<String>) -> R
         selected.id.clone()
     };
 
-    let log_path = dirs::home_dir().unwrap_or_default().join(".dginf/provider.log");
+    let log_path = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".dginf/provider.log");
 
     // Install as launchd user agent (auto-restarts on crash)
     service::install_and_start(&coordinator_url, &model)?;
@@ -2706,7 +3299,9 @@ async fn cmd_stop() -> Result<()> {
         if let Ok(pid_str) = std::fs::read_to_string(&caffeinate_pid_path) {
             if let Ok(pid) = pid_str.trim().parse::<i32>() {
                 #[cfg(unix)]
-                unsafe { libc::kill(pid, libc::SIGTERM); }
+                unsafe {
+                    libc::kill(pid, libc::SIGTERM);
+                }
             }
         }
         let _ = std::fs::remove_file(&caffeinate_pid_path);
@@ -2735,8 +3330,12 @@ async fn cmd_stop() -> Result<()> {
     // Kill any lingering backend processes
     #[cfg(unix)]
     {
-        let _ = std::process::Command::new("pkill").args(["-f", "mlx_lm.server"]).status();
-        let _ = std::process::Command::new("pkill").args(["-f", "vllm_mlx"]).status();
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "mlx_lm.server"])
+            .status();
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "vllm_mlx"])
+            .status();
     }
 
     println!("Provider stopped.");
@@ -2844,8 +3443,14 @@ async fn cmd_update(coordinator: String) -> Result<()> {
     }
 
     // Move binaries to bin dir
-    let _ = std::fs::rename(dginf_dir.join("dginf-provider"), bin_dir.join("dginf-provider"));
-    let _ = std::fs::rename(dginf_dir.join("dginf-enclave"), bin_dir.join("dginf-enclave"));
+    let _ = std::fs::rename(
+        dginf_dir.join("dginf-provider"),
+        bin_dir.join("dginf-provider"),
+    );
+    let _ = std::fs::rename(
+        dginf_dir.join("dginf-enclave"),
+        bin_dir.join("dginf-enclave"),
+    );
 
     // Make executable
     #[cfg(unix)]
@@ -2964,7 +3569,10 @@ fn delete_auth_token() -> Result<()> {
 async fn cmd_login(coordinator_url: String) -> Result<()> {
     // Check if already logged in.
     if let Some(token) = load_auth_token() {
-        println!("Already logged in (token: {}...)", &token[..std::cmp::min(20, token.len())]);
+        println!(
+            "Already logged in (token: {}...)",
+            &token[..std::cmp::min(20, token.len())]
+        );
         println!("Run 'dginf-provider logout' first to unlink.");
         return Ok(());
     }
@@ -3011,7 +3619,10 @@ async fn cmd_login(coordinator_url: String) -> Result<()> {
     println!("    │  {}  │", dc.user_code);
     println!("    └──────────────┘");
     println!();
-    println!("  Waiting for approval (expires in {} minutes)...", dc.expires_in / 60);
+    println!(
+        "  Waiting for approval (expires in {} minutes)...",
+        dc.expires_in / 60
+    );
 
     // Try to open the browser automatically.
     let _ = std::process::Command::new("open")

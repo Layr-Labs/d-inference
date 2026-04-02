@@ -50,6 +50,35 @@ pub fn default_hf_cache_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".cache").join("huggingface").join("hub"))
 }
 
+/// Resolve a model ID to its local path on disk.
+///
+/// Looks in the HuggingFace cache for a directory matching the model ID.
+/// Returns the snapshot path (e.g. ~/.cache/huggingface/hub/models--org--name/snapshots/main/)
+/// so the backend can load directly from disk without hitting HuggingFace.
+pub fn resolve_local_path(model_id: &str) -> Option<PathBuf> {
+    let cache_dir = default_hf_cache_dir()?;
+
+    // Try exact match: models--{id with / replaced by --}
+    let dir_name = format!("models--{}", model_id.replace('/', "--"));
+    let model_dir = cache_dir.join(&dir_name);
+    if model_dir.exists() {
+        if let Some(snapshot) = find_latest_snapshot(&model_dir.join("snapshots")) {
+            return Some(snapshot);
+        }
+    }
+
+    // Try without org prefix (for our own models like "qwen3.5-27b-claude-opus-8bit")
+    let dir_name_plain = format!("models--{}", model_id);
+    let model_dir_plain = cache_dir.join(&dir_name_plain);
+    if model_dir_plain.exists() {
+        if let Some(snapshot) = find_latest_snapshot(&model_dir_plain.join("snapshots")) {
+            return Some(snapshot);
+        }
+    }
+
+    None
+}
+
 /// Scan for locally cached MLX models in the given HuggingFace cache directory.
 /// Filters models to only those that fit in available memory (from HardwareInfo).
 pub fn scan_models(hw: &HardwareInfo) -> Vec<ModelInfo> {

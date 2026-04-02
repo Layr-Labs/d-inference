@@ -15,12 +15,12 @@
 
 use anyhow::Result;
 use axum::{
+    Json, Router,
     body::Body,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
 use std::sync::Arc;
 
@@ -51,9 +51,7 @@ async fn health_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse
     tracing::debug!("Health check -> {url}");
 
     match state.client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            (StatusCode::OK, "ok").into_response()
-        }
+        Ok(resp) if resp.status().is_success() => (StatusCode::OK, "ok").into_response(),
         Ok(resp) => {
             let status = resp.status();
             tracing::warn!("Backend health check returned {status}");
@@ -101,16 +99,20 @@ async fn chat_completions_handler(
 
     // Log the request (summary)
     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
-        let model = parsed.get("model").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let stream = parsed.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+        let model = parsed
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let stream = parsed
+            .get("stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let msg_count = parsed
             .get("messages")
             .and_then(|v| v.as_array())
             .map(|a| a.len())
             .unwrap_or(0);
-        tracing::info!(
-            "Chat completion: model={model}, stream={stream}, messages={msg_count}"
-        );
+        tracing::info!("Chat completion: model={model}, stream={stream}, messages={msg_count}");
     }
 
     match state
@@ -148,7 +150,8 @@ async fn chat_completions_handler(
 
 /// Proxy a non-streaming response from the backend.
 async fn proxy_response(resp: reqwest::Response) -> Response {
-    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status =
+        StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
     // Forward relevant headers
     let mut builder = Response::builder().status(status);
@@ -172,7 +175,8 @@ async fn proxy_response(resp: reqwest::Response) -> Response {
 
 /// Proxy a streaming (SSE) response from the backend.
 async fn proxy_streaming_response(resp: reqwest::Response) -> Response {
-    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status =
+        StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
     let stream = resp.bytes_stream();
 

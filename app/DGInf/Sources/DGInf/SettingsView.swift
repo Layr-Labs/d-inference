@@ -134,11 +134,99 @@ private struct AvailabilityTab: View {
                 Text("Idle Detection")
                     .font(.headline)
             }
+
+            Section {
+                Toggle("Enable schedule", isOn: $viewModel.scheduleEnabled)
+
+                if viewModel.scheduleEnabled {
+                    ForEach($viewModel.scheduleWindows) { $window in
+                        ScheduleWindowRow(window: $window)
+                    }
+                    .onDelete { indices in
+                        viewModel.scheduleWindows.remove(atOffsets: indices)
+                    }
+
+                    Button {
+                        viewModel.scheduleWindows.append(ScheduleWindowModel.defaultWindow())
+                    } label: {
+                        Label("Add Window", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                }
+
+                Text("Set when your machine serves inference. Outside these windows, the provider disconnects and frees GPU memory. Requires provider restart to take effect.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } header: {
+                Text("Schedule")
+                    .font(.headline)
+            }
         }
         .padding()
         .onAppear {
             selectedTimeout = viewModel.idleTimeoutSeconds
         }
+    }
+}
+
+// MARK: - Schedule Window Row
+
+private struct ScheduleWindowRow: View {
+    @Binding var window: ScheduleWindowModel
+
+    private let hours: [String] = (0..<24).map { String(format: "%02d:00", $0) }
+        + (0..<24).map { String(format: "%02d:30", $0) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Day selector
+            HStack(spacing: 4) {
+                ForEach(ScheduleWindowModel.allDays, id: \.self) { day in
+                    let isActive = window.activeDays.contains(day)
+                    Button {
+                        if isActive {
+                            window.activeDays.removeAll { $0 == day }
+                        } else {
+                            window.activeDays.append(day)
+                        }
+                    } label: {
+                        Text(ScheduleWindowModel.dayLabels[day] ?? day)
+                            .font(.caption2)
+                            .frame(width: 32, height: 24)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(isActive ? .accentColor : .secondary)
+                }
+            }
+
+            // Time range
+            HStack {
+                Picker("From", selection: $window.startTime) {
+                    ForEach(sortedHours, id: \.self) { time in
+                        Text(time).tag(time)
+                    }
+                }
+                .frame(width: 120)
+
+                Picker("To", selection: $window.endTime) {
+                    ForEach(sortedHours, id: \.self) { time in
+                        Text(time).tag(time)
+                    }
+                }
+                .frame(width: 120)
+
+                if window.isOvernight {
+                    Text("(overnight)")
+                        .font(.caption2)
+                        .foregroundColor(.orange)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var sortedHours: [String] {
+        hours.sorted()
     }
 }
 

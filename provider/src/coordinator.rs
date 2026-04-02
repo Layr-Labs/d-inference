@@ -15,6 +15,8 @@
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -23,9 +25,25 @@ use crate::backend::ExponentialBackoff;
 use crate::hardware::HardwareInfo;
 use crate::models::ModelInfo;
 use crate::protocol::{
-    CoordinatorMessage, ImageGenerationRequestBody, ProviderMessage, ProviderStats,
-    ProviderStatus, TranscriptionRequestBody,
+    CoordinatorMessage, ImageGenerationRequestBody, ProviderMessage, ProviderStats, ProviderStatus,
+    TranscriptionRequestBody,
 };
+
+/// Thread-safe counters for provider statistics, shared between the main
+/// event loop (which increments them) and the heartbeat sender (which reads them).
+pub struct AtomicProviderStats {
+    pub requests_served: AtomicU64,
+    pub tokens_generated: AtomicU64,
+}
+
+impl AtomicProviderStats {
+    pub fn new() -> Self {
+        Self {
+            requests_served: AtomicU64::new(0),
+            tokens_generated: AtomicU64::new(0),
+        }
+    }
+}
 
 /// Messages from coordinator connection to the main loop.
 #[derive(Debug)]
@@ -65,6 +83,12 @@ pub struct CoordinatorClient {
     wallet_address: Option<String>,
     attestation: Option<Box<serde_json::value::RawValue>>,
     auth_token: Option<String>,
+    /// Shared atomic counters — incremented by proxy tasks, read by heartbeats.
+    stats: Arc<AtomicProviderStats>,
+    /// True while at least one inference request is in flight.
+    inference_active: Arc<AtomicBool>,
+    /// The model currently loaded / being served (set by the main event loop).
+    current_model: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl CoordinatorClient {
@@ -86,6 +110,9 @@ impl CoordinatorClient {
             wallet_address: None,
             attestation: None,
             auth_token: None,
+            stats: Arc::new(AtomicProviderStats::new()),
+            inference_active: Arc::new(AtomicBool::new(false)),
+            current_model: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -96,7 +123,10 @@ impl CoordinatorClient {
     }
 
     /// Set the signed Secure Enclave attestation blob (raw JSON bytes preserved).
-    pub fn with_attestation(mut self, attestation: Option<Box<serde_json::value::RawValue>>) -> Self {
+    pub fn with_attestation(
+        mut self,
+        attestation: Option<Box<serde_json::value::RawValue>>,
+    ) -> Self {
         self.attestation = attestation;
         self
     }
@@ -104,6 +134,24 @@ impl CoordinatorClient {
     /// Set the device-linked auth token (from `dginf-provider login`).
     pub fn with_auth_token(mut self, auth_token: Option<String>) -> Self {
         self.auth_token = auth_token;
+        self
+    }
+
+    /// Set the shared atomic stats counters (requests served, tokens generated).
+    pub fn with_stats(mut self, stats: Arc<AtomicProviderStats>) -> Self {
+        self.stats = stats;
+        self
+    }
+
+    /// Set the shared inference-active flag (true while requests are in flight).
+    pub fn with_inference_active(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.inference_active = flag;
+        self
+    }
+
+    /// Set the shared current-model name (model currently loaded on this provider).
+    pub fn with_current_model(mut self, model: Arc<std::sync::Mutex<Option<String>>>) -> Self {
+        self.current_model = model;
         self
     }
 
@@ -127,7 +175,10 @@ impl CoordinatorClient {
 
             tracing::info!("Connecting to coordinator: {}", self.url);
 
-            match self.connect_and_run(&event_tx, &mut outbound_rx, &mut shutdown_rx).await {
+            match self
+                .connect_and_run(&event_tx, &mut outbound_rx, &mut shutdown_rx)
+                .await
+            {
                 Ok(()) => {
                     tracing::info!("Coordinator connection closed, reconnecting...");
                     backoff.reset();
@@ -220,10 +271,15 @@ impl CoordinatorClient {
                     let metrics = crate::hardware::collect_system_metrics(
                         self.hardware.cpu_cores.total,
                     );
+                    let is_active = self.inference_active.load(Ordering::Relaxed);
+                    let active_model = self.current_model.lock().unwrap().clone();
                     let heartbeat = ProviderMessage::Heartbeat {
-                        status: ProviderStatus::Idle,
-                        active_model: None,
-                        stats: ProviderStats::default(),
+                        status: if is_active { ProviderStatus::Serving } else { ProviderStatus::Idle },
+                        active_model,
+                        stats: ProviderStats {
+                            requests_served: self.stats.requests_served.load(Ordering::Relaxed),
+                            tokens_generated: self.stats.tokens_generated.load(Ordering::Relaxed),
+                        },
                         system_metrics: metrics,
                     };
                     let json = serde_json::to_string(&heartbeat)?;
@@ -385,7 +441,6 @@ impl CoordinatorClient {
             }
         }
     }
-
 }
 
 /// Decrypt an E2E encrypted request body using the provider's X25519 private key.
@@ -409,7 +464,10 @@ fn decrypt_request_body(
         .map_err(|e| anyhow::anyhow!("invalid ephemeral public key: {e}"))?;
 
     if ephemeral_pub_bytes.len() != 32 {
-        anyhow::bail!("invalid ephemeral key length: {}", ephemeral_pub_bytes.len());
+        anyhow::bail!(
+            "invalid ephemeral key length: {}",
+            ephemeral_pub_bytes.len()
+        );
     }
 
     let mut ephemeral_pub = [0u8; 32];
@@ -466,7 +524,9 @@ pub fn handle_attestation_challenge(
     let hypervisor_active = crate::security::check_hypervisor_active();
 
     if !sip_enabled {
-        tracing::error!("SIP is disabled during attestation challenge — coordinator will reject us");
+        tracing::error!(
+            "SIP is disabled during attestation challenge — coordinator will reject us"
+        );
     }
     if !rdma_disabled && !hypervisor_active {
         tracing::error!(
@@ -654,7 +714,10 @@ mod tests {
                 ProviderMessage::AttestationResponse { signature: s1, .. },
                 ProviderMessage::AttestationResponse { signature: s2, .. },
             ) => {
-                assert_ne!(s1, s2, "different nonces should produce different signatures");
+                assert_ne!(
+                    s1, s2,
+                    "different nonces should produce different signatures"
+                );
             }
             _ => panic!("Expected AttestationResponse"),
         }
@@ -662,7 +725,8 @@ mod tests {
 
     #[test]
     fn test_handle_attestation_challenge_serialization() {
-        let response = handle_attestation_challenge("dGVzdA==", "2025-06-01T00:00:00Z", Some("a2V5"));
+        let response =
+            handle_attestation_challenge("dGVzdA==", "2025-06-01T00:00:00Z", Some("a2V5"));
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"type\":\"attestation_response\""));
         assert!(json.contains("\"nonce\":\"dGVzdA==\""));
@@ -701,7 +765,9 @@ mod tests {
                 }
             });
             write
-                .send(Message::Text(serde_json::to_string(&request).unwrap().into()))
+                .send(Message::Text(
+                    serde_json::to_string(&request).unwrap().into(),
+                ))
                 .await
                 .unwrap();
 
@@ -716,7 +782,9 @@ mod tests {
                 "request_id": "test-req-1"
             });
             write
-                .send(Message::Text(serde_json::to_string(&cancel).unwrap().into()))
+                .send(Message::Text(
+                    serde_json::to_string(&cancel).unwrap().into(),
+                ))
                 .await
                 .unwrap();
 

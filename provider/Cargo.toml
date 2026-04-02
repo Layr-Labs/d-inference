@@ -56,6 +56,9 @@ libc = "0.2"
 # Misc
 dirs = "6"
 
+# Time/date handling for scheduling
+chrono = { version = "0.4", features = ["serde"] }
+
 # Crypto — NaCl-compatible X25519 + XSalsa20-Poly1305
 crypto_box = "0.9"
 base64 = "0.22"

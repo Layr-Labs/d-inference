@@ -11,6 +11,7 @@
 //! config values at runtime.
 
 use crate::hardware::HardwareInfo;
+use crate::scheduling::ScheduleConfig;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -20,6 +21,8 @@ pub struct ProviderConfig {
     pub provider: ProviderSettings,
     pub backend: BackendSettings,
     pub coordinator: CoordinatorSettings,
+    #[serde(default)]
+    pub schedule: Option<ScheduleConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -43,7 +46,10 @@ pub struct CoordinatorSettings {
 
 impl ProviderConfig {
     pub fn default_for_hardware(hw: &HardwareInfo) -> Self {
-        let name = format!("dginf-{}", &hw.machine_model.replace(',', "-").to_lowercase());
+        let name = format!(
+            "dginf-{}",
+            &hw.machine_model.replace(',', "-").to_lowercase()
+        );
 
         Self {
             provider: ProviderSettings {
@@ -59,6 +65,7 @@ impl ProviderConfig {
                 url: "ws://localhost:8080/ws/provider".to_string(),
                 heartbeat_interval_secs: 30,
             },
+            schedule: None,
         }
     }
 }
@@ -76,8 +83,7 @@ pub fn save(path: &Path, config: &ProviderConfig) -> Result<()> {
             .with_context(|| format!("failed to create config directory {}", parent.display()))?;
     }
 
-    let toml_str =
-        toml::to_string_pretty(config).context("failed to serialize config to TOML")?;
+    let toml_str = toml::to_string_pretty(config).context("failed to serialize config to TOML")?;
     std::fs::write(path, &toml_str)
         .with_context(|| format!("failed to write config to {}", path.display()))?;
 
@@ -87,8 +93,7 @@ pub fn save(path: &Path, config: &ProviderConfig) -> Result<()> {
 pub fn load(path: &Path) -> Result<ProviderConfig> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config from {}", path.display()))?;
-    let config: ProviderConfig =
-        toml::from_str(&content).context("failed to parse config TOML")?;
+    let config: ProviderConfig = toml::from_str(&content).context("failed to parse config TOML")?;
     Ok(config)
 }
 

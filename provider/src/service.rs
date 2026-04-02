@@ -157,12 +157,11 @@ pub fn is_installed() -> bool {
 /// Writes the plist and loads it into launchd. If the service is already
 /// loaded, it is unloaded first (to pick up any config changes).
 pub fn install_and_start(coordinator_url: &str, model: &str) -> Result<()> {
-    let binary_path = std::env::current_exe()
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_default()
-                .join(".dginf/bin/dginf-provider")
-        });
+    let binary_path = std::env::current_exe().unwrap_or_else(|_| {
+        dirs::home_dir()
+            .unwrap_or_default()
+            .join(".dginf/bin/dginf-provider")
+    });
 
     // Unload first if already loaded (picks up plist changes)
     if is_loaded() {

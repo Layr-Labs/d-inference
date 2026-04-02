@@ -71,7 +71,10 @@ pub fn scan_models_in_dir(cache_dir: &Path, available_memory_gb: u64) -> Vec<Mod
     let entries = match std::fs::read_dir(cache_dir) {
         Ok(e) => e,
         Err(err) => {
-            tracing::warn!("Failed to read cache directory {}: {err}", cache_dir.display());
+            tracing::warn!(
+                "Failed to read cache directory {}: {err}",
+                cache_dir.display()
+            );
             return models;
         }
     };
@@ -415,14 +418,7 @@ mod tests {
 
         let config = r#"{"model_type": "gpt2"}"#;
         // No "mlx" in name and no quantization hint
-        let cache = create_mock_cache(
-            &tmp,
-            &[(
-                "models--openai--gpt2",
-                config,
-                500_000,
-            )],
-        );
+        let cache = create_mock_cache(&tmp, &[("models--openai--gpt2", config, 500_000)]);
 
         // This model has config.json and safetensors, and is_mlx_model will detect it
         // because it has model.safetensors + config.json.
@@ -494,8 +490,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let config_path = tmp.path().join("config.json");
 
-        let config =
-            r#"{"model_type": "qwen2", "hidden_size": 4096, "num_hidden_layers": 32, "vocab_size": 152064}"#;
+        let config = r#"{"model_type": "qwen2", "hidden_size": 4096, "num_hidden_layers": 32, "vocab_size": 152064}"#;
         fs::write(&config_path, config).unwrap();
 
         let (model_type, params) = parse_config_json(&config_path);

@@ -47,7 +47,10 @@ impl Wallet {
 
             // Migrate to Keychain if possible
             save_to_keychain(&key_hex);
-            tracing::info!("Wallet loaded from file (migrated to Keychain): {}", &address);
+            tracing::info!(
+                "Wallet loaded from file (migrated to Keychain): {}",
+                &address
+            );
             return Ok(Self {
                 private_key_hex: key_hex,
                 address,
@@ -123,7 +126,10 @@ fn generate_private_key() -> String {
 /// For the DGInf internal ledger, this simplified address is sufficient.
 fn address_from_private_key(key_hex: &str) -> Result<String> {
     if key_hex.len() != 64 {
-        anyhow::bail!("invalid private key length: expected 64 hex chars, got {}", key_hex.len());
+        anyhow::bail!(
+            "invalid private key length: expected 64 hex chars, got {}",
+            key_hex.len()
+        );
     }
 
     // Simplified address derivation using SHA-256
@@ -170,8 +176,10 @@ fn load_from_keychain() -> Option<String> {
     let output = std::process::Command::new("/usr/bin/security")
         .args([
             "find-generic-password",
-            "-s", KEYCHAIN_SERVICE,
-            "-a", KEYCHAIN_ACCOUNT,
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-a",
+            KEYCHAIN_ACCOUNT,
             "-w", // output password only
         ])
         .output()
@@ -179,11 +187,7 @@ fn load_from_keychain() -> Option<String> {
 
     if output.status.success() {
         let key = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if key.len() == 64 {
-            Some(key)
-        } else {
-            None
-        }
+        if key.len() == 64 { Some(key) } else { None }
     } else {
         None
     }
@@ -195,18 +199,24 @@ fn save_to_keychain(key_hex: &str) -> bool {
     let _ = std::process::Command::new("/usr/bin/security")
         .args([
             "delete-generic-password",
-            "-s", KEYCHAIN_SERVICE,
-            "-a", KEYCHAIN_ACCOUNT,
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-a",
+            KEYCHAIN_ACCOUNT,
         ])
         .output();
 
     let status = std::process::Command::new("/usr/bin/security")
         .args([
             "add-generic-password",
-            "-s", KEYCHAIN_SERVICE,
-            "-a", KEYCHAIN_ACCOUNT,
-            "-w", key_hex,
-            "-T", "", // no app access (require user approval)
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-a",
+            KEYCHAIN_ACCOUNT,
+            "-w",
+            key_hex,
+            "-T",
+            "", // no app access (require user approval)
         ])
         .status()
         .map(|s| s.success())
@@ -220,17 +230,23 @@ fn delete_from_keychain() {
     let _ = std::process::Command::new("/usr/bin/security")
         .args([
             "delete-generic-password",
-            "-s", KEYCHAIN_SERVICE,
-            "-a", KEYCHAIN_ACCOUNT,
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-a",
+            KEYCHAIN_ACCOUNT,
         ])
         .output();
 }
 
 #[cfg(not(target_os = "macos"))]
-fn load_from_keychain() -> Option<String> { None }
+fn load_from_keychain() -> Option<String> {
+    None
+}
 
 #[cfg(not(target_os = "macos"))]
-fn save_to_keychain(_key_hex: &str) -> bool { false }
+fn save_to_keychain(_key_hex: &str) -> bool {
+    false
+}
 
 #[cfg(not(target_os = "macos"))]
 fn delete_from_keychain() {}

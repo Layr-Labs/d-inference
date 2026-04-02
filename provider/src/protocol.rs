@@ -536,7 +536,9 @@ mod tests {
         let raw = r#"{"type":"inference_request","request_id":"abc-123","body":{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":false}}"#;
         let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
         match msg {
-            CoordinatorMessage::InferenceRequest { request_id, body, .. } => {
+            CoordinatorMessage::InferenceRequest {
+                request_id, body, ..
+            } => {
                 assert_eq!(request_id, "abc-123");
                 assert_eq!(body["model"], "test");
                 assert_eq!(body["stream"], false);
@@ -684,7 +686,11 @@ mod tests {
         let raw = r#"{"type":"transcription_request","request_id":"go-req-1","body":{"model":"cohere-transcribe","audio":"dGVzdA==","language":"en","format":"mp3"}}"#;
         let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
         match msg {
-            CoordinatorMessage::TranscriptionRequest { request_id, body, encrypted_body } => {
+            CoordinatorMessage::TranscriptionRequest {
+                request_id,
+                body,
+                encrypted_body,
+            } => {
                 assert_eq!(request_id, "go-req-1");
                 assert_eq!(body["model"], "cohere-transcribe");
                 assert_eq!(body["audio"], "dGVzdA==");
@@ -700,7 +706,11 @@ mod tests {
         let raw = r#"{"type":"transcription_request","request_id":"enc-1","encrypted_body":{"ephemeral_public_key":"a2V5","ciphertext":"Y2lwaGVy"}}"#;
         let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
         match msg {
-            CoordinatorMessage::TranscriptionRequest { request_id, encrypted_body, .. } => {
+            CoordinatorMessage::TranscriptionRequest {
+                request_id,
+                encrypted_body,
+                ..
+            } => {
                 assert_eq!(request_id, "enc-1");
                 let enc = encrypted_body.unwrap();
                 assert_eq!(enc.ephemeral_public_key, "a2V5");
@@ -720,7 +730,8 @@ mod tests {
         });
         let msg = CoordinatorMessage::ImageGenerationRequest {
             request_id: "img-123".to_string(),
-            upload_url: "https://example.com/v1/provider/image-upload?request_id=img-123".to_string(),
+            upload_url: "https://example.com/v1/provider/image-upload?request_id=img-123"
+                .to_string(),
             body,
             encrypted_body: None,
         };
@@ -764,7 +775,12 @@ mod tests {
         let raw = r#"{"type":"image_generation_request","request_id":"go-img-1","upload_url":"https://example.com/upload","body":{"model":"flux-klein-4b","prompt":"sunset over mountains","n":2,"size":"512x512"}}"#;
         let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
         match msg {
-            CoordinatorMessage::ImageGenerationRequest { request_id, upload_url, body, encrypted_body } => {
+            CoordinatorMessage::ImageGenerationRequest {
+                request_id,
+                upload_url,
+                body,
+                encrypted_body,
+            } => {
                 assert_eq!(request_id, "go-img-1");
                 assert_eq!(upload_url, "https://example.com/upload");
                 assert_eq!(body["model"], "flux-klein-4b");
@@ -781,7 +797,11 @@ mod tests {
         let raw = r#"{"type":"image_generation_request","request_id":"enc-img-1","upload_url":"https://example.com/upload","encrypted_body":{"ephemeral_public_key":"a2V5","ciphertext":"Y2lwaGVy"}}"#;
         let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
         match msg {
-            CoordinatorMessage::ImageGenerationRequest { request_id, encrypted_body, .. } => {
+            CoordinatorMessage::ImageGenerationRequest {
+                request_id,
+                encrypted_body,
+                ..
+            } => {
                 assert_eq!(request_id, "enc-img-1");
                 let enc = encrypted_body.unwrap();
                 assert_eq!(enc.ephemeral_public_key, "a2V5");

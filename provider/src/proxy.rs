@@ -19,10 +19,11 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::coordinator::AtomicProviderStats;
 use crate::crypto::NodeKeyPair;
 use crate::protocol::{
-    ImageGenerationRequestBody, ImageGenerationUsage, ProviderMessage,
-    TranscriptionRequestBody, TranscriptionSegment, TranscriptionUsage, UsageInfo,
+    ImageGenerationRequestBody, ImageGenerationUsage, ProviderMessage, TranscriptionRequestBody,
+    TranscriptionSegment, TranscriptionUsage, UsageInfo,
 };
 use crate::security;
 
@@ -42,6 +43,7 @@ pub async fn handle_inference_request(
     outbound_tx: mpsc::Sender<ProviderMessage>,
     _node_keypair: Option<Arc<NodeKeyPair>>,
     cancel_token: CancellationToken,
+    stats: Option<Arc<AtomicProviderStats>>,
 ) {
     // Pre-request SIP check: verify SIP is still enabled before processing
     // any consumer data. SIP can't be disabled at runtime (requires reboot),
@@ -58,12 +60,31 @@ pub async fn handle_inference_request(
         return;
     }
 
-    let is_streaming = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_streaming = body
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let result = if is_streaming {
-        handle_streaming_request(&request_id, &body, &backend_url, &outbound_tx, &cancel_token).await
+        handle_streaming_request(
+            &request_id,
+            &body,
+            &backend_url,
+            &outbound_tx,
+            &cancel_token,
+            &stats,
+        )
+        .await
     } else {
-        handle_non_streaming_request(&request_id, &body, &backend_url, &outbound_tx, &cancel_token).await
+        handle_non_streaming_request(
+            &request_id,
+            &body,
+            &backend_url,
+            &outbound_tx,
+            &cancel_token,
+            &stats,
+        )
+        .await
     };
 
     if let Err(e) = result {
@@ -100,6 +121,7 @@ async fn handle_non_streaming_request(
     backend_url: &str,
     outbound_tx: &mpsc::Sender<ProviderMessage>,
     cancel_token: &CancellationToken,
+    stats: &Option<Arc<AtomicProviderStats>>,
 ) -> Result<()> {
     let url = format!("{backend_url}/v1/chat/completions");
     let client = reqwest::Client::new();
@@ -138,6 +160,7 @@ async fn handle_non_streaming_request(
 
     // Extract token usage info for billing
     let usage = extract_usage(&response_json);
+    let completion_tokens = usage.completion_tokens;
 
     // Sign the actual response content with the Secure Enclave key
     let content = response_json
@@ -161,6 +184,14 @@ async fn handle_non_streaming_request(
         })
         .await
         .ok();
+
+    // Increment shared stats counters for heartbeat reporting.
+    if let Some(s) = stats {
+        use std::sync::atomic::Ordering;
+        s.requests_served.fetch_add(1, Ordering::Relaxed);
+        s.tokens_generated
+            .fetch_add(completion_tokens, Ordering::Relaxed);
+    }
 
     // Wipe response data from memory — contains consumer's inference output.
     if let Ok(mut resp_bytes) = serde_json::to_vec(&response_json) {
@@ -186,6 +217,7 @@ async fn handle_streaming_request(
     backend_url: &str,
     outbound_tx: &mpsc::Sender<ProviderMessage>,
     cancel_token: &CancellationToken,
+    stats: &Option<Arc<AtomicProviderStats>>,
 ) -> Result<()> {
     let url = format!("{backend_url}/v1/chat/completions");
     let client = reqwest::Client::new();
@@ -254,7 +286,10 @@ async fn handle_streaming_request(
 
                 if data == "[DONE]" {
                     // Stream complete — sign the actual response content
-                    let sign_data = format!("{}:{}:{}", request_id, total_completion_tokens, response_content);
+                    let sign_data = format!(
+                        "{}:{}:{}",
+                        request_id, total_completion_tokens, response_content
+                    );
                     let response_hash = security::sha256_hex(sign_data.as_bytes());
                     let se_signature = security::se_sign(response_hash.as_bytes());
 
@@ -270,6 +305,13 @@ async fn handle_streaming_request(
                         })
                         .await
                         .ok();
+                    // Increment shared stats counters for heartbeat reporting.
+                    if let Some(s) = stats {
+                        use std::sync::atomic::Ordering;
+                        s.requests_served.fetch_add(1, Ordering::Relaxed);
+                        s.tokens_generated
+                            .fetch_add(total_completion_tokens, Ordering::Relaxed);
+                    }
                     return Ok(());
                 }
 
@@ -279,9 +321,7 @@ async fn handle_streaming_request(
                         if let Some(pt) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
                             prompt_tokens = pt;
                         }
-                        if let Some(ct) =
-                            usage.get("completion_tokens").and_then(|v| v.as_u64())
-                        {
+                        if let Some(ct) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
                             total_completion_tokens = ct;
                         }
                     }
@@ -323,7 +363,10 @@ async fn handle_streaming_request(
 
     // If we get here without [DONE], send completion with what we have
     // Sign the actual accumulated response content
-    let sign_data = format!("{}:{}:{}", request_id, total_completion_tokens, response_content);
+    let sign_data = format!(
+        "{}:{}:{}",
+        request_id, total_completion_tokens, response_content
+    );
     let response_hash = security::sha256_hex(sign_data.as_bytes());
     let se_signature = security::se_sign(response_hash.as_bytes());
 
@@ -339,6 +382,14 @@ async fn handle_streaming_request(
         })
         .await
         .ok();
+
+    // Increment shared stats counters for heartbeat reporting.
+    if let Some(s) = stats {
+        use std::sync::atomic::Ordering;
+        s.requests_served.fetch_add(1, Ordering::Relaxed);
+        s.tokens_generated
+            .fetch_add(total_completion_tokens, Ordering::Relaxed);
+    }
 
     Ok(())
 }
@@ -357,8 +408,15 @@ pub async fn handle_transcription_request(
 ) {
     let start = std::time::Instant::now();
 
-    let result =
-        do_transcription(&request_id, &body, &stt_backend_url, &outbound_tx, &cancel_token, start).await;
+    let result = do_transcription(
+        &request_id,
+        &body,
+        &stt_backend_url,
+        &outbound_tx,
+        &cancel_token,
+        start,
+    )
+    .await;
 
     if let Err(e) = result {
         if cancel_token.is_cancelled() {
@@ -399,7 +457,11 @@ async fn do_transcription(
     let audio_seconds = estimate_audio_duration(&audio_bytes, &body.format);
 
     // Determine file extension from format hint
-    let ext = if body.format.is_empty() { "wav" } else { &body.format };
+    let ext = if body.format.is_empty() {
+        "wav"
+    } else {
+        &body.format
+    };
 
     // Write to temp file for multipart upload
     let tmp_path = format!("/tmp/dginf-stt-{request_id}.{ext}");
@@ -415,10 +477,7 @@ async fn do_transcription(
     let file_part = reqwest::multipart::Part::bytes(file_bytes)
         .file_name(format!("audio.{ext}"))
         .mime_str(&format!("audio/{ext}"))
-        .unwrap_or_else(|_| {
-            reqwest::multipart::Part::bytes(vec![])
-                .file_name("audio.wav")
-        });
+        .unwrap_or_else(|_| reqwest::multipart::Part::bytes(vec![]).file_name("audio.wav"));
 
     let mut form = reqwest::multipart::Form::new()
         .part("file", file_part)
@@ -459,7 +518,10 @@ async fn do_transcription(
     }
 
     // mlx-audio returns NDJSON; read the full response
-    let response_text = response.text().await.context("failed to read STT response")?;
+    let response_text = response
+        .text()
+        .await
+        .context("failed to read STT response")?;
 
     // Parse the NDJSON response (may have multiple lines)
     let mut text = String::new();
@@ -504,7 +566,11 @@ async fn do_transcription(
         .send(ProviderMessage::TranscriptionComplete {
             request_id: request_id.to_string(),
             text,
-            segments: if segments.is_empty() { None } else { Some(segments) },
+            segments: if segments.is_empty() {
+                None
+            } else {
+                Some(segments)
+            },
             language,
             usage: TranscriptionUsage {
                 audio_seconds,
@@ -525,15 +591,11 @@ fn estimate_audio_duration(bytes: &[u8], format: &str) -> f64 {
         "wav" => {
             // WAV: sample_rate at offset 24, bits_per_sample at 34, data starts at 44
             if bytes.len() > 44 {
-                let sample_rate = u32::from_le_bytes(
-                    bytes[24..28].try_into().unwrap_or([0; 4]),
-                ) as f64;
-                let bits = u16::from_le_bytes(
-                    bytes[34..36].try_into().unwrap_or([0; 2]),
-                ) as f64;
-                let channels = u16::from_le_bytes(
-                    bytes[22..24].try_into().unwrap_or([0; 2]),
-                ) as f64;
+                let sample_rate =
+                    u32::from_le_bytes(bytes[24..28].try_into().unwrap_or([0; 4])) as f64;
+                let bits = u16::from_le_bytes(bytes[34..36].try_into().unwrap_or([0; 2])) as f64;
+                let channels =
+                    u16::from_le_bytes(bytes[22..24].try_into().unwrap_or([0; 2])) as f64;
                 if sample_rate > 0.0 && bits > 0.0 && channels > 0.0 {
                     let data_bytes = (bytes.len() - 44) as f64;
                     return data_bytes / (sample_rate * channels * bits / 8.0);
@@ -565,7 +627,13 @@ pub async fn handle_image_generation_request(
     let start = std::time::Instant::now();
 
     let result = do_image_generation(
-        &request_id, &body, &image_bridge_url, &upload_url, &outbound_tx, &cancel_token, start,
+        &request_id,
+        &body,
+        &image_bridge_url,
+        &upload_url,
+        &outbound_tx,
+        &cancel_token,
+        start,
     )
     .await;
 
@@ -836,7 +904,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_non_streaming_mock() {
-        use axum::{routing::post, Json, Router};
+        use axum::{Json, Router, routing::post};
 
         // Start a mock backend server
         let app = Router::new().route(
@@ -870,12 +938,15 @@ mod tests {
             tx,
             None,
             CancellationToken::new(),
+            None,
         )
         .await;
 
         let msg = rx.recv().await.unwrap();
         match msg {
-            ProviderMessage::InferenceComplete { request_id, usage, .. } => {
+            ProviderMessage::InferenceComplete {
+                request_id, usage, ..
+            } => {
                 assert_eq!(request_id, "req-1");
                 assert_eq!(usage.prompt_tokens, 10);
                 assert_eq!(usage.completion_tokens, 5);
@@ -886,7 +957,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_error_response() {
-        use axum::{http::StatusCode, routing::post, Router};
+        use axum::{Router, http::StatusCode, routing::post};
 
         let app = Router::new().route(
             "/v1/chat/completions",
@@ -910,6 +981,7 @@ mod tests {
             tx,
             None,
             CancellationToken::new(),
+            None,
         )
         .await;
 
@@ -930,13 +1002,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_streaming_mock() {
-        use axum::{
-            body::Body,
-            http::StatusCode,
-            response::Response,
-            routing::post,
-            Router,
-        };
+        use axum::{Router, body::Body, http::StatusCode, response::Response, routing::post};
 
         let app = Router::new().route(
             "/v1/chat/completions",
@@ -977,6 +1043,7 @@ mod tests {
             tx,
             None,
             CancellationToken::new(),
+            None,
         )
         .await;
 
@@ -989,7 +1056,11 @@ mod tests {
         }
 
         // Should have chunks + final complete
-        assert!(messages.len() >= 2, "Expected at least 2 messages, got {}", messages.len());
+        assert!(
+            messages.len() >= 2,
+            "Expected at least 2 messages, got {}",
+            messages.len()
+        );
 
         // Last message should be InferenceComplete
         let last = messages.last().unwrap();
@@ -1002,13 +1073,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_streaming_cancel_stops_early() {
-        use axum::{
-            body::Body,
-            http::StatusCode,
-            response::Response,
-            routing::post,
-            Router,
-        };
+        use axum::{Router, body::Body, http::StatusCode, response::Response, routing::post};
 
         // Slow SSE backend: sends chunks with delays
         let app = Router::new().route(
@@ -1059,6 +1124,7 @@ mod tests {
                 tx,
                 None,
                 token_clone,
+                None,
             )
             .await;
         });
@@ -1082,13 +1148,19 @@ mod tests {
             }
         }
 
-        assert!(chunks < 50, "Expected early stop, got {chunks} chunks (should be << 100)");
-        assert!(!got_error, "Cancelled request should not send InferenceError");
+        assert!(
+            chunks < 50,
+            "Expected early stop, got {chunks} chunks (should be << 100)"
+        );
+        assert!(
+            !got_error,
+            "Cancelled request should not send InferenceError"
+        );
     }
 
     #[tokio::test]
     async fn test_handle_image_generation_mock() {
-        use axum::{body::Bytes, routing::post, Json, Router};
+        use axum::{Json, Router, body::Bytes, routing::post};
         use std::sync::{Arc, Mutex};
 
         // Track what gets uploaded
@@ -1178,7 +1250,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_image_generation_error() {
-        use axum::{http::StatusCode, routing::post, Router};
+        use axum::{Router, http::StatusCode, routing::post};
 
         let app = Router::new().route(
             "/v1/images/generations",
@@ -1231,7 +1303,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_image_generation_cancel() {
-        use axum::{routing::post, Router};
+        use axum::{Router, routing::post};
 
         // Slow backend that takes 10 seconds
         let app = Router::new().route(
@@ -1284,6 +1356,9 @@ mod tests {
 
         // Should NOT get an error message (cancelled requests are silent)
         let msg = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
-        assert!(msg.is_err() || msg.unwrap().is_none(), "Cancelled request should not send messages");
+        assert!(
+            msg.is_err() || msg.unwrap().is_none(),
+            "Cancelled request should not send messages"
+        );
     }
 }

@@ -254,7 +254,10 @@ fn sysctl_string(key: &str) -> Result<String> {
         .with_context(|| format!("failed to run sysctl -n {key}"))?;
 
     if !output.status.success() {
-        anyhow::bail!("sysctl -n {key} failed: {}", String::from_utf8_lossy(&output.stderr));
+        anyhow::bail!(
+            "sysctl -n {key} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -289,8 +292,8 @@ fn detect_gpu_info() -> Result<(String, u32)> {
         );
     }
 
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .context("failed to parse system_profiler JSON")?;
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("failed to parse system_profiler JSON")?;
 
     let displays = json
         .get("SPDisplaysDataType")

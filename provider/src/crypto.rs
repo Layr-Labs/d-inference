@@ -17,8 +17,8 @@
 
 use anyhow::{Context, Result};
 use crypto_box::{
-    aead::{Aead, AeadCore, OsRng},
     PublicKey, SalsaBox, SecretKey,
+    aead::{Aead, AeadCore, OsRng},
 };
 use std::path::Path;
 
@@ -107,7 +107,6 @@ impl NodeKeyPair {
     pub fn public_key_bytes(&self) -> [u8; 32] {
         self.public.to_bytes()
     }
-
 
     /// Decrypt a message from a consumer given their ephemeral public key.
     ///
@@ -230,7 +229,12 @@ mod tests {
 
         let result = NodeKeyPair::load(&path);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("expected 32 bytes"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("expected 32 bytes")
+        );
     }
 
     #[test]
@@ -242,12 +246,9 @@ mod tests {
         let plaintext = b"Hello, encrypted world!";
 
         // Consumer encrypts with provider's public key
-        let ciphertext = encrypt_with_keypair(
-            &consumer.secret,
-            &provider.public_key_bytes(),
-            plaintext,
-        )
-        .unwrap();
+        let ciphertext =
+            encrypt_with_keypair(&consumer.secret, &provider.public_key_bytes(), plaintext)
+                .unwrap();
 
         // Provider decrypts with consumer's public key
         let decrypted = provider
@@ -270,12 +271,9 @@ mod tests {
             .unwrap();
 
         // Consumer decrypts
-        let decrypted = decrypt_with_keypair(
-            &consumer.secret,
-            &provider.public_key_bytes(),
-            &ciphertext,
-        )
-        .unwrap();
+        let decrypted =
+            decrypt_with_keypair(&consumer.secret, &provider.public_key_bytes(), &ciphertext)
+                .unwrap();
 
         assert_eq!(decrypted, plaintext);
     }
@@ -288,12 +286,9 @@ mod tests {
 
         let plaintext = b"Secret message";
 
-        let ciphertext = encrypt_with_keypair(
-            &consumer.secret,
-            &provider.public_key_bytes(),
-            plaintext,
-        )
-        .unwrap();
+        let ciphertext =
+            encrypt_with_keypair(&consumer.secret, &provider.public_key_bytes(), plaintext)
+                .unwrap();
 
         // Trying to decrypt with wrong consumer public key should fail
         let result = provider.decrypt(&wrong_key.public_key_bytes(), &ciphertext);
@@ -317,12 +312,9 @@ mod tests {
 
         let plaintext = b"";
 
-        let ciphertext = encrypt_with_keypair(
-            &consumer.secret,
-            &provider.public_key_bytes(),
-            plaintext,
-        )
-        .unwrap();
+        let ciphertext =
+            encrypt_with_keypair(&consumer.secret, &provider.public_key_bytes(), plaintext)
+                .unwrap();
 
         let decrypted = provider
             .decrypt(&consumer.public_key_bytes(), &ciphertext)
@@ -339,12 +331,9 @@ mod tests {
         // Simulate a large prompt
         let plaintext: Vec<u8> = (0..10_000).map(|i| (i % 256) as u8).collect();
 
-        let ciphertext = encrypt_with_keypair(
-            &consumer.secret,
-            &provider.public_key_bytes(),
-            &plaintext,
-        )
-        .unwrap();
+        let ciphertext =
+            encrypt_with_keypair(&consumer.secret, &provider.public_key_bytes(), &plaintext)
+                .unwrap();
 
         let decrypted = provider
             .decrypt(&consumer.public_key_bytes(), &ciphertext)
@@ -360,26 +349,22 @@ mod tests {
 
         let plaintext = b"Same message";
 
-        let ct1 = encrypt_with_keypair(
-            &consumer.secret,
-            &provider.public_key_bytes(),
-            plaintext,
-        )
-        .unwrap();
+        let ct1 = encrypt_with_keypair(&consumer.secret, &provider.public_key_bytes(), plaintext)
+            .unwrap();
 
-        let ct2 = encrypt_with_keypair(
-            &consumer.secret,
-            &provider.public_key_bytes(),
-            plaintext,
-        )
-        .unwrap();
+        let ct2 = encrypt_with_keypair(&consumer.secret, &provider.public_key_bytes(), plaintext)
+            .unwrap();
 
         // Different nonces should produce different ciphertext
         assert_ne!(ct1, ct2);
 
         // But both should decrypt to the same plaintext
-        let d1 = provider.decrypt(&consumer.public_key_bytes(), &ct1).unwrap();
-        let d2 = provider.decrypt(&consumer.public_key_bytes(), &ct2).unwrap();
+        let d1 = provider
+            .decrypt(&consumer.public_key_bytes(), &ct1)
+            .unwrap();
+        let d2 = provider
+            .decrypt(&consumer.public_key_bytes(), &ct2)
+            .unwrap();
         assert_eq!(d1, plaintext);
         assert_eq!(d2, plaintext);
     }

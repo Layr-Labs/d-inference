@@ -74,6 +74,24 @@ final class StatusViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Schedule Settings (persisted via UserDefaults, synced to provider config)
+
+    @Published var scheduleEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(scheduleEnabled, forKey: "scheduleEnabled")
+            syncScheduleToConfig()
+        }
+    }
+
+    @Published var scheduleWindows: [ScheduleWindowModel] {
+        didSet {
+            if let data = try? JSONEncoder().encode(scheduleWindows) {
+                UserDefaults.standard.set(data, forKey: "scheduleWindows")
+            }
+            syncScheduleToConfig()
+        }
+    }
+
     // MARK: - Managers
 
     let providerManager = ProviderManager()
@@ -99,6 +117,13 @@ final class StatusViewModel: ObservableObject {
         self.autoStart = UserDefaults.standard.bool(forKey: "autoStart")
         self.idleTimeoutSeconds = UserDefaults.standard.double(forKey: "idleTimeoutSeconds")
         self.hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
+        self.scheduleEnabled = UserDefaults.standard.bool(forKey: "scheduleEnabled")
+        if let data = UserDefaults.standard.data(forKey: "scheduleWindows"),
+           let windows = try? JSONDecoder().decode([ScheduleWindowModel].self, from: data) {
+            self.scheduleWindows = windows
+        } else {
+            self.scheduleWindows = [ScheduleWindowModel.defaultWindow()]
+        }
 
         if idleTimeoutSeconds == 0 {
             idleTimeoutSeconds = 300
@@ -500,5 +525,80 @@ final class StatusViewModel: ObservableObject {
         ]
         SecItemDelete(query as CFDictionary)
         SecItemAdd(query as CFDictionary, nil)
+    }
+
+    // MARK: - Schedule Config Sync
+
+    /// Write schedule settings to the provider TOML config so the CLI respects them.
+    func syncScheduleToConfig() {
+        guard let configDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .deletingLastPathComponent()
+            .appendingPathComponent(".config/dginf") else { return }
+
+        let configPath = configDir.appendingPathComponent("provider.toml")
+
+        // Read existing config (if any)
+        var tomlContent = (try? String(contentsOf: configPath, encoding: .utf8)) ?? ""
+
+        // Remove existing [schedule] section (everything from [schedule] to next section or EOF)
+        if let range = tomlContent.range(of: #"\[schedule\][\s\S]*?(?=\n\[|$)"#, options: .regularExpression) {
+            tomlContent.removeSubrange(range)
+        }
+
+        // Build schedule TOML
+        var scheduleToml = "\n[schedule]\nenabled = \(scheduleEnabled)\n"
+
+        for window in scheduleWindows {
+            let days = window.activeDays.map { "\"\($0)\"" }.joined(separator: ", ")
+            scheduleToml += "\n[[schedule.windows]]\ndays = [\(days)]\nstart = \"\(window.startTime)\"\nend = \"\(window.endTime)\"\n"
+        }
+
+        tomlContent = tomlContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        tomlContent += scheduleToml
+
+        try? FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        try? tomlContent.write(to: configPath, atomically: true, encoding: .utf8)
+    }
+}
+
+// MARK: - Schedule Window Model
+
+/// A single time window for provider availability scheduling.
+struct ScheduleWindowModel: Identifiable, Codable, Equatable {
+    let id: UUID
+    var activeDays: [String]   // e.g., ["mon", "tue", "wed"]
+    var startTime: String      // "HH:MM" 24h format
+    var endTime: String        // "HH:MM" 24h format
+
+    static let allDays = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    static let dayLabels: [String: String] = [
+        "mon": "Mon", "tue": "Tue", "wed": "Wed", "thu": "Thu",
+        "fri": "Fri", "sat": "Sat", "sun": "Sun"
+    ]
+
+    static func defaultWindow() -> ScheduleWindowModel {
+        ScheduleWindowModel(
+            id: UUID(),
+            activeDays: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+            startTime: "22:00",
+            endTime: "08:00"
+        )
+    }
+
+    var isOvernight: Bool {
+        guard let start = timeMinutes(startTime), let end = timeMinutes(endTime) else { return false }
+        return end <= start
+    }
+
+    var description: String {
+        let dayStr = activeDays.compactMap { Self.dayLabels[$0] }.joined(separator: ", ")
+        let overnight = isOvernight ? " (overnight)" : ""
+        return "\(dayStr): \(startTime)–\(endTime)\(overnight)"
+    }
+
+    private func timeMinutes(_ s: String) -> Int? {
+        let parts = s.split(separator: ":").compactMap { Int($0) }
+        guard parts.count == 2 else { return nil }
+        return parts[0] * 60 + parts[1]
     }
 }

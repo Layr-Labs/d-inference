@@ -84,8 +84,7 @@ impl InProcessEngine {
     ///   - The bundle is code-signed; any modification breaks the signature
     ///   - SIP enforces the signature
     fn lock_python_path(py: Python<'_>) -> Result<()> {
-        let exe = std::env::current_exe()
-            .context("cannot find executable path")?;
+        let exe = std::env::current_exe().context("cannot find executable path")?;
 
         // Find the app bundle's Frameworks/python directory
         let mut search = exe.as_path();
@@ -113,7 +112,8 @@ impl InProcessEngine {
                  import importlib\n\
                  importlib.invalidate_caches()\n",
                 bundled = path_str
-            )).unwrap();
+            ))
+            .unwrap();
             py.run(code.as_c_str(), None, None)
                 .context("failed to lock Python import path")?;
             tracing::info!("Python path locked to bundled packages: {}", path_str);
@@ -162,11 +162,9 @@ impl InProcessEngine {
     pub fn load(&mut self) -> Result<()> {
         self.engine_type = Self::detect_engine()?;
 
-        Python::with_gil(|py| {
-            match self.engine_type {
-                EngineType::VllmMlx => self.load_vllm_mlx(py),
-                EngineType::MlxLm => self.load_mlx_lm(py),
-            }
+        Python::with_gil(|py| match self.engine_type {
+            EngineType::VllmMlx => self.load_vllm_mlx(py),
+            EngineType::MlxLm => self.load_mlx_lm(py),
         })?;
 
         self.loaded = true;
@@ -238,8 +236,9 @@ impl InProcessEngine {
              outputs = _dginf_engine.generate([prompt], params)\n\
              _result_text = outputs[0].outputs[0].text\n\
              _result_prompt_tokens = len(outputs[0].prompt_token_ids)\n\
-             _result_completion_tokens = len(outputs[0].outputs[0].token_ids)\n"
-        ).unwrap();
+             _result_completion_tokens = len(outputs[0].outputs[0].token_ids)\n",
+        )
+        .unwrap();
         py.run(code.as_c_str(), None, Some(&locals))
             .context("vllm-mlx generate failed")?;
 
@@ -276,16 +275,19 @@ impl InProcessEngine {
         let mlx_lm = py.import("mlx_lm").context("failed to import mlx_lm")?;
         let builtins = py.import("builtins").context("failed to import builtins")?;
 
-        let model = builtins.getattr("_dginf_model")
+        let model = builtins
+            .getattr("_dginf_model")
             .context("model not loaded in builtins")?;
-        let tokenizer = builtins.getattr("_dginf_tokenizer")
+        let tokenizer = builtins
+            .getattr("_dginf_tokenizer")
             .context("tokenizer not loaded in builtins")?;
 
         let kwargs = PyDict::new(py);
         kwargs.set_item("prompt", prompt.as_str())?;
         kwargs.set_item("max_tokens", max_tokens)?;
 
-        let result = mlx_lm.call_method("generate", (model, tokenizer), Some(&kwargs))
+        let result = mlx_lm
+            .call_method("generate", (model, tokenizer), Some(&kwargs))
             .context("mlx-lm generate call failed")?;
 
         let text: String = result.extract().context("failed to extract result text")?;
@@ -385,10 +387,7 @@ fn format_chat_prompt(messages: &[serde_json::Value]) -> String {
     let mut prompt = String::new();
     for msg in messages {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("user");
-        let content = msg
-            .get("content")
-            .and_then(|c| c.as_str())
-            .unwrap_or("");
+        let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
         prompt.push_str(&format!("<|im_start|>{role}\n{content}<|im_end|>\n"));
     }
     prompt.push_str("<|im_start|>assistant\n");

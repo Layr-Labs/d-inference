@@ -198,7 +198,29 @@ function ProviderCard({ provider }: { provider: Provider }) {
             </div>
           )}
 
-          <div className="pt-2 border-t border-border-dim/50">
+          <div className="pt-2 border-t border-border-dim/50 space-y-2">
+            {provider.mda_cert_chain_b64 && provider.mda_cert_chain_b64.length > 0 && (
+              <button
+                onClick={() => {
+                  const pem = provider.mda_cert_chain_b64!
+                    .map((b64) => {
+                      const lines = b64.match(/.{1,64}/g) || [];
+                      return `-----BEGIN CERTIFICATE-----\n${lines.join("\n")}\n-----END CERTIFICATE-----`;
+                    })
+                    .join("\n\n");
+                  const blob = new Blob([pem], { type: "application/x-pem-file" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `eigeninference-${provider.mda_serial || provider.provider_id}-cert-chain.pem`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+                className="text-xs text-accent-brand hover:underline inline-flex items-center gap-1 cursor-pointer"
+              >
+                Download certificate chain (PEM)
+              </button>
+            )}
             <p className="text-xs text-text-tertiary leading-relaxed">
               Verify independently via{" "}
               <a href="https://www.apple.com/certificateauthority/" target="_blank" rel="noopener noreferrer"

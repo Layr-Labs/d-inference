@@ -94,9 +94,10 @@ func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cf
 	// Initialize Solana processor
 	if cfg.SolanaRPCURL != "" {
 		svc.solana = NewSolanaProcessor(cfg.SolanaRPCURL, cfg.SolanaCoordinatorAddress,
-			cfg.SolanaUSDCMint, "", logger)
+			cfg.SolanaUSDCMint, "", cfg.MockMode, logger)
 		logger.Info("billing: Solana processor enabled",
 			"coordinator_address", cfg.SolanaCoordinatorAddress,
+			"mock_mode", cfg.MockMode,
 		)
 	}
 

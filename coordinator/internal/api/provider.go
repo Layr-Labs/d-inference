@@ -761,6 +761,14 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		"trust_level", provider.TrustLevel,
 	)
 
+	// Deduplicate: if another provider connection exists from the same physical
+	// device (same serial number), disconnect it. This prevents multiple
+	// provider processes on the same machine from registering independently
+	// and competing for a single shared vllm-mlx backend.
+	if result.SerialNumber != "" {
+		s.registry.DisconnectDuplicatesBySerial(providerID, result.SerialNumber)
+	}
+
 	// MDM verification: independently verify security posture via MicroMDM.
 	// This upgrades trust from self_signed to hardware if MDM confirms
 	// the device is enrolled and SIP/SecureBoot match.

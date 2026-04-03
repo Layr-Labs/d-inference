@@ -16,7 +16,6 @@ package api
 //   with the provider's X25519 public key before forwarding.
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -26,7 +25,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/dginf/coordinator/internal/auth"
@@ -34,6 +32,7 @@ import (
 	"github.com/dginf/coordinator/internal/payments"
 	"github.com/dginf/coordinator/internal/protocol"
 	"github.com/dginf/coordinator/internal/registry"
+	"github.com/dginf/coordinator/internal/store"
 	"github.com/google/uuid"
 	"nhooyr.io/websocket"
 )
@@ -60,6 +59,16 @@ type chatCompletionRequest struct {
 	Stream      bool                   `json:"stream"`
 	MaxTokens   *int                   `json:"max_tokens,omitempty"`
 	Temperature *float64               `json:"temperature,omitempty"`
+}
+
+// genericInferenceRequest captures any inference request body as raw JSON.
+// Used for /v1/completions and /v1/messages endpoints where we pass the
+// body through to the provider without parsing the endpoint-specific fields.
+type genericInferenceRequest struct {
+	Model  string `json:"model"`
+	Stream bool   `json:"stream"`
+	// RawBody is the complete request JSON, forwarded as-is to the provider.
+	RawBody json.RawMessage `json:"-"`
 }
 
 // handleChatCompletions handles POST /v1/chat/completions.
@@ -705,6 +714,9 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 				return
 			}
 			// The chunk data from the provider includes the "data: ..." SSE prefix.
+			// Normalize null fields to match the OpenAI spec (some backends
+			// like vllm-mlx send "content":null instead of "content":"").
+			chunk = normalizeSSEChunk(chunk)
 			// Append \n\n to form a valid SSE event boundary.
 			fmt.Fprintf(w, "%s\n\n", chunk)
 			flusher.Flush()
@@ -783,6 +795,89 @@ func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, r *http.Reque
 	}
 }
 
+// normalizeSSEChunk fixes fields in SSE chunks to match the OpenAI spec.
+// Some backends (e.g. vllm-mlx) emit "content":null instead of "content":"",
+// and include "usage":null which strict parsers (ForgeCode, Codex) reject
+// because they expect usage to be either absent or a full object.
+func normalizeSSEChunk(chunk string) string {
+	line := strings.TrimPrefix(chunk, "data: ")
+	needsNullFix := strings.Contains(line, ":null")
+	needsReasoningDedup := strings.Contains(line, `"reasoning_content"`)
+	if !needsNullFix && !needsReasoningDedup {
+		return chunk
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(line), &raw); err != nil {
+		return chunk
+	}
+
+	changed := false
+
+	// Remove top-level null fields (usage, system_fingerprint, etc.)
+	// ForgeCode expects usage to be absent or a full object, not null.
+	for _, key := range []string{"usage", "system_fingerprint"} {
+		if v, ok := raw[key]; ok && string(v) == "null" {
+			delete(raw, key)
+			changed = true
+		}
+	}
+
+	// Fix null fields inside choices[].delta
+	if choicesRaw, ok := raw["choices"]; ok {
+		var choices []map[string]json.RawMessage
+		if err := json.Unmarshal(choicesRaw, &choices); err == nil {
+			for i, choice := range choices {
+				if deltaRaw, ok := choice["delta"]; ok {
+					var delta map[string]json.RawMessage
+					if err := json.Unmarshal(deltaRaw, &delta); err == nil {
+						for _, field := range []string{"content", "reasoning_content", "reasoning", "refusal"} {
+							if v, ok := delta[field]; ok && string(v) == "null" {
+								delta[field] = json.RawMessage(`""`)
+								changed = true
+							}
+						}
+						if v, ok := delta["tool_calls"]; ok && string(v) == "null" {
+							delta["tool_calls"] = json.RawMessage(`[]`)
+							changed = true
+						}
+						// ForgeCode uses #[serde(alias = "reasoning_content")] on
+						// the "reasoning" field. If both keys are present, serde
+						// fails with a duplicate-field error. Keep only "reasoning".
+						if _, hasR := delta["reasoning"]; hasR {
+							if _, hasRC := delta["reasoning_content"]; hasRC {
+								delete(delta, "reasoning_content")
+								changed = true
+							}
+						} else if rc, hasRC := delta["reasoning_content"]; hasRC {
+							// Only reasoning_content exists — rename to reasoning.
+							delta["reasoning"] = rc
+							delete(delta, "reasoning_content")
+							changed = true
+						}
+						if changed {
+							choices[i]["delta"], _ = json.Marshal(delta)
+						}
+					}
+				}
+			}
+			if changed {
+				raw["choices"], _ = json.Marshal(choices)
+			}
+		}
+	}
+
+	if !changed {
+		return chunk
+	}
+
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return chunk
+	}
+	return "data: " + string(out)
+}
+
 // extractContent parses SSE data lines and concatenates delta content
 // to reconstruct the full assistant message from streaming chunks.
 func extractContent(chunks []string) string {
@@ -854,8 +949,21 @@ func buildNonStreamingResponse(requestID, model, content string, usage protocol.
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	models := s.registry.ListModels()
 
+	// Filter to only show models from the catalog (active supported models).
+	catalogModels := s.store.ListSupportedModels()
+	catalogByID := make(map[string]store.SupportedModel, len(catalogModels))
+	for _, cm := range catalogModels {
+		if cm.Active {
+			catalogByID[cm.ID] = cm
+		}
+	}
+
 	data := make([]map[string]any, 0, len(models))
 	for _, m := range models {
+		cm, inCatalog := catalogByID[m.ID]
+		if len(catalogByID) > 0 && !inCatalog {
+			continue
+		}
 		metadata := map[string]any{
 			"model_type":         m.ModelType,
 			"quantization":       m.Quantization,
@@ -869,6 +977,9 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 				"sip_enabled":    m.Attestation.SIPEnabled,
 				"secure_boot":    m.Attestation.SecureBoot,
 			}
+		}
+		if inCatalog && cm.DisplayName != "" {
+			metadata["display_name"] = cm.DisplayName
 		}
 		data = append(data, map[string]any{
 			"id":       m.ID,
@@ -933,293 +1044,6 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- payment handlers ---
-
-// depositRequest is the JSON body for POST /v1/payments/deposit.
-// If TxHash is provided, the deposit is verified on-chain via the settlement
-// service. Otherwise, the trust-based MVP flow is used.
-type depositRequest struct {
-	WalletAddress string `json:"wallet_address"`
-	AmountUSD     string `json:"amount_usd"`
-	TxHash        string `json:"tx_hash,omitempty"`
-}
-
-// settlementVerifyResponse is the JSON response from the settlement service's
-// POST /v1/settlement/verify-deposit endpoint.
-type settlementVerifyResponse struct {
-	Verified       bool   `json:"verified"`
-	TxHash         string `json:"txHash"`
-	From           string `json:"from"`
-	Amount         string `json:"amount"`
-	AmountUSD      string `json:"amountUSD"`
-	AmountMicroUSD int64  `json:"amountMicroUSD"`
-	BlockNumber    string `json:"blockNumber"`
-	Error          string `json:"error,omitempty"`
-}
-
-// txHashMu protects processedTxHashes for concurrent access.
-var txHashMu sync.Mutex
-
-// handleDeposit handles POST /v1/payments/deposit.
-//
-// Two modes:
-//   - If tx_hash is provided: verify the on-chain pathUSD transfer via the
-//     settlement service, then credit the verified amount. The tx_hash is
-//     recorded to prevent double-crediting.
-//   - If tx_hash is absent: use the trust-based MVP flow (direct ledger credit).
-func (s *Server) handleDeposit(w http.ResponseWriter, r *http.Request) {
-	var req depositRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
-		return
-	}
-
-	if req.WalletAddress == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "wallet_address is required"))
-		return
-	}
-
-	consumerKey := consumerKeyFromContext(r.Context())
-
-	// On-chain verified deposit flow
-	if req.TxHash != "" {
-		s.handleVerifiedDeposit(w, consumerKey, req)
-		return
-	}
-
-	// Trust-based deposit flow (MVP)
-	if req.AmountUSD == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "amount_usd is required"))
-		return
-	}
-
-	amountFloat, err := strconv.ParseFloat(req.AmountUSD, 64)
-	if err != nil || amountFloat <= 0 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "amount_usd must be a positive number"))
-		return
-	}
-
-	amountMicroUSD := int64(amountFloat * 1_000_000)
-
-	if err := s.ledger.Deposit(consumerKey, amountMicroUSD); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to credit balance"))
-		return
-	}
-
-	s.logger.Info("deposit credited (trust-based)",
-		"consumer_key", consumerKey[:8]+"...",
-		"wallet_address", req.WalletAddress,
-		"amount_usd", req.AmountUSD,
-		"amount_micro_usd", amountMicroUSD,
-	)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":            "deposited",
-		"wallet_address":    req.WalletAddress,
-		"amount_usd":        req.AmountUSD,
-		"amount_micro_usd":  amountMicroUSD,
-		"balance_micro_usd": s.ledger.Balance(consumerKey),
-	})
-}
-
-// handleVerifiedDeposit verifies a deposit on-chain via the settlement service.
-func (s *Server) handleVerifiedDeposit(w http.ResponseWriter, consumerKey string, req depositRequest) {
-	// Check for double-crediting
-	txHashMu.Lock()
-	if s.processedTxHashes[req.TxHash] {
-		txHashMu.Unlock()
-		writeJSON(w, http.StatusConflict, errorResponse("duplicate_deposit", "tx_hash has already been processed"))
-		return
-	}
-	txHashMu.Unlock()
-
-	// Call settlement service to verify the on-chain transfer
-	verifyBody, _ := json.Marshal(map[string]string{"tx_hash": req.TxHash})
-	resp, err := http.Post(
-		s.settlementURL+"/v1/settlement/verify-deposit",
-		"application/json",
-		bytes.NewReader(verifyBody),
-	)
-	if err != nil {
-		s.logger.Error("settlement service unreachable", "error", err)
-		writeJSON(w, http.StatusBadGateway, errorResponse("settlement_error", "settlement service unreachable"))
-		return
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to read settlement response"))
-		return
-	}
-
-	var verifyResp settlementVerifyResponse
-	if err := json.Unmarshal(body, &verifyResp); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to parse settlement response"))
-		return
-	}
-
-	if !verifyResp.Verified {
-		errMsg := "deposit verification failed"
-		if verifyResp.Error != "" {
-			errMsg = verifyResp.Error
-		}
-		writeJSON(w, http.StatusBadRequest, errorResponse("verification_failed", errMsg))
-		return
-	}
-
-	// Mark tx_hash as processed to prevent double-crediting
-	txHashMu.Lock()
-	// Double-check after acquiring the lock
-	if s.processedTxHashes[req.TxHash] {
-		txHashMu.Unlock()
-		writeJSON(w, http.StatusConflict, errorResponse("duplicate_deposit", "tx_hash has already been processed"))
-		return
-	}
-	s.processedTxHashes[req.TxHash] = true
-	txHashMu.Unlock()
-
-	// Credit the verified amount from the on-chain transfer
-	amountMicroUSD := verifyResp.AmountMicroUSD
-	if err := s.ledger.Deposit(consumerKey, amountMicroUSD); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to credit balance"))
-		return
-	}
-
-	amountUSD := fmt.Sprintf("%.6f", float64(amountMicroUSD)/1_000_000)
-
-	s.logger.Info("deposit credited (on-chain verified)",
-		"consumer_key", consumerKey[:8]+"...",
-		"wallet_address", req.WalletAddress,
-		"tx_hash", req.TxHash,
-		"amount_micro_usd", amountMicroUSD,
-		"from", verifyResp.From,
-	)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":            "deposited",
-		"verified":          true,
-		"wallet_address":    req.WalletAddress,
-		"tx_hash":           req.TxHash,
-		"amount_usd":        amountUSD,
-		"amount_micro_usd":  amountMicroUSD,
-		"balance_micro_usd": s.ledger.Balance(consumerKey),
-	})
-}
-
-// withdrawRequest is the JSON body for POST /v1/payments/withdraw.
-type withdrawRequest struct {
-	WalletAddress string `json:"wallet_address"`
-	AmountUSD     string `json:"amount_usd"`
-}
-
-// settlementWithdrawResponse is the JSON response from the settlement service.
-type settlementWithdrawResponse struct {
-	ToAddress      string `json:"toAddress"`
-	AmountMicroUSD int64  `json:"amountMicroUSD"`
-	TxHash         string `json:"txHash"`
-	Success        bool   `json:"success"`
-	Error          string `json:"error,omitempty"`
-}
-
-// handleWithdraw handles POST /v1/payments/withdraw.
-//
-// Debits the consumer's ledger balance and sends pathUSD via the settlement
-// service. If the on-chain transfer fails, the balance is re-credited.
-func (s *Server) handleWithdraw(w http.ResponseWriter, r *http.Request) {
-	var req withdrawRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
-		return
-	}
-
-	if req.WalletAddress == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "wallet_address is required"))
-		return
-	}
-	if req.AmountUSD == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "amount_usd is required"))
-		return
-	}
-
-	amountFloat, err := strconv.ParseFloat(req.AmountUSD, 64)
-	if err != nil || amountFloat <= 0 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "amount_usd must be a positive number"))
-		return
-	}
-
-	amountMicroUSD := int64(amountFloat * 1_000_000)
-	consumerKey := consumerKeyFromContext(r.Context())
-
-	// Check and debit balance
-	if err := s.ledger.Charge(consumerKey, amountMicroUSD, "withdraw:"+req.WalletAddress); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("insufficient_funds", err.Error()))
-		return
-	}
-
-	// Call settlement service to send on-chain
-	withdrawBody, _ := json.Marshal(map[string]any{
-		"to_address":       req.WalletAddress,
-		"amount_micro_usd": amountMicroUSD,
-		"reason":           "consumer_withdrawal",
-		"private_key":      "", // In production, loaded from secure config/HSM
-	})
-	resp, err := http.Post(
-		s.settlementURL+"/v1/settlement/withdraw",
-		"application/json",
-		bytes.NewReader(withdrawBody),
-	)
-	if err != nil {
-		// Settlement service unreachable — re-credit the balance
-		s.logger.Error("settlement service unreachable for withdrawal, re-crediting", "error", err)
-		_ = s.ledger.Deposit(consumerKey, amountMicroUSD)
-		writeJSON(w, http.StatusBadGateway, errorResponse("settlement_error", "settlement service unreachable"))
-		return
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		s.logger.Error("failed to read settlement withdrawal response", "error", err)
-		_ = s.ledger.Deposit(consumerKey, amountMicroUSD)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to read settlement response"))
-		return
-	}
-
-	var withdrawResp settlementWithdrawResponse
-	if err := json.Unmarshal(body, &withdrawResp); err != nil {
-		s.logger.Error("failed to parse settlement withdrawal response", "error", err)
-		_ = s.ledger.Deposit(consumerKey, amountMicroUSD)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to parse settlement response"))
-		return
-	}
-
-	if !withdrawResp.Success {
-		// On-chain transfer failed — re-credit the balance
-		s.logger.Error("on-chain withdrawal failed, re-crediting",
-			"error", withdrawResp.Error,
-			"wallet_address", req.WalletAddress,
-		)
-		_ = s.ledger.Deposit(consumerKey, amountMicroUSD)
-		writeJSON(w, http.StatusBadGateway, errorResponse("settlement_error", "on-chain transfer failed: "+withdrawResp.Error))
-		return
-	}
-
-	s.logger.Info("withdrawal processed",
-		"consumer_key", consumerKey[:8]+"...",
-		"wallet_address", req.WalletAddress,
-		"amount_micro_usd", amountMicroUSD,
-		"tx_hash", withdrawResp.TxHash,
-	)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":            "withdrawn",
-		"wallet_address":    req.WalletAddress,
-		"amount_usd":        req.AmountUSD,
-		"amount_micro_usd":  amountMicroUSD,
-		"tx_hash":           withdrawResp.TxHash,
-		"balance_micro_usd": s.ledger.Balance(consumerKey),
-	})
-}
 
 // handleBalance handles GET /v1/payments/balance.
 // Returns the consumer's current balance in both micro-USD and USD.
@@ -1299,6 +1123,146 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// handleCompletions handles POST /v1/completions.
+// Proxies OpenAI-compatible text completions to the provider's vllm-mlx server.
+func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
+	s.handleGenericInference(w, r, "/v1/completions")
+}
+
+// handleAnthropicMessages handles POST /v1/messages.
+// Proxies Anthropic-compatible messages API to the provider's vllm-mlx server.
+func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
+	s.handleGenericInference(w, r, "/v1/messages")
+}
+
+// handleGenericInference is the shared dispatch for completions and Anthropic endpoints.
+// It reads the raw request body, extracts model/stream, sets the endpoint field,
+// and reuses the same E2E encryption + provider routing as chat completions.
+func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, endpoint string) {
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "failed to read request body"))
+		return
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(rawBody, &parsed); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		return
+	}
+
+	model, _ := parsed["model"].(string)
+	if model == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
+		return
+	}
+
+	stream, _ := parsed["stream"].(bool)
+
+	// Inject the endpoint so the provider knows which local path to forward to.
+	parsed["endpoint"] = endpoint
+
+	var requestedTrust registry.TrustLevel
+	if trustParam := r.URL.Query().Get("trust_level"); trustParam != "" {
+		requestedTrust = registry.TrustLevel(trustParam)
+	}
+
+	provider := s.registry.FindProviderWithTrust(model, requestedTrust)
+	if provider == nil {
+		queuedReq := &registry.QueuedRequest{
+			RequestID:  uuid.New().String(),
+			Model:      model,
+			ResponseCh: make(chan *registry.Provider, 1),
+		}
+		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
+				fmt.Sprintf("no provider available for model %q", model)))
+			return
+		}
+		provider, err = s.registry.Queue().WaitForProvider(queuedReq)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
+				fmt.Sprintf("no provider became available for model %q", model)))
+			return
+		}
+	}
+
+	requestID := uuid.New().String()
+	inferenceBody, _ := json.Marshal(parsed)
+
+	if provider.PublicKey == "" {
+		s.registry.SetProviderIdle(provider.ID)
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
+			"no provider with E2E encryption available"))
+		return
+	}
+
+	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
+	if err != nil {
+		s.registry.SetProviderIdle(provider.ID)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "provider public key invalid"))
+		return
+	}
+
+	sessionKeys, err := e2e.GenerateSessionKeys()
+	if err != nil {
+		s.registry.SetProviderIdle(provider.ID)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to generate session keys"))
+		return
+	}
+
+	encrypted, err := e2e.Encrypt(inferenceBody, providerPubKey, sessionKeys)
+	if err != nil {
+		s.registry.SetProviderIdle(provider.ID)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to encrypt request"))
+		return
+	}
+
+	wireMsg := map[string]any{
+		"type":       protocol.TypeInferenceRequest,
+		"request_id": requestID,
+		"encrypted_body": map[string]string{
+			"ephemeral_public_key": encrypted.EphemeralPublicKey,
+			"ciphertext":           encrypted.Ciphertext,
+		},
+	}
+
+	consumerKey := consumerKeyFromContext(r.Context())
+	pr := &registry.PendingRequest{
+		RequestID:   requestID,
+		ProviderID:  provider.ID,
+		Model:       model,
+		ConsumerKey: consumerKey,
+		ChunkCh:     make(chan string, chunkBufferSize),
+		CompleteCh:  make(chan protocol.UsageInfo, 1),
+		ErrorCh:     make(chan protocol.InferenceErrorMessage, 1),
+	}
+	pr.SessionPrivKey = &sessionKeys.PrivateKey
+	provider.AddPending(pr)
+
+	data, _ := json.Marshal(wireMsg)
+	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
+		return
+	}
+
+	s.logger.Info("inference request dispatched",
+		"request_id", requestID,
+		"model", model,
+		"provider_id", provider.ID,
+		"endpoint", endpoint,
+		"stream", stream,
+	)
+
+	if stream {
+		s.handleStreamingResponse(w, r, pr)
+	} else {
+		s.handleNonStreamingResponse(w, r, pr)
+	}
 }
 
 // errorResponse builds a standard OpenAI-compatible error response body.

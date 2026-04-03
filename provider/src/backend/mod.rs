@@ -1,8 +1,10 @@
 //! Inference backend management for the DGInf provider.
 //!
-//! The only supported backend is vllm-mlx — a high-performance inference
-//! engine for Apple Silicon with continuous batching, prefix caching, and
-//! an OpenAI-compatible API. It builds on Apple's MLX framework.
+//! Supported backends are vllm-mlx and mlx-lm.
+//!
+//! We prefer mlx-lm in production right now because vllm-mlx has been observed
+//! to accept HTTP requests and then hang indefinitely on generation for some
+//! large quantized models. Both expose an OpenAI-compatible API.
 //!
 //! The BackendManager wraps the backend with health monitoring and automatic
 //! restart. It periodically checks the backend's /health endpoint and
@@ -188,33 +190,51 @@ fn health_client() -> reqwest::Client {
 }
 
 /// Perform a health check against the given URL.
+///
+/// Different backends expose different health surfaces:
+/// - vllm-mlx: `/health`
+/// - mlx_lm.server: `/v1/models`
 pub async fn check_health(base_url: &str) -> bool {
-    let url = format!("{base_url}/health");
     let client = health_client();
-    match client.get(&url).send().await {
-        Ok(resp) => resp.status().is_success(),
-        Err(_) => false,
+
+    for path in ["/health", "/v1/models"] {
+        let url = format!("{base_url}{path}");
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status().is_success() {
+                return true;
+            }
+        }
     }
+
+    false
 }
 
 /// Check if the backend has fully loaded its model into GPU memory.
 /// Returns true only when the /health endpoint reports model_loaded: true.
 pub async fn check_model_loaded(base_url: &str) -> bool {
-    let url = format!("{base_url}/health");
     let client = health_client();
-    match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
+
+    // vllm-mlx reports explicit model_loaded state on /health.
+    let health_url = format!("{base_url}/health");
+    if let Ok(resp) = client.get(&health_url).send().await {
+        if resp.status().is_success() {
             if let Ok(body) = resp.json::<serde_json::Value>().await {
-                body.get("model_loaded")
+                return body
+                    .get("model_loaded")
                     .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-            } else {
-                // If we can't parse the body, fall back to status-only check
-                true
+                    .unwrap_or(true);
             }
+            return true;
         }
-        _ => false,
     }
+
+    // mlx_lm.server does not expose /health; if /v1/models responds, treat the
+    // backend as loaded enough to serve requests.
+    let models_url = format!("{base_url}/v1/models");
+    matches!(
+        client.get(&models_url).send().await,
+        Ok(resp) if resp.status().is_success()
+    )
 }
 
 /// Send a minimal warmup request to prime the model's GPU caches.

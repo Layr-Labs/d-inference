@@ -4,6 +4,8 @@ target/
 *.a
 *.dylib
 
+.next/
+
 # Rust
 Cargo.lock
 
@@ -66,3 +68,4 @@ papers/
 d-inf-docs/
 .vercel
 .claude/worktrees/
+.external/

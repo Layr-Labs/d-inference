@@ -50,10 +50,12 @@ final class StatusViewModel: ObservableObject {
         didSet { UserDefaults.standard.set(hasCompletedSetup, forKey: "hasCompletedSetup") }
     }
 
-    // MARK: - Settings (persisted via UserDefaults)
+    // MARK: - Settings (persisted via provider.toml — shared with CLI)
 
     @Published var coordinatorURL: String {
-        didSet { UserDefaults.standard.set(coordinatorURL, forKey: "coordinatorURL") }
+        didSet {
+            try? ConfigManager.update { $0.coordinatorURL = coordinatorURL }
+        }
     }
 
     @Published var apiKey: String {
@@ -92,9 +94,11 @@ final class StatusViewModel: ObservableObject {
     // MARK: - Init
 
     init() {
-        // Load persisted settings
-        self.coordinatorURL = UserDefaults.standard.string(forKey: "coordinatorURL")
-            ?? "wss://inference-test.openinnovation.dev/ws/provider"
+        // Load from provider.toml (shared with CLI) — single source of truth
+        let config = ConfigManager.load()
+        self.coordinatorURL = config.coordinatorURL
+        self.currentModel = config.backendModel ?? "None"
+
         self.apiKey = Self.loadKeychainItem(key: "apiKey") ?? ""
         self.autoStart = UserDefaults.standard.bool(forKey: "autoStart")
         self.idleTimeoutSeconds = UserDefaults.standard.double(forKey: "idleTimeoutSeconds")
@@ -108,46 +112,11 @@ final class StatusViewModel: ObservableObject {
         detectHardware()
         notificationManager.requestAuthorization()
 
-        // Observe idle state
-        idleDetector.$isUserIdle
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] isIdle in
-                guard let self = self else { return }
-                if isIdle && self.isPaused {
-                    self.resumeProvider()
-                } else if !isIdle && self.isOnline && !self.isPaused {
-                    self.pauseProvider()
-                }
-            }
-            .store(in: &cancellables)
+        // Scan for downloaded models
+        modelManager.scanModels()
 
-        // Observe provider output (both stdout and stderr — tracing uses stderr)
-        providerManager.$lastOutputLine
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] line in
-                self?.parseProviderOutput(line)
-            }
-            .store(in: &cancellables)
-
-        providerManager.$lastError
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] line in
-                self?.parseProviderOutput(line)
-            }
-            .store(in: &cancellables)
-
-        providerManager.$isRunning
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] running in
-                guard let self = self else { return }
-                if !running && self.isOnline {
-                    self.isOnline = false
-                    self.isServing = false
-                    self.tokensPerSecond = 0
-                    self.notificationManager.notifyProviderOffline()
-                }
-            }
-            .store(in: &cancellables)
+        // Poll real provider status every 5 seconds
+        startStatusPoller()
 
         // Periodic background tasks
         startPeriodicTasks()
@@ -162,68 +131,122 @@ final class StatusViewModel: ObservableObject {
     // MARK: - Actions
 
     func start() {
-        guard !providerManager.isRunning else { return }
+        guard !isOnline else { return }
 
-        providerManager.start(
-            model: currentModel,
-            coordinatorURL: coordinatorURL,
-            port: 8321
-        )
-        isOnline = true
-        isPaused = false
-        uptimeSeconds = 0
-
-        uptimeTimer?.invalidate()
-        uptimeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.uptimeSeconds += 1
-            }
+        Task {
+            do {
+                let result = try await CLIRunner.run(["start", "--model", currentModel])
+                if result.success {
+                    notificationManager.notifyProviderOnline(model: currentModel)
+                }
+            } catch {}
+            await pollProviderStatus()
         }
-
-        idleDetector.start()
-        startCaffeinate()
-        notificationManager.notifyProviderOnline(model: currentModel)
     }
 
     func stop() {
-        providerManager.stop()
-        idleDetector.stop()
-        uptimeTimer?.invalidate()
-        uptimeTimer = nil
-        caffeinateProcess?.terminate()
-        caffeinateProcess = nil
-        isOnline = false
-        isServing = false
-        isPaused = false
-        tokensPerSecond = 0
+        Task {
+            do {
+                let _ = try await CLIRunner.run(["stop"])
+            } catch {}
+            isOnline = false
+            isServing = false
+            isPaused = false
+            tokensPerSecond = 0
+            uptimeTimer?.invalidate()
+            uptimeTimer = nil
+            notificationManager.notifyProviderOffline()
+        }
     }
 
-    /// Spawn caffeinate to prevent system sleep while the provider is running.
-    private func startCaffeinate() {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
-        process.arguments = ["-s", "-i"]  // prevent system sleep + idle sleep
-        try? process.run()
-        caffeinateProcess = process
-    }
-
-    /// Pause the provider — stops the subprocess (clean restart on resume).
+    /// Pause the provider — stops the process (clean restart on resume).
     func pauseProvider() {
         isPaused = true
-        providerManager.stop()
+        stop()
     }
 
-    /// Resume the provider — restart the subprocess.
+    /// Resume the provider — restart the process.
     func resumeProvider() {
         isPaused = false
-        if !providerManager.isRunning {
-            providerManager.start(
-                model: currentModel,
-                coordinatorURL: coordinatorURL,
-                port: 8321
-            )
-            isOnline = true
+        start()
+    }
+
+    // MARK: - Real System State Polling
+
+    private var statusPoller: Timer?
+
+    private func startStatusPoller() {
+        // Initial poll
+        Task { await pollProviderStatus() }
+
+        // Poll every 5 seconds
+        statusPoller = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                await self?.pollProviderStatus()
+            }
         }
+    }
+
+    /// Check real system state: is dginf-provider running? Is the backend healthy?
+    func pollProviderStatus() async {
+        // Check if a dginf-provider serve process is running
+        let processRunning = Self.isProviderProcessRunning()
+
+        // Check if the backend is healthy on port 8100
+        var backendHealthy = false
+        var backendModel = "None"
+        var engineType = ""
+
+        if processRunning {
+            if let url = URL(string: "http://127.0.0.1:8100/health") {
+                do {
+                    let (data, response) = try await URLSession.shared.data(from: url)
+                    if (response as? HTTPURLResponse)?.statusCode == 200 {
+                        backendHealthy = true
+                        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                            if let name = json["model_name"] as? String {
+                                let parts = name.components(separatedBy: "/")
+                                backendModel = parts.last ?? name
+                            }
+                            engineType = json["engine_type"] as? String ?? ""
+                        }
+                    }
+                } catch {}
+            }
+        }
+
+        let wasOnline = isOnline
+        isOnline = processRunning && backendHealthy
+
+        if isOnline && !wasOnline {
+            uptimeSeconds = 0
+            uptimeTimer?.invalidate()
+            uptimeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.uptimeSeconds += 1 }
+            }
+        } else if !isOnline && wasOnline {
+            uptimeTimer?.invalidate()
+            uptimeTimer = nil
+            isServing = false
+            tokensPerSecond = 0
+        }
+
+        if backendHealthy {
+            currentModel = backendModel
+            coordinatorConnected = true
+        }
+    }
+
+    /// Check if a dginf-provider serve process is running via pgrep.
+    private static func isProviderProcessRunning() -> Bool {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        proc.arguments = ["-f", "dginf-provider serve"]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try? proc.run()
+        proc.waitUntilExit()
+        return proc.terminationStatus == 0
     }
 
     // MARK: - Wallet & Earnings

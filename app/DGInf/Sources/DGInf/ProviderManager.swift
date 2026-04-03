@@ -2,13 +2,11 @@
 ///
 /// This class wraps Foundation's `Process` to spawn, monitor, and stop the
 /// `dginf-provider` binary. It captures stdout/stderr for status parsing,
-/// auto-restarts on unexpected crashes, and resolves the binary path from
-/// multiple candidate locations.
+/// auto-restarts on unexpected crashes, and sets up the same environment
+/// (PATH, PYTHONHOME) that the CLI uses.
 ///
-/// Binary path resolution order:
-///   1. Same directory as the running app bundle
-///   2. `~/.dginf/bin/dginf-provider`
-///   3. Standard PATH lookup via `/usr/bin/env which`
+/// Binary resolution is delegated to CLIRunner.resolveBinaryPath() for
+/// consistency — both the app and CLI use the same search order.
 ///
 /// The provider binary is invoked as:
 ///   dginf-provider serve --coordinator <url> --model <model> --backend-port <port>
@@ -48,52 +46,12 @@ final class ProviderManager: ObservableObject {
 
     /// Resolve the path to the dginf-provider binary.
     ///
-    /// Searches in order:
-    ///   1. Adjacent to the app bundle (for production distribution)
-    ///   2. `~/.dginf/bin/dginf-provider` (for manual installs)
-    ///   3. PATH lookup (for development)
-    ///
-    /// Returns nil if the binary cannot be found anywhere.
+    /// Uses the same resolution order as CLIRunner for consistency:
+    ///   1. `~/.dginf/bin/dginf-provider` (shared install — single source of truth)
+    ///   2. Adjacent to the app bundle (fallback for first-run)
+    ///   3. PATH lookup (development)
     nonisolated static func resolveBinaryPath() -> String? {
-        // 1. Adjacent to app bundle
-        if let bundlePath = Bundle.main.executablePath {
-            let bundleDir = (bundlePath as NSString).deletingLastPathComponent
-            let adjacent = (bundleDir as NSString).appendingPathComponent("dginf-provider")
-            if FileManager.default.isExecutableFile(atPath: adjacent) {
-                return adjacent
-            }
-        }
-
-        // 2. ~/.dginf/bin/dginf-provider
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let homeBin = home.appendingPathComponent(".dginf/bin/dginf-provider").path
-        if FileManager.default.isExecutableFile(atPath: homeBin) {
-            return homeBin
-        }
-
-        // 3. PATH lookup
-        let whichProcess = Process()
-        let whichPipe = Pipe()
-        whichProcess.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        whichProcess.arguments = ["dginf-provider"]
-        whichProcess.standardOutput = whichPipe
-        whichProcess.standardError = Pipe()
-        do {
-            try whichProcess.run()
-            whichProcess.waitUntilExit()
-            if whichProcess.terminationStatus == 0 {
-                let data = whichPipe.fileHandleForReading.readDataToEndOfFile()
-                let path = String(data: data, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if let path = path, !path.isEmpty {
-                    return path
-                }
-            }
-        } catch {
-            // which failed, binary not in PATH
-        }
-
-        return nil
+        CLIRunner.resolveBinaryPath()
     }
 
     /// Build the full command arguments for the provider binary.
@@ -171,10 +129,8 @@ final class ProviderManager: ObservableObject {
     /// Spawn the provider process and wire up output capture.
     private func spawnProcess() {
         guard let binaryPath = Self.resolveBinaryPath() else {
-            lastError = "dginf-provider binary not found. Searched:\n"
-                + "  - Adjacent to app bundle\n"
-                + "  - ~/.dginf/bin/dginf-provider\n"
-                + "  - PATH"
+            lastError = "dginf-provider binary not found. Run the installer:\n"
+                + "  curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash"
             return
         }
 
@@ -186,7 +142,25 @@ final class ProviderManager: ObservableObject {
             port: currentPort
         )
 
-        // Set up pipes for output capture
+        // Match CLIRunner's environment so the provider subprocess can find
+        // Python/vllm-mlx and other tools in the same paths the CLI uses.
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        var env = ProcessInfo.processInfo.environment
+        let extraPaths = [
+            "\(home)/.dginf/bin",
+            "\(home)/.dginf/python/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+        ]
+        let existingPath = env["PATH"] ?? "/usr/bin:/bin"
+        env["PATH"] = (extraPaths + [existingPath]).joined(separator: ":")
+
+        let pythonHome = "\(home)/.dginf/python"
+        if FileManager.default.fileExists(atPath: "\(pythonHome)/bin/python3.12") {
+            env["PYTHONHOME"] = pythonHome
+        }
+        proc.environment = env
+
         let outPipe = Pipe()
         let errPipe = Pipe()
         proc.standardOutput = outPipe

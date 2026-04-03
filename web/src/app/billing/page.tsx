@@ -142,7 +142,7 @@ export default function BillingPage() {
               ) : (
                 <div className="flex items-baseline gap-1 mb-6">
                   <span className="text-4xl font-bold text-text-primary font-mono tracking-tight">
-                    ${balance?.balance_usd?.toFixed(2) ?? "0.00"}
+                    ${Number(balance?.balance_usd ?? 0).toFixed(2)}
                   </span>
                   <span className="text-sm text-text-tertiary font-mono">
                     USD

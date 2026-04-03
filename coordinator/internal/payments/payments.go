@@ -1,16 +1,15 @@
 // Package payments provides balance tracking and pricing for DGInf inference.
 //
 // The payment flow:
-//   1. Consumer deposits funds (MVP: trust-based ledger credit; production:
-//      verified pathUSD transfer on Tempo blockchain via Viem)
+//   1. Consumer deposits USDC on Solana (verified on-chain via JSON-RPC)
+//      or pays via Stripe checkout
 //   2. Consumer makes inference requests — the coordinator debits per-request
 //      based on output token count
 //   3. Provider earns a payout (total cost minus 10% platform fee)
-//   4. Payouts accumulate and are settled to the Tempo blockchain periodically
+//   4. Payouts accumulate and can be settled on-chain
 //
 // All amounts are in micro-USD (1 USD = 1,000,000 micro-USD). This maps 1:1
-// to pathUSD's 6-decimal on-chain representation, so no conversion is needed
-// when settling to the blockchain.
+// to USDC's 6-decimal on-chain representation.
 //
 // The Ledger wraps a Store for balance persistence and adds in-memory tracking
 // of per-consumer usage history and pending provider payouts.
@@ -46,7 +45,6 @@ type UsageEntry struct {
 
 // Ledger tracks consumer and provider balances, backed by a Store for
 // persistence. The Store handles balance atomicity and ledger entry recording.
-// Payouts are tracked in-memory until Tempo settlement is implemented.
 type Ledger struct {
 	mu    sync.RWMutex
 	store store.Store
@@ -54,7 +52,7 @@ type Ledger struct {
 	// in-memory usage log per consumer (keyed by consumer ID)
 	usage map[string][]UsageEntry
 
-	// pending payouts to providers (settled via Tempo later)
+	// pending payouts to providers (settled on-chain when ready)
 	pendingPayouts []Payout
 }
 

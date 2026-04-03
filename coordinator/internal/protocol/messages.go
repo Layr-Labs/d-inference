@@ -167,6 +167,10 @@ type InferenceRequestBody struct {
 	Stream      bool          `json:"stream"`
 	MaxTokens   *int          `json:"max_tokens,omitempty"`
 	Temperature *float64      `json:"temperature,omitempty"`
+	// Endpoint is the backend path to forward to (e.g. "/v1/chat/completions",
+	// "/v1/completions", "/v1/messages"). Defaults to "/v1/chat/completions"
+	// if empty, for backwards compatibility.
+	Endpoint    string        `json:"endpoint,omitempty"`
 }
 
 // InferenceRequestMessage tells a provider to run inference.

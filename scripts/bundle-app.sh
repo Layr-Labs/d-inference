@@ -37,7 +37,15 @@
 set -euo pipefail
 
 IDENTITY="${1:--}"
-NOTARIZE="${2:-}"
+NOTARIZE=""
+UPLOAD=false
+for arg in "${@:2}"; do
+    case "$arg" in
+        --notarize) NOTARIZE="--notarize" ;;
+        --upload) UPLOAD=true ;;
+    esac
+done
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_DIR/build"
@@ -396,6 +404,30 @@ if [ -f "$DMG_PATH" ]; then
 fi
 
 # ─────────────────────────────────────────────────────────
+# 12. Upload to coordinator (optional)
+# ─────────────────────────────────────────────────────────
+if [ "$UPLOAD" = true ] && [ -f "$DMG_PATH" ]; then
+    echo "12. Uploading DMG..."
+    SSH_KEY="$HOME/.ssh/dginf-infra"
+    SERVER="ubuntu@34.197.17.112"
+
+    if [ ! -f "$SSH_KEY" ]; then
+        echo "   ERROR: SSH key not found at $SSH_KEY"
+        exit 1
+    fi
+
+    scp -i "$SSH_KEY" "$DMG_PATH" "$SERVER:/tmp/DGInf-${VERSION}.dmg"
+    ssh -i "$SSH_KEY" "$SERVER" "
+        sudo cp /tmp/DGInf-${VERSION}.dmg /var/www/html/dl/
+        sudo cp /var/www/html/dl/DGInf-${VERSION}.dmg /var/www/html/dl/DGInf-latest.dmg
+        sudo chmod 644 /var/www/html/dl/DGInf-${VERSION}.dmg /var/www/html/dl/DGInf-latest.dmg
+    "
+    echo "   ✓ DGInf-${VERSION}.dmg uploaded"
+    echo "   ✓ DGInf-latest.dmg updated"
+    echo ""
+fi
+
+# ─────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────
 echo ""
@@ -424,14 +456,16 @@ echo "  Distribute:"
 if [ "$IDENTITY" = "-" ]; then
     echo "    ⚠ Ad-hoc signed — works on this Mac only"
     echo "    For distribution, sign with Developer ID:"
-    echo "    ./scripts/bundle-app.sh \"Developer ID Application: YourOrg\""
+    echo "    ./scripts/bundle-app.sh \"Developer ID Application: YourOrg\" --upload"
 else
     echo "    ✓ Signed with: $IDENTITY"
+    if [ "$UPLOAD" = true ]; then
+        echo "    ✓ Uploaded to coordinator"
+    fi
     if [ "$NOTARIZE" = "--notarize" ]; then
         echo "    ✓ Notarized with Apple"
     else
-        echo "    Run with --notarize for Gatekeeper approval:"
-        echo "    ./scripts/bundle-app.sh \"$IDENTITY\" --notarize"
+        echo "    Add --notarize for Gatekeeper approval"
     fi
 fi
 echo ""

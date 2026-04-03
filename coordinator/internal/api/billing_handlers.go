@@ -390,11 +390,11 @@ func (s *Server) handleSolanaWithdraw(w http.ResponseWriter, r *http.Request) {
 	result, err := s.billing.Solana().SendWithdrawal(billing.SolanaWithdrawRequest{
 		ToAddress:      req.WalletAddress,
 		AmountMicroUSD: amountMicroUSD,
-	}, s.settlementURL)
+	})
 	if err != nil {
 		_ = s.billing.Ledger().Deposit(accountID, amountMicroUSD)
 		s.logger.Error("solana: withdrawal failed, re-credited", "error", err)
-		writeJSON(w, http.StatusBadGateway, errorResponse("settlement_error", err.Error()))
+		writeJSON(w, http.StatusBadGateway, errorResponse("withdrawal_error", err.Error()))
 		return
 	}
 

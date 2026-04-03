@@ -289,7 +289,7 @@ There is no subprocess fallback. If the in-process engine cannot initialize, the
 - Internal micro-USD ledger (1 USD = 1,000,000 micro-USD)
 - Pricing: $0.50 per 1M output tokens, $0.001 minimum per request
 - Platform fee: 10%, provider payout: 90%
-- Settlement: Stripe (MVP) or Tempo blockchain (pathUSD stablecoin)
+- Settlement: Stripe (wired, not activated) or Solana USDC (primary)
 
 ## Storage
 

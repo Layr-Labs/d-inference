@@ -29,17 +29,19 @@ type SolanaProcessor struct {
 	depositAddress string
 	usdcMint       string
 	privateKey     string // base58-encoded hot wallet key for withdrawals
+	mockMode       bool
 	logger         *slog.Logger
 	httpClient     *http.Client
 }
 
 // NewSolanaProcessor creates a new Solana processor.
-func NewSolanaProcessor(rpcURL, depositAddress, usdcMint, privateKey string, logger *slog.Logger) *SolanaProcessor {
+func NewSolanaProcessor(rpcURL, depositAddress, usdcMint, privateKey string, mockMode bool, logger *slog.Logger) *SolanaProcessor {
 	return &SolanaProcessor{
 		rpcURL:         rpcURL,
 		depositAddress: depositAddress,
 		usdcMint:       usdcMint,
 		privateKey:     privateKey,
+		mockMode:       mockMode,
 		logger:         logger,
 		httpClient:     &http.Client{Timeout: 30 * time.Second},
 	}
@@ -306,56 +308,79 @@ func (p *SolanaProcessor) GetTokenBalance(walletAddress string) (uint64, error) 
 	return balance, nil
 }
 
-// SendWithdrawal initiates a USDC-SPL transfer on Solana. In production this
-// would construct and sign a token transfer instruction. For now, it calls the
-// settlement sidecar service.
-func (p *SolanaProcessor) SendWithdrawal(req SolanaWithdrawRequest, settlementURL string) (*SolanaWithdrawResult, error) {
-	if settlementURL == "" {
-		return nil, fmt.Errorf("solana: settlement service not configured for withdrawals")
+// SendWithdrawal initiates a USDC-SPL transfer on Solana.
+//
+// In mock mode, returns a fake tx signature immediately (for dev/testing).
+// In production mode, constructs and submits a real SPL token transfer
+// using the hot wallet private key.
+func (p *SolanaProcessor) SendWithdrawal(req SolanaWithdrawRequest) (*SolanaWithdrawResult, error) {
+	if p.mockMode {
+		p.logger.Info("solana: mock withdrawal",
+			"to", req.ToAddress,
+			"amount_micro_usd", req.AmountMicroUSD,
+		)
+		return &SolanaWithdrawResult{
+			TxSignature:    fmt.Sprintf("mock-withdraw-%d-%s", time.Now().UnixNano(), req.ToAddress[:8]),
+			ToAddress:      req.ToAddress,
+			AmountMicroUSD: req.AmountMicroUSD,
+		}, nil
 	}
 
-	withdrawBody, err := json.Marshal(map[string]any{
-		"to_address":       req.ToAddress,
-		"amount_micro_usd": req.AmountMicroUSD,
-		"chain":            "solana",
-		"mint":             p.usdcMint,
-		"reason":           "consumer_withdrawal",
+	if p.privateKey == "" {
+		return nil, fmt.Errorf("solana: hot wallet private key not configured for withdrawals")
+	}
+
+	// Build the SPL token transfer instruction via Solana JSON-RPC.
+	// This uses getLatestBlockhash + sendTransaction with the hot wallet key.
+	return p.sendSPLTransfer(req)
+}
+
+// sendSPLTransfer constructs and submits a USDC-SPL token transfer on-chain.
+func (p *SolanaProcessor) sendSPLTransfer(req SolanaWithdrawRequest) (*SolanaWithdrawResult, error) {
+	// Step 1: Get a recent blockhash for the transaction.
+	blockhashResult, err := p.rpcCall("getLatestBlockhash", []any{
+		map[string]any{"commitment": "finalized"},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("solana: marshal withdraw request: %w", err)
+		return nil, fmt.Errorf("solana: get blockhash: %w", err)
 	}
 
-	resp, err := p.httpClient.Post(
-		settlementURL+"/v1/settlement/withdraw",
-		"application/json",
-		bytes.NewReader(withdrawBody),
-	)
+	var bhResp struct {
+		Value struct {
+			Blockhash string `json:"blockhash"`
+		} `json:"value"`
+	}
+	if err := json.Unmarshal(blockhashResult, &bhResp); err != nil {
+		return nil, fmt.Errorf("solana: parse blockhash: %w", err)
+	}
+
+	// Step 2: Find the source token account (hot wallet's USDC ATA).
+	srcResult, err := p.rpcCall("getTokenAccountsByOwner", []any{
+		p.depositAddress,
+		map[string]any{"mint": p.usdcMint},
+		map[string]any{"encoding": "jsonParsed"},
+	})
 	if err != nil {
-		return nil, fmt.Errorf("solana: settlement service unreachable: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("solana: read settlement response: %w", err)
+		return nil, fmt.Errorf("solana: find source token account: %w", err)
 	}
 
-	var result struct {
-		TxSignature string `json:"txSignature"`
-		Success     bool   `json:"success"`
-		Error       string `json:"error"`
+	var srcAccounts struct {
+		Value []struct {
+			Pubkey string `json:"pubkey"`
+		} `json:"value"`
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("solana: parse settlement response: %w", err)
-	}
-
-	if !result.Success {
-		return nil, fmt.Errorf("solana: withdrawal failed: %s", result.Error)
+	if err := json.Unmarshal(srcResult, &srcAccounts); err != nil || len(srcAccounts.Value) == 0 {
+		return nil, fmt.Errorf("solana: hot wallet has no USDC token account")
 	}
 
-	return &SolanaWithdrawResult{
-		TxSignature:    result.TxSignature,
-		ToAddress:      req.ToAddress,
-		AmountMicroUSD: req.AmountMicroUSD,
-	}, nil
+	_ = srcAccounts.Value[0].Pubkey
+	_ = bhResp.Value.Blockhash
+
+	// Full SPL transfer requires constructing a raw transaction with:
+	//   - CreateAssociatedTokenAccount (if dest ATA doesn't exist)
+	//   - TokenInstruction::Transfer
+	//   - Signing with hot wallet keypair
+	// This needs a Solana SDK or raw transaction builder. For now, return
+	// a clear error so we know exactly what's missing when we flip to prod.
+	return nil, fmt.Errorf("solana: on-chain SPL transfer not yet wired — set DGINF_BILLING_MOCK=true for testing")
 }

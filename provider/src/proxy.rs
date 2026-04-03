@@ -104,7 +104,11 @@ async fn handle_non_streaming_request(
     cancel_token: &CancellationToken,
     stats: &Option<Arc<AtomicProviderStats>>,
 ) -> Result<()> {
-    let url = format!("{backend_url}/v1/chat/completions");
+    let endpoint = body
+        .get("endpoint")
+        .and_then(|v| v.as_str())
+        .unwrap_or("/v1/chat/completions");
+    let url = format!("{backend_url}{endpoint}");
     let client = reqwest::Client::new();
 
     let response = tokio::select! {
@@ -156,6 +160,28 @@ async fn handle_non_streaming_request(
     let response_hash = security::sha256_hex(sign_data.as_bytes());
     let se_signature = security::se_sign(response_hash.as_bytes());
 
+    // Send the response content as an SSE-format chunk so the coordinator's
+    // non-streaming handler can extract it via extractContent.
+    let chunk_json = serde_json::json!({
+        "id": response_json.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+        "object": "chat.completion.chunk",
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "role": "assistant",
+                "content": content,
+            },
+            "finish_reason": "stop",
+        }],
+    });
+    outbound_tx
+        .send(ProviderMessage::InferenceResponseChunk {
+            request_id: request_id.to_string(),
+            data: format!("data: {}", chunk_json),
+        })
+        .await
+        .ok();
+
     outbound_tx
         .send(ProviderMessage::InferenceComplete {
             request_id: request_id.to_string(),
@@ -199,7 +225,11 @@ async fn handle_streaming_request(
     cancel_token: &CancellationToken,
     stats: &Option<Arc<AtomicProviderStats>>,
 ) -> Result<()> {
-    let url = format!("{backend_url}/v1/chat/completions");
+    let endpoint = body
+        .get("endpoint")
+        .and_then(|v| v.as_str())
+        .unwrap_or("/v1/chat/completions");
+    let url = format!("{backend_url}{endpoint}");
     let client = reqwest::Client::new();
 
     let response = tokio::select! {
@@ -899,8 +929,19 @@ mod tests {
         )
         .await;
 
-        let msg = rx.recv().await.unwrap();
-        match msg {
+        // First message: the response content as an SSE chunk
+        let chunk_msg = rx.recv().await.unwrap();
+        match &chunk_msg {
+            ProviderMessage::InferenceResponseChunk { request_id, data } => {
+                assert_eq!(request_id, "req-1");
+                assert!(data.contains("Hello!"), "chunk should contain response content");
+            }
+            other => panic!("Expected InferenceResponseChunk, got {:?}", other),
+        }
+
+        // Second message: InferenceComplete with usage
+        let complete_msg = rx.recv().await.unwrap();
+        match complete_msg {
             ProviderMessage::InferenceComplete { request_id, usage, .. } => {
                 assert_eq!(request_id, "req-1");
                 assert_eq!(usage.prompt_tokens, 10);

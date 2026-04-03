@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { usePrivy } from "@privy-io/react-auth";
+import { useAuthContext } from "@/components/providers/PrivyClientProvider";
 
 const COORDINATOR_URL =
   process.env.NEXT_PUBLIC_COORDINATOR_URL ||
@@ -10,7 +10,7 @@ const COORDINATOR_URL =
 type LinkStatus = "idle" | "submitting" | "success" | "error";
 
 export function DeviceLinkForm() {
-  const { ready, authenticated, login, getAccessToken, user } = usePrivy();
+  const { ready, authenticated, login, getAccessToken, user } = useAuthContext();
   const [code, setCode] = useState("");
   const [status, setStatus] = useState<LinkStatus>("idle");
   const [errorMsg, setErrorMsg] = useState("");
@@ -133,7 +133,9 @@ export function DeviceLinkForm() {
       <div className="text-sm text-slate-500 mb-6 text-center">
         Signed in as{" "}
         <span className="font-medium text-slate-700">
-          {user?.email?.address || user?.wallet?.address || "your account"}
+          {(user as { email?: { address?: string }; wallet?: { address?: string } })?.email?.address ||
+            (user as { wallet?: { address?: string } })?.wallet?.address ||
+            "your account"}
         </span>
       </div>
 

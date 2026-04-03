@@ -9,8 +9,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { ready, authenticated } = useAuth();
   const pathname = usePathname();
 
-  // Login / device-linking pages — no shell
-  if (pathname === "/login" || pathname === "/link") {
+  // Device-linking page — no shell
+  if (pathname === "/link") {
     return <>{children}</>;
   }
 
@@ -28,9 +28,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Not authenticated — render children (middleware handles redirect)
+  // Unauthenticated — show page content without sidebar (page handles its own CTA)
   if (!authenticated) {
-    return <>{children}</>;
+    return (
+      <div className="flex h-screen overflow-hidden bg-bg-primary">
+        <main className="flex-1 flex flex-col overflow-y-auto">{children}</main>
+        <Toasts />
+      </div>
+    );
   }
 
   return (

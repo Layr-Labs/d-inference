@@ -438,6 +438,14 @@ enum Command {
         /// Serve all downloaded models that fit in memory
         #[arg(long)]
         all_models: bool,
+
+        /// Image model to serve (e.g. "flux-klein-4b")
+        #[arg(long)]
+        image_model: Option<String>,
+
+        /// Path to the image model directory for gRPCServerCLI
+        #[arg(long)]
+        image_model_path: Option<String>,
     },
 
     /// One-command setup: enroll in MDM, download model, start serving
@@ -514,6 +522,14 @@ enum Command {
         /// Model to serve
         #[arg(long)]
         model: Option<String>,
+
+        /// Image model to serve (e.g. "flux-klein-4b")
+        #[arg(long)]
+        image_model: Option<String>,
+
+        /// Path to the image model directory for gRPCServerCLI
+        #[arg(long)]
+        image_model_path: Option<String>,
     },
 
     /// Stop the provider gracefully
@@ -530,7 +546,7 @@ enum Command {
         watch: bool,
     },
 
-    /// Show or create provider wallet (stored in macOS Keychain)
+    /// Show or create provider wallet (stored in ~/.dginf/wallet_key)
     Wallet,
 
     /// Check for updates and install the latest version
@@ -588,7 +604,22 @@ async fn main() -> Result<()> {
             model,
             backend_port,
             all_models,
-        } => cmd_serve(local, coordinator, port, model, backend_port, all_models).await,
+            image_model,
+            image_model_path,
+        } => {
+            // CLI flags override env vars for image model
+            if let Some(ref im) = image_model {
+                // SAFETY: single-threaded at this point, before tokio runtime starts
+                unsafe {
+                    std::env::set_var("DGINF_IMAGE_MODEL", im);
+                    std::env::set_var("DGINF_IMAGE_MODEL_ID", im);
+                }
+            }
+            if let Some(ref imp) = image_model_path {
+                unsafe { std::env::set_var("DGINF_IMAGE_MODEL_PATH", imp); }
+            }
+            cmd_serve(local, coordinator, port, model, backend_port, all_models).await
+        }
         Command::Enroll { coordinator } => cmd_enroll(coordinator).await,
         Command::Unenroll => cmd_unenroll().await,
         Command::Benchmark => cmd_benchmark().await,
@@ -599,7 +630,7 @@ async fn main() -> Result<()> {
         } => cmd_models(action, coordinator).await,
         Command::Earnings { coordinator } => cmd_earnings(coordinator).await,
         Command::Doctor { coordinator } => cmd_doctor(coordinator).await,
-        Command::Start { coordinator, model } => cmd_start(coordinator, model).await,
+        Command::Start { coordinator, model, image_model, image_model_path } => cmd_start(coordinator, model, image_model, image_model_path).await,
         Command::Stop => cmd_stop().await,
         Command::Logs { lines, watch } => cmd_logs(lines, watch).await,
         Command::Wallet => cmd_wallet().await,
@@ -663,7 +694,7 @@ async fn cmd_install(
     let w = wallet::Wallet::load_or_create()?;
     println!("  ✓ Config: {}", config_path.display());
     println!("  ✓ Node key: {}", key_path.display());
-    println!("  ✓ Wallet: {} (stored in Keychain)", w.address());
+    println!("  ✓ Wallet: {} (stored in ~/.dginf/wallet_key)", w.address());
     println!();
 
     // Step 3: MDM enrollment (skip if already enrolled)
@@ -943,7 +974,7 @@ async fn cmd_install(
     println!("  Model: {}", model);
     println!();
 
-    service::install_and_start(&coordinator_url, &model)?;
+    service::install_and_start(&coordinator_url, &model, None, None)?;
 
     let log_path = dirs::home_dir()
         .unwrap_or_default()
@@ -1354,61 +1385,24 @@ async fn cmd_serve(
     ensure_chat_template(&model_path);
 
     // Backend stdout/stderr is suppressed to prevent prompt content from
-    // leaking into provider logs. vllm_mlx logs request previews at INFO
+    // leaking into provider logs. Some backends log request previews at INFO
     // level, which would expose user prompts to the provider operator.
     // Health/crash detection uses HTTP health checks, not log parsing.
-    let serve_result = std::process::Command::new(&python_cmd)
-        .args([
-            "-m",
-            "vllm_mlx.server",
-            "--model",
-            &model_path,
-            "--port",
-            &be_port.to_string(),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    let backend_module = preferred_inference_backend_module();
 
-    let backend_name = match serve_result {
-        Ok(child) => {
-            tracing::info!(
-                "vllm-mlx started (PID: {:?}) on port {}",
-                child.id(),
-                be_port
-            );
-            "vllm-mlx"
-        }
-        Err(e) => {
-            tracing::info!("vllm-mlx CLI failed ({e}), falling back to mlx_lm.server");
-            let mlx_serve = std::process::Command::new(&python_cmd)
-                .args([
-                    "-m",
-                    "mlx_lm.server",
-                    "--model",
-                    &model_path,
-                    "--port",
-                    &be_port.to_string(),
-                ])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            match mlx_serve {
-                Ok(child) => {
-                    tracing::info!(
-                        "mlx_lm.server started (PID: {:?}) on port {}",
-                        child.id(),
-                        be_port
-                    );
-                    "mlx_lm"
-                }
-                Err(e) => anyhow::bail!(
-                    "Failed to start inference backend: {e}.\n\
-                     Reinstall: curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash"
-                ),
-            }
-        }
-    };
+    let child = spawn_inference_backend(&python_cmd, backend_module, &model_path, be_port)
+        .map_err(|e| anyhow::anyhow!(
+            "Failed to start {backend_module}: {e}.\n\
+             Reinstall: curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash"
+        ))?;
+
+    let backend_name = backend_name_for_module(backend_module);
+    tracing::info!(
+        "{} started (PID: {:?}) on port {}",
+        backend_module,
+        child.id(),
+        be_port
+    );
     tracing::info!("Backend: {} on port {}", backend_name, be_port);
 
     // Wait for model to load
@@ -1423,51 +1417,13 @@ async fn cmd_serve(
         }
     }
 
-    // If vllm_mlx failed to start (process crashed silently), fall back to mlx_lm.server.
-    if !backend_ready && backend_name == "vllm-mlx" {
-        tracing::warn!("vllm_mlx backend did not become healthy — falling back to mlx_lm.server");
-        #[cfg(unix)]
-        {
-            let _ = std::process::Command::new("pkill")
-                .args(["-f", "vllm_mlx"])
-                .status();
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        let mlx_serve = std::process::Command::new(&python_cmd)
-            .args([
-                "-m",
-                "mlx_lm.server",
-                "--model",
-                &model_path,
-                "--port",
-                &be_port.to_string(),
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        match mlx_serve {
-            Ok(child) => {
-                tracing::info!(
-                    "mlx_lm.server started (PID: {:?}) on port {}",
-                    child.id(),
-                    be_port
-                );
-                // Wait for mlx_lm to load
-                for i in 0..150 {
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    if backend::check_health(&backend_url_str).await {
-                        tracing::info!("mlx_lm.server ready after {}s", (i + 1) * 2);
-                        backend_ready = true;
-                        break;
-                    }
-                }
-            }
-            Err(e) => tracing::error!("mlx_lm.server also failed to start: {e}"),
-        }
-    }
-
     if !backend_ready {
-        tracing::warn!("Backend health check timed out — continuing anyway");
+        tracing::error!(
+            "Backend {} failed to become healthy after 300s. \
+             The provider will stay registered but cannot serve requests. \
+             The coordinator will route to other providers.",
+            backend_name
+        );
     }
 
     // Start STT backend (continuous-batching stt_server.py) on be_port + 1 if available.
@@ -1976,6 +1932,38 @@ async fn shutdown_backend() {
 }
 
 /// Restart the inference backend and wait for it to become healthy.
+fn preferred_inference_backend_module() -> &'static str {
+    match std::env::var("DGINF_INFERENCE_BACKEND")
+        .ok()
+        .as_deref()
+    {
+        Some("vllm-mlx") | Some("vllm_mlx") | Some("vllm_mlx.server") => "vllm_mlx.server",
+        Some("mlx_lm") | Some("mlx_lm.server") => "mlx_lm.server",
+        _ => "vllm_mlx.server",
+    }
+}
+
+fn backend_name_for_module(module: &str) -> &'static str {
+    match module {
+        "vllm_mlx.server" => "vllm-mlx",
+        "mlx_lm.server" => "mlx_lm",
+        _ => "unknown",
+    }
+}
+
+fn spawn_inference_backend(
+    python_cmd: &str,
+    module: &str,
+    model: &str,
+    port: u16,
+) -> std::io::Result<std::process::Child> {
+    let mut cmd = std::process::Command::new(python_cmd);
+    cmd.args(["-m", module, "--model", model, "--port", &port.to_string()]);
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+}
+
 async fn reload_backend(
     python_cmd: &str,
     backend_name: &str,
@@ -1990,11 +1978,7 @@ async fn reload_backend(
 
     tracing::info!("Reloading backend: {module} for model {model} on port {port}");
 
-    let child = std::process::Command::new(python_cmd)
-        .args(["-m", module, "--model", model, "--port", &port.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+    let child = spawn_inference_backend(python_cmd, module, model, port)
         .map_err(|e| anyhow::anyhow!("failed to spawn backend: {e}"))?;
 
     tracing::info!(
@@ -2553,7 +2537,7 @@ async fn cmd_unenroll() -> Result<()> {
     println!("  - Config: ~/.config/dginf/");
     println!("  - Node key: ~/.dginf/node_key");
     println!("  - Enclave key: ~/.dginf/enclave_key.data");
-    println!("  - Wallet key from Keychain");
+    println!("  - Wallet key from Secure Enclave (or ~/.dginf/wallet_key fallback)");
     println!();
     println!("Type 'yes' to confirm:");
     let mut input = String::new();
@@ -3203,7 +3187,7 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_start(coordinator_url: String, model_override: Option<String>) -> Result<()> {
+async fn cmd_start(coordinator_url: String, model_override: Option<String>, image_model: Option<String>, image_model_path: Option<String>) -> Result<()> {
     // Stop any existing provider first
     cmd_stop().await?;
 
@@ -3268,10 +3252,13 @@ async fn cmd_start(coordinator_url: String, model_override: Option<String>) -> R
         .join(".dginf/provider.log");
 
     // Install as launchd user agent (auto-restarts on crash)
-    service::install_and_start(&coordinator_url, &model)?;
+    service::install_and_start(&coordinator_url, &model, image_model.as_deref(), image_model_path.as_deref())?;
 
     println!("Provider installed as system service");
     println!("  Model:   {}", model);
+    if let Some(ref im) = image_model {
+        println!("  Image:   {}", im);
+    }
     println!("  Logs:    {}", log_path.display());
     println!("  Service: io.dginf.provider (launchd)");
     println!("  Auto-restart: enabled (KeepAlive)");
@@ -3348,11 +3335,9 @@ async fn cmd_wallet() -> Result<()> {
 
     let w = wallet::Wallet::load_or_create()?;
     println!("Address:  {}", w.address());
-    println!("Storage:  macOS Keychain (io.dginf.provider)");
+    println!("Storage:  ~/.dginf/wallet_key");
     println!();
     println!("This wallet receives your inference earnings.");
-    println!("The private key is stored securely in the macOS Keychain");
-    println!("and never leaves your machine.");
     println!();
     println!("To delete: dginf-provider unenroll (removes wallet + all data)");
 

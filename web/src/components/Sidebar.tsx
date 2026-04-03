@@ -15,6 +15,7 @@ import {
   Code,
   Activity,
   Coins,
+  ImageIcon,
   LogOut,
   Sun,
   Moon,
@@ -68,6 +69,7 @@ export function Sidebar() {
       <nav className="px-3 space-y-0.5">
         {[
           { href: "/", icon: MessageSquare, label: "Chat" },
+          { href: "/images", icon: ImageIcon, label: "Images" },
           { href: "/providers", icon: Server, label: "Providers" },
           { href: "/earn", icon: Coins, label: "Earn" },
           { href: "/api-console", icon: Code, label: "API" },

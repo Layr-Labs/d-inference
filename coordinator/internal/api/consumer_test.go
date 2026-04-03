@@ -485,253 +485,91 @@ func TestExtractContentEmpty(t *testing.T) {
 	}
 }
 
-// --- Settlement integration tests ---
-
-// fakeSettlementServer creates a mock settlement service that returns the given
-// verification and withdrawal responses.
-func fakeSettlementServer(t *testing.T, verifyResp map[string]any, withdrawResp map[string]any) *httptest.Server {
-	t.Helper()
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("POST /v1/settlement/verify-deposit", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(verifyResp)
-	})
-
-	mux.HandleFunc("POST /v1/settlement/withdraw", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(withdrawResp)
-	})
-
-	return httptest.NewServer(mux)
-}
-
-func TestVerifiedDeposit(t *testing.T) {
-	srv, _ := testServer(t)
-
-	// Set up mock settlement service that verifies successfully
-	settlement := fakeSettlementServer(t, map[string]any{
-		"verified":       true,
-		"txHash":         "0xabc123",
-		"from":           "0x1111111111111111111111111111111111111111",
-		"amount":         "5000000",
-		"amountUSD":      "5.000000",
-		"amountMicroUSD": float64(5_000_000),
-		"blockNumber":    "12345",
-	}, nil)
-	defer settlement.Close()
-	srv.SetSettlementURL(settlement.URL)
-
-	body := `{"wallet_address":"0x1111111111111111111111111111111111111111","tx_hash":"0xabc123"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/payments/deposit", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-key")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+func TestNormalizeSSEChunk(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		wantChecks func(t *testing.T, got string)
+	}{
+		{
+			name:  "null content becomes empty string",
+			input: `data: {"choices":[{"delta":{"content":null}}]}`,
+			wantChecks: func(t *testing.T, got string) {
+				if !strings.Contains(got, `"content":""`) {
+					t.Errorf("expected content to be empty string, got: %s", got)
+				}
+			},
+		},
+		{
+			name:  "null tool_calls becomes empty array",
+			input: `data: {"choices":[{"delta":{"content":"hi","tool_calls":null}}]}`,
+			wantChecks: func(t *testing.T, got string) {
+				if !strings.Contains(got, `"tool_calls":[]`) {
+					t.Errorf("expected tool_calls to be empty array, got: %s", got)
+				}
+			},
+		},
+		{
+			name:  "usage null is removed entirely",
+			input: `data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning":null,"tool_calls":null,"reasoning_content":null},"finish_reason":null}],"usage":null}`,
+			wantChecks: func(t *testing.T, got string) {
+				if strings.Contains(got, `"usage"`) {
+					t.Errorf("expected usage to be removed, got: %s", got)
+				}
+				if !strings.Contains(got, `"content":""`) {
+					t.Errorf("expected content to be empty string, got: %s", got)
+				}
+				if !strings.Contains(got, `"reasoning":""`) {
+					t.Errorf("expected reasoning to be empty string, got: %s", got)
+				}
+				if !strings.Contains(got, `"tool_calls":[]`) {
+					t.Errorf("expected tool_calls to be empty array, got: %s", got)
+				}
+				if !strings.Contains(got, `"reasoning_content":""`) {
+					t.Errorf("expected reasoning_content to be empty string, got: %s", got)
+				}
+			},
+		},
+		{
+			name:  "no nulls returns unchanged",
+			input: `data: {"choices":[{"delta":{"content":"hello"}}]}`,
+			wantChecks: func(t *testing.T, got string) {
+				if got != `data: {"choices":[{"delta":{"content":"hello"}}]}` {
+					t.Errorf("expected unchanged, got: %s", got)
+				}
+			},
+		},
+		{
+			name:  "valid usage object is preserved",
+			input: `data: {"id":"1","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`,
+			wantChecks: func(t *testing.T, got string) {
+				if !strings.Contains(got, `"prompt_tokens"`) {
+					t.Errorf("expected usage to be preserved, got: %s", got)
+				}
+			},
+		},
 	}
 
-	var resp map[string]any
-	json.Unmarshal(w.Body.Bytes(), &resp)
-
-	if resp["verified"] != true {
-		t.Errorf("verified = %v, want true", resp["verified"])
-	}
-	if resp["amount_micro_usd"].(float64) != 5_000_000 {
-		t.Errorf("amount_micro_usd = %v, want 5000000", resp["amount_micro_usd"])
-	}
-}
-
-func TestVerifiedDepositFailedVerification(t *testing.T) {
-	srv, _ := testServer(t)
-
-	settlement := fakeSettlementServer(t, map[string]any{
-		"verified":       false,
-		"error":          "Transaction failed",
-		"amountMicroUSD": float64(0),
-	}, nil)
-	defer settlement.Close()
-	srv.SetSettlementURL(settlement.URL)
-
-	body := `{"wallet_address":"0x1111111111111111111111111111111111111111","tx_hash":"0xbad"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/payments/deposit", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-key")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeSSEChunk(tt.input)
+			tt.wantChecks(t, got)
+		})
 	}
 }
 
-func TestDoubleDepositPrevention(t *testing.T) {
-	srv, _ := testServer(t)
-
-	settlement := fakeSettlementServer(t, map[string]any{
-		"verified":       true,
-		"txHash":         "0xdouble",
-		"from":           "0x1111111111111111111111111111111111111111",
-		"amount":         "1000000",
-		"amountUSD":      "1.000000",
-		"amountMicroUSD": float64(1_000_000),
-		"blockNumber":    "100",
-	}, nil)
-	defer settlement.Close()
-	srv.SetSettlementURL(settlement.URL)
-
-	// First deposit should succeed
-	body := `{"wallet_address":"0x1111111111111111111111111111111111111111","tx_hash":"0xdouble"}`
-	req1 := httptest.NewRequest(http.MethodPost, "/v1/payments/deposit", strings.NewReader(body))
-	req1.Header.Set("Authorization", "Bearer test-key")
-	w1 := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w1, req1)
-
-	if w1.Code != http.StatusOK {
-		t.Fatalf("first deposit status = %d, want %d", w1.Code, http.StatusOK)
+func TestExtractContentWithNullFields(t *testing.T) {
+	// Simulates real vllm-mlx chunks where the first chunk has null content
+	// and subsequent chunks have actual content.
+	chunks := []string{
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":"stop"}]}`,
 	}
 
-	// Second deposit with same tx_hash should fail
-	req2 := httptest.NewRequest(http.MethodPost, "/v1/payments/deposit", strings.NewReader(body))
-	req2.Header.Set("Authorization", "Bearer test-key")
-	w2 := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w2, req2)
-
-	if w2.Code != http.StatusConflict {
-		t.Errorf("second deposit status = %d, want %d (conflict), body = %s", w2.Code, http.StatusConflict, w2.Body.String())
-	}
-}
-
-func TestTrustBasedDepositStillWorks(t *testing.T) {
-	srv, _ := testServer(t)
-
-	// No tx_hash — trust-based deposit
-	body := `{"wallet_address":"0x1111111111111111111111111111111111111111","amount_usd":"10.00"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/payments/deposit", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-key")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
-	}
-
-	var resp map[string]any
-	json.Unmarshal(w.Body.Bytes(), &resp)
-
-	if resp["status"] != "deposited" {
-		t.Errorf("status = %v, want deposited", resp["status"])
-	}
-	if resp["amount_micro_usd"].(float64) != 10_000_000 {
-		t.Errorf("amount_micro_usd = %v, want 10000000", resp["amount_micro_usd"])
-	}
-}
-
-func TestWithdrawSuccess(t *testing.T) {
-	srv, _ := testServer(t)
-
-	settlement := fakeSettlementServer(t, nil, map[string]any{
-		"toAddress":      "0x2222222222222222222222222222222222222222",
-		"amountMicroUSD": float64(3_000_000),
-		"txHash":         "0xwithdraw123",
-		"success":        true,
-	})
-	defer settlement.Close()
-	srv.SetSettlementURL(settlement.URL)
-
-	// First deposit some funds
-	depositBody := `{"wallet_address":"0x1111","amount_usd":"10.00"}`
-	depositReq := httptest.NewRequest(http.MethodPost, "/v1/payments/deposit", strings.NewReader(depositBody))
-	depositReq.Header.Set("Authorization", "Bearer test-key")
-	dw := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(dw, depositReq)
-
-	if dw.Code != http.StatusOK {
-		t.Fatalf("deposit status = %d, body = %s", dw.Code, dw.Body.String())
-	}
-
-	// Now withdraw
-	withdrawBody := `{"wallet_address":"0x2222222222222222222222222222222222222222","amount_usd":"3.00"}`
-	withdrawReq := httptest.NewRequest(http.MethodPost, "/v1/payments/withdraw", strings.NewReader(withdrawBody))
-	withdrawReq.Header.Set("Authorization", "Bearer test-key")
-	ww := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(ww, withdrawReq)
-
-	if ww.Code != http.StatusOK {
-		t.Fatalf("withdraw status = %d, want %d, body = %s", ww.Code, http.StatusOK, ww.Body.String())
-	}
-
-	var resp map[string]any
-	json.Unmarshal(ww.Body.Bytes(), &resp)
-
-	if resp["status"] != "withdrawn" {
-		t.Errorf("status = %v, want withdrawn", resp["status"])
-	}
-	if resp["tx_hash"] != "0xwithdraw123" {
-		t.Errorf("tx_hash = %v, want 0xwithdraw123", resp["tx_hash"])
-	}
-	// Balance should be 10.00 - 3.00 = 7.00 = 7,000,000 micro-USD
-	if resp["balance_micro_usd"].(float64) != 7_000_000 {
-		t.Errorf("balance_micro_usd = %v, want 7000000", resp["balance_micro_usd"])
-	}
-}
-
-func TestWithdrawInsufficientFunds(t *testing.T) {
-	srv, _ := testServer(t)
-
-	// Try to withdraw without any balance
-	body := `{"wallet_address":"0x2222222222222222222222222222222222222222","amount_usd":"5.00"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/payments/withdraw", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-key")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
-	}
-}
-
-func TestWithdrawSettlementFailureRecredits(t *testing.T) {
-	srv, _ := testServer(t)
-
-	settlement := fakeSettlementServer(t, nil, map[string]any{
-		"toAddress":      "0x2222222222222222222222222222222222222222",
-		"amountMicroUSD": float64(3_000_000),
-		"txHash":         "0x0",
-		"success":        false,
-		"error":          "Insufficient platform balance",
-	})
-	defer settlement.Close()
-	srv.SetSettlementURL(settlement.URL)
-
-	// Deposit some funds
-	depositBody := `{"wallet_address":"0x1111","amount_usd":"10.00"}`
-	depositReq := httptest.NewRequest(http.MethodPost, "/v1/payments/deposit", strings.NewReader(depositBody))
-	depositReq.Header.Set("Authorization", "Bearer test-key")
-	dw := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(dw, depositReq)
-
-	// Try to withdraw — settlement will fail
-	withdrawBody := `{"wallet_address":"0x2222222222222222222222222222222222222222","amount_usd":"3.00"}`
-	withdrawReq := httptest.NewRequest(http.MethodPost, "/v1/payments/withdraw", strings.NewReader(withdrawBody))
-	withdrawReq.Header.Set("Authorization", "Bearer test-key")
-	ww := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(ww, withdrawReq)
-
-	if ww.Code != http.StatusBadGateway {
-		t.Errorf("withdraw status = %d, want %d, body = %s", ww.Code, http.StatusBadGateway, ww.Body.String())
-	}
-
-	// Check balance is re-credited — should still be 10.00
-	balReq := httptest.NewRequest(http.MethodGet, "/v1/payments/balance", nil)
-	balReq.Header.Set("Authorization", "Bearer test-key")
-	bw := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(bw, balReq)
-
-	var balResp map[string]any
-	json.Unmarshal(bw.Body.Bytes(), &balResp)
-	if balResp["balance_micro_usd"].(float64) != 10_000_000 {
-		t.Errorf("balance after failed withdrawal = %v, want 10000000 (should be re-credited)", balResp["balance_micro_usd"])
+	content := extractContent(chunks)
+	if content != "Hello world" {
+		t.Errorf("content = %q, want %q", content, "Hello world")
 	}
 }
 

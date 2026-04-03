@@ -35,6 +35,7 @@ export interface Model {
   provider_count?: number;
   attested?: boolean;
   trust_level?: string;
+  display_name?: string;
 }
 
 export interface BalanceResponse {
@@ -131,6 +132,7 @@ export async function fetchModels(): Promise<Model[]> {
       provider_count: m.provider_count ?? meta.provider_count,
       trust_level: m.trust_level || meta.trust_level,
       attested: m.attested ?? (meta.attested_providers as number) > 0,
+      display_name: m.display_name || meta.display_name,
     };
   });
 }
@@ -201,6 +203,40 @@ export async function withdraw(
     body: JSON.stringify({ amount_usd: amountUsd, wallet_address: walletAddress }),
   });
   if (!res.ok) throw new Error(`Withdrawal failed: ${res.status}`);
+}
+
+export interface ImageGenerationRequest {
+  model: string;
+  prompt: string;
+  negative_prompt?: string;
+  n?: number;
+  size?: string;
+  steps?: number;
+  seed?: number;
+}
+
+export interface GeneratedImage {
+  b64_json: string;
+}
+
+export interface ImageGenerationResponse {
+  created: number;
+  data: GeneratedImage[];
+}
+
+export async function generateImage(
+  params: ImageGenerationRequest
+): Promise<ImageGenerationResponse> {
+  const res = await fetch("/api/images", {
+    method: "POST",
+    headers: proxyHeaders(),
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Image generation failed (${res.status}): ${text}`);
+  }
+  return res.json();
 }
 
 export async function healthCheck(): Promise<{ status: string; providers: number }> {

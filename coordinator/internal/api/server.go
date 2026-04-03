@@ -66,13 +66,11 @@ type Server struct {
 	logger            *slog.Logger
 	mux               *http.ServeMux
 	challengeInterval time.Duration // 0 means use DefaultChallengeInterval
-	settlementURL     string        // URL of the settlement sidecar (e.g. "http://localhost:8090")
 	privyAuth              *auth.PrivyAuth     // Privy JWT authentication (nil if not configured)
 	adminEmails            map[string]bool     // emails that have admin access
 	mdmClient              *mdm.Client        // MicroMDM client for provider security verification
 	stepCARootCert         *x509.Certificate  // step-ca root CA for ACME cert verification
 	stepCAIntermediateCert *x509.Certificate  // step-ca intermediate CA
-	processedTxHashes      map[string]bool    // prevents double-crediting the same on-chain tx
 
 	// imageUploads stores generated images keyed by request_id.
 	// Providers upload images via HTTP POST, then send a small WebSocket
@@ -89,17 +87,10 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 		ledger:            payments.NewLedger(st),
 		logger:            logger,
 		mux:               http.NewServeMux(),
-		settlementURL:     "http://localhost:8090",
-		processedTxHashes: make(map[string]bool),
-		imageUploads:      make(map[string][][]byte),
+		imageUploads: make(map[string][][]byte),
 	}
 	s.routes()
 	return s
-}
-
-// SetSettlementURL configures the settlement service URL.
-func (s *Server) SetSettlementURL(url string) {
-	s.settlementURL = url
 }
 
 // SetStepCACerts configures the step-ca CA certificates for ACME client cert verification.
@@ -160,6 +151,8 @@ func (s *Server) routes() {
 
 	// Consumer endpoints — API key auth required.
 	s.mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.handleChatCompletions))
+	s.mux.HandleFunc("POST /v1/completions", s.requireAuth(s.handleCompletions))
+	s.mux.HandleFunc("POST /v1/messages", s.requireAuth(s.handleAnthropicMessages))
 	s.mux.HandleFunc("POST /v1/audio/transcriptions", s.requireAuth(s.handleTranscriptions))
 	s.mux.HandleFunc("POST /v1/images/generations", s.requireAuth(s.handleImageGenerations))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
@@ -172,10 +165,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/mdm/webhook", s.HandleMDMWebhook)
 
 	// Payment endpoints — API key auth required.
-	s.mux.HandleFunc("POST /v1/payments/deposit", s.requireAuth(s.handleDeposit))
 	s.mux.HandleFunc("GET /v1/payments/balance", s.requireAuth(s.handleBalance))
 	s.mux.HandleFunc("GET /v1/payments/usage", s.requireAuth(s.handleUsage))
-	s.mux.HandleFunc("POST /v1/payments/withdraw", s.requireAuth(s.handleWithdraw))
 
 	// Provider earnings — no API key auth (providers identify by wallet address).
 	s.mux.HandleFunc("GET /v1/provider/earnings", s.handleProviderEarnings)

@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook for d-inference.
+# Checks formatting on staged files only. Skips checks when no relevant files are staged.
+#
+# Install: git config core.hooksPath .githooks
+#
+
+set -euo pipefail
+
+FAILED=0
+
+# ---------------------------------------------------------------------------
+# Go — gofmt on staged .go files under coordinator/
+# ---------------------------------------------------------------------------
+GO_FILES=$(git diff --cached --name-only --diff-filter=ACM -- 'coordinator/**.go' | grep '\.go$' || true)
+
+if [ -n "$GO_FILES" ]; then
+    echo ">> Checking Go formatting (gofmt)..."
+    UNFORMATTED=$(gofmt -l $GO_FILES 2>/dev/null || true)
+    if [ -n "$UNFORMATTED" ]; then
+        echo ""
+        echo "ERROR: The following Go files need formatting:"
+        echo "$UNFORMATTED" | sed 's/^/  /'
+        echo ""
+        echo "Fix with:  gofmt -w <file>  (or run: gofmt -w \$(git diff --cached --name-only -- 'coordinator/**.go'))"
+        echo ""
+        FAILED=1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Rust — cargo fmt --check in provider/ if any .rs files are staged
+# ---------------------------------------------------------------------------
+RS_FILES=$(git diff --cached --name-only --diff-filter=ACM -- 'provider/**.rs' | grep '\.rs$' || true)
+
+if [ -n "$RS_FILES" ]; then
+    echo ">> Checking Rust formatting (cargo fmt)..."
+    if ! (cd provider && cargo fmt --check 2>/dev/null); then
+        echo ""
+        echo "ERROR: Rust files in provider/ are not formatted."
+        echo ""
+        echo "Fix with:  cd provider && cargo fmt"
+        echo ""
+        FAILED=1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# TypeScript — next lint in web/ if any .ts/.tsx files are staged
+# ---------------------------------------------------------------------------
+TS_FILES=$(git diff --cached --name-only --diff-filter=ACM -- 'web/**.ts' 'web/**.tsx' | grep -E '\.(ts|tsx)$' || true)
+
+if [ -n "$TS_FILES" ]; then
+    echo ">> Checking TypeScript lint (next lint)..."
+    if ! (cd web && npx next lint 2>/dev/null); then
+        echo ""
+        echo "ERROR: TypeScript lint errors in web/."
+        echo ""
+        echo "Fix with:  cd web && npx next lint --fix"
+        echo ""
+        FAILED=1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Swift — skipped (no standard enforced formatter)
+# ---------------------------------------------------------------------------
+
+if [ "$FAILED" -ne 0 ]; then
+    echo "Pre-commit checks failed. Please fix the issues above and try again."
+    exit 1
+fi

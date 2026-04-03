@@ -8,7 +8,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { ChatMessage } from "@/components/ChatMessage";
 import { ChatInput } from "@/components/ChatInput";
 import { TopBar } from "@/components/TopBar";
-import { Sparkles, Lock, Cpu, Globe } from "lucide-react";
+import { Sparkles, Lock, Cpu, Globe, Mail } from "lucide-react";
 import type { Message } from "@/lib/store";
 
 function generateId() {
@@ -36,7 +36,7 @@ export default function ChatPage() {
     setModels,
   } = useStore();
 
-  const { authenticated } = useAuth();
+  const { ready, authenticated, login } = useAuth();
   const addToast = useToastStore((s) => s.addToast);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -183,13 +183,61 @@ export default function ChatPage() {
     <div className="flex flex-col h-full">
       <TopBar />
 
-      {!activeChat || activeChat.messages.length === 0 ? (
+      {!authenticated ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center max-w-lg px-6">
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-accent-amber/10 text-accent-amber text-xs font-medium mb-4">
               <span className="w-1.5 h-1.5 rounded-full bg-accent-amber animate-pulse" />
               Research Preview
             </div>
+            <h2 className="text-3xl font-bold text-text-primary tracking-tight mb-2">
+              Eigen<span className="font-normal text-text-secondary">Inference</span>
+            </h2>
+            <p className="text-base text-text-tertiary mb-8 leading-relaxed">
+              Private AI inference through hardware-attested Apple Silicon providers.
+              <br />
+              Your prompts stay encrypted, your data stays yours.
+            </p>
+
+            <button
+              onClick={login}
+              disabled={!ready}
+              className="inline-flex items-center justify-center gap-2 px-8 py-3 rounded-xl
+                         bg-accent-brand text-white font-medium text-base
+                         hover:bg-accent-brand-hover transition-colors
+                         disabled:opacity-40 disabled:cursor-not-allowed
+                         shadow-lg"
+            >
+              <Mail size={18} />
+              {!ready ? "Loading..." : "Sign In"}
+            </button>
+
+            <p className="mt-4 text-xs text-text-tertiary">
+              Sign in with your email to get started
+            </p>
+
+            <div className="flex flex-wrap justify-center gap-3 mt-10">
+              {[
+                { icon: Lock, label: "End-to-end encrypted" },
+                { icon: Sparkles, label: "Secure Enclave attested" },
+                { icon: Cpu, label: "Apple Silicon native" },
+                { icon: Globe, label: "Decentralized network" },
+              ].map(({ icon: Icon, label }) => (
+                <span
+                  key={label}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full
+                             bg-bg-secondary text-xs text-text-tertiary"
+                >
+                  <Icon size={12} />
+                  {label}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : !activeChat || activeChat.messages.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center max-w-lg px-6">
             <h2 className="text-3xl font-bold text-text-primary tracking-tight mb-2">
               Eigen<span className="font-normal text-text-secondary">Inference</span>
             </h2>

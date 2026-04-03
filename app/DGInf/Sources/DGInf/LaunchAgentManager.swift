@@ -1,14 +1,18 @@
-/// LaunchAgentManager — Install/remove a launchd LaunchAgent for auto-start on login.
+/// LaunchAgentManager — Install/remove a launchd LaunchAgent for app auto-launch on login.
 ///
-/// Creates a plist at ~/Library/LaunchAgents/io.dginf.provider.plist that
-/// launches the DGInf.app on login. This wires the "Start DGInf when you
-/// log in" toggle in SettingsView to an actual system mechanism.
+/// Creates a plist at ~/Library/LaunchAgents/io.dginf.app.plist that opens
+/// the DGInf.app on login. This is separate from the provider service plist
+/// (io.dginf.provider.plist) which is managed by the CLI's `start`/`stop`.
+///
+/// Only installed when the user explicitly toggles "Start DGInf when you
+/// log in" in Settings. Opening the app does NOT auto-start the provider;
+/// the user must click "Go Online" to begin serving.
 
 import Foundation
 
 enum LaunchAgentManager {
 
-    private static let plistName = "io.dginf.provider.plist"
+    private static let plistName = "io.dginf.app.plist"
 
     private static var plistPath: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -43,7 +47,7 @@ enum LaunchAgentManager {
         )
 
         let plist: [String: Any] = [
-            "Label": "io.dginf.provider",
+            "Label": "io.dginf.app",
             "ProgramArguments": ["/usr/bin/open", appPath],
             "RunAtLoad": true,
             "KeepAlive": false,

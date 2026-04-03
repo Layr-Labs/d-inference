@@ -1,16 +1,15 @@
 //! launchd user agent management for the dginf-provider.
 //!
-//! Installs the provider as a macOS launchd service with `KeepAlive: true`
-//! so it auto-restarts after crashes. Uses the modern `launchctl bootstrap`/
-//! `bootout` API (gui/<uid> domain).
+//! The provider only runs when the user explicitly starts it via
+//! `dginf-provider start` or the macOS app's "Go Online" toggle.
+//! It does NOT auto-start on login or auto-restart after crashes.
+//! The user is always in control of when their GPU is being used.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// launchd service label.
 const LABEL: &str = "io.dginf.provider";
 
-/// Path to the launchd plist: ~/Library/LaunchAgents/io.dginf.provider.plist
 fn plist_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
@@ -18,7 +17,6 @@ fn plist_path() -> PathBuf {
         .join(format!("{LABEL}.plist"))
 }
 
-/// Get the current user's UID.
 fn uid() -> u32 {
     #[cfg(unix)]
     {
@@ -26,12 +24,11 @@ fn uid() -> u32 {
     }
     #[cfg(not(unix))]
     {
-        501 // fallback, should never be used
+        501
     }
 }
 
-/// Write the plist XML file with the given serve arguments.
-fn write_plist(binary_path: &Path, coordinator_url: &str, model: &str) -> Result<()> {
+fn write_plist(binary_path: &Path, coordinator_url: &str, model: &str, image_model: Option<&str>, image_model_path: Option<&str>) -> Result<()> {
     let launch_agents_dir = plist_path()
         .parent()
         .expect("plist has a parent dir")
@@ -46,7 +43,25 @@ fn write_plist(binary_path: &Path, coordinator_url: &str, model: &str) -> Result
     let binary = binary_path.display();
     let log = log_path.display();
 
-    // Generate plist XML directly — no external dependencies needed.
+    let mut args = vec![
+        format!("        <string>{binary}</string>"),
+        "        <string>serve</string>".to_string(),
+        "        <string>--coordinator</string>".to_string(),
+        format!("        <string>{coordinator_url}</string>"),
+        "        <string>--model</string>".to_string(),
+        format!("        <string>{model}</string>"),
+        "        <string>--all-models</string>".to_string(),
+    ];
+    if let Some(im) = image_model {
+        args.push("        <string>--image-model</string>".to_string());
+        args.push(format!("        <string>{im}</string>"));
+    }
+    if let Some(imp) = image_model_path {
+        args.push("        <string>--image-model-path</string>".to_string());
+        args.push(format!("        <string>{imp}</string>"));
+    }
+    let args_xml = args.join("\n");
+
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -57,20 +72,14 @@ fn write_plist(binary_path: &Path, coordinator_url: &str, model: &str) -> Result
 
     <key>ProgramArguments</key>
     <array>
-        <string>{binary}</string>
-        <string>serve</string>
-        <string>--coordinator</string>
-        <string>{coordinator_url}</string>
-        <string>--model</string>
-        <string>{model}</string>
-        <string>--all-models</string>
+{args_xml}
     </array>
 
     <key>KeepAlive</key>
-    <true/>
+    <false/>
 
     <key>RunAtLoad</key>
-    <true/>
+    <false/>
 
     <key>StandardOutPath</key>
     <string>{log}</string>
@@ -92,7 +101,6 @@ fn write_plist(binary_path: &Path, coordinator_url: &str, model: &str) -> Result
     Ok(())
 }
 
-/// Load the service via `launchctl bootstrap gui/<uid> <plist>`.
 fn load_service() -> Result<()> {
     let path = plist_path();
     let domain = format!("gui/{}", uid());
@@ -104,18 +112,21 @@ fn load_service() -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Error 37 = "Operation already in progress" — service already loaded.
-        // This is fine; we unload first so it shouldn't happen, but handle gracefully.
-        if stderr.contains("37:") || stderr.contains("already loaded") {
-            tracing::debug!("Service already loaded, continuing");
-            return Ok(());
+        if !stderr.contains("37:") && !stderr.contains("already loaded") {
+            anyhow::bail!("launchctl bootstrap failed: {}", stderr.trim());
         }
-        anyhow::bail!("launchctl bootstrap failed: {}", stderr.trim());
     }
+
+    // With RunAtLoad=false, bootstrap registers the service but doesn't start it.
+    // Kickstart actually launches the process.
+    let target = format!("gui/{}/{}", uid(), LABEL);
+    let _ = std::process::Command::new("launchctl")
+        .args(["kickstart", &target])
+        .output();
+
     Ok(())
 }
 
-/// Unload the service via `launchctl bootout gui/<uid>/io.dginf.provider`.
 fn unload_service() -> Result<()> {
     let target = format!("gui/{}/{}", uid(), LABEL);
 
@@ -126,7 +137,6 @@ fn unload_service() -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Error 3 = "No such process" — service not loaded. That's fine.
         if stderr.contains("3:") || stderr.contains("could not find service") {
             return Ok(());
         }
@@ -135,7 +145,6 @@ fn unload_service() -> Result<()> {
     Ok(())
 }
 
-/// Check if the service is currently loaded in launchd.
 pub fn is_loaded() -> bool {
     let target = format!("gui/{}/{}", uid(), LABEL);
     std::process::Command::new("launchctl")
@@ -147,16 +156,16 @@ pub fn is_loaded() -> bool {
         .unwrap_or(false)
 }
 
-/// Check if the service plist is installed.
 pub fn is_installed() -> bool {
     plist_path().exists()
 }
 
-/// Install and start the provider as a launchd user agent.
+/// Start the provider as a launchd user agent.
 ///
-/// Writes the plist and loads it into launchd. If the service is already
-/// loaded, it is unloaded first (to pick up any config changes).
-pub fn install_and_start(coordinator_url: &str, model: &str) -> Result<()> {
+/// Writes the plist with KeepAlive=false and RunAtLoad=false, then loads it.
+/// The provider runs until explicitly stopped or the machine reboots.
+/// It does NOT auto-restart on crash or auto-start on login.
+pub fn install_and_start(coordinator_url: &str, model: &str, image_model: Option<&str>, image_model_path: Option<&str>) -> Result<()> {
     let binary_path = std::env::current_exe()
         .unwrap_or_else(|_| {
             dirs::home_dir()
@@ -164,24 +173,18 @@ pub fn install_and_start(coordinator_url: &str, model: &str) -> Result<()> {
                 .join(".dginf/bin/dginf-provider")
         });
 
-    // Unload first if already loaded (picks up plist changes)
     if is_loaded() {
         unload_service().context("Failed to unload existing service")?;
-        // Small delay for launchd to clean up
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
 
-    write_plist(&binary_path, coordinator_url, model)?;
+    write_plist(&binary_path, coordinator_url, model, image_model, image_model_path)?;
     load_service().context("Failed to load launchd service")?;
 
     Ok(())
 }
 
 /// Stop the provider by unloading the launchd agent.
-///
-/// After bootout, KeepAlive will NOT restart the process — the service
-/// is fully removed from the launchd session. The plist file is kept
-/// on disk so `start` can reload it.
 pub fn stop() -> Result<()> {
     if is_loaded() {
         unload_service().context("Failed to unload launchd service")?;

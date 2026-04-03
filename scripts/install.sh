@@ -10,7 +10,8 @@ set -euo pipefail
 #   3. Sets up Secure Enclave identity
 #   4. Installs MDM enrollment profile (for hardware attestation)
 #   5. Downloads the best model for your hardware
-#   6. Starts the provider in the background
+#   6. Installs the DGInf menu bar app (from coordinator)
+#   7. Starts the provider in the background
 #
 # Zero prerequisites — just macOS + Apple Silicon.
 
@@ -48,7 +49,7 @@ echo "  $CHIP · ${MEM}GB · macOS $(sw_vers -productVersion)"
 echo ""
 
 # ─── Step 1: Download and install bundle ──────────────────────
-echo "→ [1/7] Downloading DGInf..."
+echo "→ [1/8] Downloading DGInf..."
 mkdir -p "$DGINF_DIR" "$BIN_DIR"
 curl -f#L "$BASE_URL/dl/dginf-bundle-macos-arm64.tar.gz" -o "/tmp/dginf-bundle.tar.gz"
 
@@ -56,7 +57,9 @@ echo "  Installing binaries..."
 tar xzf /tmp/dginf-bundle.tar.gz -C "$DGINF_DIR"
 mv "$DGINF_DIR/dginf-provider" "$BIN_DIR/" 2>/dev/null || true
 mv "$DGINF_DIR/dginf-enclave" "$BIN_DIR/" 2>/dev/null || true
-chmod +x "$BIN_DIR/dginf-provider" "$BIN_DIR/dginf-enclave"
+mv "$DGINF_DIR/gRPCServerCLI-macOS" "$BIN_DIR/" 2>/dev/null || true
+chmod +x "$BIN_DIR/dginf-provider" "$BIN_DIR/dginf-enclave" 2>/dev/null || true
+chmod +x "$BIN_DIR/gRPCServerCLI-macOS" 2>/dev/null || true
 rm -f /tmp/dginf-bundle.tar.gz
 
 # Download bundled Python runtime (self-contained: Python 3.12 + vllm-mlx + mlx + mlx_lm).
@@ -91,7 +94,7 @@ echo "  Binaries installed ✓"
 
 # ─── Step 2: Verify inference runtime + ffmpeg ────────────────
 echo ""
-echo "→ [2/7] Verifying inference runtime..."
+echo "→ [2/8] Verifying inference runtime..."
 
 # Verify bundled Python + vllm-mlx
 if [ -f "$PYTHON_BIN" ]; then
@@ -126,7 +129,7 @@ fi
 
 # ─── Step 3: Secure Enclave identity ─────────────────────────
 echo ""
-echo "→ [3/7] Setting up Secure Enclave identity..."
+echo "→ [3/8] Setting up Secure Enclave identity..."
 rm -f "$DGINF_DIR/enclave_key.data" 2>/dev/null
 "$BIN_DIR/dginf-enclave" info >/dev/null 2>&1 \
     && echo "  Secure Enclave ✓ (P-256 key generated)" \
@@ -134,15 +137,14 @@ rm -f "$DGINF_DIR/enclave_key.data" 2>/dev/null
 
 # ─── Step 4: Enrollment + device attestation ─────────────────
 echo ""
-echo "→ [4/7] Enrollment + device attestation..."
+echo "→ [4/8] Enrollment + device attestation..."
 
-# Check if already enrolled before prompting
+# Check if already enrolled before prompting.
+# `profiles list` only shows user-level profiles — MDM is device-level.
+# `profiles status -type enrollment` reliably reports MDM without sudo.
 ALREADY_ENROLLED=false
-if [ -f "/var/db/ConfigurationProfiles/Settings/.profilesAreInstalled" ]; then
-    # Profile marker file exists — check if it's DGInf/MicroMDM specifically
-    if profiles list 2>&1 | grep -qi -e "micromdm" -e "dginf" -e "com.github.micromdm" 2>/dev/null; then
-        ALREADY_ENROLLED=true
-    fi
+if profiles status -type enrollment 2>&1 | grep -q "MDM enrollment: Yes"; then
+    ALREADY_ENROLLED=true
 fi
 
 if [ "$ALREADY_ENROLLED" = true ]; then
@@ -186,140 +188,250 @@ fi
 
 # ─── Step 5: Download inference model ─────────────────────────
 echo ""
-echo "→ [5/7] Downloading inference model..."
+echo "→ [5/8] Downloading inference model..."
 
-# Fetch model catalog from coordinator and auto-select by RAM.
-# Text models need 16GB+ to produce quality output.
-# Machines with <16GB serve transcription (STT) instead.
-# Image generation is opt-in via DGINF_IMAGE_MODEL env var (requires
-# gRPCServerCLI provisioning not yet in this installer).
+# Initialize model variables (set -u requires all vars to be defined before use)
+MODEL=""
+S3_NAME=""
+MODEL_NAME=""
+MODEL_SIZE=""
+MODEL_TYPE=""
+IMAGE_MODEL=""
+IMAGE_S3_NAME=""
+IMAGE_MODEL_NAME=""
+IMAGE_MODEL_SIZE=""
+
+# Fetch model catalog from coordinator. The user picks which model to serve.
 CATALOG_JSON=$(curl -fsSL "$BASE_URL/v1/models/catalog" 2>/dev/null || echo "")
 
 if [ -n "$CATALOG_JSON" ] && echo "$CATALOG_JSON" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
-    SELECTED=$(echo "$CATALOG_JSON" | python3 -c "
+    # Show available models and let the user pick
+    AVAILABLE_MODELS=$(echo "$CATALOG_JSON" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 mem = int(sys.argv[1])
-want_type = 'text' if mem >= 16 else 'transcription'
-best = None
+idx = 1
 for m in data.get('models', []):
-    if m.get('model_type', 'text') != want_type:
+    if m.get('min_ram_gb', 999) > mem:
         continue
-    if m.get('min_ram_gb', 999) <= mem:
-        best = m
-if best:
-    print(best['id'])
-    print(best.get('s3_name', best['id'].split('/')[-1]))
-    print(best.get('display_name', best['id']))
-    print(best.get('size_gb', '?'))
-    print(best.get('model_type', 'text'))
+    name = m.get('display_name', m['id'])
+    size = m.get('size_gb', '?')
+    mtype = m.get('model_type', 'text')
+    print(f'{idx}. {name} (~{size} GB) [{mtype}]')
+    print(f'   {m[\"id\"]}|{m.get(\"s3_name\", m[\"id\"].split(\"/\")[-1])}|{name}|{size}|{mtype}')
+    idx += 1
 " "$MEM" 2>/dev/null)
 
-    if [ -n "$SELECTED" ]; then
-        MODEL=$(echo "$SELECTED" | sed -n '1p')
-        S3_NAME=$(echo "$SELECTED" | sed -n '2p')
-        MODEL_NAME=$(echo "$SELECTED" | sed -n '3p')
-        MODEL_SIZE="~$(echo "$SELECTED" | sed -n '4p') GB"
-        MODEL_TYPE=$(echo "$SELECTED" | sed -n '5p')
-    fi
-fi
-
-# Fallback if catalog fetch or parsing failed (8-bit quantization)
-if [ -z "$MODEL" ]; then
-    if [ "$MEM" -ge 48 ]; then
-        MODEL="mlx-community/Qwen3.5-32B-Instruct-8bit"
-        S3_NAME="Qwen3.5-32B-Instruct-8bit"
-        MODEL_NAME="Qwen3.5 32B"
-        MODEL_SIZE="~32 GB"
-    elif [ "$MEM" -ge 36 ]; then
-        MODEL="mlx-community/Qwen3.5-35B-A3B-8bit"
-        S3_NAME="Qwen3.5-35B-A3B-8bit"
-        MODEL_NAME="Qwen3.5 35B-A3B"
-        MODEL_SIZE="~35 GB"
-    elif [ "$MEM" -ge 24 ]; then
-        MODEL="mlx-community/Qwen3.5-14B-Instruct-8bit"
-        S3_NAME="Qwen3.5-14B-Instruct-8bit"
-        MODEL_NAME="Qwen3.5 14B"
-        MODEL_SIZE="~14 GB"
-    elif [ "$MEM" -ge 16 ]; then
-        MODEL="mlx-community/Qwen3.5-9B-MLX-8bit"
-        S3_NAME="Qwen3.5-9B-MLX-8bit"
-        MODEL_NAME="Qwen3.5 9B"
-        MODEL_SIZE="~9 GB"
-    else
-        MODEL="CohereLabs/cohere-transcribe-03-2026"
-        S3_NAME="cohere-transcribe-03-2026"
-        MODEL_NAME="Cohere Transcribe"
-        MODEL_SIZE="~4.2 GB"
-    fi
-fi
-
-echo "  Selected: $MODEL_NAME ($MODEL_SIZE) for ${MEM}GB RAM"
-
-# Check if model is already downloaded
-HF_CACHE_DIR="$HOME/.cache/huggingface/hub/models--$(echo "$MODEL" | tr '/' '--')"
-if [ -d "$HF_CACHE_DIR/snapshots" ]; then
-    echo "  Already downloaded ✓"
-else
-    CACHE_DIR="$HF_CACHE_DIR/snapshots/main"
-    mkdir -p "$CACHE_DIR"
-
-    echo "  Downloading $MODEL_NAME ($MODEL_SIZE) from DGInf CDN..."
-    echo ""
-    # Download pre-packaged tarball from our CDN — no HuggingFace account needed
-    if curl -f#L "$BASE_URL/dl/models/$S3_NAME.tar.gz" | tar xz -C "$CACHE_DIR" 2>/dev/null; then
+    if [ -n "$AVAILABLE_MODELS" ]; then
         echo ""
-        echo "  Model downloaded ✓"
-    else
-        # Fallback: try individual files from R2 (public, no auth, zero egress)
-        echo "  Tarball not available, downloading files from R2..."
-        S3_HTTP="https://9e92221750c162ade0f2730f63f4963d.r2.cloudflarestorage.com/d-inf-models/$S3_NAME"
-        FAILED=false
-        for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json; do
-            curl -fsSL "$S3_HTTP/$f" -o "$CACHE_DIR/$f" 2>/dev/null || true
-        done
-        # Download weight files (try single file first, then sharded)
-        if curl -f#L "$S3_HTTP/model.safetensors" -o "$CACHE_DIR/model.safetensors" 2>/dev/null; then
-            echo ""
-            echo "  Model downloaded ✓"
-        elif curl -f#L "$S3_HTTP/model-00001-of-00002.safetensors" -o "$CACHE_DIR/model-00001-of-00002.safetensors" 2>/dev/null; then
-            # Sharded model — download remaining shards
-            curl -fsSL "$S3_HTTP/model.safetensors.index.json" -o "$CACHE_DIR/model.safetensors.index.json" 2>/dev/null || true
-            for i in $(seq -w 2 99); do
-                SHARD="model-000${i}-of-*.safetensors"
-                curl -fsSL "$S3_HTTP/model-000${i}-of-"*".safetensors" -o "$CACHE_DIR/" 2>/dev/null || break
-            done
-            echo ""
-            echo "  Model downloaded ✓"
+        echo "  Available models for your hardware (${MEM}GB RAM):"
+        echo ""
+        echo "$AVAILABLE_MODELS" | grep -v "^   " | sed 's/^/  /'
+        echo ""
+
+        if [ "$INTERACTIVE" = true ]; then
+            read -p "  Select a model number (or press Enter to skip): " MODEL_CHOICE
+            if [ -n "$MODEL_CHOICE" ]; then
+                MODEL_LINE=$(echo "$AVAILABLE_MODELS" | grep "^   " | sed -n "${MODEL_CHOICE}p" | sed 's/^   //')
+                if [ -n "$MODEL_LINE" ]; then
+                    MODEL=$(echo "$MODEL_LINE" | cut -d'|' -f1)
+                    S3_NAME=$(echo "$MODEL_LINE" | cut -d'|' -f2)
+                    MODEL_NAME=$(echo "$MODEL_LINE" | cut -d'|' -f3)
+                    MODEL_SIZE="~$(echo "$MODEL_LINE" | cut -d'|' -f4) GB"
+                    MODEL_TYPE=$(echo "$MODEL_LINE" | cut -d'|' -f5)
+                else
+                    echo "  Invalid selection."
+                fi
+            else
+                echo "  Skipped model selection."
+                echo "  You can download models later: dginf-provider models download"
+            fi
         else
-            echo "  ⚠ Model download failed — retry with: dginf-provider models download"
-            FAILED=true
+            echo "  Run interactively to select a model:"
+            echo "    curl -fsSL $BASE_URL/install.sh | bash -s"
+            echo "  Or download later: dginf-provider models download"
         fi
     fi
 fi
 
-# ─── Step 6: Start provider ──────────────────────────────────
+# Fallback only if catalog fetch failed entirely (network error) AND interactive.
+if [ -z "$MODEL" ] && [ -z "$CATALOG_JSON" ] && [ "$INTERACTIVE" = true ]; then
+    echo "  Catalog unavailable. Select a default model?"
+    if [ "$MEM" -ge 36 ]; then
+        read -p "  Download Qwen3.5 27B (~27 GB)? [y/N]: " DL_DEFAULT
+        if [ "$DL_DEFAULT" = "y" ] || [ "$DL_DEFAULT" = "Y" ]; then
+            MODEL="qwen3.5-27b-claude-opus-8bit"
+            S3_NAME="qwen35-27b-claude-opus-8bit"
+            MODEL_NAME="Qwen3.5 27B Claude Opus Distilled"
+            MODEL_SIZE="~27 GB"
+        fi
+    fi
+fi
+
+if [ -n "$MODEL" ]; then
+    echo "  Text:     $MODEL_NAME ($MODEL_SIZE)"
+fi
+if [ -n "$IMAGE_MODEL" ]; then
+    echo "  Image:    $IMAGE_MODEL_NAME ($IMAGE_MODEL_SIZE)"
+fi
+if [ -z "$MODEL" ] && [ -z "$IMAGE_MODEL" ]; then
+    echo "  No models in catalog for ${MEM}GB RAM"
+fi
+
+# --- Download primary model ---
+download_model() {
+    local model_id="$1" s3_name="$2" model_name="$3" model_size="$4"
+    local hf_cache_dir="$HOME/.cache/huggingface/hub/models--$(echo "$model_id" | tr '/' '--')"
+
+    if [ -d "$hf_cache_dir/snapshots" ]; then
+        echo "  $model_name already downloaded ✓"
+        return 0
+    fi
+
+    local cache_dir="$hf_cache_dir/snapshots/main"
+    mkdir -p "$cache_dir"
+
+    echo "  Downloading $model_name ($model_size) from DGInf CDN..."
+    echo ""
+    if curl -f#L "$BASE_URL/dl/models/$s3_name.tar.gz" | tar xz -C "$cache_dir" 2>/dev/null; then
+        echo ""
+        echo "  $model_name downloaded ✓"
+        return 0
+    fi
+
+    # Fallback: try individual files from R2 (public, no auth, zero egress)
+    echo "  Tarball not available, downloading files from R2..."
+    local s3_http="https://9e92221750c162ade0f2730f63f4963d.r2.cloudflarestorage.com/d-inf-models/$s3_name"
+    for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json; do
+        curl -fsSL "$s3_http/$f" -o "$cache_dir/$f" 2>/dev/null || true
+    done
+    if curl -f#L "$s3_http/model.safetensors" -o "$cache_dir/model.safetensors" 2>/dev/null; then
+        echo ""
+        echo "  $model_name downloaded ✓"
+    elif curl -f#L "$s3_http/model-00001-of-00002.safetensors" -o "$cache_dir/model-00001-of-00002.safetensors" 2>/dev/null; then
+        curl -fsSL "$s3_http/model.safetensors.index.json" -o "$cache_dir/model.safetensors.index.json" 2>/dev/null || true
+        for i in $(seq -w 2 99); do
+            curl -fsSL "$s3_http/model-000${i}-of-"*".safetensors" -o "$cache_dir/" 2>/dev/null || break
+        done
+        echo ""
+        echo "  $model_name downloaded ✓"
+    else
+        echo "  ⚠ $model_name download failed — retry with: dginf-provider models download"
+        return 1
+    fi
+}
+
+if [ -n "$MODEL" ]; then
+    download_model "$MODEL" "$S3_NAME" "$MODEL_NAME" "$MODEL_SIZE" || true
+fi
+
+# --- Download image model + backend (if selected) ---
+IMAGE_MODEL_PATH=""
+if [ -n "$IMAGE_MODEL" ]; then
+    echo ""
+    echo "  Setting up image generation..."
+
+    # gRPCServerCLI is bundled in the provider tarball (extracted in step 1)
+    if [ -x "$BIN_DIR/gRPCServerCLI-macOS" ]; then
+        echo "  gRPCServerCLI ✓ (bundled)"
+    else
+        echo "  ⚠ gRPCServerCLI not found in bundle — image generation won't be available"
+        IMAGE_MODEL=""
+    fi
+
+    # Download image-bridge Python package
+    if [ -n "$IMAGE_MODEL" ]; then
+        if [ ! -d "$DGINF_DIR/image-bridge/dginf_image_bridge" ]; then
+            echo "  Downloading image bridge..."
+            if curl -f#L "$BASE_URL/dl/dginf-image-bridge.tar.gz" -o "/tmp/dginf-image-bridge.tar.gz" 2>/dev/null; then
+                mkdir -p "$DGINF_DIR/image-bridge"
+                tar xzf /tmp/dginf-image-bridge.tar.gz -C "$DGINF_DIR/image-bridge"
+                rm -f /tmp/dginf-image-bridge.tar.gz
+                echo "  Image bridge ✓"
+            else
+                echo "  ⚠ Image bridge download failed — image generation won't be available"
+                IMAGE_MODEL=""
+            fi
+        else
+            echo "  Image bridge already installed ✓"
+        fi
+    fi
+
+    # Download image model weights
+    if [ -n "$IMAGE_MODEL" ]; then
+        IMAGE_MODEL_DIR="$DGINF_DIR/models/$IMAGE_S3_NAME"
+        if [ -d "$IMAGE_MODEL_DIR" ]; then
+            echo "  $IMAGE_MODEL_NAME already downloaded ✓"
+            IMAGE_MODEL_PATH="$IMAGE_MODEL_DIR"
+        else
+            mkdir -p "$IMAGE_MODEL_DIR"
+            echo "  Downloading $IMAGE_MODEL_NAME ($IMAGE_MODEL_SIZE)..."
+            if curl -f#L "$BASE_URL/dl/models/$IMAGE_S3_NAME.tar.gz" | tar xz -C "$IMAGE_MODEL_DIR" 2>/dev/null; then
+                echo ""
+                echo "  $IMAGE_MODEL_NAME downloaded ✓"
+                IMAGE_MODEL_PATH="$IMAGE_MODEL_DIR"
+            else
+                # Fallback: try R2
+                S3_HTTP="https://9e92221750c162ade0f2730f63f4963d.r2.cloudflarestorage.com/d-inf-models/$IMAGE_S3_NAME"
+                if curl -f#L "$S3_HTTP/$IMAGE_MODEL.ckpt" -o "$IMAGE_MODEL_DIR/$IMAGE_MODEL.ckpt" 2>/dev/null; then
+                    echo ""
+                    echo "  $IMAGE_MODEL_NAME downloaded ✓"
+                    IMAGE_MODEL_PATH="$IMAGE_MODEL_DIR"
+                else
+                    echo "  ⚠ Image model download failed — image generation won't be available"
+                    IMAGE_MODEL=""
+                fi
+            fi
+        fi
+    fi
+fi
+
+# ─── Step 6: Install DGInf menu bar app ───────────────────────
 echo ""
-echo "→ [6/7] Starting provider..."
+echo "→ [6/8] Installing DGInf app..."
 
-PROVIDER_RUNNING=false
-if "$BIN_DIR/dginf-provider" start --model "$MODEL" 2>&1; then
-    sleep 2
-    if [ -f "$HOME/.dginf/provider.pid" ]; then
-        PID=$(cat "$HOME/.dginf/provider.pid")
-        if kill -0 "$PID" 2>/dev/null; then
-            echo "  Provider running (PID $PID) ✓"
-            PROVIDER_RUNNING=true
+APP_INSTALLED=false
+APP_PATH="/Applications/DGInf.app"
+DMG_URL="$BASE_URL/dl/DGInf-latest.dmg"
+DMG_TMP="/tmp/DGInf-latest.dmg"
+
+if curl -f#L "$DMG_URL" -o "$DMG_TMP" 2>/dev/null; then
+    echo ""
+    # Mount DMG and find the volume path from hdiutil output
+    MOUNT_POINT=$(hdiutil attach "$DMG_TMP" -nobrowse 2>/dev/null | grep "/Volumes/" | sed 's/.*\(\/Volumes\/.*\)/\1/' | head -1)
+    if [ -n "$MOUNT_POINT" ] && [ -d "$MOUNT_POINT/DGInf.app" ]; then
+        rm -rf "$APP_PATH" 2>/dev/null || true
+        cp -R "$MOUNT_POINT/DGInf.app" "$APP_PATH" 2>/dev/null || \
+            cp -R "$MOUNT_POINT/DGInf.app" "$HOME/Applications/DGInf.app" 2>/dev/null || true
+        hdiutil detach "$MOUNT_POINT" 2>/dev/null || true
+        if [ -d "$APP_PATH" ] || [ -d "$HOME/Applications/DGInf.app" ]; then
+            echo "  DGInf.app installed ✓"
+            APP_INSTALLED=true
         fi
+    else
+        hdiutil detach "$MOUNT_POINT" 2>/dev/null || true
+        echo "  ⚠ Could not mount DMG"
+    fi
+    rm -f "$DMG_TMP"
+else
+    # DMG not available — keep existing app if present
+    if [ -d "$APP_PATH" ]; then
+        echo "  DGInf.app (existing) ✓"
+        APP_INSTALLED=true
+    else
+        echo "  ⚠ App not available yet — use CLI for now"
     fi
 fi
 
-if [ "$PROVIDER_RUNNING" = false ]; then
-    echo "  ⚠ Provider did not start automatically."
-    echo "    Start manually: dginf-provider start --model $MODEL"
-fi
+# ─── Step 7: Ready to serve ──────────────────────────────────
+echo ""
+echo "→ [7/8] Installation complete."
+echo ""
+echo "  The provider is NOT started automatically."
+echo "  You control when your GPU is used for inference."
+PROVIDER_RUNNING=false
 
-# ─── Step 7: Summary ─────────────────────────────────────────
+# ─── Step 8: Summary ─────────────────────────────────────────
 echo ""
 echo "════════════════════════════════════════════════"
 echo ""
@@ -327,16 +439,23 @@ echo "  DGInf installation complete!"
 echo ""
 echo "  Hardware:  $CHIP · ${MEM}GB"
 echo "  Model:     $MODEL_NAME"
+if [ -n "$IMAGE_MODEL" ]; then
+    echo "  Image:     $IMAGE_MODEL_NAME"
+fi
 
-if [ "$PROVIDER_RUNNING" = true ]; then
-    echo "  Status:    ● RUNNING (PID $PID)"
-    echo ""
-    echo "  Your Mac is now serving private inference!"
-else
-    echo "  Status:    ○ NOT RUNNING"
-    echo ""
-    echo "  Start serving:"
+echo "  Status:    ○ INSTALLED (not running)"
+echo ""
+echo "  Start serving when you're ready:"
+if [ -n "$MODEL" ]; then
     echo "    dginf-provider start --model $MODEL"
+else
+    echo "    dginf-provider start"
+fi
+
+if [ "$APP_INSTALLED" = true ]; then
+    echo ""
+    echo "  Menu Bar App: DGInf.app installed"
+    echo "    Launch from Spotlight or: open -a DGInf"
 fi
 
 if [ ! -f "$HOME/.config/dginf/auth_token" ]; then
@@ -358,5 +477,8 @@ echo "    dginf-provider status     Show provider status"
 echo "    dginf-provider logs -w    Stream logs"
 echo "    dginf-provider stop       Stop the provider"
 echo "    dginf-provider doctor     Run diagnostics"
+echo ""
+echo "  App:"
+echo "    open -a DGInf             Launch menu bar app"
 echo ""
 echo "════════════════════════════════════════════════"

@@ -105,9 +105,7 @@ struct DoctorView: View {
         rawOutput = ""
 
         do {
-            let result = try await CLIRunner.run([
-                "doctor", "--coordinator", viewModel.coordinatorURL
-            ])
+            let result = try await CLIRunner.run(["doctor"])
             rawOutput = result.output
             checks = parseDoctorOutput(result.output)
         } catch {

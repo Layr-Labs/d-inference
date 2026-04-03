@@ -103,8 +103,8 @@ echo "   Using $PYTHON312 ($($PYTHON312 --version))"
 "$PYTHON312" -m venv "$BUNDLE_DIR/python"
 source "$BUNDLE_DIR/python/bin/activate"
 
-echo "   Installing vllm-mlx (this may take a few minutes)..."
-pip install --quiet vllm-mlx
+echo "   Installing vllm-mlx from our fork..."
+pip install --quiet 'git+https://github.com/Gajesh2007/vllm-mlx.git@main'
 
 echo "   Stripping unnecessary packages..."
 cd "$BUNDLE_DIR/python/lib/python3.12/site-packages"
@@ -128,14 +128,18 @@ for pkg in mlx mlx_lm vllm_mlx huggingface_hub; do
 done
 echo ""
 
-# ─── 4. Copy binaries ────────────────────────────────────────
-echo "4. Copying binaries..."
+# ─── 4. Copy and code-sign binaries ──────────────────────────
+echo "4. Copying and code-signing binaries..."
+ENTITLEMENTS="$SCRIPT_DIR/entitlements.plist"
+
 cp "$PROVIDER_BIN" "$BUNDLE_DIR/dginf-provider"
-echo "   ✓ dginf-provider"
+codesign --force --sign - --entitlements "$ENTITLEMENTS" --options runtime "$BUNDLE_DIR/dginf-provider"
+echo "   ✓ dginf-provider (signed with hypervisor entitlement)"
 
 if [ -f "$ENCLAVE_BIN" ]; then
     cp "$ENCLAVE_BIN" "$BUNDLE_DIR/dginf-enclave"
-    echo "   ✓ dginf-enclave"
+    codesign --force --sign - --entitlements "$ENTITLEMENTS" --options runtime "$BUNDLE_DIR/dginf-enclave"
+    echo "   ✓ dginf-enclave (signed)"
 fi
 echo ""
 
@@ -182,9 +186,61 @@ TARBALL_SIZE=$(du -h "$TARBALL" | cut -f1)
 echo "   ✓ $TARBALL ($TARBALL_SIZE)"
 echo ""
 
-# ─── 8. Upload (optional) ────────────────────────────────────
+# ─── 8. Build macOS app + DMG ─────────────────────────────────
+echo "8. Building macOS app..."
+cd "$PROJECT_DIR/app/DGInf"
+swift build -c release 2>&1 | tail -3
+APP_BIN=$(swift build -c release --show-bin-path)/DGInf
+
+if [ -f "$APP_BIN" ]; then
+    APP_BUILD_DIR="$PROJECT_DIR/build"
+    rm -rf "$APP_BUILD_DIR/DGInf.app"
+    mkdir -p "$APP_BUILD_DIR/DGInf.app/Contents/MacOS" "$APP_BUILD_DIR/DGInf.app/Contents/Resources"
+
+    # Info.plist
+    cat > "$APP_BUILD_DIR/DGInf.app/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>DGInf</string>
+    <key>CFBundleIdentifier</key><string>io.dginf.app</string>
+    <key>CFBundleVersion</key><string>0.1.0</string>
+    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleExecutable</key><string>DGInf</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>LSUIElement</key><true/>
+    <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+PLIST
+
+    cp "$APP_BIN" "$APP_BUILD_DIR/DGInf.app/Contents/MacOS/DGInf"
+    codesign --force --sign - --options runtime "$APP_BUILD_DIR/DGInf.app/Contents/MacOS/DGInf" 2>/dev/null
+    codesign --force --sign - --options runtime --no-strict "$APP_BUILD_DIR/DGInf.app" 2>/dev/null
+
+    # Create DMG
+    DMG_PATH="$APP_BUILD_DIR/DGInf-latest.dmg"
+    rm -f "$DMG_PATH"
+    DMG_TMP="$APP_BUILD_DIR/dmg-staging"
+    rm -rf "$DMG_TMP"
+    mkdir -p "$DMG_TMP"
+    cp -a "$APP_BUILD_DIR/DGInf.app" "$DMG_TMP/"
+    ln -s /Applications "$DMG_TMP/Applications"
+    hdiutil create -volname "DGInf" -srcfolder "$DMG_TMP" -ov -format UDZO "$DMG_PATH" >/dev/null 2>&1
+    rm -rf "$DMG_TMP"
+
+    DMG_SIZE=$(du -h "$DMG_PATH" | cut -f1)
+    echo "   ✓ DGInf.app + DMG ($DMG_SIZE)"
+else
+    echo "   ⚠ Swift build failed — app not included"
+fi
+echo ""
+
+# ─── 9. Upload (optional) ────────────────────────────────────
 if [ "$UPLOAD" = true ]; then
-    echo "8. Uploading to server..."
+    echo "9. Uploading to server..."
     SSH_KEY="$HOME/.ssh/dginf-infra"
     SERVER="ubuntu@34.197.17.112"
 
@@ -198,10 +254,19 @@ if [ "$UPLOAD" = true ]; then
         sudo cp /tmp/dginf-bundle-macos-arm64.tar.gz /var/www/html/dl/
         sudo chmod 644 /var/www/html/dl/dginf-bundle-macos-arm64.tar.gz
     '
-    echo "   ✓ Uploaded to server"
+    echo "   ✓ Bundle uploaded"
 
-    # Also upload the install script
-    echo "   Uploading install.sh..."
+    # Upload DMG
+    if [ -f "$APP_BUILD_DIR/DGInf-latest.dmg" ]; then
+        scp -i "$SSH_KEY" "$APP_BUILD_DIR/DGInf-latest.dmg" "$SERVER:/tmp/DGInf-latest.dmg"
+        ssh -i "$SSH_KEY" "$SERVER" '
+            sudo cp /tmp/DGInf-latest.dmg /var/www/html/dl/DGInf-latest.dmg
+            sudo chmod 644 /var/www/html/dl/DGInf-latest.dmg
+        '
+        echo "   ✓ App DMG uploaded"
+    fi
+
+    # Upload install script
     scp -i "$SSH_KEY" "$PROJECT_DIR/scripts/install.sh" "$SERVER:/tmp/install.sh"
     ssh -i "$SSH_KEY" "$SERVER" '
         sudo cp /tmp/install.sh /var/www/html/install.sh

@@ -3,17 +3,14 @@
 //! Uses NaCl crypto_box (X25519 + XSalsa20-Poly1305) for cross-language
 //! compatibility with PyNaCl on the consumer side.
 //!
-//! NOTE: This module is NOT currently used in the inference request flow.
-//! The provider receives plain JSON from the coordinator (which runs in a
-//! GCP Confidential VM). The coordinator handles the consumer trust boundary.
-//! This module is kept for future coordinator-to-provider encryption.
+//! The provider's X25519 key pair is derived from the Secure Enclave at
+//! startup via `dginf-enclave derive-e2e-key`. The private key exists only
+//! in process memory and is never written to disk. The derivation is
+//! deterministic (same SE chip = same X25519 key), so the public key is
+//! stable across restarts.
 //!
-//! The provider's X25519 key pair is:
-//!   - Generated on first run and saved to ~/.dginf/node_key (32 bytes, 0600 perms)
-//!   - Loaded on subsequent runs from the same path
-//!   - Public key is sent to the coordinator during registration
-//!   - Public key is optionally bound to the Secure Enclave attestation,
-//!     proving the same device controls both keys
+//! Fallback: if the Secure Enclave is unavailable, the key is loaded from
+//! ~/.dginf/node_key (32 bytes, 0600 perms).
 
 use anyhow::{Context, Result};
 use crypto_box::{
@@ -45,15 +42,76 @@ impl NodeKeyPair {
         Self { secret, public }
     }
 
-    /// Load a key pair from disk, or generate and save a new one.
+    /// Derive the E2E key pair from the Secure Enclave, falling back to file.
+    ///
+    /// Primary path: calls `dginf-enclave derive-e2e-key` which performs ECDH
+    /// inside the SE hardware and returns a deterministic X25519 key. The
+    /// private key never touches disk.
+    ///
+    /// Fallback: loads from `~/.dginf/node_key` if the SE is unavailable.
     pub fn load_or_generate(path: &Path) -> Result<Self> {
-        if path.exists() {
-            Self::load(path)
-        } else {
-            let kp = Self::generate();
-            kp.save(path)?;
-            Ok(kp)
+        match Self::from_secure_enclave() {
+            Ok(kp) => {
+                tracing::info!("E2E key derived from Secure Enclave (never on disk)");
+                // Remove any legacy file-based key so it can't be extracted
+                if path.exists() {
+                    let _ = std::fs::remove_file(path);
+                    tracing::info!("Removed legacy E2E key file: {}", path.display());
+                }
+                Ok(kp)
+            }
+            Err(e) => {
+                tracing::warn!("SE E2E key derivation failed ({e}), falling back to file");
+                if path.exists() {
+                    Self::load(path)
+                } else {
+                    let kp = Self::generate();
+                    kp.save(path)?;
+                    Ok(kp)
+                }
+            }
         }
+    }
+
+    fn from_secure_enclave() -> Result<Self> {
+        let enclave_bin = enclave_binary_path();
+        if !enclave_bin.exists() {
+            anyhow::bail!("dginf-enclave not found at {}", enclave_bin.display());
+        }
+
+        let output = std::process::Command::new(&enclave_bin)
+            .args(["derive-e2e-key"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .context("failed to run dginf-enclave derive-e2e-key")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("dginf-enclave derive-e2e-key failed: {}", stderr.trim());
+        }
+
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .context("failed to parse derive-e2e-key JSON")?;
+
+        let private_key_b64 = json["private_key"]
+            .as_str()
+            .context("missing 'private_key' in derive-e2e-key output")?;
+
+        use base64::Engine;
+        let key_bytes = base64::engine::general_purpose::STANDARD
+            .decode(private_key_b64)
+            .context("invalid base64 in derived key")?;
+
+        if key_bytes.len() != 32 {
+            anyhow::bail!("derived key is {} bytes, expected 32", key_bytes.len());
+        }
+
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&key_bytes);
+        let secret = SecretKey::from(arr);
+        let public = secret.public_key().clone();
+        Ok(Self { secret, public })
     }
 
     /// Load a key pair from a raw 32-byte secret key file.
@@ -85,7 +143,6 @@ impl NodeKeyPair {
         std::fs::write(path, secret_bytes)
             .with_context(|| format!("failed to write key to {}", path.display()))?;
 
-        // Set file permissions to 0600 (owner read/write only)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -153,6 +210,24 @@ impl NodeKeyPair {
 pub fn default_key_path() -> Result<std::path::PathBuf> {
     let home = dirs::home_dir().context("could not determine home directory")?;
     Ok(home.join(".dginf").join("node_key"))
+}
+
+fn enclave_binary_path() -> std::path::PathBuf {
+    let dginf_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".dginf");
+
+    let bin_path = dginf_dir.join("bin/dginf-enclave");
+    if bin_path.exists() {
+        return bin_path;
+    }
+
+    let legacy_path = dginf_dir.join("dginf-enclave");
+    if legacy_path.exists() {
+        return legacy_path;
+    }
+
+    bin_path
 }
 
 #[cfg(test)]

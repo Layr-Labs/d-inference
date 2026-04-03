@@ -221,6 +221,46 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	return p
 }
 
+// DisconnectDuplicatesBySerial disconnects all providers that share the same
+// serial number as the given provider, except the given provider itself.
+// This prevents multiple WebSocket connections from the same physical machine
+// from competing for the same vllm-mlx backend on localhost.
+func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
+	if serial == "" {
+		return
+	}
+
+	var toEvict []string
+
+	r.mu.RLock()
+	for id, p := range r.providers {
+		if id == keepID {
+			continue
+		}
+		if p.AttestationResult != nil && p.AttestationResult.SerialNumber == serial {
+			toEvict = append(toEvict, id)
+		}
+	}
+	r.mu.RUnlock()
+
+	for _, id := range toEvict {
+		r.mu.RLock()
+		p := r.providers[id]
+		r.mu.RUnlock()
+
+		r.logger.Warn("evicting duplicate provider from same device",
+			"evicted_id", id,
+			"kept_id", keepID,
+			"serial", serial,
+		)
+		r.Disconnect(id)
+
+		if p != nil && p.Conn != nil {
+			p.Conn.Close(websocket.StatusNormalClosure, "replaced by new connection from same device")
+		}
+	}
+}
+
 // Heartbeat updates the provider's status and stats.
 func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	r.mu.RLock()
@@ -361,8 +401,10 @@ func TrustMultiplier(t TrustLevel) float64 {
 }
 
 // MaxConcurrentRequests is the maximum number of simultaneous inference
-// requests a provider can handle. vllm-mlx serializes them internally
-// but queuing at the provider avoids coordinator-side queue timeouts.
+// requests a provider can handle. The AdaptiveEngine queues requests at
+// the provider level for maximum single-request throughput. The coordinator
+// uses this + the load factor in scoring to naturally prefer idle providers
+// while still allowing queuing when all providers are busy.
 const MaxConcurrentRequests = 4
 
 // ScoreProvider calculates a routing score for a provider.

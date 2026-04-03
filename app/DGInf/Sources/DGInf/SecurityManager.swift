@@ -136,9 +136,14 @@ final class SecurityManager: ObservableObject {
         CLIRunner.resolveBinaryPath() != nil
     }
 
-    /// Check if the node encryption key exists.
+    /// Check if the E2E encryption key is available.
+    /// With SE-derived keys, check for the KeyAgreement handle file.
+    /// Falls back to checking the legacy node_key file.
     private func checkNodeKey() async -> Bool {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return FileManager.default.fileExists(atPath: "\(home)/.dginf/node_key")
+        let seKeyPath = "\(home)/.dginf/enclave_e2e_ka.data"
+        let legacyKeyPath = "\(home)/.dginf/node_key"
+        return FileManager.default.fileExists(atPath: seKeyPath) ||
+               FileManager.default.fileExists(atPath: legacyKeyPath)
     }
 }

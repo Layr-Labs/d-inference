@@ -159,10 +159,7 @@ impl CoordinatorClient {
     }
 
     /// Set the shared current-model weight hash (cached at model load time).
-    pub fn with_current_model_hash(
-        mut self,
-        hash: Arc<std::sync::Mutex<Option<String>>>,
-    ) -> Self {
+    pub fn with_current_model_hash(mut self, hash: Arc<std::sync::Mutex<Option<String>>>) -> Self {
         self.current_model_hash = hash;
         self
     }
@@ -717,8 +714,10 @@ mod tests {
 
     #[test]
     fn test_handle_attestation_challenge_deterministic() {
-        let resp1 = handle_attestation_challenge("bm9uY2U=", "2025-01-15T00:00:00Z", Some("key"), None);
-        let resp2 = handle_attestation_challenge("bm9uY2U=", "2025-01-15T00:00:00Z", Some("key"), None);
+        let resp1 =
+            handle_attestation_challenge("bm9uY2U=", "2025-01-15T00:00:00Z", Some("key"), None);
+        let resp2 =
+            handle_attestation_challenge("bm9uY2U=", "2025-01-15T00:00:00Z", Some("key"), None);
 
         // Same inputs should produce same output (deterministic).
         assert_eq!(resp1, resp2);
@@ -726,8 +725,10 @@ mod tests {
 
     #[test]
     fn test_handle_attestation_challenge_different_nonces() {
-        let resp1 = handle_attestation_challenge("bm9uY2Ux", "2025-01-15T00:00:00Z", Some("key"), None);
-        let resp2 = handle_attestation_challenge("bm9uY2Uy", "2025-01-15T00:00:00Z", Some("key"), None);
+        let resp1 =
+            handle_attestation_challenge("bm9uY2Ux", "2025-01-15T00:00:00Z", Some("key"), None);
+        let resp2 =
+            handle_attestation_challenge("bm9uY2Uy", "2025-01-15T00:00:00Z", Some("key"), None);
 
         // Different nonces should produce different signatures.
         match (&resp1, &resp2) {
@@ -936,7 +937,8 @@ mod tests {
     fn test_attestation_response_correct_public_key_passthrough() {
         // The public key in the response should match what was passed in.
         let pk = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=";
-        let response = handle_attestation_challenge("bm9uY2U=", "2026-06-15T00:00:00Z", Some(pk), None);
+        let response =
+            handle_attestation_challenge("bm9uY2U=", "2026-06-15T00:00:00Z", Some(pk), None);
 
         match response {
             ProviderMessage::AttestationResponse { public_key, .. } => {
@@ -961,8 +963,10 @@ mod tests {
 
     #[test]
     fn test_attestation_response_different_timestamps_different_signatures() {
-        let resp1 = handle_attestation_challenge("bm9uY2U=", "2026-01-01T00:00:00Z", Some("key"), None);
-        let resp2 = handle_attestation_challenge("bm9uY2U=", "2026-06-01T00:00:00Z", Some("key"), None);
+        let resp1 =
+            handle_attestation_challenge("bm9uY2U=", "2026-01-01T00:00:00Z", Some("key"), None);
+        let resp2 =
+            handle_attestation_challenge("bm9uY2U=", "2026-06-01T00:00:00Z", Some("key"), None);
 
         match (&resp1, &resp2) {
             (
@@ -982,7 +986,8 @@ mod tests {
     fn test_attestation_response_serializes_for_go_coordinator() {
         // The response must serialize with snake_case field names and the
         // "attestation_response" type tag that the Go coordinator expects.
-        let response = handle_attestation_challenge("YWJj", "2026-03-15T10:00:00Z", Some("cGs="), None);
+        let response =
+            handle_attestation_challenge("YWJj", "2026-03-15T10:00:00Z", Some("cGs="), None);
 
         let json = serde_json::to_string(&response).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();

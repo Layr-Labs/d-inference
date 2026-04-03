@@ -52,7 +52,8 @@ scripts/
 ├── install.sh        curl one-liner installer served from coordinator
 └── entitlements.plist Hardened Runtime entitlements
 
-web/                  Next.js frontend (verification panel)
+console-ui/           Next.js frontend (dashboard + billing)
+landing/              Static landing page (index.html)
 ```
 
 ## Building & Testing
@@ -151,7 +152,7 @@ A pre-commit hook in `.githooks/pre-commit` checks formatting on staged files on
 |-----------|-------|------------|
 | Go (coordinator/) | `gofmt -l` | `gofmt -w <file>` |
 | Rust (provider/) | `cargo fmt --check` | `cd provider && cargo fmt` |
-| TypeScript (web/) | `npx next lint` | `cd web && npx next lint --fix` |
+| TypeScript (console-ui/) | `npx next lint` | `cd console-ui && npx next lint --fix` |
 | Swift (app/, enclave/) | skipped | no enforced formatter |
 
 If you clone fresh, activate the hook with:

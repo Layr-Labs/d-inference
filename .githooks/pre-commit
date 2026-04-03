@@ -47,17 +47,17 @@ if [ -n "$RS_FILES" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# TypeScript — next lint in web/ if any .ts/.tsx files are staged
+# TypeScript — next lint in console-ui/ if any .ts/.tsx files are staged
 # ---------------------------------------------------------------------------
-TS_FILES=$(git diff --cached --name-only --diff-filter=ACM -- 'web/**.ts' 'web/**.tsx' | grep -E '\.(ts|tsx)$' || true)
+TS_FILES=$(git diff --cached --name-only --diff-filter=ACM -- 'console-ui/**.ts' 'console-ui/**.tsx' | grep -E '\.(ts|tsx)$' || true)
 
 if [ -n "$TS_FILES" ]; then
     echo ">> Checking TypeScript lint (next lint)..."
-    if ! (cd web && npx next lint 2>/dev/null); then
+    if ! (cd console-ui && npx next lint 2>/dev/null); then
         echo ""
-        echo "ERROR: TypeScript lint errors in web/."
+        echo "ERROR: TypeScript lint errors in console-ui/."
         echo ""
-        echo "Fix with:  cd web && npx next lint --fix"
+        echo "Fix with:  cd console-ui && npx next lint --fix"
         echo ""
         FAILED=1
     fi

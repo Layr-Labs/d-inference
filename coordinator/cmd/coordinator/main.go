@@ -100,6 +100,27 @@ func main() {
 	srv := api.NewServer(reg, st, logger)
 	srv.SetAdminKey(adminKey)
 
+	// Sync the model catalog to the registry so providers and consumers
+	// are filtered against the admin-managed whitelist.
+	srv.SyncModelCatalog()
+
+	// Scoped release key — GitHub Actions uses this to register new releases.
+	// Separate from admin key: can only POST /v1/releases, nothing else.
+	if releaseKey := os.Getenv("DGINF_RELEASE_KEY"); releaseKey != "" {
+		srv.SetReleaseKey(releaseKey)
+		logger.Info("release key configured")
+	}
+
+	// Sync known-good provider binary hashes from active releases in the store.
+	// Falls back to DGINF_KNOWN_BINARY_HASHES env var if no releases exist yet.
+	srv.SyncBinaryHashes()
+	if hashList := os.Getenv("DGINF_KNOWN_BINARY_HASHES"); hashList != "" {
+		// Env var hashes are additive — merge with any from releases.
+		hashes := strings.Split(hashList, ",")
+		srv.AddKnownBinaryHashes(hashes)
+		logger.Info("additional binary hashes from env var", "count", len(hashes))
+	}
+
 	// Configure billing service.
 	//
 	// Day-1 launch: Solana USDC (via Privy embedded wallets) + Referrals.

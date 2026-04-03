@@ -75,6 +75,7 @@ type ModelInfo struct {
 	SizeBytes    int64  `json:"size_bytes"`
 	ModelType    string `json:"model_type"`
 	Quantization string `json:"quantization"`
+	WeightHash   string `json:"weight_hash,omitempty"` // SHA-256 fingerprint of weight files
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +219,8 @@ type AttestationResponseMessage struct {
 	RDMADisabled      *bool  `json:"rdma_disabled,omitempty"`       // fresh RDMA status (true = safe, false = remote memory access possible)
 	SIPEnabled        *bool  `json:"sip_enabled,omitempty"`         // fresh SIP status at challenge time
 	SecureBootEnabled *bool  `json:"secure_boot_enabled,omitempty"` // fresh Secure Boot status
+	BinaryHash        string `json:"binary_hash,omitempty"`         // fresh SHA-256 of provider binary
+	ActiveModelHash   string `json:"active_model_hash,omitempty"`   // SHA-256 weight fingerprint of loaded model
 }
 
 // ---------------------------------------------------------------------------

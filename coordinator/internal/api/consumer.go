@@ -107,6 +107,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Reject requests for models not in the catalog.
+	if !s.registry.IsModelInCatalog(req.Model) {
+		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
+			fmt.Sprintf("model %q is not available — see /v1/models for supported models", req.Model)))
+		return
+	}
+
 	// Consumer-selectable trust level. Consumers can request a minimum trust
 	// tier (e.g. "hardware") to filter providers. If not specified, uses the
 	// registry's default (hardware).
@@ -347,6 +354,12 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.registry.IsModelInCatalog(model) {
+		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
+			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model)))
+		return
+	}
+
 	language := r.FormValue("language")
 
 	// Read the audio file into memory
@@ -533,6 +546,11 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.N < 0 || req.N > 4 {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "n must be between 1 and 4"))
+		return
+	}
+	if !s.registry.IsModelInCatalog(req.Model) {
+		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
+			fmt.Sprintf("model %q is not available — see /v1/models for supported models", req.Model)))
 		return
 	}
 	if req.Steps != nil && *req.Steps <= 0 {
@@ -1193,6 +1211,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	model, _ := parsed["model"].(string)
 	if model == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
+		return
+	}
+	if !s.registry.IsModelInCatalog(model) {
+		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
+			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model)))
 		return
 	}
 

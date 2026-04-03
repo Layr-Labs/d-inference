@@ -51,7 +51,36 @@ echo ""
 # ─── Step 1: Download and install bundle ──────────────────────
 echo "→ [1/8] Downloading DGInf..."
 mkdir -p "$DGINF_DIR" "$BIN_DIR"
-curl -f#L "$BASE_URL/dl/dginf-bundle-macos-arm64.tar.gz" -o "/tmp/dginf-bundle.tar.gz"
+
+# Fetch latest release metadata from coordinator (version, hash, R2 download URL).
+RELEASE_JSON=$(curl -fsSL "$BASE_URL/v1/releases/latest?platform=macos-arm64" 2>/dev/null || echo "")
+
+if [ -n "$RELEASE_JSON" ] && echo "$RELEASE_JSON" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+    BUNDLE_URL=$(echo "$RELEASE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['url'])")
+    EXPECTED_HASH=$(echo "$RELEASE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('bundle_hash',''))")
+    RELEASE_VERSION=$(echo "$RELEASE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])")
+    echo "  Version: $RELEASE_VERSION"
+    echo "  Downloading from CDN..."
+    curl -f#L "$BUNDLE_URL" -o "/tmp/dginf-bundle.tar.gz"
+
+    # Verify bundle hash before installing.
+    if [ -n "$EXPECTED_HASH" ] && [ "$EXPECTED_HASH" != "" ]; then
+        ACTUAL_HASH=$(shasum -a 256 /tmp/dginf-bundle.tar.gz | cut -d' ' -f1)
+        if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+            echo ""
+            echo "  ERROR: Bundle hash mismatch — download may be compromised!"
+            echo "  Expected: $EXPECTED_HASH"
+            echo "  Got:      $ACTUAL_HASH"
+            rm -f /tmp/dginf-bundle.tar.gz
+            exit 1
+        fi
+        echo "  Hash verified ✓"
+    fi
+else
+    # Fallback: download directly from coordinator (legacy path).
+    echo "  Downloading from coordinator (release API unavailable)..."
+    curl -f#L "$BASE_URL/dl/dginf-bundle-macos-arm64.tar.gz" -o "/tmp/dginf-bundle.tar.gz"
+fi
 
 echo "  Installing binaries..."
 tar xzf /tmp/dginf-bundle.tar.gz -C "$DGINF_DIR"

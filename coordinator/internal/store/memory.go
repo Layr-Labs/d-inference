@@ -15,6 +15,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -67,6 +68,9 @@ type MemoryStore struct {
 	// Provider earnings (per-node tracking)
 	providerEarnings    []ProviderEarning
 	providerEarningsSeq int64 // auto-increment ID
+
+	// Releases (provider binary versioning)
+	releases map[string]*Release // "version:platform" → Release
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -95,6 +99,7 @@ func NewMemory(adminKey string) *MemoryStore {
 		inviteRedemptions:     make(map[string][]InviteRedemption),
 		accountRedemptions:    make(map[string]map[string]bool),
 		providerEarnings:      make([]ProviderEarning, 0),
+		releases:              make(map[string]*Release),
 	}
 	if adminKey != "" {
 		s.keys[adminKey] = true
@@ -848,6 +853,71 @@ func (s *MemoryStore) GetAccountEarnings(accountID string, limit int) ([]Provide
 		return []ProviderEarning{}, nil
 	}
 	return results, nil
+}
+
+// --- Releases ---
+
+func releaseKey(version, platform string) string {
+	return version + ":" + platform
+}
+
+func (s *MemoryStore) SetRelease(release *Release) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if release.Version == "" || release.Platform == "" {
+		return fmt.Errorf("version and platform are required")
+	}
+	r := *release
+	if r.CreatedAt.IsZero() {
+		r.CreatedAt = time.Now()
+	}
+	r.Active = true
+	s.releases[releaseKey(r.Version, r.Platform)] = &r
+	return nil
+}
+
+func (s *MemoryStore) ListReleases() []Release {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	releases := make([]Release, 0, len(s.releases))
+	for _, r := range s.releases {
+		releases = append(releases, *r)
+	}
+	sort.Slice(releases, func(i, j int) bool {
+		return releases[i].CreatedAt.After(releases[j].CreatedAt)
+	})
+	return releases
+}
+
+func (s *MemoryStore) GetLatestRelease(platform string) *Release {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var latest *Release
+	for _, r := range s.releases {
+		if r.Platform != platform || !r.Active {
+			continue
+		}
+		if latest == nil || r.CreatedAt.After(latest.CreatedAt) {
+			latest = r
+		}
+	}
+	if latest == nil {
+		return nil
+	}
+	copy := *latest
+	return &copy
+}
+
+func (s *MemoryStore) DeleteRelease(version, platform string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := releaseKey(version, platform)
+	r, ok := s.releases[key]
+	if !ok {
+		return fmt.Errorf("release %s/%s not found", version, platform)
+	}
+	r.Active = false
+	return nil
 }
 
 // sha256Hex returns the hex-encoded SHA-256 digest of s.

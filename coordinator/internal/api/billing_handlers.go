@@ -847,6 +847,9 @@ func (s *Server) handleAdminSetModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sync the updated catalog to the registry so routing reflects the change.
+	s.SyncModelCatalog()
+
 	s.logger.Info("admin: model catalog updated",
 		"model_id", model.ID,
 		"display_name", model.DisplayName,
@@ -884,6 +887,9 @@ func (s *Server) handleAdminDeleteModel(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", err.Error()))
 		return
 	}
+
+	// Sync the updated catalog to the registry so routing reflects the change.
+	s.SyncModelCatalog()
 
 	s.logger.Info("admin: model removed from catalog", "model_id", req.ID)
 	writeJSON(w, http.StatusOK, map[string]any{

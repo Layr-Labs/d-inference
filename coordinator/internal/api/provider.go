@@ -416,6 +416,42 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		)
 	}
 
+	// Verify fresh binary hash if reported and known hashes are configured.
+	if resp.BinaryHash != "" && len(s.knownBinaryHashes) > 0 {
+		if !s.knownBinaryHashes[resp.BinaryHash] {
+			s.logger.Error("provider binary hash changed — no longer matches known-good list",
+				"provider_id", providerID,
+				"binary_hash", resp.BinaryHash,
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "binary hash mismatch")
+			return
+		}
+	}
+
+	// Verify active model hash if reported and catalog has expected hash.
+	if resp.ActiveModelHash != "" {
+		// Get the current model from the provider's last heartbeat.
+		provider.Mu().Lock()
+		currentModel := provider.CurrentModel
+		provider.Mu().Unlock()
+
+		if currentModel != "" {
+			expectedHash := s.registry.CatalogWeightHash(currentModel)
+			if expectedHash != "" && resp.ActiveModelHash != expectedHash {
+				s.logger.Error("provider active model hash mismatch — possible model swap",
+					"provider_id", providerID,
+					"model", currentModel,
+					"expected", registry.TruncHash(expectedHash),
+					"got", registry.TruncHash(resp.ActiveModelHash),
+				)
+				s.registry.MarkUntrusted(providerID)
+				s.handleChallengeFailure(providerID, "active model weight hash mismatch")
+				return
+			}
+		}
+	}
+
 	// Challenge passed.
 	s.registry.RecordChallengeSuccess(providerID)
 	s.logger.Info("attestation challenge verified",
@@ -424,6 +460,8 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		"secure_boot_enabled", resp.SecureBootEnabled,
 		"rdma_disabled", resp.RDMADisabled,
 		"hypervisor_active", resp.HypervisorActive,
+		"binary_hash", resp.BinaryHash,
+		"active_model_hash", resp.ActiveModelHash,
 	)
 }
 
@@ -765,6 +803,24 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		}
 	}
 
+	// Verify binary hash against known-good hashes.
+	if len(s.knownBinaryHashes) > 0 && result.BinaryHash != "" {
+		if !s.knownBinaryHashes[result.BinaryHash] {
+			s.logger.Warn("provider binary hash not in known-good list",
+				"provider_id", providerID,
+				"binary_hash", result.BinaryHash,
+			)
+			result.Valid = false
+			result.Error = "binary hash not recognized"
+			provider.SetAttestationResult(&result)
+			return
+		}
+		s.logger.Info("provider binary hash verified",
+			"provider_id", providerID,
+			"binary_hash", registry.TruncHash(result.BinaryHash),
+		)
+	}
+
 	provider.SetAttested(true, registry.TrustSelfSigned)
 	s.logger.Info("provider attestation verified (self-signed)",
 		"provider_id", providerID,
@@ -776,6 +832,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		"secure_boot", result.SecureBootEnabled,
 		"authenticated_root", result.AuthenticatedRootEnabled,
 		"system_volume_hash", result.SystemVolumeHash,
+		"binary_hash", result.BinaryHash,
 		"trust_level", registry.TrustSelfSigned,
 	)
 

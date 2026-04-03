@@ -1,0 +1,129 @@
+name: Release Provider Bundle
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-release:
+    name: Build, Upload, Register
+    runs-on: macos-14  # Apple Silicon runner
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Build ---
+
+      - name: Build provider (Rust)
+        run: |
+          cd provider
+          cargo build --release --no-default-features
+
+      - name: Build enclave (Swift)
+        run: |
+          cd enclave
+          swift build -c release
+
+      # --- Test ---
+
+      - name: Test provider
+        run: cd provider && cargo test
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Test coordinator
+        run: cd coordinator && go test -race ./...
+
+      # --- Bundle ---
+
+      - name: Create bundle tarball
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p /tmp/dginf-bundle
+
+          cp provider/target/release/dginf-provider /tmp/dginf-bundle/
+          cp enclave/.build/release/dginf-enclave /tmp/dginf-bundle/
+
+          # Code sign with ad-hoc identity (hardened runtime)
+          codesign --force --sign - --entitlements scripts/entitlements.plist \
+            --options runtime /tmp/dginf-bundle/dginf-provider
+          codesign --force --sign - --entitlements scripts/entitlements.plist \
+            --options runtime /tmp/dginf-bundle/dginf-enclave
+
+          cd /tmp && tar czf dginf-bundle-macos-arm64.tar.gz -C dginf-bundle .
+          echo "Bundle created: $(du -h /tmp/dginf-bundle-macos-arm64.tar.gz | cut -f1)"
+
+      # --- Compute hashes ---
+
+      - name: Compute hashes
+        id: hash
+        run: |
+          BINARY_HASH=$(shasum -a 256 provider/target/release/dginf-provider | cut -d' ' -f1)
+          BUNDLE_HASH=$(shasum -a 256 /tmp/dginf-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
+          echo "binary_hash=$BINARY_HASH" >> "$GITHUB_OUTPUT"
+          echo "bundle_hash=$BUNDLE_HASH" >> "$GITHUB_OUTPUT"
+          echo "Binary hash: $BINARY_HASH"
+          echo "Bundle hash: $BUNDLE_HASH"
+
+      # --- Upload to R2 ---
+
+      - name: Install AWS CLI
+        run: |
+          brew install awscli 2>/dev/null || true
+
+      - name: Upload bundle to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          aws s3 cp /tmp/dginf-bundle-macos-arm64.tar.gz \
+            "s3://d-inf-releases/releases/v${VERSION}/dginf-bundle-macos-arm64.tar.gz" \
+            --endpoint-url "$R2_ENDPOINT"
+          echo "Uploaded to R2: releases/v${VERSION}/dginf-bundle-macos-arm64.tar.gz"
+
+      # --- Register with coordinator ---
+
+      - name: Register release with coordinator
+        env:
+          COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
+          RELEASE_KEY: ${{ secrets.DGINF_RELEASE_KEY }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BUNDLE_URL="${R2_PUBLIC_URL}/releases/v${VERSION}/dginf-bundle-macos-arm64.tar.gz"
+
+          curl -fsSL -X POST "${COORDINATOR_URL}/v1/releases" \
+            -H "Authorization: Bearer ${RELEASE_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"version\": \"${VERSION}\",
+              \"platform\": \"macos-arm64\",
+              \"binary_hash\": \"${{ steps.hash.outputs.binary_hash }}\",
+              \"bundle_hash\": \"${{ steps.hash.outputs.bundle_hash }}\",
+              \"url\": \"${BUNDLE_URL}\"
+            }"
+          echo "Release v${VERSION} registered with coordinator"
+
+      # --- GitHub Release ---
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: /tmp/dginf-bundle-macos-arm64.tar.gz
+          generate_release_notes: true
+          body: |
+            ## Provider v${{ github.ref_name }}
+
+            **Binary hash:** `${{ steps.hash.outputs.binary_hash }}`
+            **Bundle hash:** `${{ steps.hash.outputs.bundle_hash }}`
+
+            ### Install
+            ```bash
+            curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash
+            ```

@@ -73,6 +73,15 @@ type Server struct {
 	stepCARootCert         *x509.Certificate // step-ca root CA for ACME cert verification
 	stepCAIntermediateCert *x509.Certificate // step-ca intermediate CA
 
+	// knownBinaryHashes is the set of accepted provider binary SHA-256 hashes.
+	// When non-empty, providers whose binary hash doesn't match are rejected.
+	// Auto-populated from active releases via SyncBinaryHashes().
+	knownBinaryHashes map[string]bool
+
+	// releaseKey is a scoped credential for the GitHub Action to register releases.
+	// It can only POST /v1/releases — no admin access.
+	releaseKey string
+
 	// imageUploads stores generated images keyed by request_id.
 	// Providers upload images via HTTP POST, then send a small WebSocket
 	// completion message. The consumer handler retrieves images from here.
@@ -127,6 +136,65 @@ func (s *Server) SetAdminEmails(emails []string) {
 // When set, providers are verified against MDM on registration.
 func (s *Server) SetMDMClient(client *mdm.Client) {
 	s.mdmClient = client
+}
+
+// SyncModelCatalog reads active models from the store and updates the
+// registry's model catalog. Call this at startup and after admin catalog changes.
+func (s *Server) SyncModelCatalog() {
+	models := s.store.ListSupportedModels()
+	entries := make([]registry.CatalogEntry, 0, len(models))
+	for _, m := range models {
+		if m.Active {
+			entries = append(entries, registry.CatalogEntry{
+				ID:         m.ID,
+				WeightHash: m.WeightHash,
+			})
+		}
+	}
+	s.registry.SetModelCatalog(entries)
+	s.logger.Info("model catalog synced to registry", "active_models", len(entries))
+}
+
+// SetKnownBinaryHashes configures the set of accepted provider binary hashes.
+// Providers whose binary SHA-256 doesn't match any known hash are rejected.
+func (s *Server) SetKnownBinaryHashes(hashes []string) {
+	s.knownBinaryHashes = make(map[string]bool, len(hashes))
+	for _, h := range hashes {
+		if h != "" {
+			s.knownBinaryHashes[h] = true
+		}
+	}
+}
+
+// AddKnownBinaryHashes adds hashes to the existing known set (for env var fallback).
+func (s *Server) AddKnownBinaryHashes(hashes []string) {
+	if s.knownBinaryHashes == nil {
+		s.knownBinaryHashes = make(map[string]bool)
+	}
+	for _, h := range hashes {
+		if h != "" {
+			s.knownBinaryHashes[h] = true
+		}
+	}
+}
+
+// SetReleaseKey configures the scoped release key for GitHub Actions.
+func (s *Server) SetReleaseKey(key string) {
+	s.releaseKey = key
+}
+
+// SyncBinaryHashes rebuilds knownBinaryHashes from all active releases.
+// Called at startup and after release changes.
+func (s *Server) SyncBinaryHashes() {
+	releases := s.store.ListReleases()
+	hashes := make(map[string]bool)
+	for _, r := range releases {
+		if r.Active && r.BinaryHash != "" {
+			hashes[r.BinaryHash] = true
+		}
+	}
+	s.knownBinaryHashes = hashes
+	s.logger.Info("binary hashes synced from releases", "known_hashes", len(hashes))
 }
 
 // HandleMDMWebhook processes a MicroMDM webhook callback.
@@ -195,6 +263,10 @@ func (s *Server) routes() {
 	// Provider version check — no auth needed. Providers call this to check for updates.
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)
 
+	// Releases — versioned provider binary distribution.
+	s.mux.HandleFunc("POST /v1/releases", s.handleRegisterRelease)    // scoped release key (GitHub Action)
+	s.mux.HandleFunc("GET /v1/releases/latest", s.handleLatestRelease) // public (install.sh)
+
 	// Device authorization flow — providers link to user accounts.
 	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)                      // no auth — provider not yet authenticated
 	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)                    // no auth — polls with device_code secret
@@ -222,6 +294,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/models", s.requireAuth(s.handleAdminListModels))
 	s.mux.HandleFunc("POST /v1/admin/models", s.requireAuth(s.handleAdminSetModel))
 	s.mux.HandleFunc("DELETE /v1/admin/models", s.requireAuth(s.handleAdminDeleteModel))
+	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)       // admin key or Privy admin
+	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease)   // admin key or Privy admin
+
+	// Admin CLI auth — Privy email OTP for getting admin tokens without a browser.
+	s.mux.HandleFunc("POST /v1/admin/auth/init", s.handleAdminAuthInit)     // no auth (sends OTP)
+	s.mux.HandleFunc("POST /v1/admin/auth/verify", s.handleAdminAuthVerify) // no auth (returns token)
 
 	// Public model catalog — providers and install script fetch this
 	s.mux.HandleFunc("GET /v1/models/catalog", s.handleModelCatalog)

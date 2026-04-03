@@ -16,6 +16,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/dginf/coordinator/internal/store"
@@ -211,6 +212,81 @@ func (p *PrivyAuth) fetchUserDetails(privyUserID string) (*privyUserDetails, err
 	}
 
 	return details, nil
+}
+
+// InitEmailOTP sends an OTP code to the given email address via Privy's API.
+// This is used by the admin CLI to authenticate without a browser.
+func (p *PrivyAuth) InitEmailOTP(email string) error {
+	if p.appSecret == "" {
+		return fmt.Errorf("privy: app_secret required for OTP init")
+	}
+
+	body := fmt.Sprintf(`{"email":"%s"}`, email)
+	req, err := http.NewRequestWithContext(context.Background(), "POST",
+		"https://auth.privy.io/api/v1/auth/email/init", strings.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(p.appID, p.appSecret)
+	req.Header.Set("privy-app-id", p.appID)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("privy: OTP init request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("privy: OTP init returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}
+
+// VerifyEmailOTP verifies the OTP code and returns a Privy access token.
+func (p *PrivyAuth) VerifyEmailOTP(email, code string) (string, error) {
+	if p.appSecret == "" {
+		return "", fmt.Errorf("privy: app_secret required for OTP verify")
+	}
+
+	body := fmt.Sprintf(`{"email":"%s","code":"%s"}`, email, code)
+	req, err := http.NewRequestWithContext(context.Background(), "POST",
+		"https://auth.privy.io/api/v1/auth/email/authenticate", strings.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.SetBasicAuth(p.appID, p.appSecret)
+	req.Header.Set("privy-app-id", p.appID)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("privy: OTP verify request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", fmt.Errorf("privy: OTP verify returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Token string `json:"token"`
+		User  struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("privy: decode OTP response: %w", err)
+	}
+
+	if result.Token == "" {
+		return "", fmt.Errorf("privy: no token in OTP response")
+	}
+
+	return result.Token, nil
 }
 
 // ContextKey for storing user in request context.

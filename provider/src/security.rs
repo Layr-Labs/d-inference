@@ -15,7 +15,8 @@
 //!   - SIP cannot be disabled without rebooting (which kills the process)
 
 use base64::Engine;
-use std::io::Write;
+use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::process::Command;
 
 /// Prevent debugger attachment using ptrace(PT_DENY_ATTACH).
@@ -297,28 +298,51 @@ pub fn secure_zero_string(mut s: String) {
 /// binary produces a different hash and is rejected.
 pub fn self_binary_hash() -> Option<String> {
     let exe_path = std::env::current_exe().ok()?;
-    let bytes = std::fs::read(&exe_path).ok()?;
-
-    // SHA-256 using the same approach as our crypto module.
-    // We use a simple implementation here to avoid adding a sha2 dependency.
-    // For production, this should use ring or sha2 crate.
-    use std::io::Read;
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let hash = hasher.finalize_hex();
+    let hash = hash_file(&exe_path)?;
     tracing::info!("Binary self-hash ({}): {}", exe_path.display(), &hash[..16]);
     Some(hash)
 }
 
-/// Compute the SHA-256 hash of a file at the given path.
+/// Compute the SHA-256 hash of a file at the given path using streaming reads.
 ///
-/// Used for backend integrity verification — hash vllm-mlx files
-/// before launching to detect tampering.
+/// Reads in 64KB chunks to avoid loading entire files into memory.
+/// Used for binary integrity verification and model weight fingerprinting.
 pub fn hash_file(path: &std::path::Path) -> Option<String> {
-    let bytes = std::fs::read(path).ok()?;
+    let mut file = std::fs::File::open(path).ok()?;
     let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    Some(hasher.finalize_hex())
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = file.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+/// Compute a deterministic SHA-256 fingerprint over multiple files.
+///
+/// Files are sorted by name and streamed sequentially into a single hasher.
+/// This produces a consistent hash regardless of filesystem ordering, suitable
+/// for verifying sharded model weights (e.g. model-00001.safetensors, model-00002.safetensors).
+pub fn hash_files_sorted(paths: &[std::path::PathBuf]) -> Option<String> {
+    let mut sorted = paths.to_vec();
+    sorted.sort();
+
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 65536];
+    for path in &sorted {
+        let mut file = std::fs::File::open(path).ok()?;
+        loop {
+            let n = file.read(&mut buf).ok()?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+    }
+    Some(format!("{:x}", hasher.finalize()))
 }
 
 /// Verify the integrity of the backend binary by checking its hash.
@@ -424,56 +448,11 @@ pub fn verify_bundle_signature() -> Result<(), String> {
     }
 }
 
-/// Minimal SHA-256 implementation for binary hashing.
-/// Uses the system's CommonCrypto on macOS or falls back to a manual
-/// computation. In production, use the `sha2` crate.
-struct Sha256 {
-    data: Vec<u8>,
-}
-
-impl Sha256 {
-    fn new() -> Self {
-        Self { data: Vec::new() }
-    }
-
-    fn update(&mut self, bytes: &[u8]) {
-        self.data.extend_from_slice(bytes);
-    }
-
-    fn finalize_hex(self) -> String {
-        #[cfg(target_os = "macos")]
-        {
-            // Use macOS CommonCrypto via command line for simplicity.
-            // In production, link CommonCrypto directly via FFI.
-            use std::io::Write;
-            let mut child = Command::new("/usr/bin/shasum")
-                .args(["-a", "256"])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .ok()
-                .unwrap();
-            child.stdin.take().unwrap().write_all(&self.data).ok();
-            let output = child.wait_with_output().ok().unwrap();
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout.split_whitespace().next().unwrap_or("").to_string()
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            // Fallback: use openssl
-            use std::io::Write;
-            let mut child = Command::new("sha256sum")
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .ok()
-                .unwrap();
-            child.stdin.take().unwrap().write_all(&self.data).ok();
-            let output = child.wait_with_output().ok().unwrap();
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout.split_whitespace().next().unwrap_or("").to_string()
-        }
-    }
+/// Compute SHA-256 of a byte slice, returning the hex digest.
+pub fn sha256_bytes(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(test)]
@@ -555,61 +534,5 @@ pub fn se_sign(data: &[u8]) -> Option<String> {
 
 /// Compute SHA-256 hash of data, return as hex string.
 pub fn sha256_hex(data: &[u8]) -> String {
-    use std::fmt::Write;
-    // Simple SHA-256 using the same approach as self_binary_hash
-    let hash = {
-        use std::io::Read;
-        let mut hasher = Sha256Hasher::new();
-        hasher.update(data);
-        hasher.finalize()
-    };
-    hash.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{:02x}", b);
-        s
-    })
-}
-
-/// Minimal SHA-256 implementation (avoids adding a dependency).
-struct Sha256Hasher {
-    data: Vec<u8>,
-}
-
-impl Sha256Hasher {
-    fn new() -> Self {
-        Self { data: Vec::new() }
-    }
-
-    fn update(&mut self, data: &[u8]) {
-        self.data.extend_from_slice(data);
-    }
-
-    fn finalize(&self) -> [u8; 32] {
-        // Use the system's openssl/shasum for simplicity
-        use std::process::Command;
-        let output = Command::new("shasum")
-            .args(["-a", "256"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .and_then(|mut child| {
-                child.stdin.take().unwrap().write_all(&self.data).ok();
-                child.wait_with_output()
-            });
-
-        if let Ok(out) = output {
-            let hex = String::from_utf8_lossy(&out.stdout);
-            let hash_hex = hex.split_whitespace().next().unwrap_or("");
-            let mut result = [0u8; 32];
-            for (i, chunk) in hash_hex.as_bytes().chunks(2).enumerate() {
-                if i >= 32 {
-                    break;
-                }
-                let byte_str = std::str::from_utf8(chunk).unwrap_or("00");
-                result[i] = u8::from_str_radix(byte_str, 16).unwrap_or(0);
-            }
-            return result;
-        }
-
-        [0u8; 32]
-    }
+    sha256_bytes(data)
 }

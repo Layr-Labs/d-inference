@@ -183,6 +183,11 @@ type Registry struct {
 	// Defaults to TrustHardware. Set to TrustNone for testing.
 	MinTrustLevel TrustLevel
 
+	// modelCatalog maps active model IDs to their catalog metadata (including
+	// expected weight hashes). When non-empty, only models in this map are
+	// accepted from providers and routable by consumers. Updated via SetModelCatalog.
+	modelCatalog map[string]CatalogEntry
+
 	logger *slog.Logger
 }
 
@@ -194,6 +199,60 @@ func New(logger *slog.Logger) *Registry {
 		MinTrustLevel: TrustHardware,
 		logger:        logger,
 	}
+}
+
+// TruncHash returns the first 16 chars of a hash string for logging.
+func TruncHash(h string) string {
+	if len(h) > 16 {
+		return h[:16] + "..."
+	}
+	return h
+}
+
+// CatalogEntry holds metadata about an active model in the catalog.
+type CatalogEntry struct {
+	ID         string
+	WeightHash string // expected SHA-256 weight fingerprint (empty = not enforced)
+}
+
+// SetModelCatalog updates the set of active models. Only models in this
+// set will be accepted from providers during registration and routable to
+// consumers. Pass nil or empty to disable catalog filtering.
+func (r *Registry) SetModelCatalog(entries []CatalogEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(entries) == 0 {
+		r.modelCatalog = nil
+		return
+	}
+	catalog := make(map[string]CatalogEntry, len(entries))
+	for _, e := range entries {
+		catalog[e.ID] = e
+	}
+	r.modelCatalog = catalog
+}
+
+// IsModelInCatalog returns true if the model is in the active catalog,
+// or if no catalog is configured (all models allowed).
+func (r *Registry) IsModelInCatalog(model string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.modelCatalog) == 0 {
+		return true
+	}
+	_, ok := r.modelCatalog[model]
+	return ok
+}
+
+// CatalogWeightHash returns the expected weight hash for a model, or empty
+// string if not set or not in catalog.
+func (r *Registry) CatalogWeightHash(model string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if e, ok := r.modelCatalog[model]; ok {
+		return e.WeightHash
+	}
+	return ""
 }
 
 // trustMeetsMinimum returns true if the given trust level meets the minimum.
@@ -215,11 +274,40 @@ func (r *Registry) SetQueue(q *RequestQueue) {
 }
 
 // Register adds a new provider to the registry, returning its assigned ID.
+// If a model catalog is configured, only models in the catalog are kept.
 func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.RegisterMessage) *Provider {
+	// Filter models against the catalog before storing.
+	models := msg.Models
+	r.mu.RLock()
+	catalog := r.modelCatalog
+	r.mu.RUnlock()
+	if len(catalog) > 0 {
+		filtered := make([]protocol.ModelInfo, 0, len(models))
+		for _, m := range models {
+			entry, inCatalog := catalog[m.ID]
+			if !inCatalog {
+				r.logger.Debug("provider model not in catalog, skipping",
+					"provider_id", id, "model", m.ID)
+				continue
+			}
+			// Verify weight hash if the catalog has an expected hash.
+			if entry.WeightHash != "" && m.WeightHash != "" && m.WeightHash != entry.WeightHash {
+				r.logger.Warn("provider model weight hash mismatch, rejecting model",
+					"provider_id", id, "model", m.ID,
+					"expected", TruncHash(entry.WeightHash),
+					"got", TruncHash(m.WeightHash),
+				)
+				continue
+			}
+			filtered = append(filtered, m)
+		}
+		models = filtered
+	}
+
 	p := &Provider{
 		ID:            id,
 		Hardware:      msg.Hardware,
-		Models:        msg.Models,
+		Models:        models,
 		Backend:       msg.Backend,
 		PublicKey:     msg.PublicKey,
 		WalletAddress: msg.WalletAddress,

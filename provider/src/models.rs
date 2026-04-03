@@ -29,6 +29,11 @@ pub struct ModelInfo {
     pub quantization: Option<String>,
     pub size_bytes: u64,
     pub estimated_memory_gb: f64,
+    /// SHA-256 fingerprint of all weight files (sorted by filename, streamed
+    /// sequentially). The coordinator verifies this against the model catalog
+    /// to detect weight tampering or model substitution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weight_hash: Option<String>,
 }
 
 impl std::fmt::Display for ModelInfo {
@@ -235,11 +240,15 @@ fn parse_model_info(snapshot_dir: &Path, model_name: &str) -> Option<ModelInfo> 
     };
 
     let quantization = detect_quantization(model_name, snapshot_dir);
-    let size_bytes = calculate_safetensors_size(snapshot_dir);
+    let (size_bytes, weight_paths) = collect_weight_files(snapshot_dir);
 
     if size_bytes == 0 {
         return None;
     }
+
+    // Compute deterministic weight fingerprint: sort files by name,
+    // stream each sequentially through SHA-256.
+    let weight_hash = crate::security::hash_files_sorted(&weight_paths);
 
     // Memory overhead factor: ~1.2x for runtime buffers, KV cache, etc.
     let overhead = 1.2;
@@ -252,6 +261,7 @@ fn parse_model_info(snapshot_dir: &Path, model_name: &str) -> Option<ModelInfo> 
         quantization,
         size_bytes,
         estimated_memory_gb,
+        weight_hash,
     })
 }
 
@@ -326,13 +336,15 @@ fn detect_quantization(model_name: &str, snapshot_dir: &Path) -> Option<String> 
     None
 }
 
-/// Calculate total size of safetensors/weight files in a snapshot directory.
-fn calculate_safetensors_size(snapshot_dir: &Path) -> u64 {
+/// Collect weight file paths and total size from a snapshot directory.
+/// Returns (total_size_bytes, sorted_weight_file_paths).
+fn collect_weight_files(snapshot_dir: &Path) -> (u64, Vec<PathBuf>) {
     let mut total = 0u64;
+    let mut paths = Vec::new();
 
     let entries = match std::fs::read_dir(snapshot_dir) {
         Ok(e) => e,
-        Err(_) => return 0,
+        Err(_) => return (0, paths),
     };
 
     for entry in entries.flatten() {
@@ -346,16 +358,18 @@ fn calculate_safetensors_size(snapshot_dir: &Path) -> u64 {
                 // Handle symlinks — resolve to actual file size
                 if meta.is_file() {
                     total += meta.len();
+                    paths.push(entry.path());
                 } else if meta.file_type().is_symlink() {
                     if let Ok(resolved_meta) = std::fs::metadata(entry.path()) {
                         total += resolved_meta.len();
+                        paths.push(entry.path());
                     }
                 }
             }
         }
     }
 
-    total
+    (total, paths)
 }
 
 #[cfg(test)]
@@ -538,7 +552,7 @@ mod tests {
         fs::write(dir.join("model-00001.safetensors"), vec![0u8; 2000]).unwrap();
         fs::write(dir.join("config.json"), "{}").unwrap(); // not counted
 
-        let size = calculate_safetensors_size(dir);
+        let (size, _paths) = collect_weight_files(dir);
         assert_eq!(size, 3000);
     }
 
@@ -551,6 +565,7 @@ mod tests {
             quantization: Some("4bit".to_string()),
             size_bytes: 4_000_000_000,
             estimated_memory_gb: 4.5,
+            weight_hash: None,
         };
 
         let display = format!("{info}");
@@ -569,6 +584,7 @@ mod tests {
             quantization: Some("4bit".to_string()),
             size_bytes: 4_000_000_000,
             estimated_memory_gb: 4.5,
+            weight_hash: None,
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -610,6 +626,7 @@ mod tests {
             quantization: Some("4bit".to_string()),
             size_bytes: 4_000_000_000,
             estimated_memory_gb: 4.5,
+            weight_hash: None,
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -656,6 +673,7 @@ mod tests {
             quantization: None,
             size_bytes: 1000,
             estimated_memory_gb: 0.001,
+            weight_hash: None,
         };
 
         let json = serde_json::to_string(&info).unwrap();

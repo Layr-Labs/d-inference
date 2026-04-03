@@ -120,6 +120,20 @@ type Store interface {
 	// DeleteSupportedModel removes a model from the catalog by ID.
 	DeleteSupportedModel(modelID string) error
 
+	// --- Releases (provider binary versioning) ---
+
+	// SetRelease adds or updates a release in the store.
+	SetRelease(release *Release) error
+
+	// ListReleases returns all releases, ordered by created_at descending.
+	ListReleases() []Release
+
+	// GetLatestRelease returns the latest active release for a platform.
+	GetLatestRelease(platform string) *Release
+
+	// DeleteRelease deactivates a release by version and platform.
+	DeleteRelease(version, platform string) error
+
 	// --- Users (Privy) ---
 
 	// CreateUser creates a new user record linked to a Privy identity.
@@ -291,6 +305,20 @@ type SupportedModel struct {
 	Description  string  `json:"description"`  // e.g. "Balanced", "Best-in-class STT"
 	MinRAMGB     int     `json:"min_ram_gb"`   // Minimum system RAM for auto-selection
 	Active       bool    `json:"active"`       // Whether available for use
+	WeightHash   string  `json:"weight_hash"`  // Expected SHA-256 fingerprint of model weight files
+}
+
+// Release represents a versioned provider binary release.
+// The GitHub Action registers new releases via POST /v1/releases (scoped key).
+// Admins manage releases via /v1/admin/releases (Privy auth).
+type Release struct {
+	Version    string    `json:"version"`     // semver, e.g. "0.2.1"
+	Platform   string    `json:"platform"`    // "macos-arm64"
+	BinaryHash string    `json:"binary_hash"` // SHA-256 of dginf-provider binary (attestation verification)
+	BundleHash string    `json:"bundle_hash"` // SHA-256 of the bundle tarball (install.sh download verification)
+	URL        string    `json:"url"`         // R2 download URL for the bundle tarball
+	Active     bool      `json:"active"`      // whether this version is accepted by the coordinator
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // DeviceCode represents a pending device authorization request (RFC 8628-style).

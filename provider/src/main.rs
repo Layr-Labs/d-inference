@@ -1336,6 +1336,7 @@ async fn cmd_serve(
             quantization: None,
             size_bytes: 0,
             estimated_memory_gb: 4.0,
+            weight_hash: None,
         });
         tracing::info!("Advertising STT model: {stt_model_id}");
     }
@@ -1349,6 +1350,7 @@ async fn cmd_serve(
             quantization: None,
             size_bytes: 0,
             estimated_memory_gb: 8.0,
+            weight_hash: None,
         });
         tracing::info!("Advertising image model: {image_model_id}");
     }
@@ -1397,6 +1399,14 @@ async fn cmd_serve(
         let current_model: std::sync::Arc<std::sync::Mutex<Option<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(Some(model.clone())));
 
+        // Shared current model weight hash (cached at load time for challenge responses).
+        let initial_model_hash = advertised_models
+            .iter()
+            .find(|m| m.id == model)
+            .and_then(|m| m.weight_hash.clone());
+        let current_model_hash: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(initial_model_hash));
+
         let client = coordinator::CoordinatorClient::new(
             coordinator_url,
             hw.clone(),
@@ -1414,7 +1424,8 @@ async fn cmd_serve(
         .with_auth_token(auth_token)
         .with_stats(provider_stats.clone())
         .with_inference_active(inference_active.clone())
-        .with_current_model(current_model);
+        .with_current_model(current_model)
+        .with_current_model_hash(current_model_hash);
 
         // Spawn coordinator connection — this connects immediately while
         // the backend is still loading below.

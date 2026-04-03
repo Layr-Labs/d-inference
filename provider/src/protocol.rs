@@ -120,6 +120,12 @@ pub enum ProviderMessage {
         /// Fresh Secure Boot status at time of challenge response.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secure_boot_enabled: Option<bool>,
+        /// Fresh SHA-256 hash of the provider binary (re-computed each challenge).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        binary_hash: Option<String>,
+        /// SHA-256 weight fingerprint of the currently loaded model (cached at load time).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        active_model_hash: Option<String>,
     },
 }
 
@@ -315,6 +321,7 @@ mod tests {
                 quantization: Some("4bit".to_string()),
                 size_bytes: 4_000_000_000,
                 estimated_memory_gb: 4.5,
+                weight_hash: None,
             }],
             backend: "vllm_mlx".to_string(),
             public_key: None,
@@ -349,6 +356,7 @@ mod tests {
                 quantization: Some("4bit".to_string()),
                 size_bytes: 4_000_000_000,
                 estimated_memory_gb: 4.5,
+                weight_hash: None,
             }],
             backend: "vllm_mlx".to_string(),
             public_key: None,
@@ -380,6 +388,7 @@ mod tests {
                 quantization: Some("4bit".to_string()),
                 size_bytes: 4_000_000_000,
                 estimated_memory_gb: 4.5,
+                weight_hash: None,
             }],
             backend: "vllm_mlx".to_string(),
             public_key: Some("c29tZWtleQ==".to_string()),
@@ -584,6 +593,8 @@ mod tests {
             rdma_disabled: Some(true),
             sip_enabled: Some(true),
             secure_boot_enabled: Some(true),
+            binary_hash: None,
+            active_model_hash: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -997,6 +1008,8 @@ mod tests {
                 rdma_disabled: Some(true),
                 sip_enabled: Some(true),
                 secure_boot_enabled: Some(true),
+                binary_hash: None,
+                active_model_hash: None,
             },
         ];
 

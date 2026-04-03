@@ -89,6 +89,8 @@ pub struct CoordinatorClient {
     inference_active: Arc<AtomicBool>,
     /// The model currently loaded / being served (set by the main event loop).
     current_model: Arc<std::sync::Mutex<Option<String>>>,
+    /// SHA-256 weight fingerprint of the currently loaded model (cached at load time).
+    current_model_hash: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl CoordinatorClient {
@@ -113,6 +115,7 @@ impl CoordinatorClient {
             stats: Arc::new(AtomicProviderStats::new()),
             inference_active: Arc::new(AtomicBool::new(false)),
             current_model: Arc::new(std::sync::Mutex::new(None)),
+            current_model_hash: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -152,6 +155,15 @@ impl CoordinatorClient {
     /// Set the shared current-model name (model currently loaded on this provider).
     pub fn with_current_model(mut self, model: Arc<std::sync::Mutex<Option<String>>>) -> Self {
         self.current_model = model;
+        self
+    }
+
+    /// Set the shared current-model weight hash (cached at model load time).
+    pub fn with_current_model_hash(
+        mut self,
+        hash: Arc<std::sync::Mutex<Option<String>>>,
+    ) -> Self {
+        self.current_model_hash = hash;
         self
     }
 
@@ -401,10 +413,12 @@ impl CoordinatorClient {
                                     tracing::info!("Received attestation challenge");
                                     // Respond to the challenge inline, signing with
                                     // the provider's key.
+                                    let model_hash = self.current_model_hash.lock().unwrap().clone();
                                     let response = handle_attestation_challenge(
                                         &nonce,
                                         &timestamp,
                                         self.public_key.as_deref(),
+                                        model_hash.as_deref(),
                                     );
                                     let json = serde_json::to_string(&response)
                                         .unwrap_or_default();
@@ -504,6 +518,7 @@ pub fn handle_attestation_challenge(
     nonce: &str,
     timestamp: &str,
     public_key: Option<&str>,
+    current_model_hash: Option<&str>,
 ) -> ProviderMessage {
     use base64::Engine;
     let data = format!("{}{}", nonce, timestamp);
@@ -522,6 +537,9 @@ pub fn handle_attestation_challenge(
     let sip_enabled = crate::security::check_sip_enabled();
     let rdma_disabled = crate::security::check_rdma_disabled();
     let hypervisor_active = crate::security::check_hypervisor_active();
+
+    // Fresh binary hash — re-computed each challenge (~1ms for <50MB binary).
+    let binary_hash = crate::security::self_binary_hash();
 
     if !sip_enabled {
         tracing::error!(
@@ -543,6 +561,8 @@ pub fn handle_attestation_challenge(
         rdma_disabled: Some(rdma_disabled),
         sip_enabled: Some(sip_enabled),
         secure_boot_enabled: Some(true), // Apple Silicon always has Secure Boot in Full Security mode
+        binary_hash,
+        active_model_hash: current_model_hash.map(|s| s.to_string()),
     }
 }
 
@@ -630,6 +650,7 @@ mod tests {
             quantization: None,
             size_bytes: 1000,
             estimated_memory_gb: 1.0,
+            weight_hash: None,
         }];
 
         let msg = build_register_message(&hw, &models, "vllm_mlx", None);
@@ -654,7 +675,7 @@ mod tests {
         let timestamp = "2025-01-15T10:30:00Z";
         let public_key = Some("cHVia2V5");
 
-        let response = handle_attestation_challenge(nonce, timestamp, public_key);
+        let response = handle_attestation_challenge(nonce, timestamp, public_key, None);
 
         match response {
             ProviderMessage::AttestationResponse {
@@ -675,7 +696,7 @@ mod tests {
 
     #[test]
     fn test_handle_attestation_challenge_without_public_key() {
-        let response = handle_attestation_challenge("bm9uY2U=", "2025-01-15T00:00:00Z", None);
+        let response = handle_attestation_challenge("bm9uY2U=", "2025-01-15T00:00:00Z", None, None);
 
         match response {
             ProviderMessage::AttestationResponse {
@@ -696,8 +717,8 @@ mod tests {
 
     #[test]
     fn test_handle_attestation_challenge_deterministic() {
-        let resp1 = handle_attestation_challenge("bm9uY2U=", "2025-01-15T00:00:00Z", Some("key"));
-        let resp2 = handle_attestation_challenge("bm9uY2U=", "2025-01-15T00:00:00Z", Some("key"));
+        let resp1 = handle_attestation_challenge("bm9uY2U=", "2025-01-15T00:00:00Z", Some("key"), None);
+        let resp2 = handle_attestation_challenge("bm9uY2U=", "2025-01-15T00:00:00Z", Some("key"), None);
 
         // Same inputs should produce same output (deterministic).
         assert_eq!(resp1, resp2);
@@ -705,8 +726,8 @@ mod tests {
 
     #[test]
     fn test_handle_attestation_challenge_different_nonces() {
-        let resp1 = handle_attestation_challenge("bm9uY2Ux", "2025-01-15T00:00:00Z", Some("key"));
-        let resp2 = handle_attestation_challenge("bm9uY2Uy", "2025-01-15T00:00:00Z", Some("key"));
+        let resp1 = handle_attestation_challenge("bm9uY2Ux", "2025-01-15T00:00:00Z", Some("key"), None);
+        let resp2 = handle_attestation_challenge("bm9uY2Uy", "2025-01-15T00:00:00Z", Some("key"), None);
 
         // Different nonces should produce different signatures.
         match (&resp1, &resp2) {
@@ -726,7 +747,7 @@ mod tests {
     #[test]
     fn test_handle_attestation_challenge_serialization() {
         let response =
-            handle_attestation_challenge("dGVzdA==", "2025-06-01T00:00:00Z", Some("a2V5"));
+            handle_attestation_challenge("dGVzdA==", "2025-06-01T00:00:00Z", Some("a2V5"), None);
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"type\":\"attestation_response\""));
         assert!(json.contains("\"nonce\":\"dGVzdA==\""));
@@ -874,6 +895,7 @@ mod tests {
             "dGVzdG5vbmNl",
             "2026-01-01T00:00:00Z",
             Some("cHVibGljLWtleQ=="),
+            None,
         );
 
         match response {
@@ -885,6 +907,8 @@ mod tests {
                 rdma_disabled,
                 sip_enabled,
                 secure_boot_enabled,
+                binary_hash: _,
+                active_model_hash: _,
             } => {
                 // Nonce echoed back exactly
                 assert_eq!(nonce, "dGVzdG5vbmNl");
@@ -912,7 +936,7 @@ mod tests {
     fn test_attestation_response_correct_public_key_passthrough() {
         // The public key in the response should match what was passed in.
         let pk = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=";
-        let response = handle_attestation_challenge("bm9uY2U=", "2026-06-15T00:00:00Z", Some(pk));
+        let response = handle_attestation_challenge("bm9uY2U=", "2026-06-15T00:00:00Z", Some(pk), None);
 
         match response {
             ProviderMessage::AttestationResponse { public_key, .. } => {
@@ -925,7 +949,7 @@ mod tests {
     #[test]
     fn test_attestation_response_none_public_key_becomes_empty() {
         // When no public key is configured, the response should use empty string.
-        let response = handle_attestation_challenge("bm9uY2U=", "2026-06-15T00:00:00Z", None);
+        let response = handle_attestation_challenge("bm9uY2U=", "2026-06-15T00:00:00Z", None, None);
 
         match response {
             ProviderMessage::AttestationResponse { public_key, .. } => {
@@ -937,8 +961,8 @@ mod tests {
 
     #[test]
     fn test_attestation_response_different_timestamps_different_signatures() {
-        let resp1 = handle_attestation_challenge("bm9uY2U=", "2026-01-01T00:00:00Z", Some("key"));
-        let resp2 = handle_attestation_challenge("bm9uY2U=", "2026-06-01T00:00:00Z", Some("key"));
+        let resp1 = handle_attestation_challenge("bm9uY2U=", "2026-01-01T00:00:00Z", Some("key"), None);
+        let resp2 = handle_attestation_challenge("bm9uY2U=", "2026-06-01T00:00:00Z", Some("key"), None);
 
         match (&resp1, &resp2) {
             (
@@ -958,7 +982,7 @@ mod tests {
     fn test_attestation_response_serializes_for_go_coordinator() {
         // The response must serialize with snake_case field names and the
         // "attestation_response" type tag that the Go coordinator expects.
-        let response = handle_attestation_challenge("YWJj", "2026-03-15T10:00:00Z", Some("cGs="));
+        let response = handle_attestation_challenge("YWJj", "2026-03-15T10:00:00Z", Some("cGs="), None);
 
         let json = serde_json::to_string(&response).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -984,6 +1008,7 @@ mod tests {
             quantization: None,
             size_bytes: 1000,
             estimated_memory_gb: 1.0,
+            weight_hash: None,
         }];
 
         let wallet_addr = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string();

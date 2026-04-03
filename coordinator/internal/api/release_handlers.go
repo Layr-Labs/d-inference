@@ -219,4 +219,3 @@ func (s *Server) handleAdminAuthVerify(w http.ResponseWriter, r *http.Request) {
 		"email": req.Email,
 	})
 }
-

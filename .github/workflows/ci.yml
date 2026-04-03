@@ -30,6 +30,8 @@ jobs:
   test-provider:
     name: Provider Tests
     runs-on: macos-15
+    env:
+      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: '1'
     steps:
       - uses: actions/checkout@v4
       - name: Run tests

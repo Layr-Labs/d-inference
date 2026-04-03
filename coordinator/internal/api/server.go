@@ -264,7 +264,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)
 
 	// Releases — versioned provider binary distribution.
-	s.mux.HandleFunc("POST /v1/releases", s.handleRegisterRelease)    // scoped release key (GitHub Action)
+	s.mux.HandleFunc("POST /v1/releases", s.handleRegisterRelease)     // scoped release key (GitHub Action)
 	s.mux.HandleFunc("GET /v1/releases/latest", s.handleLatestRelease) // public (install.sh)
 
 	// Device authorization flow — providers link to user accounts.
@@ -294,8 +294,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/models", s.requireAuth(s.handleAdminListModels))
 	s.mux.HandleFunc("POST /v1/admin/models", s.requireAuth(s.handleAdminSetModel))
 	s.mux.HandleFunc("DELETE /v1/admin/models", s.requireAuth(s.handleAdminDeleteModel))
-	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)       // admin key or Privy admin
-	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease)   // admin key or Privy admin
+	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
+	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin
 
 	// Admin CLI auth — Privy email OTP for getting admin tokens without a browser.
 	s.mux.HandleFunc("POST /v1/admin/auth/init", s.handleAdminAuthInit)     // no auth (sends OTP)

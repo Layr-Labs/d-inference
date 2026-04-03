@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+#
+# Pre-push hook for d-inference.
+# Runs the same checks as CI before pushing to catch failures locally.
+#
+# Install: git config core.hooksPath .githooks
+#
+
+set -euo pipefail
+
+FAILED=0
+
+# Check which components have changes being pushed.
+# Compare local HEAD against the remote ref being pushed to.
+REMOTE="$1"
+RANGE=""
+while read local_ref local_sha remote_ref remote_sha; do
+    if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+        continue  # deleting branch
+    fi
+    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+        RANGE="$local_sha"  # new branch
+    else
+        RANGE="$remote_sha..$local_sha"
+    fi
+done
+
+if [ -z "$RANGE" ]; then
+    exit 0
+fi
+
+CHANGED_FILES=$(git diff --name-only "$RANGE" 2>/dev/null || git diff --name-only HEAD~1)
+
+HAS_GO=$(echo "$CHANGED_FILES" | grep -q '^coordinator/' && echo 1 || echo 0)
+HAS_RUST=$(echo "$CHANGED_FILES" | grep -q '^provider/' && echo 1 || echo 0)
+
+# ---------------------------------------------------------------------------
+# Go — formatting + tests
+# ---------------------------------------------------------------------------
+if [ "$HAS_GO" = "1" ]; then
+    echo ">> [pre-push] Go formatting check..."
+    UNFORMATTED=$(cd coordinator && gofmt -l . 2>/dev/null || true)
+    if [ -n "$UNFORMATTED" ]; then
+        echo "ERROR: Unformatted Go files:"
+        echo "$UNFORMATTED" | sed 's/^/  /'
+        echo "Fix with: cd coordinator && gofmt -w ."
+        FAILED=1
+    fi
+
+    echo ">> [pre-push] Go tests..."
+    if ! (cd coordinator && go test ./... 2>&1 | tail -15); then
+        echo "ERROR: Go tests failed."
+        FAILED=1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Rust — formatting + tests
+# ---------------------------------------------------------------------------
+if [ "$HAS_RUST" = "1" ]; then
+    echo ">> [pre-push] Rust formatting check..."
+    if ! (cd provider && cargo fmt --check 2>/dev/null); then
+        echo "ERROR: Rust files not formatted. Fix with: cd provider && cargo fmt"
+        FAILED=1
+    fi
+
+    echo ">> [pre-push] Rust tests..."
+    if ! (cd provider && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo test 2>&1 | tail -15); then
+        echo "ERROR: Rust tests failed."
+        FAILED=1
+    fi
+fi
+
+if [ "$FAILED" -ne 0 ]; then
+    echo ""
+    echo "Pre-push checks failed. Fix the issues above before pushing."
+    exit 1
+fi
+
+echo ">> [pre-push] All checks passed."

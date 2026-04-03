@@ -1620,8 +1620,8 @@ func TestModelCatalogWeightHashVerification(t *testing.T) {
 		Type:     protocol.TypeRegister,
 		Hardware: testRegisterMessage().Hardware,
 		Models: []protocol.ModelInfo{
-			{ID: "model-a", SizeBytes: 1000, WeightHash: correctHash},  // correct
-			{ID: "model-b", SizeBytes: 2000, WeightHash: "anything"},   // no enforcement
+			{ID: "model-a", SizeBytes: 1000, WeightHash: correctHash}, // correct
+			{ID: "model-b", SizeBytes: 2000, WeightHash: "anything"},  // no enforcement
 		},
 		Backend: "vllm_mlx",
 	}

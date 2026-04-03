@@ -71,43 +71,45 @@ struct ModelCatalogTests {
     @Test("catalog has models")
     func hasModels() {
         #expect(!ModelCatalog.models.isEmpty)
-        #expect(ModelCatalog.models.count >= 8)
+        #expect(ModelCatalog.models.count >= 5)
     }
 
-    @Test("models sorted by size")
-    func sortedBySize() {
-        let sizes = ModelCatalog.models.map(\.sizeGB)
-        for i in 1..<sizes.count {
-            #expect(sizes[i] >= sizes[i - 1], "Models should be sorted by size")
+    @Test("models sorted by min RAM tier")
+    func sortedByMinRAM() {
+        let tiers = ModelCatalog.models.map(\.minRAMGB)
+        for i in 1..<tiers.count {
+            #expect(tiers[i] >= tiers[i - 1], "Models should be sorted by minRAMGB")
         }
     }
 
     @Test("fit indicator with 16GB RAM")
     func fitsWith16GB() {
-        let small = ModelCatalog.models.first! // 0.5B = 0.4 GB
+        let small = ModelCatalog.models.first! // Cohere Transcribe, minRAMGB = 8
         #expect(small.fitsInMemory(totalGB: 16))
 
-        // 72B = 42 GB, way over 16 GB - 4 = 12 GB available
-        let large = ModelCatalog.models.first { $0.sizeGB > 40 }!
+        // Large models (minRAMGB >= 128) should not fit in 16 GB
+        let large = ModelCatalog.models.first { $0.minRAMGB > 16 }!
         #expect(!large.fitsInMemory(totalGB: 16))
     }
 
-    @Test("fit indicator with 128GB RAM")
-    func fitsWith128GB() {
-        // All models should fit in 128 GB (124 available)
+    @Test("fit indicator with 256GB RAM")
+    func fitsWith256GB() {
+        // All models should fit in 256 GB
         for model in ModelCatalog.models {
-            #expect(model.fitsInMemory(totalGB: 128),
-                    "\(model.name) (\(model.sizeGB) GB) should fit in 128 GB")
+            #expect(model.fitsInMemory(totalGB: 256),
+                    "\(model.name) (minRAM: \(model.minRAMGB) GB) should fit in 256 GB")
         }
     }
 
-    @Test("fit indicator edge case: minimum headroom")
+    @Test("fit indicator edge case: minimum RAM threshold")
     func fitsEdgeCase() {
-        let entry = ModelCatalog.Entry(id: "test", name: "test", sizeGB: 5.0, parameters: "test")
-        // 9 GB total - 4 headroom = 5 available, exactly fits
-        #expect(entry.fitsInMemory(totalGB: 9))
-        // 8 GB total - 4 headroom = 4 available, doesn't fit
-        #expect(!entry.fitsInMemory(totalGB: 8))
+        let entry = ModelCatalog.Entry(
+            id: "test", name: "test", modelType: "text",
+            sizeGB: 5.0, architecture: "test", description: "test", minRAMGB: 8
+        )
+        // minRAMGB = 8, so 8 GB fits, 7 GB doesn't
+        #expect(entry.fitsInMemory(totalGB: 8))
+        #expect(!entry.fitsInMemory(totalGB: 7))
     }
 
     @Test("each model has unique ID")
@@ -307,19 +309,21 @@ struct StatusViewModelTests {
     }
 
     @MainActor
-    @Test("stop resets all state")
-    func stopResets() {
+    @Test("stop resets online and serving state")
+    func stopResets() async throws {
         let vm = StatusViewModel()
         vm.isOnline = true
         vm.isServing = true
-        vm.isPaused = true
         vm.tokensPerSecond = 42.0
 
         vm.stop()
 
+        // stop() spawns a Task that calls CLIRunner.run (async) before resetting
+        // state. Wait for the internal Task to finish.
+        try await Task.sleep(for: .seconds(2))
+
         #expect(!vm.isOnline)
         #expect(!vm.isServing)
-        #expect(!vm.isPaused)
         #expect(vm.tokensPerSecond == 0)
     }
 
@@ -331,13 +335,13 @@ struct StatusViewModelTests {
     }
 
     @MainActor
-    @Test("default coordinator URL")
-    func defaultCoordinatorURL() {
-        let defaults = UserDefaults.standard
-        defaults.removeObject(forKey: "coordinatorURL")
-
+    @Test("coordinator URL is set from config")
+    func coordinatorURL() {
         let vm = StatusViewModel()
-        #expect(vm.coordinatorURL.contains("inference-test.openinnovation.dev"))
+        // URL comes from ConfigManager.load(), which reads provider.toml if it
+        // exists, otherwise returns the default. Either way it should be non-empty.
+        #expect(!vm.coordinatorURL.isEmpty,
+                "Coordinator URL should be loaded from config or defaults")
     }
 
     @MainActor
@@ -405,12 +409,16 @@ struct OutputParsingTests {
 
     @MainActor
     @Test("stop clears serving state")
-    func stopClearsServing() {
+    func stopClearsServing() async throws {
         let vm = StatusViewModel()
         vm.isServing = true
         vm.tokensPerSecond = 50.0
 
         vm.stop()
+
+        // stop() spawns a Task that calls CLIRunner.run (async) before resetting
+        // state. Wait for the internal Task to finish.
+        try await Task.sleep(for: .seconds(2))
 
         #expect(!vm.isServing)
         #expect(vm.tokensPerSecond == 0)

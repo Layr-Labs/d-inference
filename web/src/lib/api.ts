@@ -239,6 +239,25 @@ export async function generateImage(
   return res.json();
 }
 
+export interface InviteRedeemResponse {
+  credited_usd: string;
+  balance_usd: string;
+}
+
+export async function redeemInviteCode(code: string): Promise<InviteRedeemResponse> {
+  const res = await fetch("/api/invite/redeem", {
+    method: "POST",
+    headers: proxyHeaders(),
+    body: JSON.stringify({ code }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    const msg = data?.error?.message || data?.message || `Redemption failed (${res.status})`;
+    throw new Error(msg);
+  }
+  return data;
+}
+
 export async function healthCheck(): Promise<{ status: string; providers: number }> {
   const res = await fetch("/api/health", { headers: proxyHeaders() });
   if (!res.ok) throw new Error(`Health check failed: ${res.status}`);

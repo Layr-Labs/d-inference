@@ -313,7 +313,7 @@ mod tests {
     #[tokio::test]
     async fn test_health_check_with_mock_server() {
         // Start a minimal axum server for health check
-        use axum::{routing::get, Router};
+        use axum::{Router, routing::get};
 
         let app = Router::new().route("/health", get(|| async { "ok" }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -341,6 +341,154 @@ mod tests {
         assert!(manager.is_healthy().await);
         assert_eq!(manager.base_url().await, "http://127.0.0.1:8100");
 
+        manager.stop().await.unwrap();
+    }
+
+    /// Test 6: Health check against a backend that returns HTTP 500 → unhealthy.
+    #[tokio::test]
+    async fn test_health_check_500_response() {
+        use axum::{Router, http::StatusCode, routing::get};
+
+        let app = Router::new()
+            .route(
+                "/health",
+                get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+            )
+            .route(
+                "/v1/models",
+                get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let healthy = check_health(&format!("http://127.0.0.1:{}", addr.port())).await;
+        assert!(!healthy, "Backend returning 500 should be unhealthy");
+    }
+
+    /// Test 6b: Health check succeeds via /v1/models when /health is absent.
+    #[tokio::test]
+    async fn test_health_check_via_models_endpoint() {
+        use axum::{Json, Router, routing::get};
+
+        // No /health route — only /v1/models
+        let app = Router::new().route(
+            "/v1/models",
+            get(|| async { Json(serde_json::json!({"data": [{"id": "test-model"}]})) }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let healthy = check_health(&format!("http://127.0.0.1:{}", addr.port())).await;
+        assert!(
+            healthy,
+            "Backend with /v1/models should be considered healthy"
+        );
+    }
+
+    /// Test 6c: check_model_loaded returns true when model_loaded is true.
+    #[tokio::test]
+    async fn test_check_model_loaded_true() {
+        use axum::{Json, Router, routing::get};
+
+        let app = Router::new().route(
+            "/health",
+            get(|| async { Json(serde_json::json!({"status": "ok", "model_loaded": true})) }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(check_model_loaded(&format!("http://127.0.0.1:{}", addr.port())).await);
+    }
+
+    /// Test 6d: check_model_loaded returns false when model_loaded is false.
+    #[tokio::test]
+    async fn test_check_model_loaded_false() {
+        use axum::{Json, Router, routing::get};
+
+        let app = Router::new().route(
+            "/health",
+            get(|| async { Json(serde_json::json!({"status": "loading", "model_loaded": false})) }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(!check_model_loaded(&format!("http://127.0.0.1:{}", addr.port())).await);
+    }
+
+    /// Test 6e: check_model_loaded for unreachable backend.
+    #[tokio::test]
+    async fn test_check_model_loaded_unreachable() {
+        assert!(!check_model_loaded("http://127.0.0.1:19995").await);
+    }
+
+    /// Test 6f: check_model_loaded via /v1/models fallback (mlx_lm.server).
+    #[tokio::test]
+    async fn test_check_model_loaded_via_models_fallback() {
+        use axum::{Json, Router, routing::get};
+
+        // No /health, but /v1/models responds — treat as loaded
+        let app = Router::new().route(
+            "/v1/models",
+            get(|| async { Json(serde_json::json!({"data": [{"id": "test"}]})) }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(check_model_loaded(&format!("http://127.0.0.1:{}", addr.port())).await);
+    }
+
+    /// Test: BackendManager with unhealthy backend still reports unhealthy.
+    #[tokio::test]
+    async fn test_backend_manager_unhealthy() {
+        use super::tests::mock::MockBackend;
+
+        let backend = Box::new(MockBackend::new(false));
+        let manager = BackendManager::new(backend, Duration::from_secs(60));
+
+        manager.start().await.unwrap();
+        assert!(
+            !manager.is_healthy().await,
+            "Backend reporting unhealthy should be detected"
+        );
+        manager.stop().await.unwrap();
+    }
+
+    /// Test: BackendManager stop is idempotent.
+    #[tokio::test]
+    async fn test_backend_manager_stop_idempotent() {
+        use super::tests::mock::MockBackend;
+
+        let backend = Box::new(MockBackend::new(true));
+        let manager = BackendManager::new(backend, Duration::from_secs(60));
+
+        manager.start().await.unwrap();
+        manager.stop().await.unwrap();
+        // Second stop should not panic
         manager.stop().await.unwrap();
     }
 

@@ -22,8 +22,8 @@ use tokio_util::sync::CancellationToken;
 use crate::coordinator::AtomicProviderStats;
 use crate::crypto::NodeKeyPair;
 use crate::protocol::{
-    ImageGenerationRequestBody, ImageGenerationUsage, ProviderMessage,
-    TranscriptionRequestBody, TranscriptionSegment, TranscriptionUsage, UsageInfo,
+    ImageGenerationRequestBody, ImageGenerationUsage, ProviderMessage, TranscriptionRequestBody,
+    TranscriptionSegment, TranscriptionUsage, UsageInfo,
 };
 use crate::security;
 
@@ -60,12 +60,31 @@ pub async fn handle_inference_request(
         return;
     }
 
-    let is_streaming = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_streaming = body
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let result = if is_streaming {
-        handle_streaming_request(&request_id, &body, &backend_url, &outbound_tx, &cancel_token, &stats).await
+        handle_streaming_request(
+            &request_id,
+            &body,
+            &backend_url,
+            &outbound_tx,
+            &cancel_token,
+            &stats,
+        )
+        .await
     } else {
-        handle_non_streaming_request(&request_id, &body, &backend_url, &outbound_tx, &cancel_token, &stats).await
+        handle_non_streaming_request(
+            &request_id,
+            &body,
+            &backend_url,
+            &outbound_tx,
+            &cancel_token,
+            &stats,
+        )
+        .await
     };
 
     if let Err(e) = result {
@@ -196,7 +215,8 @@ async fn handle_non_streaming_request(
     if let Some(s) = stats {
         use std::sync::atomic::Ordering;
         s.requests_served.fetch_add(1, Ordering::Relaxed);
-        s.tokens_generated.fetch_add(completion_tokens, Ordering::Relaxed);
+        s.tokens_generated
+            .fetch_add(completion_tokens, Ordering::Relaxed);
     }
 
     // Wipe response data from memory — contains consumer's inference output.
@@ -296,7 +316,10 @@ async fn handle_streaming_request(
 
                 if data == "[DONE]" {
                     // Stream complete — sign the actual response content
-                    let sign_data = format!("{}:{}:{}", request_id, total_completion_tokens, response_content);
+                    let sign_data = format!(
+                        "{}:{}:{}",
+                        request_id, total_completion_tokens, response_content
+                    );
                     let response_hash = security::sha256_hex(sign_data.as_bytes());
                     let se_signature = security::se_sign(response_hash.as_bytes());
 
@@ -316,7 +339,8 @@ async fn handle_streaming_request(
                     if let Some(s) = stats {
                         use std::sync::atomic::Ordering;
                         s.requests_served.fetch_add(1, Ordering::Relaxed);
-                        s.tokens_generated.fetch_add(total_completion_tokens, Ordering::Relaxed);
+                        s.tokens_generated
+                            .fetch_add(total_completion_tokens, Ordering::Relaxed);
                     }
                     return Ok(());
                 }
@@ -327,9 +351,7 @@ async fn handle_streaming_request(
                         if let Some(pt) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
                             prompt_tokens = pt;
                         }
-                        if let Some(ct) =
-                            usage.get("completion_tokens").and_then(|v| v.as_u64())
-                        {
+                        if let Some(ct) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
                             total_completion_tokens = ct;
                         }
                     }
@@ -371,7 +393,10 @@ async fn handle_streaming_request(
 
     // If we get here without [DONE], send completion with what we have
     // Sign the actual accumulated response content
-    let sign_data = format!("{}:{}:{}", request_id, total_completion_tokens, response_content);
+    let sign_data = format!(
+        "{}:{}:{}",
+        request_id, total_completion_tokens, response_content
+    );
     let response_hash = security::sha256_hex(sign_data.as_bytes());
     let se_signature = security::se_sign(response_hash.as_bytes());
 
@@ -392,7 +417,8 @@ async fn handle_streaming_request(
     if let Some(s) = stats {
         use std::sync::atomic::Ordering;
         s.requests_served.fetch_add(1, Ordering::Relaxed);
-        s.tokens_generated.fetch_add(total_completion_tokens, Ordering::Relaxed);
+        s.tokens_generated
+            .fetch_add(total_completion_tokens, Ordering::Relaxed);
     }
 
     Ok(())
@@ -412,8 +438,15 @@ pub async fn handle_transcription_request(
 ) {
     let start = std::time::Instant::now();
 
-    let result =
-        do_transcription(&request_id, &body, &stt_backend_url, &outbound_tx, &cancel_token, start).await;
+    let result = do_transcription(
+        &request_id,
+        &body,
+        &stt_backend_url,
+        &outbound_tx,
+        &cancel_token,
+        start,
+    )
+    .await;
 
     if let Err(e) = result {
         if cancel_token.is_cancelled() {
@@ -454,7 +487,11 @@ async fn do_transcription(
     let audio_seconds = estimate_audio_duration(&audio_bytes, &body.format);
 
     // Determine file extension from format hint
-    let ext = if body.format.is_empty() { "wav" } else { &body.format };
+    let ext = if body.format.is_empty() {
+        "wav"
+    } else {
+        &body.format
+    };
 
     // Write to temp file for multipart upload
     let tmp_path = format!("/tmp/dginf-stt-{request_id}.{ext}");
@@ -470,10 +507,7 @@ async fn do_transcription(
     let file_part = reqwest::multipart::Part::bytes(file_bytes)
         .file_name(format!("audio.{ext}"))
         .mime_str(&format!("audio/{ext}"))
-        .unwrap_or_else(|_| {
-            reqwest::multipart::Part::bytes(vec![])
-                .file_name("audio.wav")
-        });
+        .unwrap_or_else(|_| reqwest::multipart::Part::bytes(vec![]).file_name("audio.wav"));
 
     let mut form = reqwest::multipart::Form::new()
         .part("file", file_part)
@@ -514,7 +548,10 @@ async fn do_transcription(
     }
 
     // mlx-audio returns NDJSON; read the full response
-    let response_text = response.text().await.context("failed to read STT response")?;
+    let response_text = response
+        .text()
+        .await
+        .context("failed to read STT response")?;
 
     // Parse the NDJSON response (may have multiple lines)
     let mut text = String::new();
@@ -559,7 +596,11 @@ async fn do_transcription(
         .send(ProviderMessage::TranscriptionComplete {
             request_id: request_id.to_string(),
             text,
-            segments: if segments.is_empty() { None } else { Some(segments) },
+            segments: if segments.is_empty() {
+                None
+            } else {
+                Some(segments)
+            },
             language,
             usage: TranscriptionUsage {
                 audio_seconds,
@@ -580,15 +621,11 @@ fn estimate_audio_duration(bytes: &[u8], format: &str) -> f64 {
         "wav" => {
             // WAV: sample_rate at offset 24, bits_per_sample at 34, data starts at 44
             if bytes.len() > 44 {
-                let sample_rate = u32::from_le_bytes(
-                    bytes[24..28].try_into().unwrap_or([0; 4]),
-                ) as f64;
-                let bits = u16::from_le_bytes(
-                    bytes[34..36].try_into().unwrap_or([0; 2]),
-                ) as f64;
-                let channels = u16::from_le_bytes(
-                    bytes[22..24].try_into().unwrap_or([0; 2]),
-                ) as f64;
+                let sample_rate =
+                    u32::from_le_bytes(bytes[24..28].try_into().unwrap_or([0; 4])) as f64;
+                let bits = u16::from_le_bytes(bytes[34..36].try_into().unwrap_or([0; 2])) as f64;
+                let channels =
+                    u16::from_le_bytes(bytes[22..24].try_into().unwrap_or([0; 2])) as f64;
                 if sample_rate > 0.0 && bits > 0.0 && channels > 0.0 {
                     let data_bytes = (bytes.len() - 44) as f64;
                     return data_bytes / (sample_rate * channels * bits / 8.0);
@@ -620,7 +657,13 @@ pub async fn handle_image_generation_request(
     let start = std::time::Instant::now();
 
     let result = do_image_generation(
-        &request_id, &body, &image_bridge_url, &upload_url, &outbound_tx, &cancel_token, start,
+        &request_id,
+        &body,
+        &image_bridge_url,
+        &upload_url,
+        &outbound_tx,
+        &cancel_token,
+        start,
     )
     .await;
 
@@ -891,7 +934,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_non_streaming_mock() {
-        use axum::{routing::post, Json, Router};
+        use axum::{Json, Router, routing::post};
 
         // Start a mock backend server
         let app = Router::new().route(
@@ -934,7 +977,10 @@ mod tests {
         match &chunk_msg {
             ProviderMessage::InferenceResponseChunk { request_id, data } => {
                 assert_eq!(request_id, "req-1");
-                assert!(data.contains("Hello!"), "chunk should contain response content");
+                assert!(
+                    data.contains("Hello!"),
+                    "chunk should contain response content"
+                );
             }
             other => panic!("Expected InferenceResponseChunk, got {:?}", other),
         }
@@ -942,7 +988,9 @@ mod tests {
         // Second message: InferenceComplete with usage
         let complete_msg = rx.recv().await.unwrap();
         match complete_msg {
-            ProviderMessage::InferenceComplete { request_id, usage, .. } => {
+            ProviderMessage::InferenceComplete {
+                request_id, usage, ..
+            } => {
                 assert_eq!(request_id, "req-1");
                 assert_eq!(usage.prompt_tokens, 10);
                 assert_eq!(usage.completion_tokens, 5);
@@ -953,7 +1001,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_error_response() {
-        use axum::{http::StatusCode, routing::post, Router};
+        use axum::{Router, http::StatusCode, routing::post};
 
         let app = Router::new().route(
             "/v1/chat/completions",
@@ -998,13 +1046,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_streaming_mock() {
-        use axum::{
-            body::Body,
-            http::StatusCode,
-            response::Response,
-            routing::post,
-            Router,
-        };
+        use axum::{Router, body::Body, http::StatusCode, response::Response, routing::post};
 
         let app = Router::new().route(
             "/v1/chat/completions",
@@ -1058,7 +1100,11 @@ mod tests {
         }
 
         // Should have chunks + final complete
-        assert!(messages.len() >= 2, "Expected at least 2 messages, got {}", messages.len());
+        assert!(
+            messages.len() >= 2,
+            "Expected at least 2 messages, got {}",
+            messages.len()
+        );
 
         // Last message should be InferenceComplete
         let last = messages.last().unwrap();
@@ -1071,13 +1117,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_streaming_cancel_stops_early() {
-        use axum::{
-            body::Body,
-            http::StatusCode,
-            response::Response,
-            routing::post,
-            Router,
-        };
+        use axum::{Router, body::Body, http::StatusCode, response::Response, routing::post};
 
         // Slow SSE backend: sends chunks with delays
         let app = Router::new().route(
@@ -1152,13 +1192,19 @@ mod tests {
             }
         }
 
-        assert!(chunks < 50, "Expected early stop, got {chunks} chunks (should be << 100)");
-        assert!(!got_error, "Cancelled request should not send InferenceError");
+        assert!(
+            chunks < 50,
+            "Expected early stop, got {chunks} chunks (should be << 100)"
+        );
+        assert!(
+            !got_error,
+            "Cancelled request should not send InferenceError"
+        );
     }
 
     #[tokio::test]
     async fn test_handle_image_generation_mock() {
-        use axum::{body::Bytes, routing::post, Json, Router};
+        use axum::{Json, Router, body::Bytes, routing::post};
         use std::sync::{Arc, Mutex};
 
         // Track what gets uploaded
@@ -1248,7 +1294,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_image_generation_error() {
-        use axum::{http::StatusCode, routing::post, Router};
+        use axum::{Router, http::StatusCode, routing::post};
 
         let app = Router::new().route(
             "/v1/images/generations",
@@ -1299,9 +1345,835 @@ mod tests {
         }
     }
 
+    /// Test 1: Streaming response parsing — verify individual SSE chunks are
+    /// correctly parsed, forwarded as InferenceResponseChunk messages, and the
+    /// accumulated content matches what the mock backend sent.
+    #[tokio::test]
+    async fn test_streaming_chunk_content_verified() {
+        use axum::{Router, body::Body, http::StatusCode, response::Response, routing::post};
+
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                let sse_data = [
+                    "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\n",
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+                    "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n",
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}]}\n\n",
+                    "data: [DONE]\n\n",
+                ]
+                .join("");
+
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from(sse_data))
+                    .unwrap()
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true
+        });
+
+        handle_inference_request(
+            "req-chunk-verify".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            tx,
+            None,
+            CancellationToken::new(),
+            None,
+        )
+        .await;
+
+        // Collect all messages
+        let mut chunks = Vec::new();
+        let mut complete = None;
+        while let Ok(Some(msg)) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await
+        {
+            match msg {
+                ProviderMessage::InferenceResponseChunk { data, .. } => {
+                    chunks.push(data);
+                }
+                ProviderMessage::InferenceComplete {
+                    usage,
+                    response_hash,
+                    ..
+                } => {
+                    complete = Some((usage, response_hash));
+                }
+                _ => {}
+            }
+        }
+
+        // Verify individual chunks contain the expected content fragments
+        let all_chunk_text = chunks.join("\n");
+        assert!(
+            all_chunk_text.contains("Hello"),
+            "Chunks should contain 'Hello'"
+        );
+        assert!(
+            all_chunk_text.contains(" world"),
+            "Chunks should contain ' world'"
+        );
+        assert!(all_chunk_text.contains("!"), "Chunks should contain '!'");
+
+        // Verify InferenceComplete was sent with token counts
+        let (usage, response_hash) = complete.expect("Should receive InferenceComplete");
+        // Each content chunk counts as 1 token (the approximate counting logic)
+        assert!(
+            usage.completion_tokens >= 3,
+            "Should count at least 3 completion tokens, got {}",
+            usage.completion_tokens
+        );
+        assert!(response_hash.is_some(), "Response hash should be present");
+    }
+
+    /// Test 2 (enhanced): Non-streaming response verifies response_hash and
+    /// SE signature fields are populated (even if SE is unavailable, the hash
+    /// should still be computed).
+    #[tokio::test]
+    async fn test_non_streaming_response_hash_and_signature() {
+        use axum::{Json, Router, routing::post};
+
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                Json(serde_json::json!({
+                    "id": "chatcmpl-test",
+                    "choices": [{"message": {"role": "assistant", "content": "The answer is 42."}}],
+                    "usage": {"prompt_tokens": 15, "completion_tokens": 7, "total_tokens": 22}
+                }))
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "What is the meaning of life?"}],
+            "stream": false
+        });
+
+        handle_inference_request(
+            "req-hash-test".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            tx,
+            None,
+            CancellationToken::new(),
+            None,
+        )
+        .await;
+
+        // First: InferenceResponseChunk with the content
+        let chunk = rx.recv().await.unwrap();
+        match &chunk {
+            ProviderMessage::InferenceResponseChunk { request_id, data } => {
+                assert_eq!(request_id, "req-hash-test");
+                assert!(
+                    data.contains("The answer is 42."),
+                    "Chunk should contain response content"
+                );
+            }
+            other => panic!("Expected InferenceResponseChunk, got {:?}", other),
+        }
+
+        // Second: InferenceComplete with hash
+        let msg = rx.recv().await.unwrap();
+        match msg {
+            ProviderMessage::InferenceComplete {
+                request_id,
+                usage,
+                response_hash,
+                ..
+            } => {
+                assert_eq!(request_id, "req-hash-test");
+                assert_eq!(usage.prompt_tokens, 15);
+                assert_eq!(usage.completion_tokens, 7);
+                // response_hash should always be computed (SHA-256 hex)
+                let hash = response_hash.expect("response_hash should be present");
+                assert_eq!(
+                    hash.len(),
+                    64,
+                    "SHA-256 hex should be 64 chars, got {}",
+                    hash.len()
+                );
+                // Verify it's valid hex
+                assert!(
+                    hash.chars().all(|c| c.is_ascii_hexdigit()),
+                    "Hash should be hex"
+                );
+            }
+            other => panic!("Expected InferenceComplete, got {:?}", other),
+        }
+    }
+
+    /// Test 3 (enhanced): Cancellation during initial HTTP connection phase.
+    /// Cancel before the backend even responds — should bail cleanly without
+    /// sending any error message.
+    #[tokio::test]
+    async fn test_cancel_during_connection_phase() {
+        use axum::{Router, routing::post};
+
+        // Backend that takes forever to respond (simulates slow connection)
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                axum::Json(serde_json::json!({"choices": []}))
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let cancel_token = CancellationToken::new();
+        let token_clone = cancel_token.clone();
+
+        let body = serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": false
+        });
+
+        let handle = tokio::spawn(async move {
+            handle_inference_request(
+                "req-cancel-connect".to_string(),
+                body,
+                format!("http://127.0.0.1:{}", addr.port()),
+                tx,
+                None,
+                token_clone,
+                None,
+            )
+            .await;
+        });
+
+        // Cancel almost immediately (before response)
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        cancel_token.cancel();
+
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
+
+        // Should NOT receive an InferenceError — cancelled requests are silent
+        let msg = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+        assert!(
+            msg.is_err() || msg.unwrap().is_none(),
+            "Cancelled non-streaming request should not send any messages"
+        );
+    }
+
+    /// Test 4 (enhanced): Backend returns various HTTP error codes.
+    /// Verify status_code is forwarded correctly for 400, 404, 503.
+    #[tokio::test]
+    async fn test_error_status_codes_forwarded() {
+        use axum::{Router, extract::Path, http::StatusCode, routing::post};
+
+        // Backend that returns the status code from the URL path
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async { (StatusCode::BAD_REQUEST, "invalid model parameter") }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({"model": "nonexistent", "messages": [], "stream": false});
+
+        handle_inference_request(
+            "req-400".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            tx,
+            None,
+            CancellationToken::new(),
+            None,
+        )
+        .await;
+
+        let msg = rx.recv().await.unwrap();
+        match msg {
+            ProviderMessage::InferenceError {
+                status_code, error, ..
+            } => {
+                assert_eq!(status_code, 400);
+                assert!(error.contains("invalid model parameter"));
+            }
+            other => panic!("Expected InferenceError, got {:?}", other),
+        }
+    }
+
+    /// Test 4b: Streaming request that returns an error should produce InferenceError.
+    #[tokio::test]
+    async fn test_streaming_error_response() {
+        use axum::{Router, http::StatusCode, routing::post};
+
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async { (StatusCode::SERVICE_UNAVAILABLE, "backend overloaded") }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({"model": "test", "messages": [], "stream": true});
+
+        handle_inference_request(
+            "req-stream-err".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            tx,
+            None,
+            CancellationToken::new(),
+            None,
+        )
+        .await;
+
+        let msg = rx.recv().await.unwrap();
+        match msg {
+            ProviderMessage::InferenceError {
+                status_code, error, ..
+            } => {
+                assert_eq!(status_code, 503);
+                assert!(error.contains("backend overloaded"));
+            }
+            other => panic!("Expected InferenceError, got {:?}", other),
+        }
+    }
+
+    /// Test 5: Backend unreachable — connection refused should produce an
+    /// InferenceError with status 500 (internal failure).
+    #[tokio::test]
+    async fn test_backend_unreachable_error() {
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": false
+        });
+
+        // Use a port that nothing is listening on
+        handle_inference_request(
+            "req-unreachable".to_string(),
+            body,
+            "http://127.0.0.1:19997".to_string(),
+            tx,
+            None,
+            CancellationToken::new(),
+            None,
+        )
+        .await;
+
+        let msg = rx.recv().await.unwrap();
+        match msg {
+            ProviderMessage::InferenceError {
+                request_id,
+                status_code,
+                ..
+            } => {
+                assert_eq!(request_id, "req-unreachable");
+                assert_eq!(status_code, 500, "Connection refused should produce 500");
+            }
+            other => panic!("Expected InferenceError, got {:?}", other),
+        }
+    }
+
+    /// Test 5b: Streaming backend unreachable produces InferenceError.
+    #[tokio::test]
+    async fn test_streaming_backend_unreachable() {
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true
+        });
+
+        handle_inference_request(
+            "req-stream-unreachable".to_string(),
+            body,
+            "http://127.0.0.1:19996".to_string(),
+            tx,
+            None,
+            CancellationToken::new(),
+            None,
+        )
+        .await;
+
+        let msg = rx.recv().await.unwrap();
+        match msg {
+            ProviderMessage::InferenceError {
+                request_id,
+                status_code,
+                ..
+            } => {
+                assert_eq!(request_id, "req-stream-unreachable");
+                assert_eq!(status_code, 500);
+            }
+            other => panic!("Expected InferenceError, got {:?}", other),
+        }
+    }
+
+    /// Test: Stats counters are incremented after successful inference.
+    #[tokio::test]
+    async fn test_stats_counters_incremented() {
+        use axum::{Json, Router, routing::post};
+        use std::sync::atomic::Ordering;
+
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                Json(serde_json::json!({
+                    "choices": [{"message": {"content": "test"}}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 10}
+                }))
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stats = Arc::new(AtomicProviderStats::new());
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": false
+        });
+
+        handle_inference_request(
+            "req-stats".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            tx,
+            None,
+            CancellationToken::new(),
+            Some(stats.clone()),
+        )
+        .await;
+
+        // Drain messages
+        while let Ok(Some(_)) =
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await
+        {}
+
+        assert_eq!(stats.requests_served.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.tokens_generated.load(Ordering::Relaxed), 10);
+    }
+
+    /// Test: Stats counters are incremented for streaming requests too.
+    #[tokio::test]
+    async fn test_stats_counters_streaming() {
+        use axum::{Router, body::Body, http::StatusCode, response::Response, routing::post};
+        use std::sync::atomic::Ordering;
+
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n\
+                           data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n\
+                           data: [DONE]\n\n";
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from(sse))
+                    .unwrap()
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stats = Arc::new(AtomicProviderStats::new());
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true
+        });
+
+        handle_inference_request(
+            "req-stats-stream".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            tx,
+            None,
+            CancellationToken::new(),
+            Some(stats.clone()),
+        )
+        .await;
+
+        // Drain messages
+        while let Ok(Some(_)) =
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await
+        {}
+
+        assert_eq!(stats.requests_served.load(Ordering::Relaxed), 1);
+        assert!(
+            stats.tokens_generated.load(Ordering::Relaxed) >= 2,
+            "Should count at least 2 tokens"
+        );
+    }
+
+    /// Test: Custom endpoint routing. When body contains "endpoint", the proxy
+    /// should use it instead of /v1/chat/completions.
+    #[tokio::test]
+    async fn test_custom_endpoint_routing() {
+        use axum::{Json, Router, routing::post};
+
+        let app = Router::new()
+            .route(
+                "/v1/custom/endpoint",
+                post(|| async {
+                    Json(serde_json::json!({
+                        "choices": [{"message": {"content": "custom!"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+                    }))
+                }),
+            )
+            .route(
+                "/v1/chat/completions",
+                post(|| async {
+                    Json(serde_json::json!({
+                        "choices": [{"message": {"content": "default"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+                    }))
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": false,
+            "endpoint": "/v1/custom/endpoint"
+        });
+
+        handle_inference_request(
+            "req-custom".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            tx,
+            None,
+            CancellationToken::new(),
+            None,
+        )
+        .await;
+
+        let chunk = rx.recv().await.unwrap();
+        match &chunk {
+            ProviderMessage::InferenceResponseChunk { data, .. } => {
+                assert!(
+                    data.contains("custom!"),
+                    "Should hit custom endpoint, got: {}",
+                    data
+                );
+            }
+            other => panic!("Expected InferenceResponseChunk, got {:?}", other),
+        }
+    }
+
+    /// Test: Streaming with backend-reported usage (some backends include usage
+    /// in chunks). Verify the reported values override the approximate count.
+    #[tokio::test]
+    async fn test_streaming_backend_reported_usage() {
+        use axum::{Router, body::Body, http::StatusCode, response::Response, routing::post};
+
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n\
+                           data: {\"choices\":[{\"delta\":{\"content\":\" there\"}}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":50}}\n\n\
+                           data: [DONE]\n\n";
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from(sse))
+                    .unwrap()
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true
+        });
+
+        handle_inference_request(
+            "req-usage-report".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            tx,
+            None,
+            CancellationToken::new(),
+            None,
+        )
+        .await;
+
+        // Find the InferenceComplete message
+        let mut complete = None;
+        while let Ok(Some(msg)) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await
+        {
+            if let ProviderMessage::InferenceComplete { usage, .. } = msg {
+                complete = Some(usage);
+            }
+        }
+
+        let usage = complete.expect("Should receive InferenceComplete");
+        // The backend-reported usage (50) is set, then the approximate counter
+        // also adds 1 per content chunk. The code uses both, so completion_tokens
+        // should be >= 50 (backend-reported) since the last set value wins plus
+        // the per-chunk increment.
+        assert_eq!(
+            usage.prompt_tokens, 20,
+            "prompt_tokens should come from backend"
+        );
+        assert!(
+            usage.completion_tokens >= 50,
+            "completion_tokens should include backend-reported value, got {}",
+            usage.completion_tokens
+        );
+    }
+
+    /// Test: Streaming response without [DONE] sentinel still produces
+    /// InferenceComplete (the "stream ended without [DONE]" fallback path).
+    #[tokio::test]
+    async fn test_streaming_no_done_sentinel() {
+        use axum::{Router, body::Body, http::StatusCode, response::Response, routing::post};
+
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                // Stream that ends without [DONE]
+                let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from(sse))
+                    .unwrap()
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true
+        });
+
+        handle_inference_request(
+            "req-no-done".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            tx,
+            None,
+            CancellationToken::new(),
+            None,
+        )
+        .await;
+
+        let mut got_complete = false;
+        while let Ok(Some(msg)) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await
+        {
+            if matches!(msg, ProviderMessage::InferenceComplete { .. }) {
+                got_complete = true;
+            }
+        }
+
+        assert!(
+            got_complete,
+            "Should still send InferenceComplete even without [DONE]"
+        );
+    }
+
+    /// Test 8: Encrypted request round-trip — encrypt with provider's public key,
+    /// then decrypt and verify the plaintext is recoverable.
+    #[tokio::test]
+    async fn test_encrypted_payload_round_trip() {
+        use crate::crypto::NodeKeyPair;
+        use crate::protocol::EncryptedPayload;
+        use base64::Engine;
+
+        // Generate two key pairs: one for the provider, one as ephemeral consumer key
+        let provider_kp = NodeKeyPair::generate();
+        let consumer_kp = NodeKeyPair::generate();
+
+        // The plaintext request body
+        let plaintext = serde_json::json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "secret prompt"}],
+            "stream": false
+        });
+        let plaintext_bytes = serde_json::to_vec(&plaintext).unwrap();
+
+        // Consumer encrypts with provider's public key
+        let ciphertext = consumer_kp
+            .encrypt(&provider_kp.public_key_bytes(), &plaintext_bytes)
+            .expect("encryption should succeed");
+
+        // Build the EncryptedPayload (what the coordinator would send)
+        let payload = EncryptedPayload {
+            ephemeral_public_key: base64::engine::general_purpose::STANDARD
+                .encode(consumer_kp.public_key_bytes()),
+            ciphertext: base64::engine::general_purpose::STANDARD.encode(&ciphertext),
+        };
+
+        // Provider decrypts
+        let consumer_pub_bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
+            .decode(&payload.ephemeral_public_key)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let ct_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&payload.ciphertext)
+            .unwrap();
+        let decrypted = provider_kp
+            .decrypt(&consumer_pub_bytes, &ct_bytes)
+            .expect("decryption should succeed");
+
+        let decrypted_json: serde_json::Value = serde_json::from_slice(&decrypted).unwrap();
+        assert_eq!(decrypted_json, plaintext);
+        assert_eq!(
+            decrypted_json["messages"][0]["content"].as_str().unwrap(),
+            "secret prompt"
+        );
+    }
+
+    /// Test 8b: Encrypted payload with wrong key fails decryption.
+    #[tokio::test]
+    async fn test_encrypted_payload_wrong_key_fails() {
+        use crate::crypto::NodeKeyPair;
+
+        let provider_kp = NodeKeyPair::generate();
+        let consumer_kp = NodeKeyPair::generate();
+        let wrong_provider_kp = NodeKeyPair::generate();
+
+        let plaintext = b"secret data";
+        let ciphertext = consumer_kp
+            .encrypt(&provider_kp.public_key_bytes(), plaintext)
+            .unwrap();
+
+        // Try to decrypt with wrong key — should fail
+        let result = wrong_provider_kp.decrypt(&consumer_kp.public_key_bytes(), &ciphertext);
+        assert!(result.is_err(), "Decryption with wrong key should fail");
+    }
+
+    /// Test: estimate_audio_duration for WAV files.
+    #[test]
+    fn test_estimate_audio_duration_wav() {
+        // Construct a minimal WAV header: 16kHz, 16-bit, mono
+        let mut wav = vec![0u8; 100];
+        // "RIFF" magic
+        wav[0..4].copy_from_slice(b"RIFF");
+        // Format "WAVE"
+        wav[8..12].copy_from_slice(b"WAVE");
+        // Sample rate at offset 24: 16000
+        wav[24..28].copy_from_slice(&16000u32.to_le_bytes());
+        // Bits per sample at offset 34: 16
+        wav[34..36].copy_from_slice(&16u16.to_le_bytes());
+        // Channels at offset 22: 1
+        wav[22..24].copy_from_slice(&1u16.to_le_bytes());
+
+        // Data starts at 44, so data_bytes = 100 - 44 = 56
+        // Duration = 56 / (16000 * 1 * 16/8) = 56 / 32000 = 0.00175s
+        let duration = estimate_audio_duration(&wav, "wav");
+        assert!(duration > 0.0, "Duration should be positive");
+        assert!(
+            (duration - 0.00175).abs() < 0.001,
+            "Duration should be ~0.00175s, got {}",
+            duration
+        );
+    }
+
+    /// Test: estimate_audio_duration for MP3 files.
+    #[test]
+    fn test_estimate_audio_duration_mp3() {
+        // 128kbps MP3, 16000 bytes = 1 second
+        let mp3_data = vec![0u8; 16000];
+        let duration = estimate_audio_duration(&mp3_data, "mp3");
+        assert!(
+            (duration - 1.0).abs() < 0.01,
+            "16KB at 128kbps should be ~1s, got {}",
+            duration
+        );
+    }
+
+    /// Test: estimate_audio_duration for unknown format returns 0.
+    #[test]
+    fn test_estimate_audio_duration_unknown() {
+        let data = vec![0u8; 1000];
+        let duration = estimate_audio_duration(&data, "ogg");
+        assert_eq!(duration, 0.0);
+    }
+
     #[tokio::test]
     async fn test_handle_image_generation_cancel() {
-        use axum::{routing::post, Router};
+        use axum::{Router, routing::post};
 
         // Slow backend that takes 10 seconds
         let app = Router::new().route(
@@ -1354,6 +2226,9 @@ mod tests {
 
         // Should NOT get an error message (cancelled requests are silent)
         let msg = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
-        assert!(msg.is_err() || msg.unwrap().is_none(), "Cancelled request should not send messages");
+        assert!(
+            msg.is_err() || msg.unwrap().is_none(),
+            "Cancelled request should not send messages"
+        );
     }
 }

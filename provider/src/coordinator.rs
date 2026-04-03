@@ -15,8 +15,8 @@
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -25,8 +25,8 @@ use crate::backend::ExponentialBackoff;
 use crate::hardware::HardwareInfo;
 use crate::models::ModelInfo;
 use crate::protocol::{
-    CoordinatorMessage, ImageGenerationRequestBody, ProviderMessage, ProviderStats,
-    ProviderStatus, TranscriptionRequestBody,
+    CoordinatorMessage, ImageGenerationRequestBody, ProviderMessage, ProviderStats, ProviderStatus,
+    TranscriptionRequestBody,
 };
 
 /// Thread-safe counters for provider statistics, shared between the main
@@ -123,7 +123,10 @@ impl CoordinatorClient {
     }
 
     /// Set the signed Secure Enclave attestation blob (raw JSON bytes preserved).
-    pub fn with_attestation(mut self, attestation: Option<Box<serde_json::value::RawValue>>) -> Self {
+    pub fn with_attestation(
+        mut self,
+        attestation: Option<Box<serde_json::value::RawValue>>,
+    ) -> Self {
         self.attestation = attestation;
         self
     }
@@ -172,7 +175,10 @@ impl CoordinatorClient {
 
             tracing::info!("Connecting to coordinator: {}", self.url);
 
-            match self.connect_and_run(&event_tx, &mut outbound_rx, &mut shutdown_rx).await {
+            match self
+                .connect_and_run(&event_tx, &mut outbound_rx, &mut shutdown_rx)
+                .await
+            {
                 Ok(()) => {
                     tracing::info!("Coordinator connection closed, reconnecting...");
                     backoff.reset();
@@ -435,7 +441,6 @@ impl CoordinatorClient {
             }
         }
     }
-
 }
 
 /// Decrypt an E2E encrypted request body using the provider's X25519 private key.
@@ -459,7 +464,10 @@ fn decrypt_request_body(
         .map_err(|e| anyhow::anyhow!("invalid ephemeral public key: {e}"))?;
 
     if ephemeral_pub_bytes.len() != 32 {
-        anyhow::bail!("invalid ephemeral key length: {}", ephemeral_pub_bytes.len());
+        anyhow::bail!(
+            "invalid ephemeral key length: {}",
+            ephemeral_pub_bytes.len()
+        );
     }
 
     let mut ephemeral_pub = [0u8; 32];
@@ -516,7 +524,9 @@ pub fn handle_attestation_challenge(
     let hypervisor_active = crate::security::check_hypervisor_active();
 
     if !sip_enabled {
-        tracing::error!("SIP is disabled during attestation challenge — coordinator will reject us");
+        tracing::error!(
+            "SIP is disabled during attestation challenge — coordinator will reject us"
+        );
     }
     if !rdma_disabled && !hypervisor_active {
         tracing::error!(
@@ -704,7 +714,10 @@ mod tests {
                 ProviderMessage::AttestationResponse { signature: s1, .. },
                 ProviderMessage::AttestationResponse { signature: s2, .. },
             ) => {
-                assert_ne!(s1, s2, "different nonces should produce different signatures");
+                assert_ne!(
+                    s1, s2,
+                    "different nonces should produce different signatures"
+                );
             }
             _ => panic!("Expected AttestationResponse"),
         }
@@ -712,7 +725,8 @@ mod tests {
 
     #[test]
     fn test_handle_attestation_challenge_serialization() {
-        let response = handle_attestation_challenge("dGVzdA==", "2025-06-01T00:00:00Z", Some("a2V5"));
+        let response =
+            handle_attestation_challenge("dGVzdA==", "2025-06-01T00:00:00Z", Some("a2V5"));
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"type\":\"attestation_response\""));
         assert!(json.contains("\"nonce\":\"dGVzdA==\""));
@@ -751,7 +765,9 @@ mod tests {
                 }
             });
             write
-                .send(Message::Text(serde_json::to_string(&request).unwrap().into()))
+                .send(Message::Text(
+                    serde_json::to_string(&request).unwrap().into(),
+                ))
                 .await
                 .unwrap();
 
@@ -766,7 +782,9 @@ mod tests {
                 "request_id": "test-req-1"
             });
             write
-                .send(Message::Text(serde_json::to_string(&cancel).unwrap().into()))
+                .send(Message::Text(
+                    serde_json::to_string(&cancel).unwrap().into(),
+                ))
                 .await
                 .unwrap();
 
@@ -844,5 +862,150 @@ mod tests {
         let register: serde_json::Value = serde_json::from_str(&received[0]).unwrap();
         assert_eq!(register["type"], "register");
         assert_eq!(register["backend"], "vllm_mlx");
+    }
+
+    // -----------------------------------------------------------------------
+    // Challenge response generation — verifying security fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_attestation_response_has_all_security_fields() {
+        let response = handle_attestation_challenge(
+            "dGVzdG5vbmNl",
+            "2026-01-01T00:00:00Z",
+            Some("cHVibGljLWtleQ=="),
+        );
+
+        match response {
+            ProviderMessage::AttestationResponse {
+                nonce,
+                signature,
+                public_key,
+                hypervisor_active,
+                rdma_disabled,
+                sip_enabled,
+                secure_boot_enabled,
+            } => {
+                // Nonce echoed back exactly
+                assert_eq!(nonce, "dGVzdG5vbmNl");
+                // Signature is non-empty
+                assert!(!signature.is_empty(), "signature must not be empty");
+                // Public key matches input
+                assert_eq!(public_key, "cHVibGljLWtleQ==");
+                // All security status fields are populated
+                assert!(sip_enabled.is_some(), "sip_enabled must be present");
+                assert!(rdma_disabled.is_some(), "rdma_disabled must be present");
+                assert!(
+                    hypervisor_active.is_some(),
+                    "hypervisor_active must be present"
+                );
+                assert!(
+                    secure_boot_enabled.is_some(),
+                    "secure_boot_enabled must be present"
+                );
+            }
+            _ => panic!("Expected AttestationResponse"),
+        }
+    }
+
+    #[test]
+    fn test_attestation_response_correct_public_key_passthrough() {
+        // The public key in the response should match what was passed in.
+        let pk = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=";
+        let response = handle_attestation_challenge("bm9uY2U=", "2026-06-15T00:00:00Z", Some(pk));
+
+        match response {
+            ProviderMessage::AttestationResponse { public_key, .. } => {
+                assert_eq!(public_key, pk);
+            }
+            _ => panic!("Expected AttestationResponse"),
+        }
+    }
+
+    #[test]
+    fn test_attestation_response_none_public_key_becomes_empty() {
+        // When no public key is configured, the response should use empty string.
+        let response = handle_attestation_challenge("bm9uY2U=", "2026-06-15T00:00:00Z", None);
+
+        match response {
+            ProviderMessage::AttestationResponse { public_key, .. } => {
+                assert_eq!(public_key, "", "None public key should become empty string");
+            }
+            _ => panic!("Expected AttestationResponse"),
+        }
+    }
+
+    #[test]
+    fn test_attestation_response_different_timestamps_different_signatures() {
+        let resp1 = handle_attestation_challenge("bm9uY2U=", "2026-01-01T00:00:00Z", Some("key"));
+        let resp2 = handle_attestation_challenge("bm9uY2U=", "2026-06-01T00:00:00Z", Some("key"));
+
+        match (&resp1, &resp2) {
+            (
+                ProviderMessage::AttestationResponse { signature: s1, .. },
+                ProviderMessage::AttestationResponse { signature: s2, .. },
+            ) => {
+                assert_ne!(
+                    s1, s2,
+                    "different timestamps should produce different signatures"
+                );
+            }
+            _ => panic!("Expected AttestationResponse"),
+        }
+    }
+
+    #[test]
+    fn test_attestation_response_serializes_for_go_coordinator() {
+        // The response must serialize with snake_case field names and the
+        // "attestation_response" type tag that the Go coordinator expects.
+        let response = handle_attestation_challenge("YWJj", "2026-03-15T10:00:00Z", Some("cGs="));
+
+        let json = serde_json::to_string(&response).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["type"], "attestation_response");
+        assert_eq!(parsed["nonce"], "YWJj");
+        assert!(parsed["signature"].is_string());
+        assert_eq!(parsed["public_key"], "cGs=");
+        // Security fields present in JSON
+        assert!(parsed.get("sip_enabled").is_some());
+        assert!(parsed.get("rdma_disabled").is_some());
+        assert!(parsed.get("hypervisor_active").is_some());
+        assert!(parsed.get("secure_boot_enabled").is_some());
+    }
+
+    #[test]
+    fn test_build_register_message_with_wallet() {
+        let hw = sample_hardware();
+        let models = vec![ModelInfo {
+            id: "test-model".to_string(),
+            model_type: None,
+            parameters: None,
+            quantization: None,
+            size_bytes: 1000,
+            estimated_memory_gb: 1.0,
+        }];
+
+        let wallet_addr = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string();
+        let msg = build_register_message_with_wallet(
+            &hw,
+            &models,
+            "vllm_mlx",
+            Some("cHVia2V5".to_string()),
+            Some(wallet_addr.clone()),
+            None,
+        );
+
+        match msg {
+            ProviderMessage::Register {
+                wallet_address,
+                public_key,
+                ..
+            } => {
+                assert_eq!(wallet_address, Some(wallet_addr));
+                assert_eq!(public_key, Some("cHVia2V5".to_string()));
+            }
+            _ => panic!("Expected Register message"),
+        }
     }
 }

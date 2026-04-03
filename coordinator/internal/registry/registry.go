@@ -44,8 +44,8 @@ type TrustLevel string
 
 const (
 	TrustNone       TrustLevel = "none"        // No attestation provided
-	TrustSelfSigned TrustLevel = "self_signed"  // Attestation signed by provider's own key
-	TrustHardware   TrustLevel = "hardware"     // MDM + MDA + SE key bound to Apple-verified hardware
+	TrustSelfSigned TrustLevel = "self_signed" // Attestation signed by provider's own key
+	TrustHardware   TrustLevel = "hardware"    // MDM + MDA + SE key bound to Apple-verified hardware
 )
 
 // PendingRequest is a channel-based handle for an in-flight inference request.
@@ -55,11 +55,11 @@ type PendingRequest struct {
 	Model          string
 	ConsumerKey    string
 	ChunkCh        chan string             // SSE data chunks
-	CompleteCh     chan protocol.UsageInfo  // closed after usage sent
+	CompleteCh     chan protocol.UsageInfo // closed after usage sent
 	ErrorCh        chan protocol.InferenceErrorMessage
-	SessionPrivKey *[32]byte               // E2E session private key for decrypting responses
-	SESignature    string                  // SE signature over response hash
-	ResponseHash   string                  // SHA-256 of response data
+	SessionPrivKey *[32]byte // E2E session private key for decrypting responses
+	SESignature    string    // SE signature over response hash
+	ResponseHash   string    // SHA-256 of response data
 
 	// STT transcription result (nil for inference requests)
 	TranscriptionCh chan *protocol.TranscriptionCompleteMessage
@@ -78,12 +78,12 @@ type Provider struct {
 	WalletAddress     string // Ethereum-format hex address for Tempo payouts
 	Attested          bool   // true if attestation was verified successfully
 	AttestationResult *attestation.VerificationResult
-	TrustLevel        TrustLevel // attestation trust level
-	MDAVerified       bool       // true if Apple Device Attestation cert chain verified
-	MDACertChain      [][]byte   // DER-encoded Apple MDA certificate chain (leaf first)
+	TrustLevel        TrustLevel             // attestation trust level
+	MDAVerified       bool                   // true if Apple Device Attestation cert chain verified
+	MDACertChain      [][]byte               // DER-encoded Apple MDA certificate chain (leaf first)
 	MDAResult         *attestation.MDAResult // parsed OIDs from Apple cert
-	ACMEVerified      bool       // true if ACME device-attest-01 client cert verified (SE key proven)
-	SEKeyBound        bool       // true if SE key was bound to device via MDA nonce
+	ACMEVerified      bool                   // true if ACME device-attest-01 client cert verified (SE key proven)
+	SEKeyBound        bool                   // true if SE key was bound to device via MDA nonce
 	Status            ProviderStatus
 	Conn              *websocket.Conn
 	LastHeartbeat     time.Time
@@ -108,7 +108,7 @@ type Provider struct {
 
 	// Challenge-response verification state
 	LastChallengeVerified time.Time // last successful challenge verification
-	FailedChallenges     int       // consecutive failed challenges
+	FailedChallenges      int       // consecutive failed challenges
 
 	mu          sync.Mutex
 	pendingReqs map[string]*PendingRequest
@@ -135,6 +135,27 @@ func (p *Provider) GetPending(requestID string) *PendingRequest {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.pendingReqs[requestID]
+}
+
+// SetAttested updates attestation state (thread-safe).
+func (p *Provider) SetAttested(attested bool, trust TrustLevel) {
+	p.mu.Lock()
+	p.Attested = attested
+	p.TrustLevel = trust
+	p.mu.Unlock()
+}
+
+// Mu returns the provider's mutex for external callers that need to read
+// fields like Status atomically. Prefer dedicated getters where available.
+func (p *Provider) Mu() *sync.Mutex {
+	return &p.mu
+}
+
+// SetAttestationResult stores the parsed attestation result (thread-safe).
+func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) {
+	p.mu.Lock()
+	p.AttestationResult = result
+	p.mu.Unlock()
 }
 
 // pendingCount returns the number of in-flight requests.
@@ -183,6 +204,14 @@ func (r *Registry) trustMeetsMinimum(level TrustLevel) bool {
 // Queue returns the registry's request queue.
 func (r *Registry) Queue() *RequestQueue {
 	return r.queue
+}
+
+// SetQueue replaces the registry's request queue. This is useful for tests
+// that need a larger queue capacity than the default.
+func (r *Registry) SetQueue(q *RequestQueue) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.queue = q
 }
 
 // Register adds a new provider to the registry, returning its assigned ID.
@@ -355,6 +384,19 @@ func (r *Registry) MarkUntrusted(providerID string) {
 	)
 }
 
+// SetTrustLevel updates a provider's trust level (thread-safe).
+func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+	p.mu.Lock()
+	p.TrustLevel = level
+	p.mu.Unlock()
+}
+
 // RecordChallengeSuccess records a successful challenge-response verification.
 func (r *Registry) RecordChallengeSuccess(providerID string) {
 	r.mu.RLock()
@@ -419,31 +461,40 @@ func ScoreProvider(p *Provider, model string) float64 {
 		load = 1.0
 	}
 
-	// Base decode TPS — use 1.0 as minimum to avoid zero scores
+	// Snapshot mutable fields under lock. These are written by Heartbeat
+	// and SetTrustLevel from other goroutines.
+	p.mu.Lock()
 	decodeTPS := p.DecodeTPS
+	trustLevel := p.TrustLevel
+	warmModels := append([]string{}, p.WarmModels...)
+	currentModel := p.CurrentModel
+	sysMetrics := p.SystemMetrics
+	p.mu.Unlock()
+
+	// Base decode TPS — use 1.0 as minimum to avoid zero scores
 	if decodeTPS <= 0 {
 		decodeTPS = 1.0
 	}
 
-	trustMul := TrustMultiplier(p.TrustLevel)
+	trustMul := TrustMultiplier(trustLevel)
 
 	// Reputation factor (0.0 to 1.0)
 	repScore := p.Reputation.Score()
 
 	// Warm model bonus: 1.5x if the model is already warm, 1.0x otherwise
 	warmBonus := 1.0
-	for _, wm := range p.WarmModels {
+	for _, wm := range warmModels {
 		if wm == model {
 			warmBonus = 1.5
 			break
 		}
 	}
-	if p.CurrentModel == model {
+	if currentModel == model {
 		warmBonus = 1.5
 	}
 
 	// Health factor from live system metrics
-	m := p.SystemMetrics
+	m := sysMetrics
 
 	// Memory pressure: linear penalty. At 0.9 -> factor 0.1
 	memFactor := 1.0 - m.MemoryPressure
@@ -492,13 +543,31 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel) *Pro
 		effectiveMin = minTrust
 	}
 
+	// Challenge staleness threshold: providers must have passed a
+	// challenge within the last interval + grace period. A provider
+	// that reconnects without passing the immediate challenge (or whose
+	// last challenge is too old) won't be routed requests.
+	challengeMaxAge := 3*time.Minute + 30*time.Second
+	now := time.Now()
+
 	var candidates []*Provider
 	for _, p := range r.providers {
+		// Snapshot mutable fields under the provider lock.
+		p.mu.Lock()
+		status := p.Status
+		trust := p.TrustLevel
+		lastChallenge := p.LastChallengeVerified
+		p.mu.Unlock()
+
 		// Skip offline/untrusted providers
-		if p.Status == StatusOffline || p.Status == StatusUntrusted {
+		if status == StatusOffline || status == StatusUntrusted {
 			continue
 		}
-		if trustRank(p.TrustLevel) < trustRank(effectiveMin) {
+		if trustRank(trust) < trustRank(effectiveMin) {
+			continue
+		}
+		// Skip providers that haven't passed a recent challenge.
+		if lastChallenge.IsZero() || now.Sub(lastChallenge) > challengeMaxAge {
 			continue
 		}
 		// Skip providers at max concurrency
@@ -524,7 +593,9 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel) *Pro
 	})
 
 	selected := candidates[0]
+	selected.mu.Lock()
 	selected.Status = StatusServing
+	selected.mu.Unlock()
 
 	return selected
 }
@@ -549,7 +620,10 @@ func (r *Registry) SetProviderIdle(id string) {
 
 	// Check if there are queued requests and this provider has headroom.
 	hasCap := p.PendingCount() < MaxConcurrentRequests
-	if r.queue != nil && hasCap && r.trustMeetsMinimum(p.TrustLevel) {
+	p.mu.Lock()
+	trust := p.TrustLevel
+	p.mu.Unlock()
+	if r.queue != nil && hasCap && r.trustMeetsMinimum(trust) {
 		for _, m := range p.Models {
 			if r.queue.TryAssign(m.ID, p) {
 				break
@@ -582,14 +656,14 @@ func (r *Registry) ListModels() []AggregateModel {
 	defer r.mu.RUnlock()
 
 	type modelAgg struct {
-		modelType         string
-		quantization      string
-		count             int
-		attestedCount     int
-		highestTrust      TrustLevel
-		secureEnclave     bool
-		sipEnabled        bool
-		secureBoot        bool
+		modelType     string
+		quantization  string
+		count         int
+		attestedCount int
+		highestTrust  TrustLevel
+		secureEnclave bool
+		sipEnabled    bool
+		secureBoot    bool
 	}
 
 	// Aggregate by model ID only — consumers request by ID, so providers
@@ -597,10 +671,17 @@ func (r *Registry) ListModels() []AggregateModel {
 	// minor metadata differences.
 	agg := make(map[string]*modelAgg)
 	for _, p := range r.providers {
-		if p.Status == StatusOffline || p.Status == StatusUntrusted {
+		p.mu.Lock()
+		status := p.Status
+		trust := p.TrustLevel
+		attested := p.Attested
+		attestResult := p.AttestationResult
+		p.mu.Unlock()
+
+		if status == StatusOffline || status == StatusUntrusted {
 			continue
 		}
-		if !r.trustMeetsMinimum(p.TrustLevel) {
+		if !r.trustMeetsMinimum(trust) {
 			continue
 		}
 		for _, m := range p.Models {
@@ -617,15 +698,15 @@ func (r *Registry) ListModels() []AggregateModel {
 			a.count++
 
 			// Update highest trust level
-			if trustRank(p.TrustLevel) > trustRank(a.highestTrust) {
-				a.highestTrust = p.TrustLevel
+			if trustRank(trust) > trustRank(a.highestTrust) {
+				a.highestTrust = trust
 			}
 
-			if p.Attested && p.AttestationResult != nil {
+			if attested && attestResult != nil {
 				a.attestedCount++
-				a.secureEnclave = a.secureEnclave || p.AttestationResult.SecureEnclaveAvailable
-				a.sipEnabled = a.sipEnabled || p.AttestationResult.SIPEnabled
-				a.secureBoot = a.secureBoot || p.AttestationResult.SecureBootEnabled
+				a.secureEnclave = a.secureEnclave || attestResult.SecureEnclaveAvailable
+				a.sipEnabled = a.sipEnabled || attestResult.SIPEnabled
+				a.secureBoot = a.secureBoot || attestResult.SecureBootEnabled
 			}
 		}
 	}

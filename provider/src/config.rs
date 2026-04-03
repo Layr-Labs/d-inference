@@ -48,7 +48,10 @@ pub struct CoordinatorSettings {
 
 impl ProviderConfig {
     pub fn default_for_hardware(hw: &HardwareInfo) -> Self {
-        let name = format!("dginf-{}", &hw.machine_model.replace(',', "-").to_lowercase());
+        let name = format!(
+            "dginf-{}",
+            &hw.machine_model.replace(',', "-").to_lowercase()
+        );
 
         Self {
             provider: ProviderSettings {
@@ -82,8 +85,7 @@ pub fn save(path: &Path, config: &ProviderConfig) -> Result<()> {
             .with_context(|| format!("failed to create config directory {}", parent.display()))?;
     }
 
-    let toml_str =
-        toml::to_string_pretty(config).context("failed to serialize config to TOML")?;
+    let toml_str = toml::to_string_pretty(config).context("failed to serialize config to TOML")?;
     std::fs::write(path, &toml_str)
         .with_context(|| format!("failed to write config to {}", path.display()))?;
 
@@ -93,8 +95,7 @@ pub fn save(path: &Path, config: &ProviderConfig) -> Result<()> {
 pub fn load(path: &Path) -> Result<ProviderConfig> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config from {}", path.display()))?;
-    let config: ProviderConfig =
-        toml::from_str(&content).context("failed to parse config TOML")?;
+    let config: ProviderConfig = toml::from_str(&content).context("failed to parse config TOML")?;
     Ok(config)
 }
 
@@ -170,5 +171,153 @@ mod tests {
     fn test_config_load_missing_file() {
         let result = load(Path::new("/nonexistent/provider.toml"));
         assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Config defaults for different hardware profiles
+    // -----------------------------------------------------------------------
+
+    fn make_hardware(
+        model: &str,
+        chip: &str,
+        family: ChipFamily,
+        tier: ChipTier,
+        mem: u64,
+        gpu: u32,
+        bw: u32,
+    ) -> HardwareInfo {
+        HardwareInfo {
+            machine_model: model.to_string(),
+            chip_name: chip.to_string(),
+            chip_family: family,
+            chip_tier: tier,
+            memory_gb: mem,
+            memory_available_gb: mem - 4,
+            cpu_cores: CpuCores {
+                total: 12,
+                performance: 8,
+                efficiency: 4,
+            },
+            gpu_cores: gpu,
+            memory_bandwidth_gbs: bw,
+        }
+    }
+
+    #[test]
+    fn test_config_m4_max_defaults() {
+        let hw = make_hardware(
+            "Mac16,1",
+            "Apple M4 Max",
+            ChipFamily::M4,
+            ChipTier::Max,
+            128,
+            40,
+            546,
+        );
+        let config = ProviderConfig::default_for_hardware(&hw);
+        assert_eq!(config.provider.name, "dginf-mac16-1");
+        assert_eq!(config.backend.port, 8100);
+        assert_eq!(config.coordinator.heartbeat_interval_secs, 30);
+        assert!(config.backend.continuous_batching);
+        assert!(config.backend.model.is_none());
+        assert!(config.backend.enabled_models.is_empty());
+    }
+
+    #[test]
+    fn test_config_m3_defaults() {
+        let hw = make_hardware(
+            "Mac15,3",
+            "Apple M3",
+            ChipFamily::M3,
+            ChipTier::Base,
+            24,
+            10,
+            100,
+        );
+        let config = ProviderConfig::default_for_hardware(&hw);
+        assert_eq!(config.provider.name, "dginf-mac15-3");
+        assert_eq!(config.backend.port, 8100);
+        assert_eq!(config.provider.memory_reserve_gb, 4);
+    }
+
+    #[test]
+    fn test_config_m2_pro_defaults() {
+        let hw = make_hardware(
+            "Mac14,10",
+            "Apple M2 Pro",
+            ChipFamily::M2,
+            ChipTier::Pro,
+            32,
+            19,
+            200,
+        );
+        let config = ProviderConfig::default_for_hardware(&hw);
+        assert_eq!(config.provider.name, "dginf-mac14-10");
+        assert_eq!(config.backend.port, 8100);
+        assert_eq!(config.coordinator.url, "ws://localhost:8080/ws/provider");
+    }
+
+    #[test]
+    fn test_config_toml_roundtrip_with_enabled_models() {
+        let hw = sample_hardware();
+        let mut config = ProviderConfig::default_for_hardware(&hw);
+        config.backend.enabled_models = vec![
+            "mlx-community/Qwen2.5-7B-4bit".to_string(),
+            "mlx-community/Llama-3-8B-4bit".to_string(),
+        ];
+        config.backend.model = Some("mlx-community/Qwen2.5-7B-4bit".to_string());
+
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let deserialized: ProviderConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(config, deserialized);
+        assert_eq!(deserialized.backend.enabled_models.len(), 2);
+    }
+
+    #[test]
+    fn test_config_toml_backward_compat_no_enabled_models() {
+        // Old configs won't have enabled_models — verify it defaults to empty
+        let toml_str = r#"
+[provider]
+name = "old-provider"
+memory_reserve_gb = 4
+
+[backend]
+port = 8100
+continuous_batching = true
+
+[coordinator]
+url = "ws://localhost:8080/ws/provider"
+heartbeat_interval_secs = 30
+"#;
+        let config: ProviderConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.backend.enabled_models.is_empty());
+        assert!(config.backend.model.is_none());
+    }
+
+    #[test]
+    fn test_config_all_fields_preserved_through_file_io() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("provider.toml");
+
+        let config = ProviderConfig {
+            provider: ProviderSettings {
+                name: "test-provider".to_string(),
+                memory_reserve_gb: 8,
+            },
+            backend: BackendSettings {
+                port: 9000,
+                model: Some("my-model".to_string()),
+                continuous_batching: false,
+                enabled_models: vec!["m1".to_string(), "m2".to_string()],
+            },
+            coordinator: CoordinatorSettings {
+                url: "wss://example.com/ws/provider".to_string(),
+                heartbeat_interval_secs: 15,
+            },
+        };
+
+        save(&path, &config).unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(config, loaded);
     }
 }

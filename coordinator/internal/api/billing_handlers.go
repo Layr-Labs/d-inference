@@ -85,8 +85,8 @@ func (s *Server) handleStripeCreateSession(w http.ResponseWriter, r *http.Reques
 		CustomerEmail: req.Email,
 		Metadata: map[string]string{
 			"billing_session_id": sessionID,
-			"consumer_key":      accountID,
-			"referral_code":     req.ReferralCode,
+			"consumer_key":       accountID,
+			"referral_code":      req.ReferralCode,
 		},
 	})
 	if err != nil {
@@ -212,9 +212,9 @@ func (s *Server) handleStripeSessionStatus(w http.ResponseWriter, r *http.Reques
 // handleSolanaDeposit handles POST /v1/billing/deposit.
 // The user signs a USDC transfer in their frontend wallet, then submits the
 // tx signature here. We verify on-chain that:
-//   1. The tx contains a USDC transfer TO our coordinator address
-//   2. The tx sender matches the authenticated user's wallet
-//   3. The tx hasn't been submitted before (double-spend protection)
+//  1. The tx contains a USDC transfer TO our coordinator address
+//  2. The tx sender matches the authenticated user's wallet
+//  3. The tx hasn't been submitted before (double-spend protection)
 func (s *Server) handleSolanaDeposit(w http.ResponseWriter, r *http.Request) {
 	if s.billing == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "billing not configured"))
@@ -315,11 +315,11 @@ func (s *Server) handleSolanaDeposit(w http.ResponseWriter, r *http.Request) {
 	)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":           "deposited",
-		"tx_signature":     req.TxSignature,
-		"from":             result.From,
-		"amount_micro_usd": result.AmountMicroUSD,
-		"amount_usd":       fmt.Sprintf("%.6f", float64(result.AmountMicroUSD)/1_000_000),
+		"status":            "deposited",
+		"tx_signature":      req.TxSignature,
+		"from":              result.From,
+		"amount_micro_usd":  result.AmountMicroUSD,
+		"amount_usd":        fmt.Sprintf("%.6f", float64(result.AmountMicroUSD)/1_000_000),
 		"balance_micro_usd": s.billing.Ledger().Balance(accountID),
 	})
 }
@@ -354,8 +354,22 @@ func (s *Server) handleWalletBalance(w http.ResponseWriter, r *http.Request) {
 
 // --- Withdraw ---
 
+// MinWithdrawalMicroUSD is the minimum withdrawal amount (1,000,000 micro-USD = $1.00).
+const MinWithdrawalMicroUSD = 1_000_000
+
 // handleSolanaWithdraw handles POST /v1/billing/withdraw/solana.
 func (s *Server) handleSolanaWithdraw(w http.ResponseWriter, r *http.Request) {
+	// Require Privy auth — withdrawals must be tied to an authenticated user.
+	user := s.requirePrivyUser(w, r)
+	if user == nil {
+		return
+	}
+
+	if s.billing == nil || s.billing.Solana() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Solana payments not configured"))
+		return
+	}
+
 	var req struct {
 		WalletAddress string `json:"wallet_address"`
 		AmountUSD     string `json:"amount_usd"`
@@ -364,12 +378,22 @@ func (s *Server) handleSolanaWithdraw(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
 		return
 	}
+
+	// Auto-populate wallet from account if not provided in request.
+	if req.WalletAddress == "" {
+		req.WalletAddress = user.SolanaWalletAddress
+	}
+
 	if req.WalletAddress == "" || req.AmountUSD == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "wallet_address and amount_usd are required"))
 		return
 	}
-	if s.billing == nil || s.billing.Solana() == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Solana payments not configured"))
+
+	// Validate destination wallet — must match the user's linked Solana wallet
+	// to prevent fund theft (cannot withdraw to someone else's address).
+	if user.SolanaWalletAddress != "" && req.WalletAddress != user.SolanaWalletAddress {
+		writeJSON(w, http.StatusForbidden, errorResponse("wallet_mismatch",
+			"withdrawals must go to your linked Solana wallet"))
 		return
 	}
 
@@ -380,7 +404,16 @@ func (s *Server) handleSolanaWithdraw(w http.ResponseWriter, r *http.Request) {
 	}
 
 	amountMicroUSD := int64(amountFloat * 1_000_000)
-	accountID := s.resolveAccountID(r)
+
+	// Minimum withdrawal check — must be at least $1.00.
+	if amountMicroUSD < MinWithdrawalMicroUSD {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+			fmt.Sprintf("minimum withdrawal is $%.2f", float64(MinWithdrawalMicroUSD)/1_000_000)))
+		return
+	}
+
+	// Use the authenticated user's account ID for the debit.
+	accountID := user.AccountID
 
 	if err := s.billing.Ledger().Charge(accountID, amountMicroUSD, "withdraw:solana:"+req.WalletAddress); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("insufficient_funds", err.Error()))
@@ -399,12 +432,12 @@ func (s *Server) handleSolanaWithdraw(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":           "withdrawn",
-		"chain":            "solana",
-		"wallet_address":   req.WalletAddress,
-		"amount_usd":       req.AmountUSD,
-		"amount_micro_usd": amountMicroUSD,
-		"tx_signature":     result.TxSignature,
+		"status":            "withdrawn",
+		"chain":             "solana",
+		"wallet_address":    req.WalletAddress,
+		"amount_usd":        req.AmountUSD,
+		"amount_micro_usd":  amountMicroUSD,
+		"tx_signature":      result.TxSignature,
 		"balance_micro_usd": s.billing.Ledger().Balance(accountID),
 	})
 }
@@ -589,9 +622,9 @@ func (s *Server) handleGetPricing(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"prices":              prices,
+		"prices":               prices,
 		"transcription_prices": transcriptionPrices,
-		"image_prices":        imagePrices,
+		"image_prices":         imagePrices,
 	})
 }
 
@@ -918,11 +951,87 @@ func (s *Server) handleMockDeposit(w http.ResponseWriter, r *http.Request) {
 
 	balance := s.billing.Ledger().Balance(accountID)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":          "credited",
-		"mock":            true,
-		"amount_micro_usd": amountMicroUSD,
-		"amount_usd":      req.AmountUSD,
+		"status":            "credited",
+		"mock":              true,
+		"amount_micro_usd":  amountMicroUSD,
+		"amount_usd":        req.AmountUSD,
 		"balance_micro_usd": balance,
-		"balance_usd":     fmt.Sprintf("%.2f", float64(balance)/1_000_000),
+		"balance_usd":       fmt.Sprintf("%.2f", float64(balance)/1_000_000),
+	})
+}
+
+// handleNodeEarnings handles GET /v1/provider/node-earnings?provider_key=<key>&limit=50.
+// Returns per-node earnings for a specific provider identified by its X25519 public key.
+func (s *Server) handleNodeEarnings(w http.ResponseWriter, r *http.Request) {
+	providerKey := r.URL.Query().Get("provider_key")
+	if providerKey == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "provider_key query parameter is required"))
+		return
+	}
+
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	earnings, err := s.store.GetProviderEarnings(providerKey, limit)
+	if err != nil {
+		s.logger.Error("get provider earnings failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch earnings"))
+		return
+	}
+
+	var totalMicroUSD int64
+	for _, e := range earnings {
+		totalMicroUSD += e.AmountMicroUSD
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"provider_key":    providerKey,
+		"earnings":        earnings,
+		"total_micro_usd": totalMicroUSD,
+		"total_usd":       fmt.Sprintf("%.6f", float64(totalMicroUSD)/1_000_000),
+		"count":           len(earnings),
+	})
+}
+
+// handleAccountEarnings handles GET /v1/provider/account-earnings?limit=50.
+// Returns all earnings across all provider nodes for the authenticated account.
+func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
+	accountID := s.resolveAccountID(r)
+
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	earnings, err := s.store.GetAccountEarnings(accountID, limit)
+	if err != nil {
+		s.logger.Error("get account earnings failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch earnings"))
+		return
+	}
+
+	var totalMicroUSD int64
+	for _, e := range earnings {
+		totalMicroUSD += e.AmountMicroUSD
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"account_id":      accountID,
+		"earnings":        earnings,
+		"total_micro_usd": totalMicroUSD,
+		"total_usd":       fmt.Sprintf("%.6f", float64(totalMicroUSD)/1_000_000),
+		"count":           len(earnings),
 	})
 }

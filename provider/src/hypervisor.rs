@@ -32,8 +32,8 @@
 //! └──────────────────────────────────────────────────┘
 //! ```
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// macOS 26 Hypervisor.framework requires 16 MB alignment for
 /// `hv_vm_map` host virtual addresses and sizes.
@@ -176,7 +176,12 @@ pub fn allocate_pool(pool_bytes: usize) -> Result<(), String> {
         for i in 0..num_chunks {
             let chunk_ptr = unsafe { aligned_base.add(i * CHUNK_SIZE) };
             let r = unsafe {
-                ffi::hv_vm_map(chunk_ptr as *const std::os::raw::c_void, gpa, CHUNK_SIZE, flags)
+                ffi::hv_vm_map(
+                    chunk_ptr as *const std::os::raw::c_void,
+                    gpa,
+                    CHUNK_SIZE,
+                    flags,
+                )
             };
             if r == ffi::HV_SUCCESS {
                 mapped_chunks += 1;

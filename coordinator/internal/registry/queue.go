@@ -114,8 +114,12 @@ func (q *RequestQueue) TryAssign(model string, provider *Provider) bool {
 			continue
 		}
 
-		// Assign the provider
+		// Assign the provider. Hold the provider lock to avoid racing
+		// with FindProviderWithTrust and SetProviderIdle which also
+		// read/write Status under the lock.
+		provider.mu.Lock()
 		provider.Status = StatusServing
+		provider.mu.Unlock()
 		select {
 		case req.ResponseCh <- provider:
 			return true

@@ -28,7 +28,13 @@ fn uid() -> u32 {
     }
 }
 
-fn write_plist(binary_path: &Path, coordinator_url: &str, model: &str, image_model: Option<&str>, image_model_path: Option<&str>) -> Result<()> {
+fn write_plist(
+    binary_path: &Path,
+    coordinator_url: &str,
+    model: &str,
+    image_model: Option<&str>,
+    image_model_path: Option<&str>,
+) -> Result<()> {
     let launch_agents_dir = plist_path()
         .parent()
         .expect("plist has a parent dir")
@@ -165,20 +171,30 @@ pub fn is_installed() -> bool {
 /// Writes the plist with KeepAlive=false and RunAtLoad=false, then loads it.
 /// The provider runs until explicitly stopped or the machine reboots.
 /// It does NOT auto-restart on crash or auto-start on login.
-pub fn install_and_start(coordinator_url: &str, model: &str, image_model: Option<&str>, image_model_path: Option<&str>) -> Result<()> {
-    let binary_path = std::env::current_exe()
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_default()
-                .join(".dginf/bin/dginf-provider")
-        });
+pub fn install_and_start(
+    coordinator_url: &str,
+    model: &str,
+    image_model: Option<&str>,
+    image_model_path: Option<&str>,
+) -> Result<()> {
+    let binary_path = std::env::current_exe().unwrap_or_else(|_| {
+        dirs::home_dir()
+            .unwrap_or_default()
+            .join(".dginf/bin/dginf-provider")
+    });
 
     if is_loaded() {
         unload_service().context("Failed to unload existing service")?;
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
 
-    write_plist(&binary_path, coordinator_url, model, image_model, image_model_path)?;
+    write_plist(
+        &binary_path,
+        coordinator_url,
+        model,
+        image_model,
+        image_model_path,
+    )?;
     load_service().context("Failed to load launchd service")?;
 
     Ok(())

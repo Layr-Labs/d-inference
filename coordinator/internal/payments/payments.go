@@ -1,12 +1,12 @@
 // Package payments provides balance tracking and pricing for DGInf inference.
 //
 // The payment flow:
-//   1. Consumer deposits USDC on Solana (verified on-chain via JSON-RPC)
-//      or pays via Stripe checkout
-//   2. Consumer makes inference requests — the coordinator debits per-request
-//      based on output token count
-//   3. Provider earns a payout (total cost minus 10% platform fee)
-//   4. Payouts accumulate and can be settled on-chain
+//  1. Consumer deposits USDC on Solana (verified on-chain via JSON-RPC)
+//     or pays via Stripe checkout
+//  2. Consumer makes inference requests — the coordinator debits per-request
+//     based on output token count
+//  3. Provider earns a payout (total cost minus 10% platform fee)
+//  4. Payouts accumulate and can be settled on-chain
 //
 // All amounts are in micro-USD (1 USD = 1,000,000 micro-USD). This maps 1:1
 // to USDC's 6-decimal on-chain representation.

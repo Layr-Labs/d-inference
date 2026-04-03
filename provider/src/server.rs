@@ -15,12 +15,12 @@
 
 use anyhow::Result;
 use axum::{
+    Json, Router,
     body::Body,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
 use std::sync::Arc;
 
@@ -51,9 +51,7 @@ async fn health_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse
     tracing::debug!("Health check -> {url}");
 
     match state.client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            (StatusCode::OK, "ok").into_response()
-        }
+        Ok(resp) if resp.status().is_success() => (StatusCode::OK, "ok").into_response(),
         Ok(resp) => {
             let status = resp.status();
             tracing::warn!("Backend health check returned {status}");
@@ -101,16 +99,20 @@ async fn chat_completions_handler(
 
     // Log the request (summary)
     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
-        let model = parsed.get("model").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let stream = parsed.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+        let model = parsed
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let stream = parsed
+            .get("stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let msg_count = parsed
             .get("messages")
             .and_then(|v| v.as_array())
             .map(|a| a.len())
             .unwrap_or(0);
-        tracing::info!(
-            "Chat completion: model={model}, stream={stream}, messages={msg_count}"
-        );
+        tracing::info!("Chat completion: model={model}, stream={stream}, messages={msg_count}");
     }
 
     match state
@@ -148,7 +150,8 @@ async fn chat_completions_handler(
 
 /// Proxy a non-streaming response from the backend.
 async fn proxy_response(resp: reqwest::Response) -> Response {
-    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status =
+        StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
     // Forward relevant headers
     let mut builder = Response::builder().status(status);
@@ -172,7 +175,8 @@ async fn proxy_response(resp: reqwest::Response) -> Response {
 
 /// Proxy a streaming (SSE) response from the backend.
 async fn proxy_streaming_response(resp: reqwest::Response) -> Response {
-    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status =
+        StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
     let stream = resp.bytes_stream();
 
@@ -328,6 +332,201 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&resp_body).unwrap();
         assert!(json.get("choices").is_some());
+    }
+
+    /// Test 7: Server standalone mode — start_server on a test port and verify
+    /// it can receive requests and proxy them correctly.
+    #[tokio::test]
+    async fn test_server_start_and_health() {
+        let backend_port = start_mock_backend().await;
+        let backend_url = format!("http://127.0.0.1:{backend_port}");
+
+        // Start the server on a random port
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_port = listener.local_addr().unwrap().port();
+        let app = create_router(backend_url);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Hit /health via reqwest (simulating a real HTTP client)
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("http://127.0.0.1:{server_port}/health"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.text().await.unwrap(), "ok");
+    }
+
+    /// Test 7b: Server standalone mode — /v1/chat/completions returns
+    /// OpenAI-compatible JSON format.
+    #[tokio::test]
+    async fn test_server_chat_completions_openai_format() {
+        let backend_port = start_mock_backend().await;
+        let backend_url = format!("http://127.0.0.1:{backend_port}");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_port = listener.local_addr().unwrap().port();
+        let app = create_router(backend_url);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!(
+                "http://127.0.0.1:{server_port}/v1/chat/completions"
+            ))
+            .header("content-type", "application/json")
+            .body(
+                serde_json::to_string(&serde_json::json!({
+                    "model": "qwen3.5-9b",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": false
+                }))
+                .unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        let json: serde_json::Value = resp.json().await.unwrap();
+        // Verify OpenAI-compatible response fields
+        assert!(
+            json.get("choices").is_some(),
+            "Response should have 'choices'"
+        );
+        assert!(json.get("usage").is_some(), "Response should have 'usage'");
+    }
+
+    /// Test 7c: Server standalone mode — streaming response preserves SSE format.
+    #[tokio::test]
+    async fn test_server_streaming_sse_format() {
+        let backend_port = start_mock_backend().await;
+        let backend_url = format!("http://127.0.0.1:{backend_port}");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_port = listener.local_addr().unwrap().port();
+        let app = create_router(backend_url);
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!(
+                "http://127.0.0.1:{server_port}/v1/chat/completions"
+            ))
+            .header("content-type", "application/json")
+            .body(
+                serde_json::to_string(&serde_json::json!({
+                    "model": "qwen3.5-9b",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": true
+                }))
+                .unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "text/event-stream"
+        );
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains("data:"),
+            "SSE body should contain data: lines"
+        );
+        assert!(
+            body.contains("[DONE]"),
+            "SSE body should contain [DONE] sentinel"
+        );
+    }
+
+    /// Test 7d: Server standalone mode — backend down returns 503 on health.
+    #[tokio::test]
+    async fn test_server_health_backend_down() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_port = listener.local_addr().unwrap().port();
+        let app = create_router("http://127.0.0.1:19994".to_string());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("http://127.0.0.1:{server_port}/health"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 503);
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains("backend unreachable"),
+            "Should mention backend unreachable"
+        );
+    }
+
+    /// Test 7e: Server standalone mode — backend down returns 502 on completions.
+    #[tokio::test]
+    async fn test_server_completions_backend_down() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_port = listener.local_addr().unwrap().port();
+        let app = create_router("http://127.0.0.1:19993".to_string());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!(
+                "http://127.0.0.1:{server_port}/v1/chat/completions"
+            ))
+            .header("content-type", "application/json")
+            .body(r#"{"model":"test","messages":[],"stream":false}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 502);
+        let json: serde_json::Value = resp.json().await.unwrap();
+        assert!(json.get("error").is_some(), "Should return error JSON");
+    }
+
+    /// Test 7f: Server /v1/models with backend down returns 502.
+    #[tokio::test]
+    async fn test_server_models_backend_down() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_port = listener.local_addr().unwrap().port();
+        let app = create_router("http://127.0.0.1:19992".to_string());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("http://127.0.0.1:{server_port}/v1/models"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 502);
     }
 
     #[tokio::test]

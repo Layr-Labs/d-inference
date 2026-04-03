@@ -42,10 +42,10 @@ type OnMDACallback func(udid string, certChain [][]byte)
 
 // Client talks to the MicroMDM API.
 type Client struct {
-	baseURL  string
-	apiKey   string
-	client   *http.Client
-	logger   *slog.Logger
+	baseURL string
+	apiKey  string
+	client  *http.Client
+	logger  *slog.Logger
 	// Webhook responses arrive asynchronously.
 	responses       chan *SecurityInfoResponse
 	attestResponses chan *DeviceAttestationResponse
@@ -90,28 +90,28 @@ type DeviceInfo struct {
 
 // SecurityInfoResponse parsed from the MDM SecurityInfo command response.
 type SecurityInfoResponse struct {
-	UDID                              string
-	SystemIntegrityProtectionEnabled  bool
-	SecureBootLevel                   string // "full", "reduced", "permissive"
-	AuthenticatedRootVolumeEnabled    bool
-	FirewallEnabled                   bool
-	FileVaultEnabled                  bool
-	IsRecoveryLockEnabled             bool
-	RemoteDesktopEnabled              bool
+	UDID                             string
+	SystemIntegrityProtectionEnabled bool
+	SecureBootLevel                  string // "full", "reduced", "permissive"
+	AuthenticatedRootVolumeEnabled   bool
+	FirewallEnabled                  bool
+	FileVaultEnabled                 bool
+	IsRecoveryLockEnabled            bool
+	RemoteDesktopEnabled             bool
 }
 
 // VerificationResult from cross-checking MDM with attestation.
 type VerificationResult struct {
-	DeviceEnrolled       bool
-	UDID                 string
-	SerialNumber         string
-	MDMSIPEnabled        bool
-	MDMSecureBootFull    bool
-	MDMAuthRootVolume    bool
-	MDMRecoveryLocked    bool   // Recovery Lock prevents Recovery OS access (blocks rdma_ctl enable)
-	SIPMatch             bool   // MDM SIP matches attestation SIP
-	SecureBootMatch      bool   // MDM SecureBoot matches attestation
-	Error                string
+	DeviceEnrolled    bool
+	UDID              string
+	SerialNumber      string
+	MDMSIPEnabled     bool
+	MDMSecureBootFull bool
+	MDMAuthRootVolume bool
+	MDMRecoveryLocked bool // Recovery Lock prevents Recovery OS access (blocks rdma_ctl enable)
+	SIPMatch          bool // MDM SIP matches attestation SIP
+	SecureBootMatch   bool // MDM SecureBoot matches attestation
+	Error             string
 }
 
 // LookupDevice checks if a device with the given serial number is enrolled.
@@ -559,11 +559,12 @@ func parseSecurityInfoPlist(data []byte) *SecurityInfoResponse {
 // DeviceInformation response containing DevicePropertiesAttestation.
 //
 // The plist format is:
-//   <key>DevicePropertiesAttestation</key>
-//   <array>
-//     <data>...base64 DER cert...</data>
-//     <data>...base64 DER cert...</data>
-//   </array>
+//
+//	<key>DevicePropertiesAttestation</key>
+//	<array>
+//	  <data>...base64 DER cert...</data>
+//	  <data>...base64 DER cert...</data>
+//	</array>
 func parseDeviceAttestationPlist(data []byte) [][]byte {
 	// Find DevicePropertiesAttestation key
 	marker := []byte("<key>DevicePropertiesAttestation</key>")

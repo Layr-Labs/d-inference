@@ -49,6 +49,11 @@ type Config struct {
 	SolanaUSDCMint           string
 	SolanaCoordinatorAddress string // address that receives USDC deposits
 
+	// SolanaPrivateKey is the base58-encoded hot wallet private key used to
+	// sign withdrawal transactions. If empty, withdrawals are disabled
+	// (unless MockMode is true).
+	SolanaPrivateKey string
+
 	// Referral
 	ReferralSharePercent int64 // percentage of platform fee going to referrer (default 20)
 
@@ -60,10 +65,10 @@ type Config struct {
 // Service is the unified billing orchestrator. It delegates to chain-specific
 // processors and manages the referral reward flow.
 type Service struct {
-	store    store.Store
-	ledger   *payments.Ledger
-	logger   *slog.Logger
-	config   Config
+	store  store.Store
+	ledger *payments.Ledger
+	logger *slog.Logger
+	config Config
 
 	stripe   *StripeProcessor
 	solana   *SolanaProcessor
@@ -94,7 +99,7 @@ func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cf
 	// Initialize Solana processor
 	if cfg.SolanaRPCURL != "" {
 		svc.solana = NewSolanaProcessor(cfg.SolanaRPCURL, cfg.SolanaCoordinatorAddress,
-			cfg.SolanaUSDCMint, "", cfg.MockMode, logger)
+			cfg.SolanaUSDCMint, cfg.SolanaPrivateKey, cfg.MockMode, logger)
 		logger.Info("billing: Solana processor enabled",
 			"coordinator_address", cfg.SolanaCoordinatorAddress,
 			"mock_mode", cfg.MockMode,

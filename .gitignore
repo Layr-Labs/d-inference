@@ -69,3 +69,12 @@ d-inf-docs/
 .vercel
 .claude/worktrees/
 .external/
+
+# Generated prompts
+claude-voice-system-prompt.md
+
+# Solana test validator ledger (local testing)
+test-ledger/
+
+# Rust cross-language test build artifacts
+coordinator/internal/e2e/testdata/decrypt/target/

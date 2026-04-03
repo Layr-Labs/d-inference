@@ -63,6 +63,10 @@ type MemoryStore struct {
 	inviteCodes        map[string]*InviteCode        // code → InviteCode
 	inviteRedemptions  map[string][]InviteRedemption // code → list of redemptions
 	accountRedemptions map[string]map[string]bool    // accountID → set of redeemed codes
+
+	// Provider earnings (per-node tracking)
+	providerEarnings    []ProviderEarning
+	providerEarningsSeq int64 // auto-increment ID
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -90,6 +94,7 @@ func NewMemory(adminKey string) *MemoryStore {
 		inviteCodes:           make(map[string]*InviteCode),
 		inviteRedemptions:     make(map[string][]InviteRedemption),
 		accountRedemptions:    make(map[string]map[string]bool),
+		providerEarnings:      make([]ProviderEarning, 0),
 	}
 	if adminKey != "" {
 		s.keys[adminKey] = true
@@ -786,6 +791,63 @@ func (s *MemoryStore) HasRedeemedInviteCode(code, accountID string) bool {
 		return acctCodes[code]
 	}
 	return false
+}
+
+// --- Provider Earnings ---
+
+// RecordProviderEarning stores an earning record for a specific provider node.
+func (s *MemoryStore) RecordProviderEarning(earning *ProviderEarning) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.providerEarningsSeq++
+	cp := *earning
+	cp.ID = s.providerEarningsSeq
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = time.Now()
+	}
+	s.providerEarnings = append(s.providerEarnings, cp)
+	return nil
+}
+
+// GetProviderEarnings returns earnings for a specific provider node (by public key), newest first.
+func (s *MemoryStore) GetProviderEarnings(providerKey string, limit int) ([]ProviderEarning, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var results []ProviderEarning
+	for i := len(s.providerEarnings) - 1; i >= 0; i-- {
+		if s.providerEarnings[i].ProviderKey == providerKey {
+			results = append(results, s.providerEarnings[i])
+			if limit > 0 && len(results) >= limit {
+				break
+			}
+		}
+	}
+	if results == nil {
+		return []ProviderEarning{}, nil
+	}
+	return results, nil
+}
+
+// GetAccountEarnings returns all earnings across all nodes for an account, newest first.
+func (s *MemoryStore) GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var results []ProviderEarning
+	for i := len(s.providerEarnings) - 1; i >= 0; i-- {
+		if s.providerEarnings[i].AccountID == accountID {
+			results = append(results, s.providerEarnings[i])
+			if limit > 0 && len(results) >= limit {
+				break
+			}
+		}
+	}
+	if results == nil {
+		return []ProviderEarning{}, nil
+	}
+	return results, nil
 }
 
 // sha256Hex returns the hex-encoded SHA-256 digest of s.

@@ -32,7 +32,8 @@ pub fn deny_debugger_attachment() {
     {
         // PT_DENY_ATTACH = 31 on macOS
         const PT_DENY_ATTACH: libc::c_int = 31;
-        let result = unsafe { libc::ptrace(PT_DENY_ATTACH, 0, std::ptr::null_mut::<libc::c_char>(), 0) };
+        let result =
+            unsafe { libc::ptrace(PT_DENY_ATTACH, 0, std::ptr::null_mut::<libc::c_char>(), 0) };
         if result == 0 {
             tracing::info!("Anti-debug: PT_DENY_ATTACH enabled — debugger attachment blocked");
         } else {
@@ -69,7 +70,9 @@ pub fn check_sip_enabled() -> bool {
                 if enabled {
                     tracing::info!("SIP check: System Integrity Protection is enabled");
                 } else {
-                    tracing::error!("SIP check: System Integrity Protection is DISABLED — refusing to serve");
+                    tracing::error!(
+                        "SIP check: System Integrity Protection is DISABLED — refusing to serve"
+                    );
                 }
                 enabled
             }
@@ -169,15 +172,13 @@ pub fn verify_security_posture() -> Result<(), String> {
                  inference memory is hardware-protected"
             );
         } else {
-            return Err(
-                "RDMA is enabled without hypervisor memory isolation — \
+            return Err("RDMA is enabled without hypervisor memory isolation — \
                  remote memory access possible, refusing to serve.\n\n\
                  To disable RDMA:\n\
                  1. Open System Settings → Sharing\n\
                  2. Disable Remote Direct Memory Access\n\n\
                  Then retry: dginf-provider serve"
-                    .to_string(),
-            );
+                .to_string());
         }
     }
 
@@ -200,7 +201,9 @@ pub fn check_mdm_enrolled() -> bool {
         // Method 1: Check if the system profiles marker file exists.
         // This file is created when any configuration profile is installed
         // at the system level, even if `profiles list` can't show it without sudo.
-        if std::path::Path::new("/var/db/ConfigurationProfiles/Settings/.profilesAreInstalled").exists() {
+        if std::path::Path::new("/var/db/ConfigurationProfiles/Settings/.profilesAreInstalled")
+            .exists()
+        {
             tracing::debug!("MDM check: profiles marker file exists");
             return true;
         }
@@ -215,12 +218,13 @@ pub fn check_mdm_enrolled() -> bool {
                         "{}{}",
                         String::from_utf8_lossy(&o.stdout),
                         String::from_utf8_lossy(&o.stderr)
-                    ).to_lowercase();
+                    )
+                    .to_lowercase();
                     // Positive signals
-                    let has_profile = combined.contains("micromdm") ||
-                        combined.contains("com.github.micromdm") ||
-                        combined.contains("dginf") ||
-                        combined.contains("attribute: profileidentifier");
+                    let has_profile = combined.contains("micromdm")
+                        || combined.contains("com.github.micromdm")
+                        || combined.contains("dginf")
+                        || combined.contains("attribute: profileidentifier");
                     // Negative signal
                     let no_profiles = combined.contains("no configuration profiles");
                     has_profile || (!no_profiles && combined.contains("profileidentifier"))
@@ -597,7 +601,9 @@ impl Sha256Hasher {
             let hash_hex = hex.split_whitespace().next().unwrap_or("");
             let mut result = [0u8; 32];
             for (i, chunk) in hash_hex.as_bytes().chunks(2).enumerate() {
-                if i >= 32 { break; }
+                if i >= 32 {
+                    break;
+                }
                 let byte_str = std::str::from_utf8(chunk).unwrap_or("00");
                 result[i] = u8::from_str_radix(byte_str, 16).unwrap_or(0);
             }

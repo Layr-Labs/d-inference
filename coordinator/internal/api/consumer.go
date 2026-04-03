@@ -94,6 +94,19 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Pre-flight balance check — reject requests from consumers with zero
+	// balance before routing to a provider. This avoids wasting provider GPU
+	// time on requests that can't be charged. Only enforced when the billing
+	// service is configured (production); skipped in test/dev without billing.
+	if s.billing != nil {
+		consumerKey := consumerKeyFromContext(r.Context())
+		if s.ledger.Balance(consumerKey) <= 0 {
+			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
+				"your balance is $0.00 — add funds at /billing before making requests"))
+			return
+		}
+	}
+
 	// Consumer-selectable trust level. Consumers can request a minimum trust
 	// tier (e.g. "hardware") to filter providers. If not specified, uses the
 	// registry's default (hardware).
@@ -240,30 +253,45 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Include provider's public key in response headers so consumers can
 	// see which provider key was used (useful for auditing).
-	if provider.PublicKey != "" {
-		w.Header().Set("X-Provider-Public-Key", provider.PublicKey)
+	// Snapshot mutable provider fields under lock to avoid racing with
+	// background goroutines (MDA verification, challenge-response, heartbeat).
+	provider.Mu().Lock()
+	pubKey := provider.PublicKey
+	attested := provider.Attested
+	trustLevel := provider.TrustLevel
+	attestResult := provider.AttestationResult
+	mdaVerified := provider.MDAVerified
+	provider.Mu().Unlock()
+
+	// Immutable after registration — safe without lock.
+	providerID := provider.ID
+	chipName := provider.Hardware.ChipName
+	machineModel := provider.Hardware.MachineModel
+
+	if pubKey != "" {
+		w.Header().Set("X-Provider-Public-Key", pubKey)
 	}
 
 	// Include attestation status headers so consumers know the trust
 	// properties of the provider that served their request.
-	if provider.Attested {
+	if attested {
 		w.Header().Set("X-Provider-Attested", "true")
 	} else {
 		w.Header().Set("X-Provider-Attested", "false")
 	}
-	w.Header().Set("X-Provider-Trust-Level", string(provider.TrustLevel))
-	w.Header().Set("X-Provider-ID", provider.ID)
-	w.Header().Set("X-Provider-Chip", provider.Hardware.ChipName)
-	w.Header().Set("X-Provider-Model", provider.Hardware.MachineModel)
-	if provider.AttestationResult != nil {
-		w.Header().Set("X-Provider-Serial", provider.AttestationResult.SerialNumber)
-		if provider.AttestationResult.SecureEnclaveAvailable {
+	w.Header().Set("X-Provider-Trust-Level", string(trustLevel))
+	w.Header().Set("X-Provider-ID", providerID)
+	w.Header().Set("X-Provider-Chip", chipName)
+	w.Header().Set("X-Provider-Model", machineModel)
+	if attestResult != nil {
+		w.Header().Set("X-Provider-Serial", attestResult.SerialNumber)
+		if attestResult.SecureEnclaveAvailable {
 			w.Header().Set("X-Provider-Secure-Enclave", "true")
 		} else {
 			w.Header().Set("X-Provider-Secure-Enclave", "false")
 		}
 	}
-	if provider.MDAVerified {
+	if mdaVerified {
 		w.Header().Set("X-Provider-MDA-Verified", "true")
 	}
 
@@ -589,7 +617,7 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	wireMsg := map[string]any{
 		"type":       protocol.TypeImageGenerationRequest,
 		"request_id": requestID,
-		"upload_url":  uploadURL,
+		"upload_url": uploadURL,
 		"encrypted_body": map[string]string{
 			"ephemeral_public_key": encrypted.EphemeralPublicKey,
 			"ciphertext":           encrypted.Ciphertext,
@@ -801,7 +829,16 @@ func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, r *http.Reque
 // because they expect usage to be either absent or a full object.
 func normalizeSSEChunk(chunk string) string {
 	line := strings.TrimPrefix(chunk, "data: ")
-	needsNullFix := strings.Contains(line, ":null")
+	// Only trigger the expensive JSON parse for fields we actually fix.
+	// "finish_reason":null appears on every chunk but we don't touch it,
+	// so checking for generic ":null" causes unnecessary JSON round-trips.
+	needsNullFix := strings.Contains(line, `"content":null`) ||
+		strings.Contains(line, `"tool_calls":null`) ||
+		strings.Contains(line, `"usage":null`) ||
+		strings.Contains(line, `"reasoning":null`) ||
+		strings.Contains(line, `"reasoning_content":null`) ||
+		strings.Contains(line, `"refusal":null`) ||
+		strings.Contains(line, `"system_fingerprint":null`)
 	needsReasoningDedup := strings.Contains(line, `"reasoning_content"`)
 	if !needsNullFix && !needsReasoningDedup {
 		return chunk
@@ -1105,13 +1142,13 @@ func (s *Server) handleProviderEarnings(w http.ResponseWriter, r *http.Request) 
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"wallet_address":         wallet,
-		"balance_micro_usd":     balance,
-		"balance_usd":           fmt.Sprintf("%.6f", float64(balance)/1_000_000),
+		"balance_micro_usd":      balance,
+		"balance_usd":            fmt.Sprintf("%.6f", float64(balance)/1_000_000),
 		"total_earned_micro_usd": totalEarned,
-		"total_earned_usd":      fmt.Sprintf("%.6f", float64(totalEarned)/1_000_000),
-		"total_jobs":            totalJobs,
-		"payouts":               walletPayouts,
-		"ledger":                history,
+		"total_earned_usd":       fmt.Sprintf("%.6f", float64(totalEarned)/1_000_000),
+		"total_jobs":             totalJobs,
+		"payouts":                walletPayouts,
+		"ledger":                 history,
 	})
 }
 

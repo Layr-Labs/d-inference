@@ -226,4 +226,3 @@ func UserFromContext(ctx context.Context) *store.User {
 	}
 	return nil
 }
-

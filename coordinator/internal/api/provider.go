@@ -21,8 +21,8 @@ package api
 //   - hardware: MDA certificate chain verified against Apple Root CA (future)
 
 import (
-	"context"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -55,16 +55,16 @@ const (
 
 // pendingChallenge tracks an outstanding challenge sent to a provider.
 type pendingChallenge struct {
-	nonce     string
-	timestamp string
-	sentAt    time.Time
+	nonce      string
+	timestamp  string
+	sentAt     time.Time
 	responseCh chan *protocol.AttestationResponseMessage
 }
 
 // challengeTracker manages pending challenges for provider connections.
 type challengeTracker struct {
-	mu       sync.Mutex
-	pending  map[string]*pendingChallenge // keyed by nonce
+	mu      sync.Mutex
+	pending map[string]*pendingChallenge // keyed by nonce
 }
 
 func newChallengeTracker() *challengeTracker {
@@ -160,7 +160,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 						"error", err,
 					)
 				} else {
+					provider.Mu().Lock()
 					provider.AccountID = pt.AccountID
+					provider.Mu().Unlock()
 					s.logger.Info("provider linked to account",
 						"provider_id", providerID,
 						"account_id", pt.AccountID,
@@ -172,8 +174,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// If ACME client cert was verified, upgrade to hardware trust.
 			// ACME device-attest-01 proves the provider's SE key is Apple-attested.
 			if acmeResult != nil && acmeResult.Valid {
+				provider.Mu().Lock()
 				provider.ACMEVerified = true
-				provider.TrustLevel = registry.TrustHardware
+				provider.Mu().Unlock()
+				provider.SetAttested(true, registry.TrustHardware)
 				s.logger.Info("ACME client cert verified — hardware trust via Apple SE attestation",
 					"provider_id", providerID,
 					"acme_serial", acmeResult.SerialNumber,
@@ -234,7 +238,10 @@ func (s *Server) challengeLoop(ctx context.Context, conn *websocket.Conn, provid
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if provider.Status == registry.StatusUntrusted {
+			provider.Mu().Lock()
+			untrusted := provider.Status == registry.StatusUntrusted
+			provider.Mu().Unlock()
+			if untrusted {
 				return
 			}
 			s.sendChallenge(ctx, conn, providerID, provider, tracker)
@@ -520,6 +527,18 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		if p.AccountID != "" {
 			// Provider is linked to an account — credit the account directly.
 			_ = s.store.Credit(p.AccountID, providerPayout, store.LedgerPayout, msg.RequestID)
+
+			// Record per-node earning for granular provider analytics.
+			_ = s.store.RecordProviderEarning(&store.ProviderEarning{
+				AccountID:        p.AccountID,
+				ProviderID:       providerID,
+				ProviderKey:      p.PublicKey,
+				JobID:            msg.RequestID,
+				Model:            pr.Model,
+				AmountMicroUSD:   providerPayout,
+				PromptTokens:     msg.Usage.PromptTokens,
+				CompletionTokens: msg.Usage.CompletionTokens,
+			})
 		} else if p.WalletAddress != "" {
 			s.ledger.CreditProvider(p.WalletAddress, providerPayout, pr.Model, msg.RequestID)
 		}
@@ -720,7 +739,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		return
 	}
 
-	provider.AttestationResult = &result
+	provider.SetAttestationResult(&result)
 
 	if !result.Valid {
 		s.logger.Warn("provider attestation invalid",
@@ -741,13 +760,12 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			)
 			result.Valid = false
 			result.Error = "encryption key mismatch"
-			provider.AttestationResult = &result
+			provider.SetAttestationResult(&result)
 			return
 		}
 	}
 
-	provider.Attested = true
-	provider.TrustLevel = registry.TrustSelfSigned
+	provider.SetAttested(true, registry.TrustSelfSigned)
 	s.logger.Info("provider attestation verified (self-signed)",
 		"provider_id", providerID,
 		"hardware_model", result.HardwareModel,
@@ -758,7 +776,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		"secure_boot", result.SecureBootEnabled,
 		"authenticated_root", result.AuthenticatedRootEnabled,
 		"system_volume_hash", result.SystemVolumeHash,
-		"trust_level", provider.TrustLevel,
+		"trust_level", registry.TrustSelfSigned,
 	)
 
 	// Deduplicate: if another provider connection exists from the same physical
@@ -825,7 +843,7 @@ func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Prov
 	}
 
 	// MDM SecurityInfo verification passed — upgrade to hardware trust.
-	provider.TrustLevel = registry.TrustHardware
+	provider.SetAttested(true, registry.TrustHardware)
 	s.logger.Info("MDM verification passed — upgraded to hardware trust",
 		"provider_id", providerID,
 		"serial_number", attestResult.SerialNumber,
@@ -921,16 +939,24 @@ func (s *Server) verifyAppleDeviceAttestation(providerID string, provider *regis
 		return
 	}
 
-	// Apple Device Attestation verified — store proof for user verification
+	// Apple Device Attestation verified — store proof for user verification.
+	// Acquire provider lock since these fields are read by HTTP handlers
+	// (handleProviderAttestation, handleChatCompletions) concurrently.
+	seKeyBound := false
+	if seKeyNonce != "" && len(mdaResult.FreshnessCode) > 0 {
+		seKeyBound = bytes.Equal(mdaResult.FreshnessCode, expectedFreshness[:])
+	}
+
+	provider.Mu().Lock()
 	provider.MDAVerified = true
 	provider.MDACertChain = attestResp.CertChain
 	provider.MDAResult = mdaResult
+	provider.SEKeyBound = seKeyBound
+	provider.Mu().Unlock()
 
-	// Verify SE key binding via FreshnessCode if we sent a nonce.
-	// Apple computes FreshnessCode = SHA-256(DeviceAttestationNonce).
+	// Log results.
 	if seKeyNonce != "" && len(mdaResult.FreshnessCode) > 0 {
-		if bytes.Equal(mdaResult.FreshnessCode, expectedFreshness[:]) {
-			provider.SEKeyBound = true
+		if seKeyBound {
 			s.logger.Info("MDA verified with SE key binding — Apple CA confirmed device + key",
 				"provider_id", providerID,
 				"mda_serial", mdaResult.DeviceSerial,
@@ -971,23 +997,23 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		Status        string `json:"status"`
 
 		// Hardware specs
-		MemoryGB         int      `json:"memory_gb"`
-		GPUCores         int      `json:"gpu_cores"`
-		Models           []string `json:"models"`
+		MemoryGB int      `json:"memory_gb"`
+		GPUCores int      `json:"gpu_cores"`
+		Models   []string `json:"models"`
 
 		// Secure Enclave attestation (self-signed)
-		SecureEnclave        bool   `json:"secure_enclave"`
-		SIPEnabled           bool   `json:"sip_enabled"`
-		SecureBootEnabled    bool   `json:"secure_boot_enabled"`
-		AuthenticatedRoot    bool   `json:"authenticated_root_enabled"`
-		SystemVolumeHash     string `json:"system_volume_hash,omitempty"`
-		SEPublicKey          string `json:"se_public_key"`
+		SecureEnclave     bool   `json:"secure_enclave"`
+		SIPEnabled        bool   `json:"sip_enabled"`
+		SecureBootEnabled bool   `json:"secure_boot_enabled"`
+		AuthenticatedRoot bool   `json:"authenticated_root_enabled"`
+		SystemVolumeHash  string `json:"system_volume_hash,omitempty"`
+		SEPublicKey       string `json:"se_public_key"`
 
 		// MDM SecurityInfo (verified by Apple's MDM framework)
 		MDMVerified bool `json:"mdm_verified"`
 
 		// ACME device-attest-01 (SE key proven by Apple)
-		ACMEVerified  bool `json:"acme_verified"`
+		ACMEVerified bool `json:"acme_verified"`
 
 		// Apple Device Attestation (MDA) — certificate chain signed by Apple
 		MDAVerified   bool     `json:"mda_verified"`
@@ -1001,52 +1027,63 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 	var providers []providerAttestation
 
 	s.registry.ForEachProvider(func(p *registry.Provider) {
+		// Snapshot mutable fields under provider lock to avoid racing
+		// with background MDA verification and challenge goroutines.
+		p.Mu().Lock()
+		trustLevel := p.TrustLevel
+		status := p.Status
+		mdaVerified := p.MDAVerified
+		acmeVerified := p.ACMEVerified
+		attestResult := p.AttestationResult
+		mdaCertChain := p.MDACertChain
+		mdaResult := p.MDAResult
+		p.Mu().Unlock()
+
 		pa := providerAttestation{
 			ProviderID:   p.ID,
-			TrustLevel:   string(p.TrustLevel),
-			Status:       string(p.Status),
+			TrustLevel:   string(trustLevel),
+			Status:       string(status),
 			MemoryGB:     p.Hardware.MemoryGB,
 			GPUCores:     p.Hardware.GPUCores,
-			MDMVerified:  p.TrustLevel == registry.TrustHardware,
-			MDAVerified:  p.MDAVerified,
-			ACMEVerified: p.ACMEVerified,
+			MDMVerified:  trustLevel == registry.TrustHardware,
+			MDAVerified:  mdaVerified,
+			ACMEVerified: acmeVerified,
 		}
 
 		for _, m := range p.Models {
 			pa.Models = append(pa.Models, m.ID)
 		}
 
-		if p.AttestationResult != nil {
-			ar := p.AttestationResult
-			pa.ChipName = ar.ChipName
-			pa.HardwareModel = ar.HardwareModel
-			pa.SerialNumber = ar.SerialNumber
-			pa.SecureEnclave = ar.SecureEnclaveAvailable
-			pa.SIPEnabled = ar.SIPEnabled
-			pa.SecureBootEnabled = ar.SecureBootEnabled
-			pa.AuthenticatedRoot = ar.AuthenticatedRootEnabled
-			pa.SystemVolumeHash = ar.SystemVolumeHash
-			pa.SEPublicKey = ar.PublicKey
+		if attestResult != nil {
+			pa.ChipName = attestResult.ChipName
+			pa.HardwareModel = attestResult.HardwareModel
+			pa.SerialNumber = attestResult.SerialNumber
+			pa.SecureEnclave = attestResult.SecureEnclaveAvailable
+			pa.SIPEnabled = attestResult.SIPEnabled
+			pa.SecureBootEnabled = attestResult.SecureBootEnabled
+			pa.AuthenticatedRoot = attestResult.AuthenticatedRootEnabled
+			pa.SystemVolumeHash = attestResult.SystemVolumeHash
+			pa.SEPublicKey = attestResult.PublicKey
 		}
 
 		// Include MDA cert chain for independent verification
-		if len(p.MDACertChain) > 0 {
-			for _, der := range p.MDACertChain {
+		if len(mdaCertChain) > 0 {
+			for _, der := range mdaCertChain {
 				pa.MDACertChain = append(pa.MDACertChain, base64.StdEncoding.EncodeToString(der))
 			}
 		}
-		if p.MDAResult != nil {
-			pa.MDASerial = p.MDAResult.DeviceSerial
-			pa.MDAUDID = p.MDAResult.DeviceUDID
-			pa.MDAOSVersion = p.MDAResult.OSVersion
-			pa.MDASepVersion = p.MDAResult.SepOSVersion
+		if mdaResult != nil {
+			pa.MDASerial = mdaResult.DeviceSerial
+			pa.MDAUDID = mdaResult.DeviceUDID
+			pa.MDAOSVersion = mdaResult.OSVersion
+			pa.MDASepVersion = mdaResult.SepOSVersion
 		}
 
 		providers = append(providers, pa)
 	})
 
 	resp := map[string]any{
-		"providers":                 providers,
+		"providers":                providers,
 		"apple_root_ca_url":        "https://www.apple.com/certificateauthority/",
 		"apple_enterprise_root_ca": "Apple Enterprise Attestation Root CA",
 		"verification_instructions": "Download each provider's mda_cert_chain_b64, decode from base64 to DER, " +

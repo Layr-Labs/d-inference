@@ -65,13 +65,13 @@ type Server struct {
 	billing                *billing.Service
 	logger                 *slog.Logger
 	mux                    *http.ServeMux
-	challengeInterval      time.Duration       // 0 means use DefaultChallengeInterval
-	privyAuth              *auth.PrivyAuth     // Privy JWT authentication (nil if not configured)
-	adminEmails            map[string]bool     // emails that have admin access
-	adminKey               string              // DGINF_ADMIN_KEY for admin endpoints
-	mdmClient              *mdm.Client         // MicroMDM client for provider security verification
-	stepCARootCert         *x509.Certificate   // step-ca root CA for ACME cert verification
-	stepCAIntermediateCert *x509.Certificate   // step-ca intermediate CA
+	challengeInterval      time.Duration     // 0 means use DefaultChallengeInterval
+	privyAuth              *auth.PrivyAuth   // Privy JWT authentication (nil if not configured)
+	adminEmails            map[string]bool   // emails that have admin access
+	adminKey               string            // DGINF_ADMIN_KEY for admin endpoints
+	mdmClient              *mdm.Client       // MicroMDM client for provider security verification
+	stepCARootCert         *x509.Certificate // step-ca root CA for ACME cert verification
+	stepCAIntermediateCert *x509.Certificate // step-ca intermediate CA
 
 	// imageUploads stores generated images keyed by request_id.
 	// Providers upload images via HTTP POST, then send a small WebSocket
@@ -83,11 +83,11 @@ type Server struct {
 // NewServer creates a configured Server with all routes mounted.
 func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Server {
 	s := &Server{
-		registry:          reg,
-		store:             st,
-		ledger:            payments.NewLedger(st),
-		logger:            logger,
-		mux:               http.NewServeMux(),
+		registry:     reg,
+		store:        st,
+		ledger:       payments.NewLedger(st),
+		logger:       logger,
+		mux:          http.NewServeMux(),
 		imageUploads: make(map[string][][]byte),
 	}
 	s.routes()
@@ -98,7 +98,6 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 func (s *Server) SetAdminKey(key string) {
 	s.adminKey = key
 }
-
 
 // SetStepCACerts configures the step-ca CA certificates for ACME client cert verification.
 func (s *Server) SetStepCACerts(root, intermediate *x509.Certificate) {
@@ -177,6 +176,10 @@ func (s *Server) routes() {
 
 	// Provider earnings — no API key auth (providers identify by wallet address).
 	s.mux.HandleFunc("GET /v1/provider/earnings", s.handleProviderEarnings)
+
+	// Per-node provider earnings — public by provider_key, or auth'd by account.
+	s.mux.HandleFunc("GET /v1/provider/node-earnings", s.handleNodeEarnings)
+	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
 
 	// ACME enrollment — generates per-device .mobileconfig for device-attest-01.
 	// No auth needed — security comes from Apple's attestation during ACME challenge.

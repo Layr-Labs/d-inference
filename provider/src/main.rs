@@ -154,13 +154,19 @@ fn get_available_disk_gb() -> f64 {
 
 /// Download a model from the CDN (R2) into the given cache directory.
 ///
-/// Handles both single-file and sharded safetensors models by checking
-/// for `model.safetensors.index.json` and downloading each shard.
+/// Handles text models (safetensors) and image models (.ckpt) from R2.
 fn download_model_from_cdn(s3_name: &str, cache_dir: &std::path::Path, display_name: &str) -> bool {
     let base = format!(
-        "https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev/{}",
+        "https://9e92221750c162ade0f2730f63f4963d.r2.cloudflarestorage.com/d-inf-models/{}",
         s3_name
     );
+
+    // Check if this is an image model (.ckpt files, no config.json)
+    let is_image_model = s3_name.contains("flux") || s3_name.contains("klein");
+
+    if is_image_model {
+        return download_ckpt_model_from_cdn(&base, cache_dir, display_name);
+    }
 
     // 1. Download config.json to verify the model exists on CDN
     let config_ok = std::process::Command::new("curl")
@@ -304,6 +310,59 @@ fn download_model_from_cdn(s3_name: &str, cache_dir: &std::path::Path, display_n
     all_ok
 }
 
+/// Download image model .ckpt files from R2.
+/// Image models have .ckpt weight files instead of safetensors.
+fn download_ckpt_model_from_cdn(
+    base_url: &str,
+    cache_dir: &std::path::Path,
+    display_name: &str,
+) -> bool {
+    // List known .ckpt files for FLUX models
+    let ckpt_files: &[&str] = if base_url.contains("9b") {
+        &["flux_2_klein_9b_q8p.ckpt"]
+    } else if base_url.contains("4b") {
+        &["flux_2_klein_4b_q8p.ckpt", "flux_2_vae_f16.ckpt"]
+    } else {
+        &[]
+    };
+
+    if ckpt_files.is_empty() {
+        println!("  ⚠ Unknown image model format for {}", display_name);
+        return false;
+    }
+
+    println!(
+        "  Downloading {} ({} files)...",
+        display_name,
+        ckpt_files.len()
+    );
+
+    let mut all_ok = true;
+    for (i, f) in ckpt_files.iter().enumerate() {
+        println!("  [{}/{}] {}", i + 1, ckpt_files.len(), f);
+        let ok = std::process::Command::new("curl")
+            .args([
+                "-f#L",
+                &format!("{}/{}", base_url, f),
+                "-o",
+                &cache_dir.join(f).to_string_lossy(),
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            println!("  ⚠ Failed to download {}", f);
+            all_ok = false;
+            break;
+        }
+    }
+
+    if all_ok {
+        println!("  ✓ {} downloaded", display_name);
+    }
+    all_ok
+}
+
 /// Ensure a model's tokenizer_config.json contains a chat_template.
 ///
 /// vllm-mlx calls `tokenizer.apply_chat_template()` which requires this field.
@@ -353,7 +412,10 @@ fn ensure_chat_template(model_path: &str) {
         );
     }
 
-    match std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap_or_default()) {
+    match std::fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&config).unwrap_or_default(),
+    ) {
         Ok(()) => tracing::info!("Injected default ChatML template into tokenizer_config.json"),
         Err(e) => tracing::warn!("Failed to write chat_template to tokenizer config: {e}"),
     }
@@ -616,7 +678,9 @@ async fn main() -> Result<()> {
                 }
             }
             if let Some(ref imp) = image_model_path {
-                unsafe { std::env::set_var("DGINF_IMAGE_MODEL_PATH", imp); }
+                unsafe {
+                    std::env::set_var("DGINF_IMAGE_MODEL_PATH", imp);
+                }
             }
             cmd_serve(local, coordinator, port, model, backend_port, all_models).await
         }
@@ -630,7 +694,12 @@ async fn main() -> Result<()> {
         } => cmd_models(action, coordinator).await,
         Command::Earnings { coordinator } => cmd_earnings(coordinator).await,
         Command::Doctor { coordinator } => cmd_doctor(coordinator).await,
-        Command::Start { coordinator, model, image_model, image_model_path } => cmd_start(coordinator, model, image_model, image_model_path).await,
+        Command::Start {
+            coordinator,
+            model,
+            image_model,
+            image_model_path,
+        } => cmd_start(coordinator, model, image_model, image_model_path).await,
         Command::Stop => cmd_stop().await,
         Command::Logs { lines, watch } => cmd_logs(lines, watch).await,
         Command::Wallet => cmd_wallet().await,
@@ -694,7 +763,10 @@ async fn cmd_install(
     let w = wallet::Wallet::load_or_create()?;
     println!("  ✓ Config: {}", config_path.display());
     println!("  ✓ Node key: {}", key_path.display());
-    println!("  ✓ Wallet: {} (stored in ~/.dginf/wallet_key)", w.address());
+    println!(
+        "  ✓ Wallet: {} (stored in ~/.dginf/wallet_key)",
+        w.address()
+    );
     println!();
 
     // Step 3: MDM enrollment (skip if already enrolled)
@@ -1223,13 +1295,21 @@ async fn cmd_serve(
         let enabled = &cfg.backend.enabled_models;
         let filtered: Vec<_> = all_scanned
             .into_iter()
-            .filter(|m| enabled.iter().any(|e| m.id.contains(e) || e.contains(&m.id)))
+            .filter(|m| {
+                enabled
+                    .iter()
+                    .any(|e| m.id.contains(e) || e.contains(&m.id))
+            })
             .collect();
         if filtered.is_empty() {
             tracing::warn!("No enabled_models matched downloaded models — advertising all");
             models::scan_models(&hw)
         } else {
-            tracing::info!("Advertising {} of {} downloaded models (filtered by enabled_models)", filtered.len(), models::scan_models(&hw).len());
+            tracing::info!(
+                "Advertising {} of {} downloaded models (filtered by enabled_models)",
+                filtered.len(),
+                models::scan_models(&hw).len()
+            );
             filtered
         }
     };
@@ -1377,7 +1457,11 @@ async fn cmd_serve(
             tracing::warn!("Could not resolve local path for {model} — using ID directly");
             model.clone()
         });
-    tracing::info!("Starting inference backend for model: {} (path: {})", model, model_path);
+    tracing::info!(
+        "Starting inference backend for model: {} (path: {})",
+        model,
+        model_path
+    );
 
     // Ensure the model's tokenizer_config.json has a chat_template.
     // Some models (especially custom quantizations) ship without one,
@@ -1391,10 +1475,12 @@ async fn cmd_serve(
     let backend_module = preferred_inference_backend_module();
 
     let child = spawn_inference_backend(&python_cmd, backend_module, &model_path, be_port)
-        .map_err(|e| anyhow::anyhow!(
-            "Failed to start {backend_module}: {e}.\n\
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to start {backend_module}: {e}.\n\
              Reinstall: curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash"
-        ))?;
+            )
+        })?;
 
     let backend_name = backend_name_for_module(backend_module);
     tracing::info!(
@@ -1692,7 +1778,7 @@ async fn cmd_serve(
 
             // Idle timeout: shut down the backend after 10 minutes of no
             // requests to free GPU memory. Lazy-reload on next request.
-            const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+            const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
             let mut last_request_time = tokio::time::Instant::now();
             let mut backend_running = true;
 
@@ -1933,10 +2019,7 @@ async fn shutdown_backend() {
 
 /// Restart the inference backend and wait for it to become healthy.
 fn preferred_inference_backend_module() -> &'static str {
-    match std::env::var("DGINF_INFERENCE_BACKEND")
-        .ok()
-        .as_deref()
-    {
+    match std::env::var("DGINF_INFERENCE_BACKEND").ok().as_deref() {
         Some("vllm-mlx") | Some("vllm_mlx") | Some("vllm_mlx.server") => "vllm_mlx.server",
         Some("mlx_lm") | Some("mlx_lm.server") => "mlx_lm.server",
         _ => "vllm_mlx.server",
@@ -2799,11 +2882,19 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
                     println!("  Downloading {}...", cm.display_name);
 
                     let s3_name = &cm.s3_name;
-                    let cache_dir = dirs::home_dir()
-                        .unwrap_or_default()
-                        .join(".cache/huggingface/hub")
-                        .join(format!("models--{}", cm.id.replace('/', "--")))
-                        .join("snapshots/main");
+                    let is_image = cm.model_type == "image";
+                    let cache_dir = if is_image {
+                        dirs::home_dir()
+                            .unwrap_or_default()
+                            .join(".dginf/models")
+                            .join(s3_name)
+                    } else {
+                        dirs::home_dir()
+                            .unwrap_or_default()
+                            .join(".cache/huggingface/hub")
+                            .join(format!("models--{}", cm.id.replace('/', "--")))
+                            .join("snapshots/main")
+                    };
                     let _ = std::fs::create_dir_all(&cache_dir);
 
                     // Try pre-packaged tarball from CDN first
@@ -3187,7 +3278,12 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_start(coordinator_url: String, model_override: Option<String>, image_model: Option<String>, image_model_path: Option<String>) -> Result<()> {
+async fn cmd_start(
+    coordinator_url: String,
+    model_override: Option<String>,
+    image_model: Option<String>,
+    image_model_path: Option<String>,
+) -> Result<()> {
     // Stop any existing provider first
     cmd_stop().await?;
 
@@ -3252,7 +3348,12 @@ async fn cmd_start(coordinator_url: String, model_override: Option<String>, imag
         .join(".dginf/provider.log");
 
     // Install as launchd user agent (auto-restarts on crash)
-    service::install_and_start(&coordinator_url, &model, image_model.as_deref(), image_model_path.as_deref())?;
+    service::install_and_start(
+        &coordinator_url,
+        &model,
+        image_model.as_deref(),
+        image_model_path.as_deref(),
+    )?;
 
     println!("Provider installed as system service");
     println!("  Model:   {}", model);

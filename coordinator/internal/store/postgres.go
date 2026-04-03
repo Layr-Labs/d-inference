@@ -231,6 +231,22 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (code, account_id)
 		)`,
+
+		// Provider earnings — per-node tracking
+		`CREATE TABLE IF NOT EXISTS provider_earnings (
+			id BIGSERIAL PRIMARY KEY,
+			account_id TEXT NOT NULL,
+			provider_id TEXT NOT NULL,
+			provider_key TEXT NOT NULL DEFAULT '',
+			job_id TEXT NOT NULL,
+			model TEXT NOT NULL,
+			amount_micro_usd BIGINT NOT NULL,
+			prompt_tokens INTEGER NOT NULL DEFAULT 0,
+			completion_tokens INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_earnings_account ON provider_earnings(account_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_earnings_provider ON provider_earnings(provider_key, created_at DESC)`,
 	}
 
 	for _, m := range migrations {
@@ -1201,4 +1217,89 @@ func (s *PostgresStore) HasRedeemedInviteCode(code, accountID string) bool {
 		code, accountID,
 	).Scan(&count)
 	return count > 0
+}
+
+// --- Provider Earnings ---
+
+// RecordProviderEarning stores an earning record for a specific provider node.
+func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		earning.AccountID, earning.ProviderID, earning.ProviderKey, earning.JobID,
+		earning.Model, earning.AmountMicroUSD, earning.PromptTokens, earning.CompletionTokens,
+	)
+	if err != nil {
+		return fmt.Errorf("store: insert provider earning: %w", err)
+	}
+	return nil
+}
+
+// GetProviderEarnings returns earnings for a specific provider node (by public key), newest first.
+func (s *PostgresStore) GetProviderEarnings(providerKey string, limit int) ([]ProviderEarning, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
+		 FROM provider_earnings
+		 WHERE provider_key = $1
+		 ORDER BY created_at DESC
+		 LIMIT $2`,
+		providerKey, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query provider earnings: %w", err)
+	}
+	defer rows.Close()
+
+	var results []ProviderEarning
+	for rows.Next() {
+		var e ProviderEarning
+		if err := rows.Scan(&e.ID, &e.AccountID, &e.ProviderID, &e.ProviderKey, &e.JobID,
+			&e.Model, &e.AmountMicroUSD, &e.PromptTokens, &e.CompletionTokens, &e.CreatedAt); err != nil {
+			continue
+		}
+		results = append(results, e)
+	}
+	if results == nil {
+		return []ProviderEarning{}, nil
+	}
+	return results, nil
+}
+
+// GetAccountEarnings returns all earnings across all nodes for an account, newest first.
+func (s *PostgresStore) GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
+		 FROM provider_earnings
+		 WHERE account_id = $1
+		 ORDER BY created_at DESC
+		 LIMIT $2`,
+		accountID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query account earnings: %w", err)
+	}
+	defer rows.Close()
+
+	var results []ProviderEarning
+	for rows.Next() {
+		var e ProviderEarning
+		if err := rows.Scan(&e.ID, &e.AccountID, &e.ProviderID, &e.ProviderKey, &e.JobID,
+			&e.Model, &e.AmountMicroUSD, &e.PromptTokens, &e.CompletionTokens, &e.CreatedAt); err != nil {
+			continue
+		}
+		results = append(results, e)
+	}
+	if results == nil {
+		return []ProviderEarning{}, nil
+	}
+	return results, nil
 }

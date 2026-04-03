@@ -8,19 +8,20 @@
 // hardware.
 //
 // Cross-language JSON compatibility:
-//   The attestation blob is signed over its JSON representation. Swift's
-//   JSONEncoder with .sortedKeys produces alphabetically-sorted keys, while
-//   Go's encoding/json marshals struct fields in declaration order. To ensure
-//   both produce identical JSON for signature verification, the Go struct
-//   fields are declared in alphabetical order by JSON key name, and a
-//   marshalSortedJSON helper is provided as a fallback.
+//
+//	The attestation blob is signed over its JSON representation. Swift's
+//	JSONEncoder with .sortedKeys produces alphabetically-sorted keys, while
+//	Go's encoding/json marshals struct fields in declaration order. To ensure
+//	both produce identical JSON for signature verification, the Go struct
+//	fields are declared in alphabetical order by JSON key name, and a
+//	marshalSortedJSON helper is provided as a fallback.
 //
 // Verification checks:
-//   1. P-256 ECDSA signature validity against the embedded public key
-//   2. Secure Enclave availability (required)
-//   3. SIP enabled (required)
-//   4. Secure Boot enabled (required)
-//   5. Optional: encryption public key matches registration key
+//  1. P-256 ECDSA signature validity against the embedded public key
+//  2. Secure Enclave availability (required)
+//  3. SIP enabled (required)
+//  4. Secure Boot enabled (required)
+//  5. Optional: encryption public key matches registration key
 package attestation
 
 import (
@@ -65,9 +66,9 @@ type AttestationBlob struct {
 // and Go encode JSON slightly differently — e.g., Swift escapes forward
 // slashes in base64 strings).
 type SignedAttestation struct {
-	Attestation    AttestationBlob  `json:"attestation"`
-	AttestationRaw json.RawMessage  `json:"-"` // original bytes for verification
-	Signature      string           `json:"signature"`
+	Attestation    AttestationBlob `json:"attestation"`
+	AttestationRaw json.RawMessage `json:"-"` // original bytes for verification
+	Signature      string          `json:"signature"`
 }
 
 // UnmarshalJSON preserves the raw attestation bytes for signature verification.
@@ -125,18 +126,18 @@ type ecdsaSig struct {
 func Verify(signed SignedAttestation) VerificationResult {
 	result := VerificationResult{
 		PublicKey:                signed.Attestation.PublicKey,
-		EncryptionPublicKey:     signed.Attestation.EncryptionPublicKey,
-		BinaryHash:              signed.Attestation.BinaryHash,
-		HardwareModel:           signed.Attestation.HardwareModel,
-		ChipName:                signed.Attestation.ChipName,
-		SerialNumber:            signed.Attestation.SerialNumber,
-		SecureEnclaveAvailable:  signed.Attestation.SecureEnclaveAvailable,
-		SIPEnabled:              signed.Attestation.SIPEnabled,
-		SecureBootEnabled:       signed.Attestation.SecureBootEnabled,
-		HypervisorActive:        signed.Attestation.HypervisorActive,
-		RDMADisabled:            signed.Attestation.RDMADisabled,
+		EncryptionPublicKey:      signed.Attestation.EncryptionPublicKey,
+		BinaryHash:               signed.Attestation.BinaryHash,
+		HardwareModel:            signed.Attestation.HardwareModel,
+		ChipName:                 signed.Attestation.ChipName,
+		SerialNumber:             signed.Attestation.SerialNumber,
+		SecureEnclaveAvailable:   signed.Attestation.SecureEnclaveAvailable,
+		SIPEnabled:               signed.Attestation.SIPEnabled,
+		SecureBootEnabled:        signed.Attestation.SecureBootEnabled,
+		HypervisorActive:         signed.Attestation.HypervisorActive,
+		RDMADisabled:             signed.Attestation.RDMADisabled,
 		AuthenticatedRootEnabled: signed.Attestation.AuthenticatedRootEnabled,
-		SystemVolumeHash:        signed.Attestation.SystemVolumeHash,
+		SystemVolumeHash:         signed.Attestation.SystemVolumeHash,
 	}
 
 	// Parse timestamp

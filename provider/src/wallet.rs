@@ -76,7 +76,10 @@ fn generate_private_key() -> String {
 
 fn address_from_private_key(key_hex: &str) -> Result<String> {
     if key_hex.len() != 64 {
-        anyhow::bail!("invalid private key length: expected 64 hex chars, got {}", key_hex.len());
+        anyhow::bail!(
+            "invalid private key length: expected 64 hex chars, got {}",
+            key_hex.len()
+        );
     }
 
     let output = std::process::Command::new("shasum")
@@ -157,5 +160,99 @@ mod tests {
     fn test_hex_encode() {
         assert_eq!(hex_encode(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
         assert_eq!(hex_encode(&[0x00, 0xff]), "00ff");
+    }
+
+    // -----------------------------------------------------------------------
+    // Wallet address format verification
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_address_format_42_chars() {
+        let key = generate_private_key();
+        let addr = address_from_private_key(&key).unwrap();
+        assert_eq!(
+            addr.len(),
+            42,
+            "Address should be exactly 42 characters (0x + 40 hex), got: {}",
+            addr
+        );
+    }
+
+    #[test]
+    fn test_address_starts_with_0x() {
+        let key = generate_private_key();
+        let addr = address_from_private_key(&key).unwrap();
+        assert!(
+            addr.starts_with("0x"),
+            "Address should start with 0x, got: {}",
+            addr
+        );
+    }
+
+    #[test]
+    fn test_address_valid_hex_string() {
+        let key = generate_private_key();
+        let addr = address_from_private_key(&key).unwrap();
+
+        // Strip 0x prefix and verify all chars are hex digits
+        let hex_part = &addr[2..];
+        assert_eq!(hex_part.len(), 40, "Hex portion should be 40 characters");
+        assert!(
+            hex_part.chars().all(|c| c.is_ascii_hexdigit()),
+            "Address should contain only hex characters after 0x, got: {}",
+            addr
+        );
+    }
+
+    #[test]
+    fn test_address_deterministic_multiple_calls() {
+        let key = generate_private_key();
+        let addr1 = address_from_private_key(&key).unwrap();
+        let addr2 = address_from_private_key(&key).unwrap();
+        let addr3 = address_from_private_key(&key).unwrap();
+        assert_eq!(addr1, addr2);
+        assert_eq!(addr2, addr3);
+    }
+
+    #[test]
+    fn test_different_keys_produce_different_addresses() {
+        let key1 = generate_private_key();
+        let key2 = generate_private_key();
+
+        // Keys should be different (generated from /dev/urandom)
+        assert_ne!(key1, key2, "Generated keys should be different");
+
+        let addr1 = address_from_private_key(&key1).unwrap();
+        let addr2 = address_from_private_key(&key2).unwrap();
+        assert_ne!(
+            addr1, addr2,
+            "Different keys should produce different addresses"
+        );
+    }
+
+    #[test]
+    fn test_private_key_format() {
+        let key = generate_private_key();
+        assert_eq!(
+            key.len(),
+            64,
+            "Private key should be 64 hex chars (32 bytes)"
+        );
+        assert!(
+            key.chars().all(|c| c.is_ascii_hexdigit()),
+            "Private key should be valid hex"
+        );
+    }
+
+    #[test]
+    fn test_address_from_known_key() {
+        // Use a fixed known key and verify the address is stable across runs.
+        // The key is just 32 zero bytes in hex.
+        let key = "0000000000000000000000000000000000000000000000000000000000000000";
+        let addr1 = address_from_private_key(key).unwrap();
+        let addr2 = address_from_private_key(key).unwrap();
+        assert_eq!(addr1, addr2, "Same key should always produce same address");
+        assert_eq!(addr1.len(), 42);
+        assert!(addr1.starts_with("0x"));
     }
 }

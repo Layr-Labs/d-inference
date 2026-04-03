@@ -254,29 +254,48 @@ func TestStreamingE2E(t *testing.T) {
 	// Give the server a moment to process registration.
 	time.Sleep(100 * time.Millisecond)
 
-	// Upgrade provider to hardware trust for routing eligibility.
+	// Upgrade provider to hardware trust and mark challenge as verified
+	// so it's eligible for routing (FindProviderWithTrust requires a
+	// recent LastChallengeVerified).
 	for _, id := range reg.ProviderIDs() {
-		p := reg.GetProvider(id)
-		if p != nil {
-			p.TrustLevel = registry.TrustHardware
-		}
+		reg.SetTrustLevel(id, registry.TrustHardware)
+		reg.RecordChallengeSuccess(id)
 	}
 
 	// Start a goroutine to handle inference on the provider side.
+	// The provider must handle the immediate attestation challenge that
+	// fires on registration before the inference request arrives.
 	providerDone := make(chan struct{})
 	go func() {
 		defer close(providerDone)
-		// Read the inference request.
-		_, data, err := conn.Read(ctx)
-		if err != nil {
-			t.Errorf("provider read: %v", err)
-			return
-		}
-
 		var inferReq protocol.InferenceRequestMessage
-		if err := json.Unmarshal(data, &inferReq); err != nil {
-			t.Errorf("unmarshal inference request: %v", err)
-			return
+		for {
+			_, data, err := conn.Read(ctx)
+			if err != nil {
+				t.Errorf("provider read: %v", err)
+				return
+			}
+			// Check if this is a challenge — respond and continue reading.
+			var raw map[string]interface{}
+			if err := json.Unmarshal(data, &raw); err == nil {
+				if raw["type"] == protocol.TypeAttestationChallenge {
+					resp := protocol.AttestationResponseMessage{
+						Type:      protocol.TypeAttestationResponse,
+						Nonce:     raw["nonce"].(string),
+						PublicKey: "dummy",
+						Signature: "dummy",
+					}
+					respData, _ := json.Marshal(resp)
+					conn.Write(ctx, websocket.MessageText, respData)
+					continue
+				}
+			}
+			// Otherwise it's the inference request.
+			if err := json.Unmarshal(data, &inferReq); err != nil {
+				t.Errorf("unmarshal inference request: %v", err)
+				return
+			}
+			break
 		}
 
 		// Send two chunks.
@@ -390,26 +409,42 @@ func TestNonStreamingE2E(t *testing.T) {
 	conn.Write(ctx, websocket.MessageText, regData)
 	time.Sleep(100 * time.Millisecond)
 
-	// Upgrade provider to hardware trust for routing eligibility.
+	// Upgrade provider to hardware trust and mark challenge as verified
+	// so it's eligible for routing (FindProviderWithTrust requires a
+	// recent LastChallengeVerified).
 	for _, id := range reg.ProviderIDs() {
-		p := reg.GetProvider(id)
-		if p != nil {
-			p.TrustLevel = registry.TrustHardware
-		}
+		reg.SetTrustLevel(id, registry.TrustHardware)
+		reg.RecordChallengeSuccess(id)
 	}
 
-	// Provider goroutine.
+	// Provider goroutine — handles immediate challenge, then inference.
 	providerDone := make(chan struct{})
 	go func() {
 		defer close(providerDone)
-		_, data, err := conn.Read(ctx)
-		if err != nil {
-			t.Errorf("provider read: %v", err)
-			return
-		}
-
 		var inferReq protocol.InferenceRequestMessage
-		json.Unmarshal(data, &inferReq)
+		for {
+			_, data, err := conn.Read(ctx)
+			if err != nil {
+				t.Errorf("provider read: %v", err)
+				return
+			}
+			var raw map[string]interface{}
+			if err := json.Unmarshal(data, &raw); err == nil {
+				if raw["type"] == protocol.TypeAttestationChallenge {
+					resp := protocol.AttestationResponseMessage{
+						Type:      protocol.TypeAttestationResponse,
+						Nonce:     raw["nonce"].(string),
+						PublicKey: "dummy",
+						Signature: "dummy",
+					}
+					respData, _ := json.Marshal(resp)
+					conn.Write(ctx, websocket.MessageText, respData)
+					continue
+				}
+			}
+			json.Unmarshal(data, &inferReq)
+			break
+		}
 
 		// Send one chunk with the full content.
 		chunk := protocol.InferenceResponseChunkMessage{
@@ -525,8 +560,10 @@ func TestNormalizeSSEChunk(t *testing.T) {
 				if !strings.Contains(got, `"tool_calls":[]`) {
 					t.Errorf("expected tool_calls to be empty array, got: %s", got)
 				}
-				if !strings.Contains(got, `"reasoning_content":""`) {
-					t.Errorf("expected reasoning_content to be empty string, got: %s", got)
+				// reasoning_content should be removed (merged into reasoning)
+				// to avoid ForgeCode serde duplicate-field errors.
+				if strings.Contains(got, `"reasoning_content"`) {
+					t.Errorf("expected reasoning_content to be removed (deduped into reasoning), got: %s", got)
 				}
 			},
 		},
@@ -614,6 +651,43 @@ func TestProviderEarningsEndpoint(t *testing.T) {
 	ledger := resp["ledger"].([]any)
 	if len(ledger) != 2 {
 		t.Errorf("ledger entries = %d, want 2", len(ledger))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Benchmarks for normalizeSSEChunk (called per SSE chunk in streaming path)
+// ---------------------------------------------------------------------------
+
+func BenchmarkNormalizeSSEChunk_NoNulls(b *testing.B) {
+	b.ReportAllocs()
+	// Fast path: no null fields, function should return early.
+	chunk := `data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1700000000,"model":"qwen3.5-27b","choices":[{"index":0,"delta":{"content":"Hello world"},"finish_reason":null}]}`
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = normalizeSSEChunk(chunk)
+	}
+}
+
+func BenchmarkNormalizeSSEChunk_WithNulls(b *testing.B) {
+	b.ReportAllocs()
+	// Slow path: has null content, tool_calls, reasoning_content that need fixing.
+	chunk := `data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1700000000,"model":"qwen3.5-27b","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":null,"reasoning_content":null},"finish_reason":null}],"usage":null,"system_fingerprint":null}`
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = normalizeSSEChunk(chunk)
+	}
+}
+
+func BenchmarkNormalizeSSEChunk_Usage(b *testing.B) {
+	b.ReportAllocs()
+	// Final chunk with usage object (should be preserved, not removed).
+	chunk := `data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1700000000,"model":"qwen3.5-27b","choices":[],"usage":{"prompt_tokens":150,"completion_tokens":83,"total_tokens":233}}`
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = normalizeSSEChunk(chunk)
 	}
 }
 

@@ -8,6 +8,7 @@ import {
   fetchUsage,
   deposit,
   withdraw,
+  redeemInviteCode,
   type BalanceResponse,
   type UsageEntry,
 } from "@/lib/api";
@@ -19,6 +20,8 @@ import {
   Loader2,
   DollarSign,
   TrendingUp,
+  Ticket,
+  Check,
 } from "lucide-react";
 import { UsageChart } from "@/components/UsageChart";
 
@@ -60,6 +63,9 @@ export default function BillingPage() {
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [walletAddr, setWalletAddr] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
+  const [inviteCode, setInviteCode] = useState("");
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteSuccess, setInviteSuccess] = useState("");
   const [sortField, setSortField] = useState<"timestamp" | "cost_micro_usd">(
     "timestamp"
   );
@@ -92,6 +98,22 @@ export default function BillingPage() {
       addToast(`Deposit failed: ${(e as Error).message}`);
     }
     setActionLoading(false);
+  };
+
+  const handleRedeem = async () => {
+    const code = inviteCode.trim().toUpperCase();
+    if (!code) return;
+    setInviteLoading(true);
+    setInviteSuccess("");
+    try {
+      const result = await redeemInviteCode(code);
+      setInviteSuccess(`$${result.credited_usd} credited to your account`);
+      setInviteCode("");
+      loadData();
+    } catch (e) {
+      addToast(`${(e as Error).message}`);
+    }
+    setInviteLoading(false);
   };
 
   const handleWithdraw = async () => {
@@ -167,6 +189,47 @@ export default function BillingPage() {
                 </button>
               </div>
             </div>
+          </div>
+
+          {/* Invite Code Redemption */}
+          <div className="rounded-2xl border border-border-subtle bg-bg-secondary p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <Ticket size={16} className="text-accent-brand" />
+              <h3 className="text-sm font-medium text-text-primary">Invite Code</h3>
+            </div>
+            <div className="flex gap-3">
+              <input
+                type="text"
+                value={inviteCode}
+                onChange={(e) => {
+                  setInviteSuccess("");
+                  const raw = e.target.value.replace(/[^A-Za-z0-9-]/g, "").toUpperCase();
+                  setInviteCode(raw);
+                }}
+                placeholder="INV-XXXXXXXX"
+                maxLength={20}
+                className="flex-1 bg-bg-tertiary border border-border-subtle rounded-lg px-4 py-2.5 text-text-primary font-mono text-sm tracking-wider outline-none focus:border-accent-brand/50 transition-colors placeholder:text-text-tertiary/50"
+                onKeyDown={(e) => e.key === "Enter" && handleRedeem()}
+              />
+              <button
+                onClick={handleRedeem}
+                disabled={inviteLoading || !inviteCode.trim()}
+                className="px-5 py-2.5 rounded-lg bg-accent-brand text-white text-sm font-medium hover:bg-accent-brand-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+              >
+                {inviteLoading ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Ticket size={14} />
+                )}
+                Redeem
+              </button>
+            </div>
+            {inviteSuccess && (
+              <div className="mt-3 flex items-center gap-2 text-sm text-accent-green">
+                <Check size={14} />
+                {inviteSuccess}
+              </div>
+            )}
           </div>
 
           {/* Stats row */}

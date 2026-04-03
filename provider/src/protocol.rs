@@ -536,7 +536,9 @@ mod tests {
         let raw = r#"{"type":"inference_request","request_id":"abc-123","body":{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":false}}"#;
         let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
         match msg {
-            CoordinatorMessage::InferenceRequest { request_id, body, .. } => {
+            CoordinatorMessage::InferenceRequest {
+                request_id, body, ..
+            } => {
                 assert_eq!(request_id, "abc-123");
                 assert_eq!(body["model"], "test");
                 assert_eq!(body["stream"], false);
@@ -684,7 +686,11 @@ mod tests {
         let raw = r#"{"type":"transcription_request","request_id":"go-req-1","body":{"model":"cohere-transcribe","audio":"dGVzdA==","language":"en","format":"mp3"}}"#;
         let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
         match msg {
-            CoordinatorMessage::TranscriptionRequest { request_id, body, encrypted_body } => {
+            CoordinatorMessage::TranscriptionRequest {
+                request_id,
+                body,
+                encrypted_body,
+            } => {
                 assert_eq!(request_id, "go-req-1");
                 assert_eq!(body["model"], "cohere-transcribe");
                 assert_eq!(body["audio"], "dGVzdA==");
@@ -700,7 +706,11 @@ mod tests {
         let raw = r#"{"type":"transcription_request","request_id":"enc-1","encrypted_body":{"ephemeral_public_key":"a2V5","ciphertext":"Y2lwaGVy"}}"#;
         let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
         match msg {
-            CoordinatorMessage::TranscriptionRequest { request_id, encrypted_body, .. } => {
+            CoordinatorMessage::TranscriptionRequest {
+                request_id,
+                encrypted_body,
+                ..
+            } => {
                 assert_eq!(request_id, "enc-1");
                 let enc = encrypted_body.unwrap();
                 assert_eq!(enc.ephemeral_public_key, "a2V5");
@@ -720,7 +730,8 @@ mod tests {
         });
         let msg = CoordinatorMessage::ImageGenerationRequest {
             request_id: "img-123".to_string(),
-            upload_url: "https://example.com/v1/provider/image-upload?request_id=img-123".to_string(),
+            upload_url: "https://example.com/v1/provider/image-upload?request_id=img-123"
+                .to_string(),
             body,
             encrypted_body: None,
         };
@@ -764,7 +775,12 @@ mod tests {
         let raw = r#"{"type":"image_generation_request","request_id":"go-img-1","upload_url":"https://example.com/upload","body":{"model":"flux-klein-4b","prompt":"sunset over mountains","n":2,"size":"512x512"}}"#;
         let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
         match msg {
-            CoordinatorMessage::ImageGenerationRequest { request_id, upload_url, body, encrypted_body } => {
+            CoordinatorMessage::ImageGenerationRequest {
+                request_id,
+                upload_url,
+                body,
+                encrypted_body,
+            } => {
                 assert_eq!(request_id, "go-img-1");
                 assert_eq!(upload_url, "https://example.com/upload");
                 assert_eq!(body["model"], "flux-klein-4b");
@@ -781,7 +797,11 @@ mod tests {
         let raw = r#"{"type":"image_generation_request","request_id":"enc-img-1","upload_url":"https://example.com/upload","encrypted_body":{"ephemeral_public_key":"a2V5","ciphertext":"Y2lwaGVy"}}"#;
         let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
         match msg {
-            CoordinatorMessage::ImageGenerationRequest { request_id, encrypted_body, .. } => {
+            CoordinatorMessage::ImageGenerationRequest {
+                request_id,
+                encrypted_body,
+                ..
+            } => {
                 assert_eq!(request_id, "enc-img-1");
                 let enc = encrypted_body.unwrap();
                 assert_eq!(enc.ephemeral_public_key, "a2V5");
@@ -789,5 +809,288 @@ mod tests {
             }
             _ => panic!("expected ImageGenerationRequest"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Go-format JSON deserialization tests — simulating coordinator messages
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_deserialize_go_inference_request_with_encrypted_body() {
+        // Simulates what the Go coordinator sends when E2E encryption is enabled:
+        // body is null/empty, encrypted_body carries the NaCl Box payload.
+        let raw = r#"{
+            "type": "inference_request",
+            "request_id": "go-enc-req-1",
+            "body": null,
+            "encrypted_body": {
+                "ephemeral_public_key": "dGVzdGVwaGVtZXJhbHB1YmxpY2tleWJ5dGVzMTI=",
+                "ciphertext": "bm9uY2UyNGJ5dGVzaGVyZTEyMzRjaXBoZXJ0ZXh0ZGF0YQ=="
+            }
+        }"#;
+        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
+        match msg {
+            CoordinatorMessage::InferenceRequest {
+                request_id,
+                body,
+                encrypted_body,
+            } => {
+                assert_eq!(request_id, "go-enc-req-1");
+                assert!(body.is_null(), "body should be null when encrypted");
+                let enc = encrypted_body.expect("encrypted_body should be present");
+                assert_eq!(
+                    enc.ephemeral_public_key,
+                    "dGVzdGVwaGVtZXJhbHB1YmxpY2tleWJ5dGVzMTI="
+                );
+                assert_eq!(
+                    enc.ciphertext,
+                    "bm9uY2UyNGJ5dGVzaGVyZTEyMzRjaXBoZXJ0ZXh0ZGF0YQ=="
+                );
+            }
+            _ => panic!("expected InferenceRequest"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_go_attestation_challenge() {
+        // Exact JSON format the Go coordinator sends for attestation challenges.
+        let raw = r#"{"type":"attestation_challenge","nonce":"cmFuZG9tLW5vbmNlLWJ5dGVz","timestamp":"2026-04-03T12:00:00Z"}"#;
+        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
+        match msg {
+            CoordinatorMessage::AttestationChallenge { nonce, timestamp } => {
+                assert_eq!(nonce, "cmFuZG9tLW5vbmNlLWJ5dGVz");
+                assert_eq!(timestamp, "2026-04-03T12:00:00Z");
+            }
+            _ => panic!("expected AttestationChallenge"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_go_cancel() {
+        let raw = r#"{"type":"cancel","request_id":"req-to-cancel-42"}"#;
+        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
+        match msg {
+            CoordinatorMessage::Cancel { request_id } => {
+                assert_eq!(request_id, "req-to-cancel-42");
+            }
+            _ => panic!("expected Cancel"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_go_inference_request_with_all_fields() {
+        // Full inference request as the Go coordinator would emit (no encryption,
+        // all OpenAI-compatible body fields present).
+        let raw = r#"{
+            "type": "inference_request",
+            "request_id": "uuid-full-1",
+            "body": {
+                "model": "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit",
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": "Write a hello world in Rust."}
+                ],
+                "stream": true,
+                "temperature": 0.7,
+                "max_tokens": 2048,
+                "top_p": 0.9
+            }
+        }"#;
+        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
+        match msg {
+            CoordinatorMessage::InferenceRequest {
+                request_id,
+                body,
+                encrypted_body,
+            } => {
+                assert_eq!(request_id, "uuid-full-1");
+                assert!(encrypted_body.is_none());
+                assert_eq!(
+                    body["model"],
+                    "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"
+                );
+                assert_eq!(body["stream"], true);
+                assert_eq!(body["temperature"], 0.7);
+                assert_eq!(body["max_tokens"], 2048);
+                let messages = body["messages"].as_array().unwrap();
+                assert_eq!(messages.len(), 2);
+                assert_eq!(messages[0]["role"], "system");
+                assert_eq!(messages[1]["role"], "user");
+            }
+            _ => panic!("expected InferenceRequest"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Comprehensive ProviderMessage variant round-trip tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_all_provider_message_variants_roundtrip() {
+        use crate::hardware::{SystemMetrics, ThermalState};
+
+        let messages: Vec<ProviderMessage> = vec![
+            // Register (minimal)
+            ProviderMessage::Register {
+                hardware: sample_hardware(),
+                models: vec![],
+                backend: "vllm_mlx".to_string(),
+                public_key: None,
+                wallet_address: None,
+                attestation: None,
+                prefill_tps: None,
+                decode_tps: None,
+                auth_token: None,
+            },
+            // Heartbeat (idle)
+            ProviderMessage::Heartbeat {
+                status: ProviderStatus::Idle,
+                active_model: None,
+                stats: ProviderStats::default(),
+                system_metrics: SystemMetrics {
+                    memory_pressure: 0.0,
+                    cpu_usage: 0.0,
+                    thermal_state: ThermalState::Nominal,
+                },
+            },
+            // Heartbeat (serving)
+            ProviderMessage::Heartbeat {
+                status: ProviderStatus::Serving,
+                active_model: Some("test-model".to_string()),
+                stats: ProviderStats {
+                    requests_served: 42,
+                    tokens_generated: 10000,
+                },
+                system_metrics: SystemMetrics {
+                    memory_pressure: 0.8,
+                    cpu_usage: 0.95,
+                    thermal_state: ThermalState::Serious,
+                },
+            },
+            // InferenceResponseChunk
+            ProviderMessage::InferenceResponseChunk {
+                request_id: "req-1".to_string(),
+                data: "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}".to_string(),
+            },
+            // InferenceComplete
+            ProviderMessage::InferenceComplete {
+                request_id: "req-1".to_string(),
+                usage: UsageInfo {
+                    prompt_tokens: 25,
+                    completion_tokens: 150,
+                },
+                se_signature: Some("c2lnbmF0dXJl".to_string()),
+                response_hash: Some("aGFzaA==".to_string()),
+            },
+            // InferenceError
+            ProviderMessage::InferenceError {
+                request_id: "req-2".to_string(),
+                error: "out of memory".to_string(),
+                status_code: 503,
+            },
+            // AttestationResponse
+            ProviderMessage::AttestationResponse {
+                nonce: "bm9uY2U=".to_string(),
+                signature: "c2ln".to_string(),
+                public_key: "cGs=".to_string(),
+                hypervisor_active: Some(false),
+                rdma_disabled: Some(true),
+                sip_enabled: Some(true),
+                secure_boot_enabled: Some(true),
+            },
+        ];
+
+        for msg in &messages {
+            let json = serde_json::to_string(msg).unwrap();
+            let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(msg, &deserialized, "Round-trip failed for: {json}");
+        }
+    }
+
+    #[test]
+    fn test_all_coordinator_message_variants_roundtrip() {
+        let messages: Vec<CoordinatorMessage> = vec![
+            CoordinatorMessage::InferenceRequest {
+                request_id: "r1".to_string(),
+                body: serde_json::json!({"model": "test", "messages": [], "stream": true}),
+                encrypted_body: None,
+            },
+            CoordinatorMessage::InferenceRequest {
+                request_id: "r2".to_string(),
+                body: serde_json::Value::Null,
+                encrypted_body: Some(EncryptedPayload {
+                    ephemeral_public_key: "ZXBoZW1lcmFs".to_string(),
+                    ciphertext: "Y2lwaGVy".to_string(),
+                }),
+            },
+            CoordinatorMessage::TranscriptionRequest {
+                request_id: "t1".to_string(),
+                body: serde_json::json!({"model": "whisper", "audio": "YXVkaW8="}),
+                encrypted_body: None,
+            },
+            CoordinatorMessage::ImageGenerationRequest {
+                request_id: "i1".to_string(),
+                upload_url: "https://example.com/upload".to_string(),
+                body: serde_json::json!({"model": "flux", "prompt": "a cat"}),
+                encrypted_body: None,
+            },
+            CoordinatorMessage::Cancel {
+                request_id: "c1".to_string(),
+            },
+            CoordinatorMessage::AttestationChallenge {
+                nonce: "bm9uY2U=".to_string(),
+                timestamp: "2026-01-01T00:00:00Z".to_string(),
+            },
+        ];
+
+        for msg in &messages {
+            let json = serde_json::to_string(msg).unwrap();
+            let deserialized: CoordinatorMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(msg, &deserialized, "Round-trip failed for: {json}");
+        }
+    }
+
+    #[test]
+    fn test_encrypted_payload_serialization() {
+        let payload = EncryptedPayload {
+            ephemeral_public_key: "dGVzdC1rZXk=".to_string(),
+            ciphertext: "dGVzdC1jaXBoZXI=".to_string(),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        assert!(json.contains("\"ephemeral_public_key\""));
+        assert!(json.contains("\"ciphertext\""));
+
+        let deserialized: EncryptedPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(payload, deserialized);
+    }
+
+    #[test]
+    fn test_coordinator_message_unknown_type_fails() {
+        let raw = r#"{"type":"unknown_message_type","foo":"bar"}"#;
+        let result = serde_json::from_str::<CoordinatorMessage>(raw);
+        assert!(
+            result.is_err(),
+            "Unknown message type should fail deserialization"
+        );
+    }
+
+    #[test]
+    fn test_inference_complete_with_se_signature_roundtrip() {
+        let msg = ProviderMessage::InferenceComplete {
+            request_id: "signed-req".to_string(),
+            usage: UsageInfo {
+                prompt_tokens: 100,
+                completion_tokens: 500,
+            },
+            se_signature: Some("MEUCIQD...base64sig...".to_string()),
+            response_hash: Some("abc123def456".to_string()),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"se_signature\""));
+        assert!(json.contains("\"response_hash\""));
+        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, deserialized);
     }
 }

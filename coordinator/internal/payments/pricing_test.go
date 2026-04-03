@@ -188,10 +188,10 @@ func TestPlatformFeeAndProviderPayoutSumToTotal(t *testing.T) {
 func TestAllModelPricesUndercutCompetitors(t *testing.T) {
 	// Competitor output prices (micro-USD per 1M tokens)
 	competitorOutput := map[string]int64{
-		"qwen3.5-27b-claude-opus-8bit": 1_560_000, // OpenRouter $1.56
-		"mlx-community/Trinity-Mini-8bit":                       150_000,   // OpenRouter $0.15
-		"mlx-community/Qwen3.5-122B-A10B-8bit":                  2_080_000, // OpenRouter $2.08
-		"mlx-community/MiniMax-M2.5-8bit":                       1_000_000, // OpenRouter $1.00
+		"qwen3.5-27b-claude-opus-8bit":         1_560_000, // OpenRouter $1.56
+		"mlx-community/Trinity-Mini-8bit":      150_000,   // OpenRouter $0.15
+		"mlx-community/Qwen3.5-122B-A10B-8bit": 2_080_000, // OpenRouter $2.08
+		"mlx-community/MiniMax-M2.5-8bit":      1_000_000, // OpenRouter $1.00
 	}
 
 	for model, compPrice := range competitorOutput {
@@ -203,10 +203,10 @@ func TestAllModelPricesUndercutCompetitors(t *testing.T) {
 
 	// Competitor input prices (micro-USD per 1M tokens)
 	competitorInput := map[string]int64{
-		"qwen3.5-27b-claude-opus-8bit": 200_000,   // OpenRouter $0.20
-		"mlx-community/Trinity-Mini-8bit":                       46_000,    // OpenRouter $0.046
-		"mlx-community/Qwen3.5-122B-A10B-8bit":                  260_000,   // OpenRouter $0.26
-		"mlx-community/MiniMax-M2.5-8bit":                       120_000,   // OpenRouter $0.12
+		"qwen3.5-27b-claude-opus-8bit":         200_000, // OpenRouter $0.20
+		"mlx-community/Trinity-Mini-8bit":      46_000,  // OpenRouter $0.046
+		"mlx-community/Qwen3.5-122B-A10B-8bit": 260_000, // OpenRouter $0.26
+		"mlx-community/MiniMax-M2.5-8bit":      120_000, // OpenRouter $0.12
 	}
 
 	for model, compPrice := range competitorInput {

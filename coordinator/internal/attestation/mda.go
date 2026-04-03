@@ -7,9 +7,9 @@
 // attestation that cannot be spoofed by a compromised OS.
 //
 // Two attestation paths exist:
-//   1. ACME device-attest-01: OIDs in 1.2.840.113635.100.8.13.* (SIP, SecureBoot, Kext)
-//   2. DeviceInformation DevicePropertiesAttestation: OIDs in 100.8.9.*, 100.8.10.*, 100.8.11.*
-//      (Serial, UDID, SepOS version, OS version, freshness code)
+//  1. ACME device-attest-01: OIDs in 1.2.840.113635.100.8.13.* (SIP, SecureBoot, Kext)
+//  2. DeviceInformation DevicePropertiesAttestation: OIDs in 100.8.9.*, 100.8.10.*, 100.8.11.*
+//     (Serial, UDID, SepOS version, OS version, freshness code)
 //
 // This module implements path 2 (DevicePropertiesAttestation) via MDM.
 package attestation
@@ -30,13 +30,13 @@ var (
 
 // Apple MDA OID constants — DevicePropertiesAttestation path (MDM DeviceInformation).
 var (
-	OIDDeviceSerialNumber      = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 9, 1}
-	OIDDeviceUDID              = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 9, 2}
-	OIDSoftwareUpdateDeviceID  = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 9, 4}
-	OIDOSVersion               = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 10, 1}
-	OIDSepOSVersion            = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 10, 2}
-	OIDLLBVersion              = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 10, 3}
-	OIDFreshnessCode           = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 11, 1}
+	OIDDeviceSerialNumber     = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 9, 1}
+	OIDDeviceUDID             = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 9, 2}
+	OIDSoftwareUpdateDeviceID = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 9, 4}
+	OIDOSVersion              = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 10, 1}
+	OIDSepOSVersion           = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 10, 2}
+	OIDLLBVersion             = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 10, 3}
+	OIDFreshnessCode          = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 11, 1}
 )
 
 // Apple Enterprise Attestation Root CA (P-384, valid until 2047).

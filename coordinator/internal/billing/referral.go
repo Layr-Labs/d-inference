@@ -28,9 +28,9 @@ import (
 //
 //	Provider = 95%, Platform = 4%, Referrer = 1%
 type ReferralService struct {
-	store               store.Store
-	ledger              *payments.Ledger
-	logger              *slog.Logger
+	store                store.Store
+	ledger               *payments.Ledger
+	logger               *slog.Logger
 	referralSharePercent int64 // percentage of platform fee that goes to referrer
 }
 
@@ -40,9 +40,9 @@ func NewReferralService(st store.Store, ledger *payments.Ledger, logger *slog.Lo
 		sharePercent = 20
 	}
 	return &ReferralService{
-		store:               st,
-		ledger:              ledger,
-		logger:              logger,
+		store:                st,
+		ledger:               ledger,
+		logger:               logger,
 		referralSharePercent: sharePercent,
 	}
 }
@@ -228,7 +228,6 @@ type ReferralStatsResponse struct {
 	BalanceMicroUSD      int64  `json:"balance_micro_usd"`
 	BalanceUSD           string `json:"balance_usd"`
 }
-
 
 // truncateID shortens an ID for logging (shows first 8 chars).
 func truncateID(id string) string {

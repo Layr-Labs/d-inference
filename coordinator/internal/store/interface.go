@@ -169,6 +169,17 @@ type Store interface {
 	// HasRedeemedInviteCode checks if an account has already redeemed a specific code.
 	HasRedeemedInviteCode(code, accountID string) bool
 
+	// --- Provider Earnings (per-node tracking) ---
+
+	// RecordProviderEarning stores an earning record for a specific provider node.
+	RecordProviderEarning(earning *ProviderEarning) error
+
+	// GetProviderEarnings returns earnings for a specific provider node (by public key), newest first.
+	GetProviderEarnings(providerKey string, limit int) ([]ProviderEarning, error)
+
+	// GetAccountEarnings returns all earnings across all nodes for an account, newest first.
+	GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error)
+
 	// --- Provider Tokens (device-linked auth) ---
 
 	// CreateProviderToken stores a long-lived provider auth token linked to an account.
@@ -319,6 +330,21 @@ type InviteRedemption struct {
 	Code      string    `json:"code"`
 	AccountID string    `json:"account_id"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// ProviderEarning records a single earning event for a specific provider node.
+// This enables per-node earnings tracking (as opposed to account-level balance).
+type ProviderEarning struct {
+	ID               int64     `json:"id"`
+	AccountID        string    `json:"account_id"`
+	ProviderID       string    `json:"provider_id"`
+	ProviderKey      string    `json:"provider_key"` // X25519 public key (stable hardware ID)
+	JobID            string    `json:"job_id"`
+	Model            string    `json:"model"`
+	AmountMicroUSD   int64     `json:"amount_micro_usd"`
+	PromptTokens     int       `json:"prompt_tokens"`
+	CompletionTokens int       `json:"completion_tokens"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 // BillingSession tracks an in-progress payment via any method (Stripe, EVM, Solana).

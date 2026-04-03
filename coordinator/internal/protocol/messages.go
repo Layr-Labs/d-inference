@@ -6,9 +6,10 @@
 // tagged union pattern.
 //
 // Message flow:
-//   Provider → Coordinator: register, heartbeat, inference_response_chunk,
-//                           inference_complete, inference_error, attestation_response
-//   Coordinator → Provider: inference_request, cancel, attestation_challenge
+//
+//	Provider → Coordinator: register, heartbeat, inference_response_chunk,
+//	                        inference_complete, inference_error, attestation_response
+//	Coordinator → Provider: inference_request, cancel, attestation_challenge
 //
 // The inference request body is plain JSON (model, messages, stream). No
 // encryption fields are needed in the wire protocol because the coordinator
@@ -27,21 +28,21 @@ import (
 // Message type constants.
 const (
 	// Provider → Coordinator
-	TypeRegister              = "register"
-	TypeHeartbeat             = "heartbeat"
-	TypeInferenceResponseChunk = "inference_response_chunk"
-	TypeInferenceComplete     = "inference_complete"
-	TypeInferenceError        = "inference_error"
-	TypeAttestationResponse   = "attestation_response"
-	TypeTranscriptionComplete      = "transcription_complete"
-	TypeImageGenerationComplete    = "image_generation_complete"
+	TypeRegister                = "register"
+	TypeHeartbeat               = "heartbeat"
+	TypeInferenceResponseChunk  = "inference_response_chunk"
+	TypeInferenceComplete       = "inference_complete"
+	TypeInferenceError          = "inference_error"
+	TypeAttestationResponse     = "attestation_response"
+	TypeTranscriptionComplete   = "transcription_complete"
+	TypeImageGenerationComplete = "image_generation_complete"
 
 	// Coordinator → Provider
-	TypeInferenceRequest           = "inference_request"
-	TypeCancel                     = "cancel"
-	TypeAttestationChallenge       = "attestation_challenge"
-	TypeTranscriptionRequest       = "transcription_request"
-	TypeImageGenerationRequest     = "image_generation_request"
+	TypeInferenceRequest       = "inference_request"
+	TypeCancel                 = "cancel"
+	TypeAttestationChallenge   = "attestation_challenge"
+	TypeTranscriptionRequest   = "transcription_request"
+	TypeImageGenerationRequest = "image_generation_request"
 )
 
 // ---------------------------------------------------------------------------
@@ -57,15 +58,15 @@ type CPUCores struct {
 
 // Hardware describes the provider's machine capabilities.
 type Hardware struct {
-	MachineModel       string  `json:"machine_model"`
-	ChipName           string  `json:"chip_name"`
-	ChipFamily         string  `json:"chip_family"`
-	ChipTier           string  `json:"chip_tier"`
-	MemoryGB           int     `json:"memory_gb"`
-	MemoryAvailableGB  float64 `json:"memory_available_gb"`
+	MachineModel       string   `json:"machine_model"`
+	ChipName           string   `json:"chip_name"`
+	ChipFamily         string   `json:"chip_family"`
+	ChipTier           string   `json:"chip_tier"`
+	MemoryGB           int      `json:"memory_gb"`
+	MemoryAvailableGB  float64  `json:"memory_available_gb"`
 	CPUCores           CPUCores `json:"cpu_cores"`
-	GPUCores           int     `json:"gpu_cores"`
-	MemoryBandwidthGBs float64 `json:"memory_bandwidth_gbs"`
+	GPUCores           int      `json:"gpu_cores"`
+	MemoryBandwidthGBs float64  `json:"memory_bandwidth_gbs"`
 }
 
 // ModelInfo describes a model available on a provider.
@@ -88,27 +89,27 @@ type RegisterMessage struct {
 	Backend       string          `json:"backend"`
 	PublicKey     string          `json:"public_key,omitempty"`     // base64-encoded X25519 public key for E2E encryption
 	WalletAddress string          `json:"wallet_address,omitempty"` // Ethereum-format hex address for Tempo payouts
-	Attestation   json.RawMessage `json:"attestation,omitempty"`   // signed Secure Enclave attestation blob
-	PrefillTPS    float64         `json:"prefill_tps,omitempty"`   // benchmark: prefill tokens per second
-	DecodeTPS     float64         `json:"decode_tps,omitempty"`    // benchmark: decode tokens per second
-	AuthToken     string          `json:"auth_token,omitempty"`    // device-linked provider token (from dginf-provider login)
+	Attestation   json.RawMessage `json:"attestation,omitempty"`    // signed Secure Enclave attestation blob
+	PrefillTPS    float64         `json:"prefill_tps,omitempty"`    // benchmark: prefill tokens per second
+	DecodeTPS     float64         `json:"decode_tps,omitempty"`     // benchmark: decode tokens per second
+	AuthToken     string          `json:"auth_token,omitempty"`     // device-linked provider token (from dginf-provider login)
 }
 
 // HeartbeatMessage is sent periodically by connected providers.
 type HeartbeatMessage struct {
-	Type          string          `json:"type"`
-	Status        string          `json:"status"`
-	ActiveModel   *string         `json:"active_model"`
-	Stats         HeartbeatStats  `json:"stats"`
-	WarmModels    []string        `json:"warm_models,omitempty"`           // models currently loaded in memory
-	SystemMetrics SystemMetrics   `json:"system_metrics"`                   // live resource utilization
+	Type          string         `json:"type"`
+	Status        string         `json:"status"`
+	ActiveModel   *string        `json:"active_model"`
+	Stats         HeartbeatStats `json:"stats"`
+	WarmModels    []string       `json:"warm_models,omitempty"` // models currently loaded in memory
+	SystemMetrics SystemMetrics  `json:"system_metrics"`        // live resource utilization
 }
 
 // SystemMetrics contains live resource utilization reported by a provider.
 type SystemMetrics struct {
 	MemoryPressure float64 `json:"memory_pressure"` // 0.0 to 1.0
-	CPUUsage       float64 `json:"cpu_usage"`        // 0.0 to 1.0
-	ThermalState   string  `json:"thermal_state"`    // nominal, fair, serious, critical
+	CPUUsage       float64 `json:"cpu_usage"`       // 0.0 to 1.0
+	ThermalState   string  `json:"thermal_state"`   // nominal, fair, serious, critical
 }
 
 // HeartbeatStats contains counters reported in heartbeats.
@@ -170,7 +171,7 @@ type InferenceRequestBody struct {
 	// Endpoint is the backend path to forward to (e.g. "/v1/chat/completions",
 	// "/v1/completions", "/v1/messages"). Defaults to "/v1/chat/completions"
 	// if empty, for backwards compatibility.
-	Endpoint    string        `json:"endpoint,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
 }
 
 // InferenceRequestMessage tells a provider to run inference.
@@ -210,9 +211,9 @@ type AttestationChallengeMessage struct {
 // Includes fresh security posture fields verified at challenge time.
 type AttestationResponseMessage struct {
 	Type              string `json:"type"`
-	Nonce             string `json:"nonce"`                          // echoed back from the challenge
-	Signature         string `json:"signature"`                      // base64-encoded signature of nonce+timestamp
-	PublicKey         string `json:"public_key"`                     // base64-encoded public key
+	Nonce             string `json:"nonce"`                         // echoed back from the challenge
+	Signature         string `json:"signature"`                     // base64-encoded signature of nonce+timestamp
+	PublicKey         string `json:"public_key"`                    // base64-encoded public key
 	HypervisorActive  *bool  `json:"hypervisor_active,omitempty"`   // hypervisor memory isolation active (Stage 2 page tables)
 	RDMADisabled      *bool  `json:"rdma_disabled,omitempty"`       // fresh RDMA status (true = safe, false = remote memory access possible)
 	SIPEnabled        *bool  `json:"sip_enabled,omitempty"`         // fresh SIP status at challenge time
@@ -227,8 +228,8 @@ type AttestationResponseMessage struct {
 type TranscriptionRequestBody struct {
 	Model    string  `json:"model"`
 	Audio    string  `json:"audio"`              // base64-encoded audio data
-	Language *string `json:"language,omitempty"`  // ISO 639-1 language code (e.g. "en")
-	Format   string  `json:"format,omitempty"`    // audio format hint: "mp3", "wav", etc.
+	Language *string `json:"language,omitempty"` // ISO 639-1 language code (e.g. "en")
+	Format   string  `json:"format,omitempty"`   // audio format hint: "mp3", "wav", etc.
 }
 
 // TranscriptionRequestMessage tells a provider to transcribe audio.
@@ -262,7 +263,7 @@ type TranscriptionCompleteMessage struct {
 	Segments     []TranscriptionSegment `json:"segments,omitempty"`
 	Language     string                 `json:"language,omitempty"`
 	Usage        TranscriptionUsage     `json:"usage"`
-	DurationSecs float64               `json:"duration_secs"` // processing time
+	DurationSecs float64                `json:"duration_secs"` // processing time
 }
 
 // ---------------------------------------------------------------------------
@@ -274,9 +275,9 @@ type ImageGenerationRequestBody struct {
 	Model          string `json:"model"`
 	Prompt         string `json:"prompt"`
 	NegativePrompt string `json:"negative_prompt,omitempty"`
-	N              int    `json:"n,omitempty"`              // number of images (default 1)
-	Size           string `json:"size,omitempty"`           // e.g. "1024x1024"
-	Steps          *int   `json:"steps,omitempty"`          // inference steps
+	N              int    `json:"n,omitempty"`     // number of images (default 1)
+	Size           string `json:"size,omitempty"`  // e.g. "1024x1024"
+	Steps          *int   `json:"steps,omitempty"` // inference steps
 	Seed           *int64 `json:"seed,omitempty"`
 	ResponseFormat string `json:"response_format,omitempty"` // "b64_json" (default) or "url"
 }
@@ -285,11 +286,11 @@ type ImageGenerationRequestBody struct {
 // Includes an upload_url where the provider should POST the generated images
 // via HTTP (instead of sending them over the WebSocket, which has size limits).
 type ImageGenerationRequestMessage struct {
-	Type          string                       `json:"type"`
-	RequestID     string                       `json:"request_id"`
-	UploadURL     string                       `json:"upload_url"`     // HTTP endpoint for image upload
-	Body          ImageGenerationRequestBody   `json:"body,omitempty"`
-	EncryptedBody *EncryptedPayload            `json:"encrypted_body,omitempty"`
+	Type          string                     `json:"type"`
+	RequestID     string                     `json:"request_id"`
+	UploadURL     string                     `json:"upload_url"` // HTTP endpoint for image upload
+	Body          ImageGenerationRequestBody `json:"body,omitempty"`
+	EncryptedBody *EncryptedPayload          `json:"encrypted_body,omitempty"`
 }
 
 // ImageGenerationUsage carries usage info for billing image generation requests.

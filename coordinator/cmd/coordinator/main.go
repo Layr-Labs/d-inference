@@ -111,6 +111,7 @@ func main() {
 		SolanaRPCURL:             os.Getenv("DGINF_SOLANA_RPC_URL"),
 		SolanaUSDCMint:           envOr("DGINF_SOLANA_USDC_MINT", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), // mainnet USDC
 		SolanaCoordinatorAddress: os.Getenv("DGINF_SOLANA_COORDINATOR_ADDRESS"),                                   // address that receives USDC
+		SolanaPrivateKey:         os.Getenv("DGINF_SOLANA_PRIVATE_KEY"),                                           // hot wallet key for withdrawals
 
 		// Stripe — present but not activated day-1 (set env vars to enable)
 		StripeSecretKey:     os.Getenv("DGINF_STRIPE_SECRET_KEY"),

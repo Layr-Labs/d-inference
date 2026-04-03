@@ -38,16 +38,17 @@ type modelPrice struct {
 
 var modelPricing = map[string]modelPrice{
 	// Text generation — 50% of OpenRouter rates
-	"qwen3.5-27b-claude-opus-8bit": {input: 100_000, output: 780_000},   // $0.10 / $0.78
-	"mlx-community/Trinity-Mini-8bit":                       {input: 23_000, output: 75_000},     // $0.023 / $0.075
-	"mlx-community/Qwen3.5-122B-A10B-8bit":                  {input: 130_000, output: 1_040_000}, // $0.13 / $1.04
-	"mlx-community/MiniMax-M2.5-8bit":                       {input: 60_000, output: 500_000},    // $0.06 / $0.50
+	"qwen3.5-27b-claude-opus-8bit":         {input: 100_000, output: 780_000},   // $0.10 / $0.78
+	"mlx-community/Trinity-Mini-8bit":      {input: 23_000, output: 75_000},     // $0.023 / $0.075
+	"mlx-community/Qwen3.5-122B-A10B-8bit": {input: 130_000, output: 1_040_000}, // $0.13 / $1.04
+	"mlx-community/MiniMax-M2.5-8bit":      {input: 60_000, output: 500_000},    // $0.06 / $0.50
 }
 
 // transcriptionPricing stores per-audio-minute prices in micro-USD.
 var transcriptionPricing = map[string]int64{
 	"CohereLabs/cohere-transcribe-03-2026": 1_000, // $0.001 per audio-minute (50% of AssemblyAI Nano $0.002)
 }
+
 const defaultTranscriptionPricePerMinute int64 = 1_000
 
 // imagePricing stores per-image prices in micro-USD.

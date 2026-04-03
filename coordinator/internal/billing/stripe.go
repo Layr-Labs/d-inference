@@ -22,12 +22,12 @@ import (
 //  3. Stripe sends a webhook (checkout.session.completed) to our endpoint
 //  4. We verify the webhook signature and credit the consumer's balance
 type StripeProcessor struct {
-	secretKey      string
-	webhookSecret  string
-	successURL     string
-	cancelURL      string
-	logger         *slog.Logger
-	httpClient     *http.Client
+	secretKey     string
+	webhookSecret string
+	successURL    string
+	cancelURL     string
+	logger        *slog.Logger
+	httpClient    *http.Client
 }
 
 // NewStripeProcessor creates a new Stripe processor.
@@ -44,18 +44,18 @@ func NewStripeProcessor(secretKey, webhookSecret, successURL, cancelURL string, 
 
 // CheckoutSessionRequest is the input for creating a Stripe checkout session.
 type CheckoutSessionRequest struct {
-	AmountCents  int64  `json:"amount_cents"`  // amount in USD cents
-	Currency     string `json:"currency"`      // "usd"
-	CustomerEmail string `json:"customer_email,omitempty"`
-	ReferralCode string `json:"referral_code,omitempty"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
+	AmountCents   int64             `json:"amount_cents"` // amount in USD cents
+	Currency      string            `json:"currency"`     // "usd"
+	CustomerEmail string            `json:"customer_email,omitempty"`
+	ReferralCode  string            `json:"referral_code,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
 }
 
 // CheckoutSessionResponse is returned after creating a Stripe checkout session.
 type CheckoutSessionResponse struct {
-	SessionID  string `json:"session_id"`
-	URL        string `json:"url"`
-	AmountCents int64 `json:"amount_cents"`
+	SessionID   string `json:"session_id"`
+	URL         string `json:"url"`
+	AmountCents int64  `json:"amount_cents"`
 }
 
 // CreateCheckoutSession creates a Stripe Checkout Session via the API.
@@ -72,11 +72,11 @@ func (p *StripeProcessor) CreateCheckoutSession(req CheckoutSessionRequest) (*Ch
 		"mode":                                "payment",
 		"success_url":                         p.successURL + "?session_id={CHECKOUT_SESSION_ID}",
 		"cancel_url":                          p.cancelURL,
-		"line_items[0][price_data][currency]":            req.Currency,
-		"line_items[0][price_data][product_data][name]":  "DGInf Inference Credits",
-		"line_items[0][price_data][unit_amount]":         strconv.FormatInt(req.AmountCents, 10),
-		"line_items[0][quantity]":                        "1",
-		"payment_method_types[0]":                        "card",
+		"line_items[0][price_data][currency]": req.Currency,
+		"line_items[0][price_data][product_data][name]": "DGInf Inference Credits",
+		"line_items[0][price_data][unit_amount]":        strconv.FormatInt(req.AmountCents, 10),
+		"line_items[0][quantity]":                       "1",
+		"payment_method_types[0]":                       "card",
 	}
 
 	if req.CustomerEmail != "" {
@@ -145,7 +145,7 @@ type WebhookEvent struct {
 type CheckoutSessionEvent struct {
 	Object struct {
 		ID            string            `json:"id"`
-		AmountTotal   int64             `json:"amount_total"`   // in cents
+		AmountTotal   int64             `json:"amount_total"` // in cents
 		Currency      string            `json:"currency"`
 		PaymentStatus string            `json:"payment_status"` // "paid"
 		Metadata      map[string]string `json:"metadata"`

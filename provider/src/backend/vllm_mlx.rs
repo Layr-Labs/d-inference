@@ -15,7 +15,7 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
-use super::{binary_exists, check_health, Backend};
+use super::{Backend, binary_exists, check_health};
 
 /// Backend that runs `vllm-mlx serve <model>`.
 ///
@@ -55,10 +55,7 @@ impl VllmMlxBackend {
 
     /// Build the command arguments for spawning vllm-mlx.
     pub fn build_args(&self) -> Vec<String> {
-        let mut args = vec![
-            "serve".to_string(),
-            self.model.clone(),
-        ];
+        let mut args = vec!["serve".to_string(), self.model.clone()];
 
         // If Unix socket is configured, vllm-mlx needs to listen on it.
         // Note: vllm-mlx may not support --unix-socket natively yet.
@@ -78,7 +75,10 @@ impl VllmMlxBackend {
         args
     }
 
-    fn spawn_log_forwarder(stream: impl tokio::io::AsyncRead + Unpin + Send + 'static, label: &'static str) {
+    fn spawn_log_forwarder(
+        stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
+        label: &'static str,
+    ) {
         tokio::spawn(async move {
             let reader = BufReader::new(stream);
             let mut lines = reader.lines();
@@ -143,11 +143,8 @@ impl Backend for VllmMlxBackend {
                     }
 
                     // Wait up to 10 seconds for graceful shutdown
-                    match tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        child.wait(),
-                    )
-                    .await
+                    match tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+                        .await
                     {
                         Ok(Ok(status)) => {
                             tracing::info!("vllm-mlx exited with status: {status}");
@@ -157,9 +154,7 @@ impl Backend for VllmMlxBackend {
                             tracing::warn!("Error waiting for vllm-mlx: {e}");
                         }
                         Err(_) => {
-                            tracing::warn!(
-                                "vllm-mlx did not exit within 10s, sending SIGKILL"
-                            );
+                            tracing::warn!("vllm-mlx did not exit within 10s, sending SIGKILL");
                         }
                     }
                 }
@@ -207,12 +202,7 @@ mod tests {
         let args = backend.build_args();
         assert_eq!(
             args,
-            vec![
-                "serve",
-                "mlx-community/Qwen2.5-7B-4bit",
-                "--port",
-                "8100"
-            ]
+            vec!["serve", "mlx-community/Qwen2.5-7B-4bit", "--port", "8100"]
         );
     }
 

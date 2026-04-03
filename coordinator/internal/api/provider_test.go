@@ -113,10 +113,10 @@ func TestProviderWebSocketMultiple(t *testing.T) {
 		defer conn.Close(websocket.StatusNormalClosure, "")
 
 		regMsg := protocol.RegisterMessage{
-			Type:    protocol.TypeRegister,
+			Type:     protocol.TypeRegister,
 			Hardware: protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
-			Models:  []protocol.ModelInfo{{ID: "shared-model", ModelType: "test", Quantization: "4bit"}},
-			Backend: "test",
+			Models:   []protocol.ModelInfo{{ID: "shared-model", ModelType: "test", Quantization: "4bit"}},
+			Backend:  "test",
 		}
 		regData, _ := json.Marshal(regMsg)
 		conn.Write(ctx, websocket.MessageText, regData)
@@ -130,10 +130,8 @@ func TestProviderWebSocketMultiple(t *testing.T) {
 
 	// Upgrade both providers to hardware trust for routing eligibility.
 	for _, id := range reg.ProviderIDs() {
-		p := reg.GetProvider(id)
-		if p != nil {
-			p.TrustLevel = registry.TrustHardware
-		}
+		reg.SetTrustLevel(id, registry.TrustHardware)
+		reg.RecordChallengeSuccess(id)
 	}
 
 	models := reg.ListModels()
@@ -179,18 +177,33 @@ func TestProviderInferenceError(t *testing.T) {
 	// Upgrade provider to hardware trust for routing.
 	p := findProviderByModel(reg, "error-model")
 	if p != nil {
-		p.TrustLevel = registry.TrustHardware
+		reg.SetTrustLevel(p.ID, registry.TrustHardware)
+		reg.RecordChallengeSuccess(p.ID)
 	}
 
-	// Provider goroutine — respond with error.
+	// Provider goroutine — handle challenge then respond with error.
 	go func() {
-		_, data, err := conn.Read(ctx)
-		if err != nil {
-			return
-		}
-
 		var inferReq protocol.InferenceRequestMessage
-		json.Unmarshal(data, &inferReq)
+		for {
+			_, data, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			var raw map[string]interface{}
+			if err := json.Unmarshal(data, &raw); err == nil {
+				if raw["type"] == protocol.TypeAttestationChallenge {
+					resp := protocol.AttestationResponseMessage{
+						Type: protocol.TypeAttestationResponse, Nonce: raw["nonce"].(string),
+						PublicKey: "dummy", Signature: "dummy",
+					}
+					respData, _ := json.Marshal(resp)
+					conn.Write(ctx, websocket.MessageText, respData)
+					continue
+				}
+			}
+			json.Unmarshal(data, &inferReq)
+			break
+		}
 
 		errMsg := protocol.InferenceErrorMessage{
 			Type:       protocol.TypeInferenceError,
@@ -323,10 +336,10 @@ func TestProviderRegistrationWithValidAttestation(t *testing.T) {
 	attestationJSON := createTestAttestationJSON(t, "")
 
 	regMsg := protocol.RegisterMessage{
-		Type:     protocol.TypeRegister,
-		Hardware: protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:   []protocol.ModelInfo{{ID: "attested-model", ModelType: "test", Quantization: "4bit"}},
-		Backend:  "test",
+		Type:        protocol.TypeRegister,
+		Hardware:    protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:      []protocol.ModelInfo{{ID: "attested-model", ModelType: "test", Quantization: "4bit"}},
+		Backend:     "test",
 		Attestation: attestationJSON,
 	}
 	regData, _ := json.Marshal(regMsg)
@@ -340,7 +353,8 @@ func TestProviderRegistrationWithValidAttestation(t *testing.T) {
 	// Upgrade to hardware trust (simulates MDM verification completing).
 	p := findProviderByModel(reg, "attested-model")
 	if p != nil {
-		p.TrustLevel = registry.TrustHardware
+		reg.SetTrustLevel(p.ID, registry.TrustHardware)
+		reg.RecordChallengeSuccess(p.ID)
 	}
 
 	models := reg.ListModels()
@@ -377,10 +391,10 @@ func TestProviderRegistrationWithInvalidAttestation(t *testing.T) {
 	invalidAttestation := json.RawMessage(`{"attestation":{"chipName":"Fake","hardwareModel":"Bad","osVersion":"0","publicKey":"dGVzdA==","secureBootEnabled":true,"secureEnclaveAvailable":true,"sipEnabled":true,"timestamp":"2025-01-01T00:00:00Z"},"signature":"YmFkc2ln"}`)
 
 	regMsg := protocol.RegisterMessage{
-		Type:     protocol.TypeRegister,
-		Hardware: protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
-		Models:   []protocol.ModelInfo{{ID: "unattested-model", ModelType: "test", Quantization: "4bit"}},
-		Backend:  "test",
+		Type:        protocol.TypeRegister,
+		Hardware:    protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
+		Models:      []protocol.ModelInfo{{ID: "unattested-model", ModelType: "test", Quantization: "4bit"}},
+		Backend:     "test",
 		Attestation: invalidAttestation,
 	}
 	regData, _ := json.Marshal(regMsg)
@@ -467,10 +481,10 @@ func TestListModelsWithAttestationInfo(t *testing.T) {
 
 	attestationJSON := createTestAttestationJSON(t, "")
 	regMsg := protocol.RegisterMessage{
-		Type:     protocol.TypeRegister,
-		Hardware: protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:   []protocol.ModelInfo{{ID: "attested-model", ModelType: "test", Quantization: "4bit"}},
-		Backend:  "test",
+		Type:        protocol.TypeRegister,
+		Hardware:    protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:      []protocol.ModelInfo{{ID: "attested-model", ModelType: "test", Quantization: "4bit"}},
+		Backend:     "test",
 		Attestation: attestationJSON,
 	}
 	regData, _ := json.Marshal(regMsg)
@@ -480,7 +494,8 @@ func TestListModelsWithAttestationInfo(t *testing.T) {
 	// Upgrade to hardware trust for model listing.
 	p := findProviderByModel(reg, "attested-model")
 	if p != nil {
-		p.TrustLevel = registry.TrustHardware
+		reg.SetTrustLevel(p.ID, registry.TrustHardware)
+		reg.RecordChallengeSuccess(p.ID)
 	}
 
 	// Check /v1/models
@@ -720,16 +735,29 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 	conn.Write(ctx, websocket.MessageText, regData)
 	time.Sleep(200 * time.Millisecond)
 
-	// Provider goroutine — respond with completion.
-	// Note: with mandatory E2E encryption, the request body arrives encrypted.
-	// For this test we just parse the wire message to get the request_id.
+	// Provider goroutine — handle challenge then respond with completion.
 	go func() {
-		_, data, err := conn.Read(ctx)
-		if err != nil {
-			return
-		}
 		var inferReq protocol.InferenceRequestMessage
-		json.Unmarshal(data, &inferReq)
+		for {
+			_, data, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			var raw map[string]interface{}
+			if err := json.Unmarshal(data, &raw); err == nil {
+				if raw["type"] == protocol.TypeAttestationChallenge {
+					resp := protocol.AttestationResponseMessage{
+						Type: protocol.TypeAttestationResponse, Nonce: raw["nonce"].(string),
+						PublicKey: "dummy", Signature: "dummy",
+					}
+					respData, _ := json.Marshal(resp)
+					conn.Write(ctx, websocket.MessageText, respData)
+					continue
+				}
+			}
+			json.Unmarshal(data, &inferReq)
+			break
+		}
 
 		chunk := protocol.InferenceResponseChunkMessage{
 			Type:      protocol.TypeInferenceResponseChunk,
@@ -751,7 +779,8 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 	// Upgrade provider to hardware trust so it's eligible for routing.
 	p := findProviderByModel(reg, "trust-model")
 	if p != nil {
-		p.TrustLevel = registry.TrustHardware
+		reg.SetTrustLevel(p.ID, registry.TrustHardware)
+		reg.RecordChallengeSuccess(p.ID)
 	}
 
 	chatBody := `{"model":"trust-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
@@ -810,9 +839,11 @@ func TestTrustLevelInModelsList(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Upgrade provider to hardware trust so it appears in model list.
+	// Use thread-safe setter to avoid racing with the WebSocket goroutine.
 	p := findProviderByModel(reg, "trust-list-model")
 	if p != nil {
-		p.TrustLevel = registry.TrustHardware
+		reg.SetTrustLevel(p.ID, registry.TrustHardware)
+		reg.RecordChallengeSuccess(p.ID)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)

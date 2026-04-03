@@ -100,7 +100,10 @@ pub fn scan_models_in_dir(cache_dir: &Path, available_memory_gb: u64) -> Vec<Mod
     let entries = match std::fs::read_dir(cache_dir) {
         Ok(e) => e,
         Err(err) => {
-            tracing::warn!("Failed to read cache directory {}: {err}", cache_dir.display());
+            tracing::warn!(
+                "Failed to read cache directory {}: {err}",
+                cache_dir.display()
+            );
             return models;
         }
     };
@@ -444,14 +447,7 @@ mod tests {
 
         let config = r#"{"model_type": "gpt2"}"#;
         // No "mlx" in name and no quantization hint
-        let cache = create_mock_cache(
-            &tmp,
-            &[(
-                "models--openai--gpt2",
-                config,
-                500_000,
-            )],
-        );
+        let cache = create_mock_cache(&tmp, &[("models--openai--gpt2", config, 500_000)]);
 
         // This model has config.json and safetensors, and is_mlx_model will detect it
         // because it has model.safetensors + config.json.
@@ -523,8 +519,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let config_path = tmp.path().join("config.json");
 
-        let config =
-            r#"{"model_type": "qwen2", "hidden_size": 4096, "num_hidden_layers": 32, "vocab_size": 152064}"#;
+        let config = r#"{"model_type": "qwen2", "hidden_size": 4096, "num_hidden_layers": 32, "vocab_size": 152064}"#;
         fs::write(&config_path, config).unwrap();
 
         let (model_type, params) = parse_config_json(&config_path);
@@ -599,5 +594,223 @@ mod tests {
         assert_eq!(models.len(), 3);
         assert!(models[0].estimated_memory_gb <= models[1].estimated_memory_gb);
         assert!(models[1].estimated_memory_gb <= models[2].estimated_memory_gb);
+    }
+
+    // -----------------------------------------------------------------------
+    // Model scanning edge cases and serialization compatibility
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_model_info_json_field_names_match_go() {
+        // The Go coordinator expects these exact JSON field names.
+        let info = ModelInfo {
+            id: "mlx-community/test-model-4bit".to_string(),
+            model_type: Some("qwen2".to_string()),
+            parameters: Some(7_000_000_000),
+            quantization: Some("4bit".to_string()),
+            size_bytes: 4_000_000_000,
+            estimated_memory_gb: 4.5,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // Verify exact field names (Go uses these for unmarshaling)
+        assert!(parsed.get("id").is_some(), "missing 'id' field");
+        assert!(
+            parsed.get("model_type").is_some(),
+            "missing 'model_type' field"
+        );
+        assert!(
+            parsed.get("parameters").is_some(),
+            "missing 'parameters' field"
+        );
+        assert!(
+            parsed.get("quantization").is_some(),
+            "missing 'quantization' field"
+        );
+        assert!(
+            parsed.get("size_bytes").is_some(),
+            "missing 'size_bytes' field"
+        );
+        assert!(
+            parsed.get("estimated_memory_gb").is_some(),
+            "missing 'estimated_memory_gb' field"
+        );
+
+        // Verify types
+        assert!(parsed["id"].is_string());
+        assert!(parsed["model_type"].is_string());
+        assert!(parsed["parameters"].is_number());
+        assert!(parsed["quantization"].is_string());
+        assert!(parsed["size_bytes"].is_number());
+        assert!(parsed["estimated_memory_gb"].is_number());
+    }
+
+    #[test]
+    fn test_model_info_optional_fields_omitted() {
+        let info = ModelInfo {
+            id: "test-model".to_string(),
+            model_type: None,
+            parameters: None,
+            quantization: None,
+            size_bytes: 1000,
+            estimated_memory_gb: 0.001,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // Optional fields should be null (not absent) because ModelInfo doesn't
+        // use skip_serializing_if
+        assert!(parsed.get("model_type").is_some());
+        assert!(parsed.get("parameters").is_some());
+        assert!(parsed.get("quantization").is_some());
+
+        // Round-trip should work
+        let deserialized: ModelInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(info, deserialized);
+    }
+
+    #[test]
+    fn test_detect_quantization_3bit() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            detect_quantization("model-3bit", tmp.path()),
+            Some("3bit".to_string())
+        );
+        assert_eq!(
+            detect_quantization("model-q3_K", tmp.path()),
+            Some("3bit".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_quantization_int_variants() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            detect_quantization("model-int4", tmp.path()),
+            Some("4bit".to_string())
+        );
+        assert_eq!(
+            detect_quantization("model-int8", tmp.path()),
+            Some("8bit".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_quantization_f16() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            detect_quantization("model-f16", tmp.path()),
+            Some("fp16".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_quantization_from_config_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let quant_config = tmp.path().join("quantize_config.json");
+        fs::write(&quant_config, r#"{"bits": 4, "group_size": 128}"#).unwrap();
+
+        // Name has no quantization hint, but config file does
+        let result = detect_quantization("model-base", tmp.path());
+        assert_eq!(result, Some("4bit".to_string()));
+    }
+
+    #[test]
+    fn test_scan_model_no_weight_files() {
+        // A model directory with config.json but no weight files should be skipped
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("hub");
+        let model_dir = cache
+            .join("models--mlx-community--empty-model")
+            .join("snapshots")
+            .join("abc123");
+        fs::create_dir_all(&model_dir).unwrap();
+        fs::write(model_dir.join("config.json"), r#"{"model_type":"test"}"#).unwrap();
+        // No safetensors file — model should be skipped
+
+        let models = scan_models_in_dir(&cache, 128);
+        assert!(
+            models.is_empty(),
+            "Model without weight files should be skipped"
+        );
+    }
+
+    #[test]
+    fn test_scan_model_with_multiple_safetensors_shards() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("hub");
+        let model_dir = cache
+            .join("models--mlx-community--sharded-model-4bit")
+            .join("snapshots")
+            .join("abc123");
+        fs::create_dir_all(&model_dir).unwrap();
+        fs::write(model_dir.join("config.json"), r#"{"model_type":"llama"}"#).unwrap();
+
+        // Write multiple shards
+        fs::write(
+            model_dir.join("model-00001-of-00003.safetensors"),
+            vec![0u8; 1000],
+        )
+        .unwrap();
+        fs::write(
+            model_dir.join("model-00002-of-00003.safetensors"),
+            vec![0u8; 1000],
+        )
+        .unwrap();
+        fs::write(
+            model_dir.join("model-00003-of-00003.safetensors"),
+            vec![0u8; 1000],
+        )
+        .unwrap();
+        fs::write(
+            model_dir.join("model.safetensors.index.json"),
+            r#"{"shards": 3}"#,
+        )
+        .unwrap();
+
+        let models = scan_models_in_dir(&cache, 128);
+        assert_eq!(models.len(), 1);
+        // Total size should be sum of all shards
+        assert_eq!(models[0].size_bytes, 3000);
+        assert_eq!(models[0].quantization, Some("4bit".to_string()));
+    }
+
+    #[test]
+    fn test_model_info_deserialization_from_go_json() {
+        // Simulate JSON that the Go coordinator might send back in some API response
+        let go_json = r#"{
+            "id": "mlx-community/Qwen2.5-Coder-7B-4bit",
+            "model_type": "qwen2",
+            "parameters": 7000000000,
+            "quantization": "4bit",
+            "size_bytes": 3800000000,
+            "estimated_memory_gb": 4.3
+        }"#;
+
+        let info: ModelInfo = serde_json::from_str(go_json).unwrap();
+        assert_eq!(info.id, "mlx-community/Qwen2.5-Coder-7B-4bit");
+        assert_eq!(info.model_type, Some("qwen2".to_string()));
+        assert_eq!(info.parameters, Some(7_000_000_000));
+        assert_eq!(info.quantization, Some("4bit".to_string()));
+        assert_eq!(info.size_bytes, 3_800_000_000);
+        assert!((info.estimated_memory_gb - 4.3).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_scan_model_non_model_directories_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("hub");
+        fs::create_dir_all(&cache).unwrap();
+
+        // Create directories that are NOT model directories
+        fs::create_dir_all(cache.join("datasets--some-dataset")).unwrap();
+        fs::create_dir_all(cache.join(".locks")).unwrap();
+        fs::create_dir_all(cache.join("version.txt")).unwrap();
+
+        let models = scan_models_in_dir(&cache, 128);
+        assert!(models.is_empty(), "Non-model directories should be ignored");
     }
 }

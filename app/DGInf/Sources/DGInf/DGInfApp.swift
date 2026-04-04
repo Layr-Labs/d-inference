@@ -15,7 +15,7 @@
 ///   - Setup: First-run onboarding wizard
 ///   - Doctor: Diagnostic results
 ///   - Logs: Streaming log viewer
-///   - Wallet: Wallet and earnings display
+///   - Logs: Provider log viewer
 
 import SwiftUI
 
@@ -38,27 +38,24 @@ struct DGInfApp: App {
 
         Window("Dashboard", id: "dashboard") {
             DashboardView(viewModel: viewModel)
+                .textSelection(.enabled)
         }
 
         Window("Setup", id: "setup") {
             SetupWizardView(viewModel: viewModel)
+                .textSelection(.enabled)
         }
 
         Window("Diagnostics", id: "doctor") {
             DoctorView(viewModel: viewModel)
+                .textSelection(.enabled)
         }
 
         Window("Logs", id: "logs") {
             LogViewerView(viewModel: viewModel)
+                .textSelection(.enabled)
         }
 
-        Window("Wallet", id: "wallet") {
-            WalletView(viewModel: viewModel)
-        }
-
-        Window("Benchmark", id: "benchmark") {
-            BenchmarkView(viewModel: viewModel)
-        }
     }
 
     private var menuBarLabel: some View {

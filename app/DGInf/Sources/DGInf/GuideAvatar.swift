@@ -21,12 +21,12 @@ enum AvatarMood {
 
     var color: Color {
         switch self {
-        case .greeting: return .blue
-        case .explaining: return .secondary
-        case .excited: return .green
-        case .thinking: return .orange
-        case .concerned: return .red
-        case .celebrating: return .green
+        case .greeting: return .blueAccent
+        case .explaining: return .warmInkLight
+        case .excited: return .tealAccent
+        case .thinking: return .gold
+        case .concerned: return .warmError
+        case .celebrating: return .tealAccent
         }
     }
 
@@ -80,7 +80,7 @@ struct GuideAvatarView: View {
                 if let detail {
                     Text(detail)
                         .font(.callout)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.warmInkLight)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -108,39 +108,28 @@ struct GuideAvatarView: View {
         let moodImageName = "guide-avatar-\(mood.imageSuffix)"
         let fallbackImageName = "guide-avatar"
 
-        if let url = Bundle.main.url(forResource: moodImageName, withExtension: "png"),
+        if let url = Bundle.module.url(forResource: moodImageName, withExtension: "png"),
            let nsImage = NSImage(contentsOf: url) {
             Image(nsImage: nsImage)
                 .resizable()
-                .aspectRatio(contentMode: .fit)
+                .aspectRatio(contentMode: .fill)
                 .frame(width: 56, height: 56)
-                .shadow(color: mood.color.opacity(0.4), radius: 8)
-        } else if let url = Bundle.main.url(forResource: fallbackImageName, withExtension: "png"),
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(mood.color.opacity(0.3), lineWidth: 2))
+                .shadow(color: mood.color.opacity(0.3), radius: 6)
+        } else if let url = Bundle.module.url(forResource: fallbackImageName, withExtension: "png"),
                   let nsImage = NSImage(contentsOf: url) {
             Image(nsImage: nsImage)
                 .resizable()
-                .aspectRatio(contentMode: .fit)
+                .aspectRatio(contentMode: .fill)
                 .frame(width: 56, height: 56)
-                .shadow(color: mood.color.opacity(0.4), radius: 8)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(mood.color.opacity(0.3), lineWidth: 2))
+                .shadow(color: mood.color.opacity(0.3), radius: 6)
         } else {
-            // Final fallback: gradient circle with SF Symbol
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [mood.color.opacity(0.8), mood.color.opacity(0.4)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 56, height: 56)
-                    .shadow(color: mood.color.opacity(0.3), radius: 6)
-
-                Image(systemName: mood.symbol)
-                    .font(.title2)
-                    .foregroundColor(.white)
-                    .symbolEffect(.bounce, value: mood.symbol)
-            }
+            // Hand-drawn cartoon Mac character
+            CartoonMac(mood: mood, size: 64)
+                .shadow(color: mood.color.opacity(0.2), radius: 8)
         }
     }
 

@@ -16,7 +16,7 @@ struct DoctorView: View {
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
                     Text("Provider Diagnostics")
-                        .font(.title2)
+                        .font(.display(22))
                         .fontWeight(.bold)
 
                     Spacer()
@@ -34,7 +34,7 @@ struct DoctorView: View {
                     HStack {
                         ProgressView().controlSize(.small)
                         Text("Running diagnostics...")
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.warmInkLight)
                     }
                 }
 
@@ -54,7 +54,7 @@ struct DoctorView: View {
                             .font(.system(.caption, design: .monospaced))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(8)
-                            .background(Color(.textBackgroundColor))
+                            .background(Color.warmBgSecondary)
                             .cornerRadius(6)
                             .textSelection(.enabled)
                     }
@@ -73,7 +73,7 @@ struct DoctorView: View {
     private func checkRow(_ check: DiagnosticCheck) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: check.passed ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .foregroundColor(check.passed ? .green : .red)
+                .foregroundColor(check.passed ? .tealAccent : .warmError)
                 .font(.title3)
                 .frame(width: 24)
 
@@ -83,19 +83,19 @@ struct DoctorView: View {
 
                 Text(check.detail)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.warmInkLight)
 
                 if !check.passed, let hint = check.remediation {
                     Text(hint)
                         .font(.caption)
-                        .foregroundColor(.orange)
+                        .foregroundColor(.gold)
                 }
             }
 
             Spacer()
         }
         .padding(10)
-        .background(check.passed ? Color.green.opacity(0.05) : Color.red.opacity(0.05))
+        .background(check.passed ? Color.tealAccent.opacity(0.05) : Color.warmError.opacity(0.05))
         .cornerRadius(8)
     }
 

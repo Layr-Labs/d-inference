@@ -18,7 +18,7 @@ struct ModelCatalogView: View {
             // Current model
             HStack {
                 Text("Active Model:")
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.warmInkLight)
                 Text(viewModel.currentModel)
                     .fontWeight(.medium)
                 Spacer()
@@ -46,7 +46,7 @@ struct ModelCatalogView: View {
                     ProgressView().controlSize(.small)
                     Text("Downloading \(downloading)...")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.warmInkLight)
                     Spacer()
                 }
             }
@@ -54,7 +54,7 @@ struct ModelCatalogView: View {
             if !downloadStatus.isEmpty && downloadingModel == nil {
                 Text(downloadStatus)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.warmInkLight)
             }
         }
         .padding()
@@ -73,7 +73,7 @@ struct ModelCatalogView: View {
         return HStack(spacing: 12) {
             // Fit indicator
             Image(systemName: fits ? "checkmark.circle.fill" : "xmark.circle")
-                .foregroundColor(fits ? .green : .red)
+                .foregroundColor(fits ? .tealAccent : .warmError)
                 .font(.caption)
                 .help(fits ? "Fits in memory" : "Requires more RAM")
 
@@ -101,7 +101,7 @@ struct ModelCatalogView: View {
                 }
                 Text("\(String(format: "%.1f", entry.sizeGB)) GB  \(entry.architecture)")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.warmInkLight)
             }
 
             Spacer()
@@ -112,15 +112,15 @@ struct ModelCatalogView: View {
                     .font(.caption2)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Color.green.opacity(0.15))
-                    .foregroundColor(.green)
+                    .background(Color.tealAccent.opacity(0.15))
+                    .foregroundColor(.tealAccent)
                     .cornerRadius(4)
             }
 
             // Actions
             if isActive {
                 Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(.green)
+                    .foregroundColor(.tealAccent)
                     .help("Currently active")
             } else if isDownloaded {
                 HStack(spacing: 4) {
@@ -134,7 +134,7 @@ struct ModelCatalogView: View {
                         Task { await removeModel(entry.id) }
                     } label: {
                         Image(systemName: "trash")
-                            .foregroundColor(.red)
+                            .foregroundColor(.warmError)
                     }
                     .buttonStyle(.borderless)
                     .controlSize(.mini)
@@ -151,7 +151,7 @@ struct ModelCatalogView: View {
             } else {
                 Text("Too large")
                     .font(.caption)
-                    .foregroundColor(.red)
+                    .foregroundColor(.warmError)
             }
         }
         .padding(.vertical, 6)
@@ -162,10 +162,10 @@ struct ModelCatalogView: View {
 
     private func typeColor(_ type: String) -> Color {
         switch type {
-        case "text": return .blue
-        case "image": return .purple
-        case "transcription": return .orange
-        default: return .gray
+        case "text": return .blueAccent
+        case "image": return .purpleAccent
+        case "transcription": return .gold
+        default: return .warmInkFaint
         }
     }
 

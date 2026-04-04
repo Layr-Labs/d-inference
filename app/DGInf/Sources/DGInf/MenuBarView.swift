@@ -14,10 +14,16 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 8) {
             // Header
             HStack {
-                Text("DGInf")
-                    .font(.headline)
+                HStack(spacing: 0) {
+                    Text("Eigen")
+                        .font(.displaySmall)
+                        .foregroundStyle(Color.warmInk)
+                    Text("Inference")
+                        .font(.displaySmall)
+                        .foregroundStyle(Color.coral)
+                }
                 Circle()
-                    .fill(viewModel.coordinatorConnected ? Color.green : Color.red)
+                    .fill(viewModel.coordinatorConnected ? Color.tealAccent : Color.warmError)
                     .frame(width: 6, height: 6)
                     .help(viewModel.coordinatorConnected ? "Coordinator connected" : "Coordinator offline")
                 Spacer()
@@ -29,8 +35,8 @@ struct MenuBarView: View {
             // Hardware + model info
             VStack(alignment: .leading, spacing: 6) {
                 Text("\(viewModel.chipName) \u{00B7} \(viewModel.memoryGB) GB")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    .font(.bodyWarm)
+                    .foregroundStyle(Color.warmInkLight)
 
                 // Model with quick switcher
                 Menu {
@@ -55,42 +61,43 @@ struct MenuBarView: View {
                     }
                     if viewModel.modelManager.availableModels.isEmpty {
                         Text("No models downloaded")
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(Color.warmInkFaint)
                     }
                 } label: {
                     HStack {
                         Text("Model:")
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(Color.warmInkLight)
                         Text(viewModel.currentModel.components(separatedBy: "/").last ?? viewModel.currentModel)
                             .fontWeight(.medium)
+                            .foregroundStyle(Color.warmInk)
                             .lineLimit(1)
                         Image(systemName: "chevron.up.chevron.down")
                             .font(.caption2)
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(Color.warmInkFaint)
                     }
-                    .font(.subheadline)
+                    .font(.bodyWarm)
                 }
                 .menuStyle(.borderlessButton)
 
                 // Live status with animated throughput
                 HStack {
                     Text("Status:")
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(Color.warmInkLight)
                     statusText
                 }
-                .font(.subheadline)
+                .font(.bodyWarm)
                 .animation(.smooth, value: viewModel.isServing)
 
                 // Trust level
                 HStack(spacing: 4) {
                     Text("Trust:")
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(Color.warmInkLight)
                     Image(systemName: viewModel.securityManager.trustLevel.iconName)
-                        .foregroundColor(trustColor)
+                        .foregroundStyle(trustColor)
                     Text(viewModel.securityManager.trustLevel.displayName)
-                        .foregroundColor(trustColor)
+                        .foregroundStyle(trustColor)
                 }
-                .font(.subheadline)
+                .font(.bodyWarm)
             }
 
             // Trust warnings
@@ -102,35 +109,38 @@ struct MenuBarView: View {
             if viewModel.requestsServed > 0 || viewModel.tokensGenerated > 0 {
                 HStack {
                     Text("Today:")
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(Color.warmInkLight)
                     Text("\(viewModel.requestsServed) requests")
+                        .foregroundStyle(Color.warmInk)
                     Text("\u{00B7}")
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(Color.warmInkFaint)
                     Text(formatTokenCount(viewModel.tokensGenerated))
+                        .foregroundStyle(Color.warmInk)
                 }
-                .font(.subheadline)
+                .font(.bodyWarm)
                 .contentTransition(.numericText())
             }
 
             if !viewModel.earningsBalance.isEmpty {
                 HStack {
                     Text("Earnings:")
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(Color.warmInkLight)
                     Text(viewModel.earningsBalance)
                         .fontWeight(.medium)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(Color.tealAccent)
                 }
-                .font(.subheadline)
+                .font(.bodyWarm)
             }
 
             if viewModel.isOnline {
                 HStack {
                     Text("Uptime:")
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(Color.warmInkLight)
                     Text(formatUptime(viewModel.uptimeSeconds))
                         .monospacedDigit()
+                        .foregroundStyle(Color.warmInk)
                 }
-                .font(.subheadline)
+                .font(.bodyWarm)
             }
 
             Divider()
@@ -141,8 +151,8 @@ struct MenuBarView: View {
             // Sleep prevention
             if viewModel.providerManager.isRunning {
                 Label("Sleep prevention active", systemImage: "bolt.shield")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .font(.captionWarm)
+                    .foregroundStyle(Color.warmInkFaint)
             }
 
             // Pause/Resume
@@ -168,12 +178,12 @@ struct MenuBarView: View {
             // Footer
             HStack {
                 Text("v\(viewModel.updateManager.currentVersion)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .font(.captionWarm)
+                    .foregroundStyle(Color.warmInkFaint)
                 if viewModel.updateManager.updateAvailable {
                     Text("Update available")
-                        .font(.caption)
-                        .foregroundColor(.orange)
+                        .font(.captionWarm)
+                        .foregroundStyle(Color.gold)
                 }
                 Spacer()
             }
@@ -185,6 +195,7 @@ struct MenuBarView: View {
         }
         .padding(12)
         .frame(width: 300)
+        .background(Color.warmBg)
         .animation(.smooth, value: viewModel.isOnline)
         .animation(.smooth, value: viewModel.isPaused)
     }
@@ -192,17 +203,11 @@ struct MenuBarView: View {
     // MARK: - Components
 
     private var statusBadge: some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 8, height: 8)
-            Text(statusLabel)
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .modifier(GlassModifier(shape: .capsule, tint: statusColor.opacity(0.3)))
+        WarmBadge(
+            text: statusLabel,
+            color: statusColor,
+            icon: viewModel.isPaused ? "pause.fill" : viewModel.isOnline ? "bolt.fill" : "power"
+        )
     }
 
     @ViewBuilder
@@ -213,8 +218,8 @@ struct MenuBarView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                     Text("Complete setup for inference routing \u{2192}")
                 }
-                .font(.caption)
-                .foregroundColor(.red)
+                .font(.captionWarm)
+                .foregroundStyle(Color.warmError)
             }
             .buttonStyle(.plain)
         } else if viewModel.securityManager.trustLevel == .selfSigned {
@@ -223,8 +228,8 @@ struct MenuBarView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                     Text("Enroll in MDM for hardware trust \u{2192}")
                 }
-                .font(.caption)
-                .foregroundColor(.orange)
+                .font(.captionWarm)
+                .foregroundStyle(Color.gold)
             }
             .buttonStyle(.plain)
         }
@@ -238,10 +243,13 @@ struct MenuBarView: View {
             }
         )) {
             Text(viewModel.isOnline ? "Online" : viewModel.providerManager.isRunning ? "Starting..." : "Offline")
+                .font(.bodyWarm)
+                .foregroundStyle(Color.warmInk)
         }
         .toggleStyle(.switch)
+        .tint(.tealAccent)
         .padding(8)
-        .modifier(GlassModifier(shape: .rect(cornerRadius: 10)))
+        .pointerOnHover()
     }
 
     @ViewBuilder
@@ -258,8 +266,6 @@ struct MenuBarView: View {
     private var navButtonStack: some View {
         VStack(alignment: .leading, spacing: 4) {
             navButton("Dashboard...", icon: "chart.bar", window: "dashboard")
-            navButton("Wallet...", icon: "wallet.pass", window: "wallet")
-            navButton("Benchmark...", icon: "gauge.with.dots.needle.bottom.50percent", window: "benchmark")
             navButton("Logs...", icon: "doc.text", window: "logs")
             if !viewModel.hasCompletedSetup {
                 navButton("Setup Wizard...", icon: "wrench", window: "setup")
@@ -269,6 +275,7 @@ struct MenuBarView: View {
             }
             .buttonStyle(.plain)
             .modifier(InteractiveGlassModifier())
+            .pointerOnHover()
         }
     }
 
@@ -278,30 +285,31 @@ struct MenuBarView: View {
         }
         .buttonStyle(.plain)
         .modifier(InteractiveGlassModifier())
+        .pointerOnHover()
     }
 
     private var statusText: some View {
         Group {
             if viewModel.isPaused {
                 Text("Paused (user active)")
-                    .foregroundColor(.yellow)
+                    .foregroundStyle(Color.gold)
             } else if viewModel.isServing {
                 HStack(spacing: 4) {
                     Text("Serving")
-                        .foregroundColor(.green)
+                        .foregroundStyle(Color.tealAccent)
                     Text("\u{00B7}")
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(Color.warmInkFaint)
                     Text(String(format: "%.0f tok/s", viewModel.tokensPerSecond))
-                        .foregroundColor(.green)
+                        .foregroundStyle(Color.tealAccent)
                         .monospacedDigit()
                         .contentTransition(.numericText())
                 }
             } else if viewModel.isOnline {
                 Text("Ready")
-                    .foregroundColor(.green)
+                    .foregroundStyle(Color.tealAccent)
             } else {
                 Text("Stopped")
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(Color.warmInkFaint)
             }
         }
     }
@@ -310,16 +318,16 @@ struct MenuBarView: View {
 
     private var trustColor: Color {
         switch viewModel.securityManager.trustLevel {
-        case .hardware: return .green
-        case .selfSigned: return .yellow
-        case .none: return .red
+        case .hardware: return .tealAccent
+        case .selfSigned: return .gold
+        case .none: return .warmError
         }
     }
 
     private var statusColor: Color {
-        if viewModel.isPaused { return .yellow }
-        if viewModel.isOnline { return .green }
-        return .gray
+        if viewModel.isPaused { return .gold }
+        if viewModel.isOnline { return .tealAccent }
+        return .warmInkFaint
     }
 
     private var statusLabel: String {

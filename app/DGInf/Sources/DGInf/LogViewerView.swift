@@ -30,7 +30,7 @@ struct LogViewerView: View {
             // Toolbar
             HStack {
                 Text("Provider Logs")
-                    .font(.headline)
+                    .font(.display(18))
 
                 Spacer()
 
@@ -88,34 +88,34 @@ struct LogViewerView: View {
                 }
             }
             .font(.system(.caption, design: .monospaced))
-            .background(Color(.textBackgroundColor))
+            .background(Color.warmBgSecondary)
 
             // Status bar
             HStack {
                 Text("\(filteredLines.count) lines")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.warmInkLight)
 
                 if isStreaming {
                     Circle()
-                        .fill(.green)
+                        .fill(.tealAccent)
                         .frame(width: 6, height: 6)
                     Text("Live")
                         .font(.caption)
-                        .foregroundColor(.green)
+                        .foregroundColor(.tealAccent)
                 }
 
                 Spacer()
 
                 Text(logFilePath)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.warmInkLight)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .background(Color(.windowBackgroundColor))
+            .background(Color.warmBg)
         }
         .frame(minWidth: 700, minHeight: 400)
         .onAppear {
@@ -128,10 +128,10 @@ struct LogViewerView: View {
 
     private func logLineView(_ line: String) -> some View {
         let color: Color = {
-            if line.contains("ERROR") || line.contains("error") { return .red }
-            if line.contains("WARN") || line.contains("warn") { return .orange }
+            if line.contains("ERROR") || line.contains("error") { return .warmError }
+            if line.contains("WARN") || line.contains("warn") { return .gold }
             if line.contains("INFO") { return .primary }
-            if line.contains("DEBUG") { return .secondary }
+            if line.contains("DEBUG") { return .warmInkLight }
             return .primary
         }()
 

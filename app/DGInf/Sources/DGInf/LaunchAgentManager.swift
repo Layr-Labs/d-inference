@@ -1,10 +1,10 @@
 /// LaunchAgentManager — Install/remove a launchd LaunchAgent for app auto-launch on login.
 ///
-/// Creates a plist at ~/Library/LaunchAgents/io.dginf.app.plist that opens
-/// the DGInf.app on login. This is separate from the provider service plist
-/// (io.dginf.provider.plist) which is managed by the CLI's `start`/`stop`.
+/// Creates a plist at ~/Library/LaunchAgents/com.eigeninference.app.plist that opens
+/// the EigenInference app on login. This is separate from the provider service plist
+/// which is managed by the CLI's `start`/`stop`.
 ///
-/// Only installed when the user explicitly toggles "Start DGInf when you
+/// Only installed when the user explicitly toggles "Start EigenInference when you
 /// log in" in Settings. Opening the app does NOT auto-start the provider;
 /// the user must click "Go Online" to begin serving.
 
@@ -12,7 +12,7 @@ import Foundation
 
 enum LaunchAgentManager {
 
-    private static let plistName = "io.dginf.app.plist"
+    private static let plistName = "com.eigeninference.app.plist"
 
     private static var plistPath: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -20,13 +20,33 @@ enum LaunchAgentManager {
             .appendingPathComponent(plistName)
     }
 
+    /// Also check for legacy plist name and migrate if needed.
+    private static var legacyPlistPath: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents")
+            .appendingPathComponent("io.dginf.app.plist")
+    }
+
     /// Whether the LaunchAgent is currently installed.
     static var isInstalled: Bool {
         FileManager.default.fileExists(atPath: plistPath.path)
+            || FileManager.default.fileExists(atPath: legacyPlistPath.path)
     }
 
-    /// Install the LaunchAgent to start DGInf on login.
+    /// Install the LaunchAgent to start EigenInference on login.
     static func install() throws {
+        // Remove legacy plist if it exists
+        if FileManager.default.fileExists(atPath: legacyPlistPath.path) {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            proc.arguments = ["unload", legacyPlistPath.path]
+            proc.standardOutput = Pipe()
+            proc.standardError = Pipe()
+            try? proc.run()
+            proc.waitUntilExit()
+            try? FileManager.default.removeItem(at: legacyPlistPath)
+        }
+
         let launchAgentsDir = plistPath.deletingLastPathComponent()
 
         // Ensure ~/Library/LaunchAgents exists
@@ -35,24 +55,30 @@ enum LaunchAgentManager {
             withIntermediateDirectories: true
         )
 
-        // Find the app bundle path — use full path to avoid ambiguity
-        let appPath = Bundle.main.bundlePath
+        // Find the app or executable path.
+        // When running as a .app bundle, use `open` to launch it.
+        // When running from a debug build (swift run), use the executable directly.
+        let bundlePath = Bundle.main.bundlePath
+        let isAppBundle = bundlePath.hasSuffix(".app")
+        let programArgs: [String] = isAppBundle
+            ? ["/usr/bin/open", bundlePath]
+            : [ProcessInfo.processInfo.arguments[0]]
 
-        // Ensure ~/.dginf/ directory exists for log files
-        let dginfDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".dginf")
+        // Ensure ~/.eigeninference/ directory exists for log files
+        let appDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".eigeninference")
         try FileManager.default.createDirectory(
-            at: dginfDir,
+            at: appDir,
             withIntermediateDirectories: true
         )
 
         let plist: [String: Any] = [
-            "Label": "io.dginf.app",
-            "ProgramArguments": ["/usr/bin/open", appPath],
+            "Label": "com.eigeninference.app",
+            "ProgramArguments": programArgs,
             "RunAtLoad": true,
             "KeepAlive": false,
-            "StandardOutPath": dginfDir.appendingPathComponent("launchagent.log").path,
-            "StandardErrorPath": dginfDir.appendingPathComponent("launchagent.log").path,
+            "StandardOutPath": appDir.appendingPathComponent("launchagent.log").path,
+            "StandardErrorPath": appDir.appendingPathComponent("launchagent.log").path,
         ]
 
         let data = try PropertyListSerialization.data(
@@ -74,19 +100,20 @@ enum LaunchAgentManager {
 
     /// Remove the LaunchAgent.
     static func uninstall() throws {
-        guard isInstalled else { return }
+        // Unload and remove current plist
+        for path in [plistPath, legacyPlistPath] {
+            guard FileManager.default.fileExists(atPath: path.path) else { continue }
 
-        // Unload first
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        proc.arguments = ["unload", plistPath.path]
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
-        try? proc.run()
-        proc.waitUntilExit()
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            proc.arguments = ["unload", path.path]
+            proc.standardOutput = Pipe()
+            proc.standardError = Pipe()
+            try? proc.run()
+            proc.waitUntilExit()
 
-        // Remove plist
-        try FileManager.default.removeItem(at: plistPath)
+            try FileManager.default.removeItem(at: path)
+        }
     }
 
     /// Sync the LaunchAgent state with the desired auto-start setting.
@@ -98,7 +125,6 @@ enum LaunchAgentManager {
                 try uninstall()
             }
         } catch {
-            // Log but don't crash — this is a nice-to-have feature
             print("LaunchAgent sync failed: \(error)")
         }
     }

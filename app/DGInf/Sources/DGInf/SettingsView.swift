@@ -47,12 +47,9 @@ private struct GeneralTab: View {
             Section {
                 TextField("Coordinator URL:", text: $viewModel.coordinatorURL)
                     .textFieldStyle(.roundedBorder)
-
-                SecureField("API Key:", text: $viewModel.apiKey)
-                    .textFieldStyle(.roundedBorder)
             } header: {
                 Text("Connection")
-                    .font(.headline)
+                    .font(.display(18))
             }
 
             Section {
@@ -60,47 +57,47 @@ private struct GeneralTab: View {
 
                 HStack {
                     Text("LaunchAgent:")
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.warmInkLight)
                     Text(LaunchAgentManager.isInstalled ? "Installed" : "Not installed")
                         .font(.caption)
-                        .foregroundColor(LaunchAgentManager.isInstalled ? .green : .secondary)
+                        .foregroundColor(LaunchAgentManager.isInstalled ? .tealAccent : .warmInkLight)
                 }
             } header: {
                 Text("Startup")
-                    .font(.headline)
+                    .font(.display(18))
             }
 
             Section {
                 HStack {
                     Text("Provider Binary:")
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.warmInkLight)
                     if let path = CLIRunner.resolveBinaryPath() {
                         Text(path)
                             .font(.caption)
-                            .foregroundColor(.green)
+                            .foregroundColor(.tealAccent)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     } else {
                         Text("Not found")
                             .font(.caption)
-                            .foregroundColor(.red)
+                            .foregroundColor(.warmError)
                     }
                 }
 
                 HStack {
                     Text("Version:")
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.warmInkLight)
                     Text("v\(viewModel.updateManager.currentVersion)")
                         .font(.caption)
                     if viewModel.updateManager.updateAvailable {
                         Text("(update available)")
                             .font(.caption)
-                            .foregroundColor(.orange)
+                            .foregroundColor(.gold)
                     }
                 }
             } header: {
                 Text("Status")
-                    .font(.headline)
+                    .font(.display(18))
             }
         }
         .padding()
@@ -129,10 +126,10 @@ private struct AvailabilityTab: View {
 
                 Text("When you're using your Mac, DGInf will pause inference to keep your machine responsive. It resumes automatically when you step away.")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.warmInkLight)
             } header: {
                 Text("Idle Detection")
-                    .font(.headline)
+                    .font(.display(18))
             }
         }
         .padding()
@@ -152,7 +149,7 @@ private struct SecurityTab: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Security Posture")
-                    .font(.headline)
+                    .font(.display(18))
                 Spacer()
                 if viewModel.securityManager.isChecking {
                     ProgressView().controlSize(.small)
@@ -172,12 +169,12 @@ private struct SecurityTab: View {
                         .foregroundColor(trustColor)
                     VStack(alignment: .leading) {
                         Text(viewModel.securityManager.trustLevel.displayName)
-                            .font(.title3)
+                            .font(.display(18))
                             .fontWeight(.bold)
                             .foregroundColor(trustColor)
                         Text(trustDescription)
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.warmInkLight)
                     }
                 }
                 .padding(12)
@@ -189,12 +186,12 @@ private struct SecurityTab: View {
                         .foregroundColor(trustColor)
                     VStack(alignment: .leading) {
                         Text(viewModel.securityManager.trustLevel.displayName)
-                            .font(.title3)
+                            .font(.display(18))
                             .fontWeight(.bold)
                             .foregroundColor(trustColor)
                         Text(trustDescription)
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.warmInkLight)
                     }
                 }
             }
@@ -227,9 +224,9 @@ private struct SecurityTab: View {
 
     private var trustColor: Color {
         switch viewModel.securityManager.trustLevel {
-        case .hardware: return .green
-        case .selfSigned: return .yellow
-        case .none: return .red
+        case .hardware: return .tealAccent
+        case .selfSigned: return .gold
+        case .none: return .warmError
         }
     }
 
@@ -244,12 +241,12 @@ private struct SecurityTab: View {
     private func checkRow(_ label: String, _ enabled: Bool) -> some View {
         HStack {
             Image(systemName: enabled ? "checkmark.circle.fill" : "xmark.circle")
-                .foregroundColor(enabled ? .green : .red)
+                .foregroundColor(enabled ? .tealAccent : .warmError)
             Text(label)
             Spacer()
             Text(enabled ? "OK" : "Missing")
                 .font(.caption)
-                .foregroundColor(enabled ? .secondary : .red)
+                .foregroundColor(enabled ? .warmInkLight : .warmError)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 8)

@@ -1,8 +1,4 @@
-/// DashboardView — Detailed statistics window for the DGInf provider.
-///
-/// Shows hardware info, session stats, provider status, and live
-/// security/trust posture from SecurityManager.
-/// Uses a modern card-based layout with SF Symbol accents.
+/// DashboardView — Provider dashboard with warm, vibrant card design.
 
 import SwiftUI
 
@@ -22,8 +18,8 @@ struct DashboardView: View {
             }
             .padding(20)
         }
-        .frame(minWidth: 520, idealWidth: 560, minHeight: 580)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(minWidth: 540, idealWidth: 580, minHeight: 600)
+        .background(Color.warmBg)
         .task {
             await viewModel.securityManager.refresh()
         }
@@ -33,129 +29,133 @@ struct DashboardView: View {
 
     private var headerCard: some View {
         HStack(spacing: 14) {
-            // App icon area
             ZStack {
-                RoundedRectangle(cornerRadius: 14)
+                RoundedRectangle(cornerRadius: 16)
                     .fill(statusGradient)
-                    .frame(width: 52, height: 52)
+                    .frame(width: 56, height: 56)
+                    .shadow(color: statusAccentColor.opacity(0.3), radius: 8, y: 4)
                 Image(systemName: statusIconName)
                     .font(.title2)
-                    .fontWeight(.semibold)
+                    .fontWeight(.bold)
                     .foregroundStyle(.white)
                     .symbolEffect(.pulse, isActive: viewModel.isServing)
             }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("DGInf Provider")
-                    .font(.title3)
-                    .fontWeight(.bold)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 0) {
+                    Text("Eigen")
+                        .font(.display(24))
+                        .foregroundStyle(Color.warmInk)
+                    Text("Inference")
+                        .font(.display(24))
+                        .foregroundStyle(Color.coral)
+                }
                 HStack(spacing: 6) {
                     Text(providerStatusText)
-                        .font(.subheadline)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .foregroundStyle(statusAccentColor)
-                        .fontWeight(.medium)
                     Text("v\(viewModel.updateManager.currentVersion)")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(Color.warmInkFaint)
                 }
             }
 
             Spacer()
 
-            // Status pill
-            statusPill
+            WarmBadge(text: statusLabel, color: statusAccentColor,
+                      icon: statusLabel == "Serving" ? "bolt.fill" : nil)
         }
-        .cardStyle()
-    }
-
-    private var statusPill: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(statusAccentColor)
-                .frame(width: 8, height: 8)
-                .shadow(color: statusAccentColor.opacity(0.5), radius: 4)
-            Text(statusLabel)
-                .font(.caption)
-                .fontWeight(.semibold)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(statusAccentColor.opacity(0.12), in: Capsule())
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.warmBgSecondary)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .strokeBorder(statusAccentColor.opacity(0.25), lineWidth: 2)
+                )
+        )
+        .shadow(color: statusAccentColor.opacity(0.1), radius: 8, y: 4)
     }
 
     // MARK: - Hardware Grid
 
     private var hardwareGrid: some View {
         LazyVGrid(columns: [
-            GridItem(.flexible(), spacing: 10),
-            GridItem(.flexible(), spacing: 10),
-        ], spacing: 10) {
-            metricCard(
-                icon: "cpu",
-                iconColor: .blue,
+            GridItem(.flexible(), spacing: 12),
+            GridItem(.flexible(), spacing: 12),
+        ], spacing: 12) {
+            hwCard(
+                icon: "cpu", color: .blueAccent,
                 label: "Chip",
-                value: viewModel.chipName
-                    .replacingOccurrences(of: "Apple ", with: "")
+                value: viewModel.chipName.replacingOccurrences(of: "Apple ", with: ""),
+                rotation: -0.5
             )
-            metricCard(
-                icon: "memorychip",
-                iconColor: .purple,
+            hwCard(
+                icon: "memorychip", color: .purpleAccent,
                 label: "Memory",
-                value: "\(viewModel.memoryGB) GB",
-                detail: "Unified"
+                value: "\(viewModel.memoryGB) GB", detail: "Unified",
+                rotation: 0.3
             )
-            metricCard(
-                icon: "gpu",
-                iconColor: .orange,
+            hwCard(
+                icon: "gpu", color: .gold,
                 label: "GPU Cores",
-                value: viewModel.gpuCores > 0 ? "\(viewModel.gpuCores)" : "--"
+                value: viewModel.gpuCores > 0 ? "\(viewModel.gpuCores)" : "--",
+                rotation: 0.4
             )
-            metricCard(
-                icon: "arrow.left.arrow.right",
-                iconColor: .teal,
+            hwCard(
+                icon: "arrow.left.arrow.right", color: .tealAccent,
                 label: "Bandwidth",
                 value: viewModel.memoryBandwidthGBs > 0 ? "\(viewModel.memoryBandwidthGBs)" : "--",
-                detail: "GB/s"
+                detail: "GB/s",
+                rotation: -0.3
             )
         }
     }
 
-    private func metricCard(
-        icon: String,
-        iconColor: Color,
-        label: String,
-        value: String,
-        detail: String? = nil
+    private func hwCard(
+        icon: String, color: Color,
+        label: String, value: String,
+        detail: String? = nil,
+        rotation: Double = 0
     ) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Image(systemName: icon)
-                .font(.body)
-                .fontWeight(.medium)
-                .foregroundStyle(iconColor)
-                .frame(width: 32, height: 32)
-                .background(iconColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(color, in: RoundedRectangle(cornerRadius: 10))
+                .shadow(color: color.opacity(0.3), radius: 4, y: 2)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(label)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(color)
+                    .textCase(.uppercase)
                 HStack(alignment: .firstTextBaseline, spacing: 3) {
                     Text(value)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.warmInk)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                     if let detail {
                         Text(detail)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.warmInkFaint)
                     }
                 }
             }
-
             Spacer(minLength: 0)
         }
-        .cardStyle(padding: 10)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color.white.opacity(0.6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(color.opacity(0.2), lineWidth: 2)
+                )
+        )
+        .rotationEffect(.degrees(rotation))
     }
 
     // MARK: - Provider Status
@@ -163,133 +163,149 @@ struct DashboardView: View {
     private var statusCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label("Provider", systemImage: "server.rack")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
+                Image(systemName: "server.rack")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 28, height: 28)
+                    .background(Color.coral, in: RoundedRectangle(cornerRadius: 8))
+                Text("Provider")
+                    .font(.displaySmall)
+                    .foregroundStyle(Color.warmInk)
                 Spacer()
             }
 
             HStack(spacing: 14) {
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text("Model")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text("MODEL")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.warmInkFaint)
                     Text(viewModel.currentModel.components(separatedBy: "/").last ?? viewModel.currentModel)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.warmInk)
                         .lineLimit(1)
                 }
 
                 Spacer()
 
-                Divider()
-                    .frame(height: 32)
+                Divider().frame(height: 32)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Coordinator")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text("COORDINATOR")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.warmInkFaint)
                     HStack(spacing: 5) {
                         Circle()
-                            .fill(viewModel.coordinatorConnected ? Color.green : Color.red.opacity(0.7))
-                            .frame(width: 7, height: 7)
+                            .fill(viewModel.coordinatorConnected ? Color.tealAccent : Color.warmError)
+                            .frame(width: 8, height: 8)
+                            .shadow(color: (viewModel.coordinatorConnected ? Color.tealAccent : Color.warmError).opacity(0.5), radius: 4)
                         Text(viewModel.coordinatorConnected ? "Connected" : "Disconnected")
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                            .foregroundStyle(viewModel.coordinatorConnected ? .primary : .secondary)
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                            .foregroundStyle(viewModel.coordinatorConnected ? Color.tealAccent : Color.warmError)
                     }
                 }
 
                 if viewModel.isServing {
-                    Divider()
-                        .frame(height: 32)
-
+                    Divider().frame(height: 32)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Throughput")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text("THROUGHPUT")
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .foregroundStyle(Color.warmInkFaint)
                         Text(String(format: "%.1f tok/s", viewModel.tokensPerSecond))
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.green)
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color.tealAccent)
                             .monospacedDigit()
                             .contentTransition(.numericText())
                     }
                 }
             }
         }
-        .cardStyle()
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(statusAccentColor.opacity(0.3), lineWidth: 1)
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color.white.opacity(0.5))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(Color.coral.opacity(0.2), lineWidth: 2)
+                )
         )
     }
 
     // MARK: - Stats Row
 
     private var statsRow: some View {
-        HStack(spacing: 10) {
-            statCard(
+        HStack(spacing: 12) {
+            liveStatCard(
+                icon: "clock", color: .blueAccent,
                 label: "Uptime",
-                value: formatUptime(viewModel.uptimeSeconds),
-                icon: "clock",
-                color: .blue
+                value: formatUptime(viewModel.uptimeSeconds)
             )
-            statCard(
+            liveStatCard(
+                icon: "arrow.up.arrow.down", color: .tealAccent,
                 label: "Requests",
-                value: "\(viewModel.requestsServed)",
-                icon: "arrow.up.arrow.down",
-                color: .green
+                value: "\(viewModel.requestsServed)"
             )
-            statCard(
+            liveStatCard(
+                icon: "text.word.spacing", color: .gold,
                 label: "Tokens",
-                value: formatTokenCount(viewModel.tokensGenerated),
-                icon: "text.word.spacing",
-                color: .orange
+                value: formatTokenCount(viewModel.tokensGenerated)
             )
             if !viewModel.earningsBalance.isEmpty {
-                statCard(
+                liveStatCard(
+                    icon: "dollarsign.circle", color: .coral,
                     label: "Earnings",
-                    value: viewModel.earningsBalance,
-                    icon: "dollarsign.circle",
-                    color: .green
+                    value: viewModel.earningsBalance
                 )
             }
         }
     }
 
-    private func statCard(label: String, value: String, icon: String, color: Color) -> some View {
-        VStack(spacing: 6) {
+    private func liveStatCard(icon: String, color: Color, label: String, value: String) -> some View {
+        VStack(spacing: 8) {
             Image(systemName: icon)
-                .font(.caption)
-                .foregroundStyle(color)
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .background(color, in: Circle())
+                .shadow(color: color.opacity(0.3), radius: 4, y: 2)
+
             Text(value)
-                .font(.title3)
-                .fontWeight(.bold)
+                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.warmInk)
                 .monospacedDigit()
                 .contentTransition(.numericText())
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
             Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(color)
+                .textCase(.uppercase)
         }
         .frame(maxWidth: .infinity)
-        .cardStyle(padding: 12)
+        .padding(.vertical, 14)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(color.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(color.opacity(0.15), lineWidth: 1.5)
+                )
+        )
     }
 
     // MARK: - Trust & Attestation
 
     private var trustCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label("Trust & Attestation", systemImage: "shield.checkered")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
+                Image(systemName: "shield.checkered")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 28, height: 28)
+                    .background(Color.tealAccent, in: RoundedRectangle(cornerRadius: 8))
+                Text("Trust & Attestation")
+                    .font(.displaySmall)
+                    .foregroundStyle(Color.warmInk)
                 Spacer()
                 trustBadge
                 if viewModel.securityManager.isChecking {
@@ -301,8 +317,10 @@ struct DashboardView: View {
                 } label: {
                     Image(systemName: "arrow.clockwise")
                         .font(.caption)
+                        .foregroundStyle(Color.warmInkFaint)
                 }
                 .buttonStyle(.borderless)
+                .pointerOnHover()
             }
 
             LazyVGrid(columns: [
@@ -318,68 +336,72 @@ struct DashboardView: View {
                 securityChip("Binary", viewModel.securityManager.binaryFound)
             }
         }
-        .cardStyle()
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color.tealAccent.opacity(0.06))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(Color.tealAccent.opacity(0.2), lineWidth: 2)
+                )
+        )
     }
 
     private var trustBadge: some View {
-        HStack(spacing: 4) {
-            Image(systemName: viewModel.securityManager.trustLevel.iconName)
-                .font(.caption2)
-            Text(viewModel.securityManager.trustLevel.displayName)
-                .font(.caption)
-                .fontWeight(.medium)
-        }
-        .foregroundStyle(trustColor)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(trustColor.opacity(0.1), in: Capsule())
+        WarmBadge(
+            text: viewModel.securityManager.trustLevel.displayName,
+            color: trustColor,
+            icon: viewModel.securityManager.trustLevel.iconName
+        )
     }
 
     private func securityChip(_ label: String, _ enabled: Bool) -> some View {
         HStack(spacing: 5) {
             Image(systemName: enabled ? "checkmark.circle.fill" : "xmark.circle")
-                .font(.caption2)
-                .foregroundStyle(enabled ? .green : .red.opacity(0.6))
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(enabled ? Color.tealAccent : Color.warmError)
             Text(label)
-                .font(.caption)
-                .foregroundStyle(enabled ? .primary : .secondary)
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(enabled ? Color.warmInk : Color.warmInkLight)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 5)
-        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .padding(.horizontal, 10)
         .background(
-            (enabled ? Color.green : Color.red).opacity(0.06),
-            in: RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: 8)
+                .fill(enabled ? Color.tealAccent.opacity(0.08) : Color.warmError.opacity(0.06))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder((enabled ? Color.tealAccent : Color.warmError).opacity(0.15), lineWidth: 1)
+                )
         )
     }
 
     // MARK: - Action Bar
 
     private var actionBar: some View {
-        HStack(spacing: 8) {
-            actionButton("Diagnostics", icon: "stethoscope", window: "doctor")
-            actionButton("Logs", icon: "doc.text", window: "logs")
-            actionButton("Benchmark", icon: "gauge.with.dots.needle.bottom.50percent", window: "benchmark")
-            actionButton("Wallet", icon: "wallet.pass", window: "wallet")
+        HStack(spacing: 10) {
+            actionButton("Diagnostics", icon: "stethoscope", color: .blueAccent, window: "doctor")
+            actionButton("Logs", icon: "doc.text", color: .purpleAccent, window: "logs")
 
             if !viewModel.hasCompletedSetup {
                 Button { openWindow(id: "setup") } label: {
                     Label("Setup", systemImage: "wrench")
-                        .font(.caption)
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .buttonStyle(WarmButtonStyle(.coral))
+                .pointerOnHover()
             }
         }
     }
 
-    private func actionButton(_ title: String, icon: String, window: String) -> some View {
+    private func actionButton(_ title: String, icon: String, color: Color, window: String) -> some View {
         Button { openWindow(id: window) } label: {
             Label(title, systemImage: icon)
-                .font(.caption)
+                .font(.system(size: 12, weight: .bold, design: .rounded))
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
+        .buttonStyle(WarmButtonStyle(color, filled: false))
+        .pointerOnHover()
     }
 
     // MARK: - Helpers
@@ -400,17 +422,17 @@ struct DashboardView: View {
     }
 
     private var statusGradientColors: [Color] {
-        if viewModel.isPaused { return [.yellow, .orange] }
-        if viewModel.isServing { return [.green, .mint] }
-        if viewModel.isOnline { return [.blue, .cyan] }
-        return [.gray, .gray.opacity(0.7)]
+        if viewModel.isPaused { return [.gold, .goldLight] }
+        if viewModel.isServing { return [.coral, .gold] }
+        if viewModel.isOnline { return [.coral, .coralLight] }
+        return [.warmInkFaint, .warmInkFaint.opacity(0.7)]
     }
 
     private var statusAccentColor: Color {
-        if viewModel.isPaused { return .yellow }
-        if viewModel.isServing { return .green }
-        if viewModel.isOnline { return .blue }
-        return .gray
+        if viewModel.isPaused { return .gold }
+        if viewModel.isServing { return .tealAccent }
+        if viewModel.isOnline { return .blueAccent }
+        return .warmInkFaint
     }
 
     private var statusLabel: String {
@@ -423,15 +445,15 @@ struct DashboardView: View {
     private var providerStatusText: String {
         if viewModel.isPaused { return "Paused" }
         if viewModel.isServing { return "Serving inference" }
-        if viewModel.isOnline { return "Online, waiting for requests" }
+        if viewModel.isOnline { return "Online, waiting" }
         return "Offline"
     }
 
     private var trustColor: Color {
         switch viewModel.securityManager.trustLevel {
-        case .hardware: return .green
-        case .selfSigned: return .yellow
-        case .none: return .red
+        case .hardware: return .tealAccent
+        case .selfSigned: return .gold
+        case .none: return .warmError
         }
     }
 
@@ -447,24 +469,5 @@ struct DashboardView: View {
         if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }
         if count >= 1_000 { return String(format: "%.1fK", Double(count) / 1_000) }
         return "\(count)"
-    }
-}
-
-// MARK: - Card Style Modifier
-
-private struct CardModifier: ViewModifier {
-    var padding: CGFloat
-
-    func body(content: Content) -> some View {
-        content
-            .padding(padding)
-            .background(.background, in: RoundedRectangle(cornerRadius: 12))
-            .shadow(color: .black.opacity(0.06), radius: 2, y: 1)
-    }
-}
-
-extension View {
-    fileprivate func cardStyle(padding: CGFloat = 14) -> some View {
-        modifier(CardModifier(padding: padding))
     }
 }

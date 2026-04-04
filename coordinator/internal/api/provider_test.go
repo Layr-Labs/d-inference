@@ -559,12 +559,13 @@ func TestChallengeResponseSuccess(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Register with a public key.
+	pubKey := testPublicKeyB64()
 	regMsg := protocol.RegisterMessage{
 		Type:      protocol.TypeRegister,
 		Hardware:  protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:    []protocol.ModelInfo{{ID: "challenge-model", ModelType: "test", Quantization: "4bit"}},
 		Backend:   "test",
-		PublicKey: "dGVzdHB1YmxpY2tleQ==",
+		PublicKey: pubKey,
 	}
 	regData, _ := json.Marshal(regMsg)
 	conn.Write(ctx, websocket.MessageText, regData)
@@ -597,7 +598,7 @@ func TestChallengeResponseSuccess(t *testing.T) {
 				Type:      protocol.TypeAttestationResponse,
 				Nonce:     challenge.Nonce,
 				Signature: "dGVzdHNpZ25hdHVyZQ==",
-				PublicKey: "dGVzdHB1YmxpY2tleQ==",
+				PublicKey: pubKey,
 			}
 			respData, _ := json.Marshal(response)
 			conn.Write(ctx, websocket.MessageText, respData)

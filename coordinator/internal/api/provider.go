@@ -539,13 +539,34 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	totalCost := payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
 	providerPayout := payments.ProviderPayout(totalCost)
 
-	// Attempt to charge the consumer (best-effort for MVP — inference already completed).
-	if err := s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID); err != nil {
-		s.logger.Warn("could not charge consumer (insufficient balance)",
-			"consumer_key", pr.ConsumerKey,
-			"cost_micro_usd", totalCost,
-			"error", err,
-		)
+	// Adjust billing: the minimum charge was reserved at pre-flight.
+	// Now charge the difference (actual - reserved) or refund (reserved - actual).
+	if pr.ReservedMicroUSD > 0 {
+		if totalCost > pr.ReservedMicroUSD {
+			// Charge the additional amount beyond the reservation.
+			extra := totalCost - pr.ReservedMicroUSD
+			if err := s.ledger.Charge(pr.ConsumerKey, extra, msg.RequestID); err != nil {
+				s.logger.Warn("could not charge additional cost beyond reservation",
+					"consumer_key", pr.ConsumerKey,
+					"extra_micro_usd", extra,
+					"error", err,
+				)
+			}
+		} else if totalCost < pr.ReservedMicroUSD {
+			// Refund the difference.
+			refund := pr.ReservedMicroUSD - totalCost
+			_ = s.store.Credit(pr.ConsumerKey, refund, store.LedgerRefund, msg.RequestID)
+		}
+		// If totalCost == reserved, nothing to do — already charged correctly.
+	} else {
+		// No reservation (billing not configured). Charge best-effort.
+		if err := s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID); err != nil {
+			s.logger.Warn("could not charge consumer (insufficient balance)",
+				"consumer_key", pr.ConsumerKey,
+				"cost_micro_usd", totalCost,
+				"error", err,
+			)
+		}
 	}
 
 	// Record usage entry for the consumer's payment history.

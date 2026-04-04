@@ -165,7 +165,7 @@ func TestIntegration_ProviderReconnectRequiresChallenge(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	pubKey := "dGVzdHB1YmxpY2tleQ=="
+	pubKey := testPublicKeyB64()
 	model := "reconnect-model"
 	models := []protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}}
 
@@ -289,7 +289,7 @@ func TestIntegration_ChallengeFailureBlocksRouting(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pubKey := "dGVzdHB1YmxpY2tleQ=="
+	pubKey := testPublicKeyB64()
 	model := "fail-challenge-model"
 	models := []protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}}
 

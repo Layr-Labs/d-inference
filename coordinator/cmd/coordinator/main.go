@@ -174,6 +174,12 @@ func main() {
 	// Configure Privy authentication.
 	if privyAppID := os.Getenv("DGINF_PRIVY_APP_ID"); privyAppID != "" {
 		privyVerificationKey := os.Getenv("DGINF_PRIVY_VERIFICATION_KEY")
+		// Support reading PEM from a file (systemd can't handle multiline env vars).
+		if keyFile := os.Getenv("DGINF_PRIVY_VERIFICATION_KEY_FILE"); keyFile != "" {
+			if data, err := os.ReadFile(keyFile); err == nil {
+				privyVerificationKey = string(data)
+			}
+		}
 		privyAppSecret := os.Getenv("DGINF_PRIVY_APP_SECRET")
 
 		privyAuth, err := auth.NewPrivyAuth(auth.Config{

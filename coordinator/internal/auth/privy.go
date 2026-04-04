@@ -48,7 +48,9 @@ func NewPrivyAuth(cfg Config, st store.Store, logger *slog.Logger) (*PrivyAuth, 
 	}
 
 	// Parse the PEM-encoded ES256 verification key.
-	block, _ := pem.Decode([]byte(cfg.VerificationKey))
+	// Replace literal \n with actual newlines (env vars can't contain newlines).
+	keyPEM := strings.ReplaceAll(cfg.VerificationKey, `\n`, "\n")
+	block, _ := pem.Decode([]byte(keyPEM))
 	if block == nil {
 		return nil, fmt.Errorf("privy: failed to decode verification key PEM")
 	}

@@ -49,7 +49,7 @@ echo "  $CHIP · ${MEM}GB · macOS $(sw_vers -productVersion)"
 echo ""
 
 # ─── Step 1: Download and install bundle ──────────────────────
-echo "→ [1/8] Downloading DGInf..."
+echo "→ [1/9] Downloading DGInf..."
 mkdir -p "$DGINF_DIR" "$BIN_DIR"
 
 # Fetch latest release metadata from coordinator (version, hash, R2 download URL).
@@ -123,7 +123,7 @@ echo "  Binaries installed ✓"
 
 # ─── Step 2: Verify inference runtime + ffmpeg ────────────────
 echo ""
-echo "→ [2/8] Verifying inference runtime..."
+echo "→ [2/9] Verifying inference runtime..."
 
 # Verify bundled Python + vllm-mlx
 if [ -f "$PYTHON_BIN" ]; then
@@ -158,7 +158,7 @@ fi
 
 # ─── Step 3: Secure Enclave identity ─────────────────────────
 echo ""
-echo "→ [3/8] Setting up Secure Enclave identity..."
+echo "→ [3/9] Setting up Secure Enclave identity..."
 rm -f "$DGINF_DIR/enclave_key.data" 2>/dev/null
 "$BIN_DIR/dginf-enclave" info >/dev/null 2>&1 \
     && echo "  Secure Enclave ✓ (P-256 key generated)" \
@@ -166,7 +166,7 @@ rm -f "$DGINF_DIR/enclave_key.data" 2>/dev/null
 
 # ─── Step 4: Enrollment + device attestation ─────────────────
 echo ""
-echo "→ [4/8] Enrollment + device attestation..."
+echo "→ [4/9] Enrollment + device attestation..."
 
 # Check if already enrolled before prompting.
 # `profiles list` only shows user-level profiles — MDM is device-level.
@@ -215,9 +215,47 @@ else
     echo "  Enrollment ⚠ (serial number not found)"
 fi
 
-# ─── Step 5: Download inference model ─────────────────────────
+# ─── Step 5: Link to account (device auth) ───────────────────
 echo ""
-echo "→ [5/8] Downloading inference model..."
+echo "→ [5/9] Link to your account..."
+
+# Skip if already logged in.
+if [ -f "$HOME/.config/dginf/auth_token" ]; then
+    echo "  Already linked ✓"
+else
+    echo ""
+    echo "  ┌──────────────────────────────────────────────────┐"
+    echo "  │  Link this machine to your account to:           │"
+    echo "  │                                                  │"
+    echo "  │   • Earn rewards for serving inference            │"
+    echo "  │   • Withdraw earnings to your Solana wallet       │"
+    echo "  │   • Track your provider stats on the dashboard    │"
+    echo "  │                                                  │"
+    echo "  │  Without linking, earnings stay in a local wallet │"
+    echo "  │  and cannot be withdrawn.                         │"
+    echo "  └──────────────────────────────────────────────────┘"
+    echo ""
+
+    if [ "$INTERACTIVE" = true ]; then
+        read -p "  Link now? [Y/n]: " LINK_CHOICE
+        LINK_CHOICE="${LINK_CHOICE:-Y}"
+        if [ "$LINK_CHOICE" = "y" ] || [ "$LINK_CHOICE" = "Y" ]; then
+            echo ""
+            "$BIN_DIR/dginf-provider" login --coordinator "$BASE_URL" 2>&1 || {
+                echo "  ⚠ Account linking failed — you can retry later with: dginf-provider login"
+            }
+        else
+            echo "  Skipped. Link later with: dginf-provider login"
+        fi
+    else
+        echo "  Run interactively to link, or run after install:"
+        echo "    dginf-provider login"
+    fi
+fi
+
+# ─── Step 6: Download inference model ─────────────────────────
+echo ""
+echo "→ [6/9] Downloading inference model..."
 
 # Initialize model variables (set -u requires all vars to be defined before use)
 MODEL=""
@@ -415,9 +453,9 @@ if [ -n "$IMAGE_MODEL" ]; then
     fi
 fi
 
-# ─── Step 6: Install DGInf menu bar app ───────────────────────
+# ─── Step 7: Install DGInf menu bar app ───────────────────────
 echo ""
-echo "→ [6/8] Installing DGInf app..."
+echo "→ [7/9] Installing DGInf app..."
 
 APP_INSTALLED=false
 APP_PATH="/Applications/DGInf.app"
@@ -452,15 +490,15 @@ else
     fi
 fi
 
-# ─── Step 7: Ready to serve ──────────────────────────────────
+# ─── Step 8: Ready to serve ──────────────────────────────────
 echo ""
-echo "→ [7/8] Installation complete."
+echo "→ [8/9] Installation complete."
 echo ""
 echo "  The provider is NOT started automatically."
 echo "  You control when your GPU is used for inference."
 PROVIDER_RUNNING=false
 
-# ─── Step 8: Summary ─────────────────────────────────────────
+# ─── Step 9: Summary ─────────────────────────────────────────
 echo ""
 echo "════════════════════════════════════════════════"
 echo ""
@@ -470,6 +508,11 @@ echo "  Hardware:  $CHIP · ${MEM}GB"
 echo "  Model:     $MODEL_NAME"
 if [ -n "$IMAGE_MODEL" ]; then
     echo "  Image:     $IMAGE_MODEL_NAME"
+fi
+if [ -f "$HOME/.config/dginf/auth_token" ]; then
+    echo "  Account:   Linked ✓"
+else
+    echo "  Account:   Not linked (run: dginf-provider login)"
 fi
 
 echo "  Status:    ○ INSTALLED (not running)"
@@ -485,18 +528,6 @@ if [ "$APP_INSTALLED" = true ]; then
     echo ""
     echo "  Menu Bar App: DGInf.app installed"
     echo "    Launch from Spotlight or: open -a DGInf"
-fi
-
-if [ ! -f "$HOME/.config/dginf/auth_token" ]; then
-    echo ""
-    echo "  ┌──────────────────────────────────────────┐"
-    echo "  │  Link to your account to earn rewards:   │"
-    echo "  │                                          │"
-    echo "  │    dginf-provider login                  │"
-    echo "  │                                          │"
-    echo "  │  Without linking, earnings go to a local │"
-    echo "  │  wallet and cannot be withdrawn.         │"
-    echo "  └──────────────────────────────────────────┘"
 fi
 
 echo ""

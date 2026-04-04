@@ -67,12 +67,18 @@ func (s *Server) handleDeviceCode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build verification URI from the request host.
-	scheme := "https"
-	if r.TLS == nil && !strings.Contains(r.Host, "openinnovation.dev") {
-		scheme = "http"
+	// Build verification URI. If a console URL is configured (separate frontend),
+	// use that. Otherwise fall back to the coordinator's own host.
+	var verificationURI string
+	if s.consoleURL != "" {
+		verificationURI = strings.TrimRight(s.consoleURL, "/") + "/link"
+	} else {
+		scheme := "https"
+		if r.TLS == nil && !strings.Contains(r.Host, "openinnovation.dev") {
+			scheme = "http"
+		}
+		verificationURI = fmt.Sprintf("%s://%s/link", scheme, r.Host)
 	}
-	verificationURI := fmt.Sprintf("%s://%s/link", scheme, r.Host)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"device_code":      deviceCode,

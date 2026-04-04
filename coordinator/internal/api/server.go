@@ -82,6 +82,10 @@ type Server struct {
 	// It can only POST /v1/releases — no admin access.
 	releaseKey string
 
+	// consoleURL is the frontend URL (e.g. "https://private-inference.openinnovation.dev").
+	// Used for device auth verification_uri so the browser opens the console, not the coordinator.
+	consoleURL string
+
 	// imageUploads stores generated images keyed by request_id.
 	// Providers upload images via HTTP POST, then send a small WebSocket
 	// completion message. The consumer handler retrieves images from here.
@@ -176,6 +180,11 @@ func (s *Server) AddKnownBinaryHashes(hashes []string) {
 			s.knownBinaryHashes[h] = true
 		}
 	}
+}
+
+// SetConsoleURL sets the frontend URL for device auth verification links.
+func (s *Server) SetConsoleURL(url string) {
+	s.consoleURL = url
 }
 
 // SetReleaseKey configures the scoped release key for GitHub Actions.

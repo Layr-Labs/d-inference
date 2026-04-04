@@ -104,6 +104,12 @@ func main() {
 	// are filtered against the admin-managed whitelist.
 	srv.SyncModelCatalog()
 
+	// Console URL — frontend for device auth verification links.
+	if consoleURL := os.Getenv("DGINF_CONSOLE_URL"); consoleURL != "" {
+		srv.SetConsoleURL(consoleURL)
+		logger.Info("console URL configured", "url", consoleURL)
+	}
+
 	// Scoped release key — GitHub Actions uses this to register new releases.
 	// Separate from admin key: can only POST /v1/releases, nothing else.
 	if releaseKey := os.Getenv("DGINF_RELEASE_KEY"); releaseKey != "" {

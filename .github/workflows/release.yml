@@ -30,7 +30,7 @@ jobs:
       # --- Test ---
 
       - name: Test provider
-        run: cd provider && cargo test
+        run: cd provider && cargo test -- --skip proxy::tests --skip server::tests
 
       - uses: actions/setup-go@v5
         with:

@@ -224,32 +224,20 @@ if [ -f "$HOME/.config/dginf/auth_token" ]; then
     echo "  Already linked ✓"
 else
     echo ""
-    echo "  ┌──────────────────────────────────────────────────┐"
-    echo "  │  Link this machine to your account to:           │"
-    echo "  │                                                  │"
-    echo "  │   • Earn rewards for serving inference            │"
-    echo "  │   • Withdraw earnings to your Solana wallet       │"
-    echo "  │   • Track your provider stats on the dashboard    │"
-    echo "  │                                                  │"
-    echo "  │  Without linking, earnings stay in a local wallet │"
-    echo "  │  and cannot be withdrawn.                         │"
-    echo "  └──────────────────────────────────────────────────┘"
+    echo "  You must link this machine to your account to receive earnings."
     echo ""
 
     if [ "$INTERACTIVE" = true ]; then
-        read -p "  Link now? [Y/n]: " LINK_CHOICE
-        LINK_CHOICE="${LINK_CHOICE:-Y}"
-        if [ "$LINK_CHOICE" = "y" ] || [ "$LINK_CHOICE" = "Y" ]; then
+        "$BIN_DIR/dginf-provider" login --coordinator "$BASE_URL" 2>&1 || {
             echo ""
-            "$BIN_DIR/dginf-provider" login --coordinator "$BASE_URL" 2>&1 || {
-                echo "  ⚠ Account linking failed — you can retry later with: dginf-provider login"
-            }
-        else
-            echo "  Skipped. Link later with: dginf-provider login"
-        fi
+            echo "  ⚠ Account linking failed. You must link before serving:"
+            echo "    dginf-provider login"
+        }
     else
-        echo "  Run interactively to link, or run after install:"
+        echo "  REQUIRED: Run this after install to link your account:"
         echo "    dginf-provider login"
+        echo ""
+        echo "  You will not earn rewards until your account is linked."
     fi
 fi
 

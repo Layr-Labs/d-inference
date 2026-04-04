@@ -534,4 +534,361 @@ mod tests {
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Live vllm-mlx integration tests
+    //
+    // These tests start a real vllm-mlx process, load a real model, and run
+    // inference. They require:
+    //   - Apple Silicon Mac
+    //   - vllm-mlx on PATH
+    //   - A small model downloaded (Qwen3.5-0.8B-MLX-4bit)
+    //
+    // Run with: LIVE_INFERENCE_TEST=1 cargo test live_inference -- --nocapture
+    // -----------------------------------------------------------------------
+
+    fn should_run_live_tests() -> bool {
+        std::env::var("LIVE_INFERENCE_TEST").is_ok()
+    }
+
+    fn find_small_model() -> Option<String> {
+        let cache = dirs::home_dir()?.join(".cache/huggingface/hub");
+        // Prefer the smallest model for fast tests
+        for model_dir_name in [
+            "models--mlx-community--Qwen3.5-0.8B-MLX-4bit",
+            "models--mlx-community--Qwen2.5-0.5B-Instruct-4bit",
+        ] {
+            let snapshots = cache.join(model_dir_name).join("snapshots");
+            if let Ok(mut entries) = std::fs::read_dir(&snapshots) {
+                if let Some(Ok(entry)) = entries.next() {
+                    if entry.path().join("config.json").exists() {
+                        return Some(entry.path().to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    async fn wait_for_backend(base_url: &str, timeout_secs: u64) -> bool {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        while tokio::time::Instant::now() < deadline {
+            if check_health(base_url).await {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        false
+    }
+
+    /// Single comprehensive live test that starts the backend once and
+    /// exercises all functionality. Loading the model is expensive (~10-30s),
+    /// so we do it once and run all checks sequentially.
+    ///
+    /// Run: LIVE_INFERENCE_TEST=1 cargo test live_inference -- --nocapture
+    #[tokio::test]
+    async fn live_inference_full_pipeline() {
+        if !should_run_live_tests() {
+            eprintln!("Skipping live test (set LIVE_INFERENCE_TEST=1 to run)");
+            return;
+        }
+        if !binary_exists("vllm-mlx") {
+            eprintln!("Skipping: vllm-mlx not on PATH");
+            return;
+        }
+        let model_path = match find_small_model() {
+            Some(p) => p,
+            None => {
+                eprintln!("Skipping: no small test model found in ~/.cache/huggingface/hub/");
+                return;
+            }
+        };
+
+        let port = 18200u16;
+        let base_url = format!("http://127.0.0.1:{port}");
+        // vllm-mlx requires a "model" field in every request — use the path.
+        let model_name = model_path.clone();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap();
+
+        // ── 1. Start backend ────────────────────────────────────
+        eprintln!("\n=== 1. Backend startup ===");
+        let mut backend = vllm_mlx::VllmMlxBackend::new(model_path.clone(), port, false);
+        backend.start().await.expect("backend should start");
+
+        eprintln!("  Waiting for model to load...");
+        assert!(
+            wait_for_backend(&base_url, 120).await,
+            "backend should become healthy within 120s"
+        );
+        assert!(backend.health().await, "health check should pass");
+        assert!(
+            check_model_loaded(&base_url).await,
+            "model should report loaded"
+        );
+        eprintln!("  ✓ Backend started and model loaded");
+
+        // ── 2. Warmup ───────────────────────────────────────────
+        eprintln!("\n=== 2. Warmup ===");
+        // Use a longer-timeout client for warmup (first inference is slow).
+        let warmup_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .unwrap();
+        let warmup_resp = warmup_client
+            .post(format!("{base_url}/v1/chat/completions"))
+            .json(&serde_json::json!({
+                "model": &model_name,
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 1,
+                "stream": false
+            }))
+            .send()
+            .await;
+        assert!(
+            warmup_resp.is_ok() && warmup_resp.unwrap().status().is_success(),
+            "warmup request should succeed"
+        );
+        eprintln!("  ✓ Warmup complete");
+
+        // ── 3. Non-streaming completion ─────────────────────────
+        eprintln!("\n=== 3. Non-streaming completion ===");
+        let resp: serde_json::Value = client
+            .post(format!("{base_url}/v1/chat/completions"))
+            .json(&serde_json::json!({
+                "model": &model_name,
+                "messages": [{"role": "user", "content": "What is 2+2? Reply with just the number."}],
+                "stream": false,
+                "max_tokens": 10,
+                "temperature": 0.0
+            }))
+            .send()
+            .await
+            .expect("request should succeed")
+            .json()
+            .await
+            .unwrap();
+
+        let content = resp["choices"][0]["message"]["content"]
+            .as_str()
+            .expect("should have content");
+        assert!(!content.is_empty(), "content should not be empty");
+        let comp_tokens = resp["usage"]["completion_tokens"].as_i64().unwrap_or(0);
+        assert!(comp_tokens > 0, "should report completion tokens");
+        // Verify OpenAI format fields
+        assert!(resp.get("id").is_some(), "missing 'id' field");
+        assert!(resp.get("object").is_some(), "missing 'object' field");
+        assert!(resp.get("choices").is_some(), "missing 'choices' field");
+        assert!(resp.get("usage").is_some(), "missing 'usage' field");
+        eprintln!("  ✓ Response: \"{content}\" ({comp_tokens} tokens)");
+
+        // ── 4. Streaming completion ─────────────────────────────
+        eprintln!("\n=== 4. Streaming completion ===");
+        let stream_resp = client
+            .post(format!("{base_url}/v1/chat/completions"))
+            .json(&serde_json::json!({
+                "model": &model_name,
+                "messages": [{"role": "user", "content": "Count 1 to 3."}],
+                "stream": true,
+                "max_tokens": 20,
+                "temperature": 0.0
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        assert!(
+            stream_resp.status().is_success(),
+            "streaming should return 200"
+        );
+        let body_text = stream_resp.text().await.unwrap();
+        let chunk_count = body_text
+            .lines()
+            .filter(|l| l.starts_with("data: {"))
+            .count();
+        assert!(
+            chunk_count > 1,
+            "should have multiple SSE chunks, got {chunk_count}"
+        );
+        assert!(body_text.contains("data: [DONE]"), "should end with [DONE]");
+        eprintln!("  ✓ Streamed {chunk_count} chunks with [DONE]");
+
+        // ── 5. max_tokens enforcement ───────────────────────────
+        eprintln!("\n=== 5. max_tokens enforcement ===");
+        let short: serde_json::Value = client
+            .post(format!("{base_url}/v1/chat/completions"))
+            .json(&serde_json::json!({
+                "model": &model_name,
+                "messages": [{"role": "user", "content": "Write a very long essay about everything."}],
+                "stream": false,
+                "max_tokens": 5,
+                "temperature": 0.0
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        let short_tokens = short["usage"]["completion_tokens"].as_i64().unwrap_or(999);
+        assert!(
+            short_tokens <= 10,
+            "max_tokens=5 but got {short_tokens} tokens"
+        );
+        eprintln!("  ✓ Got {short_tokens} tokens (limit was 5)");
+
+        // ── 6. Deterministic (temperature=0) ────────────────────
+        eprintln!("\n=== 6. Deterministic output (temperature=0) ===");
+        let det_body = serde_json::json!({
+            "model": &model_name,
+            "messages": [{"role": "user", "content": "Capital of France? One word."}],
+            "stream": false,
+            "max_tokens": 5,
+            "temperature": 0.0
+        });
+        let r1: serde_json::Value = client
+            .post(format!("{base_url}/v1/chat/completions"))
+            .json(&det_body)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let r2: serde_json::Value = client
+            .post(format!("{base_url}/v1/chat/completions"))
+            .json(&det_body)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let c1 = r1["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("");
+        let c2 = r2["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("");
+        assert_eq!(c1, c2, "should be deterministic: '{c1}' vs '{c2}'");
+        eprintln!("  ✓ Both responses: \"{c1}\"");
+
+        // ── 7. Concurrent requests ──────────────────────────────
+        eprintln!("\n=== 7. Concurrent requests ===");
+        let mut handles = vec![];
+        for i in 1..=3 {
+            let client = client.clone();
+            let url = format!("{base_url}/v1/chat/completions");
+            let model_name_clone = model_name.clone();
+            handles.push(tokio::spawn(async move {
+                let r: serde_json::Value = client
+                    .post(&url)
+                    .json(&serde_json::json!({
+                        "model": &model_name_clone,
+                        "messages": [{"role": "user", "content": format!("What is {i}+{i}?")}],
+                        "stream": false,
+                        "max_tokens": 10
+                    }))
+                    .send()
+                    .await
+                    .unwrap()
+                    .json()
+                    .await
+                    .unwrap();
+                r["choices"][0]["message"]["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string()
+            }));
+        }
+        for (i, h) in handles.into_iter().enumerate() {
+            let content = h.await.unwrap();
+            assert!(!content.is_empty(), "request {i} returned empty");
+            eprintln!("  ✓ Request {}: \"{content}\"", i + 1);
+        }
+
+        // ── 8. Latency benchmark ────────────────────────────────
+        eprintln!("\n=== 8. Latency benchmark ===");
+        let t0 = std::time::Instant::now();
+        let _: serde_json::Value = client
+            .post(format!("{base_url}/v1/chat/completions"))
+            .json(&serde_json::json!({
+                "model": &model_name,
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": false,
+                "max_tokens": 1,
+                "temperature": 0.0
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        eprintln!("  ✓ TTFT (1 token, warm): {:?}", t0.elapsed());
+
+        let t1 = std::time::Instant::now();
+        let bench: serde_json::Value = client
+            .post(format!("{base_url}/v1/chat/completions"))
+            .json(&serde_json::json!({
+                "model": &model_name,
+                "messages": [{"role": "user", "content": "Explain gravity briefly."}],
+                "stream": false,
+                "max_tokens": 50,
+                "temperature": 0.0
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let elapsed = t1.elapsed();
+        let gen_tokens = bench["usage"]["completion_tokens"].as_i64().unwrap_or(0);
+        if gen_tokens > 0 {
+            let tps = gen_tokens as f64 / elapsed.as_secs_f64();
+            eprintln!("  ✓ Decode: {gen_tokens} tokens in {elapsed:?} = {tps:.1} tok/s");
+        }
+
+        // ── 9. Stop and verify unreachable ──────────────────────
+        eprintln!("\n=== 9. Stop and verify ===");
+        backend.stop().await.expect("should stop gracefully");
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        assert!(
+            !check_health(&base_url).await,
+            "should be unreachable after stop"
+        );
+        eprintln!("  ✓ Backend stopped, port unreachable");
+
+        // ── 10. Restart (simulates idle timeout reload) ─────────
+        eprintln!("\n=== 10. Restart (cold reload) ===");
+        let mut backend2 = vllm_mlx::VllmMlxBackend::new(model_path, port, false);
+        backend2.start().await.unwrap();
+        assert!(
+            wait_for_backend(&base_url, 120).await,
+            "should come back after restart"
+        );
+        let restart_resp = client
+            .post(format!("{base_url}/v1/chat/completions"))
+            .json(&serde_json::json!({
+                "model": &model_name,
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": false,
+                "max_tokens": 3
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            restart_resp.status().is_success(),
+            "should serve after restart"
+        );
+        eprintln!("  ✓ Backend restarted and serving");
+
+        backend2.stop().await.unwrap();
+        eprintln!("\n=== All live inference tests passed! ===\n");
+    }
 }

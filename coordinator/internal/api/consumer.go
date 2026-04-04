@@ -94,21 +94,33 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Pre-flight balance check — reject requests from consumers with zero
-	// balance before routing to a provider. This avoids wasting provider GPU
-	// time on requests that can't be charged. Only enforced when the billing
-	// service is configured (production); skipped in test/dev without billing.
+	// Pre-flight balance reservation — atomically debit the minimum charge
+	// before routing to a provider. This prevents concurrent requests from
+	// all passing a balance > 0 check and then failing to charge after inference.
+	// The reservation is refunded if the request fails, or adjusted to the
+	// actual cost after inference completes.
+	var reservedMicroUSD int64
 	if s.billing != nil {
 		consumerKey := consumerKeyFromContext(r.Context())
-		if s.ledger.Balance(consumerKey) <= 0 {
+		reservedMicroUSD = payments.MinimumCharge()
+		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-				"your balance is $0.00 — add funds at /billing before making requests"))
+				"your balance is too low — add funds at /billing before making requests"))
 			return
+		}
+	}
+
+	// Refund reservation on early errors (before inference starts).
+	refundReservation := func() {
+		if reservedMicroUSD > 0 {
+			consumerKey := consumerKeyFromContext(r.Context())
+			_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "reservation_refund")
 		}
 	}
 
 	// Reject requests for models not in the catalog.
 	if !s.registry.IsModelInCatalog(req.Model) {
+		refundReservation()
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", req.Model)))
 		return
@@ -121,6 +133,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if trustParam := r.URL.Query().Get("trust_level"); trustParam != "" {
 		requestedTrust = registry.TrustLevel(trustParam)
 		if trustRank := registry.TrustRank(requestedTrust); trustRank < 0 {
+			refundReservation()
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
 				fmt.Sprintf("invalid trust_level %q — valid values: none, self_signed, hardware", trustParam)))
 			return
@@ -141,6 +154,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			ResponseCh: make(chan *registry.Provider, 1),
 		}
 		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
+			refundReservation()
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no %s provider available for model %q and queue is full", trustDesc, req.Model)))
 			return
 		}
@@ -154,6 +168,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		var err error
 		provider, err = s.registry.Queue().WaitForProvider(queuedReq)
 		if err != nil {
+			refundReservation()
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no %s provider became available for model %q (queue timeout)", trustDesc, req.Model)))
 			return
 		}
@@ -176,6 +191,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// receive inference requests — consumer prompts must never travel in plaintext.
 	if provider.PublicKey == "" {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
 			"no provider with E2E encryption available for this model — prompt data requires encryption"))
 		return
@@ -184,6 +200,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
 	if err != nil {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
 			"provider public key invalid"))
 		return
@@ -192,6 +209,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	sessionKeys, err := e2e.GenerateSessionKeys()
 	if err != nil {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
 			"failed to generate session keys"))
 		return
@@ -200,6 +218,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	encrypted, err := e2e.Encrypt(inferenceBody, providerPubKey, sessionKeys)
 	if err != nil {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
 			"failed to encrypt request"))
 		return
@@ -236,16 +255,21 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	provider.AddPending(pr)
 
 	// Send the inference request to the provider via WebSocket.
+	// Store reservation amount on the pending request for post-inference adjustment.
+	pr.ReservedMicroUSD = reservedMicroUSD
+
 	data, err := json.Marshal(wireMsg)
 	if err != nil {
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal request"))
 		return
 	}
 	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		s.logger.Error("failed to send inference request", "request_id", requestID, "error", err)
 		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
 		return

@@ -228,6 +228,7 @@ const (
 	LedgerReferralReward LedgerEntryType = "referral_reward" // referrer earns share of platform fee
 	LedgerStripeDeposit  LedgerEntryType = "stripe_deposit"  // Stripe checkout deposit
 	LedgerInviteCredit   LedgerEntryType = "invite_credit"   // invite code redemption
+	LedgerRefund         LedgerEntryType = "refund"          // reservation refund (request failed before inference)
 )
 
 // LedgerEntry is a single balance-changing event.

@@ -19,6 +19,7 @@ package registry
 
 import (
 	"context"
+	"encoding/base64"
 	"log/slog"
 	"sort"
 	"sync"
@@ -66,6 +67,11 @@ type PendingRequest struct {
 
 	// Image generation result (nil for non-image requests)
 	ImageGenerationCh chan *protocol.ImageGenerationCompleteMessage
+
+	// ReservedMicroUSD is the balance atomically debited at pre-flight.
+	// The post-inference charge adjusts for the difference between the
+	// actual cost and this reservation, preventing billing race conditions.
+	ReservedMicroUSD int64
 }
 
 // Provider represents a connected provider agent.
@@ -304,12 +310,26 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		models = filtered
 	}
 
+	// Validate X25519 public key if provided.
+	// Reject invalid keys at registration rather than failing at encryption time.
+	pubKey := msg.PublicKey
+	if pubKey != "" {
+		decoded, err := base64.StdEncoding.DecodeString(pubKey)
+		if err != nil || len(decoded) != 32 {
+			r.logger.Warn("provider public key invalid, clearing",
+				"provider_id", id,
+				"error", "must be 32-byte base64-encoded X25519 key",
+			)
+			pubKey = "" // clear so provider can register but won't receive encrypted requests
+		}
+	}
+
 	p := &Provider{
 		ID:            id,
 		Hardware:      msg.Hardware,
 		Models:        models,
 		Backend:       msg.Backend,
-		PublicKey:     msg.PublicKey,
+		PublicKey:     pubKey,
 		WalletAddress: msg.WalletAddress,
 		PrefillTPS:    msg.PrefillTPS,
 		DecodeTPS:     msg.DecodeTPS,
@@ -498,6 +518,15 @@ func (r *Registry) RecordChallengeSuccess(providerID string) {
 	p.LastChallengeVerified = time.Now()
 	p.FailedChallenges = 0
 	p.mu.Unlock()
+
+	// Drain queued requests — a newly verified provider can serve them.
+	if r.queue != nil && p.PendingCount() < MaxConcurrentRequests {
+		for _, m := range p.Models {
+			if r.queue.TryAssign(m.ID, p) {
+				break
+			}
+		}
+	}
 }
 
 // RecordChallengeFailure records a failed challenge-response. Returns the

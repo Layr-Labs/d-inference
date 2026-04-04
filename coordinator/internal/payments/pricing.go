@@ -57,6 +57,11 @@ var imagePricing = map[string]int64{
 	"flux_2_klein_9b_q8p.ckpt": 2_500, // $0.0025 per image (50% of fal.ai $0.005)
 }
 
+// MinimumCharge returns the minimum charge per inference request in micro-USD.
+func MinimumCharge() int64 {
+	return minimumChargeMicroUSD
+}
+
 // InputPricePerMillion returns the price in micro-USD for 1M input tokens.
 func InputPricePerMillion(model string) int64 {
 	if p, ok := modelPricing[model]; ok {

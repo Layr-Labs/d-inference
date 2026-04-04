@@ -84,7 +84,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           aws s3 cp /tmp/dginf-bundle-macos-arm64.tar.gz \
-            "s3://d-inf-releases/releases/v${VERSION}/dginf-bundle-macos-arm64.tar.gz" \
+            "s3://d-inf-app/releases/v${VERSION}/dginf-bundle-macos-arm64.tar.gz" \
             --endpoint-url "$R2_ENDPOINT"
           echo "Uploaded to R2: releases/v${VERSION}/dginf-bundle-macos-arm64.tar.gz"
 

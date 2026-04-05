@@ -38,46 +38,16 @@ struct MenuBarView: View {
                     .font(.bodyWarm)
                     .foregroundStyle(Color.warmInkLight)
 
-                // Model with quick switcher
-                Menu {
-                    ForEach(viewModel.modelManager.availableModels, id: \.id) { model in
-                        Button {
-                            viewModel.currentModel = model.id
-                            // Restart with new model if running
-                            if viewModel.providerManager.isRunning {
-                                viewModel.stop()
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                                    viewModel.start()
-                                }
-                            }
-                        } label: {
-                            HStack {
-                                Text(model.id.components(separatedBy: "/").last ?? model.id)
-                                if model.id == viewModel.currentModel {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
-                    if viewModel.modelManager.availableModels.isEmpty {
-                        Text("No models downloaded")
-                            .foregroundStyle(Color.warmInkFaint)
-                    }
-                } label: {
-                    HStack {
-                        Text("Model:")
-                            .foregroundStyle(Color.warmInkLight)
-                        Text(viewModel.currentModel.components(separatedBy: "/").last ?? viewModel.currentModel)
-                            .fontWeight(.medium)
-                            .foregroundStyle(Color.warmInk)
-                            .lineLimit(1)
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.caption2)
-                            .foregroundStyle(Color.warmInkFaint)
-                    }
-                    .font(.bodyWarm)
+                // Current model (auto-selected, configurable in Settings)
+                HStack {
+                    Text("Model:")
+                        .foregroundStyle(Color.warmInkLight)
+                    Text(viewModel.currentModel.components(separatedBy: "/").last ?? viewModel.currentModel)
+                        .fontWeight(.medium)
+                        .foregroundStyle(Color.warmInk)
+                        .lineLimit(1)
                 }
-                .menuStyle(.borderlessButton)
+                .font(.bodyWarm)
 
                 // Live status with animated throughput
                 HStack {

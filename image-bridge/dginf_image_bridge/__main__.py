@@ -23,6 +23,10 @@ def main():
                         help="Path to gRPCServerCLI binary")
     parser.add_argument("--model-path", default=None,
                         help="Model directory for gRPCServerCLI (starts subprocess if set)")
+    parser.add_argument("--system-memory-gb", type=float, default=0,
+                        help="Total system RAM in GB (auto-detected if omitted)")
+    parser.add_argument("--model-size-gb", type=float, default=0,
+                        help="Model weight size in GB (estimated from model name if omitted)")
     parser.add_argument("--log-level", default="info", choices=["debug", "info", "warning", "error"])
     args = parser.parse_args()
 
@@ -40,6 +44,8 @@ def main():
         grpc_port=args.grpc_port,
         grpc_server_binary=args.grpc_binary,
         model_path=args.model_path,
+        system_memory_gb=args.system_memory_gb,
+        model_size_gb=args.model_size_gb,
     )
 
     # Start gRPCServerCLI as subprocess if model_path is provided

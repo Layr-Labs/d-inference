@@ -18,6 +18,7 @@ from PIL import Image
 from dginf_image_bridge.drawthings_backend import (
     DrawThingsBackend,
     build_config_bytes,
+    compute_max_batch_size,
     convert_response_image,
 )
 from dginf_image_bridge.generated import imageService_pb2, imageService_pb2_grpc
@@ -63,6 +64,105 @@ class TestBuildConfig:
         assert config.StartHeight() == 1024 // 64  # 16
         assert config.Steps() == 20
         assert config.Seed() == 123
+
+    def test_batch_size_in_config(self):
+        """batch_size parameter should be encoded in FlatBuffers config."""
+        from dginf_image_bridge.generated.config_generated import GenerationConfiguration
+
+        data = build_config_bytes(
+            width=1024, height=1024, steps=4, seed=1, model="test",
+            batch_size=3,
+        )
+        config = GenerationConfiguration.GetRootAs(data, 0)
+        assert config.BatchSize() == 3
+
+    def test_batch_size_passthrough(self):
+        """Any batch_size value should be passed through to FlatBuffer."""
+        from dginf_image_bridge.generated.config_generated import GenerationConfiguration
+
+        data = build_config_bytes(
+            width=1024, height=1024, steps=4, seed=1, model="test",
+            batch_size=30,
+        )
+        config = GenerationConfiguration.GetRootAs(data, 0)
+        assert config.BatchSize() == 30
+
+    def test_default_batch_size_is_one(self):
+        """Default batch_size should be 1 for backwards compatibility."""
+        from dginf_image_bridge.generated.config_generated import GenerationConfiguration
+
+        data = build_config_bytes(
+            width=1024, height=1024, steps=4, seed=1, model="test",
+        )
+        config = GenerationConfiguration.GetRootAs(data, 0)
+        assert config.BatchSize() == 1
+
+
+# ---------------------------------------------------------------------------
+# Adaptive batch size computation tests
+# ---------------------------------------------------------------------------
+
+
+class TestComputeMaxBatchSize:
+    def test_flux_4b_on_16gb(self):
+        """16 GB barely fits the model — batch=1."""
+        batch = compute_max_batch_size(16, 8.1, "flux-klein-4b")
+        assert batch == 1
+
+    def test_flux_4b_on_36gb(self):
+        """36 GB has plenty of headroom — high batch."""
+        batch = compute_max_batch_size(36, 8.1, "flux-klein-4b")
+        # free = 36 - 8.1 - 4 - 2 = 21.9, overhead = 2.0 → 10
+        assert batch == 10
+
+    def test_flux_4b_on_24gb(self):
+        """24 GB should allow batch >= 2."""
+        batch = compute_max_batch_size(24, 8.1, "flux-klein-4b")
+        assert batch >= 2
+
+    def test_flux_9b_on_24gb(self):
+        """24 GB with 13 GB model — tight, batch=1-2."""
+        batch = compute_max_batch_size(24, 13.0, "flux-klein-9b")
+        assert batch >= 1
+        assert batch <= 2
+
+    def test_flux_9b_on_48gb(self):
+        """48 GB has lots of room — high batch."""
+        batch = compute_max_batch_size(48, 13.0, "flux-klein-9b")
+        # free = 48 - 13 - 4 - 2 = 29, overhead = 3.5 → 8
+        assert batch == 8
+
+    def test_zero_memory_returns_one(self):
+        batch = compute_max_batch_size(0, 8.0, "unknown")
+        assert batch == 1
+
+    def test_model_larger_than_memory(self):
+        batch = compute_max_batch_size(8, 12.0, "big-model")
+        assert batch == 1
+
+    def test_scales_with_memory(self):
+        """Batch size grows with available memory — no artificial cap."""
+        batch = compute_max_batch_size(512, 8.0, "flux-klein-4b")
+        # free = 512 - 8 - 4 - 2 = 498, overhead = 2.0 → 249
+        assert batch == 249
+
+    def test_higher_resolution_reduces_batch(self):
+        """2048x2048 uses 4x the activation memory of 1024x1024."""
+        batch_1k = compute_max_batch_size(36, 8.1, "flux-klein-4b", 1024, 1024)
+        batch_2k = compute_max_batch_size(36, 8.1, "flux-klein-4b", 2048, 2048)
+        assert batch_2k <= batch_1k
+
+    def test_lower_resolution_allows_more_batching(self):
+        """512x512 uses less activation memory, allowing larger batches."""
+        batch_512 = compute_max_batch_size(24, 8.1, "flux-klein-4b", 512, 512)
+        batch_1k = compute_max_batch_size(24, 8.1, "flux-klein-4b", 1024, 1024)
+        assert batch_512 >= batch_1k
+
+    def test_unknown_model_uses_default_overhead(self):
+        """Unknown models use 25% of model size as per-image overhead."""
+        batch = compute_max_batch_size(36, 10.0, "unknown-model")
+        # free = 36 - 10 - 4 - 2 = 20, overhead = 10*0.25 = 2.5, batch = 20/2.5 = 8
+        assert batch == 8
 
 
 # ---------------------------------------------------------------------------
@@ -142,13 +242,21 @@ class MockImageGenerationServicer(imageService_pb2_grpc.ImageGenerationServiceSe
         return imageService_pb2.EchoReply(message="mock-server")
 
     def GenerateImage(self, request, context):
-        # Parse dimensions from the request config
-        # For simplicity, generate a fixed 64x64 RGB image
+        # Parse batch_size from FlatBuffers config to simulate real Draw Things behavior
+        batch_size = 1
+        if request.configuration:
+            try:
+                from dginf_image_bridge.generated.config_generated import GenerationConfiguration
+                config = GenerationConfiguration.GetRootAs(request.configuration, 0)
+                batch_size = max(1, config.BatchSize())
+            except Exception:
+                pass
+
         width, height, channels = 64, 64, 3
-        raw_image = make_test_response_image(width, height, channels)
+        raw_images = [make_test_response_image(width, height, channels) for _ in range(batch_size)]
 
         response = imageService_pb2.ImageGenerationResponse(
-            generatedImages=[raw_image],
+            generatedImages=raw_images,
         )
         yield response
 
@@ -203,6 +311,47 @@ class TestDrawThingsBackendWithMockServer:
         for img_bytes in images:
             img = Image.open(io.BytesIO(img_bytes))
             assert img.format == "PNG"
+
+    def test_generate_batched(self, mock_grpc_server):
+        """With enough memory, n=4 images should use batching."""
+        backend = DrawThingsBackend(
+            model="flux-klein-4b",
+            grpc_port=mock_grpc_server,
+            system_memory_gb=24,  # enough for batch > 1
+            model_size_gb=8.1,
+        )
+        images = backend.generate(
+            prompt="batch test",
+            negative_prompt=None,
+            width=64,
+            height=64,
+            steps=1,
+            seed=1,
+            n=4,
+        )
+        assert len(images) == 4
+        for img_bytes in images:
+            img = Image.open(io.BytesIO(img_bytes))
+            assert img.format == "PNG"
+
+    def test_generate_low_memory_sequential(self, mock_grpc_server):
+        """With low memory, images should be generated one at a time."""
+        backend = DrawThingsBackend(
+            model="flux-klein-4b",
+            grpc_port=mock_grpc_server,
+            system_memory_gb=16,  # tight memory
+            model_size_gb=8.1,
+        )
+        images = backend.generate(
+            prompt="sequential test",
+            negative_prompt=None,
+            width=64,
+            height=64,
+            steps=1,
+            seed=1,
+            n=3,
+        )
+        assert len(images) == 3
 
     def test_not_ready_wrong_port(self):
         backend = DrawThingsBackend(model="test", grpc_port=19999)

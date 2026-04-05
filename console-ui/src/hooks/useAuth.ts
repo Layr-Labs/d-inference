@@ -7,7 +7,7 @@ const API_KEY_STORAGE = "eigeninference_api_key";
 const OLD_API_KEY_STORAGE = "eigeninference_api_key";
 
 export function useAuth() {
-  const { ready, authenticated, user, login, logout } = useAuthContext();
+  const { ready, authenticated, user, login, logout, getAccessToken } = useAuthContext();
 
   // Derive useful fields from the Privy user
   const email = (user as { email?: { address?: string } } | null)?.email?.address || null;
@@ -38,16 +38,25 @@ export function useAuth() {
     }
 
     if (!localStorage.getItem(API_KEY_STORAGE)) {
-      fetch("/api/auth/keys", { method: "POST" })
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.api_key) {
-            localStorage.setItem(API_KEY_STORAGE, data.api_key);
-          }
+      getAccessToken().then((token) => {
+        if (!token) return;
+        fetch("/api/auth/keys", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
         })
-        .catch(() => {});
+          .then((res) => res.json())
+          .then((data) => {
+            if (data.api_key) {
+              localStorage.setItem(API_KEY_STORAGE, data.api_key);
+            }
+          })
+          .catch(() => {});
+      });
     }
-  }, [authenticated]);
+  }, [authenticated, getAccessToken]);
 
   return {
     ready,

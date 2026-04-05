@@ -230,6 +230,10 @@ func (s *Server) challengeLoop(ctx context.Context, conn *websocket.Conn, provid
 		interval = DefaultChallengeInterval
 	}
 
+	// Send initial challenge immediately so the provider is routable
+	// without waiting for the first ticker interval.
+	s.sendChallenge(ctx, conn, providerID, provider, tracker)
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 

@@ -233,14 +233,6 @@ class TestImageGeneration:
         assert isinstance(data["data"], list)
         assert all("b64_json" in item for item in data["data"])
 
-    def test_n_exceeds_max(self, client):
-        resp = client.post("/v1/images/generations", json={
-            "model": "flux-klein-4b",
-            "prompt": "test",
-            "n": 10,  # max is 4
-        })
-        assert resp.status_code == 422
-
     def test_rectangular_size(self, client, mock_backend):
         resp = client.post("/v1/images/generations", json={
             "model": "flux-klein-4b",

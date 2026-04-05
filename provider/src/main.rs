@@ -1691,6 +1691,8 @@ async fn cmd_serve(
             &image_port.to_string(),
             "--model",
             &image_model,
+            "--system-memory-gb",
+            &hw.memory_gb.to_string(),
         ]);
         if !image_model_path.is_empty() {
             bridge_cmd.args(["--model-path", &image_model_path]);

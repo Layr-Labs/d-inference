@@ -25,7 +25,7 @@ class ImageGenerationRequest(BaseModel):
     model: str
     prompt: str
     negative_prompt: Optional[str] = None
-    n: int = Field(default=1, ge=1, le=4)
+    n: int = Field(default=1, ge=1)
     size: str = "1024x1024"
     steps: Optional[int] = None
     seed: Optional[int] = None

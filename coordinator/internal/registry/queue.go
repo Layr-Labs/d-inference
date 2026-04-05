@@ -1,4 +1,4 @@
-// Request queue management for the DGInf coordinator.
+// Request queue management for the EigenInference coordinator.
 //
 // When all providers serving a model are busy, instead of immediately
 // returning 503, the coordinator enqueues the request and waits for a

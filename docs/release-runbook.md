@@ -1,4 +1,4 @@
-# DGInf Release Runbook
+# EigenInference Release Runbook
 
 How to build, release, and distribute provider binaries. Covers both the automated GitHub Actions pipeline and manual release process.
 
@@ -47,12 +47,12 @@ git push origin master --tags
 
 The `.github/workflows/release.yml` workflow:
 
-1. Builds `dginf-provider` (Rust, `--no-default-features`)
-2. Builds `dginf-enclave` (Swift)
+1. Builds `eigeninference-provider` (Rust, `--no-default-features`)
+2. Builds `eigeninference-enclave` (Swift)
 3. Runs all tests (provider + coordinator)
 4. Creates code-signed bundle tarball
 5. Computes SHA-256 of binary and bundle
-6. Uploads bundle to R2 at `releases/v0.2.1/dginf-bundle-macos-arm64.tar.gz`
+6. Uploads bundle to R2 at `releases/v0.2.1/eigeninference-bundle-macos-arm64.tar.gz`
 7. Registers the release with coordinator via `POST /v1/releases` (scoped key)
 8. Creates a GitHub Release with the bundle attached
 
@@ -88,24 +88,24 @@ swift build -c release
 ### 2. Create bundle
 
 ```bash
-mkdir -p /tmp/dginf-bundle
-cp provider/target/release/dginf-provider /tmp/dginf-bundle/
-cp enclave/.build/release/dginf-enclave /tmp/dginf-bundle/
+mkdir -p /tmp/eigeninference-bundle
+cp provider/target/release/eigeninference-provider /tmp/eigeninference-bundle/
+cp enclave/.build/release/eigeninference-enclave /tmp/eigeninference-bundle/
 
 # Code sign
 codesign --force --sign - --entitlements scripts/entitlements.plist \
-  --options runtime /tmp/dginf-bundle/dginf-provider
+  --options runtime /tmp/eigeninference-bundle/eigeninference-provider
 codesign --force --sign - --entitlements scripts/entitlements.plist \
-  --options runtime /tmp/dginf-bundle/dginf-enclave
+  --options runtime /tmp/eigeninference-bundle/eigeninference-enclave
 
-cd /tmp && tar czf dginf-bundle-macos-arm64.tar.gz -C dginf-bundle .
+cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
 ```
 
 ### 3. Compute hashes
 
 ```bash
-BINARY_HASH=$(shasum -a 256 provider/target/release/dginf-provider | cut -d' ' -f1)
-BUNDLE_HASH=$(shasum -a 256 /tmp/dginf-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
+BINARY_HASH=$(shasum -a 256 provider/target/release/eigeninference-provider | cut -d' ' -f1)
+BUNDLE_HASH=$(shasum -a 256 /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
 echo "Binary: $BINARY_HASH"
 echo "Bundle: $BUNDLE_HASH"
 ```
@@ -114,8 +114,8 @@ echo "Bundle: $BUNDLE_HASH"
 
 ```bash
 VERSION="0.2.1"
-aws s3 cp /tmp/dginf-bundle-macos-arm64.tar.gz \
-  "s3://d-inf-releases/releases/v${VERSION}/dginf-bundle-macos-arm64.tar.gz" \
+aws s3 cp /tmp/eigeninference-bundle-macos-arm64.tar.gz \
+  "s3://d-inf-releases/releases/v${VERSION}/eigeninference-bundle-macos-arm64.tar.gz" \
   --endpoint-url "$R2_ENDPOINT"
 ```
 
@@ -126,14 +126,14 @@ VERSION="0.2.1"
 R2_PUBLIC_URL="https://pub-XXXX.r2.dev"
 
 curl -X POST https://inference-test.openinnovation.dev/v1/releases \
-  -H "Authorization: Bearer $DGINF_RELEASE_KEY" \
+  -H "Authorization: Bearer $EIGENINFERENCE_RELEASE_KEY" \
   -H "Content-Type: application/json" \
   -d "{
     \"version\": \"$VERSION\",
     \"platform\": \"macos-arm64\",
     \"binary_hash\": \"$BINARY_HASH\",
     \"bundle_hash\": \"$BUNDLE_HASH\",
-    \"url\": \"$R2_PUBLIC_URL/releases/v$VERSION/dginf-bundle-macos-arm64.tar.gz\"
+    \"url\": \"$R2_PUBLIC_URL/releases/v$VERSION/eigeninference-bundle-macos-arm64.tar.gz\"
   }"
 ```
 
@@ -184,8 +184,8 @@ To rollback to a previous version, deactivate the bad version. The old version i
 
 | Item | Details |
 |------|---------|
-| Env var (coordinator) | `DGINF_RELEASE_KEY` |
-| GitHub Secret | `DGINF_RELEASE_KEY` |
+| Env var (coordinator) | `EIGENINFERENCE_RELEASE_KEY` |
+| GitHub Secret | `EIGENINFERENCE_RELEASE_KEY` |
 | Scope | Can only `POST /v1/releases` — no admin access |
 | If leaked | Attacker can register fake releases, but binary hash must match what providers actually run — no impact |
 
@@ -193,14 +193,14 @@ To rollback to a previous version, deactivate the bad version. The old version i
 
 | Method | When to use |
 |--------|-------------|
-| `DGINF_ADMIN_KEY` | Pre-production, dev, quick ops |
+| `EIGENINFERENCE_ADMIN_KEY` | Pre-production, dev, quick ops |
 | Privy email OTP | Production — `./scripts/admin.sh login` |
 
 ### Required GitHub Secrets
 
 | Secret | Purpose |
 |--------|---------|
-| `DGINF_RELEASE_KEY` | Scoped key for registering releases |
+| `EIGENINFERENCE_RELEASE_KEY` | Scoped key for registering releases |
 | `COORDINATOR_URL` | Coordinator API URL |
 | `R2_ACCESS_KEY_ID` | Cloudflare R2 access key |
 | `R2_SECRET_ACCESS_KEY` | Cloudflare R2 secret key |
@@ -209,7 +209,7 @@ To rollback to a previous version, deactivate the bad version. The old version i
 
 ## How Binary Verification Works
 
-1. **At build time**: SHA-256 of `dginf-provider` binary is computed
+1. **At build time**: SHA-256 of `eigeninference-provider` binary is computed
 2. **At release registration**: hash stored in coordinator's release table
 3. **At startup**: `SyncBinaryHashes()` loads all active release hashes into `knownBinaryHashes`
 4. **At provider registration**: attestation blob contains `binaryHash` → checked against known set

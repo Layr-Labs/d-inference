@@ -15,13 +15,13 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from dginf_image_bridge.drawthings_backend import (
+from eigeninference_image_bridge.drawthings_backend import (
     DrawThingsBackend,
     build_config_bytes,
     compute_max_batch_size,
     convert_response_image,
 )
-from dginf_image_bridge.generated import imageService_pb2, imageService_pb2_grpc
+from eigeninference_image_bridge.generated import imageService_pb2, imageService_pb2_grpc
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +53,7 @@ class TestBuildConfig:
     def test_config_deserializable(self):
         """Config bytes should be valid FlatBuffers that can be read back."""
         import flatbuffers
-        from dginf_image_bridge.generated.config_generated import GenerationConfiguration
+        from eigeninference_image_bridge.generated.config_generated import GenerationConfiguration
 
         data = build_config_bytes(
             width=768, height=1024, steps=20, seed=123, model="flux-dev"
@@ -67,7 +67,7 @@ class TestBuildConfig:
 
     def test_batch_size_in_config(self):
         """batch_size parameter should be encoded in FlatBuffers config."""
-        from dginf_image_bridge.generated.config_generated import GenerationConfiguration
+        from eigeninference_image_bridge.generated.config_generated import GenerationConfiguration
 
         data = build_config_bytes(
             width=1024, height=1024, steps=4, seed=1, model="test",
@@ -78,7 +78,7 @@ class TestBuildConfig:
 
     def test_batch_size_passthrough(self):
         """Any batch_size value should be passed through to FlatBuffer."""
-        from dginf_image_bridge.generated.config_generated import GenerationConfiguration
+        from eigeninference_image_bridge.generated.config_generated import GenerationConfiguration
 
         data = build_config_bytes(
             width=1024, height=1024, steps=4, seed=1, model="test",
@@ -89,7 +89,7 @@ class TestBuildConfig:
 
     def test_default_batch_size_is_one(self):
         """Default batch_size should be 1 for backwards compatibility."""
-        from dginf_image_bridge.generated.config_generated import GenerationConfiguration
+        from eigeninference_image_bridge.generated.config_generated import GenerationConfiguration
 
         data = build_config_bytes(
             width=1024, height=1024, steps=4, seed=1, model="test",
@@ -246,7 +246,7 @@ class MockImageGenerationServicer(imageService_pb2_grpc.ImageGenerationServiceSe
         batch_size = 1
         if request.configuration:
             try:
-                from dginf_image_bridge.generated.config_generated import GenerationConfiguration
+                from eigeninference_image_bridge.generated.config_generated import GenerationConfiguration
                 config = GenerationConfiguration.GetRootAs(request.configuration, 0)
                 batch_size = max(1, config.BatchSize())
             except Exception:
@@ -363,7 +363,7 @@ class TestDrawThingsFullStack:
 
     def test_http_to_grpc_flow(self, mock_grpc_server):
         from fastapi.testclient import TestClient
-        from dginf_image_bridge.server import create_app
+        from eigeninference_image_bridge.server import create_app
 
         backend = DrawThingsBackend(model="flux-klein-4b", grpc_port=mock_grpc_server)
         app = create_app(backend=backend)

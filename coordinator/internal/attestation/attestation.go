@@ -1,4 +1,4 @@
-// Package attestation verifies signed attestation blobs from DGInf
+// Package attestation verifies signed attestation blobs from EigenInference
 // provider nodes.
 //
 // Each provider generates an attestation blob containing hardware identity

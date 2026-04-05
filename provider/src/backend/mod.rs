@@ -1,4 +1,4 @@
-//! Inference backend management for the DGInf provider.
+//! Inference backend management for the EigenInference provider.
 //!
 //! Supported backends are vllm-mlx and mlx-lm.
 //!

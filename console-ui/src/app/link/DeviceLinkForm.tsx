@@ -178,7 +178,7 @@ export function DeviceLinkForm() {
       <div className="mt-6 text-xs text-slate-400 text-center">
         Run{" "}
         <code className="bg-slate-100 px-1.5 py-0.5 rounded font-mono">
-          dginf-provider login
+          eigeninference-provider login
         </code>{" "}
         on your Mac to get a code.
       </div>

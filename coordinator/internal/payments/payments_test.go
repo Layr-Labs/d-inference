@@ -3,7 +3,7 @@ package payments
 import (
 	"testing"
 
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/store"
 )
 
 func newTestLedger() *Ledger {

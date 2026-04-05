@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dginf/coordinator/internal/auth"
-	"github.com/dginf/coordinator/internal/billing"
-	"github.com/dginf/coordinator/internal/payments"
-	"github.com/dginf/coordinator/internal/protocol"
-	"github.com/dginf/coordinator/internal/registry"
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/auth"
+	"github.com/eigeninference/coordinator/internal/billing"
+	"github.com/eigeninference/coordinator/internal/payments"
+	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/registry"
+	"github.com/eigeninference/coordinator/internal/store"
 	"nhooyr.io/websocket"
 )
 

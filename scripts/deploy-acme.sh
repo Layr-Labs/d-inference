@@ -10,13 +10,13 @@
 set -euo pipefail
 
 SERVER="ubuntu@34.197.17.112"
-SSH="ssh -o ConnectTimeout=15 -i ~/.ssh/dginf-infra $SERVER"
-SCP="scp -o ConnectTimeout=15 -i ~/.ssh/dginf-infra"
+SSH="ssh -o ConnectTimeout=15 -i ~/.ssh/eigeninference-infra $SERVER"
+SCP="scp -o ConnectTimeout=15 -i ~/.ssh/eigeninference-infra"
 
 echo "=== Step 1: Add ACME proxy to nginx ==="
 $SSH '
-if ! grep -q "/acme/" /etc/nginx/sites-enabled/dginf-mdm; then
-  sudo sed -i "/# SCEP/i\\\\n    # step-ca ACME (device-attest-01)\\n    location /acme/ {\\n        proxy_pass https://127.0.0.1:9000;\\n        proxy_ssl_verify off;\\n        proxy_set_header Host inference-test.openinnovation.dev;\\n    }" /etc/nginx/sites-enabled/dginf-mdm
+if ! grep -q "/acme/" /etc/nginx/sites-enabled/eigeninference-mdm; then
+  sudo sed -i "/# SCEP/i\\\\n    # step-ca ACME (device-attest-01)\\n    location /acme/ {\\n        proxy_pass https://127.0.0.1:9000;\\n        proxy_ssl_verify off;\\n        proxy_set_header Host inference-test.openinnovation.dev;\\n    }" /etc/nginx/sites-enabled/eigeninference-mdm
   sudo nginx -t && sudo systemctl reload nginx
   echo "nginx: ACME proxy added"
 else
@@ -35,12 +35,12 @@ echo "Enrollment profile updated"
 
 echo ""
 echo "=== Step 3: Verify ACME endpoint ==="
-curl -s https://inference-test.openinnovation.dev/acme/dginf-acme/directory | python3 -m json.tool
+curl -s https://inference-test.openinnovation.dev/acme/eigeninference-acme/directory | python3 -m json.tool
 
 echo ""
 echo "=== Done ==="
 echo "Next steps:"
-echo "  1. On each Mac: System Settings > General > Device Management > Remove DGInf profile"
+echo "  1. On each Mac: System Settings > General > Device Management > Remove EigenInference profile"
 echo "  2. Re-install: open https://inference-test.openinnovation.dev/enroll.mobileconfig"
 echo "  3. macOS will generate SE key and complete ACME device-attest-01 challenge"
 echo "  4. step-ca issues a certificate binding the SE key to the device identity"

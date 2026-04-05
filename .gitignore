@@ -51,8 +51,8 @@ build/
 enclave_key.data
 
 # Compiled binaries (coordinator)
-coordinator/dginf-coordinator
-coordinator/dginf-coordinator-linux
+coordinator/eigeninference-coordinator
+coordinator/eigeninference-coordinator-linux
 
 # LaTeX build artifacts
 *.aux

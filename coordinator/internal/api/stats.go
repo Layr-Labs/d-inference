@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/dginf/coordinator/internal/registry"
+	"github.com/eigeninference/coordinator/internal/registry"
 )
 
 // handleStats returns aggregate platform statistics for the frontend dashboard.

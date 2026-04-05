@@ -45,7 +45,7 @@ pub enum ProviderMessage {
         /// Benchmark: decode tokens per second.
         #[serde(skip_serializing_if = "Option::is_none")]
         decode_tps: Option<f64>,
-        /// Device-linked provider token (from `dginf-provider login`).
+        /// Device-linked provider token (from `eigeninference-provider login`).
         /// When present, the coordinator links this provider to the token's account.
         #[serde(skip_serializing_if = "Option::is_none")]
         auth_token: Option<String>,

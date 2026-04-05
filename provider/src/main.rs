@@ -1,7 +1,7 @@
-//! DGInf provider agent for Apple Silicon Macs.
+//! EigenInference provider agent for Apple Silicon Macs.
 //!
 //! The provider agent runs on Mac hardware and serves local inference requests
-//! from the DGInf coordinator. It manages the lifecycle of an inference backend
+//! from the EigenInference coordinator. It manages the lifecycle of an inference backend
 //! (vllm-mlx or mlx-lm), connects to the coordinator via WebSocket, and
 //! handles attestation using the Apple Secure Enclave.
 //!
@@ -457,7 +457,7 @@ async fn fetch_catalog(coordinator_url: &str) -> Vec<CatalogModel> {
 }
 
 #[derive(Parser)]
-#[command(name = "dginf-provider", about = "DGInf provider agent for Apple Silicon Macs", version = env!("CARGO_PKG_VERSION"))]
+#[command(name = "eigeninference-provider", about = "EigenInference provider agent for Apple Silicon Macs", version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -532,14 +532,14 @@ enum Command {
         model: Option<String>,
     },
 
-    /// Enroll this Mac in DGInf MDM (without starting to serve)
+    /// Enroll this Mac in EigenInference MDM (without starting to serve)
     Enroll {
         /// Coordinator URL for device attestation enrollment
         #[arg(long, default_value = "https://inference-test.openinnovation.dev")]
         coordinator: String,
     },
 
-    /// Remove MDM enrollment and clean up DGInf data
+    /// Remove MDM enrollment and clean up EigenInference data
     Unenroll,
 
     /// Run standardized benchmarks
@@ -609,7 +609,7 @@ enum Command {
         watch: bool,
     },
 
-    /// Show or create provider wallet (stored in ~/.dginf/wallet_key)
+    /// Show or create provider wallet (stored in ~/.eigeninference/wallet_key)
     Wallet,
 
     /// Check for updates and install the latest version
@@ -632,9 +632,9 @@ enum Command {
 
 fn setup_logging(verbose: bool) {
     let filter = if verbose {
-        EnvFilter::new("dginf_provider=debug,info")
+        EnvFilter::new("eigeninference_provider=debug,info")
     } else {
-        EnvFilter::new("dginf_provider=info,warn")
+        EnvFilter::new("eigeninference_provider=info,warn")
     };
 
     tracing_subscriber::fmt()
@@ -678,13 +678,13 @@ async fn main() -> Result<()> {
             if let Some(ref im) = image_model {
                 // SAFETY: single-threaded at this point, before tokio runtime starts
                 unsafe {
-                    std::env::set_var("DGINF_IMAGE_MODEL", im);
-                    std::env::set_var("DGINF_IMAGE_MODEL_ID", im);
+                    std::env::set_var("EIGENINFERENCE_IMAGE_MODEL", im);
+                    std::env::set_var("EIGENINFERENCE_IMAGE_MODEL_ID", im);
                 }
             }
             if let Some(ref imp) = image_model_path {
                 unsafe {
-                    std::env::set_var("DGINF_IMAGE_MODEL_PATH", imp);
+                    std::env::set_var("EIGENINFERENCE_IMAGE_MODEL_PATH", imp);
                 }
             }
             cmd_serve(local, coordinator, port, model, backend_port, all_models).await
@@ -775,7 +775,7 @@ async fn check_for_update_alert() {
         }
     }
     eprintln!("  │                                              │");
-    eprintln!("  │  Run: dginf-provider update                  │");
+    eprintln!("  │  Run: eigeninference-provider update                  │");
     eprintln!("  ╰──────────────────────────────────────────────╯");
     eprintln!();
 }
@@ -809,7 +809,7 @@ async fn cmd_install(
     model_override: Option<String>,
 ) -> Result<()> {
     println!("╔══════════════════════════════════════════╗");
-    println!("║       DGInf Provider Setup               ║");
+    println!("║       EigenInference Provider Setup               ║");
     println!("╚══════════════════════════════════════════╝");
     println!();
 
@@ -835,7 +835,7 @@ async fn cmd_install(
     println!("  ✓ Config: {}", config_path.display());
     println!("  ✓ Node key: {}", key_path.display());
     println!(
-        "  ✓ Wallet: {} (stored in ~/.dginf/wallet_key)",
+        "  ✓ Wallet: {} (stored in ~/.eigeninference/wallet_key)",
         w.address()
     );
     println!();
@@ -848,7 +848,7 @@ async fn cmd_install(
     if already_enrolled {
         println!("  ✓ Already enrolled in MDM — skipping");
     } else {
-        let profile_path = std::env::temp_dir().join("DGInf-Enroll.mobileconfig");
+        let profile_path = std::env::temp_dir().join("EigenInference-Enroll.mobileconfig");
         println!("  Downloading enrollment profile...");
         let client = reqwest::Client::new();
         let resp = client.get(&profile_url).send().await?;
@@ -857,7 +857,7 @@ async fn cmd_install(
                 "  ⚠ Could not download profile (HTTP {}). Skipping MDM enrollment.",
                 resp.status()
             );
-            println!("    You can enroll later: dginf-provider enroll");
+            println!("    You can enroll later: eigeninference-provider enroll");
         } else {
             let profile_bytes = resp.bytes().await?;
             std::fs::write(&profile_path, &profile_bytes)?;
@@ -973,7 +973,7 @@ async fn cmd_install(
                     "  ⚠ Not enough disk space ({:.0} GB needed, {:.0} GB available)",
                     total_default_size, disk_available_gb
                 );
-                println!("  Free up disk space and retry: dginf-provider install");
+                println!("  Free up disk space and retry: eigeninference-provider install");
             } else {
                 use std::io::Write;
                 print!(
@@ -1121,13 +1121,13 @@ async fn cmd_install(
 
     let log_path = dirs::home_dir()
         .unwrap_or_default()
-        .join(".dginf/provider.log");
+        .join(".eigeninference/provider.log");
 
     println!("╔══════════════════════════════════════════╗");
     println!("║  Provider is running as a system service! ║");
     println!("╚══════════════════════════════════════════╝");
     println!();
-    println!("  Service: io.dginf.provider (launchd)");
+    println!("  Service: io.eigeninference.provider (launchd)");
     println!("  Auto-restart: enabled (KeepAlive)");
     println!("  Logs: {}", log_path.display());
     println!();
@@ -1140,7 +1140,7 @@ async fn cmd_install(
         println!("  Run this command to connect your provider");
         println!("  to your EigenInference account:");
         println!();
-        println!("    dginf-provider login");
+        println!("    eigeninference-provider login");
         println!();
         println!("  Without linking, earnings go to a local");
         println!("  wallet and cannot be withdrawn.");
@@ -1148,11 +1148,11 @@ async fn cmd_install(
     }
 
     println!("Commands:");
-    println!("  dginf-provider login      Link to your account");
-    println!("  dginf-provider status     Show provider status");
-    println!("  dginf-provider logs       View logs");
-    println!("  dginf-provider stop       Stop the provider");
-    println!("  dginf-provider doctor     Run diagnostics");
+    println!("  eigeninference-provider login      Link to your account");
+    println!("  eigeninference-provider status     Show provider status");
+    println!("  eigeninference-provider logs       View logs");
+    println!("  eigeninference-provider stop       Stop the provider");
+    println!("  eigeninference-provider doctor     Run diagnostics");
     println!();
 
     Ok(())
@@ -1331,26 +1331,30 @@ async fn cmd_serve(
         }
     }
 
-    // Find bundled Python at ~/.dginf/python (standalone Python 3.12 + vllm-mlx)
-    let dginf_dir = dirs::home_dir().unwrap_or_default().join(".dginf");
-    let bundled_python = dginf_dir.join("python/bin/python3.12");
+    // Find bundled Python at ~/.eigeninference/python (standalone Python 3.12 + vllm-mlx)
+    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+    let bundled_python = eigeninference_dir.join("python/bin/python3.12");
     let python_cmd = if bundled_python.exists() {
         // Only set PYTHONHOME if this is a real standalone Python install
         // (not a symlink to uv/pyenv/system Python). Wrong PYTHONHOME causes
         // Python to fail to find its stdlib and crash silently.
-        let is_standalone =
-            !bundled_python.is_symlink() && dginf_dir.join("python/lib/python3.12/os.py").exists();
+        let is_standalone = !bundled_python.is_symlink()
+            && eigeninference_dir
+                .join("python/lib/python3.12/os.py")
+                .exists();
         if is_standalone {
             tracing::info!("Using bundled Python: {}", bundled_python.display());
             unsafe {
-                std::env::set_var("PYTHONHOME", dginf_dir.join("python"));
+                std::env::set_var("PYTHONHOME", eigeninference_dir.join("python"));
             }
         } else {
             tracing::info!("Using Python at: {}", bundled_python.display());
         }
         bundled_python.to_string_lossy().to_string()
     } else {
-        tracing::info!("Using system Python (bundled Python not found at ~/.dginf/python)");
+        tracing::info!(
+            "Using system Python (bundled Python not found at ~/.eigeninference/python)"
+        );
         "python3".to_string()
     };
 
@@ -1396,16 +1400,16 @@ async fn cmd_serve(
 
     // STT model env vars (needed for both advertising and backend startup)
     let stt_port = be_port + 1;
-    let stt_model_path = std::env::var("DGINF_STT_MODEL").unwrap_or_default();
-    let stt_model_id = std::env::var("DGINF_STT_MODEL_ID")
+    let stt_model_path = std::env::var("EIGENINFERENCE_STT_MODEL").unwrap_or_default();
+    let stt_model_id = std::env::var("EIGENINFERENCE_STT_MODEL_ID")
         .unwrap_or_else(|_| "CohereLabs/cohere-transcribe-03-2026".to_string());
 
     // Image model env vars (needed for both advertising and backend startup)
     let image_port = be_port + 2;
-    let image_model = std::env::var("DGINF_IMAGE_MODEL").unwrap_or_default();
+    let image_model = std::env::var("EIGENINFERENCE_IMAGE_MODEL").unwrap_or_default();
     let image_model_id =
-        std::env::var("DGINF_IMAGE_MODEL_ID").unwrap_or_else(|_| image_model.clone());
-    let image_model_path = std::env::var("DGINF_IMAGE_MODEL_PATH").unwrap_or_default();
+        std::env::var("EIGENINFERENCE_IMAGE_MODEL_ID").unwrap_or_else(|_| image_model.clone());
+    let image_model_path = std::env::var("EIGENINFERENCE_IMAGE_MODEL_PATH").unwrap_or_default();
 
     // Advertise STT model if configured (backend starts later)
     if !stt_model_path.is_empty() && !stt_model_id.is_empty() {
@@ -1604,8 +1608,8 @@ async fn cmd_serve(
     }
 
     // Start STT backend (continuous-batching stt_server.py) on be_port + 1 if available.
-    // DGINF_STT_MODEL: local path or HuggingFace repo ID for the STT model.
-    // DGINF_STT_MODEL_ID: clean model name for coordinator registration (optional,
+    // EIGENINFERENCE_STT_MODEL: local path or HuggingFace repo ID for the STT model.
+    // EIGENINFERENCE_STT_MODEL_ID: clean model name for coordinator registration (optional,
     //   defaults to "CohereLabs/cohere-transcribe-03-2026").
     let _stt_available = if !stt_model_path.is_empty() {
         tracing::info!("Starting STT backend on port {stt_port} for model: {stt_model_path}");
@@ -1661,26 +1665,30 @@ async fn cmd_serve(
             }
         }
     } else {
-        tracing::info!("No STT model configured (set DGINF_STT_MODEL to enable)");
+        tracing::info!("No STT model configured (set EIGENINFERENCE_STT_MODEL to enable)");
         false
     };
 
     // Start image generation bridge on be_port + 2 if configured.
-    // DGINF_IMAGE_MODEL: model ID for the image bridge (e.g. "flux-klein-4b").
-    // DGINF_IMAGE_MODEL_PATH: model directory for gRPCServerCLI (optional).
+    // EIGENINFERENCE_IMAGE_MODEL: model ID for the image bridge (e.g. "flux-klein-4b").
+    // EIGENINFERENCE_IMAGE_MODEL_PATH: model directory for gRPCServerCLI (optional).
     let _image_available = if !image_model.is_empty() {
         tracing::info!("Starting image bridge on port {image_port} for model: {image_model}");
 
         let mut bridge_cmd = std::process::Command::new(&python_cmd);
 
         // Set PYTHONPATH so the image bridge package is importable.
-        // Look for it next to the binary, in ~/.dginf, or in the source tree.
+        // Look for it next to the binary, in ~/.eigeninference, or in the source tree.
         let bridge_paths: Vec<String> = [
             std::env::current_exe().ok().and_then(|p| {
                 p.parent()
                     .map(|d| d.join("image-bridge").to_string_lossy().to_string())
             }),
-            dirs::home_dir().map(|d| d.join(".dginf/image-bridge").to_string_lossy().to_string()),
+            dirs::home_dir().map(|d| {
+                d.join(".eigeninference/image-bridge")
+                    .to_string_lossy()
+                    .to_string()
+            }),
         ]
         .iter()
         .filter_map(|p| p.clone())
@@ -1696,7 +1704,7 @@ async fn cmd_serve(
 
         bridge_cmd.args([
             "-m",
-            "dginf_image_bridge",
+            "eigeninference_image_bridge",
             "--port",
             &image_port.to_string(),
             "--model",
@@ -1735,7 +1743,7 @@ async fn cmd_serve(
             }
         }
     } else {
-        tracing::info!("No image model configured (set DGINF_IMAGE_MODEL to enable)");
+        tracing::info!("No image model configured (set EIGENINFERENCE_IMAGE_MODEL to enable)");
         false
     };
 
@@ -2151,7 +2159,10 @@ async fn shutdown_backend() {
 
 /// Restart the inference backend and wait for it to become healthy.
 fn preferred_inference_backend_module() -> &'static str {
-    match std::env::var("DGINF_INFERENCE_BACKEND").ok().as_deref() {
+    match std::env::var("EIGENINFERENCE_INFERENCE_BACKEND")
+        .ok()
+        .as_deref()
+    {
         Some("vllm-mlx") | Some("vllm_mlx") | Some("vllm_mlx.server") => "vllm_mlx.server",
         Some("mlx_lm") | Some("mlx_lm.server") => "mlx_lm.server",
         _ => "vllm_mlx.server",
@@ -2371,7 +2382,7 @@ async fn handle_inprocess_request(
     }
 }
 
-/// Generate a Secure Enclave attestation by calling the dginf-enclave CLI tool.
+/// Generate a Secure Enclave attestation by calling the eigeninference-enclave CLI tool.
 ///
 /// The attestation binds the X25519 encryption public key to the hardware
 /// identity, proving the same device controls both keys.
@@ -2391,10 +2402,10 @@ fn find_stt_server_script() -> Option<String> {
             .unwrap_or_default(),
         // In the provider source directory (development)
         std::path::PathBuf::from("stt_server.py"),
-        // In ~/.dginf
+        // In ~/.eigeninference
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".dginf/stt_server.py"),
+            .join(".eigeninference/stt_server.py"),
     ];
 
     for path in &candidates {
@@ -2410,23 +2421,23 @@ fn generate_attestation(
     binary_hash: Option<&str>,
 ) -> Option<Box<serde_json::value::RawValue>> {
     // Look for the enclave CLI binary in common locations
-    // Check ~/.dginf/bin first (standard install location)
+    // Check ~/.eigeninference/bin first (standard install location)
     let home_bin = dirs::home_dir()
         .unwrap_or_default()
-        .join(".dginf/bin/dginf-enclave");
+        .join(".eigeninference/bin/eigeninference-enclave");
     let home_bin_str = home_bin.to_string_lossy().to_string();
 
     let binary_paths = [
         // Standard install location
         home_bin_str.as_str(),
         // Built in the enclave directory (development)
-        "../enclave/.build/release/dginf-enclave",
+        "../enclave/.build/release/eigeninference-enclave",
         // System-wide install
-        "/usr/local/bin/dginf-enclave",
+        "/usr/local/bin/eigeninference-enclave",
         // Homebrew
-        "/opt/homebrew/bin/dginf-enclave",
+        "/opt/homebrew/bin/eigeninference-enclave",
         // Adjacent to provider binary
-        "dginf-enclave",
+        "eigeninference-enclave",
     ];
 
     let mut binary_path = None;
@@ -2441,7 +2452,7 @@ fn generate_attestation(
     // Also check PATH
     if binary_path.is_none() {
         if let Ok(output) = std::process::Command::new("which")
-            .arg("dginf-enclave")
+            .arg("eigeninference-enclave")
             .output()
         {
             if output.status.success() {
@@ -2456,7 +2467,9 @@ fn generate_attestation(
     let binary = match binary_path {
         Some(p) => p,
         None => {
-            tracing::info!("dginf-enclave binary not found, registering without attestation");
+            tracing::info!(
+                "eigeninference-enclave binary not found, registering without attestation"
+            );
             return None;
         }
     };
@@ -2466,7 +2479,7 @@ fn generate_attestation(
         if attempt == 1 {
             // Delete stale enclave key and retry
             let home = dirs::home_dir().unwrap_or_default();
-            let key_path = home.join(".dginf/enclave_key.data");
+            let key_path = home.join(".eigeninference/enclave_key.data");
             if key_path.exists() {
                 tracing::warn!("Deleting stale enclave key at {}", key_path.display());
                 let _ = std::fs::remove_file(&key_path);
@@ -2490,14 +2503,14 @@ fn generate_attestation(
         let output = match std::process::Command::new(&binary).args(&args).output() {
             Ok(o) => o,
             Err(e) => {
-                tracing::warn!("Failed to run dginf-enclave: {e}");
+                tracing::warn!("Failed to run eigeninference-enclave: {e}");
                 return None;
             }
         };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!("dginf-enclave failed: {stderr}");
+            tracing::warn!("eigeninference-enclave failed: {stderr}");
             if attempt == 0 {
                 tracing::info!("Retrying with fresh enclave key...");
                 continue;
@@ -2585,9 +2598,9 @@ fn self_verify_attestation(attestation_json: &serde_json::Value) -> bool {
 
     // Write temp files for openssl verification
     let tmp_dir = std::env::temp_dir();
-    let sig_path = tmp_dir.join("dginf-verify-sig.der");
-    let data_path = tmp_dir.join("dginf-verify-data.bin");
-    let pubkey_path = tmp_dir.join("dginf-verify-pubkey.der");
+    let sig_path = tmp_dir.join("eigeninference-verify-sig.der");
+    let data_path = tmp_dir.join("eigeninference-verify-data.bin");
+    let pubkey_path = tmp_dir.join("eigeninference-verify-pubkey.der");
 
     // Write signature and raw data (openssl dgst will hash it)
     if std::fs::write(&sig_path, &sig_bytes).is_err() {
@@ -2653,14 +2666,14 @@ fn self_verify_attestation(attestation_json: &serde_json::Value) -> bool {
 }
 
 async fn cmd_enroll(coordinator_url: String) -> Result<()> {
-    println!("DGInf Device Attestation Enrollment");
+    println!("EigenInference Device Attestation Enrollment");
     println!();
 
     // Check if already enrolled
     if security::check_mdm_enrolled() {
         println!("✓ Already enrolled — no action needed.");
         println!();
-        println!("  Verify with: dginf-provider doctor");
+        println!("  Verify with: eigeninference-provider doctor");
         return Ok(());
     }
 
@@ -2684,7 +2697,8 @@ async fn cmd_enroll(coordinator_url: String) -> Result<()> {
     }
 
     let bytes = resp.bytes().await?;
-    let profile_path = std::env::temp_dir().join(format!("DGInf-Enroll-{serial}.mobileconfig"));
+    let profile_path =
+        std::env::temp_dir().join(format!("EigenInference-Enroll-{serial}.mobileconfig"));
     std::fs::write(&profile_path, &bytes)?;
 
     // Open for install
@@ -2704,7 +2718,7 @@ async fn cmd_enroll(coordinator_url: String) -> Result<()> {
             .status();
     }
 
-    println!("After installing, verify with: dginf-provider doctor");
+    println!("After installing, verify with: eigeninference-provider doctor");
     Ok(())
 }
 
@@ -2727,13 +2741,13 @@ fn get_serial_number() -> Result<String> {
 }
 
 async fn cmd_unenroll() -> Result<()> {
-    println!("DGInf Unenrollment");
+    println!("EigenInference Unenrollment");
     println!();
 
     if security::check_mdm_enrolled() {
         println!("MDM profile found. To remove:");
         println!("  System Settings → General → Device Management");
-        println!("  Click on the DGInf profile → Remove");
+        println!("  Click on the EigenInference profile → Remove");
         println!();
         #[cfg(target_os = "macos")]
         {
@@ -2743,25 +2757,25 @@ async fn cmd_unenroll() -> Result<()> {
                 .status();
         }
     } else {
-        println!("No DGInf MDM profile found. Nothing to remove.");
+        println!("No EigenInference MDM profile found. Nothing to remove.");
     }
 
     // Clean up local data
     println!();
-    println!("Clean up local DGInf data? This removes:");
-    println!("  - Config: ~/.config/dginf/");
-    println!("  - Node key: ~/.dginf/node_key");
-    println!("  - Enclave key: ~/.dginf/enclave_key.data");
-    println!("  - Wallet key from Secure Enclave (or ~/.dginf/wallet_key fallback)");
+    println!("Clean up local EigenInference data? This removes:");
+    println!("  - Config: ~/.config/eigeninference/");
+    println!("  - Node key: ~/.eigeninference/node_key");
+    println!("  - Enclave key: ~/.eigeninference/enclave_key.data");
+    println!("  - Wallet key from Secure Enclave (or ~/.eigeninference/wallet_key fallback)");
     println!();
     println!("Type 'yes' to confirm:");
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
     if input.trim() == "yes" {
         let home = dirs::home_dir().unwrap_or_default();
-        let _ = std::fs::remove_dir_all(home.join(".config/dginf"));
-        let _ = std::fs::remove_file(home.join(".dginf/node_key"));
-        let _ = std::fs::remove_file(home.join(".dginf/enclave_key.data"));
+        let _ = std::fs::remove_dir_all(home.join(".config/eigeninference"));
+        let _ = std::fs::remove_file(home.join(".eigeninference/node_key"));
+        let _ = std::fs::remove_file(home.join(".eigeninference/enclave_key.data"));
         let _ = wallet::Wallet::delete();
         println!("  ✓ Local data and wallet cleaned up");
     } else {
@@ -2773,7 +2787,7 @@ async fn cmd_unenroll() -> Result<()> {
 
 async fn cmd_benchmark() -> Result<()> {
     let hw = hardware::detect()?;
-    println!("DGInf Benchmark — {}", hw.chip_name);
+    println!("EigenInference Benchmark — {}", hw.chip_name);
     println!();
 
     // Check if mlx-lm is available
@@ -2829,7 +2843,7 @@ async fn cmd_benchmark() -> Result<()> {
 
 async fn cmd_status() -> Result<()> {
     let hw = hardware::detect()?;
-    println!("DGInf Provider Status");
+    println!("EigenInference Provider Status");
     println!();
 
     // Hardware
@@ -2870,7 +2884,7 @@ async fn cmd_status() -> Result<()> {
         if config_path.exists() {
             config_path.display().to_string()
         } else {
-            "Not created (run: dginf-provider init)".to_string()
+            "Not created (run: eigeninference-provider init)".to_string()
         }
     );
     let key_path = crypto::default_key_path()?;
@@ -2884,7 +2898,7 @@ async fn cmd_status() -> Result<()> {
     );
 
     let home = dirs::home_dir().unwrap_or_default();
-    let enclave_key = home.join(".dginf/enclave_key.data");
+    let enclave_key = home.join(".eigeninference/enclave_key.data");
     println!(
         "  Enclave key:  {}",
         if enclave_key.exists() {
@@ -3018,7 +3032,7 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
                     let cache_dir = if is_image {
                         dirs::home_dir()
                             .unwrap_or_default()
-                            .join(".dginf/models")
+                            .join(".eigeninference/models")
                             .join(s3_name)
                     } else {
                         dirs::home_dir()
@@ -3090,7 +3104,7 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
         }
 
         _ => {
-            println!("Usage: dginf-provider models [list|download|remove]");
+            println!("Usage: eigeninference-provider models [list|download|remove]");
         }
     }
 
@@ -3098,7 +3112,7 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
 }
 
 async fn cmd_earnings(coordinator_url: String) -> Result<()> {
-    println!("DGInf Earnings");
+    println!("EigenInference Earnings");
     println!();
 
     // Load wallet
@@ -3191,7 +3205,7 @@ async fn cmd_earnings(coordinator_url: String) -> Result<()> {
 }
 
 async fn cmd_doctor(coordinator_url: String) -> Result<()> {
-    println!("DGInf Doctor — System Diagnostics");
+    println!("EigenInference Doctor — System Diagnostics");
     println!();
 
     let mut issues: Vec<String> = Vec::new();
@@ -3235,12 +3249,12 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
     print!("3. Secure Enclave.............. ");
     #[cfg(target_os = "macos")]
     {
-        let enclave_ok = std::process::Command::new("dginf-enclave")
+        let enclave_ok = std::process::Command::new("eigeninference-enclave")
             .args(["info"])
             .output()
             .or_else(|_| {
                 let home = dirs::home_dir().unwrap_or_default();
-                std::process::Command::new(home.join(".dginf/bin/dginf-enclave"))
+                std::process::Command::new(home.join(".eigeninference/bin/eigeninference-enclave"))
                     .args(["info"])
                     .output()
             })
@@ -3250,8 +3264,8 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
             println!("✓ Available");
             passed += 1;
         } else {
-            println!("✗ dginf-enclave not found");
-            issues.push("Install dginf-enclave binary".to_string());
+            println!("✗ eigeninference-enclave not found");
+            issues.push("Install eigeninference-enclave binary".to_string());
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -3269,7 +3283,7 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
         #[cfg(target_os = "macos")]
         {
             println!("✗ Not enrolled");
-            issues.push("Run: dginf-provider enroll".to_string());
+            issues.push("Run: eigeninference-provider enroll".to_string());
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -3280,12 +3294,12 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
 
     // 5. Inference runtime (vllm-mlx / mlx-lm)
     print!("5. Inference runtime........... ");
-    let dginf_dir = dirs::home_dir().unwrap_or_default().join(".dginf");
-    let bundled_python = dginf_dir.join("python/bin/python3.12");
+    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+    let bundled_python = eigeninference_dir.join("python/bin/python3.12");
     let (python_cmd, python_home) = if bundled_python.exists() {
         (
             bundled_python.to_string_lossy().to_string(),
-            Some(dginf_dir.join("python")),
+            Some(eigeninference_dir.join("python")),
         )
     } else {
         ("python3".to_string(), None)
@@ -3354,7 +3368,7 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
         passed += 1;
     } else {
         println!("✗ No models downloaded");
-        issues.push("Download a model: dginf-provider models download".to_string());
+        issues.push("Download a model: eigeninference-provider models download".to_string());
     }
 
     // 7. Node key
@@ -3365,7 +3379,7 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
         passed += 1;
     } else {
         println!("✗ Not generated");
-        issues.push("Run: dginf-provider init".to_string());
+        issues.push("Run: eigeninference-provider init".to_string());
     }
 
     // 8. Coordinator connectivity
@@ -3398,7 +3412,7 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
     println!("Result: {passed}/8 checks passed");
     if issues.is_empty() {
         println!();
-        println!("All good! Start serving with: dginf-provider serve");
+        println!("All good! Start serving with: eigeninference-provider serve");
     } else {
         println!();
         println!("Issues to fix:");
@@ -3423,7 +3437,7 @@ async fn cmd_start(
     let downloaded = models::scan_models(&hw);
 
     if downloaded.is_empty() {
-        anyhow::bail!("No models downloaded. Run: dginf-provider install");
+        anyhow::bail!("No models downloaded. Run: eigeninference-provider install");
     }
 
     // Interactive model selection if no --model specified
@@ -3477,7 +3491,7 @@ async fn cmd_start(
 
     let log_path = dirs::home_dir()
         .unwrap_or_default()
-        .join(".dginf/provider.log");
+        .join(".eigeninference/provider.log");
 
     // Install as launchd user agent (auto-restarts on crash)
     service::install_and_start(
@@ -3493,20 +3507,20 @@ async fn cmd_start(
         println!("  Image:   {}", im);
     }
     println!("  Logs:    {}", log_path.display());
-    println!("  Service: io.dginf.provider (launchd)");
+    println!("  Service: io.eigeninference.provider (launchd)");
     println!("  Auto-restart: enabled (KeepAlive)");
     println!();
-    println!("  dginf-provider stop    Stop the provider");
-    println!("  dginf-provider logs    View logs");
-    println!("  dginf-provider status  Check status");
+    println!("  eigeninference-provider stop    Stop the provider");
+    println!("  eigeninference-provider logs    View logs");
+    println!("  eigeninference-provider status  Check status");
 
     Ok(())
 }
 
 async fn cmd_stop() -> Result<()> {
-    let dginf_dir = dirs::home_dir().unwrap_or_default().join(".dginf");
-    let pid_path = dginf_dir.join("provider.pid");
-    let caffeinate_pid_path = dginf_dir.join("caffeinate.pid");
+    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+    let pid_path = eigeninference_dir.join("provider.pid");
+    let caffeinate_pid_path = eigeninference_dir.join("caffeinate.pid");
 
     // Unload launchd service (stops the process and prevents auto-restart)
     if service::is_loaded() {
@@ -3563,23 +3577,23 @@ async fn cmd_stop() -> Result<()> {
 }
 
 async fn cmd_wallet() -> Result<()> {
-    println!("DGInf Provider Wallet");
+    println!("EigenInference Provider Wallet");
     println!();
 
     let w = wallet::Wallet::load_or_create()?;
     println!("Address:  {}", w.address());
-    println!("Storage:  ~/.dginf/wallet_key");
+    println!("Storage:  ~/.eigeninference/wallet_key");
     println!();
     println!("This wallet receives your inference earnings.");
     println!();
-    println!("To delete: dginf-provider unenroll (removes wallet + all data)");
+    println!("To delete: eigeninference-provider unenroll (removes wallet + all data)");
 
     Ok(())
 }
 
 async fn cmd_update(coordinator: String) -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
-    println!("DGInf Provider Update");
+    println!("EigenInference Provider Update");
     println!();
     println!("  Current version: {current_version}");
 
@@ -3647,7 +3661,7 @@ async fn cmd_update(coordinator: String) -> Result<()> {
 
     // Download the bundle
     println!("  Downloading update...");
-    let tmp_path = "/tmp/dginf-bundle.tar.gz";
+    let tmp_path = "/tmp/eigeninference-bundle.tar.gz";
     let download = client.get(download_url).send().await?;
     if !download.status().is_success() {
         anyhow::bail!("Download failed: {}", download.status());
@@ -3670,14 +3684,14 @@ async fn cmd_update(coordinator: String) -> Result<()> {
     }
 
     // Extract and install
-    let dginf_dir = dirs::home_dir()
+    let eigeninference_dir = dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("cannot find home directory"))?
-        .join(".dginf");
-    let bin_dir = dginf_dir.join("bin");
+        .join(".eigeninference");
+    let bin_dir = eigeninference_dir.join("bin");
 
     println!("  Installing...");
     let status = std::process::Command::new("tar")
-        .args(["xzf", tmp_path, "-C", &dginf_dir.to_string_lossy()])
+        .args(["xzf", tmp_path, "-C", &eigeninference_dir.to_string_lossy()])
         .status()?;
     if !status.success() {
         anyhow::bail!("tar extraction failed");
@@ -3685,19 +3699,19 @@ async fn cmd_update(coordinator: String) -> Result<()> {
 
     // Move binaries to bin dir
     let _ = std::fs::rename(
-        dginf_dir.join("dginf-provider"),
-        bin_dir.join("dginf-provider"),
+        eigeninference_dir.join("eigeninference-provider"),
+        bin_dir.join("eigeninference-provider"),
     );
     let _ = std::fs::rename(
-        dginf_dir.join("dginf-enclave"),
-        bin_dir.join("dginf-enclave"),
+        eigeninference_dir.join("eigeninference-enclave"),
+        bin_dir.join("eigeninference-enclave"),
     );
 
     // Make executable
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        for name in &["dginf-provider", "dginf-enclave"] {
+        for name in &["eigeninference-provider", "eigeninference-enclave"] {
             let path = bin_dir.join(name);
             if path.exists() {
                 let mut perms = std::fs::metadata(&path)?.permissions();
@@ -3713,7 +3727,7 @@ async fn cmd_update(coordinator: String) -> Result<()> {
     println!("  Updated to {latest}!");
     println!();
     println!("  If the provider is running, restart it:");
-    println!("    dginf-provider stop && dginf-provider start");
+    println!("    eigeninference-provider stop && eigeninference-provider start");
 
     Ok(())
 }
@@ -3733,11 +3747,11 @@ fn is_newer_version(current: &str, latest: &str) -> bool {
 async fn cmd_logs(lines: usize, watch: bool) -> Result<()> {
     let log_path = dirs::home_dir()
         .unwrap_or_default()
-        .join(".dginf/provider.log");
+        .join(".eigeninference/provider.log");
 
     if !log_path.exists() {
         println!("No log file found at {}", log_path.display());
-        println!("Start the provider first: dginf-provider start");
+        println!("Start the provider first: eigeninference-provider start");
         return Ok(());
     }
 
@@ -3767,7 +3781,7 @@ async fn cmd_logs(lines: usize, watch: bool) -> Result<()> {
 fn auth_token_path() -> std::path::PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("dginf")
+        .join("eigeninference")
         .join("auth_token")
 }
 
@@ -3814,7 +3828,7 @@ async fn cmd_login(coordinator_url: String) -> Result<()> {
             "Already logged in (token: {}...)",
             &token[..std::cmp::min(20, token.len())]
         );
-        println!("Run 'dginf-provider logout' first to unlink.");
+        println!("Run 'eigeninference-provider logout' first to unlink.");
         return Ok(());
     }
 
@@ -3877,7 +3891,7 @@ async fn cmd_login(coordinator_url: String) -> Result<()> {
 
     loop {
         if std::time::Instant::now() > deadline {
-            anyhow::bail!("Device code expired. Run 'dginf-provider login' again.");
+            anyhow::bail!("Device code expired. Run 'eigeninference-provider login' again.");
         }
 
         tokio::time::sleep(poll_interval).await;
@@ -3920,7 +3934,7 @@ async fn cmd_login(coordinator_url: String) -> Result<()> {
                 println!("  Your provider will now be connected to your account.");
                 println!("  Earnings will be credited to your account wallet.");
                 println!();
-                println!("  Start serving with: dginf-provider serve");
+                println!("  Start serving with: eigeninference-provider serve");
                 return Ok(());
             }
             _ => {

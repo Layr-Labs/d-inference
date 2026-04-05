@@ -494,7 +494,7 @@ async fn do_transcription(
     };
 
     // Write to temp file for multipart upload
-    let tmp_path = format!("/tmp/dginf-stt-{request_id}.{ext}");
+    let tmp_path = format!("/tmp/eigeninference-stt-{request_id}.{ext}");
     tokio::fs::write(&tmp_path, &audio_bytes)
         .await
         .context("failed to write temp audio file")?;

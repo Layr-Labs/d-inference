@@ -27,7 +27,7 @@ const defaultOutputPricePerMillion int64 = 200_000 // $0.20 per 1M output tokens
 // Minimum charge per inference request in micro-USD ($0.0001).
 const minimumChargeMicroUSD int64 = 100
 
-// Platform fee percentage — DGInf retains 5% as a routing fee, provider receives 95%.
+// Platform fee percentage — EigenInference retains 5% as a routing fee, provider receives 95%.
 const platformFeePercent int64 = 5
 
 // modelPricing stores input and output prices per model (micro-USD per 1M tokens).
@@ -172,7 +172,7 @@ func CalculateImageCost(model string, width, height, count int) int64 {
 	return totalCost
 }
 
-// PlatformFee returns DGInf's routing fee (5%).
+// PlatformFee returns EigenInference's routing fee (5%).
 func PlatformFee(totalCost int64) int64 {
 	return totalCost * platformFeePercent / 100
 }

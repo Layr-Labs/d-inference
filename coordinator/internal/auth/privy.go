@@ -1,4 +1,4 @@
-// Package auth provides Privy-based authentication for the DGInf coordinator.
+// Package auth provides Privy-based authentication for the EigenInference coordinator.
 //
 // Privy issues ES256 (ECDSA P-256) JWTs to authenticated users. The coordinator
 // verifies these tokens using the app's verification key from the Privy dashboard.
@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/store"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )

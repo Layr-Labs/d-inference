@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dginf/coordinator/internal/attestation"
-	"github.com/dginf/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/attestation"
+	"github.com/eigeninference/coordinator/internal/protocol"
 )
 
 func testLogger() *slog.Logger {

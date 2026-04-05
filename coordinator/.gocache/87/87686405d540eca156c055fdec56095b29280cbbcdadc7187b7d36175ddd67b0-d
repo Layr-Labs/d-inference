@@ -1,4 +1,0 @@
-./hsalsa20.go
-./salsa208.go
-./salsa20_noasm.go
-./salsa20_ref.go

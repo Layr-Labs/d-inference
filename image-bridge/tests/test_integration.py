@@ -18,9 +18,9 @@ import pytest
 import uvicorn
 from PIL import Image
 
-from dginf_image_bridge.drawthings_backend import DrawThingsBackend
-from dginf_image_bridge.generated import imageService_pb2, imageService_pb2_grpc
-from dginf_image_bridge.server import create_app
+from eigeninference_image_bridge.drawthings_backend import DrawThingsBackend
+from eigeninference_image_bridge.generated import imageService_pb2, imageService_pb2_grpc
+from eigeninference_image_bridge.server import create_app
 
 
 def make_test_response_image(width: int, height: int, channels: int = 3) -> bytes:

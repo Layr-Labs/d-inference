@@ -1,6 +1,0 @@
-./queue.go
-./registry.go
-./reputation.go
-./queue_test.go
-./registry_test.go
-./reputation_test.go

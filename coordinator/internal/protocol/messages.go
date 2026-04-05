@@ -93,7 +93,7 @@ type RegisterMessage struct {
 	Attestation   json.RawMessage `json:"attestation,omitempty"`    // signed Secure Enclave attestation blob
 	PrefillTPS    float64         `json:"prefill_tps,omitempty"`    // benchmark: prefill tokens per second
 	DecodeTPS     float64         `json:"decode_tps,omitempty"`     // benchmark: decode tokens per second
-	AuthToken     string          `json:"auth_token,omitempty"`     // device-linked provider token (from dginf-provider login)
+	AuthToken     string          `json:"auth_token,omitempty"`     // device-linked provider token (from eigeninference-provider login)
 }
 
 // HeartbeatMessage is sent periodically by connected providers.

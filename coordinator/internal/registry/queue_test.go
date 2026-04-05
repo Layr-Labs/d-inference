@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dginf/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/protocol"
 )
 
 func TestEnqueueAndSize(t *testing.T) {

@@ -178,7 +178,7 @@ impl InProcessEngine {
 
     fn load_vllm_mlx(&self, py: Python<'_>) -> Result<()> {
         let code = format!(
-            "import sys\nfrom vllm_mlx import LLM\n_dginf_engine = LLM(model=\"{model}\")\n",
+            "import sys\nfrom vllm_mlx import LLM\n_eigeninference_engine = LLM(model=\"{model}\")\n",
             model = self.model_id
         );
         let ccode = CString::new(code).context("invalid code string")?;
@@ -190,7 +190,7 @@ impl InProcessEngine {
     fn load_mlx_lm(&self, py: Python<'_>) -> Result<()> {
         // Store model in builtins so it persists across all with_gil calls and threads
         let code = format!(
-            "import mlx_lm, builtins\nbuiltins._dginf_model, builtins._dginf_tokenizer = mlx_lm.load(\"{model}\")\n",
+            "import mlx_lm, builtins\nbuiltins._eigeninference_model, builtins._eigeninference_tokenizer = mlx_lm.load(\"{model}\")\n",
             model = self.model_id
         );
         let ccode = CString::new(code).context("invalid code string")?;
@@ -233,7 +233,7 @@ impl InProcessEngine {
         let code = CString::new(
             "from vllm import SamplingParams\n\
              params = SamplingParams(max_tokens=int(max_tokens), temperature=float(temperature))\n\
-             outputs = _dginf_engine.generate([prompt], params)\n\
+             outputs = _eigeninference_engine.generate([prompt], params)\n\
              _result_text = outputs[0].outputs[0].text\n\
              _result_prompt_tokens = len(outputs[0].prompt_token_ids)\n\
              _result_completion_tokens = len(outputs[0].outputs[0].token_ids)\n",
@@ -276,10 +276,10 @@ impl InProcessEngine {
         let builtins = py.import("builtins").context("failed to import builtins")?;
 
         let model = builtins
-            .getattr("_dginf_model")
+            .getattr("_eigeninference_model")
             .context("model not loaded in builtins")?;
         let tokenizer = builtins
-            .getattr("_dginf_tokenizer")
+            .getattr("_eigeninference_tokenizer")
             .context("tokenizer not loaded in builtins")?;
 
         let kwargs = PyDict::new(py);
@@ -327,7 +327,7 @@ impl InProcessEngine {
                 EngineType::VllmMlx => (
                     "from vllm import SamplingParams\n\
                      params = SamplingParams(max_tokens=int(max_tokens), temperature=float(temperature))\n\
-                     _stream_outputs = _dginf_engine.generate([prompt], params, use_tqdm=False)\n\
+                     _stream_outputs = _eigeninference_engine.generate([prompt], params, use_tqdm=False)\n\
                      _stream_tokens = []\n\
                      for output in _stream_outputs:\n\
                          for o in output.outputs:\n\
@@ -338,7 +338,7 @@ impl InProcessEngine {
                     "import mlx_lm, builtins\n\
                      _stream_tokens = []\n\
                      for token in mlx_lm.stream_generate(\n\
-                         builtins._dginf_model, builtins._dginf_tokenizer,\n\
+                         builtins._eigeninference_model, builtins._eigeninference_tokenizer,\n\
                          prompt=prompt, max_tokens=int(max_tokens)):\n\
                          _stream_tokens.append(token)\n",
                     "mlx-lm",

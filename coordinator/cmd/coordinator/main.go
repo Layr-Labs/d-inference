@@ -1,6 +1,6 @@
-// Command coordinator runs the DGInf coordinator control plane.
+// Command coordinator runs the EigenInference coordinator control plane.
 //
-// The coordinator is the central routing and trust layer in the DGInf network.
+// The coordinator is the central routing and trust layer in the EigenInference network.
 // It accepts provider WebSocket connections, verifies their Secure Enclave
 // attestations, and routes OpenAI-compatible HTTP requests from consumers
 // to appropriate providers based on model availability and trust level.
@@ -12,9 +12,9 @@
 //
 // Configuration (environment variables):
 //
-//	DGINF_PORT         - HTTP listen port (default: "8080")
-//	DGINF_ADMIN_KEY    - Pre-seeded API key for bootstrapping
-//	DGINF_DATABASE_URL - PostgreSQL connection string (omit for in-memory store)
+//	EIGENINFERENCE_PORT         - HTTP listen port (default: "8080")
+//	EIGENINFERENCE_ADMIN_KEY    - Pre-seeded API key for bootstrapping
+//	EIGENINFERENCE_DATABASE_URL - PostgreSQL connection string (omit for in-memory store)
 //
 // Graceful shutdown: The coordinator handles SIGINT/SIGTERM, stops the
 // eviction loop, and drains active connections with a 15-second deadline.
@@ -34,14 +34,14 @@ import (
 
 	"strconv"
 
-	"github.com/dginf/coordinator/internal/api"
-	"github.com/dginf/coordinator/internal/attestation"
-	"github.com/dginf/coordinator/internal/auth"
-	"github.com/dginf/coordinator/internal/billing"
-	"github.com/dginf/coordinator/internal/mdm"
-	"github.com/dginf/coordinator/internal/payments"
-	"github.com/dginf/coordinator/internal/registry"
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/api"
+	"github.com/eigeninference/coordinator/internal/attestation"
+	"github.com/eigeninference/coordinator/internal/auth"
+	"github.com/eigeninference/coordinator/internal/billing"
+	"github.com/eigeninference/coordinator/internal/mdm"
+	"github.com/eigeninference/coordinator/internal/payments"
+	"github.com/eigeninference/coordinator/internal/registry"
+	"github.com/eigeninference/coordinator/internal/store"
 )
 
 func main() {
@@ -52,11 +52,11 @@ func main() {
 	slog.SetDefault(logger)
 
 	// Configuration from environment.
-	port := envOr("DGINF_PORT", "8080")
-	adminKey := os.Getenv("DGINF_ADMIN_KEY")
+	port := envOr("EIGENINFERENCE_PORT", "8080")
+	adminKey := os.Getenv("EIGENINFERENCE_ADMIN_KEY")
 
 	if adminKey == "" {
-		logger.Warn("DGINF_ADMIN_KEY is not set — no pre-seeded API key available")
+		logger.Warn("EIGENINFERENCE_ADMIN_KEY is not set — no pre-seeded API key available")
 	}
 
 	// Create core components.
@@ -64,7 +64,7 @@ func main() {
 	defer cancel()
 
 	var st store.Store
-	if dbURL := os.Getenv("DGINF_DATABASE_URL"); dbURL != "" {
+	if dbURL := os.Getenv("EIGENINFERENCE_DATABASE_URL"); dbURL != "" {
 		pgStore, err := store.NewPostgres(ctx, dbURL)
 		if err != nil {
 			logger.Error("failed to connect to PostgreSQL", "error", err)
@@ -91,8 +91,8 @@ func main() {
 	reg := registry.New(logger)
 
 	// Set minimum trust level for routing. Default: hardware (production).
-	// Set DGINF_MIN_TRUST=none or DGINF_MIN_TRUST=self_signed for testing.
-	if minTrust := os.Getenv("DGINF_MIN_TRUST"); minTrust != "" {
+	// Set EIGENINFERENCE_MIN_TRUST=none or EIGENINFERENCE_MIN_TRUST=self_signed for testing.
+	if minTrust := os.Getenv("EIGENINFERENCE_MIN_TRUST"); minTrust != "" {
 		reg.MinTrustLevel = registry.TrustLevel(minTrust)
 		logger.Info("minimum trust level override", "level", minTrust)
 	}
@@ -105,22 +105,22 @@ func main() {
 	srv.SyncModelCatalog()
 
 	// Console URL — frontend for device auth verification links.
-	if consoleURL := os.Getenv("DGINF_CONSOLE_URL"); consoleURL != "" {
+	if consoleURL := os.Getenv("EIGENINFERENCE_CONSOLE_URL"); consoleURL != "" {
 		srv.SetConsoleURL(consoleURL)
 		logger.Info("console URL configured", "url", consoleURL)
 	}
 
 	// Scoped release key — GitHub Actions uses this to register new releases.
 	// Separate from admin key: can only POST /v1/releases, nothing else.
-	if releaseKey := os.Getenv("DGINF_RELEASE_KEY"); releaseKey != "" {
+	if releaseKey := os.Getenv("EIGENINFERENCE_RELEASE_KEY"); releaseKey != "" {
 		srv.SetReleaseKey(releaseKey)
 		logger.Info("release key configured")
 	}
 
 	// Sync known-good provider binary hashes from active releases in the store.
-	// Falls back to DGINF_KNOWN_BINARY_HASHES env var if no releases exist yet.
+	// Falls back to EIGENINFERENCE_KNOWN_BINARY_HASHES env var if no releases exist yet.
 	srv.SyncBinaryHashes()
-	if hashList := os.Getenv("DGINF_KNOWN_BINARY_HASHES"); hashList != "" {
+	if hashList := os.Getenv("EIGENINFERENCE_KNOWN_BINARY_HASHES"); hashList != "" {
 		// Env var hashes are additive — merge with any from releases.
 		hashes := strings.Split(hashList, ",")
 		srv.AddKnownBinaryHashes(hashes)
@@ -135,26 +135,26 @@ func main() {
 	// Stripe is wired but not activated until we flip the env vars on.
 	billingCfg := billing.Config{
 		// Solana — primary payment rail
-		SolanaRPCURL:             os.Getenv("DGINF_SOLANA_RPC_URL"),
-		SolanaUSDCMint:           envOr("DGINF_SOLANA_USDC_MINT", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), // mainnet USDC
-		SolanaCoordinatorAddress: os.Getenv("DGINF_SOLANA_COORDINATOR_ADDRESS"),                                   // address that receives USDC
-		SolanaPrivateKey:         os.Getenv("DGINF_SOLANA_PRIVATE_KEY"),                                           // hot wallet key for withdrawals
+		SolanaRPCURL:             os.Getenv("EIGENINFERENCE_SOLANA_RPC_URL"),
+		SolanaUSDCMint:           envOr("EIGENINFERENCE_SOLANA_USDC_MINT", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), // mainnet USDC
+		SolanaCoordinatorAddress: os.Getenv("EIGENINFERENCE_SOLANA_COORDINATOR_ADDRESS"),                                   // address that receives USDC
+		SolanaPrivateKey:         os.Getenv("EIGENINFERENCE_SOLANA_PRIVATE_KEY"),                                           // hot wallet key for withdrawals
 
 		// Stripe — present but not activated day-1 (set env vars to enable)
-		StripeSecretKey:     os.Getenv("DGINF_STRIPE_SECRET_KEY"),
-		StripeWebhookSecret: os.Getenv("DGINF_STRIPE_WEBHOOK_SECRET"),
-		StripeSuccessURL:    envOr("DGINF_STRIPE_SUCCESS_URL", "https://inference-test.openinnovation.dev/billing/success"),
-		StripeCancelURL:     envOr("DGINF_STRIPE_CANCEL_URL", "https://inference-test.openinnovation.dev/billing/cancel"),
+		StripeSecretKey:     os.Getenv("EIGENINFERENCE_STRIPE_SECRET_KEY"),
+		StripeWebhookSecret: os.Getenv("EIGENINFERENCE_STRIPE_WEBHOOK_SECRET"),
+		StripeSuccessURL:    envOr("EIGENINFERENCE_STRIPE_SUCCESS_URL", "https://inference-test.openinnovation.dev/billing/success"),
+		StripeCancelURL:     envOr("EIGENINFERENCE_STRIPE_CANCEL_URL", "https://inference-test.openinnovation.dev/billing/cancel"),
 	}
 
 	// Mock billing mode — skips on-chain verification, auto-credits test balance.
-	if os.Getenv("DGINF_BILLING_MOCK") == "true" {
+	if os.Getenv("EIGENINFERENCE_BILLING_MOCK") == "true" {
 		billingCfg.MockMode = true
 		logger.Warn("BILLING MOCK MODE ENABLED — deposits skip on-chain verification")
 	}
 
 	// Parse referral share percentage
-	if refShareStr := os.Getenv("DGINF_REFERRAL_SHARE_PCT"); refShareStr != "" {
+	if refShareStr := os.Getenv("EIGENINFERENCE_REFERRAL_SHARE_PCT"); refShareStr != "" {
 		if v, err := strconv.ParseInt(refShareStr, 10, 64); err == nil {
 			billingCfg.ReferralSharePercent = v
 		}
@@ -165,22 +165,22 @@ func main() {
 	srv.SetBilling(billingSvc)
 
 	// Configure admin accounts.
-	if adminEmails := os.Getenv("DGINF_ADMIN_EMAILS"); adminEmails != "" {
+	if adminEmails := os.Getenv("EIGENINFERENCE_ADMIN_EMAILS"); adminEmails != "" {
 		emails := strings.Split(adminEmails, ",")
 		srv.SetAdminEmails(emails)
 		logger.Info("admin accounts configured", "emails", emails)
 	}
 
 	// Configure Privy authentication.
-	if privyAppID := os.Getenv("DGINF_PRIVY_APP_ID"); privyAppID != "" {
-		privyVerificationKey := os.Getenv("DGINF_PRIVY_VERIFICATION_KEY")
+	if privyAppID := os.Getenv("EIGENINFERENCE_PRIVY_APP_ID"); privyAppID != "" {
+		privyVerificationKey := os.Getenv("EIGENINFERENCE_PRIVY_VERIFICATION_KEY")
 		// Support reading PEM from a file (systemd can't handle multiline env vars).
-		if keyFile := os.Getenv("DGINF_PRIVY_VERIFICATION_KEY_FILE"); keyFile != "" {
+		if keyFile := os.Getenv("EIGENINFERENCE_PRIVY_VERIFICATION_KEY_FILE"); keyFile != "" {
 			if data, err := os.ReadFile(keyFile); err == nil {
 				privyVerificationKey = string(data)
 			}
 		}
-		privyAppSecret := os.Getenv("DGINF_PRIVY_APP_SECRET")
+		privyAppSecret := os.Getenv("EIGENINFERENCE_PRIVY_APP_SECRET")
 
 		privyAuth, err := auth.NewPrivyAuth(auth.Config{
 			AppID:           privyAppID,
@@ -208,10 +208,10 @@ func main() {
 	// Configure MDM client for provider security verification.
 	// When set, the coordinator independently verifies SIP/SecureBoot via MicroMDM
 	// rather than trusting the provider's self-reported attestation.
-	if mdmURL := os.Getenv("DGINF_MDM_URL"); mdmURL != "" {
-		mdmKey := os.Getenv("DGINF_MDM_API_KEY")
+	if mdmURL := os.Getenv("EIGENINFERENCE_MDM_URL"); mdmURL != "" {
+		mdmKey := os.Getenv("EIGENINFERENCE_MDM_API_KEY")
 		if mdmKey == "" {
-			mdmKey = "dginf-micromdm-api" // default
+			mdmKey = "eigeninference-micromdm-api" // default
 		}
 		mdmClient := mdm.NewClient(mdmURL, mdmKey, logger)
 
@@ -252,7 +252,7 @@ func main() {
 	// When providers present a TLS client cert issued by step-ca via
 	// device-attest-01, the coordinator verifies the chain and grants
 	// hardware trust (Apple-attested SE key binding).
-	if stepCARoot := os.Getenv("DGINF_STEP_CA_ROOT"); stepCARoot != "" {
+	if stepCARoot := os.Getenv("EIGENINFERENCE_STEP_CA_ROOT"); stepCARoot != "" {
 		rootPEM, err := os.ReadFile(stepCARoot)
 		if err != nil {
 			logger.Error("failed to read step-ca root CA", "path", stepCARoot, "error", err)
@@ -265,7 +265,7 @@ func main() {
 				} else {
 					// Try to load intermediate too
 					var intCert *x509.Certificate
-					stepCAInt := os.Getenv("DGINF_STEP_CA_INTERMEDIATE")
+					stepCAInt := os.Getenv("EIGENINFERENCE_STEP_CA_INTERMEDIATE")
 					if stepCAInt != "" {
 						intPEM, err := os.ReadFile(stepCAInt)
 						if err == nil {

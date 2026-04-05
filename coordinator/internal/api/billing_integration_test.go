@@ -1,6 +1,6 @@
 package api
 
-// Billing integration tests for DGInf coordinator.
+// Billing integration tests for EigenInference coordinator.
 //
 // These tests exercise the full billing flow end-to-end: consumer balance
 // checking, inference charging, referral reward distribution, device auth
@@ -20,11 +20,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dginf/coordinator/internal/billing"
-	"github.com/dginf/coordinator/internal/payments"
-	"github.com/dginf/coordinator/internal/protocol"
-	"github.com/dginf/coordinator/internal/registry"
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/billing"
+	"github.com/eigeninference/coordinator/internal/payments"
+	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/registry"
+	"github.com/eigeninference/coordinator/internal/store"
 	"nhooyr.io/websocket"
 )
 

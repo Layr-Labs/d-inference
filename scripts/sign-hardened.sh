@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Sign DGInf binaries with macOS Hardened Runtime.
+# Sign EigenInference binaries with macOS Hardened Runtime.
 #
 # Hardened Runtime is the CRITICAL piece that prevents debugger attachment
 # and memory inspection even with SIP enabled. Without it, our PT_DENY_ATTACH
@@ -48,15 +48,15 @@ cat > "$ENTITLEMENTS" << 'PLIST'
 </plist>
 PLIST
 
-echo "=== DGInf Hardened Runtime Signing ==="
+echo "=== EigenInference Hardened Runtime Signing ==="
 echo "Identity: $IDENTITY"
 echo "Entitlements: $ENTITLEMENTS"
 echo ""
 
 # Sign provider binary
-PROVIDER_BIN="$PROJECT_DIR/provider/target/release/dginf-provider"
+PROVIDER_BIN="$PROJECT_DIR/provider/target/release/eigeninference-provider"
 if [ -f "$PROVIDER_BIN" ]; then
-    echo "Signing dginf-provider..."
+    echo "Signing eigeninference-provider..."
     codesign --force --options runtime \
         --entitlements "$ENTITLEMENTS" \
         --sign "$IDENTITY" \
@@ -67,15 +67,15 @@ if [ -f "$PROVIDER_BIN" ]; then
     codesign --display --verbose=2 "$PROVIDER_BIN" 2>&1 | grep -i "runtime\|flags"
     echo ""
 else
-    echo "WARNING: dginf-provider binary not found at $PROVIDER_BIN"
+    echo "WARNING: eigeninference-provider binary not found at $PROVIDER_BIN"
     echo "  Build first with: cd provider && cargo build --release"
     echo ""
 fi
 
 # Sign enclave CLI binary
-ENCLAVE_BIN="$PROJECT_DIR/enclave/.build/release/dginf-enclave"
+ENCLAVE_BIN="$PROJECT_DIR/enclave/.build/release/eigeninference-enclave"
 if [ -f "$ENCLAVE_BIN" ]; then
-    echo "Signing dginf-enclave..."
+    echo "Signing eigeninference-enclave..."
     codesign --force --options runtime \
         --entitlements "$ENTITLEMENTS" \
         --sign "$IDENTITY" \
@@ -84,7 +84,7 @@ if [ -f "$ENCLAVE_BIN" ]; then
     codesign --verify --verbose=2 "$ENCLAVE_BIN" 2>&1 | head -5
     echo ""
 else
-    echo "WARNING: dginf-enclave binary not found at $ENCLAVE_BIN"
+    echo "WARNING: eigeninference-enclave binary not found at $ENCLAVE_BIN"
     echo "  Build first with: cd enclave && swift build -c release"
     echo ""
 fi

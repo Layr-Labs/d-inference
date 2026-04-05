@@ -1,6 +1,6 @@
 package api
 
-// Consumer-facing API handlers for the DGInf coordinator.
+// Consumer-facing API handlers for the EigenInference coordinator.
 //
 // This file implements the OpenAI-compatible HTTP endpoints that consumers
 // use to send inference requests. The coordinator acts as a trusted routing
@@ -27,12 +27,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dginf/coordinator/internal/auth"
-	"github.com/dginf/coordinator/internal/e2e"
-	"github.com/dginf/coordinator/internal/payments"
-	"github.com/dginf/coordinator/internal/protocol"
-	"github.com/dginf/coordinator/internal/registry"
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/auth"
+	"github.com/eigeninference/coordinator/internal/e2e"
+	"github.com/eigeninference/coordinator/internal/payments"
+	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/registry"
+	"github.com/eigeninference/coordinator/internal/store"
 	"github.com/google/uuid"
 	"nhooyr.io/websocket"
 )
@@ -1064,7 +1064,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 			"id":       m.ID,
 			"object":   "model",
 			"created":  0,
-			"owned_by": "dginf",
+			"owned_by": "eigeninference",
 			"metadata": metadata,
 		})
 	}
@@ -1128,7 +1128,7 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	if r.TLS == nil && !strings.Contains(r.Host, "openinnovation.dev") {
 		scheme = "http"
 	}
-	downloadURL := fmt.Sprintf("%s://%s/dl/dginf-bundle-macos-arm64.tar.gz", scheme, r.Host)
+	downloadURL := fmt.Sprintf("%s://%s/dl/eigeninference-bundle-macos-arm64.tar.gz", scheme, r.Host)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":      LatestProviderVersion,

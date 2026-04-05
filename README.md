@@ -1,8 +1,8 @@
-# DGInf — Decentralized Private Inference
+# EigenInference — Decentralized Private Inference
 
 A platform for private, decentralized AI inference on Apple Silicon Macs. Mac owners rent out idle GPU compute. Consumers get private inference on open-source models with hardware-backed trust from Apple's Secure Enclave.
 
-**Privacy claim:** Nobody in the chain can see your prompts — not the coordinator, not the provider (SIP + Hardened Runtime + in-process inference prevent memory inspection), and not DGInf as a company.
+**Privacy claim:** Nobody in the chain can see your prompts — not the coordinator, not the provider (SIP + Hardened Runtime + in-process inference prevent memory inspection), and not EigenInference as a company.
 
 ## How It Works
 
@@ -58,21 +58,21 @@ Your Mac is serving inference within minutes.
 ### Provider CLI Reference
 
 ```bash
-dginf-provider init          # Detect hardware, create config
-dginf-provider serve         # Start serving (foreground)
-dginf-provider start         # Start serving (background daemon)
-dginf-provider stop          # Stop the background daemon
-dginf-provider status        # Show hardware and connection status
-dginf-provider doctor        # Diagnose issues (SIP, Enclave, MDM, connectivity)
-dginf-provider models list   # List downloaded models
-dginf-provider models download  # Download a model
-dginf-provider earnings      # Show earnings and usage history
-dginf-provider wallet        # Show or create provider wallet (macOS Keychain)
-dginf-provider benchmark     # Run standardized benchmarks
-dginf-provider logs -w       # Stream logs in real-time
-dginf-provider update        # Check for and install updates
-dginf-provider enroll        # Enroll in MDM (without serving)
-dginf-provider unenroll      # Remove MDM enrollment
+eigeninference-provider init          # Detect hardware, create config
+eigeninference-provider serve         # Start serving (foreground)
+eigeninference-provider start         # Start serving (background daemon)
+eigeninference-provider stop          # Stop the background daemon
+eigeninference-provider status        # Show hardware and connection status
+eigeninference-provider doctor        # Diagnose issues (SIP, Enclave, MDM, connectivity)
+eigeninference-provider models list   # List downloaded models
+eigeninference-provider models download  # Download a model
+eigeninference-provider earnings      # Show earnings and usage history
+eigeninference-provider wallet        # Show or create provider wallet (macOS Keychain)
+eigeninference-provider benchmark     # Run standardized benchmarks
+eigeninference-provider logs -w       # Stream logs in real-time
+eigeninference-provider update        # Check for and install updates
+eigeninference-provider enroll        # Enroll in MDM (without serving)
+eigeninference-provider unenroll      # Remove MDM enrollment
 ```
 
 ### What Happens When You Serve
@@ -99,7 +99,7 @@ A native SwiftUI menu bar app is also available as an alternative to the CLI:
 
 Build from source:
 ```bash
-cd app/DGInf && swift build -c release
+cd app/EigenInference && swift build -c release
 ```
 
 ## Consumer API
@@ -112,7 +112,7 @@ curl -X POST https://inference-test.openinnovation.dev/v1/auth/keys
 
 # Chat completion
 curl https://inference-test.openinnovation.dev/v1/chat/completions \
-  -H "Authorization: Bearer dginf-..." \
+  -H "Authorization: Bearer eigeninference-..." \
   -H "Content-Type: application/json" \
   -d '{
     "model": "mlx-community/Qwen3.5-9B-MLX-4bit",
@@ -122,11 +122,11 @@ curl https://inference-test.openinnovation.dev/v1/chat/completions \
 
 # List available models
 curl https://inference-test.openinnovation.dev/v1/models \
-  -H "Authorization: Bearer dginf-..."
+  -H "Authorization: Bearer eigeninference-..."
 
 # Audio transcription
 curl https://inference-test.openinnovation.dev/v1/audio/transcriptions \
-  -H "Authorization: Bearer dginf-..." \
+  -H "Authorization: Bearer eigeninference-..." \
   -F file=@audio.mp3
 ```
 
@@ -141,13 +141,13 @@ A web chat interface is available at the coordinator URL with model browsing, pr
 | **Coordinator** (`coordinator/`) | Go | Control plane: request routing, attestation verification, scoring, payments, OpenAI-compatible API |
 | **Provider Agent** (`provider/`) | Rust | Inference agent: hardware detection, security hardening, attestation, WebSocket client, in-process MLX inference |
 | **Web Frontend** (`web/`) | Next.js 15 / React 19 | Chat interface, model browser, provider verification, billing dashboard |
-| **macOS App** (`app/DGInf/`) | Swift / SwiftUI | Menu bar app: status, earnings, idle detection, diagnostics |
+| **macOS App** (`app/EigenInference/`) | Swift / SwiftUI | Menu bar app: status, earnings, idle detection, diagnostics |
 | **Secure Enclave** (`enclave/`) | Swift | Hardware-bound P-256 identity, signed attestation blobs |
 | **Scripts** (`scripts/`) | Bash | Installer, Hardened Runtime code signing, app bundling, DMG distribution |
 
 ## Security Model
 
-DGInf prevents anyone — including providers — from reading consumer prompts through multiple defense layers:
+EigenInference prevents anyone — including providers — from reading consumer prompts through multiple defense layers:
 
 | Protection | What It Blocks |
 |---|---|
@@ -240,7 +240,7 @@ cd provider && cargo build --release --no-default-features
 cd enclave && swift build -c release
 
 # macOS App (Swift)
-cd app/DGInf && swift build -c release && swift test
+cd app/EigenInference && swift build -c release && swift test
 
 # Web frontend (Next.js)
 cd web && npm install && npm run dev

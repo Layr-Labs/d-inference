@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dginf/coordinator/internal/e2e"
-	"github.com/dginf/coordinator/internal/protocol"
-	"github.com/dginf/coordinator/internal/registry"
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/e2e"
+	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/registry"
+	"github.com/eigeninference/coordinator/internal/store"
 	"golang.org/x/crypto/nacl/box"
 	"nhooyr.io/websocket"
 )

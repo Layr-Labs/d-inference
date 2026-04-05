@@ -1,6 +1,6 @@
-# DGInf - Decentralized Private Inference
+# EigenInference - Decentralized Private Inference
 
-DGInf is a decentralized/private inference stack for Apple Silicon Macs. Consumers use OpenAI-compatible APIs, the coordinator handles routing/auth/billing/attestation, and providers run local text, transcription, and image workloads on macOS hardware.
+EigenInference is a decentralized/private inference stack for Apple Silicon Macs. Consumers use OpenAI-compatible APIs, the coordinator handles routing/auth/billing/attestation, and providers run local text, transcription, and image workloads on macOS hardware.
 
 ## Project Structure
 
@@ -8,7 +8,7 @@ DGInf is a decentralized/private inference stack for Apple Silicon Macs. Consume
 coordinator/          Go control plane
 ├── cmd/coordinator/  main service entrypoint
 ├── cmd/verify-attestation/
-│   └── main.go       verifies attestation blobs from /tmp/dginf_attestation.json
+│   └── main.go       verifies attestation blobs from /tmp/eigeninference_attestation.json
 ├── deploy/
 │   └── docker-compose.yml
 └── internal/
@@ -51,7 +51,7 @@ provider/             Rust provider agent for Apple Silicon Macs
 └── Cargo.toml        default `python` feature enables in-process PyO3 inference
 
 image-bridge/         Python FastAPI image generation bridge
-├── dginf_image_bridge/
+├── eigeninference_image_bridge/
 │   ├── __main__.py
 │   ├── server.py              OpenAI-compatible `/v1/images/generations`
 │   ├── drawthings_backend.py  Draw Things gRPC backend adapter
@@ -60,9 +60,9 @@ image-bridge/         Python FastAPI image generation bridge
 ├── requirements.txt
 └── tests/                     pytest coverage for server/backend/integration
 
-app/DGInf/            SwiftUI macOS menu bar app
-├── Sources/DGInf/
-│   ├── DGInfApp.swift
+app/EigenInference/            SwiftUI macOS menu bar app
+├── Sources/EigenInference/
+│   ├── EigenInferenceApp.swift
 │   ├── StatusViewModel.swift
 │   ├── ProviderManager.swift
 │   ├── CLIRunner.swift
@@ -74,13 +74,13 @@ app/DGInf/            SwiftUI macOS menu bar app
 │   ├── DoctorView.swift / BenchmarkView.swift / LogViewerView.swift
 │   ├── MenuBarView.swift / NotificationManager.swift / UpdateManager.swift
 │   └── Resources/
-└── Tests/DGInfTests/
+└── Tests/EigenInferenceTests/
 
 enclave/              Swift Secure Enclave helper + bridge binary
-├── Sources/DGInfEnclave/      enclave key + attestation library
-├── Sources/DGInfEnclaveCLI/   `dginf-enclave` CLI + WebSocket bridge
-├── Tests/DGInfEnclaveTests/
-└── include/dginf_enclave.h
+├── Sources/EigenInferenceEnclave/      enclave key + attestation library
+├── Sources/EigenInferenceEnclaveCLI/   `eigeninference-enclave` CLI + WebSocket bridge
+├── Tests/EigenInferenceEnclaveTests/
+└── include/eigeninference_enclave.h
 
 web/                  Next.js 15 / React 19 frontend
 ├── src/app/          chat, billing, images, models, stats, providers, settings, login, link
@@ -94,8 +94,8 @@ web/                  Next.js 15 / React 19 frontend
 
 scripts/              build, signing, install, and deploy helpers
 ├── build-bundle.sh   provider/enclave/python/ffmpeg bundle builder (+ optional upload)
-├── build-bridge-app.sh build signed DGInfBridge app wrapper for the bridge binary
-├── bundle-app.sh     build DGInf.app + DMG
+├── build-bridge-app.sh build signed EigenInferenceBridge app wrapper for the bridge binary
+├── bundle-app.sh     build EigenInference.app + DMG
 ├── install.sh        end-user installer served from coordinator
 ├── sign-hardened.sh  hardened runtime signing helper
 ├── deploy-acme.sh    nginx/step-ca helper
@@ -112,7 +112,7 @@ tests/                root Python tests (`test_crypto_interop.py`, plus a stale 
 - Coordinator auth is now split between Privy JWTs, API keys, and device-code login for provider machines.
 - Billing logic is split between `coordinator/internal/payments` (ledger + pricing) and `coordinator/internal/billing` (Stripe, Solana, referrals).
 - Providers can serve text models, transcription, and optional image models. Image generation goes through the separate `image-bridge/` process and uploads PNGs back to the coordinator over HTTP.
-- The macOS app is a real operational client, not just a wrapper. It manages installation, onboarding, launchd integration, diagnostics, and subprocess supervision for `dginf-provider`.
+- The macOS app is a real operational client, not just a wrapper. It manages installation, onboarding, launchd integration, diagnostics, and subprocess supervision for `eigeninference-provider`.
 
 ## Building And Testing
 
@@ -124,7 +124,7 @@ go build ./cmd/coordinator
 go build ./cmd/verify-attestation
 
 # Linux deployment build
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dginf-coordinator-linux ./cmd/coordinator
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o eigeninference-coordinator-linux ./cmd/coordinator
 ```
 
 ### Provider (Rust)
@@ -150,7 +150,7 @@ PYTHONPATH=. pytest
 
 ### macOS App (Swift)
 ```bash
-cd app/DGInf
+cd app/EigenInference
 swift build -c release
 swift test
 ```
@@ -191,13 +191,13 @@ Quick coordinator deploy:
 
 ```bash
 cd coordinator && \
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dginf-coordinator-linux ./cmd/coordinator && \
-scp -i ~/.ssh/dginf-infra dginf-coordinator-linux ubuntu@34.197.17.112:/tmp/dginf-coordinator && \
-ssh -i ~/.ssh/dginf-infra ubuntu@34.197.17.112 \
-  'sudo systemctl stop dginf-coordinator && \
-   sudo mv /tmp/dginf-coordinator /usr/local/bin/dginf-coordinator && \
-   sudo chmod +x /usr/local/bin/dginf-coordinator && \
-   sudo systemctl start dginf-coordinator'
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o eigeninference-coordinator-linux ./cmd/coordinator && \
+scp -i ~/.ssh/eigeninference-infra eigeninference-coordinator-linux ubuntu@34.197.17.112:/tmp/eigeninference-coordinator && \
+ssh -i ~/.ssh/eigeninference-infra ubuntu@34.197.17.112 \
+  'sudo systemctl stop eigeninference-coordinator && \
+   sudo mv /tmp/eigeninference-coordinator /usr/local/bin/eigeninference-coordinator && \
+   sudo chmod +x /usr/local/bin/eigeninference-coordinator && \
+   sudo systemctl start eigeninference-coordinator'
 ```
 
 ## Important Sync Points
@@ -216,7 +216,7 @@ ssh -i ~/.ssh/dginf-infra ubuntu@34.197.17.112 \
 - `web/README.md` is still the default create-next-app scaffold and is not authoritative for this repo.
 - `coordinator/coordinator` is a built binary checked into the tree. Do not model changes from it, and do not commit more built artifacts.
 - The provider's default Cargo feature still pulls in PyO3. Use `--no-default-features` for distributable bundles.
-- Provider image serving is opt-in through `DGINF_IMAGE_MODEL` and `DGINF_IMAGE_MODEL_PATH`; if you touch image flows, verify both the coordinator catalog and provider env/config path handling.
+- Provider image serving is opt-in through `EIGENINFERENCE_IMAGE_MODEL` and `EIGENINFERENCE_IMAGE_MODEL_PATH`; if you touch image flows, verify both the coordinator catalog and provider env/config path handling.
 
 ## Formatting
 

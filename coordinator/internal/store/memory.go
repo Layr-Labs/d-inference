@@ -114,7 +114,7 @@ func (s *MemoryStore) CreateKey() (string, error) {
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-	key := "dginf-" + hex.EncodeToString(b)
+	key := "eigeninference-" + hex.EncodeToString(b)
 
 	s.mu.Lock()
 	s.keys[key] = true
@@ -129,7 +129,7 @@ func (s *MemoryStore) CreateKeyForAccount(accountID string) (string, error) {
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-	key := "dginf-" + hex.EncodeToString(b)
+	key := "eigeninference-" + hex.EncodeToString(b)
 
 	s.mu.Lock()
 	s.keys[key] = true

@@ -1,4 +1,4 @@
-# DGInf Runbook
+# EigenInference Runbook
 
 ## Architecture Overview
 
@@ -24,8 +24,8 @@ Consumer (browser)          Provider (Mac)              Coordinator (Linux)
 
 | Server | IP | SSH | Purpose |
 |--------|------|-----|---------|
-| MDM/Coordinator | 34.197.17.112 | `ssh -i ~/.ssh/dginf-infra ubuntu@34.197.17.112` | Coordinator + MicroMDM + nginx |
-| Mac M2 Provider | 54.90.55.137 | `ssh -i ~/.ssh/dginf-infra ec2-user@54.90.55.137` | Test provider (AWS mac2-m2.metal) |
+| MDM/Coordinator | 34.197.17.112 | `ssh -i ~/.ssh/eigeninference-infra ubuntu@34.197.17.112` | Coordinator + MicroMDM + nginx |
+| Mac M2 Provider | 54.90.55.137 | `ssh -i ~/.ssh/eigeninference-infra ec2-user@54.90.55.137` | Test provider (AWS mac2-m2.metal) |
 
 ## Building
 
@@ -33,20 +33,20 @@ Consumer (browser)          Provider (Mac)              Coordinator (Linux)
 ```bash
 cd provider
 PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo build --release
-# Output: target/release/dginf-provider
+# Output: target/release/eigeninference-provider
 ```
 
 ### Enclave CLI (Swift, macOS only)
 ```bash
 cd enclave
 swift build -c release
-# Output: .build/release/dginf-enclave
+# Output: .build/release/eigeninference-enclave
 ```
 
 ### Coordinator (Go, cross-compile for Linux)
 ```bash
 cd coordinator
-GOOS=linux GOARCH=amd64 go build -o dginf-coordinator-linux ./cmd/coordinator
+GOOS=linux GOARCH=amd64 go build -o eigeninference-coordinator-linux ./cmd/coordinator
 ```
 
 ### Web Frontend (Next.js)
@@ -62,21 +62,21 @@ npx next build       # production build
 ```bash
 # Build
 cd coordinator
-GOOS=linux GOARCH=amd64 go build -o dginf-coordinator-linux ./cmd/coordinator
+GOOS=linux GOARCH=amd64 go build -o eigeninference-coordinator-linux ./cmd/coordinator
 
 # Upload
-scp -i ~/.ssh/dginf-infra dginf-coordinator-linux ubuntu@34.197.17.112:/tmp/dginf-coordinator
+scp -i ~/.ssh/eigeninference-infra eigeninference-coordinator-linux ubuntu@34.197.17.112:/tmp/eigeninference-coordinator
 
 # Deploy
-ssh -i ~/.ssh/dginf-infra ubuntu@34.197.17.112 '
+ssh -i ~/.ssh/eigeninference-infra ubuntu@34.197.17.112 '
   sudo fuser -k 8080/tcp 2>/dev/null
   sleep 1
-  sudo cp /tmp/dginf-coordinator /usr/local/bin/dginf-coordinator
-  sudo chmod +x /usr/local/bin/dginf-coordinator
-  sudo bash -c "DGINF_PORT=8080 \
-    DGINF_MDM_URL=https://localhost:9002 \
-    DGINF_MDM_API_KEY=dginf-micromdm-api \
-    nohup /usr/local/bin/dginf-coordinator > /var/log/dginf-coordinator.log 2>&1 &"
+  sudo cp /tmp/eigeninference-coordinator /usr/local/bin/eigeninference-coordinator
+  sudo chmod +x /usr/local/bin/eigeninference-coordinator
+  sudo bash -c "EIGENINFERENCE_PORT=8080 \
+    EIGENINFERENCE_MDM_URL=https://localhost:9002 \
+    EIGENINFERENCE_MDM_API_KEY=eigeninference-micromdm-api \
+    nohup /usr/local/bin/eigeninference-coordinator > /var/log/eigeninference-coordinator.log 2>&1 &"
 '
 
 # Verify
@@ -86,8 +86,8 @@ curl -s http://34.197.17.112:8080/health
 ## Building & Uploading Provider Bundle
 
 The provider bundle is a self-contained tarball with:
-- `dginf-provider` (Rust binary, built with `--no-default-features` to avoid PyO3 linking)
-- `dginf-enclave` (Swift Secure Enclave CLI)
+- `eigeninference-provider` (Rust binary, built with `--no-default-features` to avoid PyO3 linking)
+- `eigeninference-enclave` (Swift Secure Enclave CLI)
 - `ffmpeg` (static binary for audio transcription — no Homebrew needed)
 - `stt_server.py` (speech-to-text server script)
 - `python/` (Python 3.12 venv with vllm-mlx, mlx, mlx-lm, transformers, huggingface_hub)
@@ -120,7 +120,7 @@ cd provider && cargo build --release --no-default-features
 cd ../enclave && swift build -c release
 
 # 2. Create Python venv with inference deps
-BUNDLE_DIR="/tmp/dginf-bundle"
+BUNDLE_DIR="/tmp/eigeninference-bundle"
 rm -rf "$BUNDLE_DIR"
 python3.12 -m venv "$BUNDLE_DIR/python"
 source "$BUNDLE_DIR/python/bin/activate"
@@ -134,13 +134,13 @@ rm -rf torch* gradio* opencv* cv2* pandas* pyarrow* PIL* pillow* \
 find "$BUNDLE_DIR/python" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
 
 # 4. Copy binaries + assets into bundle
-cp provider/target/release/dginf-provider "$BUNDLE_DIR/dginf-provider"
-cp enclave/.build/release/dginf-enclave "$BUNDLE_DIR/dginf-enclave"
+cp provider/target/release/eigeninference-provider "$BUNDLE_DIR/eigeninference-provider"
+cp enclave/.build/release/eigeninference-enclave "$BUNDLE_DIR/eigeninference-enclave"
 cp provider/stt_server.py "$BUNDLE_DIR/stt_server.py"
 cp vendor/ffmpeg "$BUNDLE_DIR/ffmpeg"  # static macOS arm64 binary
 
 # 5. Create tarball
-cd /tmp && tar czf dginf-bundle-macos-arm64.tar.gz -C dginf-bundle .
+cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
 
 # 6. Upload bundle + install script to server
 ./scripts/build-bundle.sh --skip-build --upload
@@ -176,8 +176,8 @@ Only `hardware` trust providers are routed requests.
 7. Coordinator cross-checks → upgrades to `hardware`
 
 ### Common issues:
-- **"signature verification failed"**: Enclave key is stale. Delete `~/.dginf/enclave_key.data` and restart provider. (Auto-fixed in latest build.)
-- **"device lookup failed"**: MDM can't reach MicroMDM. Check `DGINF_MDM_URL` is `https://localhost:9002` (not the public domain).
+- **"signature verification failed"**: Enclave key is stale. Delete `~/.eigeninference/enclave_key.data` and restart provider. (Auto-fixed in latest build.)
+- **"device lookup failed"**: MDM can't reach MicroMDM. Check `EIGENINFERENCE_MDM_URL` is `https://localhost:9002` (not the public domain).
 - **"no hardware-trusted provider"**: Provider didn't get upgraded. Check coordinator logs for MDM verification result.
 
 ## Provider Reconnection
@@ -221,7 +221,7 @@ The env var is used by both client-side code and API proxy routes.
 | `provider/src/security.rs` | SIP check, PT_DENY_ATTACH, memory wiping |
 | `provider/src/inference.rs` | In-process MLX inference via PyO3 |
 | `provider/src/proxy.rs` | Subprocess inference proxy (vllm-mlx HTTP) |
-| `enclave/Sources/DGInfEnclave/Attestation.swift` | Secure Enclave P-256 signing |
+| `enclave/Sources/EigenInferenceEnclave/Attestation.swift` | Secure Enclave P-256 signing |
 | `web/src/app/page.tsx` | Chat page with auto-key-generation |
 | `web/src/lib/api.ts` | API client (all calls through /api/* proxy) |
 | `scripts/install.sh` | One-line provider installer |

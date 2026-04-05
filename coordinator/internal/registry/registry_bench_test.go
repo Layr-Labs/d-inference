@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dginf/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/protocol"
 )
 
 // makeProvider creates a realistic provider for benchmarks.

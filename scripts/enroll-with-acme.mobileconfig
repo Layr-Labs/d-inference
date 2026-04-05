@@ -43,7 +43,7 @@
       <key>PayloadIdentifier</key>
       <string>com.github.micromdm.micromdm.enroll.scep</string>
       <key>PayloadOrganization</key>
-      <string>DGInf</string>
+      <string>EigenInference</string>
       <key>PayloadType</key>
       <string>com.apple.security.scep</string>
       <key>PayloadUUID</key>
@@ -66,7 +66,7 @@
       <key>PayloadIdentifier</key>
       <string>com.github.micromdm.micromdm.enroll.mdm</string>
       <key>PayloadOrganization</key>
-      <string>DGInf</string>
+      <string>EigenInference</string>
       <key>PayloadType</key>
       <string>com.apple.mdm</string>
       <key>PayloadUUID</key>
@@ -92,17 +92,17 @@
       <key>PayloadVersion</key>
       <integer>1</integer>
       <key>PayloadIdentifier</key>
-      <string>io.dginf.acme.device-attestation</string>
+      <string>io.eigeninference.acme.device-attestation</string>
       <key>PayloadUUID</key>
       <string>A1B2C3D4-E5F6-7890-ABCD-EF1234567890</string>
       <key>PayloadDisplayName</key>
-      <string>DGInf Device Attestation</string>
+      <string>EigenInference Device Attestation</string>
       <key>PayloadDescription</key>
       <string>Generates a hardware-bound key in the Secure Enclave and obtains an Apple-attested certificate via ACME device-attest-01.</string>
       <key>PayloadOrganization</key>
-      <string>DGInf</string>
+      <string>EigenInference</string>
       <key>DirectoryURL</key>
-      <string>https://inference-test.openinnovation.dev/acme/dginf-acme/directory</string>
+      <string>https://inference-test.openinnovation.dev/acme/eigeninference-acme/directory</string>
       <key>ClientIdentifier</key>
       <string>F46GTCP40H</string>
       <key>KeySize</key>
@@ -118,26 +118,26 @@
         <array>
           <array>
             <string>O</string>
-            <string>DGInf Provider</string>
+            <string>EigenInference Provider</string>
           </array>
         </array>
         <array>
           <array>
             <string>CN</string>
-            <string>DGInf SE Attestation (%SerialNumber%)</string>
+            <string>EigenInference SE Attestation (%SerialNumber%)</string>
           </array>
         </array>
       </array>
     </dict>
   </array>
   <key>PayloadDescription</key>
-  <string>DGInf provider enrollment with device attestation</string>
+  <string>EigenInference provider enrollment with device attestation</string>
   <key>PayloadDisplayName</key>
-  <string>DGInf Enrollment + Attestation</string>
+  <string>EigenInference Enrollment + Attestation</string>
   <key>PayloadIdentifier</key>
-  <string>io.dginf.enroll</string>
+  <string>io.eigeninference.enroll</string>
   <key>PayloadOrganization</key>
-  <string>DGInf</string>
+  <string>EigenInference</string>
   <key>PayloadType</key>
   <string>Configuration</string>
   <key>PayloadUUID</key>

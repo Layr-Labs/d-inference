@@ -1,11 +1,11 @@
 [package]
-name = "dginf-provider"
+name = "eigeninference-provider"
 version = "0.2.0"
 edition = "2024"
-description = "DGInf provider agent for Apple Silicon Macs"
+description = "EigenInference provider agent for Apple Silicon Macs"
 
 [[bin]]
-name = "dginf-provider"
+name = "eigeninference-provider"
 path = "src/main.rs"
 
 [dependencies]

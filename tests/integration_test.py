@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DGInf Integration Test Suite — Component 4
+EigenInference Integration Test Suite — Component 4
 
 Tests the full loop: Consumer SDK → Coordinator → Provider Agent → mlx-lm → MLX → GPU
 
@@ -13,7 +13,7 @@ Test groups:
 
 Prerequisites:
   - Coordinator binary: coordinator/bin/coordinator
-  - Provider binary: provider/target/release/dginf-provider
+  - Provider binary: provider/target/release/eigeninference-provider
   - SDK installed: pip install -e sdk/
   - mlx-lm installed: pip install mlx-lm
   - Model downloaded: mlx-community/Qwen3.5-4B-MLX-4bit
@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "sdk"))
 BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(BASE, "..")
 COORDINATOR_BIN = os.path.join(ROOT, "coordinator", "bin", "coordinator")
-PROVIDER_BIN = os.path.join(ROOT, "provider", "target", "release", "dginf-provider")
+PROVIDER_BIN = os.path.join(ROOT, "provider", "target", "release", "eigeninference-provider")
 MODEL = "mlx-community/Qwen3.5-4B-MLX-4bit"
 
 COORDINATOR_PORT = 18080
@@ -120,7 +120,7 @@ class SkipTest(Exception):
 def start_coordinator():
     p = spawn(
         [COORDINATOR_BIN],
-        env={"DGINF_PORT": str(COORDINATOR_PORT), "DGINF_ADMIN_KEY": ADMIN_KEY},
+        env={"EIGENINFERENCE_PORT": str(COORDINATOR_PORT), "EIGENINFERENCE_ADMIN_KEY": ADMIN_KEY},
         label="coordinator",
     )
     if not wait_for_http(f"{COORDINATOR_URL}/health", timeout=15):
@@ -340,8 +340,8 @@ def test_4_4_2_init_creates_config():
 
 def test_4_5_1_sdk_models(api_key):
     """SDK client can list models."""
-    from dginf import DGInf
-    client = DGInf(base_url=COORDINATOR_URL, api_key=api_key)
+    from eigeninference import EigenInference
+    client = EigenInference(base_url=COORDINATOR_URL, api_key=api_key)
     models = client.models.list()
     assert models.object == "list"
     client.close()
@@ -349,9 +349,9 @@ def test_4_5_1_sdk_models(api_key):
 
 def test_4_5_2_sdk_no_provider_error(api_key):
     """SDK raises ProviderUnavailableError when no provider."""
-    from dginf import DGInf
-    from dginf.errors import ProviderUnavailableError
-    client = DGInf(base_url=COORDINATOR_URL, api_key=api_key)
+    from eigeninference import EigenInference
+    from eigeninference.errors import ProviderUnavailableError
+    client = EigenInference(base_url=COORDINATOR_URL, api_key=api_key)
     try:
         client.chat.completions.create(
             model="nonexistent",
@@ -365,9 +365,9 @@ def test_4_5_2_sdk_no_provider_error(api_key):
 
 def test_4_5_3_sdk_auth_error():
     """SDK raises AuthenticationError with bad key."""
-    from dginf import DGInf
-    from dginf.errors import AuthenticationError
-    client = DGInf(base_url=COORDINATOR_URL, api_key="bad-key")
+    from eigeninference import EigenInference
+    from eigeninference.errors import AuthenticationError
+    client = EigenInference(base_url=COORDINATOR_URL, api_key="bad-key")
     try:
         client.models.list()
         assert False, "Should have raised"
@@ -582,7 +582,7 @@ def main():
     global passed, failed, skipped
 
     print("\n" + "=" * 60)
-    print("  DGInf Integration Test Suite — Component 4")
+    print("  EigenInference Integration Test Suite — Component 4")
     print("=" * 60 + "\n")
 
     # Check prerequisites

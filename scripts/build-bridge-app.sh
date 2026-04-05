@@ -7,10 +7,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_DIR/build"
-APP_DIR="$BUILD_DIR/DGInfBridge.app"
+APP_DIR="$BUILD_DIR/EigenInferenceBridge.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
-BUNDLE_ID="io.dginf.ws-bridge"
+BUNDLE_ID="io.eigeninference.ws-bridge"
 
 echo "Building WebSocket bridge app..."
 
@@ -23,7 +23,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS"
 
 # Copy binary
-cp .build/release/dginf-enclave "$MACOS/dginf-bridge"
+cp .build/release/eigeninference-enclave "$MACOS/eigeninference-bridge"
 
 # Create Info.plist
 cat > "$CONTENTS/Info.plist" << PLIST
@@ -32,11 +32,11 @@ cat > "$CONTENTS/Info.plist" << PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>dginf-bridge</string>
+    <string>eigeninference-bridge</string>
     <key>CFBundleIdentifier</key>
     <string>${BUNDLE_ID}</string>
     <key>CFBundleName</key>
-    <string>DGInf Bridge</string>
+    <string>EigenInference Bridge</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleShortVersionString</key>
@@ -74,4 +74,4 @@ codesign --force --sign - \
 echo "Built: $APP_DIR"
 echo "Bundle ID: $BUNDLE_ID"
 echo ""
-echo "Run: $MACOS/dginf-bridge tls-bridge"
+echo "Run: $MACOS/eigeninference-bridge tls-bridge"

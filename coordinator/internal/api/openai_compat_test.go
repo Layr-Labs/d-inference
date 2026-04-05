@@ -1,6 +1,6 @@
 package api
 
-// OpenAI API compatibility tests for the DGInf coordinator.
+// OpenAI API compatibility tests for the EigenInference coordinator.
 //
 // These tests verify that the coordinator's HTTP responses match the OpenAI API
 // specification for chat completions (streaming and non-streaming), model listing,
@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dginf/coordinator/internal/protocol"
-	"github.com/dginf/coordinator/internal/registry"
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/registry"
+	"github.com/eigeninference/coordinator/internal/store"
 	"nhooyr.io/websocket"
 )
 

@@ -1,4 +1,4 @@
-module github.com/dginf/coordinator
+module github.com/eigeninference/coordinator
 
 go 1.25.0
 

@@ -1,4 +1,4 @@
-// Package api provides the HTTP and WebSocket server for the DGInf coordinator.
+// Package api provides the HTTP and WebSocket server for the EigenInference coordinator.
 //
 // This package is the network-facing layer of the coordinator. It handles:
 //   - Consumer HTTP endpoints (OpenAI-compatible chat completions, model listing)
@@ -26,12 +26,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dginf/coordinator/internal/auth"
-	"github.com/dginf/coordinator/internal/billing"
-	"github.com/dginf/coordinator/internal/mdm"
-	"github.com/dginf/coordinator/internal/payments"
-	"github.com/dginf/coordinator/internal/registry"
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/auth"
+	"github.com/eigeninference/coordinator/internal/billing"
+	"github.com/eigeninference/coordinator/internal/mdm"
+	"github.com/eigeninference/coordinator/internal/payments"
+	"github.com/eigeninference/coordinator/internal/registry"
+	"github.com/eigeninference/coordinator/internal/store"
 )
 
 // contextKey is an unexported type for context keys in this package.
@@ -68,7 +68,7 @@ type Server struct {
 	challengeInterval      time.Duration     // 0 means use DefaultChallengeInterval
 	privyAuth              *auth.PrivyAuth   // Privy JWT authentication (nil if not configured)
 	adminEmails            map[string]bool   // emails that have admin access
-	adminKey               string            // DGINF_ADMIN_KEY for admin endpoints
+	adminKey               string            // EIGENINFERENCE_ADMIN_KEY for admin endpoints
 	mdmClient              *mdm.Client       // MicroMDM client for provider security verification
 	stepCARootCert         *x509.Certificate // step-ca root CA for ACME cert verification
 	stepCAIntermediateCert *x509.Certificate // step-ca intermediate CA

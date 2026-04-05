@@ -1,4 +1,4 @@
-"""Continuous-batching STT server for DGInf providers.
+"""Continuous-batching STT server for EigenInference providers.
 
 Keeps the model loaded on GPU, accepts concurrent transcription requests,
 and batches them together for efficient GPU utilization — same pattern
@@ -180,7 +180,7 @@ class BatchScheduler:
 # FastAPI app
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="DGInf STT Server")
+app = FastAPI(title="EigenInference STT Server")
 
 # Global state — set during startup
 _model = None
@@ -205,7 +205,7 @@ async def list_models():
                 "id": _model_id,
                 "object": "model",
                 "created": int(_start_time),
-                "owned_by": "dginf",
+                "owned_by": "eigeninference",
                 "type": "stt",
             }
         ],
@@ -225,8 +225,8 @@ async def transcribe(
     # Read uploaded audio to temp file
     data = await file.read()
     ext = Path(file.filename or "audio.wav").suffix or ".wav"
-    raw_path = f"/tmp/dginf-stt-raw-{id(data)}-{time.monotonic_ns()}{ext}"
-    tmp_path = f"/tmp/dginf-stt-{id(data)}-{time.monotonic_ns()}.wav"
+    raw_path = f"/tmp/eigeninference-stt-raw-{id(data)}-{time.monotonic_ns()}{ext}"
+    tmp_path = f"/tmp/eigeninference-stt-{id(data)}-{time.monotonic_ns()}.wav"
 
     # Write raw upload, then convert to wav via ffmpeg for format compatibility.
     # Browser MediaRecorder produces webm/opus which soundfile can't read.
@@ -366,7 +366,7 @@ def load_model(model_path: str):
 def main():
     global _model, _scheduler, _model_id, _start_time
 
-    parser = argparse.ArgumentParser(description="DGInf STT Server with continuous batching")
+    parser = argparse.ArgumentParser(description="EigenInference STT Server with continuous batching")
     parser.add_argument("--model", required=True, help="Model path or HuggingFace repo ID")
     parser.add_argument("--port", type=int, default=8101, help="Port to listen on")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")

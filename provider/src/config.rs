@@ -1,13 +1,13 @@
 //! Provider configuration management.
 //!
-//! Configuration is stored in TOML format at `~/.config/dginf/provider.toml`
+//! Configuration is stored in TOML format at `~/.config/eigeninference/provider.toml`
 //! (or the platform-appropriate config directory). The config includes:
 //!   - Provider identity (name, memory reserve)
 //!   - Backend settings (type, port, model, continuous batching)
 //!   - Coordinator connection settings (URL, heartbeat interval)
 //!
 //! A default config is generated based on detected hardware when the provider
-//! is first initialized (`dginf-provider init`). CLI flags can override
+//! is first initialized (`eigeninference-provider init`). CLI flags can override
 //! config values at runtime.
 
 use crate::hardware::HardwareInfo;
@@ -52,7 +52,7 @@ pub struct CoordinatorSettings {
 impl ProviderConfig {
     pub fn default_for_hardware(hw: &HardwareInfo) -> Self {
         let name = format!(
-            "dginf-{}",
+            "eigeninference-{}",
             &hw.machine_model.replace(',', "-").to_lowercase()
         );
 
@@ -79,7 +79,7 @@ impl ProviderConfig {
 pub fn default_config_path() -> Result<PathBuf> {
     let config_dir = dirs::config_dir()
         .context("could not determine config directory")?
-        .join("dginf");
+        .join("eigeninference");
     Ok(config_dir.join("provider.toml"))
 }
 
@@ -131,7 +131,7 @@ mod tests {
         let hw = sample_hardware();
         let config = ProviderConfig::default_for_hardware(&hw);
 
-        assert_eq!(config.provider.name, "dginf-mac16-1");
+        assert_eq!(config.provider.name, "eigeninference-mac16-1");
         assert_eq!(config.backend.port, 8100);
         assert!(config.backend.continuous_batching);
     }
@@ -219,7 +219,7 @@ mod tests {
             546,
         );
         let config = ProviderConfig::default_for_hardware(&hw);
-        assert_eq!(config.provider.name, "dginf-mac16-1");
+        assert_eq!(config.provider.name, "eigeninference-mac16-1");
         assert_eq!(config.backend.port, 8100);
         assert_eq!(config.coordinator.heartbeat_interval_secs, 30);
         assert!(config.backend.continuous_batching);
@@ -239,7 +239,7 @@ mod tests {
             100,
         );
         let config = ProviderConfig::default_for_hardware(&hw);
-        assert_eq!(config.provider.name, "dginf-mac15-3");
+        assert_eq!(config.provider.name, "eigeninference-mac15-3");
         assert_eq!(config.backend.port, 8100);
         assert_eq!(config.provider.memory_reserve_gb, 4);
     }
@@ -256,7 +256,7 @@ mod tests {
             200,
         );
         let config = ProviderConfig::default_for_hardware(&hw);
-        assert_eq!(config.provider.name, "dginf-mac14-10");
+        assert_eq!(config.provider.name, "eigeninference-mac14-10");
         assert_eq!(config.backend.port, 8100);
         assert_eq!(config.coordinator.url, "ws://localhost:8080/ws/provider");
     }

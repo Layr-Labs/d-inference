@@ -1,4 +1,4 @@
-//! WebSocket client for connecting to the DGInf coordinator.
+//! WebSocket client for connecting to the EigenInference coordinator.
 //!
 //! This module manages the provider's connection to the coordinator:
 //!   - WebSocket connection with automatic reconnection (exponential backoff)
@@ -134,7 +134,7 @@ impl CoordinatorClient {
         self
     }
 
-    /// Set the device-linked auth token (from `dginf-provider login`).
+    /// Set the device-linked auth token (from `eigeninference-provider login`).
     pub fn with_auth_token(mut self, auth_token: Option<String>) -> Self {
         self.auth_token = auth_token;
         self
@@ -270,7 +270,7 @@ impl CoordinatorClient {
 
                 // WebSocket ping to detect dead connections
                 _ = ping_interval.tick() => {
-                    if let Err(e) = write.send(Message::Ping("dginf".into())).await {
+                    if let Err(e) = write.send(Message::Ping("eigeninference".into())).await {
                         anyhow::bail!("Failed to send ping: {e}");
                     }
                 }
@@ -522,7 +522,7 @@ pub fn handle_attestation_challenge(
 
     // Create a simple keyed hash as the "signature". This proves the provider
     // received the challenge and can respond with the correct data. Real SE
-    // signing would use the P-256 key via the dginf-enclave CLI tool.
+    // signing would use the P-256 key via the eigeninference-enclave CLI tool.
     let pk_str = public_key.unwrap_or("");
     let sig_input = format!("{}{}", data, pk_str);
     let hash = simple_sha256(sig_input.as_bytes());

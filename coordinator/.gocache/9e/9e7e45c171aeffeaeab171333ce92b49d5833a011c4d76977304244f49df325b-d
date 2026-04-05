@@ -1,7 +1,0 @@
-./auth_scram.go
-./config.go
-./defaults.go
-./doc.go
-./errors.go
-./krb5.go
-./pgconn.go

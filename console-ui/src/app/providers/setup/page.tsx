@@ -71,25 +71,25 @@ const STEPS = [
     icon: Wallet,
     title: "Configure Your Identity",
     description: "Set your Solana wallet address to receive earnings from inference jobs.",
-    command: "dginf-provider config --wallet <YOUR_SOLANA_ADDRESS>",
+    command: "eigeninference-provider config --wallet <YOUR_SOLANA_ADDRESS>",
   },
   {
     icon: Box,
     title: "Select Models to Serve",
     description: "Choose which AI models to serve. Models are automatically downloaded from HuggingFace.",
-    command: "dginf-provider config --models Qwen/Qwen3-8B-MLX-4bit",
+    command: "eigeninference-provider config --models Qwen/Qwen3-8B-MLX-4bit",
   },
   {
     icon: Play,
     title: "Start Serving",
     description: "Launch the provider daemon. It will connect to the coordinator and begin accepting inference requests.",
-    command: "dginf-provider serve",
+    command: "eigeninference-provider serve",
   },
   {
     icon: CheckCircle2,
     title: "Verify Attestation",
     description: "Check your provider's attestation status on the Providers page. Hardware attestation requires Apple MDM enrollment.",
-    command: "dginf-provider status",
+    command: "eigeninference-provider status",
   },
 ];
 

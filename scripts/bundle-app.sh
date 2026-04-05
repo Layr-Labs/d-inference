@@ -1,14 +1,14 @@
 #!/bin/bash
 #
-# Bundle DGInf into a self-contained, code-signed macOS .app
+# Bundle EigenInference into a self-contained, code-signed macOS .app
 #
-# Creates DGInf.app containing:
+# Creates EigenInference.app containing:
 #   Contents/
 #     Info.plist
 #     MacOS/
-#       DGInf                  ← Swift menu bar app (main executable)
-#       dginf-provider         ← Rust CLI binary
-#       dginf-enclave          ← Swift Secure Enclave CLI
+#       EigenInference                  ← Swift menu bar app (main executable)
+#       eigeninference-provider         ← Rust CLI binary
+#       eigeninference-enclave          ← Swift Secure Enclave CLI
 #     Frameworks/
 #       python/                ← python-build-standalone 3.12
 #         bin/python3.12
@@ -32,7 +32,7 @@
 # Prerequisites:
 #   cargo build --release --no-default-features   (provider)
 #   swift build -c release                         (enclave + app)
-#   Python bundle at ~/.dginf/python/              (from install.sh)
+#   Python bundle at ~/.eigeninference/python/              (from install.sh)
 
 set -euo pipefail
 
@@ -49,7 +49,7 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_DIR/build"
-APP_DIR="$BUILD_DIR/DGInf.app"
+APP_DIR="$BUILD_DIR/EigenInference.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
@@ -57,10 +57,10 @@ FRAMEWORKS="$CONTENTS/Frameworks"
 ENTITLEMENTS="$SCRIPT_DIR/entitlements.plist"
 
 VERSION="0.1.0"
-BUNDLE_ID="io.dginf.provider"
+BUNDLE_ID="io.eigeninference.provider"
 
 echo "╔══════════════════════════════════════════════════╗"
-echo "║  DGInf App Bundle Builder                        ║"
+echo "║  EigenInference App Bundle Builder                        ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""
 echo "Version:    $VERSION"
@@ -84,9 +84,9 @@ cat > "$CONTENTS/Info.plist" << PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>DGInf</string>
+    <string>EigenInference</string>
     <key>CFBundleDisplayName</key>
-    <string>DGInf</string>
+    <string>EigenInference</string>
     <key>CFBundleIdentifier</key>
     <string>${BUNDLE_ID}</string>
     <key>CFBundleVersion</key>
@@ -94,7 +94,7 @@ cat > "$CONTENTS/Info.plist" << PLIST
     <key>CFBundleShortVersionString</key>
     <string>${VERSION}</string>
     <key>CFBundleExecutable</key>
-    <string>DGInf</string>
+    <string>EigenInference</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleIconFile</key>
@@ -129,7 +129,7 @@ cat > "$ENTITLEMENTS" << 'ENT'
     <!-- Keychain access for wallet storage -->
     <key>com.apple.security.keychain-access-groups</key>
     <array>
-        <string>$(AppIdentifierPrefix)io.dginf.provider</string>
+        <string>$(AppIdentifierPrefix)io.eigeninference.provider</string>
     </array>
 </dict>
 </plist>
@@ -139,50 +139,50 @@ ENT
 # 3. Build Swift app
 # ─────────────────────────────────────────────────────────
 echo "2. Building Swift app..."
-cd "$PROJECT_DIR/app/DGInf"
+cd "$PROJECT_DIR/app/EigenInference"
 swift build -c release 2>&1 | tail -3
-APP_BIN=$(swift build -c release --show-bin-path)/DGInf
+APP_BIN=$(swift build -c release --show-bin-path)/EigenInference
 if [ ! -f "$APP_BIN" ]; then
-    echo "   ERROR: Swift build failed. Run: cd app/DGInf && swift build -c release"
+    echo "   ERROR: Swift build failed. Run: cd app/EigenInference && swift build -c release"
     exit 1
 fi
-cp "$APP_BIN" "$MACOS/DGInf"
-echo "   ✓ DGInf ($(du -h "$MACOS/DGInf" | cut -f1))"
+cp "$APP_BIN" "$MACOS/EigenInference"
+echo "   ✓ EigenInference ($(du -h "$MACOS/EigenInference" | cut -f1))"
 
 # ─────────────────────────────────────────────────────────
 # 4. Build + copy Rust provider
 # ─────────────────────────────────────────────────────────
-echo "3. Building dginf-provider..."
+echo "3. Building eigeninference-provider..."
 cd "$PROJECT_DIR/provider"
-if [ ! -f "target/release/dginf-provider" ]; then
+if [ ! -f "target/release/eigeninference-provider" ]; then
     cargo build --release --no-default-features 2>&1 | tail -3
 fi
-cp "target/release/dginf-provider" "$MACOS/dginf-provider"
+cp "target/release/eigeninference-provider" "$MACOS/eigeninference-provider"
 # Also install to shared path so CLI and app use the same binary
-mkdir -p "$HOME/.dginf/bin"
-cp "target/release/dginf-provider" "$HOME/.dginf/bin/dginf-provider"
-chmod +x "$HOME/.dginf/bin/dginf-provider"
-echo "   ✓ dginf-provider ($(du -h "$MACOS/dginf-provider" | cut -f1)) → also installed to ~/.dginf/bin/"
+mkdir -p "$HOME/.eigeninference/bin"
+cp "target/release/eigeninference-provider" "$HOME/.eigeninference/bin/eigeninference-provider"
+chmod +x "$HOME/.eigeninference/bin/eigeninference-provider"
+echo "   ✓ eigeninference-provider ($(du -h "$MACOS/eigeninference-provider" | cut -f1)) → also installed to ~/.eigeninference/bin/"
 
 # ─────────────────────────────────────────────────────────
 # 5. Build + copy enclave CLI
 # ─────────────────────────────────────────────────────────
-echo "4. Building dginf-enclave..."
+echo "4. Building eigeninference-enclave..."
 cd "$PROJECT_DIR/enclave"
 swift build -c release 2>&1 | tail -3
-ENCLAVE_BIN=".build/release/dginf-enclave"
+ENCLAVE_BIN=".build/release/eigeninference-enclave"
 if [ -f "$ENCLAVE_BIN" ]; then
-    cp "$ENCLAVE_BIN" "$MACOS/dginf-enclave"
-    echo "   ✓ dginf-enclave ($(du -h "$MACOS/dginf-enclave" | cut -f1))"
+    cp "$ENCLAVE_BIN" "$MACOS/eigeninference-enclave"
+    echo "   ✓ eigeninference-enclave ($(du -h "$MACOS/eigeninference-enclave" | cut -f1))"
 else
-    echo "   ⚠ dginf-enclave not found (attestation will be unavailable)"
+    echo "   ⚠ eigeninference-enclave not found (attestation will be unavailable)"
 fi
 
 # ─────────────────────────────────────────────────────────
 # 6. Bundle Python + inference runtime
 # ─────────────────────────────────────────────────────────
 echo "5. Bundling Python runtime..."
-PYTHON_SRC="$HOME/.dginf/python"
+PYTHON_SRC="$HOME/.eigeninference/python"
 PYTHON_DST="$RESOURCES/python"
 
 if [ -d "$PYTHON_SRC" ]; then
@@ -332,7 +332,7 @@ done
 
 # Sign the app bundle itself — use --no-strict to handle non-standard
 # framework layout (Python bundle is not a real macOS framework)
-echo "   Signing DGInf.app..."
+echo "   Signing EigenInference.app..."
 codesign --force --options runtime --no-strict \
     --entitlements "$ENTITLEMENTS" \
     --sign "$IDENTITY" \
@@ -352,7 +352,7 @@ if [ "$NOTARIZE" = "--notarize" ] && [ "$IDENTITY" != "-" ]; then
     echo "10. Notarizing..."
 
     # Create a zip for notarization
-    NOTARIZE_ZIP="$BUILD_DIR/DGInf-notarize.zip"
+    NOTARIZE_ZIP="$BUILD_DIR/EigenInference-notarize.zip"
     ditto -c -k --keepParent "$APP_DIR" "$NOTARIZE_ZIP"
 
     echo "   Submitting to Apple..."
@@ -383,7 +383,7 @@ fi
 # ─────────────────────────────────────────────────────────
 echo ""
 echo "11. Creating DMG..."
-DMG_PATH="$BUILD_DIR/DGInf-${VERSION}.dmg"
+DMG_PATH="$BUILD_DIR/EigenInference-${VERSION}.dmg"
 rm -f "$DMG_PATH"
 
 # Create a temporary DMG directory with app + Applications symlink
@@ -393,7 +393,7 @@ mkdir -p "$DMG_TMP"
 cp -a "$APP_DIR" "$DMG_TMP/"
 ln -s /Applications "$DMG_TMP/Applications"
 
-hdiutil create -volname "DGInf" -srcfolder "$DMG_TMP" \
+hdiutil create -volname "EigenInference" -srcfolder "$DMG_TMP" \
     -ov -format UDZO "$DMG_PATH" >/dev/null 2>&1
 
 rm -rf "$DMG_TMP"
@@ -408,7 +408,7 @@ fi
 # ─────────────────────────────────────────────────────────
 if [ "$UPLOAD" = true ] && [ -f "$DMG_PATH" ]; then
     echo "12. Uploading DMG..."
-    SSH_KEY="$HOME/.ssh/dginf-infra"
+    SSH_KEY="$HOME/.ssh/eigeninference-infra"
     SERVER="ubuntu@34.197.17.112"
 
     if [ ! -f "$SSH_KEY" ]; then
@@ -416,14 +416,14 @@ if [ "$UPLOAD" = true ] && [ -f "$DMG_PATH" ]; then
         exit 1
     fi
 
-    scp -i "$SSH_KEY" "$DMG_PATH" "$SERVER:/tmp/DGInf-${VERSION}.dmg"
+    scp -i "$SSH_KEY" "$DMG_PATH" "$SERVER:/tmp/EigenInference-${VERSION}.dmg"
     ssh -i "$SSH_KEY" "$SERVER" "
-        sudo cp /tmp/DGInf-${VERSION}.dmg /var/www/html/dl/
-        sudo cp /var/www/html/dl/DGInf-${VERSION}.dmg /var/www/html/dl/DGInf-latest.dmg
-        sudo chmod 644 /var/www/html/dl/DGInf-${VERSION}.dmg /var/www/html/dl/DGInf-latest.dmg
+        sudo cp /tmp/EigenInference-${VERSION}.dmg /var/www/html/dl/
+        sudo cp /var/www/html/dl/EigenInference-${VERSION}.dmg /var/www/html/dl/EigenInference-latest.dmg
+        sudo chmod 644 /var/www/html/dl/EigenInference-${VERSION}.dmg /var/www/html/dl/EigenInference-latest.dmg
     "
-    echo "   ✓ DGInf-${VERSION}.dmg uploaded"
-    echo "   ✓ DGInf-latest.dmg updated"
+    echo "   ✓ EigenInference-${VERSION}.dmg uploaded"
+    echo "   ✓ EigenInference-latest.dmg updated"
     echo ""
 fi
 
@@ -434,12 +434,12 @@ echo ""
 echo "════════════════════════════════════════════════════"
 echo ""
 APP_SIZE=$(du -sh "$APP_DIR" | cut -f1)
-echo "  DGInf.app    $APP_SIZE"
+echo "  EigenInference.app    $APP_SIZE"
 echo ""
 echo "  Contents:"
-echo "    MacOS/DGInf              SwiftUI menu bar app"
-echo "    MacOS/dginf-provider     Rust inference provider"
-echo "    MacOS/dginf-enclave      Secure Enclave attestation"
+echo "    MacOS/EigenInference              SwiftUI menu bar app"
+echo "    MacOS/eigeninference-provider     Rust inference provider"
+echo "    MacOS/eigeninference-enclave      Secure Enclave attestation"
 echo "    Resources/python/        Python 3.12 + MLX + vllm-mlx"
 echo ""
 echo "  Security:"
@@ -450,7 +450,7 @@ echo "    SIP enforcement           Any modification → won't launch"
 echo ""
 echo "  Install:"
 echo "    open $APP_DIR"
-echo "    # or drag DGInf.app from DMG to /Applications"
+echo "    # or drag EigenInference.app from DMG to /Applications"
 echo ""
 echo "  Distribute:"
 if [ "$IDENTITY" = "-" ]; then

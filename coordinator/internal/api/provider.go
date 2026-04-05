@@ -1,6 +1,6 @@
 package api
 
-// Provider WebSocket management for the DGInf coordinator.
+// Provider WebSocket management for the EigenInference coordinator.
 //
 // This file handles the provider side of the coordinator: WebSocket connections,
 // provider registration, attestation verification, challenge-response loops,
@@ -33,11 +33,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dginf/coordinator/internal/attestation"
-	"github.com/dginf/coordinator/internal/payments"
-	"github.com/dginf/coordinator/internal/protocol"
-	"github.com/dginf/coordinator/internal/registry"
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/attestation"
+	"github.com/eigeninference/coordinator/internal/payments"
+	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/registry"
+	"github.com/eigeninference/coordinator/internal/store"
 	"github.com/google/uuid"
 	"nhooyr.io/websocket"
 )

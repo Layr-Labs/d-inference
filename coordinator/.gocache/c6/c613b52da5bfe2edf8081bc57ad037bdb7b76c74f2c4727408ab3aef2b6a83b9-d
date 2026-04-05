@@ -1,9 +1,0 @@
-./group.go
-./map.go
-./runtime.go
-./runtime_fast32_swiss.go
-./runtime_fast64_swiss.go
-./runtime_faststr_swiss.go
-./runtime_swiss.go
-./table.go
-./table_debug.go

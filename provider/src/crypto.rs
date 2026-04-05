@@ -1,16 +1,16 @@
-//! NaCl Box encryption primitives for the DGInf provider.
+//! NaCl Box encryption primitives for the EigenInference provider.
 //!
 //! Uses NaCl crypto_box (X25519 + XSalsa20-Poly1305) for cross-language
 //! compatibility with PyNaCl on the consumer side.
 //!
 //! The provider's X25519 key pair is derived from the Secure Enclave at
-//! startup via `dginf-enclave derive-e2e-key`. The private key exists only
+//! startup via `eigeninference-enclave derive-e2e-key`. The private key exists only
 //! in process memory and is never written to disk. The derivation is
 //! deterministic (same SE chip = same X25519 key), so the public key is
 //! stable across restarts.
 //!
 //! Fallback: if the Secure Enclave is unavailable, the key is loaded from
-//! ~/.dginf/node_key (32 bytes, 0600 perms).
+//! ~/.eigeninference/node_key (32 bytes, 0600 perms).
 
 use anyhow::{Context, Result};
 use crypto_box::{
@@ -44,11 +44,11 @@ impl NodeKeyPair {
 
     /// Derive the E2E key pair from the Secure Enclave, falling back to file.
     ///
-    /// Primary path: calls `dginf-enclave derive-e2e-key` which performs ECDH
+    /// Primary path: calls `eigeninference-enclave derive-e2e-key` which performs ECDH
     /// inside the SE hardware and returns a deterministic X25519 key. The
     /// private key never touches disk.
     ///
-    /// Fallback: loads from `~/.dginf/node_key` if the SE is unavailable.
+    /// Fallback: loads from `~/.eigeninference/node_key` if the SE is unavailable.
     pub fn load_or_generate(path: &Path) -> Result<Self> {
         match Self::from_secure_enclave() {
             Ok(kp) => {
@@ -76,7 +76,10 @@ impl NodeKeyPair {
     fn from_secure_enclave() -> Result<Self> {
         let enclave_bin = enclave_binary_path();
         if !enclave_bin.exists() {
-            anyhow::bail!("dginf-enclave not found at {}", enclave_bin.display());
+            anyhow::bail!(
+                "eigeninference-enclave not found at {}",
+                enclave_bin.display()
+            );
         }
 
         let output = std::process::Command::new(&enclave_bin)
@@ -84,11 +87,14 @@ impl NodeKeyPair {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .output()
-            .context("failed to run dginf-enclave derive-e2e-key")?;
+            .context("failed to run eigeninference-enclave derive-e2e-key")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("dginf-enclave derive-e2e-key failed: {}", stderr.trim());
+            anyhow::bail!(
+                "eigeninference-enclave derive-e2e-key failed: {}",
+                stderr.trim()
+            );
         }
 
         let json: serde_json::Value = serde_json::from_slice(&output.stdout)
@@ -205,23 +211,23 @@ impl NodeKeyPair {
     }
 }
 
-/// Return the default path for the node key file: ~/.dginf/node_key
+/// Return the default path for the node key file: ~/.eigeninference/node_key
 pub fn default_key_path() -> Result<std::path::PathBuf> {
     let home = dirs::home_dir().context("could not determine home directory")?;
-    Ok(home.join(".dginf").join("node_key"))
+    Ok(home.join(".eigeninference").join("node_key"))
 }
 
 fn enclave_binary_path() -> std::path::PathBuf {
-    let dginf_dir = dirs::home_dir()
+    let eigeninference_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".dginf");
+        .join(".eigeninference");
 
-    let bin_path = dginf_dir.join("bin/dginf-enclave");
+    let bin_path = eigeninference_dir.join("bin/eigeninference-enclave");
     if bin_path.exists() {
         return bin_path;
     }
 
-    let legacy_path = dginf_dir.join("dginf-enclave");
+    let legacy_path = eigeninference_dir.join("eigeninference-enclave");
     if legacy_path.exists() {
         return legacy_path;
     }

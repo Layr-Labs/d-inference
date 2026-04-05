@@ -1,4 +1,4 @@
-//! Apple Silicon hardware detection for the DGInf provider agent.
+//! Apple Silicon hardware detection for the EigenInference provider agent.
 //!
 //! Detects the Mac's hardware capabilities by querying macOS system APIs:
 //!   - `sysctl` for memory size, CPU core counts, and machine model

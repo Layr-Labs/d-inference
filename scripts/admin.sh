@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# DGInf Admin CLI
+# EigenInference Admin CLI
 #
 # Authenticate with Privy and manage releases, models, and pricing.
 #
@@ -12,17 +12,17 @@ set -euo pipefail
 #   ./scripts/admin.sh models list              # List model catalog
 #   ./scripts/admin.sh raw GET /v1/admin/releases  # Raw API call
 #
-# The admin token is stored at ~/.dginf/admin_token and reused until it expires.
+# The admin token is stored at ~/.eigeninference/admin_token and reused until it expires.
 
-COORDINATOR_URL="${DGINF_COORDINATOR_URL:-https://inference-test.openinnovation.dev}"
-TOKEN_FILE="$HOME/.dginf/admin_token"
+COORDINATOR_URL="${EIGENINFERENCE_COORDINATOR_URL:-https://inference-test.openinnovation.dev}"
+TOKEN_FILE="$HOME/.eigeninference/admin_token"
 
 # ─── Auth helpers ───────────────────────────────────────────
 
 get_token() {
     # Check for admin key (dev/pre-prod).
-    if [ -n "${DGINF_ADMIN_KEY:-}" ]; then
-        echo "$DGINF_ADMIN_KEY"
+    if [ -n "${EIGENINFERENCE_ADMIN_KEY:-}" ]; then
+        echo "$EIGENINFERENCE_ADMIN_KEY"
         return
     fi
 
@@ -48,7 +48,7 @@ authed_curl() {
 # ─── Commands ───────────────────────────────────────────────
 
 cmd_login() {
-    echo "DGInf Admin Login"
+    echo "EigenInference Admin Login"
     echo ""
     read -p "Email: " EMAIL
 
@@ -163,8 +163,8 @@ case "${1:-help}" in
         echo "  raw <METHOD> <path> [body]     Raw API call with auth"
         echo ""
         echo "Environment:"
-        echo "  DGINF_COORDINATOR_URL   Coordinator URL (default: https://inference-test.openinnovation.dev)"
-        echo "  DGINF_ADMIN_KEY         Admin key (pre-prod shortcut, skips Privy login)"
+        echo "  EIGENINFERENCE_COORDINATOR_URL   Coordinator URL (default: https://inference-test.openinnovation.dev)"
+        echo "  EIGENINFERENCE_ADMIN_KEY         Admin key (pre-prod shortcut, skips Privy login)"
         ;;
     *)
         echo "Unknown command: $1. Run '$0 help' for usage."

@@ -1,6 +1,0 @@
-./blake2b.go
-./blake2b_generic.go
-./blake2b_ref.go
-./blake2x.go
-./go125.go
-./register.go

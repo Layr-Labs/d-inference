@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dginf/coordinator/internal/auth"
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/auth"
+	"github.com/eigeninference/coordinator/internal/store"
 )
 
 const (
@@ -132,7 +132,7 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to generate token"))
 			return
 		}
-		rawToken := "dginf-pt-" + hex.EncodeToString(tokenBytes)
+		rawToken := "eigeninference-pt-" + hex.EncodeToString(tokenBytes)
 		tokenHash := sha256Hash(rawToken)
 
 		pt := &store.ProviderToken{
@@ -190,7 +190,7 @@ func (s *Server) handleDeviceApprove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if time.Now().After(dc.ExpiresAt) {
-		writeJSON(w, http.StatusGone, errorResponse("expired_code", "this code has expired — run 'dginf-provider login' again"))
+		writeJSON(w, http.StatusGone, errorResponse("expired_code", "this code has expired — run 'eigeninference-provider login' again"))
 		return
 	}
 

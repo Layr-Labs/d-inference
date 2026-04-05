@@ -158,7 +158,7 @@ pub fn verify_security_posture() -> Result<(), String> {
              4. From the menu bar: Utilities → Terminal\n\
              5. Type: csrutil enable\n\
              6. Restart your Mac\n\n\
-             Then retry: dginf-provider serve"
+             Then retry: eigeninference-provider serve"
                 .to_string(),
         );
     }
@@ -178,7 +178,7 @@ pub fn verify_security_posture() -> Result<(), String> {
                  To disable RDMA:\n\
                  1. Open System Settings → Sharing\n\
                  2. Disable Remote Direct Memory Access\n\n\
-                 Then retry: dginf-provider serve"
+                 Then retry: eigeninference-provider serve"
                 .to_string());
         }
     }
@@ -190,7 +190,7 @@ pub fn verify_security_posture() -> Result<(), String> {
     Ok(())
 }
 
-/// Check if this Mac is enrolled in DGInf MDM.
+/// Check if this Mac is enrolled in EigenInference MDM.
 ///
 /// Tries multiple detection methods since system-level profiles
 /// require sudo to see via `profiles list`. This is the single
@@ -224,7 +224,7 @@ pub fn check_mdm_enrolled() -> bool {
                     // Positive signals
                     let has_profile = combined.contains("micromdm")
                         || combined.contains("com.github.micromdm")
-                        || combined.contains("dginf")
+                        || combined.contains("eigeninference")
                         || combined.contains("attribute: profileidentifier");
                     // Negative signal
                     let no_profiles = combined.contains("no configuration profiles");
@@ -384,7 +384,7 @@ pub fn verify_backend_integrity(binary_name: &str) -> Result<String, String> {
 /// cannot be sniffed by tcpdump (unlike TCP localhost).
 pub fn backend_socket_path() -> std::path::PathBuf {
     let pid = std::process::id();
-    std::path::PathBuf::from(format!("/tmp/dginf-backend-{pid}.sock"))
+    std::path::PathBuf::from(format!("/tmp/eigeninference-backend-{pid}.sock"))
 }
 
 /// Clean up the Unix socket file if it exists.
@@ -500,19 +500,19 @@ mod tests {
     }
 }
 
-/// Sign data with the Secure Enclave key via dginf-enclave CLI.
+/// Sign data with the Secure Enclave key via eigeninference-enclave CLI.
 /// Returns the base64-encoded DER ECDSA signature.
 pub fn se_sign(data: &[u8]) -> Option<String> {
     use std::io::Write;
 
-    let dginf_dir = dirs::home_dir()?.join(".dginf");
-    let enclave_bin = dginf_dir.join("bin/dginf-enclave");
+    let eigeninference_dir = dirs::home_dir()?.join(".eigeninference");
+    let enclave_bin = eigeninference_dir.join("bin/eigeninference-enclave");
 
     if !enclave_bin.exists() {
         return None;
     }
 
-    // Write data to a temp file (dginf-enclave reads from stdin)
+    // Write data to a temp file (eigeninference-enclave reads from stdin)
     let data_b64 = base64::engine::general_purpose::STANDARD.encode(data);
 
     let output = Command::new(&enclave_bin)

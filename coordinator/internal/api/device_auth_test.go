@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dginf/coordinator/internal/auth"
-	"github.com/dginf/coordinator/internal/registry"
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/auth"
+	"github.com/eigeninference/coordinator/internal/registry"
+	"github.com/eigeninference/coordinator/internal/store"
 )
 
 func deviceTestServer() (*Server, store.Store) {
@@ -166,8 +166,8 @@ func TestDeviceApproveAndTokenAuthorized(t *testing.T) {
 		t.Errorf("status = %q, want authorized", tokenResp["status"])
 	}
 	token := tokenResp["token"].(string)
-	if !strings.HasPrefix(token, "dginf-pt-") {
-		t.Errorf("token = %q, want dginf-pt- prefix", token)
+	if !strings.HasPrefix(token, "eigeninference-pt-") {
+		t.Errorf("token = %q, want eigeninference-pt- prefix", token)
 	}
 	if tokenResp["account_id"] != "acct-1" {
 		t.Errorf("account_id = %q, want acct-1", tokenResp["account_id"])

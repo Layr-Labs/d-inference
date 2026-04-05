@@ -25,8 +25,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dginf/coordinator/internal/attestation"
-	"github.com/dginf/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/attestation"
+	"github.com/eigeninference/coordinator/internal/protocol"
 	"nhooyr.io/websocket"
 )
 

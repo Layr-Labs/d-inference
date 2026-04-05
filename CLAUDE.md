@@ -1,4 +1,4 @@
-# DGInf - Decentralized GPU Inference
+# EigenInference - Decentralized GPU Inference
 
 Decentralized inference network for Apple Silicon Macs. Providers offer GPU compute, consumers send OpenAI-compatible requests, the coordinator matches them.
 
@@ -33,19 +33,19 @@ provider/             Rust — runs on Apple Silicon Macs
 │   ├── inference.rs  In-process MLX inference (behind "python" feature flag)
 │   └── server.rs     Local HTTP server (standalone mode without coordinator)
 
-app/DGInf/            Swift — macOS menu bar app (SwiftUI)
-├── Sources/DGInf/
-│   ├── DGInfApp.swift        App entry, menu bar setup
+app/EigenInference/            Swift — macOS menu bar app (SwiftUI)
+├── Sources/EigenInference/
+│   ├── EigenInferenceApp.swift        App entry, menu bar setup
 │   ├── StatusViewModel.swift Core state management
 │   ├── DashboardView.swift   Main dashboard
 │   ├── SettingsView.swift    Preferences
-│   ├── CLIRunner.swift       Launches dginf-provider as subprocess
+│   ├── CLIRunner.swift       Launches eigeninference-provider as subprocess
 │   └── ...                   Other views (Wallet, Benchmark, Doctor, etc.)
 
 enclave/              Swift — Secure Enclave attestation CLI helper
 ├── Sources/
-│   ├── DGInfEnclave/         Library (P-256 key generation, attestation blob signing)
-│   └── DGInfEnclaveCLI/      CLI tool (invoked by provider at startup)
+│   ├── EigenInferenceEnclave/         Library (P-256 key generation, attestation blob signing)
+│   └── EigenInferenceEnclaveCLI/      CLI tool (invoked by provider at startup)
 
 scripts/
 ├── bundle-app.sh     Builds code-signed .app bundle + .dmg
@@ -63,7 +63,7 @@ landing/              Static landing page (index.html)
 cd coordinator
 go test ./...
 # Cross-compile for AWS (Linux amd64):
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dginf-coordinator-linux ./cmd/coordinator
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o eigeninference-coordinator-linux ./cmd/coordinator
 ```
 
 ### Provider (Rust)
@@ -81,7 +81,7 @@ cargo build --release --no-default-features
 
 ### macOS App (Swift)
 ```bash
-cd app/DGInf
+cd app/EigenInference
 swift build -c release
 swift test
 ```
@@ -101,19 +101,19 @@ Covers coordinator deploy, provider CLI bundling, macOS app distribution, and in
 ### Coordinator (quick deploy)
 ```bash
 cd coordinator && \
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dginf-coordinator-linux ./cmd/coordinator && \
-scp -i ~/.ssh/dginf-infra dginf-coordinator-linux ubuntu@34.197.17.112:/tmp/dginf-coordinator && \
-ssh -i ~/.ssh/dginf-infra ubuntu@34.197.17.112 \
-  'sudo systemctl stop dginf-coordinator && \
-   sudo mv /tmp/dginf-coordinator /usr/local/bin/dginf-coordinator && \
-   sudo chmod +x /usr/local/bin/dginf-coordinator && \
-   sudo systemctl start dginf-coordinator'
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o eigeninference-coordinator-linux ./cmd/coordinator && \
+scp -i ~/.ssh/eigeninference-infra eigeninference-coordinator-linux ubuntu@34.197.17.112:/tmp/eigeninference-coordinator && \
+ssh -i ~/.ssh/eigeninference-infra ubuntu@34.197.17.112 \
+  'sudo systemctl stop eigeninference-coordinator && \
+   sudo mv /tmp/eigeninference-coordinator /usr/local/bin/eigeninference-coordinator && \
+   sudo chmod +x /usr/local/bin/eigeninference-coordinator && \
+   sudo systemctl start eigeninference-coordinator'
 ```
 
 ### Provider bundle (quick upload)
 ```bash
 # After building provider + enclave:
-scp -i ~/.ssh/dginf-infra /tmp/dginf-bundle/dginf-bundle-macos-arm64.tar.gz \
+scp -i ~/.ssh/eigeninference-infra /tmp/eigeninference-bundle/eigeninference-bundle-macos-arm64.tar.gz \
   ubuntu@34.197.17.112:/var/www/html/dl/
 ```
 
@@ -121,9 +121,9 @@ scp -i ~/.ssh/dginf-infra /tmp/dginf-bundle/dginf-bundle-macos-arm64.tar.gz \
 
 | Component | Location | Details |
 |-----------|----------|---------|
-| Coordinator | AWS EC2 `dginf-mdm` | t3.small, `34.197.17.112` (Elastic IP), systemd service |
+| Coordinator | AWS EC2 `eigeninference-mdm` | t3.small, `34.197.17.112` (Elastic IP), systemd service |
 | Domain | `inference-test.openinnovation.dev` | nginx → localhost:8080, Let's Encrypt TLS |
-| SSH | `ssh -i ~/.ssh/dginf-infra ubuntu@34.197.17.112` | Key name: `dginf-infra` |
+| SSH | `ssh -i ~/.ssh/eigeninference-infra ubuntu@34.197.17.112` | Key name: `eigeninference-infra` |
 | AWS Profile | `admin` | Account 084828557146 |
 | Provider install | `curl -fsSL https://inference-test.openinnovation.dev/install.sh \| bash` | Downloads tarball from `/dl/` |
 
@@ -142,7 +142,7 @@ scp -i ~/.ssh/dginf-infra /tmp/dginf-bundle/dginf-bundle-macos-arm64.tar.gz \
 - Attestation tests need `AuthenticatedRootEnabled: true` in test blobs or the ARV check fails and overwrites earlier error messages (the checks run sequentially, last failure wins).
 - The `python` feature flag in the provider Cargo.toml links PyO3. Use `--no-default-features` when building for distribution to avoid Python linking issues.
 - The coordinator uses in-memory store by default. Provider state is lost on restart. Postgres store exists but is not used in production yet.
-- Binary files like `coordinator/dginf-coordinator` and `coordinator/dginf-coordinator-linux` should NOT be committed to git (15MB+ each).
+- Binary files like `coordinator/eigeninference-coordinator` and `coordinator/eigeninference-coordinator-linux` should NOT be committed to git (15MB+ each).
 
 ## Formatting
 

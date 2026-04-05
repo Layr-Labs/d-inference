@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build the DGInf provider bundle tarball
+# Build the EigenInference provider bundle tarball
 #
 # Creates a self-contained tarball with:
-#   dginf-provider     Rust CLI binary (no Python linking)
-#   dginf-enclave      Swift Secure Enclave CLI
+#   eigeninference-provider     Rust CLI binary (no Python linking)
+#   eigeninference-enclave      Swift Secure Enclave CLI
 #   ffmpeg             Static binary for audio transcription
 #   stt_server.py      Speech-to-text server script
 #   python/            Python 3.12 venv with vllm-mlx, mlx, transformers
@@ -20,12 +20,12 @@ set -euo pipefail
 #   - Python 3.12 installed
 #   - Rust toolchain (cargo)
 #   - Swift toolchain (swift)
-#   - SSH key at ~/.ssh/dginf-infra (for --upload)
+#   - SSH key at ~/.ssh/eigeninference-infra (for --upload)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-BUNDLE_DIR="/tmp/dginf-bundle"
-TARBALL="/tmp/dginf-bundle-macos-arm64.tar.gz"
+BUNDLE_DIR="/tmp/eigeninference-bundle"
+TARBALL="/tmp/eigeninference-bundle-macos-arm64.tar.gz"
 
 UPLOAD=false
 SKIP_BUILD=false
@@ -37,16 +37,16 @@ for arg in "$@"; do
 done
 
 echo "╔══════════════════════════════════════════════════╗"
-echo "║  DGInf Bundle Builder                            ║"
+echo "║  EigenInference Bundle Builder                            ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""
 
 # ─── 1. Build Rust provider ──────────────────────────────────
 if [ "$SKIP_BUILD" = false ]; then
-    echo "1. Building dginf-provider (Rust, --no-default-features)..."
+    echo "1. Building eigeninference-provider (Rust, --no-default-features)..."
     cd "$PROJECT_DIR/provider"
     cargo build --release --no-default-features 2>&1 | tail -3
-    echo "   ✓ dginf-provider ($(du -h target/release/dginf-provider | cut -f1))"
+    echo "   ✓ eigeninference-provider ($(du -h target/release/eigeninference-provider | cut -f1))"
     echo ""
 else
     echo "1. Skipping Rust build (--skip-build)"
@@ -54,7 +54,7 @@ else
 fi
 
 # Verify binary exists
-PROVIDER_BIN="$PROJECT_DIR/provider/target/release/dginf-provider"
+PROVIDER_BIN="$PROJECT_DIR/provider/target/release/eigeninference-provider"
 if [ ! -f "$PROVIDER_BIN" ]; then
     echo "   ERROR: $PROVIDER_BIN not found. Run without --skip-build."
     exit 1
@@ -62,19 +62,19 @@ fi
 
 # ─── 2. Build Swift enclave CLI ───────────────────────────────
 if [ "$SKIP_BUILD" = false ]; then
-    echo "2. Building dginf-enclave (Swift)..."
+    echo "2. Building eigeninference-enclave (Swift)..."
     cd "$PROJECT_DIR/enclave"
     swift build -c release 2>&1 | tail -3
-    echo "   ✓ dginf-enclave ($(du -h .build/release/dginf-enclave | cut -f1))"
+    echo "   ✓ eigeninference-enclave ($(du -h .build/release/eigeninference-enclave | cut -f1))"
     echo ""
 else
     echo "2. Skipping Swift build (--skip-build)"
     echo ""
 fi
 
-ENCLAVE_BIN="$PROJECT_DIR/enclave/.build/release/dginf-enclave"
+ENCLAVE_BIN="$PROJECT_DIR/enclave/.build/release/eigeninference-enclave"
 if [ ! -f "$ENCLAVE_BIN" ]; then
-    echo "   WARNING: dginf-enclave not found. Attestation will be unavailable."
+    echo "   WARNING: eigeninference-enclave not found. Attestation will be unavailable."
 fi
 
 # ─── 3. Create Python 3.12 venv with inference deps ──────────
@@ -132,14 +132,14 @@ echo ""
 echo "4. Copying and code-signing binaries..."
 ENTITLEMENTS="$SCRIPT_DIR/entitlements.plist"
 
-cp "$PROVIDER_BIN" "$BUNDLE_DIR/dginf-provider"
-codesign --force --sign - --entitlements "$ENTITLEMENTS" --options runtime "$BUNDLE_DIR/dginf-provider"
-echo "   ✓ dginf-provider (signed with hypervisor entitlement)"
+cp "$PROVIDER_BIN" "$BUNDLE_DIR/eigeninference-provider"
+codesign --force --sign - --entitlements "$ENTITLEMENTS" --options runtime "$BUNDLE_DIR/eigeninference-provider"
+echo "   ✓ eigeninference-provider (signed with hypervisor entitlement)"
 
 if [ -f "$ENCLAVE_BIN" ]; then
-    cp "$ENCLAVE_BIN" "$BUNDLE_DIR/dginf-enclave"
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" --options runtime "$BUNDLE_DIR/dginf-enclave"
-    echo "   ✓ dginf-enclave (signed)"
+    cp "$ENCLAVE_BIN" "$BUNDLE_DIR/eigeninference-enclave"
+    codesign --force --sign - --entitlements "$ENTITLEMENTS" --options runtime "$BUNDLE_DIR/eigeninference-enclave"
+    echo "   ✓ eigeninference-enclave (signed)"
 fi
 echo ""
 
@@ -181,33 +181,33 @@ echo ""
 # ─── 7. Create tarball ───────────────────────────────────────
 echo "7. Creating tarball..."
 rm -f "$TARBALL"
-cd /tmp && tar czf "$TARBALL" -C dginf-bundle .
+cd /tmp && tar czf "$TARBALL" -C eigeninference-bundle .
 TARBALL_SIZE=$(du -h "$TARBALL" | cut -f1)
 echo "   ✓ $TARBALL ($TARBALL_SIZE)"
 echo ""
 
 # ─── 8. Build macOS app + DMG ─────────────────────────────────
 echo "8. Building macOS app..."
-cd "$PROJECT_DIR/app/DGInf"
+cd "$PROJECT_DIR/app/EigenInference"
 swift build -c release 2>&1 | tail -3
-APP_BIN=$(swift build -c release --show-bin-path)/DGInf
+APP_BIN=$(swift build -c release --show-bin-path)/EigenInference
 
 if [ -f "$APP_BIN" ]; then
     APP_BUILD_DIR="$PROJECT_DIR/build"
-    rm -rf "$APP_BUILD_DIR/DGInf.app"
-    mkdir -p "$APP_BUILD_DIR/DGInf.app/Contents/MacOS" "$APP_BUILD_DIR/DGInf.app/Contents/Resources"
+    rm -rf "$APP_BUILD_DIR/EigenInference.app"
+    mkdir -p "$APP_BUILD_DIR/EigenInference.app/Contents/MacOS" "$APP_BUILD_DIR/EigenInference.app/Contents/Resources"
 
     # Info.plist
-    cat > "$APP_BUILD_DIR/DGInf.app/Contents/Info.plist" << 'PLIST'
+    cat > "$APP_BUILD_DIR/EigenInference.app/Contents/Info.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>DGInf</string>
-    <key>CFBundleIdentifier</key><string>io.dginf.app</string>
+    <key>CFBundleName</key><string>EigenInference</string>
+    <key>CFBundleIdentifier</key><string>io.eigeninference.app</string>
     <key>CFBundleVersion</key><string>0.1.0</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleExecutable</key><string>DGInf</string>
+    <key>CFBundleExecutable</key><string>EigenInference</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
@@ -216,23 +216,23 @@ if [ -f "$APP_BIN" ]; then
 </plist>
 PLIST
 
-    cp "$APP_BIN" "$APP_BUILD_DIR/DGInf.app/Contents/MacOS/DGInf"
-    codesign --force --sign - --options runtime "$APP_BUILD_DIR/DGInf.app/Contents/MacOS/DGInf" 2>/dev/null
-    codesign --force --sign - --options runtime --no-strict "$APP_BUILD_DIR/DGInf.app" 2>/dev/null
+    cp "$APP_BIN" "$APP_BUILD_DIR/EigenInference.app/Contents/MacOS/EigenInference"
+    codesign --force --sign - --options runtime "$APP_BUILD_DIR/EigenInference.app/Contents/MacOS/EigenInference" 2>/dev/null
+    codesign --force --sign - --options runtime --no-strict "$APP_BUILD_DIR/EigenInference.app" 2>/dev/null
 
     # Create DMG
-    DMG_PATH="$APP_BUILD_DIR/DGInf-latest.dmg"
+    DMG_PATH="$APP_BUILD_DIR/EigenInference-latest.dmg"
     rm -f "$DMG_PATH"
     DMG_TMP="$APP_BUILD_DIR/dmg-staging"
     rm -rf "$DMG_TMP"
     mkdir -p "$DMG_TMP"
-    cp -a "$APP_BUILD_DIR/DGInf.app" "$DMG_TMP/"
+    cp -a "$APP_BUILD_DIR/EigenInference.app" "$DMG_TMP/"
     ln -s /Applications "$DMG_TMP/Applications"
-    hdiutil create -volname "DGInf" -srcfolder "$DMG_TMP" -ov -format UDZO "$DMG_PATH" >/dev/null 2>&1
+    hdiutil create -volname "EigenInference" -srcfolder "$DMG_TMP" -ov -format UDZO "$DMG_PATH" >/dev/null 2>&1
     rm -rf "$DMG_TMP"
 
     DMG_SIZE=$(du -h "$DMG_PATH" | cut -f1)
-    echo "   ✓ DGInf.app + DMG ($DMG_SIZE)"
+    echo "   ✓ EigenInference.app + DMG ($DMG_SIZE)"
 else
     echo "   ⚠ Swift build failed — app not included"
 fi
@@ -241,7 +241,7 @@ echo ""
 # ─── 9. Upload (optional) ────────────────────────────────────
 if [ "$UPLOAD" = true ]; then
     echo "9. Uploading to server..."
-    SSH_KEY="$HOME/.ssh/dginf-infra"
+    SSH_KEY="$HOME/.ssh/eigeninference-infra"
     SERVER="ubuntu@34.197.17.112"
 
     if [ ! -f "$SSH_KEY" ]; then
@@ -249,19 +249,19 @@ if [ "$UPLOAD" = true ]; then
         exit 1
     fi
 
-    scp -i "$SSH_KEY" "$TARBALL" "$SERVER:/tmp/dginf-bundle-macos-arm64.tar.gz"
+    scp -i "$SSH_KEY" "$TARBALL" "$SERVER:/tmp/eigeninference-bundle-macos-arm64.tar.gz"
     ssh -i "$SSH_KEY" "$SERVER" '
-        sudo cp /tmp/dginf-bundle-macos-arm64.tar.gz /var/www/html/dl/
-        sudo chmod 644 /var/www/html/dl/dginf-bundle-macos-arm64.tar.gz
+        sudo cp /tmp/eigeninference-bundle-macos-arm64.tar.gz /var/www/html/dl/
+        sudo chmod 644 /var/www/html/dl/eigeninference-bundle-macos-arm64.tar.gz
     '
     echo "   ✓ Bundle uploaded"
 
     # Upload DMG
-    if [ -f "$APP_BUILD_DIR/DGInf-latest.dmg" ]; then
-        scp -i "$SSH_KEY" "$APP_BUILD_DIR/DGInf-latest.dmg" "$SERVER:/tmp/DGInf-latest.dmg"
+    if [ -f "$APP_BUILD_DIR/EigenInference-latest.dmg" ]; then
+        scp -i "$SSH_KEY" "$APP_BUILD_DIR/EigenInference-latest.dmg" "$SERVER:/tmp/EigenInference-latest.dmg"
         ssh -i "$SSH_KEY" "$SERVER" '
-            sudo cp /tmp/DGInf-latest.dmg /var/www/html/dl/DGInf-latest.dmg
-            sudo chmod 644 /var/www/html/dl/DGInf-latest.dmg
+            sudo cp /tmp/EigenInference-latest.dmg /var/www/html/dl/EigenInference-latest.dmg
+            sudo chmod 644 /var/www/html/dl/EigenInference-latest.dmg
         '
         echo "   ✓ App DMG uploaded"
     fi

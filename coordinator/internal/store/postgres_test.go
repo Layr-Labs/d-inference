@@ -46,8 +46,8 @@ func TestPostgresCreateKey(t *testing.T) {
 		t.Fatalf("CreateKey: %v", err)
 	}
 
-	if !strings.HasPrefix(key, "dginf-") {
-		t.Errorf("key %q does not have dginf- prefix", key)
+	if !strings.HasPrefix(key, "eigeninference-") {
+		t.Errorf("key %q does not have eigeninference- prefix", key)
 	}
 
 	if !s.ValidateKey(key) {

@@ -73,7 +73,7 @@ func (p *StripeProcessor) CreateCheckoutSession(req CheckoutSessionRequest) (*Ch
 		"success_url":                         p.successURL + "?session_id={CHECKOUT_SESSION_ID}",
 		"cancel_url":                          p.cancelURL,
 		"line_items[0][price_data][currency]": req.Currency,
-		"line_items[0][price_data][product_data][name]": "DGInf Inference Credits",
+		"line_items[0][price_data][product_data][name]": "EigenInference Inference Credits",
 		"line_items[0][price_data][unit_amount]":        strconv.FormatInt(req.AmountCents, 10),
 		"line_items[0][quantity]":                       "1",
 		"payment_method_types[0]":                       "card",

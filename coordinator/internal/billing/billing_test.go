@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/dginf/coordinator/internal/payments"
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/payments"
+	"github.com/eigeninference/coordinator/internal/store"
 )
 
 func newTestService(t *testing.T) (*Service, store.Store) {
@@ -274,11 +274,11 @@ func TestBillingSessionLifecycle(t *testing.T) {
 func TestReferrerStoreLifecycle(t *testing.T) {
 	st := store.NewMemory("")
 
-	if err := st.CreateReferrer("account-1", "DGINF-ABC123"); err != nil {
+	if err := st.CreateReferrer("account-1", "EIGEN-ABC123"); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	ref, err := st.GetReferrerByCode("DGINF-ABC123")
+	ref, err := st.GetReferrerByCode("EIGEN-ABC123")
 	if err != nil {
 		t.Fatalf("get by code: %v", err)
 	}
@@ -286,10 +286,10 @@ func TestReferrerStoreLifecycle(t *testing.T) {
 		t.Fatalf("expected account-1, got %s", ref.AccountID)
 	}
 
-	if err := st.CreateReferrer("account-2", "DGINF-ABC123"); err == nil {
+	if err := st.CreateReferrer("account-2", "EIGEN-ABC123"); err == nil {
 		t.Fatal("expected error on duplicate code")
 	}
-	if err := st.CreateReferrer("account-1", "DGINF-XYZ789"); err == nil {
+	if err := st.CreateReferrer("account-1", "EIGEN-XYZ789"); err == nil {
 		t.Fatal("expected error on duplicate account")
 	}
 }

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/dginf/coordinator/internal/auth"
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/auth"
+	"github.com/eigeninference/coordinator/internal/store"
 )
 
 // handleRegisterRelease handles POST /v1/releases.
@@ -134,7 +134,7 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 }
 
 // isAdminAuthorized checks if the request is from an admin.
-// Accepts either Privy admin (email in admin list) OR DGINF_ADMIN_KEY.
+// Accepts either Privy admin (email in admin list) OR EIGENINFERENCE_ADMIN_KEY.
 func (s *Server) isAdminAuthorized(w http.ResponseWriter, r *http.Request) bool {
 	// Check admin key first (no Privy needed).
 	token := extractBearerToken(r)

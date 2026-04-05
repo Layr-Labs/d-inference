@@ -1,6 +1,6 @@
 package api
 
-// Multi-provider integration tests for the DGInf coordinator.
+// Multi-provider integration tests for the EigenInference coordinator.
 //
 // These tests verify correct behavior when multiple providers are connected
 // simultaneously: load distribution, failover, model catalog enforcement
@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dginf/coordinator/internal/protocol"
-	"github.com/dginf/coordinator/internal/registry"
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/registry"
+	"github.com/eigeninference/coordinator/internal/store"
 	"nhooyr.io/websocket"
 )
 

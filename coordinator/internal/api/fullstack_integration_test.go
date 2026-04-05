@@ -37,10 +37,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dginf/coordinator/internal/e2e"
-	"github.com/dginf/coordinator/internal/protocol"
-	"github.com/dginf/coordinator/internal/registry"
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/e2e"
+	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/registry"
+	"github.com/eigeninference/coordinator/internal/store"
 	"golang.org/x/crypto/nacl/box"
 	"nhooyr.io/websocket"
 )
@@ -499,7 +499,7 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 	// Wait for registration + first challenge
 	time.Sleep(2 * time.Second)
 
-	// Set trust levels (since DGINF_MIN_TRUST=none, self-reported attestation is accepted)
+	// Set trust levels (since EIGENINFERENCE_MIN_TRUST=none, self-reported attestation is accepted)
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustSelfSigned)
 		reg.RecordChallengeSuccess(id)

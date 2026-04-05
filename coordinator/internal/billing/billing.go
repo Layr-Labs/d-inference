@@ -1,4 +1,4 @@
-// Package billing provides unified payment processing for the DGInf coordinator.
+// Package billing provides unified payment processing for the EigenInference coordinator.
 //
 // Payment flow (Privy auth + client-side Solana signing):
 //  1. User authenticates via Privy → gets embedded Solana wallet
@@ -17,8 +17,8 @@ package billing
 import (
 	"log/slog"
 
-	"github.com/dginf/coordinator/internal/payments"
-	"github.com/dginf/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/payments"
+	"github.com/eigeninference/coordinator/internal/store"
 )
 
 // PaymentMethod identifies the payment rail used for a transaction.
@@ -58,7 +58,7 @@ type Config struct {
 	ReferralSharePercent int64 // percentage of platform fee going to referrer (default 20)
 
 	// MockMode skips on-chain verification and auto-credits test balances.
-	// Set DGINF_BILLING_MOCK=true for testing without real payments.
+	// Set EIGENINFERENCE_BILLING_MOCK=true for testing without real payments.
 	MockMode bool
 }
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# DGInf Provider Installer
+# EigenInference Provider Installer
 # Usage: curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash
 #
 # This script:
@@ -10,15 +10,15 @@ set -euo pipefail
 #   3. Sets up Secure Enclave identity
 #   4. Installs MDM enrollment profile (for hardware attestation)
 #   5. Downloads the best model for your hardware
-#   6. Installs the DGInf menu bar app (from coordinator)
+#   6. Installs the EigenInference menu bar app (from coordinator)
 #   7. Starts the provider in the background
 #
 # Zero prerequisites — just macOS + Apple Silicon.
 
 BASE_URL="https://inference-test.openinnovation.dev"
-DGINF_DIR="$HOME/.dginf"
-BIN_DIR="$DGINF_DIR/bin"
-PYTHON_BIN="$DGINF_DIR/python/bin/python3.12"
+EIGENINFERENCE_DIR="$HOME/.eigeninference"
+BIN_DIR="$EIGENINFERENCE_DIR/bin"
+PYTHON_BIN="$EIGENINFERENCE_DIR/python/bin/python3.12"
 
 # Detect if running interactively (terminal) or piped (curl | bash)
 if [ -t 0 ]; then
@@ -28,17 +28,17 @@ else
 fi
 
 echo "╔══════════════════════════════════════════════╗"
-echo "║  DGInf — Decentralized Private Inference     ║"
+echo "║  EigenInference — Decentralized Private Inference     ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 
 # ─── Pre-flight checks ───────────────────────────────────────
 if [ "$(uname)" != "Darwin" ]; then
-    echo "Error: DGInf requires macOS with Apple Silicon."
+    echo "Error: EigenInference requires macOS with Apple Silicon."
     exit 1
 fi
 if [ "$(uname -m)" != "arm64" ]; then
-    echo "Error: DGInf requires Apple Silicon (arm64)."
+    echo "Error: EigenInference requires Apple Silicon (arm64)."
     exit 1
 fi
 
@@ -49,8 +49,8 @@ echo "  $CHIP · ${MEM}GB · macOS $(sw_vers -productVersion)"
 echo ""
 
 # ─── Step 1: Download and install bundle ──────────────────────
-echo "→ [1/9] Downloading DGInf..."
-mkdir -p "$DGINF_DIR" "$BIN_DIR"
+echo "→ [1/9] Downloading EigenInference..."
+mkdir -p "$EIGENINFERENCE_DIR" "$BIN_DIR"
 
 # Fetch latest release metadata from coordinator (version, hash, R2 download URL).
 RELEASE_JSON=$(curl -fsSL "$BASE_URL/v1/releases/latest?platform=macos-arm64" 2>/dev/null || echo "")
@@ -61,17 +61,17 @@ if [ -n "$RELEASE_JSON" ] && echo "$RELEASE_JSON" | python3 -c "import sys,json;
     RELEASE_VERSION=$(echo "$RELEASE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])")
     echo "  Version: $RELEASE_VERSION"
     echo "  Downloading from CDN..."
-    curl -f#L "$BUNDLE_URL" -o "/tmp/dginf-bundle.tar.gz"
+    curl -f#L "$BUNDLE_URL" -o "/tmp/eigeninference-bundle.tar.gz"
 
     # Verify bundle hash before installing.
     if [ -n "$EXPECTED_HASH" ] && [ "$EXPECTED_HASH" != "" ]; then
-        ACTUAL_HASH=$(shasum -a 256 /tmp/dginf-bundle.tar.gz | cut -d' ' -f1)
+        ACTUAL_HASH=$(shasum -a 256 /tmp/eigeninference-bundle.tar.gz | cut -d' ' -f1)
         if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
             echo ""
             echo "  ERROR: Bundle hash mismatch — download may be compromised!"
             echo "  Expected: $EXPECTED_HASH"
             echo "  Got:      $ACTUAL_HASH"
-            rm -f /tmp/dginf-bundle.tar.gz
+            rm -f /tmp/eigeninference-bundle.tar.gz
             exit 1
         fi
         echo "  Hash verified ✓"
@@ -79,17 +79,17 @@ if [ -n "$RELEASE_JSON" ] && echo "$RELEASE_JSON" | python3 -c "import sys,json;
 else
     # Fallback: download directly from coordinator (legacy path).
     echo "  Downloading from coordinator (release API unavailable)..."
-    curl -f#L "$BASE_URL/dl/dginf-bundle-macos-arm64.tar.gz" -o "/tmp/dginf-bundle.tar.gz"
+    curl -f#L "$BASE_URL/dl/eigeninference-bundle-macos-arm64.tar.gz" -o "/tmp/eigeninference-bundle.tar.gz"
 fi
 
 echo "  Installing binaries..."
-tar xzf /tmp/dginf-bundle.tar.gz -C "$DGINF_DIR"
-mv "$DGINF_DIR/dginf-provider" "$BIN_DIR/" 2>/dev/null || true
-mv "$DGINF_DIR/dginf-enclave" "$BIN_DIR/" 2>/dev/null || true
-mv "$DGINF_DIR/gRPCServerCLI-macOS" "$BIN_DIR/" 2>/dev/null || true
-chmod +x "$BIN_DIR/dginf-provider" "$BIN_DIR/dginf-enclave" 2>/dev/null || true
+tar xzf /tmp/eigeninference-bundle.tar.gz -C "$EIGENINFERENCE_DIR"
+mv "$EIGENINFERENCE_DIR/eigeninference-provider" "$BIN_DIR/" 2>/dev/null || true
+mv "$EIGENINFERENCE_DIR/eigeninference-enclave" "$BIN_DIR/" 2>/dev/null || true
+mv "$EIGENINFERENCE_DIR/gRPCServerCLI-macOS" "$BIN_DIR/" 2>/dev/null || true
+chmod +x "$BIN_DIR/eigeninference-provider" "$BIN_DIR/eigeninference-enclave" 2>/dev/null || true
 chmod +x "$BIN_DIR/gRPCServerCLI-macOS" 2>/dev/null || true
-rm -f /tmp/dginf-bundle.tar.gz
+rm -f /tmp/eigeninference-bundle.tar.gz
 
 # Download bundled Python runtime (self-contained: Python 3.12 + vllm-mlx + mlx + mlx_lm).
 # This is a complete, standalone Python — no system Python or pip needed.
@@ -97,25 +97,25 @@ if [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "import vllm_mlx" 2>/dev/null; then
     echo "  Python runtime already installed ✓"
 else
     echo "  Downloading Python runtime (~105 MB)..."
-    curl -f#L "$BASE_URL/dl/dginf-python-runtime.tar.gz" -o "/tmp/dginf-python.tar.gz"
+    curl -f#L "$BASE_URL/dl/eigeninference-python-runtime.tar.gz" -o "/tmp/eigeninference-python.tar.gz"
     # Remove any existing broken/symlinked Python install
-    rm -rf "$DGINF_DIR/python"
-    tar xzf /tmp/dginf-python.tar.gz -C "$DGINF_DIR"
-    rm -f /tmp/dginf-python.tar.gz
+    rm -rf "$EIGENINFERENCE_DIR/python"
+    tar xzf /tmp/eigeninference-python.tar.gz -C "$EIGENINFERENCE_DIR"
+    rm -f /tmp/eigeninference-python.tar.gz
     echo "  Python runtime installed ✓"
 fi
 
-# Make dginf-provider available system-wide via /usr/local/bin symlink
+# Make eigeninference-provider available system-wide via /usr/local/bin symlink
 # This works immediately — no need to restart the terminal
 mkdir -p /usr/local/bin 2>/dev/null || true
-ln -sf "$BIN_DIR/dginf-provider" /usr/local/bin/dginf-provider 2>/dev/null || true
-ln -sf "$BIN_DIR/dginf-enclave" /usr/local/bin/dginf-enclave 2>/dev/null || true
+ln -sf "$BIN_DIR/eigeninference-provider" /usr/local/bin/eigeninference-provider 2>/dev/null || true
+ln -sf "$BIN_DIR/eigeninference-enclave" /usr/local/bin/eigeninference-enclave 2>/dev/null || true
 
 # Also add to PATH in shell rc for environments where /usr/local/bin isn't in PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     RC="$HOME/.zshrc"
     [ -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ] && RC="$HOME/.bashrc"
-    echo -e "\n# DGInf\nexport PATH=\"$BIN_DIR:\$PATH\"" >> "$RC"
+    echo -e "\n# EigenInference\nexport PATH=\"$BIN_DIR:\$PATH\"" >> "$RC"
     export PATH="$BIN_DIR:$PATH"
 fi
 
@@ -127,7 +127,7 @@ echo "→ [2/9] Verifying inference runtime..."
 
 # Verify bundled Python + vllm-mlx
 if [ -f "$PYTHON_BIN" ]; then
-    PYTHONHOME="$DGINF_DIR/python" "$PYTHON_BIN" -c \
+    PYTHONHOME="$EIGENINFERENCE_DIR/python" "$PYTHON_BIN" -c \
         "import vllm_mlx; print(f'  vllm-mlx {vllm_mlx.__version__} ✓')" 2>/dev/null \
         || echo "  ⚠ vllm-mlx import failed — inference may fall back to mlx_lm"
 else
@@ -140,9 +140,9 @@ if command -v ffmpeg &>/dev/null; then
     echo "  ffmpeg ✓"
 elif [ -x "$BIN_DIR/ffmpeg" ]; then
     echo "  ffmpeg ✓ (bundled)"
-elif [ -f "$DGINF_DIR/ffmpeg" ]; then
+elif [ -f "$EIGENINFERENCE_DIR/ffmpeg" ]; then
     # Extracted from tarball
-    mv "$DGINF_DIR/ffmpeg" "$BIN_DIR/ffmpeg"
+    mv "$EIGENINFERENCE_DIR/ffmpeg" "$BIN_DIR/ffmpeg"
     chmod +x "$BIN_DIR/ffmpeg"
     echo "  ffmpeg ✓"
 else
@@ -159,8 +159,8 @@ fi
 # ─── Step 3: Secure Enclave identity ─────────────────────────
 echo ""
 echo "→ [3/9] Setting up Secure Enclave identity..."
-rm -f "$DGINF_DIR/enclave_key.data" 2>/dev/null
-"$BIN_DIR/dginf-enclave" info >/dev/null 2>&1 \
+rm -f "$EIGENINFERENCE_DIR/enclave_key.data" 2>/dev/null
+"$BIN_DIR/eigeninference-enclave" info >/dev/null 2>&1 \
     && echo "  Secure Enclave ✓ (P-256 key generated)" \
     || echo "  Secure Enclave ⚠ (not available on this hardware)"
 
@@ -180,25 +180,25 @@ if [ "$ALREADY_ENROLLED" = true ]; then
     echo "  Already enrolled ✓"
 elif [ -n "$SERIAL" ]; then
     echo "  Requesting enrollment profile..."
-    rm -f "/tmp/DGInf-Enroll-${SERIAL}.mobileconfig" 2>/dev/null
+    rm -f "/tmp/EigenInference-Enroll-${SERIAL}.mobileconfig" 2>/dev/null
     if curl -fsSL -X POST "$BASE_URL/v1/enroll" \
         -H "Content-Type: application/json" \
         -d "{\"serial_number\": \"$SERIAL\"}" \
-        -o "/tmp/DGInf-Enroll-${SERIAL}.mobileconfig" 2>/dev/null; then
+        -o "/tmp/EigenInference-Enroll-${SERIAL}.mobileconfig" 2>/dev/null; then
         echo ""
         echo "  ┌─────────────────────────────────────────────────┐"
-        echo "  │ ACTION REQUIRED: Install the DGInf profile      │"
+        echo "  │ ACTION REQUIRED: Install the EigenInference profile      │"
         echo "  │                                                 │"
         echo "  │ This profile will:                              │"
         echo "  │  • Verify SIP, Secure Boot, system integrity    │"
         echo "  │  • Generate a key in your Secure Enclave        │"
         echo "  │  • Apple verifies your device is genuine        │"
         echo "  │                                                 │"
-        echo "  │ DGInf CANNOT erase, lock, or control your Mac.  │"
+        echo "  │ EigenInference CANNOT erase, lock, or control your Mac.  │"
         echo "  │ Remove anytime: System Settings > Device Mgmt   │"
         echo "  └─────────────────────────────────────────────────┘"
         echo ""
-        open "/tmp/DGInf-Enroll-${SERIAL}.mobileconfig"
+        open "/tmp/EigenInference-Enroll-${SERIAL}.mobileconfig"
 
         if [ "$INTERACTIVE" = true ]; then
             read -p "  Press Enter after installing the profile..."
@@ -209,7 +209,7 @@ elif [ -n "$SERIAL" ]; then
         fi
         echo "  Enrollment ✓"
     else
-        echo "  Enrollment ⚠ (coordinator unreachable — enroll later with: dginf-provider enroll)"
+        echo "  Enrollment ⚠ (coordinator unreachable — enroll later with: eigeninference-provider enroll)"
     fi
 else
     echo "  Enrollment ⚠ (serial number not found)"
@@ -220,7 +220,7 @@ echo ""
 echo "→ [5/9] Link to your account..."
 
 # Skip if already logged in.
-if [ -f "$HOME/.config/dginf/auth_token" ]; then
+if [ -f "$HOME/.config/eigeninference/auth_token" ]; then
     echo "  Already linked ✓"
 else
     echo ""
@@ -228,14 +228,14 @@ else
     echo ""
 
     if [ "$INTERACTIVE" = true ]; then
-        "$BIN_DIR/dginf-provider" login --coordinator "$BASE_URL" 2>&1 || {
+        "$BIN_DIR/eigeninference-provider" login --coordinator "$BASE_URL" 2>&1 || {
             echo ""
             echo "  ⚠ Account linking failed. You must link before serving:"
-            echo "    dginf-provider login"
+            echo "    eigeninference-provider login"
         }
     else
         echo "  REQUIRED: Run this after install to link your account:"
-        echo "    dginf-provider login"
+        echo "    eigeninference-provider login"
         echo ""
         echo "  You will not earn rewards until your account is linked."
     fi
@@ -299,12 +299,12 @@ for m in data.get('models', []):
                 fi
             else
                 echo "  Skipped model selection."
-                echo "  You can download models later: dginf-provider models download"
+                echo "  You can download models later: eigeninference-provider models download"
             fi
         else
             echo "  Run interactively to select a model:"
             echo "    curl -fsSL $BASE_URL/install.sh | bash -s"
-            echo "  Or download later: dginf-provider models download"
+            echo "  Or download later: eigeninference-provider models download"
         fi
     fi
 fi
@@ -346,7 +346,7 @@ download_model() {
     local cache_dir="$hf_cache_dir/snapshots/main"
     mkdir -p "$cache_dir"
 
-    echo "  Downloading $model_name ($model_size) from DGInf CDN..."
+    echo "  Downloading $model_name ($model_size) from EigenInference CDN..."
     echo ""
     if curl -f#L "$BASE_URL/dl/models/$s3_name.tar.gz" | tar xz -C "$cache_dir" 2>/dev/null; then
         echo ""
@@ -371,7 +371,7 @@ download_model() {
         echo ""
         echo "  $model_name downloaded ✓"
     else
-        echo "  ⚠ $model_name download failed — retry with: dginf-provider models download"
+        echo "  ⚠ $model_name download failed — retry with: eigeninference-provider models download"
         return 1
     fi
 }
@@ -396,12 +396,12 @@ if [ -n "$IMAGE_MODEL" ]; then
 
     # Download image-bridge Python package
     if [ -n "$IMAGE_MODEL" ]; then
-        if [ ! -d "$DGINF_DIR/image-bridge/dginf_image_bridge" ]; then
+        if [ ! -d "$EIGENINFERENCE_DIR/image-bridge/eigeninference_image_bridge" ]; then
             echo "  Downloading image bridge..."
-            if curl -f#L "$BASE_URL/dl/dginf-image-bridge.tar.gz" -o "/tmp/dginf-image-bridge.tar.gz" 2>/dev/null; then
-                mkdir -p "$DGINF_DIR/image-bridge"
-                tar xzf /tmp/dginf-image-bridge.tar.gz -C "$DGINF_DIR/image-bridge"
-                rm -f /tmp/dginf-image-bridge.tar.gz
+            if curl -f#L "$BASE_URL/dl/eigeninference-image-bridge.tar.gz" -o "/tmp/eigeninference-image-bridge.tar.gz" 2>/dev/null; then
+                mkdir -p "$EIGENINFERENCE_DIR/image-bridge"
+                tar xzf /tmp/eigeninference-image-bridge.tar.gz -C "$EIGENINFERENCE_DIR/image-bridge"
+                rm -f /tmp/eigeninference-image-bridge.tar.gz
                 echo "  Image bridge ✓"
             else
                 echo "  ⚠ Image bridge download failed — image generation won't be available"
@@ -414,7 +414,7 @@ if [ -n "$IMAGE_MODEL" ]; then
 
     # Download image model weights
     if [ -n "$IMAGE_MODEL" ]; then
-        IMAGE_MODEL_DIR="$DGINF_DIR/models/$IMAGE_S3_NAME"
+        IMAGE_MODEL_DIR="$EIGENINFERENCE_DIR/models/$IMAGE_S3_NAME"
         if [ -d "$IMAGE_MODEL_DIR" ]; then
             echo "  $IMAGE_MODEL_NAME already downloaded ✓"
             IMAGE_MODEL_PATH="$IMAGE_MODEL_DIR"
@@ -441,26 +441,26 @@ if [ -n "$IMAGE_MODEL" ]; then
     fi
 fi
 
-# ─── Step 7: Install DGInf menu bar app ───────────────────────
+# ─── Step 7: Install EigenInference menu bar app ───────────────────────
 echo ""
-echo "→ [7/9] Installing DGInf app..."
+echo "→ [7/9] Installing EigenInference app..."
 
 APP_INSTALLED=false
-APP_PATH="/Applications/DGInf.app"
-DMG_URL="$BASE_URL/dl/DGInf-latest.dmg"
-DMG_TMP="/tmp/DGInf-latest.dmg"
+APP_PATH="/Applications/EigenInference.app"
+DMG_URL="$BASE_URL/dl/EigenInference-latest.dmg"
+DMG_TMP="/tmp/EigenInference-latest.dmg"
 
 if curl -f#L "$DMG_URL" -o "$DMG_TMP" 2>/dev/null; then
     echo ""
     # Mount DMG and find the volume path from hdiutil output
     MOUNT_POINT=$(hdiutil attach "$DMG_TMP" -nobrowse 2>/dev/null | grep "/Volumes/" | sed 's/.*\(\/Volumes\/.*\)/\1/' | head -1)
-    if [ -n "$MOUNT_POINT" ] && [ -d "$MOUNT_POINT/DGInf.app" ]; then
+    if [ -n "$MOUNT_POINT" ] && [ -d "$MOUNT_POINT/EigenInference.app" ]; then
         rm -rf "$APP_PATH" 2>/dev/null || true
-        cp -R "$MOUNT_POINT/DGInf.app" "$APP_PATH" 2>/dev/null || \
-            cp -R "$MOUNT_POINT/DGInf.app" "$HOME/Applications/DGInf.app" 2>/dev/null || true
+        cp -R "$MOUNT_POINT/EigenInference.app" "$APP_PATH" 2>/dev/null || \
+            cp -R "$MOUNT_POINT/EigenInference.app" "$HOME/Applications/EigenInference.app" 2>/dev/null || true
         hdiutil detach "$MOUNT_POINT" 2>/dev/null || true
-        if [ -d "$APP_PATH" ] || [ -d "$HOME/Applications/DGInf.app" ]; then
-            echo "  DGInf.app installed ✓"
+        if [ -d "$APP_PATH" ] || [ -d "$HOME/Applications/EigenInference.app" ]; then
+            echo "  EigenInference.app installed ✓"
             APP_INSTALLED=true
         fi
     else
@@ -471,7 +471,7 @@ if curl -f#L "$DMG_URL" -o "$DMG_TMP" 2>/dev/null; then
 else
     # DMG not available — keep existing app if present
     if [ -d "$APP_PATH" ]; then
-        echo "  DGInf.app (existing) ✓"
+        echo "  EigenInference.app (existing) ✓"
         APP_INSTALLED=true
     else
         echo "  ⚠ App not available yet — use CLI for now"
@@ -490,43 +490,43 @@ PROVIDER_RUNNING=false
 echo ""
 echo "════════════════════════════════════════════════"
 echo ""
-echo "  DGInf installation complete!"
+echo "  EigenInference installation complete!"
 echo ""
 echo "  Hardware:  $CHIP · ${MEM}GB"
 echo "  Model:     $MODEL_NAME"
 if [ -n "$IMAGE_MODEL" ]; then
     echo "  Image:     $IMAGE_MODEL_NAME"
 fi
-if [ -f "$HOME/.config/dginf/auth_token" ]; then
+if [ -f "$HOME/.config/eigeninference/auth_token" ]; then
     echo "  Account:   Linked ✓"
 else
-    echo "  Account:   Not linked (run: dginf-provider login)"
+    echo "  Account:   Not linked (run: eigeninference-provider login)"
 fi
 
 echo "  Status:    ○ INSTALLED (not running)"
 echo ""
 echo "  Start serving when you're ready:"
 if [ -n "$MODEL" ]; then
-    echo "    dginf-provider start --model $MODEL"
+    echo "    eigeninference-provider start --model $MODEL"
 else
-    echo "    dginf-provider start"
+    echo "    eigeninference-provider start"
 fi
 
 if [ "$APP_INSTALLED" = true ]; then
     echo ""
-    echo "  Menu Bar App: DGInf.app installed"
-    echo "    Launch from Spotlight or: open -a DGInf"
+    echo "  Menu Bar App: EigenInference.app installed"
+    echo "    Launch from Spotlight or: open -a EigenInference"
 fi
 
 echo ""
 echo "  Commands:"
-echo "    dginf-provider login      Link to your account"
-echo "    dginf-provider status     Show provider status"
-echo "    dginf-provider logs -w    Stream logs"
-echo "    dginf-provider stop       Stop the provider"
-echo "    dginf-provider doctor     Run diagnostics"
+echo "    eigeninference-provider login      Link to your account"
+echo "    eigeninference-provider status     Show provider status"
+echo "    eigeninference-provider logs -w    Stream logs"
+echo "    eigeninference-provider stop       Stop the provider"
+echo "    eigeninference-provider doctor     Run diagnostics"
 echo ""
 echo "  App:"
-echo "    open -a DGInf             Launch menu bar app"
+echo "    open -a EigenInference             Launch menu bar app"
 echo ""
 echo "════════════════════════════════════════════════"

@@ -1,14 +1,14 @@
-//! launchd user agent management for the dginf-provider.
+//! launchd user agent management for the eigeninference-provider.
 //!
 //! The provider only runs when the user explicitly starts it via
-//! `dginf-provider start` or the macOS app's "Go Online" toggle.
+//! `eigeninference-provider start` or the macOS app's "Go Online" toggle.
 //! It does NOT auto-start on login or auto-restart after crashes.
 //! The user is always in control of when their GPU is being used.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-const LABEL: &str = "io.dginf.provider";
+const LABEL: &str = "io.eigeninference.provider";
 
 fn plist_path() -> PathBuf {
     dirs::home_dir()
@@ -44,7 +44,7 @@ fn write_plist(
 
     let log_path = dirs::home_dir()
         .unwrap_or_default()
-        .join(".dginf/provider.log");
+        .join(".eigeninference/provider.log");
 
     let binary = binary_path.display();
     let log = log_path.display();
@@ -180,7 +180,7 @@ pub fn install_and_start(
     let binary_path = std::env::current_exe().unwrap_or_else(|_| {
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".dginf/bin/dginf-provider")
+            .join(".eigeninference/bin/eigeninference-provider")
     });
 
     if is_loaded() {

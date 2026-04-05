@@ -16,7 +16,7 @@ API_KEY="${API_KEY:-test-key}"
 AUDIO_FILE="${1:-/tmp/elon_test_30s.wav}"
 MODEL="${2:-CohereLabs/cohere-transcribe-03-2026}"
 
-echo "=== DGInf STT End-to-End Test ==="
+echo "=== EigenInference STT End-to-End Test ==="
 echo "Coordinator: $COORDINATOR_URL"
 echo "Audio file: $AUDIO_FILE"
 echo "Model: $MODEL"

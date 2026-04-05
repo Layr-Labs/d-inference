@@ -46,7 +46,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	profile := generateCombinedProfile(req.SerialNumber)
 
 	w.Header().Set("Content-Type", "application/x-apple-aspen-config")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="DGInf-Enroll-%s.mobileconfig"`, req.SerialNumber))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="EigenInference-Enroll-%s.mobileconfig"`, req.SerialNumber))
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(profile))
 }
@@ -87,13 +87,13 @@ func generateCombinedProfile(serialNumber string) string {
           <array>
             <array>
               <string>O</string>
-              <string>DGInf</string>
+              <string>EigenInference</string>
             </array>
           </array>
           <array>
             <array>
               <string>CN</string>
-              <string>DGInf Identity</string>
+              <string>EigenInference Identity</string>
             </array>
           </array>
         </array>
@@ -105,9 +105,9 @@ func generateCombinedProfile(serialNumber string) string {
       <key>PayloadDisplayName</key>
       <string>SCEP</string>
       <key>PayloadIdentifier</key>
-      <string>io.dginf.enroll.scep</string>
+      <string>io.eigeninference.enroll.scep</string>
       <key>PayloadOrganization</key>
-      <string>DGInf</string>
+      <string>EigenInference</string>
       <key>PayloadType</key>
       <string>com.apple.security.scep</string>
       <key>PayloadUUID</key>
@@ -126,11 +126,11 @@ func generateCombinedProfile(serialNumber string) string {
       <key>IdentityCertificateUUID</key>
       <string>D01D95F9-762E-4538-A9B3-4D949D55577C</string>
       <key>PayloadDescription</key>
-      <string>Enrolls with the DGInf coordinator for security verification</string>
+      <string>Enrolls with the EigenInference coordinator for security verification</string>
       <key>PayloadIdentifier</key>
-      <string>io.dginf.enroll.mdm</string>
+      <string>io.eigeninference.enroll.mdm</string>
       <key>PayloadOrganization</key>
-      <string>DGInf</string>
+      <string>EigenInference</string>
       <key>PayloadType</key>
       <string>com.apple.mdm</string>
       <key>PayloadUUID</key>
@@ -156,7 +156,7 @@ func generateCombinedProfile(serialNumber string) string {
       <key>PayloadVersion</key>
       <integer>1</integer>
       <key>PayloadIdentifier</key>
-      <string>io.dginf.enroll.acme.%s</string>
+      <string>io.eigeninference.enroll.acme.%s</string>
       <key>PayloadUUID</key>
       <string>%s</string>
       <key>PayloadDisplayName</key>
@@ -164,9 +164,9 @@ func generateCombinedProfile(serialNumber string) string {
       <key>PayloadDescription</key>
       <string>Generates a hardware-bound key in the Secure Enclave. Apple verifies your device is genuine and a certificate is issued binding the key to your Mac.</string>
       <key>PayloadOrganization</key>
-      <string>DGInf</string>
+      <string>EigenInference</string>
       <key>DirectoryURL</key>
-      <string>https://inference-test.openinnovation.dev/acme/dginf-acme/directory</string>
+      <string>https://inference-test.openinnovation.dev/acme/eigeninference-acme/directory</string>
       <key>ClientIdentifier</key>
       <string>%s</string>
       <key>KeySize</key>
@@ -184,7 +184,7 @@ func generateCombinedProfile(serialNumber string) string {
         <array>
           <array>
             <string>O</string>
-            <string>DGInf Provider</string>
+            <string>EigenInference Provider</string>
           </array>
         </array>
         <array>
@@ -197,13 +197,13 @@ func generateCombinedProfile(serialNumber string) string {
     </dict>
   </array>
   <key>PayloadDescription</key>
-  <string>DGInf provider enrollment and device attestation. Grants read-only security verification (SIP, SecureBoot) and generates an Apple-attested Secure Enclave key.</string>
+  <string>EigenInference provider enrollment and device attestation. Grants read-only security verification (SIP, SecureBoot) and generates an Apple-attested Secure Enclave key.</string>
   <key>PayloadDisplayName</key>
-  <string>DGInf Provider Enrollment</string>
+  <string>EigenInference Provider Enrollment</string>
   <key>PayloadIdentifier</key>
-  <string>io.dginf.enroll.%s</string>
+  <string>io.eigeninference.enroll.%s</string>
   <key>PayloadOrganization</key>
-  <string>DGInf</string>
+  <string>EigenInference</string>
   <key>PayloadType</key>
   <string>Configuration</string>
   <key>PayloadUUID</key>

@@ -1,6 +1,0 @@
-./acme_verify.go
-./consumer.go
-./enroll.go
-./provider.go
-./server.go
-./stats.go

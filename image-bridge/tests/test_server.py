@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from dginf_image_bridge.server import (
+from eigeninference_image_bridge.server import (
     ImageBackend,
     ImageGenerationRequest,
     create_app,

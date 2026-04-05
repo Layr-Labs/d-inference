@@ -1,6 +1,6 @@
-//! Local-only HTTP server for the DGInf provider.
+//! Local-only HTTP server for the EigenInference provider.
 //!
-//! When running in local-only mode (`dginf-provider serve --local`), this
+//! When running in local-only mode (`eigeninference-provider serve --local`), this
 //! module provides an HTTP server that proxies OpenAI-compatible requests
 //! to the local inference backend. This is useful for development and
 //! testing without a coordinator.

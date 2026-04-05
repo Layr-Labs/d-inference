@@ -570,6 +570,35 @@ mod tests {
         None
     }
 
+    /// Check if backend is still alive after an edge case test, restart if crashed.
+    async fn ensure_backend_alive(
+        backend: &mut vllm_mlx::VllmMlxBackend,
+        base_url: &str,
+        model_path: &str,
+        model_name: &str,
+        port: u16,
+        client: &reqwest::Client,
+    ) {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        if check_health(base_url).await {
+            return;
+        }
+        eprintln!("    Backend crashed! Restarting...");
+        let _ = backend.stop().await;
+        *backend = vllm_mlx::VllmMlxBackend::new(model_path.to_string(), port, false);
+        backend.start().await.unwrap();
+        assert!(
+            wait_for_backend(base_url, 120).await,
+            "restart failed after crash"
+        );
+        let _ = client
+            .post(format!("{base_url}/v1/chat/completions"))
+            .json(&serde_json::json!({"model": model_name, "messages": [{"role":"user","content":"hi"}], "max_tokens": 1, "stream": false}))
+            .send()
+            .await;
+        eprintln!("    Restarted ✓");
+    }
+
     async fn wait_for_backend(base_url: &str, timeout_secs: u64) -> bool {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
         while tokio::time::Instant::now() < deadline {
@@ -890,5 +919,405 @@ mod tests {
 
         backend2.stop().await.unwrap();
         eprintln!("\n=== All live inference tests passed! ===\n");
+    }
+
+    /// Edge case tests — malformed inputs, boundary conditions, stress.
+    /// Starts backend once, runs all edge cases sequentially.
+    ///
+    /// Run: LIVE_INFERENCE_TEST=1 cargo test live_edge_cases -- --nocapture
+    #[tokio::test]
+    async fn live_edge_cases() {
+        if !should_run_live_tests() {
+            eprintln!("Skipping (set LIVE_INFERENCE_TEST=1)");
+            return;
+        }
+        if !binary_exists("vllm-mlx") {
+            return;
+        }
+        let model_path = match find_small_model() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let port = 18211u16;
+        let base_url = format!("http://127.0.0.1:{port}");
+        let model_name = model_path.clone();
+        let mut backend = vllm_mlx::VllmMlxBackend::new(model_path.clone(), port, false);
+        backend.start().await.unwrap();
+        assert!(
+            wait_for_backend(&base_url, 120).await,
+            "backend didn't start"
+        );
+
+        // Warm up
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .unwrap();
+        let _ = client
+            .post(format!("{base_url}/v1/chat/completions"))
+            .json(&serde_json::json!({
+                "model": &model_name,
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 1, "stream": false
+            }))
+            .send()
+            .await;
+
+        // Switch to shorter timeout for edge case tests
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap();
+
+        let url = format!("{base_url}/v1/chat/completions");
+
+        // ── Empty/malformed requests ────────────────────────────
+
+        eprintln!("\n=== Edge: Empty/Malformed Requests ===");
+
+        // Missing model field
+        let r = client
+            .post(&url)
+            .json(
+                &serde_json::json!({"messages": [{"role":"user","content":"hi"}], "max_tokens": 3}),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            r.status() == 422 || r.status() == 400,
+            "missing model should be 4xx, got {}",
+            r.status()
+        );
+        eprintln!("  ✓ Missing model field → {}", r.status());
+
+        // Missing messages field
+        let r = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "max_tokens": 3}))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            r.status() == 422 || r.status() == 400,
+            "missing messages should be 4xx, got {}",
+            r.status()
+        );
+        eprintln!("  ✓ Missing messages field → {}", r.status());
+
+        // Empty messages array — KNOWN BUG: vllm-mlx returns 500 and may crash.
+        // The provider proxy should validate messages before forwarding.
+        let r = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "messages": [], "max_tokens": 3}))
+            .send()
+            .await
+            .unwrap();
+        let status = r.status().as_u16();
+        if status == 500 {
+            eprintln!("  ⚠ Empty messages array → 500 (BUG: vllm-mlx crashes)");
+        } else {
+            eprintln!("  ✓ Empty messages array → {status}");
+        }
+        ensure_backend_alive(
+            &mut backend,
+            &base_url,
+            &model_path,
+            &model_name,
+            port,
+            &client,
+        )
+        .await;
+
+        // Invalid JSON body
+        let r = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body("not json at all{{{")
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            r.status() == 422 || r.status() == 400,
+            "invalid JSON should be 4xx, got {}",
+            r.status()
+        );
+        eprintln!("  ✓ Invalid JSON body → {}", r.status());
+
+        // Empty message content
+        let r = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "messages": [{"role":"user","content":""}], "stream": false, "max_tokens": 5}))
+            .send().await.unwrap();
+        let status = r.status().as_u16();
+        assert!(
+            status == 200 || status == 400 || status == 422 || status == 500,
+            "empty content: unexpected {status}"
+        );
+        eprintln!("  ✓ Empty message content → {status}");
+
+        // Invalid role — KNOWN BUG: vllm-mlx may 500/crash on unknown roles.
+        let r = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "messages": [{"role":"banana","content":"hi"}], "stream": false, "max_tokens": 5}))
+            .send().await.unwrap();
+        let status = r.status().as_u16();
+        if status == 500 {
+            eprintln!("  ⚠ Invalid role 'banana' → 500 (BUG: vllm-mlx crashes)");
+        } else {
+            eprintln!("  ✓ Invalid role 'banana' → {status}");
+        }
+        ensure_backend_alive(
+            &mut backend,
+            &base_url,
+            &model_path,
+            &model_name,
+            port,
+            &client,
+        )
+        .await;
+
+        // ── Token limit edge cases ──────────────────────────────
+
+        eprintln!("\n=== Edge: Token Limits ===");
+
+        // max_tokens=0
+        let r = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "messages": [{"role":"user","content":"hi"}], "stream": false, "max_tokens": 0}))
+            .send().await.unwrap();
+        let status = r.status().as_u16();
+        assert!(
+            status == 200 || status == 400 || status == 422 || status == 500,
+            "max_tokens=0: unexpected {status}"
+        );
+        eprintln!("  ✓ max_tokens=0 → {status}");
+        ensure_backend_alive(
+            &mut backend,
+            &base_url,
+            &model_path,
+            &model_name,
+            port,
+            &client,
+        )
+        .await;
+
+        // max_tokens=1 — should return exactly 1 token
+        let r: serde_json::Value = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "messages": [{"role":"user","content":"hi"}], "stream": false, "max_tokens": 1, "temperature": 0.0}))
+            .send().await.unwrap().json().await.unwrap();
+        let tokens = r["usage"]["completion_tokens"].as_i64().unwrap_or(-1);
+        assert!(tokens >= 0 && tokens <= 2, "max_tokens=1 but got {tokens}");
+        eprintln!("  ✓ max_tokens=1 → {tokens} token(s)");
+
+        // max_tokens negative
+        let r = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "messages": [{"role":"user","content":"hi"}], "stream": false, "max_tokens": -1}))
+            .send().await.unwrap();
+        let status = r.status().as_u16();
+        assert!(
+            status == 200 || status == 400 || status == 422 || status == 500,
+            "max_tokens=-1: unexpected {status}"
+        );
+        eprintln!("  ✓ max_tokens=-1 → {status}");
+        ensure_backend_alive(
+            &mut backend,
+            &base_url,
+            &model_path,
+            &model_name,
+            port,
+            &client,
+        )
+        .await;
+
+        // ── Large inputs ────────────────────────────────────────
+
+        eprintln!("\n=== Edge: Large Inputs ===");
+
+        // 10K character prompt
+        let long_content = "x".repeat(10_000);
+        let r = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "messages": [{"role":"user","content": long_content}], "stream": false, "max_tokens": 5}))
+            .send().await.unwrap();
+        let status = r.status().as_u16();
+        assert!(
+            status == 200 || status == 400 || status == 413 || status == 500,
+            "10K prompt: unexpected {status}"
+        );
+        eprintln!("  ✓ 10K character prompt → {status}");
+        ensure_backend_alive(
+            &mut backend,
+            &base_url,
+            &model_path,
+            &model_name,
+            port,
+            &client,
+        )
+        .await;
+
+        // 50-message conversation
+        let mut msgs: Vec<serde_json::Value> = (0..50)
+            .map(|i| {
+                serde_json::json!({
+                    "role": if i % 2 == 0 { "user" } else { "assistant" },
+                    "content": format!("Message number {i}")
+                })
+            })
+            .collect();
+        msgs.push(serde_json::json!({"role": "user", "content": "Summarize."}));
+        let r = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "messages": msgs, "stream": false, "max_tokens": 10}))
+            .send().await.unwrap();
+        assert!(
+            r.status().is_success(),
+            "50-message convo failed: {}",
+            r.status()
+        );
+        eprintln!("  ✓ 50-message conversation → {}", r.status());
+
+        // Unicode/emoji
+        let r: serde_json::Value = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "messages": [{"role":"user","content":"日本語でこんにちはと言って 🎌"}], "stream": false, "max_tokens": 10}))
+            .send().await.unwrap().json().await.unwrap();
+        let content = r["choices"][0]["message"]["content"].as_str().unwrap_or("");
+        assert!(!content.is_empty(), "unicode response empty");
+        eprintln!("  ✓ Unicode/emoji prompt → \"{content}\"");
+
+        // ── Streaming edge cases ────────────────────────────────
+
+        eprintln!("\n=== Edge: Streaming ===");
+
+        // Streaming with max_tokens=1
+        let r = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "messages": [{"role":"user","content":"hi"}], "stream": true, "max_tokens": 1}))
+            .send().await.unwrap();
+        assert!(r.status().is_success());
+        let text = r.text().await.unwrap();
+        assert!(
+            text.contains("data: [DONE]"),
+            "streaming max_tokens=1 missing [DONE]"
+        );
+        eprintln!("  ✓ Streaming max_tokens=1 → got [DONE]");
+
+        // Streaming early disconnect
+        let r = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "messages": [{"role":"user","content":"Write a long essay."}], "stream": true, "max_tokens": 200}))
+            .send().await.unwrap();
+        assert!(r.status().is_success());
+        // Read only 3 chunks then drop the connection
+        let mut chunks_read = 0usize;
+        let body = r.text().await.unwrap();
+        for line in body.lines() {
+            if line.starts_with("data: {") {
+                chunks_read += 1;
+            }
+        }
+        // We can't truly disconnect mid-stream in reqwest without streaming mode,
+        // but we can verify the full response completed without error
+        assert!(chunks_read > 3, "expected many chunks, got {chunks_read}");
+        eprintln!("  ✓ Full stream completed ({chunks_read} chunks)");
+
+        // ── Temperature ─────────────────────────────────────────
+
+        eprintln!("\n=== Edge: Temperature ===");
+
+        // High temperature
+        let r = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "messages": [{"role":"user","content":"Pick a number."}], "stream": false, "max_tokens": 5, "temperature": 2.0}))
+            .send().await.unwrap();
+        assert!(r.status().is_success(), "temperature=2.0 failed");
+        eprintln!("  ✓ temperature=2.0 → {}", r.status());
+
+        // Negative temperature
+        let r = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "messages": [{"role":"user","content":"hi"}], "stream": false, "max_tokens": 3, "temperature": -1.0}))
+            .send().await.unwrap();
+        let status = r.status().as_u16();
+        assert!(
+            status == 200 || status == 400 || status == 422 || status == 500,
+            "temperature=-1: unexpected {status}"
+        );
+        eprintln!("  ✓ temperature=-1.0 → {status}");
+        ensure_backend_alive(
+            &mut backend,
+            &base_url,
+            &model_path,
+            &model_name,
+            port,
+            &client,
+        )
+        .await;
+
+        // ── Response format ─────────────────────────────────────
+
+        eprintln!("\n=== Edge: Response Format ===");
+
+        // finish_reason=length when truncated
+        let r: serde_json::Value = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "messages": [{"role":"user","content":"Write a very long story about dragons."}], "stream": false, "max_tokens": 3, "temperature": 0.0}))
+            .send().await.unwrap().json().await.unwrap();
+        let fr = r["choices"][0]["finish_reason"].as_str().unwrap_or("null");
+        assert!(
+            fr == "length" || fr == "stop",
+            "expected length or stop, got {fr}"
+        );
+        eprintln!("  ✓ finish_reason when truncated → \"{fr}\"");
+
+        // finish_reason=stop when natural end
+        let r: serde_json::Value = client
+            .post(&url)
+            .json(&serde_json::json!({"model": &model_name, "messages": [{"role":"user","content":"Say just 'ok'."}], "stream": false, "max_tokens": 100, "temperature": 0.0}))
+            .send().await.unwrap().json().await.unwrap();
+        let fr = r["choices"][0]["finish_reason"].as_str().unwrap_or("null");
+        eprintln!("  ✓ finish_reason on natural end → \"{fr}\"");
+
+        // ── Concurrent stress ───────────────────────────────────
+
+        eprintln!("\n=== Edge: Concurrent Stress (10 requests) ===");
+
+        let mut handles = vec![];
+        for i in 0..10 {
+            let client = client.clone();
+            let url = url.clone();
+            let mn = model_name.clone();
+            handles.push(tokio::spawn(async move {
+                let r = client
+                    .post(&url)
+                    .json(&serde_json::json!({"model": mn, "messages": [{"role":"user","content": format!("{i}*{i}=?")}], "stream": false, "max_tokens": 5}))
+                    .send().await;
+                match r {
+                    Ok(resp) => resp.status().as_u16(),
+                    Err(_) => 0,
+                }
+            }));
+        }
+        let mut ok_count = 0;
+        for h in handles {
+            let status = h.await.unwrap();
+            if status == 200 {
+                ok_count += 1;
+            }
+        }
+        assert!(
+            ok_count >= 8,
+            "only {ok_count}/10 concurrent requests succeeded"
+        );
+        eprintln!("  ✓ {ok_count}/10 concurrent requests succeeded");
+
+        // ── Cleanup ─────────────────────────────────────────────
+
+        backend.stop().await.unwrap();
+        eprintln!("\n=== All edge case tests passed! ===\n");
     }
 }

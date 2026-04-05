@@ -680,6 +680,26 @@
     }
     footer .footer-links a:hover { color: var(--coral); }
 
+    /* ==================== RESEARCH BANNER ==================== */
+    .research-banner {
+      background: var(--gold-light);
+      border-bottom: 2.5px solid var(--ink);
+      border-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='4'%3E%3Cpath d='M0 2 Q20 0,40 2 Q60 4,80 2 Q100 0,120 2 Q140 4,160 2 Q180 0,200 2 Q220 4,240 2 Q260 0,280 2 Q300 4,320 2 Q340 0,360 2 Q380 4,400 2' fill='none' stroke='%233B2C35' stroke-width='2'/%3E%3C/svg%3E") 2 stretch;
+      padding: 10px 0;
+      text-align: center;
+      font-size: 14px;
+      color: var(--ink);
+    }
+    .research-banner svg {
+      vertical-align: -3px;
+      margin-right: 6px;
+    }
+    .research-banner strong {
+      font-family: 'Caveat', cursive;
+      font-size: 17px;
+      font-weight: 700;
+    }
+
     /* ==================== DOODLES / DECORATIONS ==================== */
     .doodle-star {
       display: inline-block;
@@ -726,6 +746,14 @@
     </div>
   </header>
 
+  <!-- ============ RESEARCH BANNER ============ -->
+  <div class="research-banner">
+    <div class="container">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--ink)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2v-4M9 21H5a2 2 0 0 1-2-2v-4"/><path d="M3 9h18M3 15h18"/></svg>
+      <strong>Research Project</strong> &mdash; EigenInference is an experimental research prototype, not a production service. Expect rough edges, breaking changes, and downtime.
+    </div>
+  </div>
+
   <main>
 
     <!-- ============ HERO ============ -->
@@ -744,7 +772,7 @@
         </h1>
         <p class="subtitle">
           OpenAI-compatible inference on hardware-verified Apple Silicon Macs.
-          Your prompts are encrypted end-to-end. No one sees your data -- not even us.
+          Your prompts are encrypted end-to-end. No one sees your data &mdash; not even us.
         </p>
         <div class="ctas">
           <a href="#developers" class="btn btn-coral">
@@ -1188,7 +1216,7 @@ response = client.chat.completions.create(
     <section id="earn">
       <div class="container">
         <h2>For Mac owners</h2>
-        <p class="section-sub">Your Mac earns while you sleep.</p>
+        <p class="section-sub">Put your idle Mac to work. Experimental &mdash; join the research network.</p>
 
         <!-- START EARNING CTA -- first thing they see -->
         <div class="earn-card" style="margin-bottom: 32px;">
@@ -1722,7 +1750,7 @@ response = client.chat.completions.create(
   <footer>
     <div class="container">
       <div class="footer-inner">
-        <span class="copy">EigenInference &copy; 2026</span>
+        <span class="copy">EigenInference &copy; 2026 &mdash; Experimental research project. Not production software.</span>
         <div class="footer-links">
           <a href="#developers">Docs</a>
           <a href="https://github.com/eigeninference">GitHub</a>

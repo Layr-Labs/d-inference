@@ -1,36 +1,100 @@
-# EigenInference — Decentralized Private Inference
+# EigenInference
 
-A platform for private, decentralized AI inference on Apple Silicon Macs. Mac owners rent out idle GPU compute. Consumers get private inference on open-source models with hardware-backed trust from Apple's Secure Enclave.
+> **Research project** -- EigenInference is an experimental prototype exploring decentralized private inference on Apple Silicon. Expect rough edges, breaking changes, and downtime.
 
-**Privacy claim:** Nobody in the chain can see your prompts — not the coordinator, not the provider (SIP + Hardened Runtime + in-process inference prevent memory inspection), and not EigenInference as a company.
+Private AI inference on a decentralized network of hardware-verified Apple Silicon Macs. Your prompts are encrypted end-to-end -- nobody sees your data, not even us.
 
 ## How It Works
 
 ```
-Consumer (Web UI / Python SDK)
-    │
-    │  HTTPS + OpenAI-compatible API
-    ▼
-Coordinator (Go)
-    │
-    │  WebSocket (outbound from provider, no port forwarding needed)
-    ▼
-Provider Agent (Rust, hardened process)
-    │
-    │  In-process Python (PyO3) — no subprocess, no IPC
-    ▼
-MLX inference engine → Metal → Apple Silicon GPU
+Consumer (SDK / Web UI / curl)
+    |
+    |  HTTPS, OpenAI-compatible API
+    v
+Coordinator (Go, AWS)
+    |
+    |  WebSocket (outbound from provider)
+    v
+Provider (Rust, hardened process)
+    |
+    |  vllm-mlx / Draw Things / Cohere STT
+    v
+Apple Silicon GPU (Metal)
 ```
+
+Providers connect outbound over WebSocket -- no port forwarding needed. The coordinator never sees plaintext prompts; requests are encrypted with the provider's X25519 public key before leaving the consumer.
+
+## Models
+
+Models are selected from a curated catalog. The coordinator only routes requests to models it has verified.
+
+### Text
+
+| Model | Architecture | Size | Min RAM | Notes |
+|-------|-------------|------|---------|-------|
+| Qwen3.5 27B Claude Opus 8-bit | 27B dense | 27 GB | 36 GB | Frontier-quality reasoning, Claude Opus distilled |
+| Trinity Mini 8-bit | 27B Adaptive MoE | 26 GB | 48 GB | Fast agentic inference |
+| Qwen3.5 122B MoE 8-bit | 122B MoE, 10B active | 122 GB | 128 GB | Best quality reasoning |
+| MiniMax M2.5 8-bit | 239B MoE, 11B active | 243 GB | 256 GB | SOTA coding, ~100 tok/s |
+
+### Image
+
+| Model | Architecture | Size | Min RAM |
+|-------|-------------|------|---------|
+| FLUX.2 Klein 4B | 4B diffusion | 8.1 GB | 16 GB |
+| FLUX.2 Klein 9B | 9B diffusion | 13 GB | 24 GB |
+
+Image generation uses Draw Things with Metal FlashAttention. Adaptive batching sizes batches based on available system memory.
+
+### Speech-to-Text
+
+| Model | Architecture | Size | Min RAM |
+|-------|-------------|------|---------|
+| Cohere Transcribe 03-2026 | 2B conformer | 4.2 GB | 8 GB |
+
+## Use the API
+
+OpenAI-compatible. Works with any OpenAI SDK by changing the base URL.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://inference-test.openinnovation.dev/v1",
+    api_key="eigeninference-..."
+)
+
+# Chat completion
+response = client.chat.completions.create(
+    model="qwen3.5-27b-claude-opus-8bit",
+    messages=[{"role": "user", "content": "Hello"}],
+    stream=True
+)
+
+# Image generation
+image = client.images.generate(
+    model="flux_2_klein_4b_q8p.ckpt",
+    prompt="A cat astronaut on Mars"
+)
+
+# Audio transcription
+transcript = client.audio.transcriptions.create(
+    model="CohereLabs/cohere-transcribe-03-2026",
+    file=open("audio.mp3", "rb")
+)
+```
+
+The Anthropic Messages API is also supported at `/v1/messages`.
 
 ## Become a Provider
 
-Earn money by serving AI inference on your idle Mac.
+Earn by serving inference on your idle Mac.
 
 ### Requirements
 
-- Any Apple Silicon Mac (M1 or later)
-- macOS 13 (Ventura) or later
-- 8 GB+ unified memory (16 GB+ recommended)
+- Apple Silicon Mac (M1 or later)
+- macOS 14 (Sonoma) or later
+- 16 GB+ unified memory recommended
 
 ### Install
 
@@ -38,212 +102,111 @@ Earn money by serving AI inference on your idle Mac.
 curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash
 ```
 
-That's it. The installer will:
-1. Download the provider binary, Python/MLX runtime, and ffmpeg (zero prerequisites)
-2. Set up Secure Enclave identity and enrollment profile
-3. Download the best model for your hardware (auto-selected by RAM)
-4. Start the provider in the background
+Zero prerequisites. The installer bundles the provider binary, Python 3.12 runtime, vllm-mlx, ffmpeg, and Secure Enclave tooling. You pick a model from the catalog, link your account, and you're serving within minutes.
 
-Your Mac is serving inference within minutes.
-
-**Models by memory** (auto-selected during install):
-
-| Memory | Model | Parameters |
-|--------|-------|------------|
-| 8 GB | `mlx-community/Qwen2.5-0.5B-Instruct-4bit` | 0.5B |
-| 16 GB | `mlx-community/Qwen3.5-9B-MLX-4bit` | 9B |
-| 32 GB | `mlx-community/Qwen3.5-14B-Instruct-4bit` | 14B |
-| 64 GB+ | `mlx-community/Qwen3.5-32B-Instruct-4bit` | 32B |
-
-### Provider CLI Reference
+### Provider CLI
 
 ```bash
-eigeninference-provider init          # Detect hardware, create config
-eigeninference-provider serve         # Start serving (foreground)
-eigeninference-provider start         # Start serving (background daemon)
-eigeninference-provider stop          # Stop the background daemon
-eigeninference-provider status        # Show hardware and connection status
-eigeninference-provider doctor        # Diagnose issues (SIP, Enclave, MDM, connectivity)
-eigeninference-provider models list   # List downloaded models
-eigeninference-provider models download  # Download a model
-eigeninference-provider earnings      # Show earnings and usage history
-eigeninference-provider wallet        # Show or create provider wallet (macOS Keychain)
-eigeninference-provider benchmark     # Run standardized benchmarks
-eigeninference-provider logs -w       # Stream logs in real-time
-eigeninference-provider update        # Check for and install updates
-eigeninference-provider enroll        # Enroll in MDM (without serving)
-eigeninference-provider unenroll      # Remove MDM enrollment
+eigeninference-provider serve          # Start serving (foreground)
+eigeninference-provider start          # Background daemon
+eigeninference-provider stop           # Stop daemon
+eigeninference-provider status         # Hardware and connection info
+eigeninference-provider doctor         # Diagnose issues
+eigeninference-provider models list    # Downloaded models
+eigeninference-provider earnings       # Earnings and usage
+eigeninference-provider update         # Check for updates
 ```
-
-### What Happens When You Serve
-
-1. Your Apple Silicon hardware is detected (chip, memory, GPU cores, bandwidth)
-2. A Secure Enclave identity key is generated (P-256 ECDSA, non-extractable from hardware)
-3. SIP, Secure Boot, and RDMA status are verified
-4. The model is loaded via vllm-mlx with continuous batching
-5. A WebSocket connection is opened to the coordinator (outbound — no port forwarding needed)
-6. Periodic challenge-response attestation runs every 5 minutes (fresh SIP/SecureBoot checks)
-7. Inference requests arrive from the coordinator and are processed locally on your GPU
-8. After 10 minutes of no requests, the model is unloaded to free GPU memory (auto-reloads on next request)
 
 ### macOS Menu Bar App
 
-A native SwiftUI menu bar app is also available as an alternative to the CLI:
+A native SwiftUI app is also available:
 
-- Status indicator (green = online, yellow = paused, gray = offline)
-- Real-time tokens/second display
+- One-click start/stop
+- Real-time throughput display
 - Idle detection (pauses when you're using your Mac)
-- Earnings dashboard and wallet
-- Auto-start at login via Launch Agent
-- Diagnostics, benchmarks, and log viewer
+- Provider scheduling (set hours your Mac serves, GPU memory freed between windows)
+- Earnings dashboard
+- Auto-start at login
 
-Build from source:
-```bash
-cd app/EigenInference && swift build -c release
+### Scheduling
+
+Providers can configure time-based availability windows. Outside scheduled hours, the provider disconnects and shuts down the backend to free GPU memory. Configured in the app's Settings or directly in `~/.config/eigeninference/provider.toml`:
+
+```toml
+[schedule]
+enabled = true
+
+[[schedule.windows]]
+days = ["mon", "tue", "wed", "thu", "fri"]
+start = "22:00"
+end = "08:00"
 ```
 
-## Consumer API
+## Security
 
-The coordinator exposes an OpenAI-compatible API.
+EigenInference prevents anyone -- including providers -- from reading consumer prompts.
 
-```bash
-# Create an API key
-curl -X POST https://inference-test.openinnovation.dev/v1/auth/keys
+| Layer | What It Does |
+|-------|-------------|
+| E2E encryption | Prompts encrypted with provider's X25519 key; coordinator never sees plaintext |
+| Hardened Runtime + SIP | Blocks debugger attachment, memory reads, code injection |
+| Secure Enclave attestation | Hardware-bound P-256 identity, signed attestation blobs |
+| Binary hash verification | Coordinator verifies the provider runs a blessed binary |
+| Challenge-response | SIP/SecureBoot re-verified every 5 minutes |
+| MDM SecurityInfo | Apple MDM cross-checks hardware integrity (SIP, Secure Boot, FileVault) |
+| MDA certificate chain | Optional Apple Enterprise Attestation Root CA verification |
+| RDMA detection | Refuses to serve if Thunderbolt 5 DMA is enabled |
 
-# Chat completion
-curl https://inference-test.openinnovation.dev/v1/chat/completions \
-  -H "Authorization: Bearer eigeninference-..." \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "mlx-community/Qwen3.5-9B-MLX-4bit",
-    "messages": [{"role": "user", "content": "Hello"}],
-    "stream": true
-  }'
-
-# List available models
-curl https://inference-test.openinnovation.dev/v1/models \
-  -H "Authorization: Bearer eigeninference-..."
-
-# Audio transcription
-curl https://inference-test.openinnovation.dev/v1/audio/transcriptions \
-  -H "Authorization: Bearer eigeninference-..." \
-  -F file=@audio.mp3
-```
-
-### Web Interface
-
-A web chat interface is available at the coordinator URL with model browsing, provider verification, billing, and network stats.
-
-## Architecture
-
-| Component | Language | What It Does |
-|-----------|----------|-------------|
-| **Coordinator** (`coordinator/`) | Go | Control plane: request routing, attestation verification, scoring, payments, OpenAI-compatible API |
-| **Provider Agent** (`provider/`) | Rust | Inference agent: hardware detection, security hardening, attestation, WebSocket client, in-process MLX inference |
-| **Web Frontend** (`web/`) | Next.js 15 / React 19 | Chat interface, model browser, provider verification, billing dashboard |
-| **macOS App** (`app/EigenInference/`) | Swift / SwiftUI | Menu bar app: status, earnings, idle detection, diagnostics |
-| **Secure Enclave** (`enclave/`) | Swift | Hardware-bound P-256 identity, signed attestation blobs |
-| **Scripts** (`scripts/`) | Bash | Installer, Hardened Runtime code signing, app bundling, DMG distribution |
-
-## Security Model
-
-EigenInference prevents anyone — including providers — from reading consumer prompts through multiple defense layers:
-
-| Protection | What It Blocks |
-|---|---|
-| **PT_DENY_ATTACH** | Debugger attachment (lldb, dtrace, Instruments) |
-| **Hardened Runtime** | External process memory reads (task_for_pid, mach_vm_read) |
-| **SIP enforcement** | Kernel-level enforcement of the above; cannot be disabled without reboot |
-| **In-process inference** | No subprocess or IPC channel to sniff — all inference inside hardened process |
-| **Python path locking** | Only loads from signed app bundle, not system packages |
-| **Signed app bundle** | Any file modification breaks code signature; SIP refuses to run modified bundle |
-| **Binary hash attestation** | Coordinator verifies provider runs the expected blessed binary version |
-| **SIP re-verification** | Checked at startup, before every request, and in every 5-min challenge-response |
-| **RDMA detection** | Detects Thunderbolt 5 RDMA; refuses to serve if enabled (bypasses software protections) |
-| **Hypervisor memory isolation** | Stage 2 page tables protect inference memory if RDMA is present |
-| **Memory wiping** | Volatile-zeros prompt/response buffers after each request |
-| **MDM SecurityInfo** | Hardware-verified SIP, Secure Boot, and system integrity via Apple MDM |
-| **E2E encryption** | Consumer requests encrypted with provider's X25519 public key (NaCl box); coordinator never sees plaintext |
-
-**Remaining attack surface:** Physical memory probing on soldered LPDDR5x — same threat model as Apple Private Cloud Compute.
+Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 
 ### Trust Levels
 
-| Level | Name | How Achieved |
+| Level | Name | Verification |
 |-------|------|-------------|
-| `none` | Open Mode | No attestation |
-| `self_signed` | Self-Attested | Secure Enclave P-256 signature verified + periodic challenge-response with SIP/SecureBoot checks |
-| `hardware` | Hardware-Attested | MDA certificate chain from Apple Enterprise Attestation Root CA (via MDM) |
+| `self_signed` | Self-Attested | Secure Enclave signature + periodic challenge-response |
+| `hardware` | Hardware-Attested | MDA certificate chain from Apple Enterprise Attestation Root CA |
 
-### Attestation Chain
+## Pricing
 
-```
-Secure Enclave P-256 key (non-extractable from hardware)
-    ↓ Signs attestation blob (hardware info + SIP + binary hash)
-Coordinator verifies ECDSA signature
-    ↓ Cross-checks via MDM SecurityInfo query
-MDM returns: SIP status, Secure Boot level, FileVault, Authenticated Root Volume
-    ↓ Optional: Apple Device Attestation (MDA)
-Apple Enterprise Attestation Root CA certificate chain
-    ↓ Public verification endpoint
-GET /v1/providers/attestation — anyone can independently verify the chain
-```
+| Type | Rate |
+|------|------|
+| Text (Qwen3.5 27B) | $0.10 / 1M input, $0.78 / 1M output |
+| Text (Qwen3.5 122B) | $0.13 / 1M input, $1.04 / 1M output |
+| Text (MiniMax M2.5) | $0.06 / 1M input, $0.50 / 1M output |
+| Image (FLUX.2 Klein 4B) | $0.0015 / image |
+| Audio (Cohere Transcribe) | $0.001 / minute |
 
-## Provider Scoring
+5% platform fee. Providers keep 95%.
 
-Providers are ranked by a composite score:
+## Architecture
 
-```
-score = (1 - load) × decode_tps × trust_multiplier × reputation × warm_model_bonus × health_factor
-```
-
-- **decode_tps** — measured throughput during inference
-- **trust_multiplier** — higher for hardware-attested providers
-- **reputation** — 40% job success + 30% uptime + 20% attestation + 10% response time
-- **warm_model_bonus** — preference for providers with the model already loaded
-- **health_factor** — live system metrics (memory pressure, CPU usage, thermal state) from heartbeats
-
-## Payments
-
-- Internal micro-USD ledger (1 USD = 1,000,000 micro-USD)
-- $0.50 per 1M output tokens, 10% platform fee
-- Provider payouts: 90% of inference charges
-- Provider wallet: secp256k1 key stored in macOS Keychain
-
-## Hardware Support
-
-Any Apple Silicon Mac (M1 or later):
-
-| Chip | Memory | Bandwidth | Best Models |
-|------|--------|-----------|-------------|
-| M1 | 8–16 GB | 68 GB/s | 0.5B–8B |
-| M1 Pro/Max | 16–64 GB | 200–400 GB/s | 8B–33B |
-| M2 Pro/Max | 16–96 GB | 200–400 GB/s | 8B–70B |
-| M3 Pro/Max | 18–128 GB | 150–400 GB/s | 8B–122B |
-| M3 Ultra | 96–256 GB | 819 GB/s | 8B–230B |
-| M4 Pro/Max | 24–128 GB | 273–546 GB/s | 8B–122B |
-| M4 Ultra | 256–512 GB | 819 GB/s | 8B–400B+ |
+| Component | Language | Role |
+|-----------|----------|------|
+| Coordinator (`coordinator/`) | Go | Control plane: routing, attestation, billing, API |
+| Provider (`provider/`) | Rust | Inference agent: security, attestation, WebSocket client |
+| Console (`console-ui/`) | Next.js 15 | Web dashboard: chat, billing, provider verification |
+| macOS App (`app/EigenInference/`) | Swift | Menu bar app: status, scheduling, earnings |
+| Secure Enclave (`enclave/`) | Swift | Hardware-bound P-256 identity |
+| Image Bridge (`image-bridge/`) | Python | Draw Things gRPC integration for FLUX models |
+| Landing (`landing/`) | HTML | Static landing page |
 
 ## Development
 
 ```bash
-# Coordinator (Go)
-cd coordinator && go build ./... && go test ./...
+# Coordinator
+cd coordinator && go test ./...
 
-# Provider (Rust) — requires PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 on Python 3.14+
-cd provider && cargo build --release && cargo test
+# Provider (set PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 on Python 3.14+)
+cd provider && cargo test
 
-# Provider without Python feature (for distribution bundles)
-cd provider && cargo build --release --no-default-features
+# macOS App
+cd app/EigenInference && swift build -c release
 
-# Enclave helper (Swift)
-cd enclave && swift build -c release
+# Console UI
+cd console-ui && npm install && npm run dev
 
-# macOS App (Swift)
-cd app/EigenInference && swift build -c release && swift test
-
-# Web frontend (Next.js)
-cd web && npm install && npm run dev
+# Image Bridge tests
+cd image-bridge && python3 -m pytest tests/
 ```
 
 ## License

@@ -33,6 +33,7 @@ CHANGED_FILES=$(git diff --name-only "$RANGE" 2>/dev/null || git diff --name-onl
 
 HAS_GO=$(echo "$CHANGED_FILES" | grep -q '^coordinator/' && echo 1 || echo 0)
 HAS_RUST=$(echo "$CHANGED_FILES" | grep -q '^provider/' && echo 1 || echo 0)
+HAS_TS=$(echo "$CHANGED_FILES" | grep -q '^console-ui/' && echo 1 || echo 0)
 
 # ---------------------------------------------------------------------------
 # Go — formatting + tests
@@ -67,6 +68,23 @@ if [ "$HAS_RUST" = "1" ]; then
     echo ">> [pre-push] Rust tests..."
     if ! (cd provider && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo test 2>&1 | tail -15); then
         echo "ERROR: Rust tests failed."
+        FAILED=1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# TypeScript — lint + build
+# ---------------------------------------------------------------------------
+if [ "$HAS_TS" = "1" ]; then
+    echo ">> [pre-push] TypeScript lint check..."
+    if ! (cd console-ui && npx next lint 2>&1 | tail -10); then
+        echo "ERROR: TypeScript lint failed. Fix with: cd console-ui && npx next lint --fix"
+        FAILED=1
+    fi
+
+    echo ">> [pre-push] Next.js build check..."
+    if ! (cd console-ui && npm run build 2>&1 | tail -10); then
+        echo "ERROR: Next.js build failed."
         FAILED=1
     fi
 fi

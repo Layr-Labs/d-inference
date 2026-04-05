@@ -11,7 +11,7 @@ Consumer (SDK / Web UI / curl)
     |
     |  HTTPS, OpenAI-compatible API
     v
-EigenCloud TEE (Go, AWS Nitro Enclave)
+Coordinator (Go, EigenCloud TEE)
     |
     |  WebSocket (outbound from provider)
     v
@@ -22,11 +22,11 @@ Provider (Rust, hardened process)
 Apple Silicon GPU (Metal)
 ```
 
-Providers connect outbound over WebSocket -- no port forwarding needed. EigenCloud TEE never sees plaintext prompts; requests are encrypted with the provider's X25519 public key before leaving the consumer.
+Providers connect outbound over WebSocket -- no port forwarding needed. The coordinator never sees plaintext prompts; requests are encrypted with the provider's X25519 public key before leaving the consumer.
 
 ## Models
 
-Models are selected from a curated catalog. EigenCloud TEE only routes requests to models it has verified.
+Models are selected from a curated catalog. The coordinator only routes requests to models it has verified.
 
 ### Text
 
@@ -148,10 +148,10 @@ EigenInference prevents anyone -- including providers -- from reading consumer p
 
 | Layer | What It Does |
 |-------|-------------|
-| E2E encryption | Prompts encrypted with provider's X25519 key; EigenCloud TEE never sees plaintext |
+| E2E encryption | Prompts encrypted with provider's X25519 key; coordinator never sees plaintext |
 | Hardened Runtime + SIP | Blocks debugger attachment, memory reads, code injection |
 | Secure Enclave attestation | Hardware-bound P-256 identity, signed attestation blobs |
-| Binary hash verification | EigenCloud TEE verifies the provider runs a blessed binary |
+| Binary hash verification | Coordinator verifies the provider runs a blessed binary |
 | Challenge-response | SIP/SecureBoot re-verified every 5 minutes |
 | MDM SecurityInfo | Apple MDM cross-checks hardware integrity (SIP, Secure Boot, FileVault) |
 | MDA certificate chain | Optional Apple Enterprise Attestation Root CA verification |
@@ -182,7 +182,7 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 
 | Component | Language | Role |
 |-----------|----------|------|
-| EigenCloud TEE (`coordinator/`) | Go | Control plane: routing, attestation, billing, API (AWS Nitro Enclave) |
+| Coordinator (`coordinator/`) | Go | Control plane: routing, attestation, billing, API |
 | Provider (`provider/`) | Rust | Inference agent: security, attestation, WebSocket client |
 | Console (`console-ui/`) | Next.js 15 | Web dashboard: chat, billing, provider verification |
 | macOS App (`app/EigenInference/`) | Swift | Menu bar app: status, scheduling, earnings |
@@ -193,7 +193,7 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 ## Development
 
 ```bash
-# EigenCloud TEE (coordinator)
+# Coordinator
 cd coordinator && go test ./...
 
 # Provider (set PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 on Python 3.14+)

@@ -3,7 +3,9 @@ package billing
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -14,6 +16,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/pbkdf2"
 )
 
 // Solana program and mint constants.
@@ -259,6 +263,60 @@ func deriveATA(wallet, mint []byte) ([]byte, error) {
 		return nil, fmt.Errorf("derive ATA: %w", err)
 	}
 	return addr, nil
+}
+
+// DeriveKeypairFromMnemonic derives a Solana ed25519 keypair from a BIP39 mnemonic.
+//
+// Uses SLIP-0010 (ed25519 key derivation) at path m/44'/501'/0'/0'.
+// This matches Phantom, Solflare, and the Solana CLI's derivation.
+//
+// Returns the 64-byte ed25519 private key and the 32-byte public key (base58 address).
+func DeriveKeypairFromMnemonic(mnemonic string) (ed25519.PrivateKey, string, error) {
+	mnemonic = strings.TrimSpace(mnemonic)
+	words := strings.Fields(mnemonic)
+	if len(words) != 12 && len(words) != 24 {
+		return nil, "", fmt.Errorf("mnemonic must be 12 or 24 words, got %d", len(words))
+	}
+
+	// BIP39: mnemonic → seed (PBKDF2 with "mnemonic" as salt, 2048 iterations)
+	seed := pbkdf2.Key([]byte(mnemonic), []byte("mnemonic"), 2048, 64, sha512.New)
+
+	// SLIP-0010: derive ed25519 key at m/44'/501'/0'/0'
+	// Start with master key derivation
+	key, chainCode := slip0010Master(seed)
+
+	// Derive each segment of the path (all hardened)
+	for _, index := range []uint32{44, 501, 0, 0} {
+		key, chainCode = slip0010DeriveChild(key, chainCode, index+0x80000000)
+	}
+
+	// ed25519: seed (32 bytes) → 64-byte private key
+	privKey := ed25519.NewKeyFromSeed(key)
+	pubKey := privKey.Public().(ed25519.PublicKey)
+	address := base58Encode(pubKey)
+
+	return privKey, address, nil
+}
+
+// slip0010Master derives the master key and chain code from a BIP39 seed.
+func slip0010Master(seed []byte) ([]byte, []byte) {
+	mac := hmac.New(sha512.New, []byte("ed25519 seed"))
+	mac.Write(seed)
+	I := mac.Sum(nil)
+	return I[:32], I[32:]
+}
+
+// slip0010DeriveChild derives a child key from a parent key and chain code.
+func slip0010DeriveChild(key, chainCode []byte, index uint32) ([]byte, []byte) {
+	buf := make([]byte, 37)
+	buf[0] = 0x00
+	copy(buf[1:33], key)
+	binary.BigEndian.PutUint32(buf[33:], index)
+
+	mac := hmac.New(sha512.New, chainCode)
+	mac.Write(buf)
+	I := mac.Sum(nil)
+	return I[:32], I[32:]
 }
 
 // SolanaProcessor handles deposit verification and withdrawals on Solana.

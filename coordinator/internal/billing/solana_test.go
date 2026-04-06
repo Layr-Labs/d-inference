@@ -457,3 +457,44 @@ func TestWriteCompactU16(t *testing.T) {
 		})
 	}
 }
+
+func TestDeriveKeypairFromMnemonic(t *testing.T) {
+	// Standard BIP39 test mnemonic (DO NOT use in production)
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+	privKey, address, err := DeriveKeypairFromMnemonic(mnemonic)
+	if err != nil {
+		t.Fatalf("DeriveKeypairFromMnemonic failed: %v", err)
+	}
+
+	// Verify key lengths
+	if len(privKey) != 64 {
+		t.Errorf("private key should be 64 bytes, got %d", len(privKey))
+	}
+	if address == "" {
+		t.Error("address should not be empty")
+	}
+
+	// Verify the derived key can sign and verify
+	msg := []byte("test message")
+	sig := ed25519.Sign(privKey, msg)
+	pubKey := privKey.Public().(ed25519.PublicKey)
+	if !ed25519.Verify(pubKey, msg, sig) {
+		t.Error("signature verification failed")
+	}
+
+	// Verify deterministic — same mnemonic always gives same address
+	_, address2, _ := DeriveKeypairFromMnemonic(mnemonic)
+	if address != address2 {
+		t.Errorf("derivation not deterministic: %s != %s", address, address2)
+	}
+
+	t.Logf("Derived address: %s", address)
+}
+
+func TestDeriveKeypairFromMnemonicInvalidInput(t *testing.T) {
+	_, _, err := DeriveKeypairFromMnemonic("only three words")
+	if err == nil {
+		t.Error("should reject invalid mnemonic word count")
+	}
+}

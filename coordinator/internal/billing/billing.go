@@ -49,9 +49,16 @@ type Config struct {
 	SolanaUSDCMint           string
 	SolanaCoordinatorAddress string // address that receives USDC deposits
 
+	// SolanaMnemonic is a BIP39 mnemonic phrase (12 or 24 words) from which
+	// the coordinator's Solana keypair is derived (SLIP-0010, path m/44'/501'/0'/0').
+	// The derived public key becomes the deposit address, and the private key
+	// is used for withdrawal transactions. If set, SolanaCoordinatorAddress
+	// is ignored (auto-derived from the mnemonic).
+	SolanaMnemonic string
+
 	// SolanaPrivateKey is the base58-encoded hot wallet private key used to
-	// sign withdrawal transactions. If empty, withdrawals are disabled
-	// (unless MockMode is true).
+	// sign withdrawal transactions. Deprecated — use SolanaMnemonic instead.
+	// If SolanaMnemonic is set, this is ignored.
 	SolanaPrivateKey string
 
 	// Referral
@@ -98,10 +105,27 @@ func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cf
 
 	// Initialize Solana processor
 	if cfg.SolanaRPCURL != "" {
-		svc.solana = NewSolanaProcessor(cfg.SolanaRPCURL, cfg.SolanaCoordinatorAddress,
-			cfg.SolanaUSDCMint, cfg.SolanaPrivateKey, cfg.MockMode, logger)
+		privKey := cfg.SolanaPrivateKey
+		coordAddr := cfg.SolanaCoordinatorAddress
+
+		// Derive from mnemonic if provided (takes precedence over raw private key)
+		if cfg.SolanaMnemonic != "" {
+			derivedKey, derivedAddr, err := DeriveKeypairFromMnemonic(cfg.SolanaMnemonic)
+			if err != nil {
+				logger.Error("billing: failed to derive Solana keypair from mnemonic", "error", err)
+			} else {
+				privKey = base58Encode(derivedKey)
+				coordAddr = derivedAddr
+				logger.Info("billing: Solana keypair derived from mnemonic",
+					"coordinator_address", coordAddr,
+				)
+			}
+		}
+
+		svc.solana = NewSolanaProcessor(cfg.SolanaRPCURL, coordAddr,
+			cfg.SolanaUSDCMint, privKey, cfg.MockMode, logger)
 		logger.Info("billing: Solana processor enabled",
-			"coordinator_address", cfg.SolanaCoordinatorAddress,
+			"coordinator_address", coordAddr,
 			"mock_mode", cfg.MockMode,
 		)
 	}

@@ -323,26 +323,42 @@ pub fn hash_file(path: &std::path::Path) -> Option<String> {
 
 /// Compute a deterministic SHA-256 fingerprint over multiple files.
 ///
-/// Files are sorted by name and streamed sequentially into a single hasher.
-/// This produces a consistent hash regardless of filesystem ordering, suitable
-/// for verifying sharded model weights (e.g. model-00001.safetensors, model-00002.safetensors).
+/// Each file is hashed independently on its own thread (parallel), then the
+/// per-file hashes are combined in sorted filename order into a final hash.
+/// This produces a consistent result regardless of filesystem ordering and
+/// scales with the number of CPU cores for sharded model weights.
 pub fn hash_files_sorted(paths: &[std::path::PathBuf]) -> Option<String> {
     let mut sorted = paths.to_vec();
     sorted.sort();
 
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 65536];
-    for path in &sorted {
-        let mut file = std::fs::File::open(path).ok()?;
-        loop {
-            let n = file.read(&mut buf).ok()?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-        }
+    // Hash each file in parallel on its own thread.
+    let handles: Vec<_> = sorted
+        .iter()
+        .map(|path| {
+            let path = path.clone();
+            std::thread::spawn(move || -> Option<[u8; 32]> {
+                let mut hasher = Sha256::new();
+                let mut buf = [0u8; 65536];
+                let mut file = std::fs::File::open(&path).ok()?;
+                loop {
+                    let n = file.read(&mut buf).ok()?;
+                    if n == 0 {
+                        break;
+                    }
+                    hasher.update(&buf[..n]);
+                }
+                Some(hasher.finalize().into())
+            })
+        })
+        .collect();
+
+    // Collect per-file hashes and combine in sorted order.
+    let mut final_hasher = Sha256::new();
+    for handle in handles {
+        let file_hash = handle.join().ok()??;
+        final_hasher.update(file_hash);
     }
-    Some(format!("{:x}", hasher.finalize()))
+    Some(format!("{:x}", final_hasher.finalize()))
 }
 
 /// Verify the integrity of the backend binary by checking its hash.

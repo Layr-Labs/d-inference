@@ -1445,6 +1445,7 @@ async fn cmd_serve(
     let inference_active_opt;
     let health_inference_active_opt;
     let provider_stats_opt;
+    let mut rehash_model_hash_opt: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>> = None;
 
     if !local {
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
@@ -1489,6 +1490,7 @@ async fn cmd_serve(
         let initial_model_hash = models::compute_weight_hash(&model);
         let current_model_hash: std::sync::Arc<std::sync::Mutex<Option<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(initial_model_hash));
+        rehash_model_hash_opt = Some(current_model_hash.clone());
 
         let client = coordinator::CoordinatorClient::new(
             coordinator_url,
@@ -1876,7 +1878,10 @@ async fn cmd_serve(
                 (s.model_id.clone(), path)
             })
             .collect();
+        // For idle reload: re-hash weights after reloading to detect tampering
+        let rehash_handle = rehash_model_hash_opt.clone();
         // For backwards compat (idle reload of primary model)
+        let idle_model_id = model.clone();
         let idle_model = model_to_path
             .get(&model)
             .cloned()
@@ -1964,6 +1969,14 @@ async fn cmd_serve(
                                     ).await {
                                         Ok(()) => {
                                             backend_running = true;
+                                            // Re-hash model weights on reload to detect
+                                            // any tampering that occurred while idle.
+                                            if let Some(ref hash_arc) = rehash_handle {
+                                                if let Some(new_hash) = models::compute_weight_hash(&idle_model_id) {
+                                                    *hash_arc.lock().unwrap() = Some(new_hash);
+                                                    tracing::info!("Model weight hash refreshed after reload");
+                                                }
+                                            }
                                         }
                                         Err(e) => {
                                             tracing::error!("Failed to reload backend: {e}");

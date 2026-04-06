@@ -110,6 +110,7 @@ func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cf
 			} else {
 				privKey = base58Encode(derivedKey)
 				coordAddr = derivedAddr
+				cfg.SolanaCoordinatorAddress = derivedAddr // update config so CoordinatorAddress() works
 				logger.Info("billing: Solana keypair derived from mnemonic",
 					"coordinator_address", coordAddr,
 				)

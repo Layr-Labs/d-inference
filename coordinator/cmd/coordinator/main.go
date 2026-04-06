@@ -137,9 +137,8 @@ func main() {
 		// Solana — primary payment rail
 		SolanaRPCURL:             os.Getenv("EIGENINFERENCE_SOLANA_RPC_URL"),
 		SolanaUSDCMint:           envOr("EIGENINFERENCE_SOLANA_USDC_MINT", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), // mainnet USDC
-		SolanaCoordinatorAddress: os.Getenv("EIGENINFERENCE_SOLANA_COORDINATOR_ADDRESS"),                                   // address that receives USDC (auto-derived if mnemonic set)
+		SolanaCoordinatorAddress: os.Getenv("EIGENINFERENCE_SOLANA_COORDINATOR_ADDRESS"),                                   // fallback if no mnemonic (deposit-only, no withdrawals)
 		SolanaMnemonic:           os.Getenv("EIGENINFERENCE_SOLANA_MNEMONIC"),                                              // BIP39 mnemonic → derive keypair + deposit address
-		SolanaPrivateKey:         os.Getenv("EIGENINFERENCE_SOLANA_PRIVATE_KEY"),                                           // deprecated: use EIGENINFERENCE_SOLANA_MNEMONIC
 
 		// Stripe — present but not activated day-1 (set env vars to enable)
 		StripeSecretKey:     os.Getenv("EIGENINFERENCE_STRIPE_SECRET_KEY"),

@@ -336,19 +336,20 @@ type SolanaProcessor struct {
 	rpcURL         string
 	depositAddress string
 	usdcMint       string
-	privateKey     string // base58-encoded hot wallet key for withdrawals
+	signingKey     string // base58-encoded 64-byte ed25519 key (derived from mnemonic)
 	mockMode       bool
 	logger         *slog.Logger
 	httpClient     *http.Client
 }
 
 // NewSolanaProcessor creates a new Solana processor.
-func NewSolanaProcessor(rpcURL, depositAddress, usdcMint, privateKey string, mockMode bool, logger *slog.Logger) *SolanaProcessor {
+// signingKey is a base58-encoded ed25519 private key derived from the mnemonic.
+func NewSolanaProcessor(rpcURL, depositAddress, usdcMint, signingKey string, mockMode bool, logger *slog.Logger) *SolanaProcessor {
 	return &SolanaProcessor{
 		rpcURL:         rpcURL,
 		depositAddress: depositAddress,
 		usdcMint:       usdcMint,
-		privateKey:     privateKey,
+		signingKey:     signingKey,
 		mockMode:       mockMode,
 		logger:         logger,
 		httpClient:     &http.Client{Timeout: 30 * time.Second},
@@ -634,8 +635,8 @@ func (p *SolanaProcessor) SendWithdrawal(req SolanaWithdrawRequest) (*SolanaWith
 		}, nil
 	}
 
-	if p.privateKey == "" {
-		return nil, fmt.Errorf("solana: hot wallet private key not configured for withdrawals")
+	if p.signingKey == "" {
+		return nil, fmt.Errorf("solana: mnemonic not configured — withdrawals require EIGENINFERENCE_SOLANA_MNEMONIC")
 	}
 
 	// Build the SPL token transfer instruction via Solana JSON-RPC.
@@ -645,12 +646,12 @@ func (p *SolanaProcessor) SendWithdrawal(req SolanaWithdrawRequest) (*SolanaWith
 
 // sendSPLTransfer constructs and submits a USDC-SPL token transfer on-chain.
 func (p *SolanaProcessor) sendSPLTransfer(req SolanaWithdrawRequest) (*SolanaWithdrawResult, error) {
-	if p.privateKey == "" {
-		return nil, fmt.Errorf("solana private key not configured")
+	if p.signingKey == "" {
+		return nil, fmt.Errorf("solana signing key not configured")
 	}
 
 	// Step 1: Decode the hot wallet private key (base58 → 64 bytes).
-	privKeyBytes, err := base58Decode(p.privateKey)
+	privKeyBytes, err := base58Decode(p.signingKey)
 	if err != nil {
 		return nil, fmt.Errorf("solana: decode private key: %w", err)
 	}

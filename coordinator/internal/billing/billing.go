@@ -52,14 +52,9 @@ type Config struct {
 	// SolanaMnemonic is a BIP39 mnemonic phrase (12 or 24 words) from which
 	// the coordinator's Solana keypair is derived (SLIP-0010, path m/44'/501'/0'/0').
 	// The derived public key becomes the deposit address, and the private key
-	// is used for withdrawal transactions. If set, SolanaCoordinatorAddress
-	// is ignored (auto-derived from the mnemonic).
+	// is used for withdrawal transactions. SolanaCoordinatorAddress is
+	// auto-derived from the mnemonic.
 	SolanaMnemonic string
-
-	// SolanaPrivateKey is the base58-encoded hot wallet private key used to
-	// sign withdrawal transactions. Deprecated — use SolanaMnemonic instead.
-	// If SolanaMnemonic is set, this is ignored.
-	SolanaPrivateKey string
 
 	// Referral
 	ReferralSharePercent int64 // percentage of platform fee going to referrer (default 20)
@@ -105,10 +100,9 @@ func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cf
 
 	// Initialize Solana processor
 	if cfg.SolanaRPCURL != "" {
-		privKey := cfg.SolanaPrivateKey
-		coordAddr := cfg.SolanaCoordinatorAddress
+		var privKey string
+		var coordAddr string
 
-		// Derive from mnemonic if provided (takes precedence over raw private key)
 		if cfg.SolanaMnemonic != "" {
 			derivedKey, derivedAddr, err := DeriveKeypairFromMnemonic(cfg.SolanaMnemonic)
 			if err != nil {
@@ -120,6 +114,9 @@ func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cf
 					"coordinator_address", coordAddr,
 				)
 			}
+		} else if !cfg.MockMode {
+			logger.Warn("billing: EIGENINFERENCE_SOLANA_MNEMONIC not set — deposits will work but withdrawals are disabled")
+			coordAddr = cfg.SolanaCoordinatorAddress
 		}
 
 		svc.solana = NewSolanaProcessor(cfg.SolanaRPCURL, coordAddr,

@@ -190,13 +190,13 @@ func TestIsOnCurve(t *testing.T) {
 
 // --- SendSPLTransfer Tests ---
 
-func TestSendSPLTransferEmptyPrivateKey(t *testing.T) {
+func TestSendSPLTransferNoSigningKey(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	proc := NewSolanaProcessor(
 		"https://api.mainnet-beta.solana.com",
 		"SomeDepositAddress1111111111111111111111",
 		USDCMintMainnet,
-		"", // empty private key
+		"", // no signing key (no mnemonic configured)
 		false,
 		logger,
 	)
@@ -206,10 +206,10 @@ func TestSendSPLTransferEmptyPrivateKey(t *testing.T) {
 		AmountMicroUSD: 1_000_000,
 	})
 	if err == nil {
-		t.Fatal("expected error for empty private key")
+		t.Fatal("expected error for missing signing key")
 	}
-	if !strings.Contains(err.Error(), "private key not configured") {
-		t.Fatalf("expected 'private key not configured' error, got: %v", err)
+	if !strings.Contains(err.Error(), "mnemonic not configured") {
+		t.Fatalf("expected 'mnemonic not configured' error, got: %v", err)
 	}
 }
 

@@ -245,7 +245,7 @@ func TestIntegration_ConcurrentWithdrawals(t *testing.T) {
 		SolanaRPCURL:             "http://localhost:8899",
 		SolanaCoordinatorAddress: "CoordAddress1111111111111111111111111111111",
 		SolanaUSDCMint:           "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-		SolanaPrivateKey:         "mock-key",
+		SolanaMnemonic:           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
 		MockMode:                 true,
 	})
 	srv.SetBilling(billingSvc)

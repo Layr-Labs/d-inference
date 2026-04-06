@@ -1409,14 +1409,10 @@ async fn cmd_serve(
             .collect()
     } else if let Some(m) = cfg.backend.model.clone() {
         if is_image_model(&m) { vec![] } else { vec![m] }
-    } else if let Some(m) = available_models
-        .iter()
-        .filter(|m| !is_image_model(&m.id))
-        .last()
-    {
-        // Default to largest non-image model
-        vec![m.id.clone()]
     } else {
+        // No --model specified — don't auto-pick. The picker in cmd_start
+        // explicitly chooses which models to serve. If only image models were
+        // selected, this stays empty and only the image bridge runs.
         vec![]
     };
 

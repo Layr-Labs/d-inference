@@ -166,7 +166,7 @@ func generateCombinedProfile(serialNumber string) string {
       <key>PayloadOrganization</key>
       <string>EigenInference</string>
       <key>DirectoryURL</key>
-      <string>https://inference-test.openinnovation.dev/acme/eigeninference-acme/directory</string>
+      <string>https://inference-test.openinnovation.dev/acme/dginf-acme/directory</string>
       <key>ClientIdentifier</key>
       <string>%s</string>
       <key>KeySize</key>

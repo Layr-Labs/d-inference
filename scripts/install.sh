@@ -58,10 +58,12 @@ if [ -z "$RELEASE_JSON" ]; then
     exit 1
 fi
 
-BUNDLE_URL=$(echo "$RELEASE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['url'])")
-BUNDLE_HASH=$(echo "$RELEASE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['bundle_hash'])")
-BINARY_HASH=$(echo "$RELEASE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['binary_hash'])")
-VERSION=$(echo "$RELEASE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])")
+# Extract JSON string fields with sed — no python3 needed, avoids Xcode CLT prompt on fresh Macs
+json_val() { echo "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p"; }
+BUNDLE_URL=$(json_val "$RELEASE_JSON" url)
+BUNDLE_HASH=$(json_val "$RELEASE_JSON" bundle_hash)
+BINARY_HASH=$(json_val "$RELEASE_JSON" binary_hash)
+VERSION=$(json_val "$RELEASE_JSON" version)
 
 echo "  Version: $VERSION"
 echo "  Signed by: Developer ID Application: Eigen Labs, Inc."
@@ -91,7 +93,7 @@ tar xzf /tmp/eigeninference-bundle.tar.gz -C "$BIN_DIR"
 chmod +x "$BIN_DIR/eigeninference-provider" "$BIN_DIR/eigeninference-enclave" 2>/dev/null || true
 rm -f /tmp/eigeninference-bundle.tar.gz
 
-# Verify code signature
+# Verify code signature (codesign is part of base macOS, no CLT needed)
 if codesign --verify --verbose "$BIN_DIR/eigeninference-provider" 2>/dev/null; then
     TEAM=$(codesign -dvv "$BIN_DIR/eigeninference-provider" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)
     echo "  Code signature verified ✓ (Team: $TEAM)"
@@ -258,8 +260,12 @@ IMAGE_MODEL=""
 # Fetch model catalog from coordinator
 CATALOG_JSON=$(curl -fsSL "$COORD_URL/v1/models/catalog" 2>/dev/null || echo "")
 
-if [ -n "$CATALOG_JSON" ] && echo "$CATALOG_JSON" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
-    AVAILABLE_MODELS=$(echo "$CATALOG_JSON" | python3 -c "
+# Use bundled Python (installed in step 3) for catalog parsing — system python3 may not exist
+CATALOG_PYTHON="$PYTHON_BIN"
+[ ! -f "$CATALOG_PYTHON" ] && CATALOG_PYTHON="python3"
+
+if [ -n "$CATALOG_JSON" ] && echo "$CATALOG_JSON" | PYTHONHOME="$INSTALL_DIR/python" "$CATALOG_PYTHON" -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+    AVAILABLE_MODELS=$(echo "$CATALOG_JSON" | PYTHONHOME="$INSTALL_DIR/python" "$CATALOG_PYTHON" -c "
 import sys, json
 data = json.load(sys.stdin)
 mem = int(sys.argv[1])

@@ -609,9 +609,6 @@ enum Command {
         watch: bool,
     },
 
-    /// Show or create provider wallet (stored in ~/.eigeninference/wallet_key)
-    Wallet,
-
     /// Check for updates and install the latest version
     Update {
         /// Coordinator URL to check for latest version
@@ -707,7 +704,6 @@ async fn main() -> Result<()> {
         } => cmd_start(coordinator, model, image_model, image_model_path).await,
         Command::Stop => cmd_stop().await,
         Command::Logs { lines, watch } => cmd_logs(lines, watch).await,
-        Command::Wallet => cmd_wallet().await,
         Command::Update { coordinator } => cmd_update(coordinator).await,
         Command::Login { coordinator } => cmd_login(coordinator).await,
         Command::Logout => cmd_logout().await,
@@ -831,13 +827,8 @@ async fn cmd_install(
     }
     let key_path = crypto::default_key_path()?;
     let _kp = crypto::NodeKeyPair::load_or_generate(&key_path)?;
-    let w = wallet::Wallet::load_or_create()?;
     println!("  ✓ Config: {}", config_path.display());
     println!("  ✓ Node key: {}", key_path.display());
-    println!(
-        "  ✓ Wallet: {} (stored in ~/.eigeninference/wallet_key)",
-        w.address()
-    );
     println!();
 
     // Step 3: MDM enrollment (skip if already enrolled)
@@ -2765,7 +2756,7 @@ async fn cmd_unenroll() -> Result<()> {
     println!("  - Config: ~/.config/eigeninference/");
     println!("  - Node key: ~/.eigeninference/node_key");
     println!("  - Enclave key: ~/.eigeninference/enclave_key.data");
-    println!("  - Wallet key from Secure Enclave (or ~/.eigeninference/wallet_key fallback)");
+    println!("  - Auth token: ~/.eigeninference/auth_token");
     println!();
     println!("Type 'yes' to confirm:");
     let mut input = String::new();
@@ -2775,8 +2766,8 @@ async fn cmd_unenroll() -> Result<()> {
         let _ = std::fs::remove_dir_all(home.join(".config/eigeninference"));
         let _ = std::fs::remove_file(home.join(".eigeninference/node_key"));
         let _ = std::fs::remove_file(home.join(".eigeninference/enclave_key.data"));
-        let _ = wallet::Wallet::delete();
-        println!("  ✓ Local data and wallet cleaned up");
+        let _ = std::fs::remove_file(home.join(".eigeninference/wallet_key"));
+        println!("  ✓ Local data cleaned up");
     } else {
         println!("  Skipped cleanup");
     }
@@ -2786,134 +2777,357 @@ async fn cmd_unenroll() -> Result<()> {
 
 async fn cmd_benchmark() -> Result<()> {
     let hw = hardware::detect()?;
-    println!("EigenInference Benchmark — {}", hw.chip_name);
+    println!();
+    println!("  EigenInference Benchmark");
+    println!("  ─────────────────────────────────────");
+    println!(
+        "  {} · {} GB RAM · {} GPU cores · {} GB/s",
+        hw.chip_name, hw.memory_gb, hw.gpu_cores, hw.memory_bandwidth_gbs
+    );
     println!();
 
-    // Check if mlx-lm is available
-    let has_mlx = std::process::Command::new("python3")
-        .args(["-c", "import mlx_lm; print('ok')"])
+    // Find bundled Python
+    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+    let bundled_python = eigeninference_dir.join("python/bin/python3.12");
+    let python_cmd = if bundled_python.exists() {
+        bundled_python.to_string_lossy().to_string()
+    } else {
+        "python3".to_string()
+    };
+
+    // Verify vllm-mlx is available
+    let has_vllm = std::process::Command::new(&python_cmd)
+        .args(["-c", "import vllm_mlx; print('ok')"])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
 
-    if !has_mlx {
-        println!("mlx-lm not installed. Install with: pip3 install mlx-lm");
-        return Ok(());
+    if !has_vllm {
+        anyhow::bail!("vllm-mlx not found. Run: eigeninference-provider install");
     }
 
-    // Scan available models
-    let models = models::scan_models(&hw);
-    if models.is_empty() {
-        println!("No models downloaded. Download one first:");
-        println!("  huggingface-cli download mlx-community/Qwen3.5-9B-MLX-4bit");
-        return Ok(());
+    // Scan downloaded models and filter by catalog
+    let downloaded = models::scan_models(&hw);
+    let catalog = fetch_catalog("https://inference-test.openinnovation.dev").await;
+    let catalog_ids: std::collections::HashSet<String> =
+        catalog.iter().map(|c| c.id.clone()).collect();
+
+    let servable: Vec<_> = downloaded
+        .iter()
+        .filter(|m| catalog_ids.contains(&m.id))
+        .collect();
+
+    if servable.is_empty() {
+        anyhow::bail!("No catalog models downloaded. Run: eigeninference-provider models download");
     }
 
-    // Benchmark each available model
-    for model in &models {
+    // Let user pick which model to benchmark
+    println!("  Select a model to benchmark:");
+    println!();
+    for (i, m) in servable.iter().enumerate() {
+        let display = catalog
+            .iter()
+            .find(|c| c.id == m.id)
+            .map(|c| c.display_name.as_str())
+            .unwrap_or(&m.id);
         println!(
-            "Benchmarking: {} ({:.1} GB)",
-            model.id, model.estimated_memory_gb
+            "    [{}] {} ({:.1} GB)",
+            i + 1,
+            display,
+            m.estimated_memory_gb
         );
-        let output = std::process::Command::new("python3")
-            .args(["-c", &format!(
-                "import mlx_lm, time\n\
-                 m, t = mlx_lm.load('{}')\n\
-                 prompt = '<|im_start|>user\\nWrite a short poem about the ocean.<|im_end|>\\n<|im_start|>assistant\\n'\n\
-                 start = time.time()\n\
-                 result = mlx_lm.generate(m, t, prompt=prompt, max_tokens=100)\n\
-                 elapsed = time.time() - start\n\
-                 tokens = len(result.split())\n\
-                 print(f'  Tokens: {{tokens}}, Time: {{elapsed:.2f}}s, Speed: {{tokens/elapsed:.1f}} tok/s')",
-                model.id
-            )])
-            .output();
-        match output {
-            Ok(o) if o.status.success() => {
-                print!("{}", String::from_utf8_lossy(&o.stdout));
+    }
+    println!();
+    use std::io::Write;
+    print!(
+        "  Enter number [1-{}] (or press Enter for [1]): ",
+        servable.len()
+    );
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let idx = input
+        .trim()
+        .parse::<usize>()
+        .unwrap_or(1)
+        .saturating_sub(1)
+        .min(servable.len() - 1);
+    let selected = &servable[idx];
+
+    let display_name = catalog
+        .iter()
+        .find(|c| c.id == selected.id)
+        .map(|c| c.display_name.as_str())
+        .unwrap_or(&selected.id);
+
+    println!();
+    println!(
+        "  Benchmarking: {} ({:.1} GB)",
+        display_name, selected.estimated_memory_gb
+    );
+    println!();
+
+    // Resolve model to local path
+    let model_path = models::resolve_local_path(&selected.id)
+        .ok_or_else(|| anyhow::anyhow!("Could not find model on disk: {}", selected.id))?;
+
+    // Run benchmark via vllm-mlx: load model, measure prefill (TTFT) and decode (tok/s)
+    let bench_script = format!(
+        r#"
+import time, json, sys
+sys.path.insert(0, '.')
+from vllm_mlx.engine import MLXEngine
+
+engine = MLXEngine(model="{model_path}", tokenizer="{model_path}")
+
+prompt = "Write a detailed analysis of the economic impact of artificial intelligence on the global workforce over the next decade."
+
+# Warmup
+print("  Warming up...", flush=True)
+engine.generate(prompt, max_tokens=10)
+
+# Benchmark: 3 runs
+results = []
+for run in range(3):
+    start = time.perf_counter()
+    tokens = []
+    first_token_time = None
+    for tok in engine.generate_stream(prompt, max_tokens=200):
+        if first_token_time is None:
+            first_token_time = time.perf_counter()
+        tokens.append(tok)
+    end = time.perf_counter()
+
+    ttft_ms = (first_token_time - start) * 1000 if first_token_time else 0
+    decode_time = end - first_token_time if first_token_time else end - start
+    n_tokens = len(tokens)
+    tps = n_tokens / decode_time if decode_time > 0 else 0
+
+    results.append({{"ttft_ms": ttft_ms, "tokens": n_tokens, "tps": tps, "total_s": end - start}})
+    print(f"  Run {{run+1}}: {{tps:.1f}} tok/s | TTFT {{ttft_ms:.0f}}ms | {{n_tokens}} tokens in {{end-start:.2f}}s", flush=True)
+
+# Summary
+avg_tps = sum(r["tps"] for r in results) / len(results)
+avg_ttft = sum(r["ttft_ms"] for r in results) / len(results)
+print()
+print(f"  Average: {{avg_tps:.1f}} tok/s | TTFT {{avg_ttft:.0f}}ms")
+print(json.dumps({{"avg_tps": avg_tps, "avg_ttft_ms": avg_ttft, "runs": results}}))
+"#,
+        model_path = model_path.display()
+    );
+
+    println!("  Loading model...");
+    println!();
+
+    let mut child = std::process::Command::new(&python_cmd)
+        .args(["-c", &bench_script])
+        .env("PYTHONHOME", eigeninference_dir.join("python"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+
+    // Stream stdout
+    if let Some(stdout) = child.stdout.take() {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                if line.starts_with('{') {
+                    // JSON summary line — parse for structured output
+                    if let Ok(data) = serde_json::from_str::<serde_json::Value>(&line) {
+                        println!("  ─────────────────────────────────────");
+                        println!(
+                            "  Result: {:.1} tok/s decode | {:.0}ms TTFT",
+                            data["avg_tps"].as_f64().unwrap_or(0.0),
+                            data["avg_ttft_ms"].as_f64().unwrap_or(0.0)
+                        );
+                        println!(
+                            "  Theoretical bandwidth utilization: {:.0}%",
+                            (data["avg_tps"].as_f64().unwrap_or(0.0)
+                                * selected.estimated_memory_gb
+                                / hw.memory_bandwidth_gbs as f64)
+                                * 100.0
+                        );
+                    }
+                } else {
+                    println!("{}", line);
+                }
             }
-            _ => println!("  Failed to benchmark this model"),
         }
-        println!();
     }
 
+    let status = child.wait()?;
+    if !status.success() {
+        println!("  Benchmark failed. Check that the model is not corrupted.");
+    }
+
+    println!();
     Ok(())
 }
 
 async fn cmd_status() -> Result<()> {
     let hw = hardware::detect()?;
-    println!("EigenInference Provider Status");
+    let home = dirs::home_dir().unwrap_or_default();
+    let eigeninference_dir = home.join(".eigeninference");
+
+    println!();
+    println!("  EigenInference Provider Status");
+    println!("  ─────────────────────────────────────");
+
+    // Running state
+    let pid_path = eigeninference_dir.join("provider.pid");
+    let is_running = if pid_path.exists() {
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                #[cfg(unix)]
+                {
+                    // Check if process is alive (signal 0 = just check)
+                    unsafe { libc::kill(pid, 0) == 0 }
+                }
+                #[cfg(not(unix))]
+                false
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    // Try to read the current model from the log
+    let serving_model = if is_running {
+        let log_path = eigeninference_dir.join("provider.log");
+        if log_path.exists() {
+            std::fs::read_to_string(&log_path).ok().and_then(|log| {
+                log.lines()
+                    .rev()
+                    .find(|l| l.contains("Primary model:"))
+                    .map(|l| {
+                        l.split("Primary model:")
+                            .nth(1)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string()
+                    })
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if is_running {
+        if let Some(ref model) = serving_model {
+            println!("  Status:     ● Running — serving {}", model);
+        } else {
+            println!("  Status:     ● Running");
+        }
+    } else {
+        println!("  Status:     ○ Stopped");
+    }
     println!();
 
     // Hardware
-    println!("Hardware:");
-    println!("  Chip:       {}", hw.chip_name);
+    println!("  Hardware:");
+    println!("    Chip:       {}", hw.chip_name);
     println!(
-        "  Memory:     {} GB total, {} GB available",
+        "    Memory:     {} GB total, {} GB available",
         hw.memory_gb, hw.memory_available_gb
     );
-    println!("  GPU:        {} cores", hw.gpu_cores);
-    println!("  Bandwidth:  {} GB/s", hw.memory_bandwidth_gbs);
+    println!("    GPU:        {} cores", hw.gpu_cores);
+    println!("    Bandwidth:  {} GB/s", hw.memory_bandwidth_gbs);
     println!();
 
     // Security
-    println!("Security:");
+    println!("  Security:");
     let sip = security::check_sip_enabled();
     println!(
-        "  SIP:              {}",
+        "    SIP:            {}",
         if sip { "✓ Enabled" } else { "✗ DISABLED" }
     );
-    println!("  Secure Enclave:   ✓ Available (Apple Silicon)");
+    println!("    Secure Enclave: ✓ Available");
 
+    let enclave_key = eigeninference_dir.join("enclave_key.data");
     println!(
-        "  MDM enrolled:     {}",
-        if security::check_mdm_enrolled() {
-            "✓ Yes"
-        } else {
-            "✗ No"
-        }
-    );
-    println!();
-
-    // Config
-    let config_path = config::default_config_path()?;
-    println!("Config:");
-    println!(
-        "  Config file:  {}",
-        if config_path.exists() {
-            config_path.display().to_string()
-        } else {
-            "Not created (run: eigeninference-provider init)".to_string()
-        }
-    );
-    let key_path = crypto::default_key_path()?;
-    println!(
-        "  Node key:     {}",
-        if key_path.exists() {
-            "✓ Generated"
-        } else {
-            "✗ Not generated"
-        }
-    );
-
-    let home = dirs::home_dir().unwrap_or_default();
-    let enclave_key = home.join(".eigeninference/enclave_key.data");
-    println!(
-        "  Enclave key:  {}",
+        "    Enclave key:    {}",
         if enclave_key.exists() {
             "✓ Generated"
         } else {
             "✗ Not generated"
         }
     );
+
+    println!(
+        "    MDM enrolled:   {}",
+        if security::check_mdm_enrolled() {
+            "✓ Yes (hardware trust)"
+        } else {
+            "✗ No (self-signed trust only)"
+        }
+    );
     println!();
 
-    // Models
+    // Account
+    let auth_token = eigeninference_dir.join("auth_token");
+    println!("  Account:");
+    println!(
+        "    Linked:   {}",
+        if auth_token.exists() {
+            "✓ Yes"
+        } else {
+            "✗ No — run: eigeninference-provider login"
+        }
+    );
+    println!();
+
+    // Models (catalog-filtered)
     let models = models::scan_models(&hw);
-    println!("Models: {} downloaded", models.len());
-    for m in &models {
-        println!("  {} ({:.1} GB)", m.id, m.estimated_memory_gb);
+    let catalog = fetch_catalog("https://inference-test.openinnovation.dev").await;
+    let catalog_ids: std::collections::HashSet<String> =
+        catalog.iter().map(|c| c.id.clone()).collect();
+
+    let servable: Vec<_> = models
+        .iter()
+        .filter(|m| catalog_ids.contains(&m.id))
+        .collect();
+    let extra: Vec<_> = models
+        .iter()
+        .filter(|m| !catalog_ids.contains(&m.id))
+        .collect();
+
+    println!("  Models ({} servable):", servable.len());
+    for m in &servable {
+        let active = serving_model.as_deref() == Some(&m.id);
+        let marker = if active { "●" } else { " " };
+        let display = catalog
+            .iter()
+            .find(|c| c.id == m.id)
+            .map(|c| c.display_name.as_str())
+            .unwrap_or(&m.id);
+        println!(
+            "    {} {} ({:.1} GB)",
+            marker, display, m.estimated_memory_gb
+        );
     }
+    if !extra.is_empty() {
+        println!("    + {} other models not in catalog", extra.len());
+    }
+
+    if is_running {
+        println!();
+        println!("  Commands:");
+        println!("    eigeninference-provider logs -w    Stream live logs");
+        println!("    eigeninference-provider stop       Stop serving");
+    } else {
+        println!();
+        println!("  Commands:");
+        println!("    eigeninference-provider start       Start serving");
+        println!("    eigeninference-provider models download  Download models");
+    }
+    println!();
 
     Ok(())
 }
@@ -2925,47 +3139,73 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
     // Fetch model catalog from coordinator
     let catalog = fetch_catalog(&coordinator_url).await;
 
-    match action.as_str() {
-        "list" | "ls" => {
+    // When called with no action (default "list"), show the interactive hub
+    let effective_action = if action == "list" {
+        // Show overview first
+        println!();
+        println!("  EigenInference Models");
+        println!("  ─────────────────────────────────────");
+        println!(
+            "  {} · {} GB available",
+            hw.chip_name, hw.memory_available_gb
+        );
+        println!();
+
+        // Catalog section
+        println!("  Catalog:");
+        for cm in &catalog {
+            let fits = hw.memory_available_gb as f64 >= cm.size_gb;
+            let is_downloaded = downloaded.iter().any(|m| m.id == cm.id);
+            let (icon, label) = if is_downloaded {
+                ("✓", "downloaded")
+            } else if fits {
+                ("○", "available")
+            } else {
+                ("✗", "too large")
+            };
             println!(
-                "Models for {} ({} GB available):",
-                hw.chip_name, hw.memory_available_gb
+                "    {} {:>5.1} GB  {}  ({})",
+                icon, cm.size_gb, cm.display_name, label
             );
+        }
+
+        // Non-catalog downloaded models
+        let extra: Vec<_> = downloaded
+            .iter()
+            .filter(|m| !catalog.iter().any(|cm| cm.id == m.id))
+            .collect();
+        if !extra.is_empty() {
             println!();
-            for cm in &catalog {
-                let fits = hw.memory_available_gb as f64 >= cm.size_gb;
-                let is_downloaded = downloaded.iter().any(|m| m.id == cm.id);
-                let status = if is_downloaded {
-                    "✓"
-                } else if fits {
-                    " "
-                } else {
-                    "✗"
-                };
-                let label = if is_downloaded {
-                    "downloaded"
-                } else if fits {
-                    "available"
-                } else {
-                    "too large"
-                };
-                println!(
-                    "  {} {:>5.1} GB  {:15} {:10} {}",
-                    status, cm.size_gb, cm.display_name, label, cm.id
-                );
-            }
-            // Show any downloaded models not in catalog
-            for m in &downloaded {
-                let in_catalog = catalog.iter().any(|cm| cm.id == m.id);
-                if !in_catalog {
-                    println!(
-                        "  ✓ {:>5.1} GB  {:15} {:10} {}",
-                        m.estimated_memory_gb, "", "downloaded", m.id
-                    );
-                }
+            println!("  Other downloads (not in catalog):");
+            for m in &extra {
+                println!("    · {:>5.1} GB  {}", m.estimated_memory_gb, m.id);
             }
         }
 
+        println!();
+        println!("  What would you like to do?");
+        println!();
+        println!("    [1] Download a model");
+        println!("    [2] Remove a model");
+        println!("    [3] Exit");
+        println!();
+
+        use std::io::Write;
+        print!("  Enter choice [1-3]: ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+
+        match input.trim() {
+            "1" => "download".to_string(),
+            "2" => "remove".to_string(),
+            _ => return Ok(()),
+        }
+    } else {
+        action.clone()
+    };
+
+    match effective_action.as_str() {
         "download" | "add" => {
             println!(
                 "Select models to download ({} GB available):",
@@ -3114,11 +3354,6 @@ async fn cmd_earnings(coordinator_url: String) -> Result<()> {
     println!("EigenInference Earnings");
     println!();
 
-    // Load wallet
-    let w = wallet::Wallet::load_or_create()?;
-    println!("Wallet: {}", w.address());
-    println!();
-
     // Query coordinator for balance
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -3145,12 +3380,7 @@ async fn cmd_earnings(coordinator_url: String) -> Result<()> {
     }
 
     // Query provider earnings from the coordinator's ledger
-    // Uses the provider-specific endpoint that looks up by wallet address
-    let earnings_url = format!(
-        "{}/v1/provider/earnings?wallet={}",
-        coordinator_url,
-        w.address()
-    );
+    let earnings_url = format!("{}/v1/provider/earnings", coordinator_url);
     let earnings_resp = client.get(&earnings_url).send().await;
 
     println!();
@@ -3605,21 +3835,6 @@ async fn cmd_stop() -> Result<()> {
     }
 
     println!("Provider stopped.");
-    Ok(())
-}
-
-async fn cmd_wallet() -> Result<()> {
-    println!("EigenInference Provider Wallet");
-    println!();
-
-    let w = wallet::Wallet::load_or_create()?;
-    println!("Address:  {}", w.address());
-    println!("Storage:  ~/.eigeninference/wallet_key");
-    println!();
-    println!("This wallet receives your inference earnings.");
-    println!();
-    println!("To delete: eigeninference-provider unenroll (removes wallet + all data)");
-
     Ok(())
 }
 

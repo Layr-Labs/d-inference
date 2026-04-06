@@ -449,20 +449,6 @@ func TestEdge_CatalogChangeDuringActiveProvider(t *testing.T) {
 	}
 }
 
-func TestEdge_InvalidTrustLevelQuery(t *testing.T) {
-	srv, _ := testServer(t)
-
-	body := `{"model":"test-model","messages":[{"role":"user","content":"hi"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions?trust_level=invalid_level", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-key")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("invalid trust level: status = %d, want 400, body = %s", w.Code, w.Body.String())
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Provider error handling edge cases
 // ---------------------------------------------------------------------------

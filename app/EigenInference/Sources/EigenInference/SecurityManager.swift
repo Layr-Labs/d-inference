@@ -10,13 +10,11 @@ import Foundation
 /// Trust level matching the coordinator's registry.
 enum TrustLevel: String, CaseIterable {
     case none = "none"
-    case selfSigned = "self_signed"
     case hardware = "hardware"
 
     var displayName: String {
         switch self {
         case .none: return "Not Verified"
-        case .selfSigned: return "Software Verified"
         case .hardware: return "Hardware Verified"
         }
     }
@@ -24,7 +22,6 @@ enum TrustLevel: String, CaseIterable {
     var iconName: String {
         switch self {
         case .none: return "xmark.shield"
-        case .selfSigned: return "shield"
         case .hardware: return "checkmark.shield.fill"
         }
     }
@@ -64,11 +61,11 @@ final class SecurityManager: ObservableObject {
         binaryFound = await binaryResult
         nodeKeyExists = await keyResult
 
-        // Determine trust level
+        // Determine trust level — only hardware trust is routable.
+        // Providers without MDM enrollment stay at .none regardless of
+        // Secure Enclave or SIP status.
         if secureEnclaveAvailable && mdmEnrolled && sipEnabled && secureBootEnabled {
             trustLevel = .hardware
-        } else if sipEnabled && secureEnclaveAvailable {
-            trustLevel = .selfSigned
         } else {
             trustLevel = .none
         }

@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import {
   ShieldCheck,
-  ShieldAlert,
   Shield,
   Layers,
   Loader2,
@@ -96,14 +95,6 @@ function TrustBadge({ level }: { level: string }) {
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-green/10 border border-accent-green/20 text-accent-green text-xs font-medium uppercase tracking-wider">
         <ShieldCheck size={10} />
         Hardware
-      </span>
-    );
-  }
-  if (level === "self_signed") {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-amber/10 border border-accent-amber/20 text-accent-amber text-xs font-medium uppercase tracking-wider">
-        <ShieldAlert size={10} />
-        Self-Signed
       </span>
     );
   }

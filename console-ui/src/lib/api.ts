@@ -59,7 +59,7 @@ export interface ChatMessage {
 
 export interface TrustMetadata {
   attested: boolean;
-  trustLevel: "none" | "self_signed" | "hardware";
+  trustLevel: "none" | "hardware";
   secureEnclave: boolean;
   mdaVerified: boolean;
   providerChip: string;

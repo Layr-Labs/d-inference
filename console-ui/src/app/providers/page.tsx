@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import {
   ShieldCheck,
-  ShieldAlert,
   Shield,
   Cpu,
   HardDrive,
@@ -55,14 +54,6 @@ function TrustBadge({ level, mdaVerified }: { level: string; mdaVerified: boolea
       <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-accent-green/10 text-accent-green text-xs font-medium">
         <ShieldCheck size={12} />
         {mdaVerified ? "Apple Attested" : "Hardware Verified"}
-      </span>
-    );
-  }
-  if (level === "self_signed") {
-    return (
-      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-accent-amber/10 text-accent-amber text-xs font-medium">
-        <ShieldAlert size={12} />
-        Verifying...
       </span>
     );
   }

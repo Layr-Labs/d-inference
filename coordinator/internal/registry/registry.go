@@ -866,11 +866,6 @@ func trustRank(t TrustLevel) int {
 	}
 }
 
-// TrustRank is the exported version of trustRank for use by other packages.
-func TrustRank(t TrustLevel) int {
-	return trustRank(t)
-}
-
 // RecordJobSuccess records a successful job completion for the provider's reputation.
 func (r *Registry) RecordJobSuccess(providerID string, responseTime time.Duration) {
 	r.mu.RLock()

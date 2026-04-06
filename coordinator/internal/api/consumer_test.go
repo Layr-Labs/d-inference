@@ -134,14 +134,18 @@ func TestChatCompletionsMissingMessages(t *testing.T) {
 func TestChatCompletionsNoProvider(t *testing.T) {
 	srv, _ := testServer(t)
 
+	// Set a catalog so the unknown model returns 404 immediately instead of
+	// blocking for the full 120s queue timeout.
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: "known-model"}})
+
 	body := `{"model":"nonexistent-model","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-key")
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
 	}
 }
 

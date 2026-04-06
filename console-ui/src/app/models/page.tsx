@@ -58,35 +58,24 @@ function formatBytes(bytes: number): string {
 }
 
 function TrustIndicator({ level }: { level?: string }) {
-  switch (level) {
-    case "hardware":
-      return (
-        <div className="flex items-center gap-1 text-accent-green">
-          <ShieldCheck size={12} />
-          <span className="text-xs font-mono uppercase tracking-wider">
-            Hardware
-          </span>
-        </div>
-      );
-    case "self_signed":
-      return (
-        <div className="flex items-center gap-1 text-accent-amber">
-          <Shield size={12} />
-          <span className="text-xs font-mono uppercase tracking-wider">
-            Self-Signed
-          </span>
-        </div>
-      );
-    default:
-      return (
-        <div className="flex items-center gap-1 text-text-tertiary">
-          <Shield size={12} />
-          <span className="text-xs font-mono uppercase tracking-wider">
-            None
-          </span>
-        </div>
-      );
+  if (level === "hardware") {
+    return (
+      <div className="flex items-center gap-1 text-accent-green">
+        <ShieldCheck size={12} />
+        <span className="text-xs font-mono uppercase tracking-wider">
+          Hardware
+        </span>
+      </div>
+    );
   }
+  return (
+    <div className="flex items-center gap-1 text-text-tertiary">
+      <Shield size={12} />
+      <span className="text-xs font-mono uppercase tracking-wider">
+        None
+      </span>
+    </div>
+  );
 }
 
 export default function ModelsPage() {

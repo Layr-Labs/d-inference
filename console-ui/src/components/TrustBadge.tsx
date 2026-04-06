@@ -1,6 +1,6 @@
 "use client";
 
-import { Shield, ShieldCheck, ShieldAlert } from "lucide-react";
+import { Shield, ShieldCheck } from "lucide-react";
 import type { TrustMetadata } from "@/lib/api";
 
 const config = {
@@ -17,13 +17,6 @@ const config = {
     color: "text-teal",
     bg: "bg-teal-light/50",
     glow: "trust-glow-hardware",
-  },
-  self_signed: {
-    icon: ShieldAlert,
-    label: "Self-Signed",
-    color: "text-gold",
-    bg: "bg-gold-light/50",
-    glow: "",
   },
   none: {
     icon: Shield,

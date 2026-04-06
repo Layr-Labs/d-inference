@@ -313,7 +313,6 @@ private struct SecurityTab: View {
     private var trustColor: Color {
         switch viewModel.securityManager.trustLevel {
         case .hardware: return .tealAccent
-        case .selfSigned: return .gold
         case .none: return .warmError
         }
     }
@@ -321,7 +320,6 @@ private struct SecurityTab: View {
     private var trustDescription: String {
         switch viewModel.securityManager.trustLevel {
         case .hardware: return "All security checks pass. Your provider will receive inference requests."
-        case .selfSigned: return "Partial verification. Complete MDM enrollment for hardware trust."
         case .none: return "Not verified. Complete the setup wizard to enable inference routing."
         }
     }

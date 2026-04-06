@@ -30,9 +30,9 @@ describe("TrustBadge", () => {
     expect(screen.getByText("Unverified")).toBeInTheDocument();
   });
 
-  it("renders 'Self-Signed' for self_signed trust level", () => {
-    render(<TrustBadge trust={makeTrust({ trustLevel: "self_signed" })} />);
-    expect(screen.getByText("Self-Signed")).toBeInTheDocument();
+  it("renders 'Unverified' for non-hardware trust levels", () => {
+    render(<TrustBadge trust={makeTrust({ trustLevel: "none" })} />);
+    expect(screen.getByText("Unverified")).toBeInTheDocument();
   });
 
   it("renders 'Hardware Attested' for hardware without MDA", () => {

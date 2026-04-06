@@ -452,7 +452,6 @@ struct DashboardView: View {
     private var trustColor: Color {
         switch viewModel.securityManager.trustLevel {
         case .hardware: return .tealAccent
-        case .selfSigned: return .gold
         case .none: return .warmError
         }
     }

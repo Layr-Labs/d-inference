@@ -182,7 +182,7 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private var trustWarning: some View {
-        if viewModel.securityManager.trustLevel == .none {
+        if viewModel.securityManager.trustLevel != .hardware {
             Button(action: { openWindow(id: "setup") }) {
                 HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -190,16 +190,6 @@ struct MenuBarView: View {
                 }
                 .font(.captionWarm)
                 .foregroundStyle(Color.warmError)
-            }
-            .buttonStyle(.plain)
-        } else if viewModel.securityManager.trustLevel == .selfSigned {
-            Button(action: { openWindow(id: "setup") }) {
-                HStack(spacing: 4) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                    Text("Enroll in MDM for hardware trust \u{2192}")
-                }
-                .font(.captionWarm)
-                .foregroundStyle(Color.gold)
             }
             .buttonStyle(.plain)
         }
@@ -289,7 +279,6 @@ struct MenuBarView: View {
     private var trustColor: Color {
         switch viewModel.securityManager.trustLevel {
         case .hardware: return .tealAccent
-        case .selfSigned: return .gold
         case .none: return .warmError
         }
     }

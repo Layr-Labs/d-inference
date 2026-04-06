@@ -4,7 +4,6 @@ import { useState } from "react";
 import type { TrustMetadata } from "@/lib/api";
 import {
   ShieldCheck,
-  ShieldAlert,
   Shield,
   ChevronDown,
   Check,
@@ -59,29 +58,14 @@ export function VerificationPanel({ trust }: { trust: TrustMetadata }) {
   } | null>(null);
 
   const isHardware = trust.trustLevel === "hardware";
-  const isSelfSigned = trust.trustLevel === "self_signed";
 
-  const Icon = isHardware
-    ? ShieldCheck
-    : isSelfSigned
-    ? ShieldAlert
-    : Shield;
-  const color = isHardware
-    ? "text-accent-green"
-    : isSelfSigned
-    ? "text-accent-amber"
-    : "text-text-tertiary";
-  const bg = isHardware
-    ? "bg-accent-green/5"
-    : isSelfSigned
-    ? "bg-accent-amber/5"
-    : "bg-bg-secondary";
+  const Icon = isHardware ? ShieldCheck : Shield;
+  const color = isHardware ? "text-accent-green" : "text-text-tertiary";
+  const bg = isHardware ? "bg-accent-green/5" : "bg-bg-secondary";
   const title = isHardware
     ? trust.mdaVerified
       ? "Apple Attested"
       : "Hardware Verified"
-    : isSelfSigned
-    ? "Verifying..."
     : "Unverified";
 
   const chipLabel = trust.providerChip
@@ -306,9 +290,7 @@ export function VerificationPanel({ trust }: { trust: TrustMetadata }) {
           {!isHardware && (
             <div className="mt-3 pt-2 border-t border-border-dim/50">
               <p className="text-xs text-text-tertiary leading-relaxed">
-                {isSelfSigned
-                  ? "This provider presented a Secure Enclave attestation. MDM and Apple Device Attestation are being verified..."
-                  : "This provider has not been verified."}
+                This provider has not been verified.
               </p>
             </div>
           )}

@@ -126,28 +126,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Consumer-selectable trust level. Consumers can request a minimum trust
-	// tier (e.g. "hardware") to filter providers. If not specified, uses the
-	// registry's default (hardware).
-	var requestedTrust registry.TrustLevel
-	if trustParam := r.URL.Query().Get("trust_level"); trustParam != "" {
-		requestedTrust = registry.TrustLevel(trustParam)
-		if trustRank := registry.TrustRank(requestedTrust); trustRank < 0 {
-			refundReservation()
-			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
-				fmt.Sprintf("invalid trust_level %q — valid values: none, self_signed, hardware", trustParam)))
-			return
-		}
-	}
-
-	// Find a provider that serves the requested model.
-	provider := s.registry.FindProviderWithTrust(req.Model, requestedTrust)
+	// Find a hardware-trusted provider that serves the requested model.
+	provider := s.registry.FindProvider(req.Model)
 	if provider == nil {
-		trustDesc := "hardware-trusted"
-		if requestedTrust != "" {
-			trustDesc = string(requestedTrust)
-		}
-		// No idle provider at requested trust — try queueing.
+		// No idle provider — try queueing.
 		queuedReq := &registry.QueuedRequest{
 			RequestID:  uuid.New().String(),
 			Model:      req.Model,
@@ -155,13 +137,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
 			refundReservation()
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no %s provider available for model %q and queue is full", trustDesc, req.Model)))
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider available for model %q and queue is full", req.Model)))
 			return
 		}
 
 		s.logger.Info("request queued, waiting for provider",
 			"model", req.Model,
-			"trust_level", trustDesc,
 			"queue_request_id", queuedReq.RequestID,
 		)
 
@@ -169,7 +150,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		provider, err = s.registry.Queue().WaitForProvider(queuedReq)
 		if err != nil {
 			refundReservation()
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no %s provider became available for model %q (queue timeout)", trustDesc, req.Model)))
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider became available for model %q (queue timeout)", req.Model)))
 			return
 		}
 	}
@@ -602,9 +583,8 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Find a provider that serves the requested image model.
-	requestedTrust := registry.TrustLevel(r.URL.Query().Get("trust_level"))
-	provider := s.registry.FindProviderWithTrust(req.Model, requestedTrust)
+	// Find a hardware-trusted provider that serves the requested image model.
+	provider := s.registry.FindProvider(req.Model)
 	if provider == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
 			fmt.Sprintf("no provider available for image model %q", req.Model)))
@@ -1262,12 +1242,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Inject the endpoint so the provider knows which local path to forward to.
 	parsed["endpoint"] = endpoint
 
-	var requestedTrust registry.TrustLevel
-	if trustParam := r.URL.Query().Get("trust_level"); trustParam != "" {
-		requestedTrust = registry.TrustLevel(trustParam)
-	}
-
-	provider := s.registry.FindProviderWithTrust(model, requestedTrust)
+	provider := s.registry.FindProvider(model)
 	if provider == nil {
 		queuedReq := &registry.QueuedRequest{
 			RequestID:  uuid.New().String(),

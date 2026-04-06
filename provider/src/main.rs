@@ -2950,9 +2950,9 @@ async fn cmd_enroll(coordinator_url: String) -> Result<()> {
         // Small delay so the profile registers before we open the pane
         std::thread::sleep(std::time::Duration::from_secs(1));
 
-        // Step 2: open System Settings directly to Device Management
+        // Step 2: open System Settings directly to Profiles pane
         let _ = std::process::Command::new("open")
-            .arg("x-apple.systempreferences:com.apple.settings.PrivacySecurity.DeviceManagement")
+            .arg("x-apple.systempreferences:com.apple.Profiles-Settings.extension")
             .status();
 
         println!("→ System Settings opened to Device Management");

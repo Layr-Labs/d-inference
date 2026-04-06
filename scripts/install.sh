@@ -233,7 +233,7 @@ elif [ -n "$SERIAL" ]; then
         # Register the profile, then open System Settings to the install pane
         open "/tmp/EigenInference-Enroll-${SERIAL}.mobileconfig"
         sleep 1
-        open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.DeviceManagement"
+        open "x-apple.systempreferences:com.apple.Profiles-Settings.extension"
 
         echo "  System Settings opened — click Install and enter your password."
         echo ""

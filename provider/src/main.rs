@@ -4161,15 +4161,49 @@ async fn cmd_start(
                 model_type: String,
             }
 
+            // Fetch expected file sizes from CDN via HEAD requests to detect partial downloads.
+            let cdn_base = "https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev";
+            let cdn_sizes: std::collections::HashMap<String, u64> = {
+                let client = reqwest::Client::new();
+                let mut sizes = std::collections::HashMap::new();
+                for c in &catalog {
+                    if let Some(on_disk) = downloaded.iter().find(|m| m.id == c.id) {
+                        // Only HEAD-check models we have locally (to verify completeness)
+                        let url = if c.id.ends_with(".ckpt") {
+                            format!("{}/{}/{}", cdn_base, c.s3_name, c.id)
+                        } else {
+                            format!("{}/{}/model.safetensors", cdn_base, c.s3_name)
+                        };
+                        if let Ok(resp) = client
+                            .head(&url)
+                            .timeout(std::time::Duration::from_secs(5))
+                            .send()
+                            .await
+                        {
+                            if let Some(len) = resp.content_length() {
+                                sizes.insert(c.id.clone(), len);
+                            }
+                        }
+                    }
+                }
+                sizes
+            };
+
             let mut items: Vec<PickerItem> = catalog
                 .iter()
                 .filter(|c| (c.min_ram_gb as f64) <= hw.memory_gb as f64)
                 .map(|c| {
-                    // Check if model is downloaded AND not a trivial partial file.
-                    // A real model is at least 500 MB. Partial downloads from interrupted
-                    // transfers are typically much smaller.
+                    // Check if model is downloaded AND matches expected CDN size.
                     let on_disk = downloaded.iter().find(|m| m.id == c.id);
-                    let is_downloaded = on_disk.is_some_and(|m| m.size_bytes > 500_000_000);
+                    let is_downloaded = on_disk.is_some_and(|m| {
+                        if let Some(&expected) = cdn_sizes.get(&c.id) {
+                            // Compare raw file size against CDN Content-Length
+                            m.size_bytes >= expected
+                        } else {
+                            // No CDN size available — trust if file is non-trivial
+                            m.size_bytes > 500_000_000
+                        }
+                    });
                     let size = if is_downloaded {
                         on_disk.map(|m| m.estimated_memory_gb).unwrap_or(c.size_gb)
                     } else {

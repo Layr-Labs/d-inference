@@ -5,20 +5,20 @@ set -euo pipefail
 # Usage: curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash
 #
 # This script:
-#   1. Downloads the provider binary, enclave helper, Python runtime, and ffmpeg
-#   2. Verifies the inference runtime
-#   3. Sets up Secure Enclave identity
-#   4. Installs MDM enrollment profile (for hardware attestation)
-#   5. Downloads the best model for your hardware
-#   6. Installs the EigenInference menu bar app (from coordinator)
-#   7. Starts the provider in the background
+#   1. Fetches the latest signed release from the coordinator
+#   2. Downloads the provider bundle (binary + enclave helper)
+#   3. Verifies the bundle hash
+#   4. Sets up Python runtime + ffmpeg
+#   5. Sets up Secure Enclave identity
+#   6. Downloads the best model for your hardware
+#   7. Summary with next steps
 #
 # Zero prerequisites — just macOS + Apple Silicon.
 
-BASE_URL="https://inference-test.openinnovation.dev"
-EIGENINFERENCE_DIR="$HOME/.eigeninference"
-BIN_DIR="$EIGENINFERENCE_DIR/bin"
-PYTHON_BIN="$EIGENINFERENCE_DIR/python/bin/python3.12"
+COORD_URL="https://inference-test.openinnovation.dev"
+INSTALL_DIR="$HOME/.eigeninference"
+BIN_DIR="$INSTALL_DIR/bin"
+PYTHON_BIN="$INSTALL_DIR/python/bin/python3.12"
 
 # Detect if running interactively (terminal) or piped (curl | bash)
 if [ -t 0 ]; then
@@ -28,7 +28,7 @@ else
 fi
 
 echo "╔══════════════════════════════════════════════╗"
-echo "║  EigenInference — Decentralized Private Inference     ║"
+echo "║  EigenInference — Private AI on Verified Macs ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 
@@ -48,70 +48,62 @@ SERIAL=$(ioreg -c IOPlatformExpertDevice -d 2 | awk -F'"' '/IOPlatformSerialNumb
 echo "  $CHIP · ${MEM}GB · macOS $(sw_vers -productVersion)"
 echo ""
 
-# ─── Step 1: Download and install bundle ──────────────────────
-echo "→ [1/9] Downloading EigenInference..."
-mkdir -p "$EIGENINFERENCE_DIR" "$BIN_DIR"
+# ─── Step 1: Fetch latest release ────────────────────────────
+echo "→ [1/7] Fetching latest release..."
 
-# Fetch latest release metadata from coordinator (version, hash, R2 download URL).
-RELEASE_JSON=$(curl -fsSL "$BASE_URL/v1/releases/latest?platform=macos-arm64" 2>/dev/null || echo "")
-
-if [ -n "$RELEASE_JSON" ] && echo "$RELEASE_JSON" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
-    BUNDLE_URL=$(echo "$RELEASE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['url'])")
-    EXPECTED_HASH=$(echo "$RELEASE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('bundle_hash',''))")
-    RELEASE_VERSION=$(echo "$RELEASE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])")
-    echo "  Version: $RELEASE_VERSION"
-    echo "  Downloading from CDN..."
-    curl -f#L "$BUNDLE_URL" -o "/tmp/eigeninference-bundle.tar.gz"
-
-    # Verify bundle hash before installing.
-    if [ -n "$EXPECTED_HASH" ] && [ "$EXPECTED_HASH" != "" ]; then
-        ACTUAL_HASH=$(shasum -a 256 /tmp/eigeninference-bundle.tar.gz | cut -d' ' -f1)
-        if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
-            echo ""
-            echo "  ERROR: Bundle hash mismatch — download may be compromised!"
-            echo "  Expected: $EXPECTED_HASH"
-            echo "  Got:      $ACTUAL_HASH"
-            rm -f /tmp/eigeninference-bundle.tar.gz
-            exit 1
-        fi
-        echo "  Hash verified ✓"
-    fi
-else
-    # Fallback: download directly from coordinator (legacy path).
-    echo "  Downloading from coordinator (release API unavailable)..."
-    curl -f#L "$BASE_URL/dl/eigeninference-bundle-macos-arm64.tar.gz" -o "/tmp/eigeninference-bundle.tar.gz"
+RELEASE_JSON=$(curl -fsSL "$COORD_URL/v1/releases/latest" 2>/dev/null || echo "")
+if [ -z "$RELEASE_JSON" ]; then
+    echo "  ✗ Could not reach coordinator at $COORD_URL"
+    echo "    Check your internet connection and try again."
+    exit 1
 fi
+
+BUNDLE_URL=$(echo "$RELEASE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['url'])")
+BUNDLE_HASH=$(echo "$RELEASE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['bundle_hash'])")
+BINARY_HASH=$(echo "$RELEASE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['binary_hash'])")
+VERSION=$(echo "$RELEASE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])")
+
+echo "  Version: $VERSION"
+echo "  Signed by: Developer ID Application: Eigen Labs, Inc."
+echo ""
+
+# ─── Step 2: Download and install bundle ──────────────────────
+echo "→ [2/7] Downloading EigenInference v${VERSION}..."
+mkdir -p "$INSTALL_DIR" "$BIN_DIR"
+
+curl -f#L "$BUNDLE_URL" -o "/tmp/eigeninference-bundle.tar.gz"
+
+# Verify bundle hash
+ACTUAL_HASH=$(shasum -a 256 /tmp/eigeninference-bundle.tar.gz | cut -d' ' -f1)
+if [ "$ACTUAL_HASH" != "$BUNDLE_HASH" ]; then
+    echo ""
+    echo "  ✗ Bundle hash mismatch — download may be corrupted."
+    echo "    Expected: $BUNDLE_HASH"
+    echo "    Got:      $ACTUAL_HASH"
+    rm -f /tmp/eigeninference-bundle.tar.gz
+    exit 1
+fi
+echo ""
+echo "  Hash verified ✓"
 
 echo "  Installing binaries..."
-tar xzf /tmp/eigeninference-bundle.tar.gz -C "$EIGENINFERENCE_DIR"
-mv "$EIGENINFERENCE_DIR/eigeninference-provider" "$BIN_DIR/" 2>/dev/null || true
-mv "$EIGENINFERENCE_DIR/eigeninference-enclave" "$BIN_DIR/" 2>/dev/null || true
-mv "$EIGENINFERENCE_DIR/gRPCServerCLI-macOS" "$BIN_DIR/" 2>/dev/null || true
+tar xzf /tmp/eigeninference-bundle.tar.gz -C "$BIN_DIR"
 chmod +x "$BIN_DIR/eigeninference-provider" "$BIN_DIR/eigeninference-enclave" 2>/dev/null || true
-chmod +x "$BIN_DIR/gRPCServerCLI-macOS" 2>/dev/null || true
 rm -f /tmp/eigeninference-bundle.tar.gz
 
-# Download bundled Python runtime (self-contained: Python 3.12 + vllm-mlx + mlx + mlx_lm).
-# This is a complete, standalone Python — no system Python or pip needed.
-if [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "import vllm_mlx" 2>/dev/null; then
-    echo "  Python runtime already installed ✓"
+# Verify code signature
+if codesign --verify --verbose "$BIN_DIR/eigeninference-provider" 2>/dev/null; then
+    TEAM=$(codesign -dvv "$BIN_DIR/eigeninference-provider" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)
+    echo "  Code signature verified ✓ (Team: $TEAM)"
 else
-    echo "  Downloading Python runtime (~105 MB)..."
-    curl -f#L "$BASE_URL/dl/eigeninference-python-runtime.tar.gz" -o "/tmp/eigeninference-python.tar.gz"
-    # Remove any existing broken/symlinked Python install
-    rm -rf "$EIGENINFERENCE_DIR/python"
-    tar xzf /tmp/eigeninference-python.tar.gz -C "$EIGENINFERENCE_DIR"
-    rm -f /tmp/eigeninference-python.tar.gz
-    echo "  Python runtime installed ✓"
+    echo "  ⚠ Code signature could not be verified"
 fi
 
-# Make eigeninference-provider available system-wide via /usr/local/bin symlink
-# This works immediately — no need to restart the terminal
+# Make available system-wide
 mkdir -p /usr/local/bin 2>/dev/null || true
 ln -sf "$BIN_DIR/eigeninference-provider" /usr/local/bin/eigeninference-provider 2>/dev/null || true
-ln -sf "$BIN_DIR/eigeninference-enclave" /usr/local/bin/eigeninference-enclave 2>/dev/null || true
 
-# Also add to PATH in shell rc for environments where /usr/local/bin isn't in PATH
+# Add to PATH in shell rc if needed
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     RC="$HOME/.zshrc"
     [ -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ] && RC="$HOME/.bashrc"
@@ -121,34 +113,69 @@ fi
 
 echo "  Binaries installed ✓"
 
-# ─── Step 2: Verify inference runtime + ffmpeg ────────────────
-echo ""
-echo "→ [2/9] Verifying inference runtime..."
-
-# Verify bundled Python + vllm-mlx
-if [ -f "$PYTHON_BIN" ]; then
-    PYTHONHOME="$EIGENINFERENCE_DIR/python" "$PYTHON_BIN" -c \
-        "import vllm_mlx; print(f'  vllm-mlx {vllm_mlx.__version__} ✓')" 2>/dev/null \
-        || echo "  ⚠ vllm-mlx import failed — inference may fall back to mlx_lm"
-else
-    echo "  ✗ Bundled Python not found — inference will not work"
-    echo "    Reinstall: curl -fsSL $BASE_URL/install.sh | bash"
+# ─── Migrate from old install (if exists) ─────────────────────
+if [ -d "$HOME/.dginf" ] && [ ! -L "$HOME/.dginf" ]; then
+    echo ""
+    echo "  Migrating from previous installation..."
+    # Copy over enclave keys, wallet, and config
+    for f in enclave_key.data enclave_e2e_ka.data wallet_key; do
+        [ -f "$HOME/.dginf/$f" ] && cp -n "$HOME/.dginf/$f" "$INSTALL_DIR/$f" 2>/dev/null || true
+    done
+    # Symlink python if not already present
+    if [ -d "$HOME/.dginf/python" ] && [ ! -d "$INSTALL_DIR/python" ]; then
+        ln -sf "$HOME/.dginf/python" "$INSTALL_DIR/python"
+    fi
+    # Symlink ffmpeg
+    if [ -f "$HOME/.dginf/ffmpeg" ] && [ ! -f "$INSTALL_DIR/ffmpeg" ]; then
+        ln -sf "$HOME/.dginf/ffmpeg" "$INSTALL_DIR/ffmpeg"
+    fi
+    echo "  Migration complete ✓"
 fi
 
-# Ensure ffmpeg is available (needed for audio transcription)
+# ─── Step 3: Python runtime + ffmpeg ─────────────────────────
+echo ""
+echo "→ [3/7] Verifying inference runtime..."
+
+# Check for Python runtime
+if [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "import vllm_mlx" 2>/dev/null; then
+    echo "  Python runtime ✓"
+else
+    echo "  Downloading Python runtime (~105 MB)..."
+    if curl -f#L "$COORD_URL/dl/eigeninference-python-runtime.tar.gz" -o "/tmp/eigeninference-python.tar.gz" 2>/dev/null; then
+        rm -rf "$INSTALL_DIR/python"
+        tar xzf /tmp/eigeninference-python.tar.gz -C "$INSTALL_DIR"
+        rm -f /tmp/eigeninference-python.tar.gz
+        echo ""
+        echo "  Python runtime installed ✓"
+    else
+        # Fallback to old URL
+        if curl -f#L "$COORD_URL/dl/dginf-python-runtime.tar.gz" -o "/tmp/eigeninference-python.tar.gz" 2>/dev/null; then
+            rm -rf "$INSTALL_DIR/python"
+            tar xzf /tmp/eigeninference-python.tar.gz -C "$INSTALL_DIR"
+            rm -f /tmp/eigeninference-python.tar.gz
+            echo ""
+            echo "  Python runtime installed ✓"
+        else
+            echo "  ⚠ Python runtime download failed — inference won't work without it"
+        fi
+    fi
+fi
+
+# Verify vllm-mlx
+if [ -f "$PYTHON_BIN" ]; then
+    PYTHONHOME="$INSTALL_DIR/python" "$PYTHON_BIN" -c \
+        "import vllm_mlx; print(f'  vllm-mlx {vllm_mlx.__version__} ✓')" 2>/dev/null \
+        || echo "  ⚠ vllm-mlx import failed"
+fi
+
+# Ensure ffmpeg is available
 if command -v ffmpeg &>/dev/null; then
     echo "  ffmpeg ✓"
-elif [ -x "$BIN_DIR/ffmpeg" ]; then
+elif [ -x "$BIN_DIR/ffmpeg" ] || [ -x "$INSTALL_DIR/ffmpeg" ]; then
     echo "  ffmpeg ✓ (bundled)"
-elif [ -f "$EIGENINFERENCE_DIR/ffmpeg" ]; then
-    # Extracted from tarball
-    mv "$EIGENINFERENCE_DIR/ffmpeg" "$BIN_DIR/ffmpeg"
-    chmod +x "$BIN_DIR/ffmpeg"
-    echo "  ffmpeg ✓"
 else
-    # Download static ffmpeg binary — no Homebrew needed
     echo "  Downloading ffmpeg..."
-    if curl -fsSL "$BASE_URL/dl/ffmpeg-macos-arm64" -o "$BIN_DIR/ffmpeg" 2>/dev/null; then
+    if curl -fsSL "$COORD_URL/dl/ffmpeg-macos-arm64" -o "$BIN_DIR/ffmpeg" 2>/dev/null; then
         chmod +x "$BIN_DIR/ffmpeg"
         echo "  ffmpeg ✓"
     else
@@ -156,21 +183,18 @@ else
     fi
 fi
 
-# ─── Step 3: Secure Enclave identity ─────────────────────────
+# ─── Step 4: Secure Enclave identity ─────────────────────────
 echo ""
-echo "→ [3/9] Setting up Secure Enclave identity..."
-rm -f "$EIGENINFERENCE_DIR/enclave_key.data" 2>/dev/null
+echo "→ [4/7] Setting up Secure Enclave identity..."
+
 "$BIN_DIR/eigeninference-enclave" info >/dev/null 2>&1 \
     && echo "  Secure Enclave ✓ (P-256 key generated)" \
     || echo "  Secure Enclave ⚠ (not available on this hardware)"
 
-# ─── Step 4: Enrollment + device attestation ─────────────────
+# ─── Step 5: Enrollment + device attestation ─────────────────
 echo ""
-echo "→ [4/9] Enrollment + device attestation..."
+echo "→ [5/7] Enrollment + device attestation..."
 
-# Check if already enrolled before prompting.
-# `profiles list` only shows user-level profiles — MDM is device-level.
-# `profiles status -type enrollment` reliably reports MDM without sudo.
 ALREADY_ENROLLED=false
 if profiles status -type enrollment 2>&1 | grep -q "MDM enrollment: Yes"; then
     ALREADY_ENROLLED=true
@@ -181,22 +205,22 @@ if [ "$ALREADY_ENROLLED" = true ]; then
 elif [ -n "$SERIAL" ]; then
     echo "  Requesting enrollment profile..."
     rm -f "/tmp/EigenInference-Enroll-${SERIAL}.mobileconfig" 2>/dev/null
-    if curl -fsSL -X POST "$BASE_URL/v1/enroll" \
+    if curl -fsSL -X POST "$COORD_URL/v1/enroll" \
         -H "Content-Type: application/json" \
         -d "{\"serial_number\": \"$SERIAL\"}" \
         -o "/tmp/EigenInference-Enroll-${SERIAL}.mobileconfig" 2>/dev/null; then
         echo ""
-        echo "  ┌─────────────────────────────────────────────────┐"
-        echo "  │ ACTION REQUIRED: Install the EigenInference profile      │"
-        echo "  │                                                 │"
-        echo "  │ This profile will:                              │"
-        echo "  │  • Verify SIP, Secure Boot, system integrity    │"
-        echo "  │  • Generate a key in your Secure Enclave        │"
-        echo "  │  • Apple verifies your device is genuine        │"
-        echo "  │                                                 │"
-        echo "  │ EigenInference CANNOT erase, lock, or control your Mac.  │"
-        echo "  │ Remove anytime: System Settings > Device Mgmt   │"
-        echo "  └─────────────────────────────────────────────────┘"
+        echo "  ┌──────────────────────────────────────────────────┐"
+        echo "  │ ACTION REQUIRED: Install the enrollment profile   │"
+        echo "  │                                                   │"
+        echo "  │ This profile will:                                │"
+        echo "  │  • Verify SIP, Secure Boot, system integrity      │"
+        echo "  │  • Generate a key in your Secure Enclave          │"
+        echo "  │  • Apple verifies your device is genuine          │"
+        echo "  │                                                   │"
+        echo "  │ EigenInference CANNOT erase, lock, or control     │"
+        echo "  │ your Mac. Remove anytime in System Settings.      │"
+        echo "  └──────────────────────────────────────────────────┘"
         echo ""
         open "/tmp/EigenInference-Enroll-${SERIAL}.mobileconfig"
 
@@ -215,52 +239,20 @@ else
     echo "  Enrollment ⚠ (serial number not found)"
 fi
 
-# ─── Step 5: Link to account (device auth) ───────────────────
-echo ""
-echo "→ [5/9] Link to your account..."
-
-# Skip if already logged in.
-if [ -f "$HOME/.config/eigeninference/auth_token" ]; then
-    echo "  Already linked ✓"
-else
-    echo ""
-    echo "  You must link this machine to your account to receive earnings."
-    echo ""
-
-    if [ "$INTERACTIVE" = true ]; then
-        "$BIN_DIR/eigeninference-provider" login --coordinator "$BASE_URL" 2>&1 || {
-            echo ""
-            echo "  ⚠ Account linking failed. You must link before serving:"
-            echo "    eigeninference-provider login"
-        }
-    else
-        echo "  REQUIRED: Run this after install to link your account:"
-        echo "    eigeninference-provider login"
-        echo ""
-        echo "  You will not earn rewards until your account is linked."
-    fi
-fi
-
 # ─── Step 6: Download inference model ─────────────────────────
 echo ""
-echo "→ [6/9] Downloading inference model..."
+echo "→ [6/7] Selecting inference model..."
 
-# Initialize model variables (set -u requires all vars to be defined before use)
 MODEL=""
 S3_NAME=""
 MODEL_NAME=""
 MODEL_SIZE=""
-MODEL_TYPE=""
 IMAGE_MODEL=""
-IMAGE_S3_NAME=""
-IMAGE_MODEL_NAME=""
-IMAGE_MODEL_SIZE=""
 
-# Fetch model catalog from coordinator. The user picks which model to serve.
-CATALOG_JSON=$(curl -fsSL "$BASE_URL/v1/models/catalog" 2>/dev/null || echo "")
+# Fetch model catalog from coordinator
+CATALOG_JSON=$(curl -fsSL "$COORD_URL/v1/models/catalog" 2>/dev/null || echo "")
 
 if [ -n "$CATALOG_JSON" ] && echo "$CATALOG_JSON" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
-    # Show available models and let the user pick
     AVAILABLE_MODELS=$(echo "$CATALOG_JSON" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
@@ -293,240 +285,90 @@ for m in data.get('models', []):
                     S3_NAME=$(echo "$MODEL_LINE" | cut -d'|' -f2)
                     MODEL_NAME=$(echo "$MODEL_LINE" | cut -d'|' -f3)
                     MODEL_SIZE="~$(echo "$MODEL_LINE" | cut -d'|' -f4) GB"
-                    MODEL_TYPE=$(echo "$MODEL_LINE" | cut -d'|' -f5)
                 else
                     echo "  Invalid selection."
                 fi
             else
-                echo "  Skipped model selection."
-                echo "  You can download models later: eigeninference-provider models download"
+                echo "  Skipped — download models later: eigeninference-provider models download"
             fi
         else
-            echo "  Run interactively to select a model:"
-            echo "    curl -fsSL $BASE_URL/install.sh | bash -s"
-            echo "  Or download later: eigeninference-provider models download"
+            echo "  Run interactively to select: curl -fsSL $COORD_URL/install.sh | bash -s"
         fi
+    else
+        echo "  No models in catalog for ${MEM}GB RAM"
     fi
 fi
 
-# Fallback only if catalog fetch failed entirely (network error) AND interactive.
-if [ -z "$MODEL" ] && [ -z "$CATALOG_JSON" ] && [ "$INTERACTIVE" = true ]; then
-    echo "  Catalog unavailable. Select a default model?"
-    if [ "$MEM" -ge 36 ]; then
-        read -p "  Download Qwen3.5 27B (~27 GB)? [y/N]: " DL_DEFAULT
-        if [ "$DL_DEFAULT" = "y" ] || [ "$DL_DEFAULT" = "Y" ]; then
-            MODEL="qwen3.5-27b-claude-opus-8bit"
-            S3_NAME="qwen35-27b-claude-opus-8bit"
-            MODEL_NAME="Qwen3.5 27B Claude Opus Distilled"
-            MODEL_SIZE="~27 GB"
-        fi
-    fi
-fi
-
+# Download selected model
 if [ -n "$MODEL" ]; then
-    echo "  Text:     $MODEL_NAME ($MODEL_SIZE)"
-fi
-if [ -n "$IMAGE_MODEL" ]; then
-    echo "  Image:    $IMAGE_MODEL_NAME ($IMAGE_MODEL_SIZE)"
-fi
-if [ -z "$MODEL" ] && [ -z "$IMAGE_MODEL" ]; then
-    echo "  No models in catalog for ${MEM}GB RAM"
-fi
-
-# --- Download primary model ---
-download_model() {
-    local model_id="$1" s3_name="$2" model_name="$3" model_size="$4"
-    local hf_cache_dir="$HOME/.cache/huggingface/hub/models--$(echo "$model_id" | tr '/' '--')"
-
-    if [ -d "$hf_cache_dir/snapshots" ]; then
-        echo "  $model_name already downloaded ✓"
-        return 0
-    fi
-
-    local cache_dir="$hf_cache_dir/snapshots/main"
-    mkdir -p "$cache_dir"
-
-    echo "  Downloading $model_name ($model_size) from EigenInference CDN..."
-    echo ""
-    if curl -f#L "$BASE_URL/dl/models/$s3_name.tar.gz" | tar xz -C "$cache_dir" 2>/dev/null; then
-        echo ""
-        echo "  $model_name downloaded ✓"
-        return 0
-    fi
-
-    # Fallback: try individual files from R2 (public, no auth, zero egress)
-    echo "  Tarball not available, downloading files from R2..."
-    local s3_http="https://9e92221750c162ade0f2730f63f4963d.r2.cloudflarestorage.com/d-inf-models/$s3_name"
-    for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json; do
-        curl -fsSL "$s3_http/$f" -o "$cache_dir/$f" 2>/dev/null || true
-    done
-    if curl -f#L "$s3_http/model.safetensors" -o "$cache_dir/model.safetensors" 2>/dev/null; then
-        echo ""
-        echo "  $model_name downloaded ✓"
-    elif curl -f#L "$s3_http/model-00001-of-00002.safetensors" -o "$cache_dir/model-00001-of-00002.safetensors" 2>/dev/null; then
-        curl -fsSL "$s3_http/model.safetensors.index.json" -o "$cache_dir/model.safetensors.index.json" 2>/dev/null || true
-        for i in $(seq -w 2 99); do
-            curl -fsSL "$s3_http/model-000${i}-of-"*".safetensors" -o "$cache_dir/" 2>/dev/null || break
-        done
-        echo ""
-        echo "  $model_name downloaded ✓"
+    HF_CACHE_DIR="$HOME/.cache/huggingface/hub/models--$(echo "$MODEL" | tr '/' '--')"
+    if [ -d "$HF_CACHE_DIR/snapshots" ]; then
+        echo "  $MODEL_NAME already downloaded ✓"
     else
-        echo "  ⚠ $model_name download failed — retry with: eigeninference-provider models download"
-        return 1
-    fi
-}
+        CACHE_DIR="$HF_CACHE_DIR/snapshots/main"
+        mkdir -p "$CACHE_DIR"
+        echo "  Downloading $MODEL_NAME ($MODEL_SIZE)..."
+        echo ""
 
-if [ -n "$MODEL" ]; then
-    download_model "$MODEL" "$S3_NAME" "$MODEL_NAME" "$MODEL_SIZE" || true
-fi
-
-# --- Download image model + backend (if selected) ---
-IMAGE_MODEL_PATH=""
-if [ -n "$IMAGE_MODEL" ]; then
-    echo ""
-    echo "  Setting up image generation..."
-
-    # gRPCServerCLI is bundled in the provider tarball (extracted in step 1)
-    if [ -x "$BIN_DIR/gRPCServerCLI-macOS" ]; then
-        echo "  gRPCServerCLI ✓ (bundled)"
-    else
-        echo "  ⚠ gRPCServerCLI not found in bundle — image generation won't be available"
-        IMAGE_MODEL=""
-    fi
-
-    # Download image-bridge Python package
-    if [ -n "$IMAGE_MODEL" ]; then
-        if [ ! -d "$EIGENINFERENCE_DIR/image-bridge/eigeninference_image_bridge" ]; then
-            echo "  Downloading image bridge..."
-            if curl -f#L "$BASE_URL/dl/eigeninference-image-bridge.tar.gz" -o "/tmp/eigeninference-image-bridge.tar.gz" 2>/dev/null; then
-                mkdir -p "$EIGENINFERENCE_DIR/image-bridge"
-                tar xzf /tmp/eigeninference-image-bridge.tar.gz -C "$EIGENINFERENCE_DIR/image-bridge"
-                rm -f /tmp/eigeninference-image-bridge.tar.gz
-                echo "  Image bridge ✓"
-            else
-                echo "  ⚠ Image bridge download failed — image generation won't be available"
-                IMAGE_MODEL=""
-            fi
+        # Try CDN tarball first, then individual files from R2
+        if curl -f#L "$COORD_URL/dl/models/$S3_NAME.tar.gz" | tar xz -C "$CACHE_DIR" 2>/dev/null; then
+            echo ""
+            echo "  $MODEL_NAME downloaded ✓"
         else
-            echo "  Image bridge already installed ✓"
-        fi
-    fi
-
-    # Download image model weights
-    if [ -n "$IMAGE_MODEL" ]; then
-        IMAGE_MODEL_DIR="$EIGENINFERENCE_DIR/models/$IMAGE_S3_NAME"
-        if [ -d "$IMAGE_MODEL_DIR" ]; then
-            echo "  $IMAGE_MODEL_NAME already downloaded ✓"
-            IMAGE_MODEL_PATH="$IMAGE_MODEL_DIR"
-        else
-            mkdir -p "$IMAGE_MODEL_DIR"
-            echo "  Downloading $IMAGE_MODEL_NAME ($IMAGE_MODEL_SIZE)..."
-            if curl -f#L "$BASE_URL/dl/models/$IMAGE_S3_NAME.tar.gz" | tar xz -C "$IMAGE_MODEL_DIR" 2>/dev/null; then
-                echo ""
-                echo "  $IMAGE_MODEL_NAME downloaded ✓"
-                IMAGE_MODEL_PATH="$IMAGE_MODEL_DIR"
-            else
-                # Fallback: try R2
-                S3_HTTP="https://9e92221750c162ade0f2730f63f4963d.r2.cloudflarestorage.com/d-inf-models/$IMAGE_S3_NAME"
-                if curl -f#L "$S3_HTTP/$IMAGE_MODEL.ckpt" -o "$IMAGE_MODEL_DIR/$IMAGE_MODEL.ckpt" 2>/dev/null; then
-                    echo ""
-                    echo "  $IMAGE_MODEL_NAME downloaded ✓"
-                    IMAGE_MODEL_PATH="$IMAGE_MODEL_DIR"
-                else
-                    echo "  ⚠ Image model download failed — image generation won't be available"
-                    IMAGE_MODEL=""
-                fi
-            fi
+            echo "  Tarball not available, downloading from R2..."
+            R2_BASE="https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev/$S3_NAME"
+            for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json model.safetensors.index.json; do
+                curl -fsSL "$R2_BASE/$f" -o "$CACHE_DIR/$f" 2>/dev/null || true
+            done
+            # Download weight shards
+            for f in $(curl -fsSL "$R2_BASE/" 2>/dev/null | grep -o 'model-[0-9]*-of-[0-9]*.safetensors' || echo "model.safetensors"); do
+                echo "  Downloading $f..."
+                curl -f#L "$R2_BASE/$f" -o "$CACHE_DIR/$f" 2>/dev/null || true
+            done
+            echo "  $MODEL_NAME downloaded ✓"
         fi
     fi
 fi
 
-# ─── Step 7: Install EigenInference menu bar app ───────────────────────
-echo ""
-echo "→ [7/9] Installing EigenInference app..."
-
-APP_INSTALLED=false
-APP_PATH="/Applications/EigenInference.app"
-DMG_URL="$BASE_URL/dl/EigenInference-latest.dmg"
-DMG_TMP="/tmp/EigenInference-latest.dmg"
-
-if curl -f#L "$DMG_URL" -o "$DMG_TMP" 2>/dev/null; then
-    echo ""
-    # Mount DMG and find the volume path from hdiutil output
-    MOUNT_POINT=$(hdiutil attach "$DMG_TMP" -nobrowse 2>/dev/null | grep "/Volumes/" | sed 's/.*\(\/Volumes\/.*\)/\1/' | head -1)
-    if [ -n "$MOUNT_POINT" ] && [ -d "$MOUNT_POINT/EigenInference.app" ]; then
-        rm -rf "$APP_PATH" 2>/dev/null || true
-        cp -R "$MOUNT_POINT/EigenInference.app" "$APP_PATH" 2>/dev/null || \
-            cp -R "$MOUNT_POINT/EigenInference.app" "$HOME/Applications/EigenInference.app" 2>/dev/null || true
-        hdiutil detach "$MOUNT_POINT" 2>/dev/null || true
-        if [ -d "$APP_PATH" ] || [ -d "$HOME/Applications/EigenInference.app" ]; then
-            echo "  EigenInference.app installed ✓"
-            APP_INSTALLED=true
-        fi
-    else
-        hdiutil detach "$MOUNT_POINT" 2>/dev/null || true
-        echo "  ⚠ Could not mount DMG"
-    fi
-    rm -f "$DMG_TMP"
-else
-    # DMG not available — keep existing app if present
-    if [ -d "$APP_PATH" ]; then
-        echo "  EigenInference.app (existing) ✓"
-        APP_INSTALLED=true
-    else
-        echo "  ⚠ App not available yet — use CLI for now"
-    fi
-fi
-
-# ─── Step 8: Ready to serve ──────────────────────────────────
-echo ""
-echo "→ [8/9] Installation complete."
-echo ""
-echo "  The provider is NOT started automatically."
-echo "  You control when your GPU is used for inference."
-PROVIDER_RUNNING=false
-
-# ─── Step 9: Summary ─────────────────────────────────────────
+# ─── Step 7: Summary ─────────────────────────────────────────
 echo ""
 echo "════════════════════════════════════════════════"
 echo ""
-echo "  EigenInference installation complete!"
+echo "  EigenInference v${VERSION} installed!"
 echo ""
 echo "  Hardware:  $CHIP · ${MEM}GB"
-echo "  Model:     $MODEL_NAME"
-if [ -n "$IMAGE_MODEL" ]; then
-    echo "  Image:     $IMAGE_MODEL_NAME"
+if [ -n "$MODEL_NAME" ]; then
+    echo "  Model:     $MODEL_NAME"
 fi
-if [ -f "$HOME/.config/eigeninference/auth_token" ]; then
-    echo "  Account:   Linked ✓"
-else
-    echo "  Account:   Not linked (run: eigeninference-provider login)"
-fi
-
-echo "  Status:    ○ INSTALLED (not running)"
+echo "  Binary:    Signed + notarized by Eigen Labs, Inc."
+echo "  Status:    ○ Installed (not running)"
 echo ""
-echo "  Start serving when you're ready:"
+echo "  Start serving:"
 if [ -n "$MODEL" ]; then
-    echo "    eigeninference-provider start --model $MODEL"
+    echo "    eigeninference-provider serve --model $MODEL"
 else
-    echo "    eigeninference-provider start"
+    echo "    eigeninference-provider serve"
 fi
+echo ""
 
-if [ "$APP_INSTALLED" = true ]; then
+if [ ! -f "$HOME/.config/eigeninference/auth_token" ]; then
+    echo "  ┌──────────────────────────────────────────────┐"
+    echo "  │  Link your account to earn rewards:          │"
+    echo "  │                                              │"
+    echo "  │    eigeninference-provider login              │"
+    echo "  │                                              │"
+    echo "  │  Without linking, earnings go to a local     │"
+    echo "  │  wallet and cannot be withdrawn.             │"
+    echo "  └──────────────────────────────────────────────┘"
     echo ""
-    echo "  Menu Bar App: EigenInference.app installed"
-    echo "    Launch from Spotlight or: open -a EigenInference"
 fi
 
-echo ""
 echo "  Commands:"
-echo "    eigeninference-provider login      Link to your account"
-echo "    eigeninference-provider status     Show provider status"
-echo "    eigeninference-provider logs -w    Stream logs"
-echo "    eigeninference-provider stop       Stop the provider"
-echo "    eigeninference-provider doctor     Run diagnostics"
-echo ""
-echo "  App:"
-echo "    open -a EigenInference             Launch menu bar app"
+echo "    eigeninference-provider serve       Start serving"
+echo "    eigeninference-provider status      Show status"
+echo "    eigeninference-provider logs -w     Stream logs"
+echo "    eigeninference-provider stop        Stop provider"
+echo "    eigeninference-provider update      Check for updates"
+echo "    eigeninference-provider doctor      Run diagnostics"
 echo ""
 echo "════════════════════════════════════════════════"

@@ -56,7 +56,7 @@ export const useStore = create<AppState>()(
       activeChatId: null,
       selectedModel: "",
       models: [],
-      sidebarOpen: true,
+      sidebarOpen: typeof window !== "undefined" ? window.innerWidth >= 640 : true,
 
       createChat: () => {
         const id = generateId();

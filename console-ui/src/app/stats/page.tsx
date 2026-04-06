@@ -129,7 +129,7 @@ function HeroStat({
 }) {
   return (
     <div className="text-center">
-      <p className="text-4xl md:text-5xl font-mono font-bold text-text-primary tracking-tighter">
+      <p className="text-2xl sm:text-4xl md:text-5xl font-mono font-bold text-text-primary tracking-tighter">
         {value}
       </p>
       <p className="text-xs font-mono text-text-tertiary uppercase tracking-widest mt-1">
@@ -499,7 +499,7 @@ export default function StatsPage() {
   return (
     <div className="flex-1 flex flex-col overflow-y-auto">
       <TopBar title="Network Stats" />
-      <div className="max-w-5xl mx-auto px-6 py-8 space-y-6">
+      <div className="max-w-5xl mx-auto px-3 sm:px-6 py-6 sm:py-8 space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
@@ -550,7 +550,7 @@ export default function StatsPage() {
         </div>
 
         {/* Hardware capacity grid */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
           <MiniStat label="GPU Cores" value={stats.total_gpu_cores.toString()} sub="Apple Silicon" />
           <MiniStat label="CPU Cores" value={stats.total_cpu_cores.toString()} sub="P + E cores" />
           <MiniStat label="Unified RAM" value={`${stats.total_memory_gb} GB`} />

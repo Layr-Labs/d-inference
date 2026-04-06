@@ -92,7 +92,7 @@ export function ChatInput({ onSend, onStop, isStreaming }: ChatInputProps) {
                 </button>
 
                 {modelOpen && chatModels.length > 0 && (
-                  <div className="absolute bottom-full left-0 mb-1 w-80 bg-bg-white border-[3px] border-ink rounded-xl shadow-lg overflow-hidden z-50">
+                  <div className="absolute bottom-full left-0 mb-1 w-[calc(100vw-3rem)] sm:w-80 bg-bg-white border-[3px] border-ink rounded-xl shadow-lg overflow-hidden z-50">
                     {chatModels.map((m) => {
                       const name = m.display_name || m.id.split("/").pop() || m.id;
                       return (

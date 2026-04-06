@@ -109,7 +109,7 @@ export default function ImagesPage() {
 
       {/* Main content */}
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-5xl mx-auto px-6 py-6 space-y-6">
+        <div className="max-w-5xl mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-6">
           {/* Prompt input */}
           <div className="bg-bg-white rounded-2xl border-[3px] border-ink shadow-md p-4 space-y-3">
             <textarea
@@ -139,7 +139,7 @@ export default function ImagesPage() {
                     <ChevronDown size={12} />
                   </button>
                   {modelOpen && imageModels.length > 0 && (
-                    <div className="absolute bottom-full left-0 mb-1 w-72 bg-bg-secondary border border-border-subtle rounded-xl shadow-xl overflow-hidden z-50">
+                    <div className="absolute bottom-full left-0 mb-1 w-[calc(100vw-3rem)] sm:w-72 bg-bg-secondary border border-border-subtle rounded-xl shadow-xl overflow-hidden z-50">
                       {imageModels.map((m) => {
                         const name = m.display_name || m.id.split("/").pop() || m.id;
                         return (
@@ -216,7 +216,7 @@ export default function ImagesPage() {
 
             {/* Advanced options */}
             {showAdvanced && (
-              <div className="flex items-center gap-4 pt-2 border-t border-border-dim">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4 pt-2 border-t border-border-dim">
                 <div className="flex items-center gap-2">
                   <label className="text-xs text-text-tertiary">Negative prompt</label>
                   <input

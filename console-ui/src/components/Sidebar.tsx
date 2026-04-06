@@ -83,6 +83,7 @@ export function Sidebar() {
             <Link
               key={href}
               href={href}
+              onClick={() => { if (window.innerWidth < 640) setSidebarOpen(false); }}
               className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold transition-all ${
                 isActive
                   ? "bg-coral/15 text-coral border-2 border-coral"
@@ -125,6 +126,7 @@ export function Sidebar() {
                 onClick={() => {
                   setActiveChat(chat.id);
                   if (pathname !== "/") router.push("/");
+                  if (window.innerWidth < 640) setSidebarOpen(false);
                 }}
               >
                 <MessageSquare size={14} className="shrink-0 opacity-40" />
@@ -158,6 +160,7 @@ export function Sidebar() {
           <Link
             key={href}
             href={href}
+            onClick={() => { if (window.innerWidth < 640) setSidebarOpen(false); }}
             className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all ${
               pathname === href
                 ? "bg-bg-elevated text-text-primary font-semibold"

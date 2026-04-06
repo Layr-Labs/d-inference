@@ -112,7 +112,7 @@ export default function ModelsPage() {
       <TopBar title="Models" />
 
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-5xl mx-auto px-6 py-8">
+        <div className="max-w-5xl mx-auto px-3 sm:px-6 py-6 sm:py-8">
           <div className="mb-6">
             <h2 className="text-2xl font-display text-ink mb-1">
               Available Models

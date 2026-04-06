@@ -7,7 +7,7 @@ export function TopBar({ title }: { title?: string }) {
   const { sidebarOpen, setSidebarOpen } = useStore();
 
   return (
-    <header className="h-14 bg-bg-primary/80 backdrop-blur-sm flex items-center px-5 gap-3 shrink-0 squiggly-border-bottom">
+    <header className="h-14 bg-bg-primary/80 backdrop-blur-sm flex items-center px-3 sm:px-5 gap-3 shrink-0 squiggly-border-bottom">
       {!sidebarOpen && (
         <button
           onClick={() => setSidebarOpen(true)}

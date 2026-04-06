@@ -146,7 +146,7 @@ export default function BillingPage() {
       <TopBar title="Billing" />
 
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
+        <div className="max-w-4xl mx-auto px-3 sm:px-6 py-6 sm:py-8 space-y-8">
           {/* Balance Card */}
           <div className="relative overflow-hidden rounded-2xl border-[3px] border-ink bg-bg-white p-8 shadow-md">
 
@@ -231,7 +231,7 @@ export default function BillingPage() {
           </div>
 
           {/* Stats row */}
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
             {[
               {
                 icon: DollarSign,

@@ -27,7 +27,7 @@ export function Toasts() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-[10000] flex flex-col gap-2 max-w-sm">
+    <div className="fixed bottom-4 left-3 right-3 sm:left-auto sm:right-4 z-[10000] flex flex-col gap-2 sm:max-w-sm">
       {toasts.map((toast) => {
         const Icon = icons[toast.type];
         return (

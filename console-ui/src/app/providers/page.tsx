@@ -331,7 +331,7 @@ export default function ProvidersPage() {
       {myProvider && (
         <div className="rounded-xl bg-accent-brand/5 shadow-sm p-6">
           <h2 className="text-lg font-semibold text-text-primary mb-3">Your Provider Node</h2>
-          <div className="grid grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-4">
             <div>
               <p className="text-xs text-text-tertiary mb-1">Hardware</p>
               <p className="text-sm font-semibold text-text-primary">{myProvider.chip_name}</p>

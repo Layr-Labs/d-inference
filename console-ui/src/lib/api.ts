@@ -312,7 +312,20 @@ export async function streamChat(
       return;
     }
     const text = await res.text();
-    callbacks.onError(`Request failed (${res.status}): ${text}`);
+    // Parse error for user-friendly messages
+    try {
+      const errData = JSON.parse(text);
+      const msg = errData?.error?.message || text;
+      if (res.status === 503 && msg.includes("queue timeout")) {
+        callbacks.onError("All providers are busy — please try again in a moment");
+      } else if (res.status === 402) {
+        callbacks.onError("Insufficient credits — buy credits in Billing to continue");
+      } else {
+        callbacks.onError(`Request failed (${res.status}): ${msg}`);
+      }
+    } catch {
+      callbacks.onError(`Request failed (${res.status}): ${text}`);
+    }
     return;
   }
 

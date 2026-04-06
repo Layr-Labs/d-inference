@@ -122,12 +122,23 @@ def build_config_bytes(
 
 
 def convert_response_image(response_image: bytes) -> Optional[Image.Image]:
-    """Convert Draw Things raw tensor response to a PIL Image.
+    """Convert Draw Things gRPC response to a PIL Image.
 
-    Response format: 68-byte header followed by float16 pixel data.
-    Header contains dimensions at uint32 offsets 6, 7, 8 (height, width, channels).
-    Pixel values are in [-1, 1] range, converted to [0, 255] uint8.
+    The response format depends on the gRPCServerCLI version:
+    - Older versions: 68-byte header + raw float16 pixel data
+    - Newer versions: PNG or JPEG bytes directly
+    Detects format automatically.
     """
+    if len(response_image) < 8:
+        return None
+
+    # Check if it's already a PNG or JPEG
+    if response_image[:8] == b"\x89PNG\r\n\x1a\n":
+        return Image.open(io.BytesIO(response_image))
+    if response_image[:2] == b"\xff\xd8":
+        return Image.open(io.BytesIO(response_image))
+
+    # Try raw tensor format: 68-byte header + float16 pixel data
     if len(response_image) < 68:
         return None
 
@@ -135,15 +146,23 @@ def convert_response_image(response_image: bytes) -> Optional[Image.Image]:
     height, width, channels = int(int_buffer[6]), int(int_buffer[7]), int(int_buffer[8])
 
     if width <= 0 or height <= 0 or channels not in (3, 4):
-        logger.error(f"Invalid image dimensions: {width}x{height}x{channels}")
-        return None
+        # Not a valid tensor header — try as raw image bytes
+        try:
+            return Image.open(io.BytesIO(response_image))
+        except Exception:
+            logger.error(f"Cannot parse response: {len(response_image)} bytes, header: {response_image[:16].hex()}")
+            return None
 
     length = width * height * channels * 2  # float16 = 2 bytes
     pixel_data = response_image[68:]
 
     if len(pixel_data) < length:
-        logger.error(f"Insufficient pixel data: got {len(pixel_data)}, expected {length}")
-        return None
+        # Maybe compressed — try as image
+        try:
+            return Image.open(io.BytesIO(response_image))
+        except Exception:
+            logger.error(f"Insufficient pixel data: got {len(pixel_data)}, expected {length}")
+            return None
 
     data = np.frombuffer(pixel_data, dtype=np.float16, count=length // 2)
     # Convert from [-1, 1] to [0, 255]

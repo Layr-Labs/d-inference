@@ -201,7 +201,7 @@ type Registry struct {
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
 		providers:     make(map[string]*Provider),
-		queue:         NewRequestQueue(10, 30*time.Second),
+		queue:         NewRequestQueue(10, 120*time.Second),
 		MinTrustLevel: TrustHardware,
 		logger:        logger,
 	}

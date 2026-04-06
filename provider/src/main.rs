@@ -3439,29 +3439,30 @@ async fn cmd_start(
         anyhow::bail!("No models downloaded. Run: eigeninference-provider install");
     }
 
+    // Fetch catalog from coordinator to filter to supported models only
+    let catalog = fetch_catalog(&coordinator_url).await;
+    let catalog_ids: std::collections::HashSet<String> =
+        catalog.iter().map(|c| c.id.clone()).collect();
+
+    // Only show models that are both downloaded AND in the catalog
+    let servable: Vec<_> = downloaded
+        .iter()
+        .filter(|m| catalog_ids.contains(&m.id))
+        .collect();
+
     // Interactive model selection if no --model specified
     let model = if let Some(m) = model_override {
         m
-    } else {
+    } else if servable.is_empty() {
+        // Fall back to all downloaded if catalog is empty/unreachable
         println!(
             "Select a model to serve (available memory: {} GB):",
             hw.memory_available_gb
         );
         println!();
-
-        let mut total_mem = 0.0_f64;
         for (i, m) in downloaded.iter().enumerate() {
-            let fits = (total_mem + m.estimated_memory_gb) <= hw.memory_available_gb as f64;
-            let marker = if fits { "  " } else { "✗ " };
-            println!(
-                "  {}[{}] {} ({:.1} GB)",
-                marker,
-                i + 1,
-                m.id,
-                m.estimated_memory_gb
-            );
+            println!("    [{}] {} ({:.1} GB)", i + 1, m.id, m.estimated_memory_gb);
         }
-
         println!();
         println!(
             "  Enter number [1-{}] (or press Enter for [{}] - largest):",
@@ -3471,19 +3472,51 @@ async fn cmd_start(
 
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
-        let input = input.trim();
-
-        let idx = if input.is_empty() {
-            downloaded.len() - 1
-        } else {
-            input
-                .parse::<usize>()
-                .unwrap_or(downloaded.len())
-                .saturating_sub(1)
-        };
-
-        let idx = idx.min(downloaded.len() - 1);
+        let idx = input
+            .trim()
+            .parse::<usize>()
+            .unwrap_or(downloaded.len())
+            .saturating_sub(1)
+            .min(downloaded.len() - 1);
         let selected = &downloaded[idx];
+        println!("  → {}", selected.id);
+        selected.id.clone()
+    } else {
+        println!(
+            "Select a model to serve (available memory: {} GB):",
+            hw.memory_available_gb
+        );
+        println!();
+        for (i, m) in servable.iter().enumerate() {
+            // Find catalog entry for display name
+            let display = catalog
+                .iter()
+                .find(|c| c.id == m.id)
+                .map(|c| c.display_name.as_str())
+                .unwrap_or(&m.id);
+            println!(
+                "    [{}] {} ({:.1} GB)",
+                i + 1,
+                display,
+                m.estimated_memory_gb
+            );
+        }
+        println!();
+        println!(
+            "  Enter number [1-{}] (or press Enter for [{}] - largest):",
+            servable.len(),
+            servable.len()
+        );
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let idx = input
+            .trim()
+            .parse::<usize>()
+            .unwrap_or(servable.len())
+            .saturating_sub(1)
+            .min(servable.len() - 1);
+        let selected = &servable[idx];
         println!("  → {}", selected.id);
         selected.id.clone()
     };

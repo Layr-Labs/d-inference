@@ -3968,7 +3968,7 @@ async fn cmd_start(
     let selected_models: Vec<String> = if let Some(m) = model_override {
         vec![m]
     } else {
-        // Build picker items from catalog: text models that fit in RAM.
+        // Build picker items from catalog: all models that fit in RAM.
         struct PickerItem {
             id: String,
             display: String,
@@ -3979,7 +3979,6 @@ async fn cmd_start(
 
         let mut items: Vec<PickerItem> = catalog
             .iter()
-            .filter(|c| c.model_type == "text")
             .filter(|c| (c.min_ram_gb as f64) <= hw.memory_gb as f64)
             .map(|c| {
                 let is_downloaded = downloaded_ids.contains(&c.id);
@@ -3992,9 +3991,15 @@ async fn cmd_start(
                 } else {
                     c.size_gb
                 };
+                // Show model type tag for non-text models
+                let display = if c.model_type != "text" {
+                    format!("{} [{}]", c.display_name, c.model_type)
+                } else {
+                    c.display_name.clone()
+                };
                 PickerItem {
                     id: c.id.clone(),
-                    display: c.display_name.clone(),
+                    display,
                     size_gb: size,
                     downloaded: is_downloaded,
                     s3_name: c.s3_name.clone(),

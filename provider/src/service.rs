@@ -34,6 +34,7 @@ fn write_plist(
     models: &[String],
     image_model: Option<&str>,
     image_model_path: Option<&str>,
+    stt_model: Option<&str>,
 ) -> Result<()> {
     let launch_agents_dir = plist_path()
         .parent()
@@ -69,6 +70,22 @@ fn write_plist(
     }
     let args_xml = args.join("\n");
 
+    // Build environment variables section for non-CLI models (STT)
+    let mut env_vars = String::new();
+    if let Some(stt) = stt_model {
+        env_vars = format!(
+            r#"
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>EIGENINFERENCE_STT_MODEL</key>
+        <string>{stt}</string>
+        <key>EIGENINFERENCE_STT_MODEL_ID</key>
+        <string>{stt}</string>
+    </dict>
+"#
+        );
+    }
+
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -81,7 +98,7 @@ fn write_plist(
     <array>
 {args_xml}
     </array>
-
+{env_vars}
     <key>KeepAlive</key>
     <false/>
 
@@ -177,6 +194,7 @@ pub fn install_and_start(
     models: &[String],
     image_model: Option<&str>,
     image_model_path: Option<&str>,
+    stt_model: Option<&str>,
 ) -> Result<()> {
     let binary_path = std::env::current_exe().unwrap_or_else(|_| {
         dirs::home_dir()
@@ -195,6 +213,7 @@ pub fn install_and_start(
         models,
         image_model,
         image_model_path,
+        stt_model,
     )?;
     load_service().context("Failed to load launchd service")?;
 

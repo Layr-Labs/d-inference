@@ -1355,7 +1355,7 @@ async fn cmd_install(
     println!("  Model: {}", model);
     println!();
 
-    service::install_and_start(&coordinator_url, &[model.clone()], None, None)?;
+    service::install_and_start(&coordinator_url, &[model.clone()], None, None, None)?;
 
     let log_path = dirs::home_dir()
         .unwrap_or_default()
@@ -4240,183 +4240,182 @@ async fn cmd_start(
         downloaded.iter().map(|m| m.id.clone()).collect();
 
     // Interactive model selection if no --model specified
-    let (selected_models, picked_image): (Vec<String>, Option<String>) = if let Some(m) =
-        model_override
-    {
-        (vec![m], None)
-    } else {
-        // Build picker items from catalog: all models that fit in RAM.
-        struct PickerItem {
-            id: String,
-            display: String,
-            size_gb: f64,
-            downloaded: bool,
-            s3_name: String,
-            model_type: String,
-        }
+    let (selected_models, picked_image, picked_stt): (Vec<String>, Option<String>, Option<String>) =
+        if let Some(m) = model_override {
+            (vec![m], None, None)
+        } else {
+            // Build picker items from catalog: all models that fit in RAM.
+            struct PickerItem {
+                id: String,
+                display: String,
+                size_gb: f64,
+                downloaded: bool,
+                s3_name: String,
+                model_type: String,
+            }
 
-        // Fetch expected file sizes from CDN via HEAD requests to detect partial downloads.
-        let cdn_base = "https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev";
-        let cdn_sizes: std::collections::HashMap<String, u64> = {
-            let client = reqwest::Client::new();
-            let mut sizes = std::collections::HashMap::new();
-            for c in &catalog {
-                if let Some(on_disk) = downloaded.iter().find(|m| m.id == c.id) {
-                    // Only HEAD-check models we have locally (to verify completeness)
-                    let url = if c.id.ends_with(".ckpt") {
-                        format!("{}/{}/{}", cdn_base, c.s3_name, c.id)
-                    } else {
-                        format!("{}/{}/model.safetensors", cdn_base, c.s3_name)
-                    };
-                    if let Ok(resp) = client
-                        .head(&url)
-                        .timeout(std::time::Duration::from_secs(5))
-                        .send()
-                        .await
-                    {
-                        if let Some(len) = resp.content_length() {
-                            sizes.insert(c.id.clone(), len);
+            // Fetch expected file sizes from CDN via HEAD requests to detect partial downloads.
+            let cdn_base = "https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev";
+            let cdn_sizes: std::collections::HashMap<String, u64> = {
+                let client = reqwest::Client::new();
+                let mut sizes = std::collections::HashMap::new();
+                for c in &catalog {
+                    if let Some(on_disk) = downloaded.iter().find(|m| m.id == c.id) {
+                        // Only HEAD-check models we have locally (to verify completeness)
+                        let url = if c.id.ends_with(".ckpt") {
+                            format!("{}/{}/{}", cdn_base, c.s3_name, c.id)
+                        } else {
+                            format!("{}/{}/model.safetensors", cdn_base, c.s3_name)
+                        };
+                        if let Ok(resp) = client
+                            .head(&url)
+                            .timeout(std::time::Duration::from_secs(5))
+                            .send()
+                            .await
+                        {
+                            if let Some(len) = resp.content_length() {
+                                sizes.insert(c.id.clone(), len);
+                            }
                         }
                     }
                 }
-            }
-            sizes
-        };
+                sizes
+            };
 
-        let mut items: Vec<PickerItem> = catalog
-            .iter()
-            .filter(|c| (c.min_ram_gb as f64) <= hw.memory_gb as f64)
-            .map(|c| {
-                // Check if model is downloaded AND complete.
-                // For image models (.ckpt), also verify companion files exist
-                // (text encoder + VAE) since the pipeline needs all 3.
-                let on_disk = downloaded.iter().find(|m| m.id == c.id);
-                let is_downloaded = on_disk.is_some_and(|m| {
-                    let main_ok = if let Some(&expected) = cdn_sizes.get(&c.id) {
-                        m.size_bytes >= expected
-                    } else {
-                        m.size_bytes > 500_000_000
-                    };
-                    if !main_ok {
-                        return false;
-                    }
-                    // For image models, parse models.json and verify all referenced files exist
-                    if c.model_type == "image" {
-                        let model_dir = models::resolve_local_path(&c.id);
-                        if let Some(dir) = model_dir.as_ref().and_then(|p| p.parent()) {
-                            let meta_path = dir.join("models.json");
-                            if !meta_path.exists() {
-                                return false;
-                            }
-                            // Parse models.json and check every referenced file exists
-                            let complete = std::fs::read_to_string(&meta_path)
-                                .ok()
-                                .and_then(|s| {
-                                    serde_json::from_str::<Vec<serde_json::Value>>(&s).ok()
-                                })
-                                .map(|entries| {
-                                    entries.iter().all(|entry| {
-                                        let files = [
-                                            entry.get("file").and_then(|v| v.as_str()),
-                                            entry.get("autoencoder").and_then(|v| v.as_str()),
-                                            entry.get("text_encoder").and_then(|v| v.as_str()),
-                                        ];
-                                        files.iter().all(|f| {
-                                            f.map(|name| dir.join(name).exists()).unwrap_or(true)
+            let mut items: Vec<PickerItem> = catalog
+                .iter()
+                .filter(|c| (c.min_ram_gb as f64) <= hw.memory_gb as f64)
+                .map(|c| {
+                    // Check if model is downloaded AND complete.
+                    // For image models (.ckpt), also verify companion files exist
+                    // (text encoder + VAE) since the pipeline needs all 3.
+                    let on_disk = downloaded.iter().find(|m| m.id == c.id);
+                    let is_downloaded = on_disk.is_some_and(|m| {
+                        let main_ok = if let Some(&expected) = cdn_sizes.get(&c.id) {
+                            m.size_bytes >= expected
+                        } else {
+                            m.size_bytes > 500_000_000
+                        };
+                        if !main_ok {
+                            return false;
+                        }
+                        // For image models, parse models.json and verify all referenced files exist
+                        if c.model_type == "image" {
+                            let model_dir = models::resolve_local_path(&c.id);
+                            if let Some(dir) = model_dir.as_ref().and_then(|p| p.parent()) {
+                                let meta_path = dir.join("models.json");
+                                if !meta_path.exists() {
+                                    return false;
+                                }
+                                // Parse models.json and check every referenced file exists
+                                let complete = std::fs::read_to_string(&meta_path)
+                                    .ok()
+                                    .and_then(|s| {
+                                        serde_json::from_str::<Vec<serde_json::Value>>(&s).ok()
+                                    })
+                                    .map(|entries| {
+                                        entries.iter().all(|entry| {
+                                            let files = [
+                                                entry.get("file").and_then(|v| v.as_str()),
+                                                entry.get("autoencoder").and_then(|v| v.as_str()),
+                                                entry.get("text_encoder").and_then(|v| v.as_str()),
+                                            ];
+                                            files.iter().all(|f| {
+                                                f.map(|name| dir.join(name).exists())
+                                                    .unwrap_or(true)
+                                            })
                                         })
                                     })
-                                })
-                                .unwrap_or(false);
-                            return complete;
+                                    .unwrap_or(false);
+                                return complete;
+                            }
+                            return false;
                         }
-                        return false;
+                        true
+                    });
+                    let size = if is_downloaded {
+                        on_disk.map(|m| m.estimated_memory_gb).unwrap_or(c.size_gb)
+                    } else {
+                        c.size_gb
+                    };
+                    // Show model type tag for non-text models
+                    let display = if c.model_type != "text" {
+                        format!("{} [{}]", c.display_name, c.model_type)
+                    } else {
+                        c.display_name.clone()
+                    };
+                    PickerItem {
+                        id: c.id.clone(),
+                        display,
+                        size_gb: size,
+                        downloaded: is_downloaded,
+                        s3_name: c.s3_name.clone(),
+                        model_type: c.model_type.clone(),
                     }
-                    true
-                });
-                let size = if is_downloaded {
-                    on_disk.map(|m| m.estimated_memory_gb).unwrap_or(c.size_gb)
-                } else {
-                    c.size_gb
-                };
-                // Show model type tag for non-text models
-                let display = if c.model_type != "text" {
-                    format!("{} [{}]", c.display_name, c.model_type)
-                } else {
-                    c.display_name.clone()
-                };
-                PickerItem {
-                    id: c.id.clone(),
-                    display,
-                    size_gb: size,
-                    downloaded: is_downloaded,
-                    s3_name: c.s3_name.clone(),
-                    model_type: c.model_type.clone(),
-                }
-            })
-            .collect();
+                })
+                .collect();
 
-        // Sort: downloaded first, then by size descending
-        items.sort_by(|a, b| {
-            b.downloaded.cmp(&a.downloaded).then(
-                b.size_gb
-                    .partial_cmp(&a.size_gb)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
-        });
+            // Sort: downloaded first, then by size descending
+            items.sort_by(|a, b| {
+                b.downloaded.cmp(&a.downloaded).then(
+                    b.size_gb
+                        .partial_cmp(&a.size_gb)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+            });
 
-        if items.is_empty() {
-            anyhow::bail!("No supported models fit in {} GB RAM", hw.memory_gb);
-        }
-
-        // Convert to PickerEntry for the interactive picker
-        let entries: Vec<PickerEntry> = items
-            .iter()
-            .map(|i| PickerEntry {
-                display: i.display.clone(),
-                size_gb: i.size_gb,
-                downloaded: i.downloaded,
-            })
-            .collect();
-
-        let selected_indices = run_model_picker(&entries, hw.memory_gb as f64)?;
-
-        // Download any selected models that aren't local yet
-        for &idx in &selected_indices {
-            let item = &items[idx];
-            if !item.downloaded {
-                println!();
-                println!("  Downloading {}...", item.display);
-                let cache_dir = dirs::home_dir()
-                    .unwrap_or_default()
-                    .join(".cache/huggingface/hub")
-                    .join(format!("models--{}", item.id.replace('/', "--")))
-                    .join("snapshots/main");
-                std::fs::create_dir_all(&cache_dir)?;
-                if !download_model_from_cdn(&item.s3_name, &cache_dir, &item.display) {
-                    anyhow::bail!("Failed to download {}", item.display);
-                }
-                println!("  ✓ Downloaded {}", item.display);
+            if items.is_empty() {
+                anyhow::bail!("No supported models fit in {} GB RAM", hw.memory_gb);
             }
-        }
 
-        // Split selected models by type:
-        //   text → --model (vmlm-mlx backends)
-        //   image → --image-model (image bridge)
-        //   transcription → handled separately via STT env vars
-        let mut text_models = Vec::new();
-        let mut picked_image_model: Option<String> = None;
-        for &idx in &selected_indices {
-            let item = &items[idx];
-            match item.model_type.as_str() {
-                "image" => picked_image_model = Some(item.id.clone()),
-                "text" => text_models.push(item.id.clone()),
-                // transcription/stt models are handled by the separate stt_server.py pipeline
-                // via EIGENINFERENCE_STT_MODEL env var, not via --model
-                _ => {}
+            // Convert to PickerEntry for the interactive picker
+            let entries: Vec<PickerEntry> = items
+                .iter()
+                .map(|i| PickerEntry {
+                    display: i.display.clone(),
+                    size_gb: i.size_gb,
+                    downloaded: i.downloaded,
+                })
+                .collect();
+
+            let selected_indices = run_model_picker(&entries, hw.memory_gb as f64)?;
+
+            // Download any selected models that aren't local yet
+            for &idx in &selected_indices {
+                let item = &items[idx];
+                if !item.downloaded {
+                    println!();
+                    println!("  Downloading {}...", item.display);
+                    let cache_dir = dirs::home_dir()
+                        .unwrap_or_default()
+                        .join(".cache/huggingface/hub")
+                        .join(format!("models--{}", item.id.replace('/', "--")))
+                        .join("snapshots/main");
+                    std::fs::create_dir_all(&cache_dir)?;
+                    if !download_model_from_cdn(&item.s3_name, &cache_dir, &item.display) {
+                        anyhow::bail!("Failed to download {}", item.display);
+                    }
+                    println!("  ✓ Downloaded {}", item.display);
+                }
             }
-        }
-        (text_models, picked_image_model)
-    };
+
+            // Split selected models by type:
+            //   text → --model (vmlm-mlx backends)
+            //   image → --image-model (image bridge)
+            //   transcription → EIGENINFERENCE_STT_MODEL env var (stt_server.py)
+            let mut text_models = Vec::new();
+            let mut picked_image_model: Option<String> = None;
+            let mut picked_stt_model: Option<String> = None;
+            for &idx in &selected_indices {
+                let item = &items[idx];
+                match item.model_type.as_str() {
+                    "image" => picked_image_model = Some(item.id.clone()),
+                    "transcription" | "stt" => picked_stt_model = Some(item.id.clone()),
+                    _ => text_models.push(item.id.clone()),
+                }
+            }
+            (text_models, picked_image_model, picked_stt_model)
+        };
 
     // Merge CLI --image-model with picker selection
     let final_image_model = picked_image.or(image_model);
@@ -4435,6 +4434,7 @@ async fn cmd_start(
         &selected_models,
         final_image_model.as_deref(),
         image_model_path.as_deref(),
+        picked_stt.as_deref(),
     )?;
 
     println!("Provider installed as system service");

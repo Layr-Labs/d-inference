@@ -4297,21 +4297,34 @@ async fn cmd_start(
                     if !main_ok {
                         return false;
                     }
-                    // For image models, check companion files exist
+                    // For image models, parse models.json and verify all referenced files exist
                     if c.model_type == "image" {
                         let model_dir = models::resolve_local_path(&c.id);
                         if let Some(dir) = model_dir.as_ref().and_then(|p| p.parent()) {
-                            let has_vae = dir.join("flux_2_vae_f16.ckpt").exists();
-                            let has_encoder = std::fs::read_dir(dir)
+                            let meta_path = dir.join("models.json");
+                            if !meta_path.exists() {
+                                return false;
+                            }
+                            // Parse models.json and check every referenced file exists
+                            let complete = std::fs::read_to_string(&meta_path)
+                                .ok()
+                                .and_then(|s| {
+                                    serde_json::from_str::<Vec<serde_json::Value>>(&s).ok()
+                                })
                                 .map(|entries| {
-                                    entries.flatten().any(|e| {
-                                        let name = e.file_name().to_string_lossy().to_string();
-                                        name.starts_with("qwen_3_") && name.ends_with("_q8p.ckpt")
+                                    entries.iter().all(|entry| {
+                                        let files = [
+                                            entry.get("file").and_then(|v| v.as_str()),
+                                            entry.get("autoencoder").and_then(|v| v.as_str()),
+                                            entry.get("text_encoder").and_then(|v| v.as_str()),
+                                        ];
+                                        files.iter().all(|f| {
+                                            f.map(|name| dir.join(name).exists()).unwrap_or(true)
+                                        })
                                     })
                                 })
                                 .unwrap_or(false);
-                            let has_metadata = dir.join("models.json").exists();
-                            return has_vae && has_encoder && has_metadata;
+                            return complete;
                         }
                         return false;
                     }

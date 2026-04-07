@@ -2012,8 +2012,8 @@ async fn cmd_serve(
             bridge_cmd.args(["--model-path", &image_model_path]);
         }
         bridge_cmd
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
 
         match bridge_cmd.spawn() {
             Ok(_child) => {

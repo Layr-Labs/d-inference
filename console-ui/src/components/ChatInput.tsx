@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, Square, ChevronDown, Mic, Loader2 } from "lucide-react";
+import { Send, Square, ChevronDown, Mic, Loader2, LogIn } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { transcribeAudio } from "@/lib/api";
 
@@ -9,9 +9,11 @@ interface ChatInputProps {
   onSend: (content: string) => void;
   onStop: () => void;
   isStreaming: boolean;
+  authenticated?: boolean;
+  onLogin?: () => void;
 }
 
-export function ChatInput({ onSend, onStop, isStreaming }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, onLogin }: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { selectedModel, models, setSelectedModel } = useStore();
@@ -126,6 +128,23 @@ export function ChatInput({ onSend, onStop, isStreaming }: ChatInputProps) {
   const displayModel = selectedModelObj?.display_name
     || selectedModel?.split("/").pop()
     || "Select model";
+
+  if (!authenticated) {
+    return (
+      <div className="bg-bg-primary/80 backdrop-blur-sm">
+        <div className="max-w-4xl mx-auto px-3 sm:px-6 py-3 sm:py-4">
+          <button
+            onClick={onLogin}
+            className="w-full flex items-center justify-center gap-2 bg-bg-tertiary rounded-2xl border-[3px] border-border-dim
+                       py-4 text-text-tertiary hover:text-text-secondary hover:border-border-subtle cursor-pointer transition-all"
+          >
+            <LogIn size={16} />
+            <span className="text-sm font-medium">Sign in to start chatting</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-bg-primary/80 backdrop-blur-sm">

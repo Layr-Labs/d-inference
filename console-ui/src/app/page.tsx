@@ -378,6 +378,8 @@ export default function ChatPage() {
         onSend={handleSend}
         onStop={handleStop}
         isStreaming={isStreaming}
+        authenticated={authenticated}
+        onLogin={login}
       />
     </div>
   );

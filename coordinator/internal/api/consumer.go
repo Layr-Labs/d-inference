@@ -1217,9 +1217,32 @@ func (s *Server) handleBalance(w http.ResponseWriter, r *http.Request) {
 
 // handleUsage handles GET /v1/payments/usage.
 // Returns the consumer's inference usage history with per-request costs.
+// Tries in-memory ledger first (has full detail), falls back to store
+// ledger history (persists across restarts but has less detail).
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	consumerKey := consumerKeyFromContext(r.Context())
 	entries := s.ledger.Usage(consumerKey)
+
+	// If in-memory usage is empty (coordinator restarted), build from
+	// persisted ledger entries so the billing page isn't blank.
+	if len(entries) == 0 {
+		accountID := s.resolveAccountID(r)
+		if accountID != "" {
+			ledgerEntries := s.store.LedgerHistory(accountID)
+			for _, le := range ledgerEntries {
+				if le.Type == store.LedgerCharge && le.Reference != "" && !strings.HasPrefix(le.Reference, "reserve:") {
+					entries = append(entries, payments.UsageEntry{
+						JobID:            le.Reference,
+						Model:            "",
+						CostMicroUSD:     -le.AmountMicroUSD, // charges are negative
+						PromptTokens:     0,
+						CompletionTokens: 0,
+						Timestamp:        le.CreatedAt,
+					})
+				}
+			}
+		}
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"usage": entries,

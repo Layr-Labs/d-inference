@@ -7,8 +7,6 @@ import {
   Wifi,
   Shield,
   Terminal,
-  Wallet,
-  Box,
   Play,
   CheckCircle2,
   ChevronDown,
@@ -64,31 +62,19 @@ const STEPS = [
   {
     icon: Terminal,
     title: "Install the Provider CLI",
-    description: "One command to download and install the EigenInference provider daemon.",
+    description: "One command to download and install the EigenInference provider on your Mac.",
     command: "curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash",
   },
   {
-    icon: Wallet,
-    title: "Configure Your Identity",
-    description: "Set your Solana wallet address to receive earnings from inference jobs.",
-    command: "eigeninference-provider config --wallet <YOUR_SOLANA_ADDRESS>",
-  },
-  {
-    icon: Box,
-    title: "Select Models to Serve",
-    description: "Choose which AI models to serve. Models are automatically downloaded from HuggingFace.",
-    command: "eigeninference-provider config --models Qwen/Qwen3-8B-MLX-4bit",
-  },
-  {
     icon: Play,
-    title: "Start Serving",
-    description: "Launch the provider daemon. It will connect to the coordinator and begin accepting inference requests.",
-    command: "eigeninference-provider serve",
+    title: "Start the Provider",
+    description: "Launch the provider. It will show an interactive picker to select models based on your hardware, download them, and start serving.",
+    command: "eigeninference-provider start",
   },
   {
     icon: CheckCircle2,
-    title: "Verify Attestation",
-    description: "Check your provider's attestation status on the Providers page. Hardware attestation requires Apple MDM enrollment.",
+    title: "Check Status",
+    description: "Verify your provider is online and serving. Hardware attestation via Secure Enclave happens automatically.",
     command: "eigeninference-provider status",
   },
 ];
@@ -123,7 +109,7 @@ const FAQ = [
   },
   {
     question: "What models can I serve?",
-    answer: "Any MLX-compatible model from HuggingFace. Popular choices include Qwen3-8B, Llama 3, and Mistral variants in 4-bit or 8-bit quantization. The provider CLI handles model downloading and conversion.",
+    answer: "The interactive model picker shows all supported models that fit your hardware. Models include text (Qwen3.5 27B, Trinity Mini), image (FLUX Klein), and transcription (Cohere Transcribe). The provider downloads selected models automatically.",
   },
   {
     question: "What is hardware attestation?",
@@ -135,7 +121,7 @@ const FAQ = [
   },
   {
     question: "How does the idle timeout work?",
-    answer: "The vllm-mlx backend process is automatically stopped after 10 minutes of no inference requests to free GPU memory. When a new request arrives, the model is lazy-reloaded (10-30 second cold start). This is configurable via the provider config.",
+    answer: "The vllm-mlx backend process is automatically stopped after 1 hour of no inference requests to free GPU memory. When a new request arrives, the model is lazy-reloaded (10-30 second cold start). This is configurable via the provider config.",
   },
 ];
 

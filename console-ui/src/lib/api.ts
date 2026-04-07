@@ -96,7 +96,10 @@ export async function transcribeAudio(
   const { apiKey, baseUrl } = getConfig();
 
   const form = new FormData();
-  form.append("file", file, file instanceof File ? file.name : "recording.wav");
+  const filename = file instanceof File
+    ? file.name
+    : file.type?.includes("webm") ? "recording.webm" : "recording.wav";
+  form.append("file", file, filename);
   form.append("model", model);
   if (language) form.append("language", language);
 

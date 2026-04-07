@@ -88,8 +88,11 @@ export function ChatInput({ onSend, onStop, isStreaming }: ChatInputProps) {
             blob,
             sttModel?.id || "CohereLabs/cohere-transcribe-03-2026"
           );
-          if (result.text) {
-            setInput((prev) => (prev ? prev + " " + result.text : result.text));
+          const text = result?.text?.trim();
+          if (text) {
+            setInput((prev) => (prev ? prev + " " + text : text));
+            // Focus textarea so user sees the text and can edit/send
+            setTimeout(() => textareaRef.current?.focus(), 100);
           }
         } catch (err) {
           console.error("Transcription failed:", err);

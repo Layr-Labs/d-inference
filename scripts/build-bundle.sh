@@ -106,6 +106,9 @@ source "$BUNDLE_DIR/python/bin/activate"
 echo "   Installing vllm-mlx from our fork..."
 pip install --quiet 'git+https://github.com/Gajesh2007/vllm-mlx.git@main'
 
+echo "   Upgrading mlx-lm to latest (Gemma 4 support)..."
+pip install --quiet --upgrade 'git+https://github.com/ml-explore/mlx-lm.git@main'
+
 echo "   Installing image bridge dependencies..."
 pip install --quiet grpcio flatbuffers Pillow
 

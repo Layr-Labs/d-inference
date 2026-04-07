@@ -203,15 +203,17 @@ async fn download_file_async(url: &str, dest: &std::path::Path, label: &str) -> 
         let existing_bytes = dest.metadata().map(|m| m.len()).unwrap_or(0);
 
         let mut req = client.get(url);
-        if attempt > 0 && existing_bytes > 0 {
-            // Resume from where we left off
+        if existing_bytes > 0 {
+            // Resume from where we left off (works across retries AND fresh starts)
             req = req.header("Range", format!("bytes={}-", existing_bytes));
-            eprintln!(
-                "\r  Resuming from {:.1} GB (attempt {}/{})...              ",
-                existing_bytes as f64 / 1_073_741_824.0,
-                attempt + 1,
-                max_retries + 1
-            );
+            if attempt > 0 {
+                eprintln!(
+                    "\r  Resuming from {:.1} GB (attempt {}/{})...              ",
+                    existing_bytes as f64 / 1_073_741_824.0,
+                    attempt + 1,
+                    max_retries + 1
+                );
+            }
         }
 
         let resp = match req.send().await {

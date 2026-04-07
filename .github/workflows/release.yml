@@ -77,32 +77,74 @@ jobs:
       - name: Test coordinator
         run: cd coordinator && go test -race ./...
 
+      # --- Build Python runtime ---
+
+      - name: Build Python runtime
+        run: |
+          BUNDLE=/tmp/eigeninference-bundle
+          mkdir -p "$BUNDLE"
+
+          # Create Python 3.12 venv with inference deps
+          python3.12 -m venv "$BUNDLE/python"
+          source "$BUNDLE/python/bin/activate"
+
+          echo "Installing vllm-mlx from our fork..."
+          pip install --quiet 'git+https://github.com/Gajesh2007/vllm-mlx.git@main'
+
+          echo "Upgrading mlx-lm to latest (Gemma 4 support)..."
+          pip install --quiet --upgrade 'git+https://github.com/ml-explore/mlx-lm.git@main'
+
+          echo "Installing image bridge dependencies..."
+          pip install --quiet grpcio flatbuffers Pillow
+
+          echo "Installing STT dependencies..."
+          pip install --quiet mlx-audio
+
+          echo "Stripping unnecessary packages..."
+          cd "$BUNDLE/python/lib/python3.12/site-packages"
+          rm -rf torch* gradio* opencv* cv2* pandas* pyarrow* \
+                 sympy* networkx* mcp* miniaudio* pydub* datasets*
+          find "$BUNDLE/python" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+
+          deactivate
+
+          # Verify key packages
+          for pkg in mlx mlx_lm vllm_mlx huggingface_hub; do
+            if [ -d "$BUNDLE/python/lib/python3.12/site-packages/$pkg" ] || \
+               [ -d "$BUNDLE/python/lib/python3.12/site-packages/${pkg/-/_}" ]; then
+              echo "  ✓ $pkg"
+            else
+              echo "  ✗ $pkg MISSING" && exit 1
+            fi
+          done
+          echo "Python runtime: $(du -sh "$BUNDLE/python" | cut -f1)"
+
       # --- Sign & Bundle ---
 
       - name: Sign binaries and create bundle
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          mkdir -p /tmp/eigeninference-bundle
+          BUNDLE=/tmp/eigeninference-bundle
 
-          cp provider/target/release/eigeninference-provider /tmp/eigeninference-bundle/
-          cp enclave/.build/release/eigeninference-enclave /tmp/eigeninference-bundle/
+          cp provider/target/release/eigeninference-provider "$BUNDLE/"
+          cp enclave/.build/release/eigeninference-enclave "$BUNDLE/"
 
           # Code sign with Developer ID (hardened runtime + entitlements)
           codesign --force --sign "$DEVELOPER_ID" \
             --keychain "$KEYCHAIN_PATH" \
             --entitlements scripts/entitlements.plist \
             --options runtime \
-            /tmp/eigeninference-bundle/eigeninference-provider
+            "$BUNDLE/eigeninference-provider"
 
           codesign --force --sign "$DEVELOPER_ID" \
             --keychain "$KEYCHAIN_PATH" \
             --entitlements scripts/entitlements.plist \
             --options runtime \
-            /tmp/eigeninference-bundle/eigeninference-enclave
+            "$BUNDLE/eigeninference-enclave"
 
           # Verify signatures
-          codesign --verify --verbose /tmp/eigeninference-bundle/eigeninference-provider
-          codesign --verify --verbose /tmp/eigeninference-bundle/eigeninference-enclave
+          codesign --verify --verbose "$BUNDLE/eigeninference-provider"
+          codesign --verify --verbose "$BUNDLE/eigeninference-enclave"
 
           cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
           echo "Bundle created: $(du -h /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -f1)"

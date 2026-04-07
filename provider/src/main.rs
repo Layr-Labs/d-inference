@@ -4411,12 +4411,18 @@ async fn cmd_start(
 
             let selected_indices = run_model_picker(&entries, hw.memory_gb as f64)?;
 
-            // Download any selected models that aren't local yet
+            // Download any selected models that aren't local yet.
+            // For image models (.ckpt), always verify even if "downloaded" — the
+            // download function does a HEAD check against R2 and re-downloads files
+            // that are the wrong size (e.g. corrupt/truncated downloads).
             for &idx in &selected_indices {
                 let item = &items[idx];
-                if !item.downloaded {
-                    println!();
-                    println!("  Downloading {}...", item.display);
+                let needs_download = !item.downloaded || item.model_type == "image";
+                if needs_download {
+                    if !item.downloaded {
+                        println!();
+                        println!("  Downloading {}...", item.display);
+                    }
                     let cache_dir = dirs::home_dir()
                         .unwrap_or_default()
                         .join(".cache/huggingface/hub")
@@ -4426,7 +4432,9 @@ async fn cmd_start(
                     if !download_model_from_cdn(&item.s3_name, &cache_dir, &item.display) {
                         anyhow::bail!("Failed to download {}", item.display);
                     }
-                    println!("  ✓ Downloaded {}", item.display);
+                    if !item.downloaded {
+                        println!("  ✓ Downloaded {}", item.display);
+                    }
                 }
             }
 

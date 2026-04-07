@@ -166,31 +166,66 @@ async fn handle_non_streaming_request(
     let usage = extract_usage(&response_json);
     let completion_tokens = usage.completion_tokens;
 
-    // Sign the actual response content with the Secure Enclave key
-    let content = response_json
+    // Extract the full message object from the response (content + tool_calls).
+    let message = response_json
         .get("choices")
         .and_then(|c| c.as_array())
         .and_then(|a| a.first())
         .and_then(|c| c.get("message"))
-        .and_then(|m| m.get("content"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({"role": "assistant", "content": ""}));
+
+    let finish_reason = response_json
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|c| c.get("finish_reason"))
+        .and_then(|f| f.as_str())
+        .unwrap_or("stop");
+
+    // Sign the response content with the Secure Enclave key.
+    // For signing, use the text content (tool_calls are structural, not secret).
+    let content = message
+        .get("content")
         .and_then(|c| c.as_str())
         .unwrap_or("");
     let sign_data = format!("{}:{}:{}", request_id, usage.completion_tokens, content);
     let response_hash = security::sha256_hex(sign_data.as_bytes());
     let se_signature = security::se_sign(response_hash.as_bytes());
 
-    // Send the response content as an SSE-format chunk so the coordinator's
-    // non-streaming handler can extract it via extractContent.
+    // Send the full message as an SSE-format chunk so the coordinator's
+    // non-streaming handler can reconstruct the complete response.
+    // The delta mirrors the message object (content + tool_calls if present).
+    let mut delta = serde_json::Map::new();
+    delta.insert("role".to_string(), serde_json::json!("assistant"));
+    if let Some(c) = message.get("content") {
+        delta.insert("content".to_string(), c.clone());
+    }
+    if let Some(tc) = message.get("tool_calls") {
+        // Convert non-streaming tool_calls to streaming delta format (add index).
+        if let Some(tool_calls) = tc.as_array() {
+            let indexed: Vec<serde_json::Value> = tool_calls
+                .iter()
+                .enumerate()
+                .map(|(i, tc)| {
+                    let mut tc = tc.clone();
+                    if let Some(obj) = tc.as_object_mut() {
+                        obj.insert("index".to_string(), serde_json::json!(i));
+                    }
+                    tc
+                })
+                .collect();
+            delta.insert("tool_calls".to_string(), serde_json::json!(indexed));
+        }
+    }
+
     let chunk_json = serde_json::json!({
         "id": response_json.get("id").and_then(|v| v.as_str()).unwrap_or(""),
         "object": "chat.completion.chunk",
         "choices": [{
             "index": 0,
-            "delta": {
-                "role": "assistant",
-                "content": content,
-            },
-            "finish_reason": "stop",
+            "delta": delta,
+            "finish_reason": finish_reason,
         }],
     });
     outbound_tx

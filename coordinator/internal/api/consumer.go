@@ -949,16 +949,18 @@ func normalizeSSEChunk(chunk string) string {
 }
 
 // extractedMessage holds the reconstructed assistant message from SSE chunks,
-// including both text content and any tool calls.
+// including text content, reasoning, and any tool calls.
 type extractedMessage struct {
 	Content   string           `json:"content"`
+	Reasoning string           `json:"reasoning,omitempty"`
 	ToolCalls []map[string]any `json:"tool_calls,omitempty"`
 }
 
 // extractMessage parses SSE data lines and reconstructs the full assistant
-// message from streaming chunks, including content and tool_calls.
+// message from streaming chunks, including content, reasoning, and tool_calls.
 func extractMessage(chunks []string) extractedMessage {
 	var contentBuilder strings.Builder
+	var reasoningBuilder strings.Builder
 	// Tool calls are indexed — accumulate argument fragments by index.
 	toolCallMap := map[int]map[string]any{}
 
@@ -981,6 +983,7 @@ func extractMessage(chunks []string) extractedMessage {
 		var choices []struct {
 			Delta struct {
 				Content   string `json:"content"`
+				Reasoning string `json:"reasoning"`
 				ToolCalls []struct {
 					Index    int    `json:"index"`
 					ID       string `json:"id,omitempty"`
@@ -999,6 +1002,7 @@ func extractMessage(chunks []string) extractedMessage {
 
 		for _, c := range choices {
 			contentBuilder.WriteString(c.Delta.Content)
+			reasoningBuilder.WriteString(c.Delta.Reasoning)
 			for _, tc := range c.Delta.ToolCalls {
 				existing, ok := toolCallMap[tc.Index]
 				if !ok {
@@ -1025,7 +1029,7 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 	}
 
-	msg := extractedMessage{Content: contentBuilder.String()}
+	msg := extractedMessage{Content: contentBuilder.String(), Reasoning: reasoningBuilder.String()}
 	if len(toolCallMap) > 0 {
 		msg.ToolCalls = make([]map[string]any, 0, len(toolCallMap))
 		for i := 0; i < len(toolCallMap); i++ {
@@ -1044,6 +1048,9 @@ func buildNonStreamingResponse(requestID, model string, msg extractedMessage, us
 	message := map[string]any{
 		"role":    "assistant",
 		"content": msg.Content,
+	}
+	if msg.Reasoning != "" {
+		message["reasoning"] = msg.Reasoning
 	}
 
 	finishReason := "stop"

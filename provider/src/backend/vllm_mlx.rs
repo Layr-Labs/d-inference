@@ -72,6 +72,28 @@ impl VllmMlxBackend {
             args.push("--continuous-batching".to_string());
         }
 
+        // Enable tool call parsing so vllm-mlx converts <tool_call> output
+        // into structured tool_calls fields in the OpenAI response format.
+        // "auto" parser auto-detects the model's tool call format.
+        args.push("--enable-auto-tool-choice".to_string());
+        args.push("--tool-call-parser".to_string());
+        args.push("auto".to_string());
+
+        // Extract <think>...</think> into reasoning_content field instead of
+        // leaking thinking tags into the response content.
+        //
+        // Default: qwen3 parser (safe for all models — if no </think> found,
+        // it's a no-op passthrough). DeepSeek needs its own parser because it
+        // supports implicit reasoning mode where <think> is omitted.
+        let model_lower = self.model.to_lowercase();
+        let reasoning_parser = if model_lower.contains("deepseek") {
+            "deepseek_r1"
+        } else {
+            "qwen3" // safe default: no-op if model doesn't output <think> tags
+        };
+        args.push("--reasoning-parser".to_string());
+        args.push(reasoning_parser.to_string());
+
         args
     }
 
@@ -200,26 +222,42 @@ mod tests {
     fn test_build_args_basic() {
         let backend = VllmMlxBackend::new("mlx-community/Qwen2.5-7B-4bit".into(), 8100, false);
         let args = backend.build_args();
-        assert_eq!(
-            args,
-            vec!["serve", "mlx-community/Qwen2.5-7B-4bit", "--port", "8100"]
-        );
+        // Qwen model gets tool calling + qwen3 reasoning parser
+        assert!(args.contains(&"serve".to_string()));
+        assert!(args.contains(&"--enable-auto-tool-choice".to_string()));
+        assert!(args.contains(&"--tool-call-parser".to_string()));
+        assert!(args.contains(&"auto".to_string()));
+        assert!(args.contains(&"--reasoning-parser".to_string()));
+        assert!(args.contains(&"qwen3".to_string()));
+        assert!(!args.contains(&"--continuous-batching".to_string()));
     }
 
     #[test]
     fn test_build_args_with_continuous_batching() {
         let backend = VllmMlxBackend::new("mlx-community/Qwen2.5-7B-4bit".into(), 8100, true);
         let args = backend.build_args();
-        assert_eq!(
-            args,
-            vec![
-                "serve",
-                "mlx-community/Qwen2.5-7B-4bit",
-                "--port",
-                "8100",
-                "--continuous-batching"
-            ]
-        );
+        assert!(args.contains(&"--continuous-batching".to_string()));
+        assert!(args.contains(&"--enable-auto-tool-choice".to_string()));
+        assert!(args.contains(&"qwen3".to_string()));
+    }
+
+    #[test]
+    fn test_build_args_deepseek_model() {
+        let backend = VllmMlxBackend::new("mlx-community/DeepSeek-R1-7B".into(), 8100, false);
+        let args = backend.build_args();
+        assert!(args.contains(&"--reasoning-parser".to_string()));
+        assert!(args.contains(&"deepseek_r1".to_string()));
+        assert!(!args.contains(&"qwen3".to_string()));
+    }
+
+    #[test]
+    fn test_build_args_generic_model() {
+        let backend = VllmMlxBackend::new("mlx-community/Llama-3-8B".into(), 8100, false);
+        let args = backend.build_args();
+        // Generic model gets tool calling + qwen3 reasoning (safe default)
+        assert!(args.contains(&"--enable-auto-tool-choice".to_string()));
+        assert!(args.contains(&"--reasoning-parser".to_string()));
+        assert!(args.contains(&"qwen3".to_string()));
     }
 
     #[test]

@@ -4698,9 +4698,32 @@ async fn cmd_update(coordinator: String) -> Result<()> {
 
     println!();
     println!("  Updated to {latest}!");
-    println!();
-    println!("  If the provider is running, restart it:");
-    println!("    eigeninference-provider stop && eigeninference-provider start");
+
+    // Auto-restart if the provider is currently running as a launchd service.
+    // The plist already has the correct args from the last `start`, so we just
+    // stop and re-kickstart with the new binary.
+    if service::is_loaded() {
+        println!("  Restarting provider...");
+        service::stop()?;
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        // Re-bootstrap and kickstart — plist is already on disk with correct args
+        let uid = unsafe { libc::getuid() };
+        let domain = format!("gui/{uid}");
+        let plist = dirs::home_dir()
+            .unwrap_or_default()
+            .join("Library/LaunchAgents/io.eigeninference.provider.plist");
+        if plist.exists() {
+            let _ = std::process::Command::new("launchctl")
+                .args(["bootstrap", &domain, &plist.to_string_lossy()])
+                .output();
+            let target = format!("gui/{uid}/io.eigeninference.provider");
+            let _ = std::process::Command::new("launchctl")
+                .args(["kickstart", &target])
+                .output();
+            println!("  Provider restarted with {latest}");
+        }
+    }
 
     Ok(())
 }

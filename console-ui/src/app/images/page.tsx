@@ -110,9 +110,15 @@ export default function ImagesPage() {
     <div className="flex-1 flex flex-col h-full">
       {/* Header */}
       <div className="squiggly-border-bottom px-6 py-4">
-        <h1 className="text-2xl font-display text-ink">Image Generation</h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-display text-ink">Image Generation</h1>
+          <span className="px-2 py-0.5 rounded-full bg-accent-amber/15 border border-accent-amber/30 text-accent-amber text-[10px] font-bold uppercase tracking-wider">
+            Experimental
+          </span>
+        </div>
         <p className="text-sm text-text-tertiary mt-0.5">
-          Generate images with FLUX models running on attested Apple Silicon
+          Generate images with FLUX models running on attested Apple Silicon.
+          Image providers may not always be available.
         </p>
       </div>
 
@@ -264,8 +270,17 @@ export default function ImagesPage() {
 
           {/* Error */}
           {error && (
-            <div className="px-4 py-3 rounded-xl bg-accent-red-dim border border-accent-red/20 text-sm text-accent-red">
-              {error}
+            <div className="px-4 py-3 rounded-xl bg-accent-red/5 border-2 border-accent-red/20 space-y-1">
+              <p className="text-sm font-semibold text-accent-red">
+                {error.includes("no provider") || error.includes("503")
+                  ? "No image provider available right now"
+                  : "Image generation failed"}
+              </p>
+              <p className="text-xs text-text-tertiary">
+                {error.includes("no provider") || error.includes("503")
+                  ? "Image generation is experimental and depends on provider availability. Please try again in a few minutes."
+                  : error}
+              </p>
             </div>
           )}
 

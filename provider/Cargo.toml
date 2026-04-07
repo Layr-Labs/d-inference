@@ -1,6 +1,6 @@
 [package]
 name = "eigeninference-provider"
-version = "0.2.23"
+version = "0.2.24"
 edition = "2024"
 description = "EigenInference provider agent for Apple Silicon Macs"
 

@@ -2395,10 +2395,7 @@ async fn cmd_serve(
                                 let token_clone = cancel_token.clone();
                                 let done_tx = done_tx.clone();
                                 let rid = request_id.clone();
-                                let image_url = proxy_backend_url.clone().replace(
-                                    &format!(":{}", be_port),
-                                    &format!(":{}", be_port + 2),
-                                );
+                                let image_url = format!("http://127.0.0.1:{}", image_port);
 
                                 let handle = tokio::spawn(async move {
                                     proxy::handle_image_generation_request(

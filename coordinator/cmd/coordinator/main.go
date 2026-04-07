@@ -329,13 +329,14 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// seedModelCatalog populates the supported model catalog if it's empty.
-// This provides the initial set of models on first startup.
+// seedModelCatalog ensures all hardcoded models exist in the catalog.
+// On first startup it populates everything; on subsequent starts it adds
+// any new models that were added to the code but not yet in the DB.
 func seedModelCatalog(st store.Store, logger *slog.Logger) {
 	existing := st.ListSupportedModels()
-	if len(existing) > 0 {
-		logger.Info("model catalog loaded", "count", len(existing))
-		return
+	existingIDs := make(map[string]bool, len(existing))
+	for _, m := range existing {
+		existingIDs[m.ID] = true
 	}
 
 	models := []store.SupportedModel{
@@ -354,10 +355,20 @@ func seedModelCatalog(st store.Store, logger *slog.Logger) {
 		{ID: "mlx-community/MiniMax-M2.5-8bit", S3Name: "MiniMax-M2.5-8bit", DisplayName: "MiniMax M2.5", ModelType: "text", SizeGB: 243.0, Architecture: "239B MoE, 11B active", Description: "SOTA coding, 100 tok/s", MinRAMGB: 256, Active: true},
 	}
 
+	added := 0
 	for i := range models {
+		if existingIDs[models[i].ID] {
+			continue
+		}
 		if err := st.SetSupportedModel(&models[i]); err != nil {
 			logger.Warn("failed to seed model", "id", models[i].ID, "error", err)
+		} else {
+			added++
 		}
 	}
-	logger.Info("model catalog seeded", "count", len(models))
+	if added > 0 {
+		logger.Info("new models added to catalog", "added", added, "total", len(existing)+added)
+	} else {
+		logger.Info("model catalog loaded", "count", len(existing))
+	}
 }

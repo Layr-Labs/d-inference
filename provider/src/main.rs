@@ -1416,9 +1416,39 @@ async fn cmd_serve(
     backend_port_override: Option<u16>,
     _all_models: bool,
 ) -> Result<()> {
-    // Kill any existing provider/mlx_lm processes to avoid "address already in use"
+    // Ensure only one provider instance runs at a time.
+    // Kill any existing provider serve process + its backend children.
     #[cfg(unix)]
     {
+        let my_pid = std::process::id();
+        let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+        let pid_file = eigeninference_dir.join("provider.pid");
+
+        // Check for an existing provider process
+        if let Ok(old_pid_str) = std::fs::read_to_string(&pid_file) {
+            if let Ok(old_pid) = old_pid_str.trim().parse::<u32>() {
+                if old_pid != my_pid {
+                    // Check if the old process is still running
+                    let alive = std::process::Command::new("kill")
+                        .args(["-0", &old_pid.to_string()])
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false);
+                    if alive {
+                        tracing::info!("Killing existing provider (PID {old_pid})");
+                        let _ = std::process::Command::new("kill")
+                            .args([&old_pid.to_string()])
+                            .status();
+                        // Give it a moment to clean up
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                }
+            }
+        }
+
+        // Write our PID
+        let _ = std::fs::write(&pid_file, my_pid.to_string());
+
         let _ = std::process::Command::new("pkill")
             .args(["-f", "mlx_lm.server"])
             .status();
@@ -2496,7 +2526,7 @@ async fn cmd_serve(
         event_handle.abort();
     }
 
-    // Clean up mlx_lm.server
+    // Clean up backends and PID file
     #[cfg(unix)]
     {
         let _ = std::process::Command::new("pkill")
@@ -2505,6 +2535,10 @@ async fn cmd_serve(
         let _ = std::process::Command::new("pkill")
             .args(["-f", "vllm_mlx"])
             .status();
+        let pid_file = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".eigeninference/provider.pid");
+        let _ = std::fs::remove_file(pid_file);
     }
 
     Ok(())

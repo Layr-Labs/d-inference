@@ -66,6 +66,12 @@ const STEPS = [
     command: "curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash",
   },
   {
+    icon: Shield,
+    title: "Link Your Account",
+    description: "Link this machine to your EigenInference account. You'll get a code to enter on the web to verify ownership.",
+    command: "eigeninference-provider login",
+  },
+  {
     icon: Play,
     title: "Start the Provider",
     description: "Launch the provider. It will show an interactive picker to select models based on your hardware, download them, and start serving.",

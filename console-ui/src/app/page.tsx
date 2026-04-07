@@ -37,7 +37,7 @@ export default function ChatPage() {
     setModels,
   } = useStore();
 
-  const { ready, authenticated, login } = useAuth();
+  const { ready, authenticated, apiKeyReady, login } = useAuth();
   const addToast = useToastStore((s) => s.addToast);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -45,9 +45,9 @@ export default function ChatPage() {
 
   const activeChat = chats.find((c) => c.id === activeChatId);
 
-  // Load models on mount
+  // Load models once API key is ready
   useEffect(() => {
-    if (!authenticated) return;
+    if (!authenticated || !apiKeyReady) return;
 
     async function bootstrap() {
       try {
@@ -58,7 +58,7 @@ export default function ChatPage() {
       }
     }
     bootstrap();
-  }, [setModels, authenticated]);
+  }, [setModels, authenticated, apiKeyReady]);
 
   useEffect(() => {
     if (scrollRef.current) {

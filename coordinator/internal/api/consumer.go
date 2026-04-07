@@ -637,12 +637,10 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Build the upload URL for the provider to POST generated images to.
-	// Derive from the incoming request's Host header.
-	scheme := "https"
-	if r.TLS == nil {
-		scheme = "http"
-	}
-	uploadURL := fmt.Sprintf("%s://%s/v1/provider/image-upload?request_id=%s", scheme, r.Host, requestID)
+	// Always use HTTPS — the coordinator runs behind nginx which terminates TLS,
+	// so r.TLS is always nil, but the public URL must be HTTPS to avoid
+	// HTTP→HTTPS 301 redirects that convert POST to GET (405 error).
+	uploadURL := fmt.Sprintf("https://%s/v1/provider/image-upload?request_id=%s", r.Host, requestID)
 
 	wireMsg := map[string]any{
 		"type":       protocol.TypeImageGenerationRequest,

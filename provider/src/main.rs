@@ -1491,18 +1491,21 @@ async fn cmd_serve(
     let be_port = backend_port_override.unwrap_or(cfg.backend.port);
 
     // Determine text models to serve (vmlm-mlx backends).
-    // Filter out .ckpt files at every stage — they're image models for the
-    // image-bridge, not vllm-mlx text models.
+    // Filter out image (.ckpt) and transcription models — they have their own backends.
     let available_models = models::scan_models(&hw);
-    let is_image_model = |id: &str| id.ends_with(".ckpt");
+    let is_non_text = |id: &str| {
+        id.ends_with(".ckpt")
+            || id.to_lowercase().contains("transcribe")
+            || id.to_lowercase().contains("cohere-transcribe")
+            || id.to_lowercase().contains("whisper")
+    };
     let selected_models: Vec<String> = if !model_overrides.is_empty() {
-        // Only keep text models from overrides — .ckpt models are handled by image-bridge
         model_overrides
             .into_iter()
-            .filter(|m| !is_image_model(m))
+            .filter(|m| !is_non_text(m))
             .collect()
     } else if let Some(m) = cfg.backend.model.clone() {
-        if is_image_model(&m) { vec![] } else { vec![m] }
+        if is_non_text(&m) { vec![] } else { vec![m] }
     } else {
         // No --model specified — don't auto-pick. The picker in cmd_start
         // explicitly chooses which models to serve. If only image models were
@@ -4396,15 +4399,20 @@ async fn cmd_start(
             }
         }
 
-        // Split selected models by type: text → --model, image → --image-model
+        // Split selected models by type:
+        //   text → --model (vmlm-mlx backends)
+        //   image → --image-model (image bridge)
+        //   transcription → handled separately via STT env vars
         let mut text_models = Vec::new();
         let mut picked_image_model: Option<String> = None;
         for &idx in &selected_indices {
             let item = &items[idx];
-            if item.model_type == "image" {
-                picked_image_model = Some(item.id.clone());
-            } else {
-                text_models.push(item.id.clone());
+            match item.model_type.as_str() {
+                "image" => picked_image_model = Some(item.id.clone()),
+                "text" => text_models.push(item.id.clone()),
+                // transcription/stt models are handled by the separate stt_server.py pipeline
+                // via EIGENINFERENCE_STT_MODEL env var, not via --model
+                _ => {}
             }
         }
         (text_models, picked_image_model)

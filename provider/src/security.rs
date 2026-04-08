@@ -634,6 +634,86 @@ mod tests {
     }
 
     #[test]
+    fn test_collect_files_recursive_wildcard() {
+        let tmp = std::env::temp_dir().join("eigeninference_test_collect_wildcard");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("sub")).unwrap();
+        std::fs::write(tmp.join("a.py"), "# python").unwrap();
+        std::fs::write(tmp.join("b.so"), "binary").unwrap();
+        std::fs::write(tmp.join("c.json"), "{}").unwrap();
+        std::fs::write(tmp.join("sub/d.dylib"), "lib").unwrap();
+        std::fs::write(tmp.join("sub/e.txt"), "text").unwrap();
+
+        let mut files = Vec::new();
+        collect_files_recursive(&tmp, "*", &mut files);
+        files.sort();
+
+        assert_eq!(files.len(), 5, "wildcard should find all 5 files");
+
+        // Verify it finds all extensions
+        let extensions: Vec<_> = files
+            .iter()
+            .filter_map(|p| p.extension().and_then(|e| e.to_str()).map(String::from))
+            .collect();
+        assert!(extensions.contains(&"py".to_string()));
+        assert!(extensions.contains(&"so".to_string()));
+        assert!(extensions.contains(&"json".to_string()));
+        assert!(extensions.contains(&"dylib".to_string()));
+        assert!(extensions.contains(&"txt".to_string()));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_collect_files_recursive_wildcard_vs_filtered() {
+        let tmp = std::env::temp_dir().join("eigeninference_test_wildcard_vs_filter");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("code.py"), "# python").unwrap();
+        std::fs::write(tmp.join("ext.so"), "binary").unwrap();
+        std::fs::write(tmp.join("data.json"), "{}").unwrap();
+
+        let mut py_only = Vec::new();
+        collect_files_recursive(&tmp, "py", &mut py_only);
+        assert_eq!(py_only.len(), 1, "py filter should find 1 file");
+
+        let mut all = Vec::new();
+        collect_files_recursive(&tmp, "*", &mut all);
+        assert_eq!(all.len(), 3, "wildcard should find all 3 files");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_hash_files_sorted_deterministic_with_mixed_types() {
+        let tmp = std::env::temp_dir().join("eigeninference_test_hash_mixed");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("a.py"), "python code").unwrap();
+        std::fs::write(tmp.join("b.so"), "compiled extension").unwrap();
+        std::fs::write(tmp.join("c.json"), "{\"key\": \"value\"}").unwrap();
+
+        let mut files = Vec::new();
+        collect_files_recursive(&tmp, "*", &mut files);
+        files.sort();
+
+        let hash1 = hash_files_sorted(&files);
+        let hash2 = hash_files_sorted(&files);
+        assert!(hash1.is_some());
+        assert_eq!(hash1, hash2, "hash should be deterministic");
+
+        // Modify one file — hash should change
+        std::fs::write(tmp.join("b.so"), "tampered extension").unwrap();
+        let hash3 = hash_files_sorted(&files);
+        assert_ne!(
+            hash1, hash3,
+            "hash should change when a .so file is modified"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn test_collect_files_recursive_nonexistent_dir() {
         let mut files = Vec::new();
         collect_files_recursive(std::path::Path::new("/nonexistent/path"), "py", &mut files);

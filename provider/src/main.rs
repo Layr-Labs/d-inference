@@ -2244,11 +2244,14 @@ async fn cmd_serve(
     );
 
     // Build backend slots: one vllm-mlx process per model on sequential ports.
+    // Shared state struct for per-slot health monitoring and lifecycle management.
     struct BackendSlot {
         model_id: String,
+        model_path: String,
         port: u16,
         pid: Option<u32>,
         backend_url: String,
+        healthy: bool,
     }
     let mut backend_slots: Vec<BackendSlot> = selected_models
         .iter()
@@ -2257,9 +2260,11 @@ async fn cmd_serve(
             let port = be_port + i as u16;
             BackendSlot {
                 model_id: model_id.clone(),
+                model_path: String::new(), // resolved later during backend startup
                 port,
                 pid: None,
                 backend_url: format!("http://127.0.0.1:{}", port),
+                healthy: false,
             }
         })
         .collect();
@@ -2603,6 +2608,7 @@ async fn cmd_serve(
                 );
                 slot.model_id.clone()
             });
+        slot.model_path = model_path.clone();
         tracing::info!(
             "Starting backend for {} on port {} (path: {})",
             slot.model_id,
@@ -2629,7 +2635,7 @@ async fn cmd_serve(
     }
 
     // Wait for all backends to become healthy
-    for slot in &backend_slots {
+    for slot in &mut backend_slots {
         if slot.pid.is_none() {
             continue;
         }
@@ -2654,6 +2660,7 @@ async fn cmd_serve(
                 slot.model_id
             );
         }
+        slot.healthy = ready;
     }
 
     // Build model→URL lookup for request routing
@@ -2667,7 +2674,7 @@ async fn cmd_serve(
         .map(|s| s.backend_url.clone())
         .unwrap_or_else(|| format!("http://127.0.0.1:{}", be_port));
     let backend_url = backend_url_str.clone();
-    // Primary model path for health monitor restart
+    // Primary model path for backwards compat (idle reload of primary model).
     let primary_model_path = if !model.is_empty() {
         models::resolve_local_path(&model)
             .map(|p| p.to_string_lossy().to_string())
@@ -2675,6 +2682,30 @@ async fn cmd_serve(
     } else {
         String::new()
     };
+
+    // Shared per-slot state for health monitoring, capacity polling, and the event loop.
+    // The health monitor reads port/PID/model_path and updates healthy/pid.
+    // The event loop reads healthy to know which slots can serve, and updates pid on reload.
+    struct SharedSlotState {
+        model_id: String,
+        model_path: String,
+        port: u16,
+        pid: Option<u32>,
+        healthy: bool,
+    }
+    let shared_slots: std::sync::Arc<std::sync::Mutex<Vec<SharedSlotState>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(
+            backend_slots
+                .iter()
+                .map(|s| SharedSlotState {
+                    model_id: s.model_id.clone(),
+                    model_path: s.model_path.clone(),
+                    port: s.port,
+                    pid: s.pid,
+                    healthy: s.healthy,
+                })
+                .collect(),
+        ));
 
     // Start STT backend (continuous-batching stt_server.py) on be_port + 1 if available.
     // EIGENINFERENCE_STT_MODEL: local path or HuggingFace repo ID for the STT model.
@@ -2862,7 +2893,7 @@ async fn cmd_serve(
         let outbound_tx = outbound_tx_opt.unwrap();
         let shutdown_tx = shutdown_tx_opt.unwrap();
         let inference_active = inference_active_opt.unwrap();
-        let health_inference_active = health_inference_active_opt.unwrap();
+        let _health_inference_active = health_inference_active_opt.unwrap();
         let provider_stats = provider_stats_opt.unwrap();
         let coordinator_handle = coordinator_handle.unwrap();
 
@@ -2947,15 +2978,13 @@ async fn cmd_serve(
             });
         }
 
-        // Spawn backend health monitor — detects crashes and auto-restarts.
-        // Only monitor if we have text backends; image-only providers don't
-        // run vmlm-mlx so there's nothing to health-check on the text port.
-        let health_url = backend_url_str.clone();
+        // Spawn per-slot backend health monitor — detects crashes and auto-restarts
+        // each backend independently. Only monitors text backends (vllm-mlx slots);
+        // image-only providers don't have text backends to health-check.
+        let has_text_backends = !backend_slots.is_empty();
+        let health_shared_slots = shared_slots.clone();
         let health_python = python_cmd.clone();
         let health_backend = backend_name.to_string();
-        let health_model = primary_model_path.clone();
-        let health_port = be_port;
-        let has_text_backends = !backend_slots.is_empty();
         let health_backend_running = backend_running_flag_opt
             .as_ref()
             .expect("backend_running_flag must be set in non-local mode")
@@ -2967,64 +2996,116 @@ async fn cmd_serve(
                     tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                 }
             }
+
+            // Track consecutive failures per slot (indexed by position in shared_slots).
+            let slot_count = health_shared_slots.lock().unwrap().len();
+            let mut consecutive_failures: Vec<u32> = vec![0; slot_count];
+
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
-            let mut consecutive_failures = 0u32;
             loop {
                 interval.tick().await;
 
-                // Skip crash detection while inference is active — the Python
-                // GIL blocks /health while generating tokens, causing false
-                // positives that trigger unnecessary restarts.
-                if health_inference_active.load(std::sync::atomic::Ordering::Relaxed) {
-                    consecutive_failures = 0;
-                    continue;
+                // Snapshot current slot state (hold the lock briefly).
+                let slot_snapshots: Vec<(String, String, u16, Option<u32>)> = {
+                    let slots = health_shared_slots.lock().unwrap();
+                    slots
+                        .iter()
+                        .map(|s| (s.model_id.clone(), s.model_path.clone(), s.port, s.pid))
+                        .collect()
+                };
+
+                let mut any_crashed = false;
+                for (idx, (model_id, model_path, port, pid)) in slot_snapshots.iter().enumerate() {
+                    let health_url = format!("http://127.0.0.1:{}", port);
+                    if backend::check_health(&health_url).await {
+                        if consecutive_failures[idx] > 0 {
+                            tracing::info!(
+                                "Backend for {} recovered after {} failed health checks",
+                                model_id,
+                                consecutive_failures[idx]
+                            );
+                            consecutive_failures[idx] = 0;
+                            // Mark slot healthy again.
+                            let mut slots = health_shared_slots.lock().unwrap();
+                            if let Some(slot) = slots.get_mut(idx) {
+                                slot.healthy = true;
+                            }
+                        }
+                    } else {
+                        consecutive_failures[idx] += 1;
+                        tracing::warn!(
+                            "Backend health check failed for {} on port {} ({} consecutive)",
+                            model_id,
+                            port,
+                            consecutive_failures[idx]
+                        );
+                        if consecutive_failures[idx] >= 3 {
+                            tracing::error!(
+                                "Backend for {} appears crashed — restarting (port {})...",
+                                model_id,
+                                port
+                            );
+                            any_crashed = true;
+
+                            // Mark slot as unhealthy before restart.
+                            {
+                                let mut slots = health_shared_slots.lock().unwrap();
+                                if let Some(slot) = slots.get_mut(idx) {
+                                    slot.healthy = false;
+                                }
+                            }
+
+                            // Kill only THIS slot's process by PID (not all backends).
+                            #[cfg(unix)]
+                            if let Some(slot_pid) = pid {
+                                let _ = unsafe { libc::kill(*slot_pid as i32, libc::SIGTERM) };
+                                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                let _ = unsafe { libc::kill(*slot_pid as i32, libc::SIGKILL) };
+                            }
+
+                            // Restart only this slot's model on its port.
+                            match reload_backend(&health_python, &health_backend, model_path, *port)
+                                .await
+                            {
+                                Ok(new_pid) => {
+                                    tracing::info!(
+                                        "Backend for {} auto-restarted successfully (new PID: {})",
+                                        model_id,
+                                        new_pid
+                                    );
+                                    consecutive_failures[idx] = 0;
+                                    // Update PID and healthy state in shared slots.
+                                    let mut slots = health_shared_slots.lock().unwrap();
+                                    if let Some(slot) = slots.get_mut(idx) {
+                                        slot.pid = Some(new_pid);
+                                        slot.healthy = true;
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Backend auto-restart failed for {}: {e}",
+                                        model_id
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
 
-                if backend::check_health(&health_url).await {
-                    if consecutive_failures > 0 {
-                        tracing::info!(
-                            "Backend recovered after {} failed health checks",
-                            consecutive_failures
-                        );
-                        consecutive_failures = 0;
-                    }
+                // Update the global backend_running flag based on whether ALL
+                // slots are healthy. This preserves the existing tri-state
+                // semantics for capacity polling.
+                if any_crashed {
+                    health_backend_running
+                        .store(BACKEND_CRASHED, std::sync::atomic::Ordering::Relaxed);
                 } else {
-                    consecutive_failures += 1;
-                    tracing::warn!(
-                        "Backend health check failed ({consecutive_failures} consecutive)"
-                    );
-                    if consecutive_failures >= 3 {
-                        tracing::error!("Backend appears crashed — restarting...");
-                        // Kill any zombie processes
-                        #[cfg(unix)]
-                        {
-                            let _ = std::process::Command::new("pkill")
-                                .args(["-f", "vllm_mlx"])
-                                .status();
-                            let _ = std::process::Command::new("pkill")
-                                .args(["-f", "mlx_lm.server"])
-                                .status();
-                        }
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-                        match reload_backend(
-                            &health_python,
-                            &health_backend,
-                            &health_model,
-                            health_port,
-                        )
-                        .await
-                        {
-                            Ok(()) => {
-                                tracing::info!("Backend auto-restarted successfully");
-                                consecutive_failures = 0;
-                                health_backend_running
-                                    .store(BACKEND_RUNNING, std::sync::atomic::Ordering::Relaxed);
-                            }
-                            Err(e) => {
-                                tracing::error!("Backend auto-restart failed: {e}");
-                            }
-                        }
+                    let all_healthy = {
+                        let slots = health_shared_slots.lock().unwrap();
+                        slots.iter().all(|s| s.healthy)
+                    };
+                    if all_healthy {
+                        health_backend_running
+                            .store(BACKEND_RUNNING, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
@@ -3183,7 +3264,7 @@ async fn cmd_serve(
                                         &reload_path,
                                         idle_be_port,
                                     ).await {
-                                        Ok(()) => {
+                                        Ok(_new_pid) => {
                                             set_backend_state(BACKEND_RUNNING);
                                             idle_model = reload_path;
                                             idle_model_id = reload_id;
@@ -3583,7 +3664,7 @@ async fn reload_backend(
     backend_name: &str,
     model: &str,
     port: u16,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<u32> {
     let module = if backend_name == "vllm-mlx" || backend_name == "vllm_mlx" {
         "vllm_mlx.server"
     } else {
@@ -3595,9 +3676,10 @@ async fn reload_backend(
     let child = spawn_inference_backend(python_cmd, module, model, port)
         .map_err(|e| anyhow::anyhow!("failed to spawn backend: {e}"))?;
 
+    let new_pid = child.id();
     tracing::info!(
-        "Backend process started (PID: {:?}), waiting for model to load...",
-        child.id()
+        "Backend process started (PID: {}), waiting for model to load...",
+        new_pid
     );
 
     let backend_url = format!("http://127.0.0.1:{}", port);
@@ -3657,7 +3739,7 @@ async fn reload_backend(
         warmup_start.elapsed()
     );
 
-    Ok(())
+    Ok(new_pid)
 }
 
 /// Handle an inference request using the in-process engine (no HTTP, no subprocess).

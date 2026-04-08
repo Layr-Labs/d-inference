@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import { useVerificationMode } from "@/lib/verification-mode";
 import {
   ShieldCheck,
   Shield,
@@ -20,6 +21,11 @@ import {
 import Link from "next/link";
 
 const ATTESTATION_API = "https://inference-test.openinnovation.dev";
+
+function maskSerial(serial: string): string {
+  if (serial.length <= 6) return serial;
+  return serial.slice(0, 4) + "\u2022".repeat(serial.length - 6) + serial.slice(-2);
+}
 
 interface Provider {
   provider_id: string;
@@ -129,6 +135,7 @@ function VerifyCertSection({ provider }: { provider: Provider }) {
 {`openssl verify -CAfile AppleRootCA.pem provider.pem`}
             </pre>
             <p>If valid, this proves the device (serial: <code className="bg-bg-elevated px-1 rounded">{provider.mda_serial}</code>) is a real {provider.chip_name} verified by Apple.</p>
+
           </div>
         </div>
       )}
@@ -137,7 +144,9 @@ function VerifyCertSection({ provider }: { provider: Provider }) {
 }
 
 function ProviderCard({ provider }: { provider: Provider }) {
+  const { mode } = useVerificationMode();
   const [expanded, setExpanded] = useState(false);
+  const serial = mode === "normal" ? maskSerial(provider.serial_number) : provider.serial_number;
 
   return (
     <div className="rounded-xl bg-bg-secondary shadow-sm overflow-hidden">
@@ -149,7 +158,7 @@ function ProviderCard({ provider }: { provider: Provider }) {
           <div>
             <h3 className="text-sm font-semibold text-text-primary">{provider.chip_name}</h3>
             <p className="text-xs text-text-tertiary font-mono">
-              {provider.hardware_model} · {provider.serial_number}
+              {provider.hardware_model} · {serial}
             </p>
           </div>
         </div>
@@ -245,7 +254,7 @@ function ProviderCard({ provider }: { provider: Provider }) {
               </div>
               <div className="space-y-1 text-xs text-text-secondary">
                 <div className="flex items-center gap-2"><Check size={12} className="text-accent-green" /> Apple CA cert chain verified</div>
-                {provider.mda_serial && <div className="flex items-center gap-2"><Check size={12} className="text-accent-green" /> Serial: {provider.mda_serial}</div>}
+                {provider.mda_serial && <div className="flex items-center gap-2"><Check size={12} className="text-accent-green" /> Serial: {mode === "normal" ? maskSerial(provider.mda_serial) : provider.mda_serial}</div>}
                 {provider.mda_os_version && <div className="flex items-center gap-2"><Check size={12} className="text-accent-green" /> macOS {provider.mda_os_version}</div>}
               </div>
             </div>

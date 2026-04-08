@@ -8,6 +8,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { ChatMessage } from "@/components/ChatMessage";
 import { ChatInput } from "@/components/ChatInput";
 import { TopBar } from "@/components/TopBar";
+import { PreSendTrustBanner } from "@/components/PreSendTrustBanner";
 import { Lock, Cpu, Globe, Mail } from "lucide-react";
 import { InviteCodeBanner } from "@/components/InviteCodeBanner";
 import type { Message } from "@/lib/store";
@@ -383,6 +384,10 @@ export default function ChatPage() {
       )}
 
       {authenticated && <InviteCodeBanner />}
+
+      <PreSendTrustBanner
+        visible={authenticated && (!activeChat || activeChat.messages.length === 0)}
+      />
 
       <ChatInput
         onSend={handleSend}

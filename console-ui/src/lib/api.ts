@@ -65,6 +65,11 @@ export interface TrustMetadata {
   providerChip: string;
   providerSerial: string;
   providerModel: string;
+  // Attestation receipt fields (per-request SE signature)
+  responseHash?: string;
+  seSignature?: string;
+  sePublicKey?: string;
+  deviceSerial?: string;
 }
 
 export interface StreamMetrics {
@@ -340,6 +345,9 @@ export async function streamChat(
     providerChip: res.headers.get("x-provider-chip") || "",
     providerSerial: res.headers.get("x-provider-serial") || "",
     providerModel: res.headers.get("x-provider-model") || "",
+    // Attestation receipt fields (populated from headers + SSE events)
+    sePublicKey: res.headers.get("x-attestation-se-public-key") || undefined,
+    deviceSerial: res.headers.get("x-attestation-device-serial") || undefined,
   };
 
   const reader = res.body?.getReader();
@@ -481,6 +489,18 @@ export async function streamChat(
           tokenCount,
         });
         return;
+      }
+
+      // Check for attestation receipt event (sent just before [DONE])
+      try {
+        const receiptCheck = JSON.parse(payload);
+        if (receiptCheck.se_signature) {
+          trustMeta.seSignature = receiptCheck.se_signature;
+          trustMeta.responseHash = receiptCheck.response_hash;
+          continue;
+        }
+      } catch {
+        // Not a receipt — normal chunk processing continues below
       }
 
       try {

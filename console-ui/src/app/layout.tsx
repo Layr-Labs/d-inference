@@ -4,6 +4,7 @@ import "./globals.css";
 import { AppShell } from "@/components/AppShell";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { PrivyClientProvider } from "@/components/providers/PrivyClientProvider";
+import { VerificationModeProvider } from "@/lib/verification-mode";
 
 const nunito = Nunito({
   variable: "--font-nunito",
@@ -44,7 +45,9 @@ export default function RootLayout({
       >
         <ThemeProvider>
           <PrivyClientProvider>
-            <AppShell>{children}</AppShell>
+            <VerificationModeProvider>
+              <AppShell>{children}</AppShell>
+            </VerificationModeProvider>
           </PrivyClientProvider>
         </ThemeProvider>
       </body>

@@ -101,6 +101,18 @@ if [ -d "$BIN_DIR/image-bridge" ]; then
 fi
 rm -f /tmp/eigeninference-bundle.tar.gz
 
+# Verify image pipeline components
+if [ -f "$BIN_DIR/gRPCServerCLI" ]; then
+    echo "  gRPCServerCLI ✓"
+else
+    echo "  ⚠ gRPCServerCLI not found — image generation unavailable"
+fi
+if [ -d "$INSTALL_DIR/image-bridge/eigeninference_image_bridge" ]; then
+    echo "  Image bridge ✓"
+else
+    echo "  ⚠ Image bridge not found — image generation unavailable"
+fi
+
 # Verify code signature (codesign is part of base macOS, no CLT needed)
 if codesign --verify --verbose "$BIN_DIR/eigeninference-provider" 2>/dev/null; then
     TEAM=$(codesign -dvv "$BIN_DIR/eigeninference-provider" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)

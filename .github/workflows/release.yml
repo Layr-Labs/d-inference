@@ -67,6 +67,14 @@ jobs:
           cd enclave
           swift build -c release
 
+      - name: Build gRPCServerCLI (Draw Things)
+        run: |
+          git clone --depth 1 https://github.com/drawthingsai/draw-things-community.git /tmp/draw-things-community
+          cd /tmp/draw-things-community
+          swift build -c release --product gRPCServerCLI
+          cp .build/arm64-apple-macosx/release/gRPCServerCLI /tmp/gRPCServerCLI
+          echo "gRPCServerCLI built: $(du -h /tmp/gRPCServerCLI | cut -f1)"
+
       # --- Test ---
 
       - name: Test provider
@@ -89,6 +97,11 @@ jobs:
           cp provider/target/release/eigeninference-provider /tmp/eigeninference-bundle/
           cp enclave/.build/release/eigeninference-enclave /tmp/eigeninference-bundle/
 
+          # Copy gRPCServerCLI and image bridge into bundle
+          cp /tmp/gRPCServerCLI /tmp/eigeninference-bundle/
+          mkdir -p /tmp/eigeninference-bundle/image-bridge
+          cp -r image-bridge/eigeninference_image_bridge /tmp/eigeninference-bundle/image-bridge/eigeninference_image_bridge
+
           # Code sign with Developer ID (hardened runtime + entitlements)
           codesign --force --sign "$DEVELOPER_ID" \
             --keychain "$KEYCHAIN_PATH" \
@@ -102,9 +115,17 @@ jobs:
             --options runtime \
             /tmp/eigeninference-bundle/eigeninference-enclave
 
-          # Verify signatures
+          # Code sign gRPCServerCLI with Developer ID
+          codesign --force --sign "$DEVELOPER_ID" \
+            --keychain "$KEYCHAIN_PATH" \
+            --entitlements scripts/entitlements.plist \
+            --options runtime \
+            /tmp/eigeninference-bundle/gRPCServerCLI
+
+          # Verify all signatures
           codesign --verify --verbose /tmp/eigeninference-bundle/eigeninference-provider
           codesign --verify --verbose /tmp/eigeninference-bundle/eigeninference-enclave
+          codesign --verify --verbose /tmp/eigeninference-bundle/gRPCServerCLI
 
           cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
           echo "Bundle created: $(du -h /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -f1)"
@@ -144,6 +165,16 @@ jobs:
           echo "bundle_hash=$BUNDLE_HASH" >> "$GITHUB_OUTPUT"
           echo "Binary hash (signed): $BINARY_HASH"
           echo "Bundle hash: $BUNDLE_HASH"
+
+          # Hash gRPCServerCLI (signed)
+          GRPC_HASH=$(shasum -a 256 /tmp/eigeninference-bundle/gRPCServerCLI | cut -d' ' -f1)
+          echo "grpc_binary_hash=$GRPC_HASH" >> "$GITHUB_OUTPUT"
+          echo "gRPCServerCLI hash (signed): $GRPC_HASH"
+
+          # Hash image bridge Python source
+          IMAGE_BRIDGE_HASH=$(find /tmp/eigeninference-bundle/image-bridge -name '*.py' | sort | while read f; do shasum -a 256 "$f"; done | shasum -a 256 | cut -d' ' -f1)
+          echo "image_bridge_hash=$IMAGE_BRIDGE_HASH" >> "$GITHUB_OUTPUT"
+          echo "Image bridge hash: $IMAGE_BRIDGE_HASH"
 
       # --- Compute runtime integrity hashes ---
       # Build a temp Python venv with our fork to compute reference hashes.
@@ -328,6 +359,8 @@ jobs:
               'python_hash': '${{ steps.runtime.outputs.python_hash }}',
               'runtime_hash': '${{ steps.runtime.outputs.runtime_hash }}',
               'template_hashes': '${{ steps.runtime.outputs.template_hashes }}',
+              'grpc_binary_hash': '${{ steps.hash.outputs.grpc_binary_hash }}',
+              'image_bridge_hash': '${{ steps.hash.outputs.image_bridge_hash }}',
               'url': '${BUNDLE_URL}',
               'changelog': '''${TAG_MSG}'''.strip()
           }
@@ -361,6 +394,7 @@ jobs:
             **Binary hash (signed):** `${{ steps.hash.outputs.binary_hash }}`
             **Bundle hash:** `${{ steps.hash.outputs.bundle_hash }}`
             **Runtime hash (vllm-mlx):** `${{ steps.runtime.outputs.runtime_hash }}`
+            **gRPCServerCLI hash:** `${{ steps.hash.outputs.grpc_binary_hash }}`
             **Signed by:** Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)
             **Notarized:** Yes
 

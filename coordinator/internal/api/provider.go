@@ -181,7 +181,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// Verify runtime integrity against the known-good manifest.
 			if s.knownRuntimeManifest != nil {
 				runtimeOK, mismatches := s.verifyRuntimeHashes(
-					regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
+					regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes,
+					regMsg.GrpcBinaryHash, regMsg.ImageBridgeHash)
 				provider.Mu().Lock()
 				provider.RuntimeVerified = runtimeOK
 				provider.PythonHash = regMsg.PythonHash
@@ -525,7 +526,8 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	// Verify runtime integrity hashes from challenge response.
 	if s.knownRuntimeManifest != nil {
 		runtimeOK, mismatches := s.verifyRuntimeHashes(
-			resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
+			resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes,
+			resp.GrpcBinaryHash, resp.ImageBridgeHash)
 		provider.Mu().Lock()
 		provider.RuntimeVerified = runtimeOK
 		if resp.PythonHash != "" {

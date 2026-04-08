@@ -264,16 +264,18 @@ impl CoordinatorClient {
         let (mut write, mut read) = ws_stream.split();
 
         // Send registration message
-        let (python_hash, runtime_hash, template_hashes) = if let Some(ref rh) = self.runtime_hashes
-        {
-            (
-                rh.python_hash.clone(),
-                rh.runtime_hash.clone(),
-                rh.template_hashes.clone(),
-            )
-        } else {
-            (None, None, std::collections::HashMap::new())
-        };
+        let (python_hash, runtime_hash, template_hashes, grpc_binary_hash, image_bridge_hash) =
+            if let Some(ref rh) = self.runtime_hashes {
+                (
+                    rh.python_hash.clone(),
+                    rh.runtime_hash.clone(),
+                    rh.template_hashes.clone(),
+                    rh.grpc_binary_hash.clone(),
+                    rh.image_bridge_hash.clone(),
+                )
+            } else {
+                (None, None, std::collections::HashMap::new(), None, None)
+            };
         let register = ProviderMessage::Register {
             hardware: self.hardware.clone(),
             models: self.models.clone(),
@@ -288,6 +290,8 @@ impl CoordinatorClient {
             python_hash,
             runtime_hash,
             template_hashes,
+            grpc_binary_hash,
+            image_bridge_hash,
         };
         let register_json = serde_json::to_string(&register)?;
         write.send(Message::Text(register_json.into())).await?;
@@ -627,15 +631,18 @@ pub fn handle_attestation_challenge(
         );
     }
 
-    let (python_hash, rt_hash, template_hashes) = if let Some(rh) = runtime_hashes {
-        (
-            rh.python_hash.clone(),
-            rh.runtime_hash.clone(),
-            rh.template_hashes.clone(),
-        )
-    } else {
-        (None, None, std::collections::HashMap::new())
-    };
+    let (python_hash, rt_hash, template_hashes, grpc_binary_hash, image_bridge_hash) =
+        if let Some(rh) = runtime_hashes {
+            (
+                rh.python_hash.clone(),
+                rh.runtime_hash.clone(),
+                rh.template_hashes.clone(),
+                rh.grpc_binary_hash.clone(),
+                rh.image_bridge_hash.clone(),
+            )
+        } else {
+            (None, None, std::collections::HashMap::new(), None, None)
+        };
 
     ProviderMessage::AttestationResponse {
         nonce: nonce.to_string(),
@@ -650,6 +657,8 @@ pub fn handle_attestation_challenge(
         python_hash,
         runtime_hash: rt_hash,
         template_hashes,
+        grpc_binary_hash,
+        image_bridge_hash,
     }
 }
 
@@ -702,6 +711,8 @@ pub fn build_register_message_with_wallet(
         python_hash: None,
         runtime_hash: None,
         template_hashes: std::collections::HashMap::new(),
+        grpc_binary_hash: None,
+        image_bridge_hash: None,
     }
 }
 
@@ -1034,6 +1045,8 @@ mod tests {
                 python_hash: _,
                 runtime_hash: _,
                 template_hashes: _,
+                grpc_binary_hash: _,
+                image_bridge_hash: _,
             } => {
                 // Nonce echoed back exactly
                 assert_eq!(nonce, "dGVzdG5vbmNl");

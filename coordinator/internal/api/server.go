@@ -237,9 +237,11 @@ func (s *Server) SyncBinaryHashes() {
 func (s *Server) SyncRuntimeManifest() {
 	releases := s.store.ListReleases()
 	manifest := &RuntimeManifest{
-		PythonHashes:   make(map[string]bool),
-		RuntimeHashes:  make(map[string]bool),
-		TemplateHashes: make(map[string]string),
+		PythonHashes:      make(map[string]bool),
+		RuntimeHashes:     make(map[string]bool),
+		TemplateHashes:    make(map[string]string),
+		GrpcBinaryHashes:  make(map[string]bool),
+		ImageBridgeHashes: make(map[string]bool),
 	}
 
 	hasAny := false
@@ -265,6 +267,14 @@ func (s *Server) SyncRuntimeManifest() {
 				}
 			}
 		}
+		if r.GrpcBinaryHash != "" {
+			manifest.GrpcBinaryHashes[r.GrpcBinaryHash] = true
+			hasAny = true
+		}
+		if r.ImageBridgeHash != "" {
+			manifest.ImageBridgeHashes[r.ImageBridgeHash] = true
+			hasAny = true
+		}
 	}
 
 	// Set minimum provider version to the latest active release version.
@@ -286,6 +296,8 @@ func (s *Server) SyncRuntimeManifest() {
 			"python_hashes", len(manifest.PythonHashes),
 			"runtime_hashes", len(manifest.RuntimeHashes),
 			"template_hashes", len(manifest.TemplateHashes),
+			"grpc_binary_hashes", len(manifest.GrpcBinaryHashes),
+			"image_bridge_hashes", len(manifest.ImageBridgeHashes),
 		)
 	}
 }
@@ -294,9 +306,11 @@ func (s *Server) SyncRuntimeManifest() {
 // When configured, the coordinator verifies provider-reported hashes against
 // this manifest at registration and during periodic attestation challenges.
 type RuntimeManifest struct {
-	PythonHashes   map[string]bool   `json:"python_hashes"`   // set of accepted Python runtime hashes
-	RuntimeHashes  map[string]bool   `json:"runtime_hashes"`  // set of accepted inference runtime hashes
-	TemplateHashes map[string]string `json:"template_hashes"` // template_name -> expected hash
+	PythonHashes      map[string]bool   `json:"python_hashes"`       // set of accepted Python runtime hashes
+	RuntimeHashes     map[string]bool   `json:"runtime_hashes"`      // set of accepted inference runtime hashes
+	TemplateHashes    map[string]string `json:"template_hashes"`     // template_name -> expected hash
+	GrpcBinaryHashes  map[string]bool   `json:"grpc_binary_hashes"`  // set of accepted gRPCServerCLI hashes
+	ImageBridgeHashes map[string]bool   `json:"image_bridge_hashes"` // set of accepted image bridge hashes
 }
 
 // SetRuntimeManifest configures the known-good runtime manifest for provider
@@ -342,7 +356,7 @@ func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 // verifyRuntimeHashes checks provider-reported runtime hashes against the
 // known-good manifest. Returns (true, nil) if all hashes match or no manifest
 // is configured. Returns (false, mismatches) if any component fails verification.
-func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
+func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHashes map[string]string, grpcBinaryHash, imageBridgeHash string) (bool, []protocol.RuntimeMismatch) {
 	if s.knownRuntimeManifest == nil {
 		return true, nil // no manifest configured, pass by default
 	}
@@ -385,6 +399,28 @@ func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHas
 		}
 	}
 
+	// Check gRPCServerCLI binary hash (warn only — backward compat with older providers).
+	if grpcBinaryHash != "" && len(s.knownRuntimeManifest.GrpcBinaryHashes) > 0 {
+		if !s.knownRuntimeManifest.GrpcBinaryHashes[grpcBinaryHash] {
+			mismatches = append(mismatches, protocol.RuntimeMismatch{
+				Component: "grpc_binary",
+				Expected:  "one of known-good hashes",
+				Got:       grpcBinaryHash,
+			})
+		}
+	}
+
+	// Check image bridge hash (warn only — backward compat with older providers).
+	if imageBridgeHash != "" && len(s.knownRuntimeManifest.ImageBridgeHashes) > 0 {
+		if !s.knownRuntimeManifest.ImageBridgeHashes[imageBridgeHash] {
+			mismatches = append(mismatches, protocol.RuntimeMismatch{
+				Component: "image_bridge",
+				Expected:  "one of known-good hashes",
+				Got:       imageBridgeHash,
+			})
+		}
+	}
+
 	return len(mismatches) == 0, mismatches
 }
 
@@ -398,10 +434,12 @@ func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"configured":      true,
-		"python_hashes":   s.knownRuntimeManifest.PythonHashes,
-		"runtime_hashes":  s.knownRuntimeManifest.RuntimeHashes,
-		"template_hashes": s.knownRuntimeManifest.TemplateHashes,
+		"configured":          true,
+		"python_hashes":       s.knownRuntimeManifest.PythonHashes,
+		"runtime_hashes":      s.knownRuntimeManifest.RuntimeHashes,
+		"template_hashes":     s.knownRuntimeManifest.TemplateHashes,
+		"grpc_binary_hashes":  s.knownRuntimeManifest.GrpcBinaryHashes,
+		"image_bridge_hashes": s.knownRuntimeManifest.ImageBridgeHashes,
 	})
 }
 

@@ -2401,7 +2401,16 @@ async fn cmd_serve(
     let image_model = std::env::var("EIGENINFERENCE_IMAGE_MODEL").unwrap_or_default();
     let image_model_id =
         std::env::var("EIGENINFERENCE_IMAGE_MODEL_ID").unwrap_or_else(|_| image_model.clone());
-    let image_model_path = std::env::var("EIGENINFERENCE_IMAGE_MODEL_PATH").unwrap_or_default();
+    let image_model_path_raw = std::env::var("EIGENINFERENCE_IMAGE_MODEL_PATH").unwrap_or_default();
+    // Auto-resolve image model path from model ID if not explicitly set.
+    // gRPCServerCLI needs the directory containing the .ckpt files.
+    let image_model_path = if image_model_path_raw.is_empty() && !image_model.is_empty() {
+        models::resolve_local_path(&image_model)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
+    } else {
+        image_model_path_raw
+    };
 
     // Advertise STT model if configured (backend starts later)
     if !stt_model_path.is_empty() && !stt_model_id.is_empty() {
@@ -2732,7 +2741,16 @@ async fn cmd_serve(
     // Start image generation bridge on be_port + 2 if configured.
     // EIGENINFERENCE_IMAGE_MODEL: model ID for the image bridge (e.g. "flux-klein-4b").
     // EIGENINFERENCE_IMAGE_MODEL_PATH: model directory for gRPCServerCLI (optional).
-    let _image_available = if !image_model.is_empty() {
+    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+    let grpc_binary = eigeninference_dir.join("bin/gRPCServerCLI");
+    let _image_available = if !image_model.is_empty() && !grpc_binary.exists() {
+        tracing::error!(
+            "gRPCServerCLI not found at {} — image generation unavailable. \
+             Re-run install or update to get the image pipeline.",
+            grpc_binary.display()
+        );
+        false
+    } else if !image_model.is_empty() {
         tracing::info!("Starting image bridge on port {image_port} for model: {image_model}");
 
         let mut bridge_cmd = std::process::Command::new(&python_cmd);
@@ -2774,6 +2792,9 @@ async fn cmd_serve(
         ]);
         if !image_model_path.is_empty() {
             bridge_cmd.args(["--model-path", &image_model_path]);
+        }
+        if grpc_binary.exists() {
+            bridge_cmd.args(["--grpc-binary", &grpc_binary.to_string_lossy()]);
         }
         bridge_cmd
             .stdout(std::process::Stdio::null())

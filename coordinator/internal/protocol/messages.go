@@ -99,9 +99,11 @@ type RegisterMessage struct {
 	AuthToken     string          `json:"auth_token,omitempty"`     // device-linked provider token (from eigeninference-provider login)
 
 	// Runtime integrity hashes — used for runtime verification against known-good manifests.
-	PythonHash     string            `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
-	RuntimeHash    string            `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
-	TemplateHashes map[string]string `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
+	PythonHash      string            `json:"python_hash,omitempty"`       // SHA-256 of Python runtime
+	RuntimeHash     string            `json:"runtime_hash,omitempty"`      // SHA-256 of inference runtime (vllm-mlx)
+	TemplateHashes  map[string]string `json:"template_hashes,omitempty"`   // template_name -> SHA-256 hash
+	GrpcBinaryHash  string            `json:"grpc_binary_hash,omitempty"`  // SHA-256 of gRPCServerCLI binary
+	ImageBridgeHash string            `json:"image_bridge_hash,omitempty"` // SHA-256 of image bridge Python source
 }
 
 // HeartbeatMessage is sent periodically by connected providers.
@@ -263,9 +265,11 @@ type AttestationResponseMessage struct {
 	ActiveModelHash   string `json:"active_model_hash,omitempty"`   // SHA-256 weight fingerprint of loaded model
 
 	// Runtime integrity hashes — fresh values reported at challenge time.
-	PythonHash     string            `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
-	RuntimeHash    string            `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
-	TemplateHashes map[string]string `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
+	PythonHash      string            `json:"python_hash,omitempty"`       // SHA-256 of Python runtime
+	RuntimeHash     string            `json:"runtime_hash,omitempty"`      // SHA-256 of inference runtime (vllm-mlx)
+	TemplateHashes  map[string]string `json:"template_hashes,omitempty"`   // template_name -> SHA-256 hash
+	GrpcBinaryHash  string            `json:"grpc_binary_hash,omitempty"`  // SHA-256 of gRPCServerCLI binary
+	ImageBridgeHash string            `json:"image_bridge_hash,omitempty"` // SHA-256 of image bridge Python source
 }
 
 // ---------------------------------------------------------------------------

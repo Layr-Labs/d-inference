@@ -372,6 +372,10 @@ pub struct RuntimeHashes {
     pub runtime_hash: Option<String>,
     /// Per-file SHA-256 hashes of Jinja templates in ~/.eigeninference/templates/.
     pub template_hashes: std::collections::HashMap<String, String>,
+    /// SHA-256 hash of the gRPCServerCLI binary (image generation backend).
+    pub grpc_binary_hash: Option<String>,
+    /// Combined SHA-256 hash of image bridge Python source files (sorted).
+    pub image_bridge_hash: Option<String>,
 }
 
 /// Recursively collect all files matching an extension under a directory.
@@ -509,10 +513,49 @@ print(final.hexdigest())
         }
     }
 
+    let grpc_binary_hash = compute_grpc_binary_hash();
+    let image_bridge_hash = compute_image_bridge_hash();
+
     RuntimeHashes {
         python_hash,
         runtime_hash,
         template_hashes,
+        grpc_binary_hash,
+        image_bridge_hash,
+    }
+}
+
+/// Compute the SHA-256 hash of the gRPCServerCLI binary.
+///
+/// This binary is the Draw Things gRPC backend used for image generation.
+/// Located at ~/.eigeninference/bin/gRPCServerCLI when installed via the bundle.
+pub fn compute_grpc_binary_hash() -> Option<String> {
+    let eigeninference_dir = dirs::home_dir()?.join(".eigeninference");
+    let path = eigeninference_dir.join("bin/gRPCServerCLI");
+    if path.exists() {
+        hash_file(&path)
+    } else {
+        None
+    }
+}
+
+/// Compute a combined SHA-256 hash of the image bridge Python source files.
+///
+/// Hashes all .py files under ~/.eigeninference/image-bridge/eigeninference_image_bridge/
+/// in sorted order, producing a single deterministic fingerprint.
+pub fn compute_image_bridge_hash() -> Option<String> {
+    let eigeninference_dir = dirs::home_dir()?.join(".eigeninference");
+    let bridge_dir = eigeninference_dir.join("image-bridge/eigeninference_image_bridge");
+    if !bridge_dir.exists() {
+        return None;
+    }
+    let mut files = Vec::new();
+    collect_files_recursive(&bridge_dir, "py", &mut files);
+    files.sort();
+    if files.is_empty() {
+        None
+    } else {
+        hash_files_sorted(&files)
     }
 }
 

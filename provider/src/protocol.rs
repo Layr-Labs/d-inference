@@ -62,6 +62,12 @@ pub enum ProviderMessage {
         /// Per-file SHA-256 hashes of Jinja templates.
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         template_hashes: std::collections::HashMap<String, String>,
+        /// SHA-256 hash of the gRPCServerCLI binary (image generation).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grpc_binary_hash: Option<String>,
+        /// Combined SHA-256 hash of image bridge Python source files.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        image_bridge_hash: Option<String>,
     },
     Heartbeat {
         status: ProviderStatus,
@@ -157,6 +163,12 @@ pub enum ProviderMessage {
         /// Per-file SHA-256 hashes of Jinja templates.
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         template_hashes: std::collections::HashMap<String, String>,
+        /// SHA-256 hash of the gRPCServerCLI binary (image generation).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grpc_binary_hash: Option<String>,
+        /// Combined SHA-256 hash of image bridge Python source files.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        image_bridge_hash: Option<String>,
     },
 }
 
@@ -418,6 +430,8 @@ mod tests {
             python_hash: None,
             runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
+            grpc_binary_hash: None,
+            image_bridge_hash: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -461,6 +475,8 @@ mod tests {
             python_hash: None,
             runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
+            grpc_binary_hash: None,
+            image_bridge_hash: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -497,6 +513,8 @@ mod tests {
             python_hash: None,
             runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
+            grpc_binary_hash: None,
+            image_bridge_hash: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -702,6 +720,8 @@ mod tests {
             python_hash: None,
             runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
+            grpc_binary_hash: None,
+            image_bridge_hash: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -1177,6 +1197,8 @@ mod tests {
                 python_hash: None,
                 runtime_hash: None,
                 template_hashes: std::collections::HashMap::new(),
+                grpc_binary_hash: None,
+                image_bridge_hash: None,
             },
             // Heartbeat (idle)
             ProviderMessage::Heartbeat {
@@ -1242,6 +1264,8 @@ mod tests {
                 python_hash: None,
                 runtime_hash: None,
                 template_hashes: std::collections::HashMap::new(),
+                grpc_binary_hash: None,
+                image_bridge_hash: None,
             },
         ];
 
@@ -1430,6 +1454,8 @@ mod tests {
             python_hash: Some("pythonhash123".to_string()),
             runtime_hash: Some("runtimehash456".to_string()),
             template_hashes,
+            grpc_binary_hash: None,
+            image_bridge_hash: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();

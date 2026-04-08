@@ -29,6 +29,7 @@ import (
 
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/billing"
+	"github.com/eigeninference/coordinator/internal/buildattest"
 	"github.com/eigeninference/coordinator/internal/mdm"
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
@@ -93,6 +94,11 @@ type Server struct {
 	// releaseKey is a scoped credential for the GitHub Action to register releases.
 	// It can only POST /v1/releases — no admin access.
 	releaseKey string
+
+	// attestationPolicy configures build provenance attestation verification
+	// for new releases. When enabled, the coordinator checks GitHub attestations
+	// before accepting a release registration.
+	attestationPolicy buildattest.Policy
 
 	// consoleURL is the frontend URL (e.g. "https://private-inference.openinnovation.dev").
 	// Used for device auth verification_uri so the browser opens the console, not the coordinator.
@@ -202,6 +208,11 @@ func (s *Server) SetConsoleURL(url string) {
 // SetReleaseKey configures the scoped release key for GitHub Actions.
 func (s *Server) SetReleaseKey(key string) {
 	s.releaseKey = key
+}
+
+// SetAttestationPolicy configures the build provenance attestation policy.
+func (s *Server) SetAttestationPolicy(p buildattest.Policy) {
+	s.attestationPolicy = p
 }
 
 // SyncBinaryHashes rebuilds knownBinaryHashes from all active releases.

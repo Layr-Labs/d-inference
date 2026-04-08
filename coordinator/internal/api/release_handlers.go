@@ -3,9 +3,12 @@ package api
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/eigeninference/coordinator/internal/auth"
+	"github.com/eigeninference/coordinator/internal/buildattest"
 	"github.com/eigeninference/coordinator/internal/store"
 )
 
@@ -39,6 +42,45 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 	if release.URL == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "url is required"))
 		return
+	}
+
+	// Verify build provenance attestation if configured.
+	if s.attestationPolicy.Enabled() || s.attestationPolicy.Required {
+		bundleHash := release.BundleHash
+		if bundleHash == "" {
+			bundleHash = release.BinaryHash // fallback to binary hash
+		}
+		if bundleHash != "" {
+			result, err := buildattest.VerifyRelease(r.Context(), s.attestationPolicy, bundleHash)
+			if err != nil {
+				if s.attestationPolicy.Required {
+					s.logger.Error("release: attestation verification failed", "error", err, "version", release.Version)
+					writeJSON(w, http.StatusForbidden, errorResponse("attestation_error", fmt.Sprintf("build attestation verification failed: %v", err)))
+					return
+				}
+				s.logger.Warn("release: attestation verification error (non-required)", "error", err, "version", release.Version)
+			} else if result != nil {
+				if result.Verified {
+					s.logger.Info("release: build attestation verified",
+						"version", release.Version,
+						"actor", result.Actor,
+					)
+				} else if s.attestationPolicy.Required && len(result.Errors) > 0 {
+					s.logger.Error("release: attestation policy check failed",
+						"version", release.Version,
+						"errors", strings.Join(result.Errors, "; "),
+					)
+					writeJSON(w, http.StatusForbidden, errorResponse("attestation_error",
+						fmt.Sprintf("build attestation did not match policy: %s", strings.Join(result.Errors, "; "))))
+					return
+				} else if len(result.Warnings) > 0 {
+					s.logger.Warn("release: attestation warnings",
+						"version", release.Version,
+						"warnings", strings.Join(result.Warnings, "; "),
+					)
+				}
+			}
+		}
 	}
 
 	if err := s.store.SetRelease(&release); err != nil {

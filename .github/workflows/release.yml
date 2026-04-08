@@ -13,6 +13,10 @@ jobs:
   build-and-release:
     name: Build, Sign, Upload, Register
     runs-on: macos-26-xlarge  # Apple Silicon, 16 cores
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -142,6 +146,11 @@ jobs:
           echo "bundle_hash=$BUNDLE_HASH" >> "$GITHUB_OUTPUT"
           echo "Binary hash (signed): $BINARY_HASH"
           echo "Bundle hash: $BUNDLE_HASH"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: /tmp/eigeninference-bundle-macos-arm64.tar.gz
 
       # --- Compute runtime integrity hashes ---
       # Build a temp Python venv with our fork to compute reference hashes.
@@ -330,6 +339,7 @@ jobs:
             **Runtime hash (vllm-mlx):** `${{ steps.runtime.outputs.runtime_hash }}`
             **Signed by:** Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)
             **Notarized:** Yes
+            **Build provenance:** Verify with `gh attestation verify eigeninference-bundle-macos-arm64.tar.gz --repo Layr-Labs/d-inference`
 
             ### Install
             ```bash

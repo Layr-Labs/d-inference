@@ -854,6 +854,111 @@ fn fetch_runtime_manifest(
     Some((python_hashes, runtime_hashes, template_hashes))
 }
 
+/// Verify the Python binary hash matches the coordinator's manifest.
+/// If it doesn't match, download the canonical Python runtime from R2.
+fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) {
+    let manifest = fetch_runtime_manifest(coordinator_base);
+    let expected_python_hashes: Vec<String> = manifest
+        .as_ref()
+        .map(|(ph, _, _)| ph.clone())
+        .unwrap_or_default();
+
+    if expected_python_hashes.is_empty() {
+        tracing::debug!("No Python hash in manifest — skipping Python verification");
+        return;
+    }
+
+    // Hash the current Python binary
+    let python_path = std::path::Path::new(python_cmd);
+    let current_hash = security::hash_file(python_path).unwrap_or_default();
+
+    if expected_python_hashes.contains(&current_hash) {
+        tracing::info!("Python binary hash verified ✓");
+        return;
+    }
+
+    tracing::warn!("Python binary hash mismatch — downloading canonical runtime from CDN...");
+
+    // Get the download URL from the coordinator's latest release
+    let release_url = format!("{coordinator_base}/v1/releases/latest");
+    let release_output = std::process::Command::new("curl")
+        .args(["-fsSL", "--connect-timeout", "5", &release_url])
+        .output();
+
+    let python_download_url = match release_output {
+        Ok(output) if output.status.success() => {
+            let release: serde_json::Value = match serde_json::from_slice(&output.stdout) {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            // Derive Python tarball URL from release URL
+            // e.g. .../releases/v0.2.29/eigeninference-bundle-macos-arm64.tar.gz
+            //   -> .../releases/v0.2.29/eigeninference-python-macos-arm64.tar.gz
+            release.get("url").and_then(|v| v.as_str()).map(|url| {
+                url.replace(
+                    "eigeninference-bundle-macos-arm64.tar.gz",
+                    "eigeninference-python-macos-arm64.tar.gz",
+                )
+            })
+        }
+        _ => None,
+    };
+
+    let Some(download_url) = python_download_url else {
+        tracing::error!("Could not determine Python download URL");
+        return;
+    };
+
+    // Download to temp
+    let tmp_tarball = "/tmp/eigeninference-python-update.tar.gz";
+    let download = std::process::Command::new("curl")
+        .args([
+            "-fsSL",
+            "--connect-timeout",
+            "30",
+            &download_url,
+            "-o",
+            tmp_tarball,
+        ])
+        .output();
+
+    match download {
+        Ok(output) if output.status.success() => {
+            let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+            let python_dir = eigeninference_dir.join("python");
+
+            // Extract over existing Python dir
+            tracing::info!("Extracting canonical Python runtime...");
+            let _ = std::fs::create_dir_all(&python_dir);
+            let extract = std::process::Command::new("tar")
+                .args(["xzf", tmp_tarball, "-C", &python_dir.to_string_lossy()])
+                .output();
+
+            let _ = std::fs::remove_file(tmp_tarball);
+
+            match extract {
+                Ok(o) if o.status.success() => {
+                    // Verify the extracted binary matches
+                    let new_hash =
+                        security::hash_file(&python_dir.join("bin/python3")).unwrap_or_default();
+                    if expected_python_hashes.contains(&new_hash) {
+                        tracing::info!("Canonical Python runtime installed and verified ✓");
+                    } else {
+                        tracing::error!("Downloaded Python hash still doesn't match manifest!");
+                    }
+                }
+                _ => {
+                    tracing::error!("Failed to extract Python runtime");
+                }
+            }
+        }
+        _ => {
+            tracing::error!("Failed to download canonical Python runtime");
+            let _ = std::fs::remove_file(tmp_tarball);
+        }
+    }
+}
+
 /// Ensure the Python runtime (vllm-mlx) is up to date and verified.
 ///
 /// Called once at startup. Downloads from a verified URL and checks
@@ -1976,6 +2081,7 @@ async fn cmd_serve(
         .replace("wss://", "https://")
         .replace("ws://", "http://")
         .replace("/ws/provider", "");
+    ensure_python_verified(&python_cmd, &coordinator_http_base);
     ensure_runtime_updated(&python_cmd, &coordinator_http_base);
 
     // =========================================================================

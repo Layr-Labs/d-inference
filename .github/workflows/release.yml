@@ -148,24 +148,41 @@ jobs:
       # The venv is NOT shipped — providers self-heal at startup.
       # We only need the hashes for the coordinator's manifest.
 
-      - name: Compute runtime integrity manifest
+      - name: Build and hash canonical Python runtime
         id: runtime
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
         run: |
-          echo "Creating temporary Python venv for hash computation..."
-          python3 -m venv /tmp/runtime-hash-venv
-          source /tmp/runtime-hash-venv/bin/activate
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          # Build a standalone Python venv with --copies (real binary, not symlinks).
+          # This is THE canonical Python that all providers must run.
+          echo "Building canonical Python runtime..."
+          python3 -m venv --copies /tmp/eigeninference-python
+          source /tmp/eigeninference-python/bin/activate
 
           pip install --quiet 'git+https://github.com/Gajesh2007/vllm-mlx.git@main'
+          pip install --quiet mlx-lm
 
-          # NOTE: Python binary hash is NOT computed here because the CI runner's
-          # Python binary differs from providers' bundled Python. Each provider
-          # computes its own python_hash from its local binary. Only runtime_hash
-          # (vllm-mlx package) and template_hashes are verified centrally.
-          PYTHON_HASH=""
+          # Strip unnecessary packages to keep it small
+          cd /tmp/eigeninference-python/lib/python*/site-packages
+          rm -rf torch* gradio* opencv* cv2* pandas* pyarrow* \
+                 sympy* networkx* mcp* miniaudio* pydub* datasets*
+          find /tmp/eigeninference-python -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+          cd -
 
-          # Compute vllm-mlx package hash (must match Rust hash_files_sorted algorithm)
-          VLLM_MLX_DIR=$(python3 -c "import vllm_mlx, os; print(os.path.dirname(vllm_mlx.__file__))")
-          RUNTIME_HASH=$(python3 -c "
+          deactivate
+
+          # Hash the Python binary (this is what providers must match)
+          PYTHON_BIN="/tmp/eigeninference-python/bin/python3"
+          PYTHON_HASH=$(shasum -a 256 "$PYTHON_BIN" | cut -d' ' -f1)
+          echo "Python hash: $PYTHON_HASH"
+
+          # Hash the vllm-mlx package (must match Rust hash_files_sorted algorithm)
+          VLLM_MLX_DIR=$(/tmp/eigeninference-python/bin/python3 -c "import vllm_mlx, os; print(os.path.dirname(vllm_mlx.__file__))")
+          RUNTIME_HASH=$(/tmp/eigeninference-python/bin/python3 -c "
           import hashlib, os, sys
           d = sys.argv[1]
           files = sorted(
@@ -188,6 +205,18 @@ jobs:
           " "$VLLM_MLX_DIR")
           echo "Runtime hash (vllm-mlx): $RUNTIME_HASH"
 
+          # Tar the Python runtime for R2 upload
+          echo "Packaging Python runtime..."
+          cd /tmp && tar czf eigeninference-python-macos-arm64.tar.gz -C eigeninference-python .
+          PYTHON_TARBALL_SIZE=$(du -h eigeninference-python-macos-arm64.tar.gz | cut -f1)
+          echo "Python runtime: $PYTHON_TARBALL_SIZE"
+
+          # Upload Python runtime to R2 (providers download this)
+          aws s3 cp /tmp/eigeninference-python-macos-arm64.tar.gz \
+            "s3://d-inf-app/releases/v${VERSION}/eigeninference-python-macos-arm64.tar.gz" \
+            --endpoint-url "$R2_ENDPOINT"
+          echo "Python runtime uploaded to R2"
+
           # Compute template hashes from R2 CDN
           R2_CDN="https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev"
           TEMPLATE_HASHES=""
@@ -200,8 +229,7 @@ jobs:
             fi
           done
 
-          deactivate
-          rm -rf /tmp/runtime-hash-venv
+          rm -rf /tmp/eigeninference-python
 
           echo "python_hash=$PYTHON_HASH" >> "$GITHUB_OUTPUT"
           echo "runtime_hash=$RUNTIME_HASH" >> "$GITHUB_OUTPUT"

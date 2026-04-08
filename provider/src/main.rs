@@ -3014,6 +3014,7 @@ async fn cmd_serve(
         let proxy_keypair = node_keypair.clone();
         let is_inprocess = proxy_backend_url.starts_with("inprocess://");
         let idle_python_cmd = python_cmd.clone();
+        let self_heal_running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let idle_backend_name = backend_name.to_string();
         let proxy_stats = provider_stats.clone();
         let model_to_url = model_to_url.clone();
@@ -3344,17 +3345,30 @@ async fn cmd_serve(
                                 // loop — the coordinator will re-verify on the next attestation
                                 // challenge (every 5 minutes). Breaking causes a reconnect
                                 // storm if the self-heal doesn't immediately fix the hash.
-                                tracing::info!("Triggering runtime self-heal (background)...");
-                                let heal_python = idle_python_cmd.clone();
-                                let heal_coordinator = coordinator_http_base.clone();
-                                std::thread::spawn(move || {
-                                    if !ensure_python_verified(&heal_python, &heal_coordinator) {
-                                        tracing::error!("Self-heal: Python binary is broken and could not be recovered");
-                                        return;
-                                    }
-                                    ensure_runtime_updated(&heal_python, &heal_coordinator);
-                                    tracing::info!("Runtime self-heal complete — next attestation challenge will re-verify");
-                                });
+                                // Guard: only one self-heal at a time to prevent two threads
+                                // from corrupting site-packages simultaneously.
+                                if self_heal_running.compare_exchange(
+                                    false, true,
+                                    std::sync::atomic::Ordering::SeqCst,
+                                    std::sync::atomic::Ordering::SeqCst,
+                                ).is_ok() {
+                                    tracing::info!("Triggering runtime self-heal (background)...");
+                                    let heal_python = idle_python_cmd.clone();
+                                    let heal_coordinator = coordinator_http_base.clone();
+                                    let heal_flag = self_heal_running.clone();
+                                    std::thread::spawn(move || {
+                                        if !ensure_python_verified(&heal_python, &heal_coordinator) {
+                                            tracing::error!("Self-heal: Python binary is broken and could not be recovered");
+                                            heal_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                                            return;
+                                        }
+                                        ensure_runtime_updated(&heal_python, &heal_coordinator);
+                                        heal_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                                        tracing::info!("Runtime self-heal complete — next attestation challenge will re-verify");
+                                    });
+                                } else {
+                                    tracing::info!("Self-heal already in progress — skipping");
+                                }
                             }
                         }
                     }

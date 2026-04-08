@@ -20,6 +20,7 @@ package registry
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"log/slog"
 	"sort"
 	"sync"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/store"
 	"nhooyr.io/websocket"
 )
 
@@ -151,6 +153,8 @@ func (p *Provider) GetPending(requestID string) *PendingRequest {
 }
 
 // SetAttested updates attestation state (thread-safe).
+// Note: persistence is handled by the Registry methods that call this,
+// via persistProvider() after attestation verification completes.
 func (p *Provider) SetAttested(attested bool, trust TrustLevel) {
 	p.mu.Lock()
 	p.Attested = attested
@@ -201,6 +205,10 @@ type Registry struct {
 	// accepted from providers and routable by consumers. Updated via SetModelCatalog.
 	modelCatalog map[string]CatalogEntry
 
+	// store provides persistence for provider fleet state. When non-nil,
+	// provider records and reputation are persisted across coordinator restarts.
+	store store.Store
+
 	logger *slog.Logger
 }
 
@@ -212,6 +220,197 @@ func New(logger *slog.Logger) *Registry {
 		MinTrustLevel: TrustHardware,
 		logger:        logger,
 	}
+}
+
+// SetStore configures the persistence store for the registry.
+// When set, provider state and reputation are persisted to the store.
+func (r *Registry) SetStore(st store.Store) {
+	r.store = st
+}
+
+// LoadStoredProviders loads provider records and reputation from the store
+// on startup. This pre-populates a lookup table so that reconnecting providers
+// can have their trust level and reputation restored. Providers are NOT added
+// to the active registry (they need to reconnect via WebSocket first).
+func (r *Registry) LoadStoredProviders() map[string]*store.ProviderRecord {
+	if r.store == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	records, err := r.store.ListProviderRecords(ctx)
+	if err != nil {
+		r.logger.Warn("failed to load stored providers", "error", err)
+		return nil
+	}
+
+	lookup := make(map[string]*store.ProviderRecord, len(records))
+	for i := range records {
+		rec := records[i]
+		// Index by serial number for matching reconnecting providers
+		if rec.SerialNumber != "" {
+			lookup[rec.SerialNumber] = &rec
+		}
+		// Also index by SE public key
+		if rec.SEPublicKey != "" {
+			lookup["sekey:"+rec.SEPublicKey] = &rec
+		}
+	}
+
+	r.logger.Info("loaded stored provider records", "count", len(records))
+	return lookup
+}
+
+// RestoreProviderState restores trust level and reputation from a stored record
+// onto a live provider. Called after a provider reconnects and is matched to
+// its stored state by serial number or SE key.
+func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) {
+	if rec == nil {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Restore trust level (will be re-verified via fresh attestation)
+	p.TrustLevel = TrustLevel(rec.TrustLevel)
+	p.Attested = rec.Attested
+	p.MDAVerified = rec.MDAVerified
+	p.ACMEVerified = rec.ACMEVerified
+
+	// Restore challenge state
+	if rec.LastChallengeVerified != nil {
+		p.LastChallengeVerified = *rec.LastChallengeVerified
+	}
+	p.FailedChallenges = rec.FailedChallenges
+
+	// Restore account linkage
+	if rec.AccountID != "" && p.AccountID == "" {
+		p.AccountID = rec.AccountID
+	}
+
+	// Restore reputation from store
+	if r.store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		repRec, err := r.store.GetReputation(ctx, rec.ID)
+		if err == nil {
+			p.Reputation.TotalJobs = repRec.TotalJobs
+			p.Reputation.SuccessfulJobs = repRec.SuccessfulJobs
+			p.Reputation.FailedJobs = repRec.FailedJobs
+			p.Reputation.TotalUptime = time.Duration(repRec.TotalUptimeSeconds) * time.Second
+			p.Reputation.AvgResponseTime = time.Duration(repRec.AvgResponseTimeMs) * time.Millisecond
+			p.Reputation.ChallengesPassed = repRec.ChallengesPassed
+			p.Reputation.ChallengesFailed = repRec.ChallengesFailed
+		}
+	}
+
+	r.logger.Info("restored provider state from store",
+		"provider_id", p.ID,
+		"stored_id", rec.ID,
+		"trust_level", rec.TrustLevel,
+		"attested", rec.Attested,
+		"serial", rec.SerialNumber,
+	)
+}
+
+// PersistProvider is the public entry point for persisting a provider's state.
+// Called by the API layer after attestation and trust changes.
+func (r *Registry) PersistProvider(p *Provider) {
+	r.persistProvider(p)
+}
+
+// persistProvider saves a provider's current state to the store.
+// Called asynchronously to avoid blocking the hot path.
+func (r *Registry) persistProvider(p *Provider) {
+	if r.store == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		p.mu.Lock()
+		hardwareJSON, _ := json.Marshal(p.Hardware)
+		modelsJSON, _ := json.Marshal(p.Models)
+		var attestJSON json.RawMessage
+		if p.AttestationResult != nil {
+			attestJSON, _ = json.Marshal(p.AttestationResult)
+		}
+		seKey := ""
+		serial := ""
+		if p.AttestationResult != nil {
+			seKey = p.AttestationResult.PublicKey
+			serial = p.AttestationResult.SerialNumber
+		}
+		var mdaCertJSON json.RawMessage
+		if len(p.MDACertChain) > 0 {
+			mdaCertJSON, _ = json.Marshal(p.MDACertChain)
+		}
+		var lastChallenge *time.Time
+		if !p.LastChallengeVerified.IsZero() {
+			t := p.LastChallengeVerified
+			lastChallenge = &t
+		}
+
+		rec := store.ProviderRecord{
+			ID:                    p.ID,
+			Hardware:              hardwareJSON,
+			Models:                modelsJSON,
+			Backend:               p.Backend,
+			TrustLevel:            string(p.TrustLevel),
+			Attested:              p.Attested,
+			AttestationResult:     attestJSON,
+			SEPublicKey:           seKey,
+			SerialNumber:          serial,
+			MDAVerified:           p.MDAVerified,
+			MDACertChain:          mdaCertJSON,
+			ACMEVerified:          p.ACMEVerified,
+			Version:               p.Version,
+			RuntimeVerified:       p.RuntimeVerified,
+			PythonHash:            p.PythonHash,
+			RuntimeHash:           p.RuntimeHash,
+			LastChallengeVerified: lastChallenge,
+			FailedChallenges:      p.FailedChallenges,
+			AccountID:             p.AccountID,
+			RegisteredAt:          time.Now(),
+			LastSeen:              time.Now(),
+		}
+		p.mu.Unlock()
+
+		if err := r.store.UpsertProvider(ctx, rec); err != nil {
+			r.logger.Warn("failed to persist provider", "provider_id", p.ID, "error", err)
+		}
+	}()
+}
+
+// persistReputation saves a provider's current reputation to the store.
+// Called asynchronously to avoid blocking the hot path.
+func (r *Registry) persistReputation(p *Provider) {
+	if r.store == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		p.mu.Lock()
+		rep := store.ReputationRecord{
+			TotalJobs:          p.Reputation.TotalJobs,
+			SuccessfulJobs:     p.Reputation.SuccessfulJobs,
+			FailedJobs:         p.Reputation.FailedJobs,
+			TotalUptimeSeconds: int64(p.Reputation.TotalUptime / time.Second),
+			AvgResponseTimeMs:  int64(p.Reputation.AvgResponseTime / time.Millisecond),
+			ChallengesPassed:   p.Reputation.ChallengesPassed,
+			ChallengesFailed:   p.Reputation.ChallengesFailed,
+		}
+		p.mu.Unlock()
+
+		if err := r.store.UpsertReputation(ctx, p.ID, rep); err != nil {
+			r.logger.Warn("failed to persist reputation", "provider_id", p.ID, "error", err)
+		}
+	}()
 }
 
 // TruncHash returns the first 16 chars of a hash string for logging.
@@ -363,6 +562,9 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		"decode_tps", msg.DecodeTPS,
 	)
 
+	// Persist provider record to store (async).
+	r.persistProvider(p)
+
 	return p
 }
 
@@ -511,6 +713,9 @@ func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
 	p.mu.Lock()
 	p.TrustLevel = level
 	p.mu.Unlock()
+
+	// Persist trust state.
+	r.persistProvider(p)
 }
 
 // RecordChallengeSuccess records a successful challenge-response verification.
@@ -525,7 +730,12 @@ func (r *Registry) RecordChallengeSuccess(providerID string) {
 	p.mu.Lock()
 	p.LastChallengeVerified = time.Now()
 	p.FailedChallenges = 0
+	p.Reputation.RecordChallengePass()
 	p.mu.Unlock()
+
+	// Persist challenge state and reputation.
+	r.persistProvider(p)
+	r.persistReputation(p)
 
 	// Drain queued requests — a newly verified provider can serve them.
 	if r.queue != nil && p.PendingCount() < MaxConcurrentRequests {
@@ -549,8 +759,13 @@ func (r *Registry) RecordChallengeFailure(providerID string) int {
 
 	p.mu.Lock()
 	p.FailedChallenges++
+	p.Reputation.RecordChallengeFail()
 	count := p.FailedChallenges
 	p.mu.Unlock()
+
+	// Persist challenge state and reputation.
+	r.persistProvider(p)
+	r.persistReputation(p)
 
 	return count
 }
@@ -898,6 +1113,9 @@ func (r *Registry) RecordJobSuccess(providerID string, responseTime time.Duratio
 	p.mu.Lock()
 	p.Reputation.RecordJobSuccess(responseTime)
 	p.mu.Unlock()
+
+	// Persist reputation.
+	r.persistReputation(p)
 }
 
 // RecordJobFailure records a failed job for the provider's reputation.
@@ -912,6 +1130,9 @@ func (r *Registry) RecordJobFailure(providerID string) {
 	p.mu.Lock()
 	p.Reputation.RecordJobFailure()
 	p.mu.Unlock()
+
+	// Persist reputation.
+	r.persistReputation(p)
 }
 
 // ProviderCount returns the number of registered providers.

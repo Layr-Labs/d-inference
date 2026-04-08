@@ -103,10 +103,19 @@ type Server struct {
 	// completion message. The consumer handler retrieves images from here.
 	imageUploads   map[string][][]byte // request_id → list of PNG images
 	imageUploadsMu sync.Mutex
+
+	// storedProviders is a lookup table of persisted provider records, indexed
+	// by serial number and SE public key. When a provider reconnects after a
+	// coordinator restart, this table is checked to restore trust/reputation.
+	// Populated once at startup from the store.
+	storedProviders map[string]*store.ProviderRecord
 }
 
 // NewServer creates a configured Server with all routes mounted.
 func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Server {
+	// Wire the store into the registry for provider fleet persistence.
+	reg.SetStore(st)
+
 	s := &Server{
 		registry:     reg,
 		store:        st,
@@ -116,6 +125,11 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 		imageUploads: make(map[string][][]byte),
 	}
 	s.routes()
+
+	// Load stored provider records into a lookup table for matching
+	// reconnecting providers to their persisted state.
+	s.storedProviders = reg.LoadStoredProviders()
+
 	return s
 }
 

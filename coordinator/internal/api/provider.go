@@ -982,6 +982,28 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		"trust_level", registry.TrustSelfSigned,
 	)
 
+	// Restore persisted state: if this provider was previously known (by serial
+	// number or SE key), restore trust level, reputation, and account linkage.
+	// Fresh attestation verification still runs (above), but stored reputation
+	// is preserved so routing quality is maintained across coordinator restarts.
+	if s.storedProviders != nil {
+		var storedRec *store.ProviderRecord
+		if result.SerialNumber != "" {
+			storedRec = s.storedProviders[result.SerialNumber]
+		}
+		if storedRec == nil && result.PublicKey != "" {
+			storedRec = s.storedProviders["sekey:"+result.PublicKey]
+		}
+		if storedRec != nil {
+			s.registry.RestoreProviderState(provider, storedRec)
+			s.logger.Info("restored persisted provider state",
+				"provider_id", providerID,
+				"stored_serial", storedRec.SerialNumber,
+				"stored_trust", storedRec.TrustLevel,
+			)
+		}
+	}
+
 	// Deduplicate: if another provider connection exists from the same physical
 	// device (same serial number), disconnect it. This prevents multiple
 	// provider processes on the same machine from registering independently
@@ -989,6 +1011,10 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 	if result.SerialNumber != "" {
 		s.registry.DisconnectDuplicatesBySerial(providerID, result.SerialNumber)
 	}
+
+	// Persist provider state after attestation verification.
+	// This captures the attestation result, serial number, and trust level.
+	s.registry.PersistProvider(provider)
 
 	// MDM verification: independently verify security posture via MicroMDM.
 	// This upgrades trust from self_signed to hardware if MDM confirms
@@ -1054,6 +1080,9 @@ func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Prov
 		"mdm_secure_boot", mdmResult.MDMSecureBootFull,
 		"mdm_auth_root_volume", mdmResult.MDMAuthRootVolume,
 	)
+
+	// Persist the trust upgrade.
+	s.registry.PersistProvider(provider)
 
 	// Request Apple Device Attestation — Apple's servers generate a
 	// certificate chain that proves this device's identity. This cert

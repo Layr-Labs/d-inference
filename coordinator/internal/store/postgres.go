@@ -18,6 +18,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -69,7 +70,52 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			models JSONB NOT NULL,
 			backend TEXT NOT NULL,
 			registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			trust_level TEXT NOT NULL DEFAULT 'none',
+			attested BOOLEAN NOT NULL DEFAULT FALSE,
+			attestation_result JSONB,
+			se_public_key TEXT NOT NULL DEFAULT '',
+			serial_number TEXT NOT NULL DEFAULT '',
+			mda_verified BOOLEAN NOT NULL DEFAULT FALSE,
+			mda_cert_chain JSONB,
+			acme_verified BOOLEAN NOT NULL DEFAULT FALSE,
+			version TEXT NOT NULL DEFAULT '',
+			runtime_verified BOOLEAN NOT NULL DEFAULT FALSE,
+			python_hash TEXT NOT NULL DEFAULT '',
+			runtime_hash TEXT NOT NULL DEFAULT '',
+			last_challenge_verified TIMESTAMPTZ,
+			failed_challenges INT NOT NULL DEFAULT 0,
+			account_id TEXT NOT NULL DEFAULT ''
+		)`,
+		// Migrate existing providers table: add new columns if upgrading from previous schema
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS trust_level TEXT NOT NULL DEFAULT 'none'; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS attested BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS attestation_result JSONB; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS se_public_key TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS serial_number TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS mda_verified BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS mda_cert_chain JSONB; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS acme_verified BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS version TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS runtime_verified BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS python_hash TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS runtime_hash TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS last_challenge_verified TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS failed_challenges INT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS account_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_providers_serial ON providers(serial_number) WHERE serial_number != ''`,
+
+		// Provider reputation — persistent reputation tracking
+		`CREATE TABLE IF NOT EXISTS provider_reputation (
+			provider_id TEXT PRIMARY KEY REFERENCES providers(id),
+			total_jobs INT NOT NULL DEFAULT 0,
+			successful_jobs INT NOT NULL DEFAULT 0,
+			failed_jobs INT NOT NULL DEFAULT 0,
+			total_uptime_seconds BIGINT NOT NULL DEFAULT 0,
+			avg_response_time_ms BIGINT NOT NULL DEFAULT 0,
+			challenges_passed INT NOT NULL DEFAULT 0,
+			challenges_failed INT NOT NULL DEFAULT 0,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE TABLE IF NOT EXISTS api_keys (
 			key_hash TEXT PRIMARY KEY,
@@ -1410,4 +1456,251 @@ func (s *PostgresStore) GetAccountEarnings(accountID string, limit int) ([]Provi
 		return []ProviderEarning{}, nil
 	}
 	return results, nil
+}
+
+// --- Provider Fleet Persistence ---
+
+func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO providers (
+			id, hardware, models, backend, trust_level, attested,
+			attestation_result, se_public_key, serial_number,
+			mda_verified, mda_cert_chain, acme_verified,
+			version, runtime_verified, python_hash, runtime_hash,
+			last_challenge_verified, failed_challenges, account_id,
+			registered_at, last_seen
+		) VALUES (
+			$1, $2, $3, $4, $5, $6,
+			$7, $8, $9,
+			$10, $11, $12,
+			$13, $14, $15, $16,
+			$17, $18, $19,
+			$20, $21
+		)
+		ON CONFLICT (id) DO UPDATE SET
+			hardware = $2, models = $3, backend = $4,
+			trust_level = $5, attested = $6,
+			attestation_result = $7, se_public_key = $8, serial_number = $9,
+			mda_verified = $10, mda_cert_chain = $11, acme_verified = $12,
+			version = $13, runtime_verified = $14, python_hash = $15, runtime_hash = $16,
+			last_challenge_verified = $17, failed_challenges = $18, account_id = $19,
+			last_seen = $21`,
+		p.ID, p.Hardware, p.Models, p.Backend,
+		p.TrustLevel, p.Attested,
+		p.AttestationResult, p.SEPublicKey, p.SerialNumber,
+		p.MDAVerified, p.MDACertChain, p.ACMEVerified,
+		p.Version, p.RuntimeVerified, p.PythonHash, p.RuntimeHash,
+		p.LastChallengeVerified, p.FailedChallenges, p.AccountID,
+		p.RegisteredAt, p.LastSeen,
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert provider: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*ProviderRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var p ProviderRecord
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, hardware, models, backend, trust_level, attested,
+			attestation_result, se_public_key, serial_number,
+			mda_verified, mda_cert_chain, acme_verified,
+			version, runtime_verified, python_hash, runtime_hash,
+			last_challenge_verified, failed_challenges, account_id,
+			registered_at, last_seen
+		 FROM providers WHERE id = $1`, id,
+	).Scan(
+		&p.ID, &p.Hardware, &p.Models, &p.Backend,
+		&p.TrustLevel, &p.Attested,
+		&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
+		&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
+		&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
+		&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
+		&p.RegisteredAt, &p.LastSeen,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: provider not found: %w", err)
+	}
+	return &p, nil
+}
+
+func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) (*ProviderRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var p ProviderRecord
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, hardware, models, backend, trust_level, attested,
+			attestation_result, se_public_key, serial_number,
+			mda_verified, mda_cert_chain, acme_verified,
+			version, runtime_verified, python_hash, runtime_hash,
+			last_challenge_verified, failed_challenges, account_id,
+			registered_at, last_seen
+		 FROM providers WHERE serial_number = $1 AND serial_number != ''
+		 ORDER BY last_seen DESC LIMIT 1`, serial,
+	).Scan(
+		&p.ID, &p.Hardware, &p.Models, &p.Backend,
+		&p.TrustLevel, &p.Attested,
+		&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
+		&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
+		&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
+		&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
+		&p.RegisteredAt, &p.LastSeen,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: provider with serial not found: %w", err)
+	}
+	return &p, nil
+}
+
+func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, hardware, models, backend, trust_level, attested,
+			attestation_result, se_public_key, serial_number,
+			mda_verified, mda_cert_chain, acme_verified,
+			version, runtime_verified, python_hash, runtime_hash,
+			last_challenge_verified, failed_challenges, account_id,
+			registered_at, last_seen
+		 FROM providers ORDER BY last_seen DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list providers: %w", err)
+	}
+	defer rows.Close()
+
+	var records []ProviderRecord
+	for rows.Next() {
+		var p ProviderRecord
+		if err := rows.Scan(
+			&p.ID, &p.Hardware, &p.Models, &p.Backend,
+			&p.TrustLevel, &p.Attested,
+			&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
+			&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
+			&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
+			&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
+			&p.RegisteredAt, &p.LastSeen,
+		); err != nil {
+			continue
+		}
+		records = append(records, p)
+	}
+	if records == nil {
+		return []ProviderRecord{}, nil
+	}
+	return records, nil
+}
+
+func (s *PostgresStore) UpdateProviderLastSeen(ctx context.Context, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`UPDATE providers SET last_seen = NOW() WHERE id = $1`, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update provider last_seen: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) UpdateProviderTrust(ctx context.Context, id string, trustLevel string, attested bool, attestationResult json.RawMessage) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`UPDATE providers SET trust_level = $2, attested = $3, attestation_result = $4
+		 WHERE id = $1`,
+		id, trustLevel, attested, attestationResult,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update provider trust: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) UpdateProviderChallenge(ctx context.Context, id string, lastVerified time.Time, failedCount int) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`UPDATE providers SET last_challenge_verified = $2, failed_challenges = $3
+		 WHERE id = $1`,
+		id, lastVerified, failedCount,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update provider challenge: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) UpdateProviderRuntime(ctx context.Context, id string, verified bool, pythonHash, runtimeHash string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`UPDATE providers SET runtime_verified = $2, python_hash = $3, runtime_hash = $4
+		 WHERE id = $1`,
+		id, verified, pythonHash, runtimeHash,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update provider runtime: %w", err)
+	}
+	return nil
+}
+
+// --- Provider Reputation Persistence ---
+
+func (s *PostgresStore) UpsertReputation(ctx context.Context, providerID string, rep ReputationRecord) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_reputation (
+			provider_id, total_jobs, successful_jobs, failed_jobs,
+			total_uptime_seconds, avg_response_time_ms,
+			challenges_passed, challenges_failed, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+		ON CONFLICT (provider_id) DO UPDATE SET
+			total_jobs = $2, successful_jobs = $3, failed_jobs = $4,
+			total_uptime_seconds = $5, avg_response_time_ms = $6,
+			challenges_passed = $7, challenges_failed = $8,
+			updated_at = NOW()`,
+		providerID, rep.TotalJobs, rep.SuccessfulJobs, rep.FailedJobs,
+		rep.TotalUptimeSeconds, rep.AvgResponseTimeMs,
+		rep.ChallengesPassed, rep.ChallengesFailed,
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert reputation: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetReputation(ctx context.Context, providerID string) (*ReputationRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var rep ReputationRecord
+	err := s.pool.QueryRow(ctx,
+		`SELECT total_jobs, successful_jobs, failed_jobs,
+			total_uptime_seconds, avg_response_time_ms,
+			challenges_passed, challenges_failed
+		 FROM provider_reputation WHERE provider_id = $1`, providerID,
+	).Scan(
+		&rep.TotalJobs, &rep.SuccessfulJobs, &rep.FailedJobs,
+		&rep.TotalUptimeSeconds, &rep.AvgResponseTimeMs,
+		&rep.ChallengesPassed, &rep.ChallengesFailed,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: reputation not found: %w", err)
+	}
+	return &rep, nil
 }

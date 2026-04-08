@@ -16,6 +16,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+fn default_idle_timeout_mins() -> u64 {
+    60
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderConfig {
     pub provider: ProviderSettings,
@@ -41,6 +45,10 @@ pub struct BackendSettings {
     /// but are not served).
     #[serde(default)]
     pub enabled_models: Vec<String>,
+    /// Minutes of inactivity before the backend is shut down to free GPU memory.
+    /// 0 = never shut down. Default: 60 (1 hour).
+    #[serde(default = "default_idle_timeout_mins")]
+    pub idle_timeout_mins: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -66,6 +74,7 @@ impl ProviderConfig {
                 model: None,
                 continuous_batching: true,
                 enabled_models: Vec::new(),
+                idle_timeout_mins: 60,
             },
             coordinator: CoordinatorSettings {
                 url: "ws://localhost:8080/ws/provider".to_string(),
@@ -296,6 +305,68 @@ heartbeat_interval_secs = 30
         let config: ProviderConfig = toml::from_str(toml_str).unwrap();
         assert!(config.backend.enabled_models.is_empty());
         assert!(config.backend.model.is_none());
+        assert_eq!(config.backend.idle_timeout_mins, 60);
+    }
+
+    #[test]
+    fn test_config_idle_timeout_custom_value() {
+        let toml_str = r#"
+[provider]
+name = "test"
+memory_reserve_gb = 4
+
+[backend]
+port = 8100
+continuous_batching = true
+idle_timeout_mins = 15
+
+[coordinator]
+url = "ws://localhost:8080/ws/provider"
+heartbeat_interval_secs = 30
+"#;
+        let config: ProviderConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.backend.idle_timeout_mins, 15);
+    }
+
+    #[test]
+    fn test_config_idle_timeout_zero_disables() {
+        let toml_str = r#"
+[provider]
+name = "test"
+memory_reserve_gb = 4
+
+[backend]
+port = 8100
+continuous_batching = true
+idle_timeout_mins = 0
+
+[coordinator]
+url = "ws://localhost:8080/ws/provider"
+heartbeat_interval_secs = 30
+"#;
+        let config: ProviderConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.backend.idle_timeout_mins, 0);
+    }
+
+    #[test]
+    fn test_config_idle_timeout_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("provider.toml");
+
+        let hw = sample_hardware();
+        let mut config = ProviderConfig::default_for_hardware(&hw);
+        config.backend.idle_timeout_mins = 0;
+
+        save(&path, &config).unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.backend.idle_timeout_mins, 0);
+    }
+
+    #[test]
+    fn test_config_default_idle_timeout() {
+        let hw = sample_hardware();
+        let config = ProviderConfig::default_for_hardware(&hw);
+        assert_eq!(config.backend.idle_timeout_mins, 60);
     }
 
     #[test]
@@ -313,6 +384,7 @@ heartbeat_interval_secs = 30
                 model: Some("my-model".to_string()),
                 continuous_batching: false,
                 enabled_models: vec!["m1".to_string(), "m2".to_string()],
+                idle_timeout_mins: 30,
             },
             coordinator: CoordinatorSettings {
                 url: "wss://example.com/ws/provider".to_string(),

@@ -108,11 +108,9 @@ pub fn check_rdma_disabled() -> bool {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let disabled = stdout.trim() == "disabled";
                 if disabled {
-                    tracing::info!("RDMA check: RDMA is disabled (safe)");
+                    tracing::debug!("RDMA check: RDMA is disabled");
                 } else {
-                    tracing::error!(
-                        "RDMA check: RDMA is ENABLED — remote memory access possible, refusing to serve"
-                    );
+                    tracing::debug!("RDMA check: RDMA is enabled");
                 }
                 disabled
             }

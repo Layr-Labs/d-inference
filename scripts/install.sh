@@ -115,7 +115,9 @@ fi
 
 # Always add to shell rc so it works even without the symlink
 RC="$HOME/.zshrc"
-[ -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ] && RC="$HOME/.bashrc"
+if [ -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ]; then
+    RC="$HOME/.bashrc"
+fi
 if ! grep -q "eigeninference" "$RC" 2>/dev/null; then
     cat >> "$RC" << 'SHELL'
 
@@ -128,7 +130,10 @@ export PATH="$BIN_DIR:$PATH"
 
 # Source the rc file so commands are available immediately in this session
 # (important when running via curl | bash — the parent shell won't have PATH yet)
-source "$RC" 2>/dev/null || true
+# Temporarily disable -eu: the user's rc file may reference unbound variables
+# or use zsh-specific builtins that fail in bash, and set -u causes an immediate
+# exit that || true cannot catch.
+set +eu; source "$RC" 2>/dev/null; set -eu
 
 echo "  Binaries installed ✓"
 echo "  Shortcut: eigeninf (alias for eigeninference-provider)"
@@ -398,5 +403,7 @@ echo "    eigeninference-provider logs -w     Stream logs"
 echo "    eigeninference-provider stop        Stop provider"
 echo "    eigeninference-provider update      Check for updates"
 echo "    eigeninference-provider doctor      Run diagnostics"
+echo ""
+echo "  Open a new terminal or run: source ~/.zshrc"
 echo ""
 echo "════════════════════════════════════════════════"

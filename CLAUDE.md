@@ -157,6 +157,23 @@ pip install -r requirements.txt pytest httpx
 PYTHONPATH=. pytest
 ```
 
+## Releases
+
+**Never create a release unless explicitly asked by the user.** When asked:
+
+1. **Squash push**: All local commits since the last tag should be squash-pushed into a single commit on master.
+2. **Bump version**: Update `provider/Cargo.toml` version.
+3. **Create annotated tag** with a description summarizing all changes:
+   ```bash
+   git tag -a v0.X.Y -m "v0.X.Y: one-line summary
+
+   - Change 1
+   - Change 2
+   - ..."
+   ```
+4. **Push** the commit and tag: `git push origin master --tags`
+5. The CI release workflow (`.github/workflows/release.yml`) is triggered by the tag push.
+
 ## Deploying
 
 Full deploy runbook: **[docs/coordinator-deploy-runbook.md](docs/coordinator-deploy-runbook.md)**
@@ -222,6 +239,23 @@ scp -i ~/.ssh/eigeninference-infra /tmp/eigeninference-bundle/eigeninference-bun
 - Image generation changes span three places: coordinator consumer/provider handlers, provider proxying, and `image-bridge/`.
 - Device linking changes span coordinator device auth endpoints and provider `login`/`logout` commands.
 - The repo contains mixed payment language: current code implements Privy + Solana + Stripe, but some provider comments still reference Tempo/pathUSD.
+
+## Quality Gate
+
+After completing each objective (task, plan phase, or discrete unit of work), spawn **both** reviewers in parallel:
+
+1. **Codex rescue subagent** (`codex:codex-rescue`) — reviews the diff for correctness, regressions, and build/test pass
+2. **Claude Code subagent** (`Agent` tool, general-purpose) — independently reviews the same diff for correctness, edge cases, and code quality
+
+Each reviewer should:
+
+1. Read the diff of all changes made for that objective
+2. Verify correctness: does the implementation actually solve what was asked?
+3. Check for regressions: broken imports, missing protocol symmetry, untested edge cases
+4. Confirm builds/tests pass for affected components (run `go test`, `cargo test`, `npm run build`, etc. as appropriate)
+5. Report a pass/fail verdict with specific issues if any
+
+Only proceed to the next objective after both reviewers pass. If either flags issues, fix them before moving on.
 
 ## Formatting
 

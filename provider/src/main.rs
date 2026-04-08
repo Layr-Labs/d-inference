@@ -1168,6 +1168,10 @@ enum Command {
         /// Path to the image model directory for gRPCServerCLI
         #[arg(long)]
         image_model_path: Option<String>,
+
+        /// Minutes of inactivity before backend shuts down to free GPU memory (0 = never)
+        #[arg(long)]
+        idle_timeout: Option<u64>,
     },
 
     /// One-command setup: enroll in MDM, download model, start serving
@@ -1252,6 +1256,10 @@ enum Command {
         /// Path to the image model directory for gRPCServerCLI
         #[arg(long)]
         image_model_path: Option<String>,
+
+        /// Minutes of inactivity before backend shuts down to free GPU memory (0 = never)
+        #[arg(long)]
+        idle_timeout: Option<u64>,
     },
 
     /// Stop the provider gracefully
@@ -1329,6 +1337,7 @@ async fn main() -> Result<()> {
             all_models,
             image_model,
             image_model_path,
+            idle_timeout,
         } => {
             // CLI flags override env vars for image model
             if let Some(ref im) = image_model {
@@ -1343,7 +1352,16 @@ async fn main() -> Result<()> {
                     std::env::set_var("EIGENINFERENCE_IMAGE_MODEL_PATH", imp);
                 }
             }
-            cmd_serve(local, coordinator, port, model, backend_port, all_models).await
+            cmd_serve(
+                local,
+                coordinator,
+                port,
+                model,
+                backend_port,
+                all_models,
+                idle_timeout,
+            )
+            .await
         }
         Command::Enroll { coordinator } => cmd_enroll(coordinator).await,
         Command::Unenroll => cmd_unenroll().await,
@@ -1360,7 +1378,17 @@ async fn main() -> Result<()> {
             model,
             image_model,
             image_model_path,
-        } => cmd_start(coordinator, model, image_model, image_model_path).await,
+            idle_timeout,
+        } => {
+            cmd_start(
+                coordinator,
+                model,
+                image_model,
+                image_model_path,
+                idle_timeout,
+            )
+            .await
+        }
         Command::Stop => cmd_stop().await,
         Command::Logs { lines, watch } => cmd_logs(lines, watch).await,
         Command::Update { coordinator } => cmd_update(coordinator).await,
@@ -1767,7 +1795,7 @@ async fn cmd_install(
     println!("  Model: {}", model);
     println!();
 
-    service::install_and_start(&coordinator_url, &[model.clone()], None, None, None)?;
+    service::install_and_start(&coordinator_url, &[model.clone()], None, None, None, None)?;
 
     let log_path = dirs::home_dir()
         .unwrap_or_default()
@@ -1815,6 +1843,7 @@ async fn cmd_serve(
     model_overrides: Vec<String>,
     backend_port_override: Option<u16>,
     _all_models: bool,
+    idle_timeout_override: Option<u64>,
 ) -> Result<()> {
     // Ensure only one provider instance runs at a time.
     // Kill any existing provider serve process + its backend children.
@@ -1854,6 +1883,13 @@ async fn cmd_serve(
             .status();
         let _ = std::process::Command::new("pkill")
             .args(["-f", "vllm_mlx"])
+            .status();
+        // Kill legacy DGInf/dginf-provider processes
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "DGInf"])
+            .status();
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "dginf-provider"])
             .status();
         // Small delay to let ports free up
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -1931,6 +1967,19 @@ async fn cmd_serve(
 
     // Determine backend port (CLI override > config)
     let be_port = backend_port_override.unwrap_or(cfg.backend.port);
+
+    // Determine idle timeout (CLI override > config, 0 = never)
+    let idle_timeout_mins = idle_timeout_override.unwrap_or(cfg.backend.idle_timeout_mins);
+    let idle_timeout = if idle_timeout_mins == 0 {
+        None
+    } else {
+        Some(std::time::Duration::from_secs(idle_timeout_mins * 60))
+    };
+    if let Some(d) = idle_timeout {
+        tracing::info!("Idle GPU timeout: {} minutes", d.as_secs() / 60);
+    } else {
+        tracing::info!("Idle GPU timeout: disabled (backend stays running)");
+    }
 
     // Determine text models to serve (vmlm-mlx backends).
     // Filter out image (.ckpt) and transcription models — they have their own backends.
@@ -2676,18 +2725,22 @@ async fn cmd_serve(
             // coordinator disconnect or explicit cancel messages.
             let mut inflight: HashMap<String, (CancellationToken, tokio::task::JoinHandle<()>)> =
                 HashMap::new();
-            let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<String>(64);
+            let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<(String, bool)>(64);
 
-            // Idle timeout: shut down the backend after 10 minutes of no
+            // Idle timeout: shut down the backend after a period of no
             // requests to free GPU memory. Lazy-reload on next request.
-            const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+            // `idle_timeout` is None when disabled (0 minutes).
             let mut last_request_time = tokio::time::Instant::now();
             let mut backend_running = true;
 
             loop {
                 let idle_sleep = async {
-                    if backend_running && inflight.is_empty() {
-                        tokio::time::sleep_until(last_request_time + IDLE_TIMEOUT).await;
+                    if let Some(timeout) = idle_timeout {
+                        if backend_running && inflight.is_empty() {
+                            tokio::time::sleep_until(last_request_time + timeout).await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
                     } else {
                         std::future::pending::<()>().await;
                     }
@@ -2799,15 +2852,15 @@ async fn cmd_serve(
                                         let stats = proxy_stats.clone();
                                         tokio::spawn(async move {
                                             handle_inprocess_request(rid2, body, engine, tx, Some(stats)).await;
-                                            let _ = done_tx.send(rid).await;
+                                            let _ = done_tx.send((rid, false)).await;
                                         })
                                     } else {
                                         let kp = proxy_keypair.clone();
                                         let rid2 = rid.clone();
                                         let stats = proxy_stats.clone();
                                         tokio::spawn(async move {
-                                            proxy::handle_inference_request(rid2, body, target_url, tx, Some(kp), token_clone, Some(stats)).await;
-                                            let _ = done_tx.send(rid).await;
+                                            let dead = proxy::handle_inference_request(rid2, body, target_url, tx, Some(kp), token_clone, Some(stats)).await;
+                                            let _ = done_tx.send((rid, dead)).await;
                                         })
                                     }
 
@@ -2817,8 +2870,8 @@ async fn cmd_serve(
                                         let rid2 = rid.clone();
                                         let stats = proxy_stats.clone();
                                         tokio::spawn(async move {
-                                            proxy::handle_inference_request(rid2, body, target_url, tx, Some(kp), token_clone, Some(stats)).await;
-                                            let _ = done_tx.send(rid).await;
+                                            let dead = proxy::handle_inference_request(rid2, body, target_url, tx, Some(kp), token_clone, Some(stats)).await;
+                                            let _ = done_tx.send((rid, dead)).await;
                                         })
                                     }
                                 };
@@ -2843,7 +2896,7 @@ async fn cmd_serve(
                                     proxy::handle_transcription_request(
                                         rid.clone(), body, stt_url, tx, token_clone,
                                     ).await;
-                                    let _ = done_tx.send(rid).await;
+                                    let _ = done_tx.send((rid, false)).await;
                                 });
 
                                 inflight.insert(request_id, (cancel_token, handle));
@@ -2862,7 +2915,7 @@ async fn cmd_serve(
                                     proxy::handle_image_generation_request(
                                         rid.clone(), body, image_url, upload_url, tx, token_clone,
                                     ).await;
-                                    let _ = done_tx.send(rid).await;
+                                    let _ = done_tx.send((rid, false)).await;
                                 });
 
                                 inflight.insert(request_id, (cancel_token, handle));
@@ -2910,18 +2963,23 @@ async fn cmd_serve(
                             }
                         }
                     }
-                    Some(rid) = done_rx.recv() => {
+                    Some((rid, backend_dead)) = done_rx.recv() => {
                         if inflight.remove(&rid).is_some() {
                             tracing::debug!("Request {rid} completed, removed from tracker ({} in-flight)", inflight.len());
                             if inflight.is_empty() {
                                 inference_active.store(false, std::sync::atomic::Ordering::Relaxed);
                             }
                         }
+                        if backend_dead && backend_running {
+                            tracing::warn!("Backend appears dead (connection refused) — will reload on next request");
+                            backend_running = false;
+                        }
                     }
                     _ = idle_sleep => {
                         tracing::info!(
-                            "No requests for 1 hour — shutting down backends to free GPU memory. \
-                             Next request will reload (~30-60s cold start)."
+                            "No requests for {} minutes — shutting down backends to free GPU memory. \
+                             Next request will reload (~30-60s cold start).",
+                            idle_timeout_mins
                         );
                         shutdown_backends(&backend_pids).await;
                         backend_running = false;
@@ -4773,6 +4831,7 @@ async fn cmd_start(
     model_override: Option<String>,
     image_model: Option<String>,
     image_model_path: Option<String>,
+    idle_timeout: Option<u64>,
 ) -> Result<()> {
     // Stop any existing provider first
     cmd_stop().await?;
@@ -4997,6 +5056,7 @@ async fn cmd_start(
         final_image_model.as_deref(),
         final_image_model_path.as_deref(),
         picked_stt.as_deref(),
+        idle_timeout,
     )?;
 
     println!("Provider installed as system service");

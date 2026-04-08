@@ -36,6 +36,8 @@ use crate::security;
 ///
 /// The `node_keypair` parameter is retained for future coordinator-to-provider
 /// encryption but is not used in the current plain JSON flow.
+/// Returns `true` if the backend appears to be down (connection refused),
+/// signalling that the caller should mark the backend as not running.
 pub async fn handle_inference_request(
     request_id: String,
     body: serde_json::Value,
@@ -44,7 +46,7 @@ pub async fn handle_inference_request(
     _node_keypair: Option<Arc<NodeKeyPair>>,
     cancel_token: CancellationToken,
     stats: Option<Arc<AtomicProviderStats>>,
-) {
+) -> bool {
     // Pre-request SIP check: verify SIP is still enabled before processing
     // any consumer data. SIP can't be disabled at runtime (requires reboot),
     // so this is defense-in-depth on top of the startup check.
@@ -57,7 +59,7 @@ pub async fn handle_inference_request(
                 status_code: 503,
             })
             .await;
-        return;
+        return false;
     }
 
     let is_streaming = body
@@ -87,10 +89,17 @@ pub async fn handle_inference_request(
         .await
     };
 
+    let mut backend_dead = false;
     if let Err(e) = result {
         if cancel_token.is_cancelled() {
             tracing::info!("Inference request {request_id} cancelled");
         } else {
+            // Check if this is a connection error (backend process died)
+            backend_dead = e.chain().any(|cause| {
+                cause
+                    .downcast_ref::<reqwest::Error>()
+                    .map_or(false, |re| re.is_connect())
+            });
             tracing::error!("Inference request {request_id} failed: {e}");
             let _ = outbound_tx
                 .send(ProviderMessage::InferenceError {
@@ -108,6 +117,8 @@ pub async fn handle_inference_request(
     if let Ok(mut body_bytes) = serde_json::to_vec(&body) {
         security::secure_zero(&mut body_bytes);
     }
+
+    backend_dead
 }
 
 /// Handle a non-streaming inference request.
@@ -996,7 +1007,7 @@ mod tests {
             "stream": false
         });
 
-        handle_inference_request(
+        let dead = handle_inference_request(
             "req-1".to_string(),
             body,
             format!("http://127.0.0.1:{}", addr.port()),
@@ -1006,6 +1017,7 @@ mod tests {
             None,
         )
         .await;
+        assert!(!dead, "backend should not be reported as dead");
 
         // First message: the response content as an SSE chunk
         let chunk_msg = rx.recv().await.unwrap();
@@ -1053,7 +1065,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(32);
         let body = serde_json::json!({"model": "test", "messages": [], "stream": false});
 
-        handle_inference_request(
+        let dead = handle_inference_request(
             "req-err".to_string(),
             body,
             format!("http://127.0.0.1:{}", addr.port()),
@@ -1063,6 +1075,8 @@ mod tests {
             None,
         )
         .await;
+        // HTTP 500 means backend is running but returned an error — not dead
+        assert!(!dead, "HTTP error should not report backend as dead");
 
         let msg = rx.recv().await.unwrap();
         match msg {
@@ -1115,7 +1129,7 @@ mod tests {
             "stream": true
         });
 
-        handle_inference_request(
+        let dead = handle_inference_request(
             "req-stream".to_string(),
             body,
             format!("http://127.0.0.1:{}", addr.port()),
@@ -1125,6 +1139,7 @@ mod tests {
             None,
         )
         .await;
+        assert!(!dead, "backend should not be reported as dead");
 
         // Collect all messages
         let mut messages = Vec::new();
@@ -2265,5 +2280,78 @@ mod tests {
             msg.is_err() || msg.unwrap().is_none(),
             "Cancelled request should not send messages"
         );
+    }
+
+    #[tokio::test]
+    async fn test_backend_dead_on_connection_refused() {
+        // Use a port with nothing listening to simulate a crashed backend
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener); // free the port — nothing listening now
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true
+        });
+
+        let dead = handle_inference_request(
+            "req-dead".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", port),
+            tx,
+            None,
+            CancellationToken::new(),
+            None,
+        )
+        .await;
+
+        assert!(dead, "connection refused should report backend as dead");
+
+        let msg = rx.recv().await.unwrap();
+        match msg {
+            ProviderMessage::InferenceError { request_id, .. } => {
+                assert_eq!(request_id, "req-dead");
+            }
+            other => panic!("Expected InferenceError, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_backend_not_dead_on_http_error() {
+        use axum::{Router, http::StatusCode, routing::post};
+
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async { (StatusCode::BAD_GATEWAY, "upstream error") }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, _rx) = mpsc::channel(32);
+        let body = serde_json::json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": false
+        });
+
+        let dead = handle_inference_request(
+            "req-502".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            tx,
+            None,
+            CancellationToken::new(),
+            None,
+        )
+        .await;
+
+        assert!(!dead, "HTTP 502 should not report backend as dead");
     }
 }

@@ -188,8 +188,27 @@ const markdownComponents: any = {
 };
 
 function parseThinkFromContent(content: string, existingThinking?: string): { thinking: string; content: string } {
-  if (existingThinking || !content) return { thinking: existingThinking || "", content };
+  if (!content) return { thinking: existingThinking || "", content };
 
+  // Always strip thinking tags from content, even when reasoning_content
+  // was already extracted server-side. Old providers may leave tags in content.
+  let cleaned = content;
+
+  // Strip <think>...</think>
+  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>\s*/g, "");
+
+  // Strip Thinking Process:...</think>
+  cleaned = cleaned.replace(/Thinking Process:?[\s\S]*?<\/think>\s*/g, "");
+
+  // Strip <|channel>thought\n...<channel|>
+  cleaned = cleaned.replace(/<\|channel>thought[\s\S]*?<channel\|>\s*/g, "");
+
+  // If we already have thinking from the server, return cleaned content
+  if (existingThinking) {
+    return { thinking: existingThinking, content: cleaned.trimStart() };
+  }
+
+  // Otherwise, try to extract thinking from content
   const trimmed = content.trimStart();
 
   if (trimmed.startsWith("<think>")) {
@@ -224,7 +243,7 @@ function parseThinkFromContent(content: string, existingThinking?: string): { th
     }
   }
 
-  return { thinking: "", content };
+  return { thinking: "", content: cleaned };
 }
 
 export function ChatMessage({ message, onRetry }: { message: Message; onRetry?: () => void }) {

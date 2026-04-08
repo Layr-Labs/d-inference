@@ -82,3 +82,6 @@ docs/coordinator-deploy-runbook.md
 
 # Rust cross-language test build artifacts
 coordinator/internal/e2e/testdata/decrypt/target/
+coordinator/coordinator
+coordinator/eigeninference-coordinator-linux
+coordinator/Caddyfile

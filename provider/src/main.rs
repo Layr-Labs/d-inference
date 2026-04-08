@@ -2898,14 +2898,17 @@ async fn cmd_serve(
                                         m.component, m.expected, m.got
                                     );
                                 }
-                                // Trigger self-healing: re-download, then force reconnect
-                                // so the coordinator gets updated hashes on re-registration.
-                                tracing::info!("Triggering runtime self-heal...");
-                                ensure_runtime_updated(&idle_python_cmd, &coordinator_http_base);
-                                tracing::info!("Runtime updated — forcing reconnect to re-register with new hashes");
-                                // Breaking the event loop causes the outer reconnect loop to
-                                // reconnect, which sends a fresh Register with new hashes.
-                                break;
+                                // Trigger self-healing in background. Don't break the event
+                                // loop — the coordinator will re-verify on the next attestation
+                                // challenge (every 5 minutes). Breaking causes a reconnect
+                                // storm if the self-heal doesn't immediately fix the hash.
+                                tracing::info!("Triggering runtime self-heal (background)...");
+                                let heal_python = idle_python_cmd.clone();
+                                let heal_coordinator = coordinator_http_base.clone();
+                                std::thread::spawn(move || {
+                                    ensure_runtime_updated(&heal_python, &heal_coordinator);
+                                    tracing::info!("Runtime self-heal complete — next attestation challenge will re-verify");
+                                });
                             }
                         }
                     }

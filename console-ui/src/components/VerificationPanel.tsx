@@ -111,6 +111,7 @@ function NormalModeContent({
       title: "Hardware Identity",
       description:
         "This machine's identity is sealed in Apple's Secure Enclave chip — it can't be cloned, copied, or faked.",
+      info: "P-256 key generated inside the Secure Enclave. The private key never leaves the chip and cannot be exported.",
       ok: trust.secureEnclave,
     },
     {
@@ -119,6 +120,7 @@ function NormalModeContent({
       title: "Software Integrity",
       description:
         "The inference software hasn't been modified — its hash matches the signed release.",
+      info: "SHA-256 hash of the provider binary is verified against the CI-signed release. Runtime packages are also hash-checked.",
       ok: isHardware,
     },
     {
@@ -127,6 +129,7 @@ function NormalModeContent({
       title: "Data Protection",
       description:
         "Your prompts are encrypted end-to-end. Not even EigenInference servers can read them.",
+      info: "X25519 key exchange + XSalsa20-Poly1305 encryption (NaCl box). The coordinator only sees ciphertext.",
       ok: true, // E2E is always active
     },
     {
@@ -135,13 +138,14 @@ function NormalModeContent({
       title: "Anti-Tampering",
       description:
         "No process can inspect memory during inference. Debuggers are blocked and memory is wiped after each request.",
+      info: "PT_DENY_ATTACH prevents debugger attachment. Hardened Runtime blocks task_for_pid. Memory is zeroed after each request.",
       ok: isHardware,
     },
   ];
 
   return (
     <div className="space-y-3">
-      {guarantees.map(({ icon: Icon, color, title, description, ok }) => (
+      {guarantees.map(({ icon: Icon, color, title, description, info, ok }) => (
         <div key={title} className="flex gap-3">
           <div className="shrink-0 mt-0.5">
             {ok ? (
@@ -150,8 +154,13 @@ function NormalModeContent({
               <Icon size={16} className="text-text-tertiary" />
             )}
           </div>
-          <div>
-            <p className="text-xs font-semibold text-text-primary">{title}</p>
+          <div className="flex-1">
+            <div className="flex items-center gap-1">
+              <p className="text-xs font-semibold text-text-primary">{title}</p>
+              <span title={info} className="cursor-help">
+                <Info size={10} className="text-text-tertiary hover:text-text-secondary transition-colors" />
+              </span>
+            </div>
             <p className="text-xs text-text-secondary leading-relaxed mt-0.5">
               {description}
             </p>
@@ -173,10 +182,10 @@ function NormalModeContent({
               <ShieldCheck size={14} />
             )}
             {verifying
-              ? "Verifying with Apple..."
+              ? "Verifying..."
               : verifyResult?.success
-                ? "Verified — genuine Apple device"
-                : "Verify this device with Apple"}
+                ? "Apple-verified hardware"
+                : "Verify device"}
           </button>
 
           {/* Step-by-step progress */}
@@ -196,7 +205,7 @@ function NormalModeContent({
               }`}
             >
               {verifyResult.success
-                ? `Verified by Apple Inc. ${verifyResult.deviceInfo?.serial ? `(${verifyResult.deviceInfo.serial})` : ""}`
+                ? `Genuine Apple device ${verifyResult.deviceInfo?.serial ? `(${verifyResult.deviceInfo.serial})` : ""}`
                 : verifyResult.error || "Verification failed"}
             </p>
           )}
@@ -369,7 +378,7 @@ function TechnicalModeContent({
               }`}
             >
               {verifyResult.success
-                ? "This provider is a genuine Apple device, verified by Apple Inc."
+                ? "Genuine Apple device — certificate chain verified against Apple Root CA."
                 : verifyResult.error || "Verification failed"}
             </p>
           )}
@@ -481,7 +490,7 @@ export function VerificationPanel({ trust }: { trust: TrustMetadata }) {
   const title = isHardware
     ? trust.mdaVerified
       ? mode === "normal"
-        ? "Verified by Apple"
+        ? "Apple-verified hardware"
         : "Apple Attested"
       : "Hardware Verified"
     : "Unverified";

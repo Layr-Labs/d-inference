@@ -312,7 +312,7 @@ export async function verifyCertificateChain(
     notify();
 
     steps[4].status = "success";
-    steps[4].detail = "This provider is a genuine Apple device, verified by Apple Inc.";
+    steps[4].detail = "Genuine Apple device — certificate chain valid";
     notify();
 
     return { success: true, steps, deviceInfo };

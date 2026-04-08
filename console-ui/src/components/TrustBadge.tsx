@@ -7,7 +7,7 @@ import { useVerificationMode } from "@/lib/verification-mode";
 const config = {
   hardware_mda: {
     icon: ShieldCheck,
-    normalLabel: "Verified by Apple",
+    normalLabel: "Apple-verified hardware",
     technicalLabel: "Apple Attested",
     color: "text-teal",
     bg: "bg-teal-light/50",

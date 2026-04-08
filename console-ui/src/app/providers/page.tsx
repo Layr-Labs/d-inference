@@ -59,7 +59,7 @@ function TrustBadge({ level, mdaVerified }: { level: string; mdaVerified: boolea
     return (
       <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-accent-green/10 text-accent-green text-xs font-medium">
         <ShieldCheck size={12} />
-        {mdaVerified ? "Apple Attested" : "Hardware Verified"}
+        {mdaVerified ? "Apple-verified hardware" : "Hardware Verified"}
       </span>
     );
   }

@@ -45,13 +45,13 @@ describe("TrustBadge (normal mode)", () => {
     expect(screen.getByText("Hardware Verified")).toBeInTheDocument();
   });
 
-  it("renders 'Verified by Apple' for hardware with MDA", () => {
+  it("renders 'Apple-verified hardware' for hardware with MDA", () => {
     renderWithMode(
       <TrustBadge
         trust={makeTrust({ trustLevel: "hardware", mdaVerified: true })}
       />
     );
-    expect(screen.getByText("Verified by Apple")).toBeInTheDocument();
+    expect(screen.getByText("Apple-verified hardware")).toBeInTheDocument();
   });
 
   it("does NOT show SE/MDA indicators in normal mode", () => {
@@ -90,6 +90,6 @@ describe("TrustBadge (normal mode)", () => {
     );
     const span = container.querySelector("span[title]");
     expect(span).toBeTruthy();
-    expect(span!.getAttribute("title")).toBe("Verified by Apple");
+    expect(span!.getAttribute("title")).toBe("Apple-verified hardware");
   });
 });

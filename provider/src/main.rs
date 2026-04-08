@@ -965,119 +965,156 @@ fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) {
 /// the hash against the coordinator's runtime manifest before installing.
 /// This prevents MITM attacks on the update channel.
 fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) {
-    const REQUIRED_VLLM_MLX_VERSION: &str = "0.2.7";
-    const DOWNLOAD_URL: &str = "https://github.com/Gajesh2007/vllm-mlx/archive/refs/heads/main.zip";
+    const R2_CDN: &str = "https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev";
 
-    // Check current vllm-mlx version and features
-    let current_version = std::process::Command::new(python_cmd)
-        .args(["-c", "import vllm_mlx; print(vllm_mlx.__version__)"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-
-    let has_responses = std::process::Command::new(python_cmd)
-        .args([
-            "-c",
-            "from vllm_mlx.server import create_response; print('ok')",
-        ])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    let needs_update = current_version.is_empty()
-        || current_version < REQUIRED_VLLM_MLX_VERSION.to_string()
-        || !has_responses;
-
-    if !needs_update {
-        tracing::info!("Runtime check: vllm-mlx {current_version} ✓");
-        return;
-    }
-
-    tracing::warn!(
-        "vllm-mlx {} — updating...",
-        if current_version.is_empty() {
-            "not found".to_string()
-        } else {
-            format!("{current_version} outdated")
-        }
-    );
-
-    // Fetch manifest to get expected runtime hash (hash of installed .py files)
+    // Fetch the manifest to check if our runtime hash matches.
     let manifest = fetch_runtime_manifest(coordinator_base);
     let expected_runtime_hashes: Vec<String> = manifest
         .as_ref()
         .map(|(_, rh, _)| rh.clone())
         .unwrap_or_default();
 
-    // Download to temp file, install, then verify the INSTALLED package hash
-    let tmp_zip = "/tmp/eigeninference-vllm-mlx-update.zip";
+    // Check current installed hash against manifest.
+    let current_hashes = security::compute_runtime_hashes(python_cmd);
+    if let Some(ref actual_hash) = current_hashes.runtime_hash {
+        if expected_runtime_hashes.is_empty() || expected_runtime_hashes.contains(actual_hash) {
+            // Hash matches or no manifest — we're good.
+            let current_version = std::process::Command::new(python_cmd)
+                .args(["-c", "import vllm_mlx; print(vllm_mlx.__version__)"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            tracing::info!("Runtime check: vllm-mlx {current_version} ✓");
+            return;
+        }
+    }
+
+    // Hash mismatch or vllm-mlx not installed — download the exact Python
+    // runtime from R2 that CI built for the latest release. This ensures
+    // the hash always matches because it's the same artifact.
+    tracing::warn!("Runtime hash mismatch — downloading matching runtime from release...");
+
+    // Get the latest release version from the coordinator.
+    let release_version = fetch_latest_release_version(coordinator_base);
+    if release_version.is_empty() {
+        tracing::error!("Cannot determine latest release version — skipping runtime update");
+        return;
+    }
+
+    let runtime_url =
+        format!("{R2_CDN}/releases/v{release_version}/eigeninference-python-macos-arm64.tar.gz");
+    let python_dir = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".eigeninference")
+        .join("python");
+    let tmp_tarball = "/tmp/eigeninference-python-runtime-update.tar.gz";
+
+    tracing::info!("Downloading Python runtime v{release_version} from R2...");
     let download = std::process::Command::new("curl")
         .args([
-            "-fsSL",
+            "-fSL",
             "--connect-timeout",
             "30",
-            DOWNLOAD_URL,
+            "--progress-bar",
+            &runtime_url,
             "-o",
-            tmp_zip,
+            tmp_tarball,
         ])
         .output();
 
     match download {
         Ok(output) if output.status.success() => {
-            let install = std::process::Command::new(python_cmd)
-                .args([
-                    "-m",
-                    "pip",
-                    "install",
-                    "--break-system-packages",
-                    "--force-reinstall",
-                    "--no-deps",
-                    "--quiet",
-                    tmp_zip,
-                ])
+            // Extract to a staging directory, verify hash, then swap.
+            // This preserves the old runtime if the new one is broken.
+            let staging_dir = python_dir.with_file_name("python.new");
+            let backup_dir = python_dir.with_file_name("python.old");
+            let _ = std::fs::remove_dir_all(&staging_dir);
+            let _ = std::fs::create_dir_all(&staging_dir);
+
+            let extract = std::process::Command::new("tar")
+                .args(["xzf", tmp_tarball, "-C", &staging_dir.to_string_lossy()])
                 .output();
 
-            let _ = std::fs::remove_file(tmp_zip);
+            let _ = std::fs::remove_file(tmp_tarball);
 
-            match install {
+            match extract {
                 Ok(o) if o.status.success() => {
-                    // Verify the INSTALLED package hash against the manifest
-                    // (not the zip hash — we verify what's actually on disk)
-                    if !expected_runtime_hashes.is_empty() {
-                        let post_install = security::compute_runtime_hashes(python_cmd);
-                        if let Some(actual_hash) = post_install.runtime_hash {
-                            if expected_runtime_hashes.contains(&actual_hash) {
-                                tracing::info!("Updated vllm-mlx — post-install hash verified ✓");
+                    // Verify hash of the staged runtime before swapping.
+                    let staged_python = staging_dir.join("bin").join("python3.12");
+                    let staged_cmd = staged_python.to_string_lossy().to_string();
+                    let post_install = security::compute_runtime_hashes(&staged_cmd);
+
+                    match post_install.runtime_hash {
+                        Some(actual_hash) if expected_runtime_hashes.contains(&actual_hash) => {
+                            // Hash verified — swap atomically.
+                            let _ = std::fs::remove_dir_all(&backup_dir);
+                            let _ = std::fs::rename(&python_dir, &backup_dir);
+                            if let Err(e) = std::fs::rename(&staging_dir, &python_dir) {
+                                tracing::error!("Failed to swap runtime dirs: {e}");
+                                let _ = std::fs::rename(&backup_dir, &python_dir);
                             } else {
-                                tracing::error!(
-                                    "vllm-mlx post-install hash MISMATCH — package may be tampered!"
+                                let _ = std::fs::remove_dir_all(&backup_dir);
+                                tracing::info!(
+                                    "Runtime updated from R2 release v{release_version} — hash verified ✓"
                                 );
-                                tracing::error!("  Expected one of: {:?}", expected_runtime_hashes);
-                                tracing::error!("  Got: {actual_hash}");
-                                // Don't uninstall — let coordinator decide whether to route
                             }
                         }
-                    } else {
-                        tracing::info!(
-                            "Updated vllm-mlx ✓ (no manifest for post-install verification)"
-                        );
+                        Some(actual_hash) => {
+                            tracing::error!("Downloaded runtime hash does not match release!");
+                            tracing::error!("  Expected one of: {:?}", expected_runtime_hashes);
+                            tracing::error!("  Got: {actual_hash}");
+                            let _ = std::fs::remove_dir_all(&staging_dir);
+                        }
+                        None => {
+                            tracing::error!(
+                                "Downloaded runtime is invalid — vllm_mlx not found in extracted files"
+                            );
+                            let _ = std::fs::remove_dir_all(&staging_dir);
+                        }
                     }
                 }
                 Ok(o) => {
                     let stderr = String::from_utf8_lossy(&o.stderr);
                     tracing::error!(
-                        "pip install failed: {}",
+                        "Failed to extract runtime: {}",
                         stderr.chars().take(200).collect::<String>()
                     );
+                    let _ = std::fs::remove_dir_all(&staging_dir);
                 }
-                Err(e) => tracing::error!("Failed to run pip: {e}"),
+                Err(e) => {
+                    tracing::error!("Failed to run tar: {e}");
+                    let _ = std::fs::remove_dir_all(&staging_dir);
+                }
             }
         }
         _ => {
-            tracing::error!("Failed to download vllm-mlx update");
+            let _ = std::fs::remove_file(tmp_tarball);
+            tracing::error!("Failed to download Python runtime from R2");
         }
+    }
+}
+
+/// Fetch the latest release version string from the coordinator.
+fn fetch_latest_release_version(coordinator_base: &str) -> String {
+    let url = format!("{coordinator_base}/v1/releases/latest");
+    let output = std::process::Command::new("curl")
+        .args(["-fsSL", "--connect-timeout", "5", &url])
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            let release: serde_json::Value = match serde_json::from_slice(&o.stdout) {
+                Ok(v) => v,
+                Err(_) => return String::new(),
+            };
+            release
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        }
+        _ => String::new(),
     }
 }
 
@@ -1868,8 +1905,22 @@ async fn cmd_serve(
                         let _ = std::process::Command::new("kill")
                             .args([&old_pid.to_string()])
                             .status();
-                        // Give it a moment to clean up
+                        // Wait for graceful shutdown, then SIGKILL if still alive
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        let still_alive = std::process::Command::new("kill")
+                            .args(["-0", &old_pid.to_string()])
+                            .status()
+                            .map(|s| s.success())
+                            .unwrap_or(false);
+                        if still_alive {
+                            tracing::warn!(
+                                "Old provider (PID {old_pid}) didn't exit — sending SIGKILL"
+                            );
+                            let _ = std::process::Command::new("kill")
+                                .args(["-9", &old_pid.to_string()])
+                                .status();
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        }
                     }
                 }
             }
@@ -2773,7 +2824,9 @@ async fn cmd_serve(
                                 last_request_time = tokio::time::Instant::now();
                                 inference_active.store(true, std::sync::atomic::Ordering::Relaxed);
 
-                                // Reload backend if it was idle-shutdown
+                                // Reload backend if it was idle-shutdown.
+                                // Send InferenceError (not Accepted) if reload fails so
+                                // the coordinator can retry on another provider.
                                 if !backend_running {
                                     tracing::info!("Backend idle-shutdown — reloading for incoming request");
                                     match reload_backend(
@@ -2806,6 +2859,16 @@ async fn cmd_serve(
                                         }
                                     }
                                 }
+
+                                // Backend is ready — tell the coordinator we accepted.
+                                // This commits the coordinator to this provider (no more
+                                // retries) and allows it to wait with the full inference
+                                // timeout for chunks.
+                                let _ = outbound_tx.send(
+                                    protocol::ProviderMessage::InferenceAccepted {
+                                        request_id: request_id.clone(),
+                                    }
+                                ).await;
 
                                 // Route to the correct backend based on the requested model.
                                 let requested_model = body.get("model")

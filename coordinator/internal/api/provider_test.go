@@ -152,7 +152,7 @@ func TestProviderInferenceError(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
@@ -181,38 +181,38 @@ func TestProviderInferenceError(t *testing.T) {
 		reg.RecordChallengeSuccess(p.ID)
 	}
 
-	// Provider goroutine — handle challenge then respond with error.
+	// Provider goroutine — handle challenges and always respond with error
+	// for inference requests. Loops to handle retry attempts from the coordinator.
 	go func() {
-		var inferReq protocol.InferenceRequestMessage
 		for {
 			_, data, err := conn.Read(ctx)
 			if err != nil {
 				return
 			}
 			var raw map[string]interface{}
-			if err := json.Unmarshal(data, &raw); err == nil {
-				if raw["type"] == protocol.TypeAttestationChallenge {
-					resp := protocol.AttestationResponseMessage{
-						Type: protocol.TypeAttestationResponse, Nonce: raw["nonce"].(string),
-						PublicKey: "dummy", Signature: "dummy",
-					}
-					respData, _ := json.Marshal(resp)
-					conn.Write(ctx, websocket.MessageText, respData)
-					continue
-				}
+			if err := json.Unmarshal(data, &raw); err != nil {
+				continue
 			}
-			json.Unmarshal(data, &inferReq)
-			break
+			switch raw["type"] {
+			case protocol.TypeAttestationChallenge:
+				resp := protocol.AttestationResponseMessage{
+					Type: protocol.TypeAttestationResponse, Nonce: raw["nonce"].(string),
+					PublicKey: "dummy", Signature: "dummy",
+				}
+				respData, _ := json.Marshal(resp)
+				conn.Write(ctx, websocket.MessageText, respData)
+			case protocol.TypeInferenceRequest:
+				reqID, _ := raw["request_id"].(string)
+				errMsg := protocol.InferenceErrorMessage{
+					Type:       protocol.TypeInferenceError,
+					RequestID:  reqID,
+					Error:      "model not loaded",
+					StatusCode: 500,
+				}
+				errData, _ := json.Marshal(errMsg)
+				conn.Write(ctx, websocket.MessageText, errData)
+			}
 		}
-
-		errMsg := protocol.InferenceErrorMessage{
-			Type:       protocol.TypeInferenceError,
-			RequestID:  inferReq.RequestID,
-			Error:      "model not loaded",
-			StatusCode: 500,
-		}
-		errData, _ := json.Marshal(errMsg)
-		conn.Write(ctx, websocket.MessageText, errData)
 	}()
 
 	// Consumer request.

@@ -255,6 +255,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			hbMsg := msg.Payload.(*protocol.HeartbeatMessage)
 			s.registry.Heartbeat(providerID, hbMsg)
 
+		case protocol.TypeInferenceAccepted:
+			acceptMsg := msg.Payload.(*protocol.InferenceAcceptedMessage)
+			s.handleInferenceAccepted(providerID, provider, acceptMsg)
+
 		case protocol.TypeInferenceResponseChunk:
 			chunkMsg := msg.Payload.(*protocol.InferenceResponseChunkMessage)
 			s.handleChunk(providerID, provider, chunkMsg)
@@ -599,6 +603,21 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 	case pr.ChunkCh <- msg.Data:
 	default:
 		s.logger.Warn("dropped chunk, consumer channel full", "request_id", msg.RequestID)
+	}
+}
+
+func (s *Server) handleInferenceAccepted(providerID string, provider *registry.Provider, msg *protocol.InferenceAcceptedMessage) {
+	if provider == nil {
+		return
+	}
+	pr := provider.GetPending(msg.RequestID)
+	if pr == nil {
+		return
+	}
+	// Non-blocking signal — the dispatch loop may have already committed.
+	select {
+	case pr.AcceptedCh <- struct{}{}:
+	default:
 	}
 }
 

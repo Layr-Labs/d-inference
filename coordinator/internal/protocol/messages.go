@@ -30,6 +30,7 @@ const (
 	// Provider → Coordinator
 	TypeRegister                = "register"
 	TypeHeartbeat               = "heartbeat"
+	TypeInferenceAccepted       = "inference_accepted"
 	TypeInferenceResponseChunk  = "inference_response_chunk"
 	TypeInferenceComplete       = "inference_complete"
 	TypeInferenceError          = "inference_error"
@@ -124,6 +125,15 @@ type SystemMetrics struct {
 type HeartbeatStats struct {
 	RequestsServed  int64 `json:"requests_served"`
 	TokensGenerated int64 `json:"tokens_generated"`
+}
+
+// InferenceAcceptedMessage signals the provider accepted the request and is
+// working on it (possibly reloading the backend). The coordinator should
+// commit to this provider and wait for chunks with the full inference timeout
+// instead of retrying.
+type InferenceAcceptedMessage struct {
+	Type      string `json:"type"`
+	RequestID string `json:"request_id"`
 }
 
 // InferenceResponseChunkMessage carries a single SSE chunk from the provider.
@@ -382,6 +392,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg HeartbeatMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal heartbeat: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeInferenceAccepted:
+		var msg InferenceAcceptedMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal inference_accepted: %w", err)
 		}
 		pm.Payload = &msg
 

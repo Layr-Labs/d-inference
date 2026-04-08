@@ -101,7 +101,14 @@ scripts/
 docs/                 Architecture docs, deploy runbook, MDM/ACME notes
 landing/              Static landing page (index.html)
 .github/workflows/    CI (ci.yml) and release automation (release.yml)
+
+.external/            Git-ignored; holds external forks used by the project (NOT part of this repo)
+└── vllm-mlx/         Our fork of vllm-mlx (github.com/Gajesh2007/vllm-mlx)
 ```
+
+### External Dependencies (`.external/`)
+
+The `.external/` directory contains our fork of [vllm-mlx](https://github.com/Gajesh2007/vllm-mlx) — the MLX inference backend that the provider spawns as `vllm-mlx serve <model>`. This is a separate git repo and **must never be committed to d-inference** (it is git-ignored). Changes to vllm-mlx should be made in that repo directly, not here.
 
 ## Building & Testing
 
@@ -198,6 +205,21 @@ ssh -i ~/.ssh/eigeninference-infra ubuntu@34.197.17.112 \
 scp -i ~/.ssh/eigeninference-infra /tmp/eigeninference-bundle/eigeninference-bundle-macos-arm64.tar.gz \
   ubuntu@34.197.17.112:/var/www/html/dl/
 ```
+
+## SSH
+
+Use persistent SSH control sockets to avoid rate limits when running multiple commands against the same host:
+
+```bash
+# First connection opens the socket (add to first SSH/SCP call):
+ssh -o ControlMaster=auto -o ControlPath=/tmp/ssh-%r@%h -o ControlPersist=600 -i ~/.ssh/eigeninference-infra ubuntu@34.197.17.112 "..."
+
+# Subsequent calls reuse it automatically (same ControlPath):
+ssh -o ControlPath=/tmp/ssh-%r@%h ubuntu@34.197.17.112 "..."
+scp -o ControlPath=/tmp/ssh-%r@%h file ubuntu@34.197.17.112:/path
+```
+
+Always use control sockets when running multiple SSH/SCP commands to the same host in a session.
 
 ## Infrastructure
 

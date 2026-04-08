@@ -72,6 +72,9 @@ pub enum ProviderMessage {
         stats: ProviderStats,
         system_metrics: SystemMetrics,
     },
+    InferenceAccepted {
+        request_id: String,
+    },
     InferenceResponseChunk {
         request_id: String,
         data: String,

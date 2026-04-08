@@ -55,6 +55,7 @@ type PendingRequest struct {
 	ProviderID     string
 	Model          string
 	ConsumerKey    string
+	AcceptedCh     chan struct{}           // signalled when provider accepts request
 	ChunkCh        chan string             // SSE data chunks
 	CompleteCh     chan protocol.UsageInfo // closed after usage sent
 	ErrorCh        chan protocol.InferenceErrorMessage

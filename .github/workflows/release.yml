@@ -191,11 +191,11 @@ jobs:
           PYTHON_HASH=$(shasum -a 256 "$PYTHON_BIN" | cut -d' ' -f1)
           echo "Python hash: $PYTHON_HASH"
 
-          # Hash ALL .py files in site-packages (must match Rust hash_files_sorted algorithm).
-          # This covers every Python package: vllm_mlx, mlx_lm, mlx, transformers, etc.
-          # Any tampering with any dependency will cause a hash mismatch on providers.
+          # Hash EVERY file in site-packages (must match Rust hash_files_sorted algorithm).
+          # This covers .py source, .so compiled extensions (mlx GPU backend, tokenizers),
+          # .dylib libraries, config files — everything. Any tampered file is detected.
           SITE_PACKAGES_DIR=$(python3 -c "import site; print(site.getsitepackages()[0])")
-          echo "Hashing all .py files in: $SITE_PACKAGES_DIR"
+          echo "Hashing all files in: $SITE_PACKAGES_DIR"
           RUNTIME_HASH=$(/tmp/eigeninference-python/bin/python3 -c "
           import hashlib, os, sys
           d = sys.argv[1]
@@ -203,9 +203,8 @@ jobs:
               os.path.join(r, f)
               for r, _, fs in os.walk(d)
               for f in fs
-              if f.endswith('.py')
           )
-          print(f'Total .py files: {len(files)}', file=sys.stderr)
+          print(f'Total files: {len(files)}', file=sys.stderr)
           final = hashlib.sha256()
           for path in files:
               h = hashlib.sha256()

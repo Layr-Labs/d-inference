@@ -391,7 +391,7 @@ fn collect_files_recursive(
         let path = entry.path();
         if path.is_dir() {
             collect_files_recursive(&path, extension, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some(extension) {
+        } else if extension == "*" || path.extension().and_then(|e| e.to_str()) == Some(extension) {
             out.push(path);
         }
     }
@@ -412,14 +412,15 @@ pub fn compute_runtime_hashes(python_cmd: &str) -> RuntimeHashes {
     // Hash the Python binary itself
     let python_hash = hash_file(std::path::Path::new(python_cmd));
 
-    // Hash ALL .py files in the entire site-packages directory.
-    // This covers every Python package — vllm_mlx, mlx_lm, mlx, transformers,
-    // tokenizers, etc. Any modification to any package is detected.
+    // Hash EVERY file in the entire site-packages directory — .py, .so, .dylib,
+    // .json, everything. This covers source code, compiled extensions (mlx GPU
+    // backend, tokenizers), config files, and all dependencies. Any modification
+    // to any file in any package is detected.
     let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
     let site_packages_dir = eigeninference_dir.join("python/lib/python3.12/site-packages");
     let runtime_hash = if site_packages_dir.exists() {
         let mut py_files = Vec::new();
-        collect_files_recursive(&site_packages_dir, "py", &mut py_files);
+        collect_files_recursive(&site_packages_dir, "*", &mut py_files);
         py_files.sort();
         if py_files.is_empty() {
             None

@@ -176,7 +176,8 @@ jobs:
           deactivate
 
           # Hash the Python binary (this is what providers must match)
-          PYTHON_BIN="/tmp/eigeninference-python/bin/python3"
+          # Hash python3.12 specifically — must match what compute_runtime_hashes() hashes on providers
+          PYTHON_BIN="/tmp/eigeninference-python/bin/python3.12"
           PYTHON_HASH=$(shasum -a 256 "$PYTHON_BIN" | cut -d' ' -f1)
           echo "Python hash: $PYTHON_HASH"
 

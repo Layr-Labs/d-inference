@@ -940,7 +940,7 @@ fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) {
                 Ok(o) if o.status.success() => {
                     // Verify the extracted binary matches
                     let new_hash =
-                        security::hash_file(&python_dir.join("bin/python3")).unwrap_or_default();
+                        security::hash_file(&python_dir.join("bin/python3.12")).unwrap_or_default();
                     if expected_python_hashes.contains(&new_hash) {
                         tracing::info!("Canonical Python runtime installed and verified ✓");
                     } else {

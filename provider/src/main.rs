@@ -2257,6 +2257,14 @@ async fn cmd_serve(
     let inference_active_opt;
     let health_inference_active_opt;
     let provider_stats_opt;
+    let backend_capacity_opt: Option<
+        std::sync::Arc<std::sync::Mutex<Option<protocol::BackendCapacity>>>,
+    >;
+    // Backend state: tri-state to distinguish running, idle-shutdown, and crashed.
+    const BACKEND_RUNNING: u8 = 0;
+    const BACKEND_IDLE_SHUTDOWN: u8 = 1;
+    const BACKEND_CRASHED: u8 = 2;
+    let backend_running_flag_opt: Option<std::sync::Arc<std::sync::atomic::AtomicU8>>;
     let mut rehash_model_hash_opt: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>> = None;
     // Deferred coordinator spawn state — held until backends are ready.
     let mut deferred_coordinator: Option<(
@@ -2311,6 +2319,18 @@ async fn cmd_serve(
             std::sync::Arc::new(std::sync::Mutex::new(initial_model_hash));
         rehash_model_hash_opt = Some(current_model_hash.clone());
 
+        // Shared backend capacity data (updated by polling task, read by heartbeats).
+        let backend_capacity: std::sync::Arc<std::sync::Mutex<Option<protocol::BackendCapacity>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        backend_capacity_opt = Some(backend_capacity.clone());
+
+        // Shared tri-state flag tracking backend lifecycle.
+        // Written by the event loop (idle shutdown → IDLE_SHUTDOWN, crash → CRASHED,
+        // reload → RUNNING), read by the capacity polling task to report accurate state.
+        let backend_running_flag =
+            std::sync::Arc::new(std::sync::atomic::AtomicU8::new(BACKEND_RUNNING));
+        backend_running_flag_opt = Some(backend_running_flag);
+
         // Compute runtime integrity hashes for verification by coordinator.
         let runtime_hashes = security::compute_runtime_hashes(&python_cmd);
         tracing::info!(
@@ -2340,7 +2360,8 @@ async fn cmd_serve(
         .with_inference_active(inference_active.clone())
         .with_current_model(current_model)
         .with_warm_models(warm_models)
-        .with_current_model_hash(current_model_hash);
+        .with_current_model_hash(current_model_hash)
+        .with_backend_capacity(backend_capacity);
 
         // Store coordinator client for deferred spawn after backends are ready.
         deferred_coordinator = Some((client, event_tx, outbound_rx, shutdown_rx));
@@ -2359,6 +2380,8 @@ async fn cmd_serve(
         inference_active_opt = None;
         health_inference_active_opt = None;
         provider_stats_opt = None;
+        backend_capacity_opt = None;
+        backend_running_flag_opt = None;
     }
 
     // =========================================================================
@@ -2641,6 +2664,85 @@ async fn cmd_serve(
 
         let backend_name = "vllm_mlx";
 
+        // Spawn backend capacity polling task — periodically polls each
+        // vllm-mlx backend's /v1/status endpoint to collect live capacity data
+        // (running requests, token counts, GPU memory). This data is included
+        // in heartbeats so the coordinator can make informed routing decisions.
+        if let Some(cap_arc) = backend_capacity_opt {
+            let poll_urls: Vec<(String, String)> = backend_slots
+                .iter()
+                .map(|s| (s.model_id.clone(), s.backend_url.clone()))
+                .collect();
+            let total_mem_gb = hw.memory_gb as f64;
+            let poll_backend_running = backend_running_flag_opt
+                .as_ref()
+                .expect("backend_running_flag must be set in non-local mode")
+                .clone();
+            tokio::spawn(async move {
+                let mut poll_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    poll_interval.tick().await;
+                    let mut slots = Vec::new();
+                    let mut gpu_active = 0.0_f64;
+                    let mut gpu_peak = 0.0_f64;
+                    let mut gpu_cache = 0.0_f64;
+                    for (model_id, url) in &poll_urls {
+                        match hardware::poll_backend_status(url).await {
+                            Some(status) => {
+                                // Use GPU memory from any slot (Metal memory is shared)
+                                // Take the max across slots to avoid double-counting.
+                                if status.gpu_memory_active_gb > gpu_active {
+                                    gpu_active = status.gpu_memory_active_gb;
+                                }
+                                if status.gpu_memory_peak_gb > gpu_peak {
+                                    gpu_peak = status.gpu_memory_peak_gb;
+                                }
+                                if status.gpu_memory_cache_gb > gpu_cache {
+                                    gpu_cache = status.gpu_memory_cache_gb;
+                                }
+                                slots.push(protocol::BackendSlotCapacity {
+                                    model: model_id.clone(),
+                                    state: "running".to_string(),
+                                    num_running: status.num_running,
+                                    num_waiting: status.num_waiting,
+                                    active_tokens: status.active_tokens,
+                                    max_tokens_potential: status.max_tokens_potential,
+                                });
+                            }
+                            None => {
+                                // Backend unreachable — use the tri-state flag
+                                // to distinguish intentional idle-shutdown from crash.
+                                let flag_val =
+                                    poll_backend_running.load(std::sync::atomic::Ordering::Relaxed);
+                                let state = match flag_val {
+                                    BACKEND_IDLE_SHUTDOWN => "idle_shutdown",
+                                    // BACKEND_RUNNING (should be up but isn't) or BACKEND_CRASHED
+                                    _ => "crashed",
+                                };
+                                slots.push(protocol::BackendSlotCapacity {
+                                    model: model_id.clone(),
+                                    state: state.to_string(),
+                                    num_running: 0,
+                                    num_waiting: 0,
+                                    active_tokens: 0,
+                                    max_tokens_potential: 0,
+                                });
+                            }
+                        }
+                    }
+                    let capacity = protocol::BackendCapacity {
+                        slots,
+                        gpu_memory_active_gb: gpu_active,
+                        gpu_memory_peak_gb: gpu_peak,
+                        gpu_memory_cache_gb: gpu_cache,
+                        total_memory_gb: total_mem_gb,
+                    };
+                    *cap_arc.lock().unwrap() = Some(capacity);
+                }
+            });
+        }
+
         // Spawn backend health monitor — detects crashes and auto-restarts.
         // Only monitor if we have text backends; image-only providers don't
         // run vmlm-mlx so there's nothing to health-check on the text port.
@@ -2650,6 +2752,10 @@ async fn cmd_serve(
         let health_model = primary_model_path.clone();
         let health_port = be_port;
         let has_text_backends = !backend_slots.is_empty();
+        let health_backend_running = backend_running_flag_opt
+            .as_ref()
+            .expect("backend_running_flag must be set in non-local mode")
+            .clone();
         tokio::spawn(async move {
             if !has_text_backends {
                 // No text backends to monitor — sleep forever.
@@ -2708,6 +2814,8 @@ async fn cmd_serve(
                             Ok(()) => {
                                 tracing::info!("Backend auto-restarted successfully");
                                 consecutive_failures = 0;
+                                health_backend_running
+                                    .store(BACKEND_RUNNING, std::sync::atomic::Ordering::Relaxed);
                             }
                             Err(e) => {
                                 tracing::error!("Backend auto-restart failed: {e}");
@@ -2765,6 +2873,8 @@ async fn cmd_serve(
             None
         };
 
+        let event_backend_running =
+            backend_running_flag_opt.expect("backend_running_flag must be set in non-local mode");
         let event_handle = tokio::spawn(async move {
             use std::collections::HashMap;
             use tokio_util::sync::CancellationToken;
@@ -2779,12 +2889,19 @@ async fn cmd_serve(
             // requests to free GPU memory. Lazy-reload on next request.
             // `idle_timeout` is None when disabled (0 minutes).
             let mut last_request_time = tokio::time::Instant::now();
-            let mut backend_running = true;
+
+            // Helper closures for the shared backend state flag (tri-state).
+            let is_backend_running = || {
+                event_backend_running.load(std::sync::atomic::Ordering::Relaxed) == BACKEND_RUNNING
+            };
+            let set_backend_state = |state: u8| {
+                event_backend_running.store(state, std::sync::atomic::Ordering::Relaxed);
+            };
 
             loop {
                 let idle_sleep = async {
                     if let Some(timeout) = idle_timeout {
-                        if backend_running && inflight.is_empty() {
+                        if is_backend_running() && inflight.is_empty() {
                             tokio::time::sleep_until(last_request_time + timeout).await;
                         } else {
                             std::future::pending::<()>().await;
@@ -2824,8 +2941,8 @@ async fn cmd_serve(
                                 // Reload backend if it was idle-shutdown.
                                 // Send InferenceError (not Accepted) if reload fails so
                                 // the coordinator can retry on another provider.
-                                if !backend_running {
-                                    tracing::info!("Backend idle-shutdown — reloading for incoming request");
+                                if !is_backend_running() {
+                                    tracing::info!("Backend not running — reloading for incoming request");
                                     match reload_backend(
                                         &idle_python_cmd,
                                         &idle_backend_name,
@@ -2833,7 +2950,7 @@ async fn cmd_serve(
                                         idle_be_port,
                                     ).await {
                                         Ok(()) => {
-                                            backend_running = true;
+                                            set_backend_state(BACKEND_RUNNING);
                                             // Re-hash model weights on reload to detect
                                             // any tampering that occurred while idle.
                                             if let Some(ref hash_arc) = rehash_handle {
@@ -3030,9 +3147,9 @@ async fn cmd_serve(
                                 inference_active.store(false, std::sync::atomic::Ordering::Relaxed);
                             }
                         }
-                        if backend_dead && backend_running {
+                        if backend_dead && is_backend_running() {
                             tracing::warn!("Backend appears dead (connection refused) — will reload on next request");
-                            backend_running = false;
+                            set_backend_state(BACKEND_CRASHED);
                         }
                     }
                     _ = idle_sleep => {
@@ -3042,7 +3159,7 @@ async fn cmd_serve(
                             idle_timeout_mins
                         );
                         shutdown_backends(&backend_pids).await;
-                        backend_running = false;
+                        set_backend_state(BACKEND_IDLE_SHUTDOWN);
                     }
                 }
             }

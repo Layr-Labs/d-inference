@@ -13,7 +13,11 @@
 // on the Tempo blockchain.
 package store
 
-import "time"
+import (
+	"context"
+	"encoding/json"
+	"time"
+)
 
 // Store is the interface that all storage backends must implement.
 type Store interface {
@@ -204,6 +208,40 @@ type Store interface {
 
 	// RevokeProviderToken deactivates a provider token.
 	RevokeProviderToken(token string) error
+
+	// --- Provider Fleet Persistence ---
+
+	// UpsertProvider creates or updates a provider record.
+	UpsertProvider(ctx context.Context, p ProviderRecord) error
+
+	// GetProvider returns a provider record by ID.
+	GetProviderRecord(ctx context.Context, id string) (*ProviderRecord, error)
+
+	// GetProviderBySerial returns a provider record by serial number.
+	GetProviderBySerial(ctx context.Context, serial string) (*ProviderRecord, error)
+
+	// ListProviders returns all stored provider records.
+	ListProviderRecords(ctx context.Context) ([]ProviderRecord, error)
+
+	// UpdateProviderLastSeen updates the last_seen timestamp for a provider.
+	UpdateProviderLastSeen(ctx context.Context, id string) error
+
+	// UpdateProviderTrust persists trust level and attestation state changes.
+	UpdateProviderTrust(ctx context.Context, id string, trustLevel string, attested bool, attestationResult json.RawMessage) error
+
+	// UpdateProviderChallenge persists challenge verification state.
+	UpdateProviderChallenge(ctx context.Context, id string, lastVerified time.Time, failedCount int) error
+
+	// UpdateProviderRuntime persists runtime integrity verification state.
+	UpdateProviderRuntime(ctx context.Context, id string, verified bool, pythonHash, runtimeHash string) error
+
+	// --- Provider Reputation Persistence ---
+
+	// UpsertReputation creates or updates a provider's reputation record.
+	UpsertReputation(ctx context.Context, providerID string, rep ReputationRecord) error
+
+	// GetReputation returns a provider's reputation record.
+	GetReputation(ctx context.Context, providerID string) (*ReputationRecord, error)
 }
 
 // UsageRecord captures a single inference usage event.
@@ -392,4 +430,41 @@ type BillingSession struct {
 	ReferralCode   string     `json:"referral_code"` // optional
 	CreatedAt      time.Time  `json:"created_at"`
 	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+}
+
+// ProviderRecord is the persistent representation of a provider for storage.
+// Transient fields (WebSocket conn, pending requests, system metrics) are NOT persisted.
+type ProviderRecord struct {
+	ID                    string          `json:"id"`
+	Hardware              json.RawMessage `json:"hardware"`
+	Models                json.RawMessage `json:"models"`
+	Backend               string          `json:"backend"`
+	TrustLevel            string          `json:"trust_level"`
+	Attested              bool            `json:"attested"`
+	AttestationResult     json.RawMessage `json:"attestation_result,omitempty"`
+	SEPublicKey           string          `json:"se_public_key,omitempty"`
+	SerialNumber          string          `json:"serial_number,omitempty"`
+	MDAVerified           bool            `json:"mda_verified"`
+	MDACertChain          json.RawMessage `json:"mda_cert_chain,omitempty"`
+	ACMEVerified          bool            `json:"acme_verified"`
+	Version               string          `json:"version,omitempty"`
+	RuntimeVerified       bool            `json:"runtime_verified"`
+	PythonHash            string          `json:"python_hash,omitempty"`
+	RuntimeHash           string          `json:"runtime_hash,omitempty"`
+	LastChallengeVerified *time.Time      `json:"last_challenge_verified,omitempty"`
+	FailedChallenges      int             `json:"failed_challenges"`
+	AccountID             string          `json:"account_id,omitempty"`
+	RegisteredAt          time.Time       `json:"registered_at"`
+	LastSeen              time.Time       `json:"last_seen"`
+}
+
+// ReputationRecord is the persistent representation of a provider's reputation.
+type ReputationRecord struct {
+	TotalJobs          int   `json:"total_jobs"`
+	SuccessfulJobs     int   `json:"successful_jobs"`
+	FailedJobs         int   `json:"failed_jobs"`
+	TotalUptimeSeconds int64 `json:"total_uptime_seconds"`
+	AvgResponseTimeMs  int64 `json:"avg_response_time_ms"`
+	ChallengesPassed   int   `json:"challenges_passed"`
+	ChallengesFailed   int   `json:"challenges_failed"`
 }

@@ -267,7 +267,7 @@ func TestLoad_SingleProviderConcurrent(t *testing.T) {
 	defer providerCancel()
 	go runProviderLoop(providerCtx, t, conn, pubKey, "concurrent")
 
-	// MaxConcurrentRequests = 4, so with 20 concurrent requests the remaining
+	// DefaultMaxConcurrent = 4, so with 20 concurrent requests the remaining
 	// 16 will queue. The queue supports up to 200 slots (setupLoadTestServer).
 	const numRequests = 20
 	results := sendConcurrentRequests(t, ts.URL, "test-key", model, numRequests, numRequests, 25*time.Second)
@@ -468,7 +468,7 @@ func TestLoad_ConcurrentBillingUnderLoad(t *testing.T) {
 		t.Fatalf("credit consumer: %v", err)
 	}
 
-	// Send 50 requests with a concurrency limit. MaxConcurrentRequests=4, so
+	// Send 50 requests with a concurrency limit. DefaultMaxConcurrent=4, so
 	// we allow up to 50 in flight (the queue can hold 200) and they'll be
 	// served 4 at a time by the single provider.
 	const numRequests = 50

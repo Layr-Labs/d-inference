@@ -11,9 +11,11 @@ package store
 // in-memory implementation. The PostgresStore uses SHA-256 hashing.
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
@@ -71,6 +73,11 @@ type MemoryStore struct {
 
 	// Releases (provider binary versioning)
 	releases map[string]*Release // "version:platform" → Release
+
+	// Provider fleet persistence
+	providerRecords    map[string]*ProviderRecord   // providerID → record
+	reputationRecords  map[string]*ReputationRecord // providerID → reputation
+	serialToProviderID map[string]string            // serialNumber → providerID
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -100,6 +107,9 @@ func NewMemory(adminKey string) *MemoryStore {
 		accountRedemptions:    make(map[string]map[string]bool),
 		providerEarnings:      make([]ProviderEarning, 0),
 		releases:              make(map[string]*Release),
+		providerRecords:       make(map[string]*ProviderRecord),
+		reputationRecords:     make(map[string]*ReputationRecord),
+		serialToProviderID:    make(map[string]string),
 	}
 	if adminKey != "" {
 		s.keys[adminKey] = true
@@ -918,6 +928,141 @@ func (s *MemoryStore) DeleteRelease(version, platform string) error {
 	}
 	r.Active = false
 	return nil
+}
+
+// --- Provider Fleet Persistence ---
+
+func (s *MemoryStore) UpsertProvider(_ context.Context, p ProviderRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Update serial index
+	if p.SerialNumber != "" {
+		// Remove old serial mapping if exists
+		if old, ok := s.providerRecords[p.ID]; ok && old.SerialNumber != "" && old.SerialNumber != p.SerialNumber {
+			delete(s.serialToProviderID, old.SerialNumber)
+		}
+		s.serialToProviderID[p.SerialNumber] = p.ID
+	}
+
+	cp := p
+	s.providerRecords[p.ID] = &cp
+	return nil
+}
+
+func (s *MemoryStore) GetProviderRecord(_ context.Context, id string) (*ProviderRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	p, ok := s.providerRecords[id]
+	if !ok {
+		return nil, fmt.Errorf("provider %q not found", id)
+	}
+	cp := *p
+	return &cp, nil
+}
+
+func (s *MemoryStore) GetProviderBySerial(_ context.Context, serial string) (*ProviderRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	id, ok := s.serialToProviderID[serial]
+	if !ok {
+		return nil, fmt.Errorf("provider with serial %q not found", serial)
+	}
+	p, ok := s.providerRecords[id]
+	if !ok {
+		return nil, fmt.Errorf("provider %q not found (stale serial index)", id)
+	}
+	cp := *p
+	return &cp, nil
+}
+
+func (s *MemoryStore) ListProviderRecords(_ context.Context) ([]ProviderRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	records := make([]ProviderRecord, 0, len(s.providerRecords))
+	for _, p := range s.providerRecords {
+		records = append(records, *p)
+	}
+	return records, nil
+}
+
+func (s *MemoryStore) UpdateProviderLastSeen(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p, ok := s.providerRecords[id]
+	if !ok {
+		return fmt.Errorf("provider %q not found", id)
+	}
+	p.LastSeen = time.Now()
+	return nil
+}
+
+func (s *MemoryStore) UpdateProviderTrust(_ context.Context, id string, trustLevel string, attested bool, attestationResult json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p, ok := s.providerRecords[id]
+	if !ok {
+		return fmt.Errorf("provider %q not found", id)
+	}
+	p.TrustLevel = trustLevel
+	p.Attested = attested
+	p.AttestationResult = attestationResult
+	return nil
+}
+
+func (s *MemoryStore) UpdateProviderChallenge(_ context.Context, id string, lastVerified time.Time, failedCount int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p, ok := s.providerRecords[id]
+	if !ok {
+		return fmt.Errorf("provider %q not found", id)
+	}
+	p.LastChallengeVerified = &lastVerified
+	p.FailedChallenges = failedCount
+	return nil
+}
+
+func (s *MemoryStore) UpdateProviderRuntime(_ context.Context, id string, verified bool, pythonHash, runtimeHash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p, ok := s.providerRecords[id]
+	if !ok {
+		return fmt.Errorf("provider %q not found", id)
+	}
+	p.RuntimeVerified = verified
+	p.PythonHash = pythonHash
+	p.RuntimeHash = runtimeHash
+	return nil
+}
+
+// --- Provider Reputation Persistence ---
+
+func (s *MemoryStore) UpsertReputation(_ context.Context, providerID string, rep ReputationRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cp := rep
+	s.reputationRecords[providerID] = &cp
+	return nil
+}
+
+func (s *MemoryStore) GetReputation(_ context.Context, providerID string) (*ReputationRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rep, ok := s.reputationRecords[providerID]
+	if !ok {
+		return nil, fmt.Errorf("reputation for provider %q not found", providerID)
+	}
+	cp := *rep
+	return &cp, nil
 }
 
 // sha256Hex returns the hex-encoded SHA-256 digest of s.

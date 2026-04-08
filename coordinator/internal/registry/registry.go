@@ -20,6 +20,7 @@ package registry
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"log/slog"
 	"sort"
 	"sync"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/store"
 	"nhooyr.io/websocket"
 )
 
@@ -110,6 +112,9 @@ type Provider struct {
 	// Live system metrics from heartbeats
 	SystemMetrics protocol.SystemMetrics
 
+	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
+	BackendCapacity *protocol.BackendCapacity
+
 	// Reputation tracking
 	Reputation Reputation
 
@@ -151,6 +156,8 @@ func (p *Provider) GetPending(requestID string) *PendingRequest {
 }
 
 // SetAttested updates attestation state (thread-safe).
+// Note: persistence is handled by the Registry methods that call this,
+// via persistProvider() after attestation verification completes.
 func (p *Provider) SetAttested(attested bool, trust TrustLevel) {
 	p.mu.Lock()
 	p.Attested = attested
@@ -184,6 +191,41 @@ func (p *Provider) PendingCount() int {
 	return p.pendingCount()
 }
 
+// MaxConcurrency returns the dynamic max concurrent request limit.
+// Uses hardware-based estimation when backend capacity is reported.
+// Falls back to DefaultMaxConcurrent for providers without capacity reporting.
+func (p *Provider) MaxConcurrency() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.maxConcurrency()
+}
+
+// maxConcurrency is the lock-free version (caller must hold p.mu).
+func (p *Provider) maxConcurrency() int {
+	if p.BackendCapacity == nil {
+		return DefaultMaxConcurrent
+	}
+	// Hardware-based cap using total memory reported by the provider.
+	memGB := p.BackendCapacity.TotalMemoryGB
+	if memGB <= 0 {
+		memGB = float64(p.Hardware.MemoryGB)
+	}
+	var cap int
+	switch {
+	case memGB <= 24:
+		cap = 4
+	case memGB <= 48:
+		cap = 8
+	case memGB <= 96:
+		cap = 16
+	case memGB <= 128:
+		cap = 24
+	default:
+		cap = 32
+	}
+	return cap
+}
+
 // Registry holds all connected providers and provides routing.
 type Registry struct {
 	mu        sync.RWMutex
@@ -201,6 +243,10 @@ type Registry struct {
 	// accepted from providers and routable by consumers. Updated via SetModelCatalog.
 	modelCatalog map[string]CatalogEntry
 
+	// store provides persistence for provider fleet state. When non-nil,
+	// provider records and reputation are persisted across coordinator restarts.
+	store store.Store
+
 	logger *slog.Logger
 }
 
@@ -212,6 +258,197 @@ func New(logger *slog.Logger) *Registry {
 		MinTrustLevel: TrustHardware,
 		logger:        logger,
 	}
+}
+
+// SetStore configures the persistence store for the registry.
+// When set, provider state and reputation are persisted to the store.
+func (r *Registry) SetStore(st store.Store) {
+	r.store = st
+}
+
+// LoadStoredProviders loads provider records and reputation from the store
+// on startup. This pre-populates a lookup table so that reconnecting providers
+// can have their trust level and reputation restored. Providers are NOT added
+// to the active registry (they need to reconnect via WebSocket first).
+func (r *Registry) LoadStoredProviders() map[string]*store.ProviderRecord {
+	if r.store == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	records, err := r.store.ListProviderRecords(ctx)
+	if err != nil {
+		r.logger.Warn("failed to load stored providers", "error", err)
+		return nil
+	}
+
+	lookup := make(map[string]*store.ProviderRecord, len(records))
+	for i := range records {
+		rec := records[i]
+		// Index by serial number for matching reconnecting providers
+		if rec.SerialNumber != "" {
+			lookup[rec.SerialNumber] = &rec
+		}
+		// Also index by SE public key
+		if rec.SEPublicKey != "" {
+			lookup["sekey:"+rec.SEPublicKey] = &rec
+		}
+	}
+
+	r.logger.Info("loaded stored provider records", "count", len(records))
+	return lookup
+}
+
+// RestoreProviderState restores trust level and reputation from a stored record
+// onto a live provider. Called after a provider reconnects and is matched to
+// its stored state by serial number or SE key.
+func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) {
+	if rec == nil {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Restore trust level (will be re-verified via fresh attestation)
+	p.TrustLevel = TrustLevel(rec.TrustLevel)
+	p.Attested = rec.Attested
+	p.MDAVerified = rec.MDAVerified
+	p.ACMEVerified = rec.ACMEVerified
+
+	// Restore challenge state
+	if rec.LastChallengeVerified != nil {
+		p.LastChallengeVerified = *rec.LastChallengeVerified
+	}
+	p.FailedChallenges = rec.FailedChallenges
+
+	// Restore account linkage
+	if rec.AccountID != "" && p.AccountID == "" {
+		p.AccountID = rec.AccountID
+	}
+
+	// Restore reputation from store
+	if r.store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		repRec, err := r.store.GetReputation(ctx, rec.ID)
+		if err == nil {
+			p.Reputation.TotalJobs = repRec.TotalJobs
+			p.Reputation.SuccessfulJobs = repRec.SuccessfulJobs
+			p.Reputation.FailedJobs = repRec.FailedJobs
+			p.Reputation.TotalUptime = time.Duration(repRec.TotalUptimeSeconds) * time.Second
+			p.Reputation.AvgResponseTime = time.Duration(repRec.AvgResponseTimeMs) * time.Millisecond
+			p.Reputation.ChallengesPassed = repRec.ChallengesPassed
+			p.Reputation.ChallengesFailed = repRec.ChallengesFailed
+		}
+	}
+
+	r.logger.Info("restored provider state from store",
+		"provider_id", p.ID,
+		"stored_id", rec.ID,
+		"trust_level", rec.TrustLevel,
+		"attested", rec.Attested,
+		"serial", rec.SerialNumber,
+	)
+}
+
+// PersistProvider is the public entry point for persisting a provider's state.
+// Called by the API layer after attestation and trust changes.
+func (r *Registry) PersistProvider(p *Provider) {
+	r.persistProvider(p)
+}
+
+// persistProvider saves a provider's current state to the store.
+// Called asynchronously to avoid blocking the hot path.
+func (r *Registry) persistProvider(p *Provider) {
+	if r.store == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		p.mu.Lock()
+		hardwareJSON, _ := json.Marshal(p.Hardware)
+		modelsJSON, _ := json.Marshal(p.Models)
+		var attestJSON json.RawMessage
+		if p.AttestationResult != nil {
+			attestJSON, _ = json.Marshal(p.AttestationResult)
+		}
+		seKey := ""
+		serial := ""
+		if p.AttestationResult != nil {
+			seKey = p.AttestationResult.PublicKey
+			serial = p.AttestationResult.SerialNumber
+		}
+		var mdaCertJSON json.RawMessage
+		if len(p.MDACertChain) > 0 {
+			mdaCertJSON, _ = json.Marshal(p.MDACertChain)
+		}
+		var lastChallenge *time.Time
+		if !p.LastChallengeVerified.IsZero() {
+			t := p.LastChallengeVerified
+			lastChallenge = &t
+		}
+
+		rec := store.ProviderRecord{
+			ID:                    p.ID,
+			Hardware:              hardwareJSON,
+			Models:                modelsJSON,
+			Backend:               p.Backend,
+			TrustLevel:            string(p.TrustLevel),
+			Attested:              p.Attested,
+			AttestationResult:     attestJSON,
+			SEPublicKey:           seKey,
+			SerialNumber:          serial,
+			MDAVerified:           p.MDAVerified,
+			MDACertChain:          mdaCertJSON,
+			ACMEVerified:          p.ACMEVerified,
+			Version:               p.Version,
+			RuntimeVerified:       p.RuntimeVerified,
+			PythonHash:            p.PythonHash,
+			RuntimeHash:           p.RuntimeHash,
+			LastChallengeVerified: lastChallenge,
+			FailedChallenges:      p.FailedChallenges,
+			AccountID:             p.AccountID,
+			RegisteredAt:          time.Now(),
+			LastSeen:              time.Now(),
+		}
+		p.mu.Unlock()
+
+		if err := r.store.UpsertProvider(ctx, rec); err != nil {
+			r.logger.Warn("failed to persist provider", "provider_id", p.ID, "error", err)
+		}
+	}()
+}
+
+// persistReputation saves a provider's current reputation to the store.
+// Called asynchronously to avoid blocking the hot path.
+func (r *Registry) persistReputation(p *Provider) {
+	if r.store == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		p.mu.Lock()
+		rep := store.ReputationRecord{
+			TotalJobs:          p.Reputation.TotalJobs,
+			SuccessfulJobs:     p.Reputation.SuccessfulJobs,
+			FailedJobs:         p.Reputation.FailedJobs,
+			TotalUptimeSeconds: int64(p.Reputation.TotalUptime / time.Second),
+			AvgResponseTimeMs:  int64(p.Reputation.AvgResponseTime / time.Millisecond),
+			ChallengesPassed:   p.Reputation.ChallengesPassed,
+			ChallengesFailed:   p.Reputation.ChallengesFailed,
+		}
+		p.mu.Unlock()
+
+		if err := r.store.UpsertReputation(ctx, p.ID, rep); err != nil {
+			r.logger.Warn("failed to persist reputation", "provider_id", p.ID, "error", err)
+		}
+	}()
 }
 
 // TruncHash returns the first 16 chars of a hash string for logging.
@@ -363,6 +600,9 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		"decode_tps", msg.DecodeTPS,
 	)
 
+	// Persist provider record to store (async).
+	r.persistProvider(p)
+
 	return p
 }
 
@@ -420,6 +660,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	p.LastHeartbeat = time.Now()
 	p.Stats = msg.Stats
 	p.SystemMetrics = msg.SystemMetrics
+	// Update backend capacity from heartbeat (nil-safe for old providers).
+	if msg.BackendCapacity != nil {
+		p.BackendCapacity = msg.BackendCapacity
+	}
 	// Update warm models from heartbeat
 	if len(msg.WarmModels) > 0 {
 		p.WarmModels = msg.WarmModels
@@ -511,6 +755,9 @@ func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
 	p.mu.Lock()
 	p.TrustLevel = level
 	p.mu.Unlock()
+
+	// Persist trust state.
+	r.persistProvider(p)
 }
 
 // RecordChallengeSuccess records a successful challenge-response verification.
@@ -525,10 +772,15 @@ func (r *Registry) RecordChallengeSuccess(providerID string) {
 	p.mu.Lock()
 	p.LastChallengeVerified = time.Now()
 	p.FailedChallenges = 0
+	p.Reputation.RecordChallengePass()
 	p.mu.Unlock()
 
+	// Persist challenge state and reputation.
+	r.persistProvider(p)
+	r.persistReputation(p)
+
 	// Drain queued requests — a newly verified provider can serve them.
-	if r.queue != nil && p.PendingCount() < MaxConcurrentRequests {
+	if r.queue != nil && p.PendingCount() < p.MaxConcurrency() {
 		for _, m := range p.Models {
 			if r.queue.TryAssign(m.ID, p) {
 				break
@@ -549,8 +801,13 @@ func (r *Registry) RecordChallengeFailure(providerID string) int {
 
 	p.mu.Lock()
 	p.FailedChallenges++
+	p.Reputation.RecordChallengeFail()
 	count := p.FailedChallenges
 	p.mu.Unlock()
+
+	// Persist challenge state and reputation.
+	r.persistProvider(p)
+	r.persistReputation(p)
 
 	return count
 }
@@ -567,16 +824,20 @@ func TrustMultiplier(t TrustLevel) float64 {
 	}
 }
 
-// MaxConcurrentRequests is the maximum number of simultaneous inference
-// requests a provider can handle. The AdaptiveEngine queues requests at
-// the provider level for maximum single-request throughput. The coordinator
-// uses this + the load factor in scoring to naturally prefer idle providers
-// while still allowing queuing when all providers are busy.
-const MaxConcurrentRequests = 4
+// DefaultMaxConcurrent is the fallback concurrency limit for providers
+// that don't report backend capacity. Providers that report BackendCapacity
+// in heartbeats get a dynamic limit based on their total memory.
+const DefaultMaxConcurrent = 4
+
+// MaxConcurrentRequests is kept as an alias for backward compatibility
+// with tests and external code that reference the old constant name.
+const MaxConcurrentRequests = DefaultMaxConcurrent
 
 // ScoreProvider calculates a routing score for a provider.
 // Higher scores indicate better routing candidates.
-// Score = (1 - load) * decode_tps * trust_multiplier * reputation * warm_bonus
+// Score = (1 - load) * decode_tps * trust_multiplier * reputation * warm_bonus * health_factor
+//
+// Uses dynamic max based on hardware when backend capacity is reported.
 func ScoreProvider(p *Provider, model string) float64 {
 	// Providers that have not passed runtime integrity verification score 0
 	// and should never be selected for routing.
@@ -588,9 +849,12 @@ func ScoreProvider(p *Provider, model string) float64 {
 	}
 
 	// Load: gradient from 0.0 (idle) to 1.0 (at max concurrency).
-	// Providers with fewer in-flight requests score higher.
+	// Uses dynamic max based on hardware when backend capacity is reported.
 	pending := float64(p.PendingCount())
-	load := pending / float64(MaxConcurrentRequests)
+	p.mu.Lock()
+	maxConc := p.maxConcurrency()
+	p.mu.Unlock()
+	load := pending / float64(maxConc)
 	if load > 1.0 {
 		load = 1.0
 	}
@@ -604,6 +868,7 @@ func ScoreProvider(p *Provider, model string) float64 {
 	currentModel := p.CurrentModel
 	sysMetrics := p.SystemMetrics
 	repScore := p.Reputation.Score()
+	backendCap := p.BackendCapacity
 	p.mu.Unlock()
 
 	// Base decode TPS — use 1.0 as minimum to avoid zero scores
@@ -623,6 +888,24 @@ func ScoreProvider(p *Provider, model string) float64 {
 	}
 	if currentModel == model {
 		warmBonus = 1.5
+	}
+
+	// Cold-start / crash penalty: apply multipliers based on the backend
+	// slot state reported by the provider's capacity polling task.
+	//   "idle_shutdown" → 0.1x (provider intentionally killed backend, can reload ~30s)
+	//   "crashed"       → 0.05x (backend died unexpectedly, health monitor may restart)
+	if backendCap != nil {
+		for _, slot := range backendCap.Slots {
+			if slot.Model == model {
+				switch slot.State {
+				case "idle_shutdown":
+					warmBonus = 0.1
+				case "crashed":
+					warmBonus = 0.05
+				}
+				break
+			}
+		}
 	}
 
 	// Health factor from live system metrics
@@ -650,13 +933,30 @@ func ScoreProvider(p *Provider, model string) float64 {
 
 	healthFactor := memFactor * cpuFactor * thermalFactor
 
+	// GPU memory pressure from backend capacity: penalize providers with
+	// high GPU utilization to prefer those with more headroom.
+	if backendCap != nil && backendCap.GPUMemoryActiveGB > 0 {
+		totalMem := backendCap.TotalMemoryGB
+		if totalMem <= 0 {
+			totalMem = float64(p.Hardware.MemoryGB)
+		}
+		if totalMem > 0 {
+			gpuUtil := backendCap.GPUMemoryActiveGB / totalMem
+			gpuFactor := 1.0 - (gpuUtil * 0.5) // max 50% penalty at full GPU
+			if gpuFactor < 0.1 {
+				gpuFactor = 0.1
+			}
+			healthFactor *= gpuFactor
+		}
+	}
+
 	return (1.0 - load) * decodeTPS * trustMul * repScore * warmBonus * healthFactor
 }
 
 // FindProvider selects an available provider for the given model using
 // intelligent scoring based on benchmark data, trust level, reputation,
-// and warm model cache. Picks the highest-scoring provider that has
-// concurrency headroom (pending requests < MaxConcurrentRequests).
+// warm model cache, and backend capacity. Picks the highest-scoring
+// provider that has concurrency headroom (dynamic limit based on hardware).
 func (r *Registry) FindProvider(model string) *Provider {
 	return r.FindProviderWithTrust(model, "")
 }
@@ -707,8 +1007,8 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel) *Pro
 		if lastChallenge.IsZero() || now.Sub(lastChallenge) > challengeMaxAge {
 			continue
 		}
-		// Skip providers at max concurrency
-		if p.PendingCount() >= MaxConcurrentRequests {
+		// Skip providers at max concurrency (dynamic limit based on hardware)
+		if p.PendingCount() >= p.MaxConcurrency() {
 			continue
 		}
 		for _, m := range p.Models {
@@ -756,7 +1056,7 @@ func (r *Registry) SetProviderIdle(id string) {
 	p.mu.Unlock()
 
 	// Check if there are queued requests and this provider has headroom.
-	hasCap := p.PendingCount() < MaxConcurrentRequests
+	hasCap := p.PendingCount() < p.MaxConcurrency()
 	p.mu.Lock()
 	trust := p.TrustLevel
 	p.mu.Unlock()
@@ -898,6 +1198,9 @@ func (r *Registry) RecordJobSuccess(providerID string, responseTime time.Duratio
 	p.mu.Lock()
 	p.Reputation.RecordJobSuccess(responseTime)
 	p.mu.Unlock()
+
+	// Persist reputation.
+	r.persistReputation(p)
 }
 
 // RecordJobFailure records a failed job for the provider's reputation.
@@ -912,6 +1215,9 @@ func (r *Registry) RecordJobFailure(providerID string) {
 	p.mu.Lock()
 	p.Reputation.RecordJobFailure()
 	p.mu.Unlock()
+
+	// Persist reputation.
+	r.persistReputation(p)
 }
 
 // ProviderCount returns the number of registered providers.

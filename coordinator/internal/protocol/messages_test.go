@@ -622,3 +622,162 @@ func TestProviderMessageUnmarshalAttestationResponse(t *testing.T) {
 		t.Errorf("public_key = %q", resp.PublicKey)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// BackendCapacity protocol tests
+// ---------------------------------------------------------------------------
+
+func TestBackendCapacityMarshalRoundtrip(t *testing.T) {
+	cap := BackendCapacity{
+		Slots: []BackendSlotCapacity{
+			{
+				Model:              "mlx-community/Qwen2.5-7B-4bit",
+				State:              "running",
+				NumRunning:         3,
+				NumWaiting:         1,
+				ActiveTokens:       5000,
+				MaxTokensPotential: 12000,
+			},
+			{
+				Model:              "mlx-community/Gemma-4-27B-4bit",
+				State:              "idle_shutdown",
+				NumRunning:         0,
+				NumWaiting:         0,
+				ActiveTokens:       0,
+				MaxTokensPotential: 0,
+			},
+		},
+		GPUMemoryActiveGB: 45.2,
+		GPUMemoryPeakGB:   52.1,
+		GPUMemoryCacheGB:  8.3,
+		TotalMemoryGB:     128,
+	}
+
+	data, err := json.Marshal(cap)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded BackendCapacity
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(decoded.Slots) != 2 {
+		t.Fatalf("slots len = %d, want 2", len(decoded.Slots))
+	}
+	if decoded.Slots[0].Model != "mlx-community/Qwen2.5-7B-4bit" {
+		t.Errorf("slot[0].model = %q", decoded.Slots[0].Model)
+	}
+	if decoded.Slots[0].NumRunning != 3 {
+		t.Errorf("slot[0].num_running = %d, want 3", decoded.Slots[0].NumRunning)
+	}
+	if decoded.Slots[1].State != "idle_shutdown" {
+		t.Errorf("slot[1].state = %q, want idle_shutdown", decoded.Slots[1].State)
+	}
+	if decoded.GPUMemoryActiveGB != 45.2 {
+		t.Errorf("gpu_memory_active_gb = %f, want 45.2", decoded.GPUMemoryActiveGB)
+	}
+	if decoded.TotalMemoryGB != 128 {
+		t.Errorf("total_memory_gb = %f, want 128", decoded.TotalMemoryGB)
+	}
+}
+
+func TestHeartbeatWithBackendCapacityMarshal(t *testing.T) {
+	cap := &BackendCapacity{
+		Slots: []BackendSlotCapacity{
+			{
+				Model:      "test-model",
+				State:      "running",
+				NumRunning: 2,
+			},
+		},
+		GPUMemoryActiveGB: 30.5,
+		TotalMemoryGB:     64,
+	}
+
+	msg := HeartbeatMessage{
+		Type:            TypeHeartbeat,
+		Status:          "serving",
+		Stats:           HeartbeatStats{RequestsServed: 10, TokensGenerated: 5000},
+		BackendCapacity: cap,
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if decoded.BackendCapacity == nil {
+		t.Fatal("backend_capacity should not be nil")
+	}
+	if decoded.BackendCapacity.GPUMemoryActiveGB != 30.5 {
+		t.Errorf("gpu_memory_active_gb = %f, want 30.5", decoded.BackendCapacity.GPUMemoryActiveGB)
+	}
+	if len(decoded.BackendCapacity.Slots) != 1 {
+		t.Fatalf("slots len = %d, want 1", len(decoded.BackendCapacity.Slots))
+	}
+	if decoded.BackendCapacity.Slots[0].NumRunning != 2 {
+		t.Errorf("num_running = %d, want 2", decoded.BackendCapacity.Slots[0].NumRunning)
+	}
+}
+
+func TestHeartbeatWithoutBackendCapacityOmitted(t *testing.T) {
+	msg := HeartbeatMessage{
+		Type:   TypeHeartbeat,
+		Status: "idle",
+		Stats:  HeartbeatStats{},
+		// BackendCapacity is nil — should be omitted from JSON
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var m map[string]any
+	json.Unmarshal(data, &m)
+	if _, ok := m["backend_capacity"]; ok {
+		t.Error("backend_capacity should be omitted when nil (omitempty)")
+	}
+}
+
+func TestProviderMessageUnmarshalHeartbeatWithCapacity(t *testing.T) {
+	raw := `{"type":"heartbeat","status":"serving","active_model":"test","stats":{"requests_served":5,"tokens_generated":1000},"system_metrics":{"memory_pressure":0.3,"cpu_usage":0.2,"thermal_state":"nominal"},"backend_capacity":{"slots":[{"model":"test","state":"running","num_running":2,"num_waiting":0,"active_tokens":3000,"max_tokens_potential":8000}],"gpu_memory_active_gb":25.5,"gpu_memory_peak_gb":30.0,"gpu_memory_cache_gb":5.0,"total_memory_gb":64}}`
+
+	var pm ProviderMessage
+	if err := json.Unmarshal([]byte(raw), &pm); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	hb := pm.Payload.(*HeartbeatMessage)
+	if hb.BackendCapacity == nil {
+		t.Fatal("backend_capacity should not be nil")
+	}
+	if hb.BackendCapacity.TotalMemoryGB != 64 {
+		t.Errorf("total_memory_gb = %f, want 64", hb.BackendCapacity.TotalMemoryGB)
+	}
+	if hb.BackendCapacity.Slots[0].ActiveTokens != 3000 {
+		t.Errorf("active_tokens = %d, want 3000", hb.BackendCapacity.Slots[0].ActiveTokens)
+	}
+}
+
+func TestProviderMessageUnmarshalHeartbeatWithoutCapacity(t *testing.T) {
+	// Simulate an old provider that doesn't send backend_capacity
+	raw := `{"type":"heartbeat","status":"idle","active_model":null,"stats":{"requests_served":0,"tokens_generated":0},"system_metrics":{"memory_pressure":0.1,"cpu_usage":0.05,"thermal_state":"nominal"}}`
+
+	var pm ProviderMessage
+	if err := json.Unmarshal([]byte(raw), &pm); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	hb := pm.Payload.(*HeartbeatMessage)
+	if hb.BackendCapacity != nil {
+		t.Error("backend_capacity should be nil for old providers")
+	}
+}

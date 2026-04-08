@@ -71,6 +71,10 @@ pub enum ProviderMessage {
         warm_models: Vec<String>,
         stats: ProviderStats,
         system_metrics: SystemMetrics,
+        /// Live backend capacity reported from polling vllm-mlx /v1/status endpoints.
+        /// None for providers that don't support capacity reporting (backward compat).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        backend_capacity: Option<BackendCapacity>,
     },
     InferenceAccepted {
         request_id: String,
@@ -249,6 +253,40 @@ impl PartialEq for ProviderMessage {
         let b = serde_json::to_string(other).unwrap_or_default();
         a == b
     }
+}
+
+/// Capacity state of a single backend slot (one vllm-mlx instance serving one model).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackendSlotCapacity {
+    /// Model ID for this slot.
+    pub model: String,
+    /// Backend state: "running", "idle_shutdown", "crashed", "reloading".
+    pub state: String,
+    /// Requests actively generating tokens.
+    pub num_running: u32,
+    /// Requests queued in the backend scheduler.
+    pub num_waiting: u32,
+    /// Sum of (prompt_tokens + completion_tokens) across running requests.
+    pub active_tokens: i64,
+    /// Sum of max_tokens across running requests (worst-case future growth).
+    pub max_tokens_potential: i64,
+}
+
+/// Aggregate backend capacity across all slots on a provider. Reported in
+/// heartbeats so the coordinator can make routing decisions based on actual
+/// GPU utilization rather than hardcoded concurrency limits.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackendCapacity {
+    /// Per-model slot capacity.
+    pub slots: Vec<BackendSlotCapacity>,
+    /// Metal active memory in GB (shared across all slots).
+    pub gpu_memory_active_gb: f64,
+    /// Metal peak memory in GB.
+    pub gpu_memory_peak_gb: f64,
+    /// Metal cache memory in GB (reclaimable).
+    pub gpu_memory_cache_gb: f64,
+    /// Total system/GPU memory in GB.
+    pub total_memory_gb: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -484,6 +522,7 @@ mod tests {
                 cpu_usage: 0.0,
                 thermal_state: ThermalState::Nominal,
             },
+            backend_capacity: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -510,6 +549,7 @@ mod tests {
                 cpu_usage: 0.5,
                 thermal_state: ThermalState::Nominal,
             },
+            backend_capacity: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -686,6 +726,7 @@ mod tests {
                 cpu_usage: 0.3,
                 thermal_state: ThermalState::Nominal,
             },
+            backend_capacity: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -694,6 +735,118 @@ mod tests {
         assert!(json.contains("\"thermal_state\":\"nominal\""));
         let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, deserialized);
+    }
+
+    #[test]
+    fn test_backend_capacity_roundtrip() {
+        let cap = BackendCapacity {
+            slots: vec![
+                BackendSlotCapacity {
+                    model: "mlx-community/Qwen2.5-7B-4bit".to_string(),
+                    state: "running".to_string(),
+                    num_running: 3,
+                    num_waiting: 1,
+                    active_tokens: 5000,
+                    max_tokens_potential: 12000,
+                },
+                BackendSlotCapacity {
+                    model: "mlx-community/Gemma-4-27B-4bit".to_string(),
+                    state: "idle_shutdown".to_string(),
+                    num_running: 0,
+                    num_waiting: 0,
+                    active_tokens: 0,
+                    max_tokens_potential: 0,
+                },
+            ],
+            gpu_memory_active_gb: 45.2,
+            gpu_memory_peak_gb: 52.1,
+            gpu_memory_cache_gb: 8.3,
+            total_memory_gb: 128.0,
+        };
+
+        let json = serde_json::to_string(&cap).unwrap();
+        assert!(json.contains("\"num_running\":3"));
+        assert!(json.contains("\"idle_shutdown\""));
+        assert!(json.contains("\"gpu_memory_active_gb\":45.2"));
+
+        let deserialized: BackendCapacity = serde_json::from_str(&json).unwrap();
+        assert_eq!(cap, deserialized);
+    }
+
+    #[test]
+    fn test_heartbeat_with_backend_capacity_roundtrip() {
+        use crate::hardware::{SystemMetrics, ThermalState};
+        let msg = ProviderMessage::Heartbeat {
+            status: ProviderStatus::Serving,
+            active_model: Some("test-model".to_string()),
+            warm_models: vec!["test-model".to_string()],
+            stats: ProviderStats {
+                requests_served: 42,
+                tokens_generated: 10000,
+            },
+            system_metrics: SystemMetrics {
+                memory_pressure: 0.3,
+                cpu_usage: 0.5,
+                thermal_state: ThermalState::Nominal,
+            },
+            backend_capacity: Some(BackendCapacity {
+                slots: vec![BackendSlotCapacity {
+                    model: "test-model".to_string(),
+                    state: "running".to_string(),
+                    num_running: 2,
+                    num_waiting: 0,
+                    active_tokens: 3000,
+                    max_tokens_potential: 8000,
+                }],
+                gpu_memory_active_gb: 25.5,
+                gpu_memory_peak_gb: 30.0,
+                gpu_memory_cache_gb: 5.0,
+                total_memory_gb: 64.0,
+            }),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"backend_capacity\""));
+        assert!(json.contains("\"gpu_memory_active_gb\":25.5"));
+
+        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, deserialized);
+    }
+
+    #[test]
+    fn test_heartbeat_without_capacity_omits_field() {
+        use crate::hardware::{SystemMetrics, ThermalState};
+        let msg = ProviderMessage::Heartbeat {
+            status: ProviderStatus::Idle,
+            active_model: None,
+            warm_models: vec![],
+            stats: ProviderStats::default(),
+            system_metrics: SystemMetrics {
+                memory_pressure: 0.0,
+                cpu_usage: 0.0,
+                thermal_state: ThermalState::Nominal,
+            },
+            backend_capacity: None,
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        // backend_capacity should be omitted when None (skip_serializing_if)
+        assert!(!json.contains("backend_capacity"));
+
+        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, deserialized);
+    }
+
+    #[test]
+    fn test_cross_language_backend_capacity_json() {
+        // Verify Rust can parse JSON that Go would produce (snake_case fields)
+        let go_json = r#"{"slots":[{"model":"test-model","state":"running","num_running":2,"num_waiting":1,"active_tokens":5000,"max_tokens_potential":12000}],"gpu_memory_active_gb":45.2,"gpu_memory_peak_gb":52.1,"gpu_memory_cache_gb":8.3,"total_memory_gb":128}"#;
+
+        let cap: BackendCapacity = serde_json::from_str(go_json).unwrap();
+        assert_eq!(cap.slots.len(), 1);
+        assert_eq!(cap.slots[0].num_running, 2);
+        assert_eq!(cap.gpu_memory_active_gb, 45.2);
+        assert_eq!(cap.total_memory_gb, 128.0);
     }
 
     #[test]
@@ -1036,6 +1189,7 @@ mod tests {
                     cpu_usage: 0.0,
                     thermal_state: ThermalState::Nominal,
                 },
+                backend_capacity: None,
             },
             // Heartbeat (serving)
             ProviderMessage::Heartbeat {
@@ -1051,6 +1205,7 @@ mod tests {
                     cpu_usage: 0.95,
                     thermal_state: ThermalState::Serious,
                 },
+                backend_capacity: None,
             },
             // InferenceResponseChunk
             ProviderMessage::InferenceResponseChunk {

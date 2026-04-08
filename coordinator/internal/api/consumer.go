@@ -453,6 +453,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if mdaVerified {
 		w.Header().Set("X-Provider-MDA-Verified", "true")
 	}
+	// SE public key for attestation receipt verification.
+	// Consumers can use this to verify SE signatures on response hashes.
+	if attestResult != nil && attestResult.PublicKey != "" {
+		w.Header().Set("X-Attestation-SE-Public-Key", attestResult.PublicKey)
+		w.Header().Set("X-Attestation-Device-Serial", attestResult.SerialNumber)
+	}
 
 	// When this function returns (consumer disconnect, timeout, or completion),
 	// send a cancel to the provider so it stops generating tokens.

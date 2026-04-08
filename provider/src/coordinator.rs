@@ -101,6 +101,8 @@ pub struct CoordinatorClient {
     current_model_hash: Arc<std::sync::Mutex<Option<String>>>,
     /// Runtime integrity hashes (Python binary, vllm_mlx package, templates).
     runtime_hashes: Option<RuntimeHashes>,
+    /// Live backend capacity data (updated by main loop, read by heartbeat tick).
+    backend_capacity: Arc<std::sync::Mutex<Option<crate::protocol::BackendCapacity>>>,
 }
 
 impl CoordinatorClient {
@@ -128,6 +130,7 @@ impl CoordinatorClient {
             warm_models: Arc::new(std::sync::Mutex::new(Vec::new())),
             current_model_hash: Arc::new(std::sync::Mutex::new(None)),
             runtime_hashes: None,
+            backend_capacity: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -185,6 +188,15 @@ impl CoordinatorClient {
     /// Set runtime integrity hashes (Python, vllm_mlx, templates) for registration.
     pub fn with_runtime_hashes(mut self, hashes: Option<RuntimeHashes>) -> Self {
         self.runtime_hashes = hashes;
+        self
+    }
+
+    /// Set the shared backend capacity data (updated by main loop, read by heartbeats).
+    pub fn with_backend_capacity(
+        mut self,
+        cap: Arc<std::sync::Mutex<Option<crate::protocol::BackendCapacity>>>,
+    ) -> Self {
+        self.backend_capacity = cap;
         self
     }
 
@@ -321,6 +333,7 @@ impl CoordinatorClient {
                     let is_active = self.inference_active.load(Ordering::Relaxed);
                     let active_model = self.current_model.lock().unwrap().clone();
                     let warm = self.warm_models.lock().unwrap().clone();
+                    let capacity = self.backend_capacity.lock().unwrap().clone();
                     let heartbeat = ProviderMessage::Heartbeat {
                         status: if is_active { ProviderStatus::Serving } else { ProviderStatus::Idle },
                         active_model,
@@ -330,6 +343,7 @@ impl CoordinatorClient {
                             tokens_generated: self.stats.tokens_generated.load(Ordering::Relaxed),
                         },
                         system_metrics: metrics,
+                        backend_capacity: capacity,
                     };
                     let json = serde_json::to_string(&heartbeat)?;
                     write.send(Message::Text(json.into())).await?;

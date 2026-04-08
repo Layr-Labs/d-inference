@@ -163,7 +163,7 @@ func TestFindProviderSkipsAtMaxConcurrency(t *testing.T) {
 	p1.LastChallengeVerified = time.Now()
 
 	// Fill up the provider to max concurrency by adding pending requests.
-	for i := 0; i < MaxConcurrentRequests; i++ {
+	for i := 0; i < DefaultMaxConcurrent; i++ {
 		p1.AddPending(&PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
 	}
 
@@ -1677,5 +1677,507 @@ func TestCatalogWeightHash(t *testing.T) {
 	}
 	if h := reg.CatalogWeightHash("model-c"); h != "" {
 		t.Errorf("expected empty hash for unknown model, got %q", h)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic capacity-based routing tests
+// ---------------------------------------------------------------------------
+
+// TestMaxConcurrencyDefault verifies that providers without BackendCapacity
+// fall back to DefaultMaxConcurrent (4).
+func TestMaxConcurrencyDefault(t *testing.T) {
+	p := &Provider{
+		pendingReqs: make(map[string]*PendingRequest),
+	}
+	if got := p.MaxConcurrency(); got != DefaultMaxConcurrent {
+		t.Errorf("MaxConcurrency() = %d, want %d (default)", got, DefaultMaxConcurrent)
+	}
+}
+
+// TestMaxConcurrencyWithCapacity verifies hardware-based dynamic concurrency.
+func TestMaxConcurrencyWithCapacity(t *testing.T) {
+	cases := []struct {
+		memGB    float64
+		expected int
+	}{
+		{16, 4},
+		{24, 4},
+		{36, 8},
+		{48, 8},
+		{64, 16},
+		{96, 16},
+		{128, 24},
+		{192, 32},
+		{256, 32},
+	}
+
+	for _, tc := range cases {
+		p := &Provider{
+			pendingReqs: make(map[string]*PendingRequest),
+			BackendCapacity: &protocol.BackendCapacity{
+				TotalMemoryGB: tc.memGB,
+			},
+		}
+		got := p.MaxConcurrency()
+		if got != tc.expected {
+			t.Errorf("MaxConcurrency() with %.0f GB = %d, want %d", tc.memGB, got, tc.expected)
+		}
+	}
+}
+
+// TestScoreProviderDynamicLoad verifies that a provider with high memory and
+// dynamic max concurrency still gets a good score with 4 pending requests
+// (which would be load=1.0 under the old hardcoded limit of 4).
+func TestScoreProviderDynamicLoad(t *testing.T) {
+	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
+
+	// Provider A: 128GB, 4 pending requests.
+	// Old code: load=4/4=1.0, score=0.
+	// New code: MaxConcurrency=24, load=4/24=0.17, high score.
+	pA := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 128},
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 128,
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+	pA.AddPending(&PendingRequest{RequestID: "r1"})
+	pA.AddPending(&PendingRequest{RequestID: "r2"})
+	pA.AddPending(&PendingRequest{RequestID: "r3"})
+	pA.AddPending(&PendingRequest{RequestID: "r4"})
+
+	score := ScoreProvider(pA, model)
+	if score <= 0 {
+		t.Errorf("128GB provider with 4 pending should have positive score, got %f", score)
+	}
+
+	// Provider B: no backend capacity (old-style), same 4 pending.
+	// load = 4/4 = 1.0, so (1-load)=0 => score=0.
+	pB := &Provider{
+		Hardware:        protocol.Hardware{MemoryGB: 128},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+	pB.AddPending(&PendingRequest{RequestID: "r1"})
+	pB.AddPending(&PendingRequest{RequestID: "r2"})
+	pB.AddPending(&PendingRequest{RequestID: "r3"})
+	pB.AddPending(&PendingRequest{RequestID: "r4"})
+
+	scoreB := ScoreProvider(pB, model)
+	if scoreB != 0 {
+		t.Errorf("old-style provider with 4 pending should have score=0, got %f", scoreB)
+	}
+
+	// The new provider should score significantly higher.
+	if score <= scoreB {
+		t.Errorf("128GB dynamic provider score (%f) should be > old-style score (%f)", score, scoreB)
+	}
+}
+
+// TestScoreProviderGPUMemoryFactor verifies GPU utilization affects scoring.
+func TestScoreProviderGPUMemoryFactor(t *testing.T) {
+	model := "test-model"
+
+	lowGPU := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 64},
+		BackendCapacity: &protocol.BackendCapacity{
+			GPUMemoryActiveGB: 32, // 50% utilization
+			TotalMemoryGB:     64,
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+
+	highGPU := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 64},
+		BackendCapacity: &protocol.BackendCapacity{
+			GPUMemoryActiveGB: 57.6, // 90% utilization
+			TotalMemoryGB:     64,
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+
+	lowScore := ScoreProvider(lowGPU, model)
+	highScore := ScoreProvider(highGPU, model)
+
+	if highScore >= lowScore {
+		t.Errorf("90%% GPU provider score (%f) should be less than 50%% GPU score (%f)", highScore, lowScore)
+	}
+}
+
+// TestScoreProviderColdStartPenalty verifies that a provider whose requested
+// model's slot has state "idle_shutdown" scores much lower.
+func TestScoreProviderColdStartPenalty(t *testing.T) {
+	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
+
+	hotProvider := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 64},
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 64,
+			Slots: []protocol.BackendSlotCapacity{
+				{Model: model, State: "running"},
+			},
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		WarmModels:      []string{model},
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+
+	coldProvider := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 64},
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 64,
+			Slots: []protocol.BackendSlotCapacity{
+				{Model: model, State: "idle_shutdown"},
+			},
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		WarmModels:      []string{model},
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+
+	hotScore := ScoreProvider(hotProvider, model)
+	coldScore := ScoreProvider(coldProvider, model)
+
+	if coldScore >= hotScore {
+		t.Errorf("cold-start score (%f) should be less than hot score (%f)", coldScore, hotScore)
+	}
+
+	// The penalty should be severe (0.1x vs 1.5x warm bonus)
+	ratio := hotScore / coldScore
+	if ratio < 10 {
+		t.Errorf("hot/cold score ratio = %f, expected >= 10 (warm 1.5x vs cold 0.1x)", ratio)
+	}
+}
+
+// TestFindProviderDynamicConcurrency verifies that with dynamic concurrency,
+// a provider with 5 pending requests is still eligible when its max is 8.
+func TestFindProviderDynamicConcurrency(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+	p.TrustLevel = TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.DecodeTPS = 100.0
+	// Set backend capacity with 36GB -> max concurrency = 8
+	p.mu.Lock()
+	p.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 36,
+	}
+	p.mu.Unlock()
+
+	// Add 5 pending requests (exceeds old limit of 4, within new limit of 8)
+	for i := 0; i < 5; i++ {
+		p.AddPending(&PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
+	}
+
+	// With dynamic concurrency (max=8), provider should still be eligible.
+	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if found == nil {
+		t.Error("FindProvider should return provider with 5/8 capacity used (dynamic limit)")
+	}
+}
+
+// TestHeartbeatBackendCapacity verifies that BackendCapacity from heartbeats
+// is stored on the Provider struct.
+func TestHeartbeatBackendCapacity(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	reg.Register("p1", nil, msg)
+
+	cap := &protocol.BackendCapacity{
+		Slots: []protocol.BackendSlotCapacity{
+			{
+				Model:              "mlx-community/Qwen3.5-9B-Instruct-4bit",
+				State:              "running",
+				NumRunning:         3,
+				NumWaiting:         1,
+				ActiveTokens:       5000,
+				MaxTokensPotential: 12000,
+			},
+		},
+		GPUMemoryActiveGB: 45.2,
+		GPUMemoryPeakGB:   52.1,
+		GPUMemoryCacheGB:  8.3,
+		TotalMemoryGB:     64,
+	}
+
+	hb := &protocol.HeartbeatMessage{
+		Type:            protocol.TypeHeartbeat,
+		Status:          "serving",
+		Stats:           protocol.HeartbeatStats{},
+		BackendCapacity: cap,
+	}
+	reg.Heartbeat("p1", hb)
+
+	p := reg.GetProvider("p1")
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.BackendCapacity == nil {
+		t.Fatal("BackendCapacity should be set after heartbeat")
+	}
+	if len(p.BackendCapacity.Slots) != 1 {
+		t.Fatalf("expected 1 slot, got %d", len(p.BackendCapacity.Slots))
+	}
+	if p.BackendCapacity.Slots[0].NumRunning != 3 {
+		t.Errorf("num_running = %d, want 3", p.BackendCapacity.Slots[0].NumRunning)
+	}
+	if p.BackendCapacity.GPUMemoryActiveGB != 45.2 {
+		t.Errorf("gpu_memory_active_gb = %f, want 45.2", p.BackendCapacity.GPUMemoryActiveGB)
+	}
+	if p.BackendCapacity.TotalMemoryGB != 64 {
+		t.Errorf("total_memory_gb = %f, want 64", p.BackendCapacity.TotalMemoryGB)
+	}
+}
+
+// TestBackwardCompatNoCapacity verifies that heartbeats WITHOUT BackendCapacity
+// (simulating old providers) work correctly with default limits.
+func TestBackwardCompatNoCapacity(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+	p.TrustLevel = TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.DecodeTPS = 100.0
+
+	// Send heartbeat without BackendCapacity (old provider).
+	hb := &protocol.HeartbeatMessage{
+		Type:   protocol.TypeHeartbeat,
+		Status: "idle",
+		Stats:  protocol.HeartbeatStats{},
+	}
+	reg.Heartbeat("p1", hb)
+
+	// BackendCapacity should remain nil.
+	if p.BackendCapacity != nil {
+		t.Error("BackendCapacity should be nil for old providers")
+	}
+
+	// MaxConcurrency should return the default.
+	if p.MaxConcurrency() != DefaultMaxConcurrent {
+		t.Errorf("MaxConcurrency() = %d, want %d (default)", p.MaxConcurrency(), DefaultMaxConcurrent)
+	}
+
+	// Provider should be routable with default limits.
+	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if found == nil {
+		t.Error("old provider without BackendCapacity should still be routable")
+	}
+}
+
+// TestSetProviderIdleDynamicCap verifies that SetProviderIdle drains queued
+// requests using dynamic concurrency limits. A provider with max=8 and
+// pending=5 should still try to drain after completing a request.
+func TestSetProviderIdleDynamicCap(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+	p.TrustLevel = TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.DecodeTPS = 100.0
+
+	// Set dynamic capacity (48GB -> max=8)
+	p.mu.Lock()
+	p.BackendCapacity = &protocol.BackendCapacity{TotalMemoryGB: 48}
+	p.mu.Unlock()
+
+	// Add 5 pending requests (under max of 8)
+	for i := 0; i < 5; i++ {
+		p.AddPending(&PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
+	}
+
+	// Queue a request
+	qr := &QueuedRequest{
+		RequestID:  "req-queued",
+		Model:      "mlx-community/Qwen3.5-9B-Instruct-4bit",
+		ResponseCh: make(chan *Provider, 1),
+	}
+	reg.Queue().Enqueue(qr)
+
+	// Complete one request
+	p.RemovePending("req-0")
+
+	// SetProviderIdle should drain queue since pending(4) < max(8)
+	reg.SetProviderIdle(p.ID)
+
+	select {
+	case assigned := <-qr.ResponseCh:
+		if assigned == nil {
+			t.Fatal("expected non-nil provider from queue drain")
+		}
+		if assigned.ID != "p1" {
+			t.Errorf("assigned provider = %q, want p1", assigned.ID)
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("timed out waiting for queue drain — dynamic cap may not be working")
+	}
+}
+
+// TestScoreProviderCrashedPenalty verifies that a provider whose backend
+// slot is in "crashed" state scores even lower than "idle_shutdown".
+func TestScoreProviderCrashedPenalty(t *testing.T) {
+	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
+
+	hotProvider := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 64},
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 64,
+			Slots: []protocol.BackendSlotCapacity{
+				{Model: model, State: "running"},
+			},
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		WarmModels:      []string{model},
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+
+	idleProvider := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 64},
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 64,
+			Slots: []protocol.BackendSlotCapacity{
+				{Model: model, State: "idle_shutdown"},
+			},
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		WarmModels:      []string{model},
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+
+	crashedProvider := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 64},
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 64,
+			Slots: []protocol.BackendSlotCapacity{
+				{Model: model, State: "crashed"},
+			},
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		WarmModels:      []string{model},
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+
+	hotScore := ScoreProvider(hotProvider, model)
+	idleScore := ScoreProvider(idleProvider, model)
+	crashedScore := ScoreProvider(crashedProvider, model)
+
+	// Crashed should score lower than idle_shutdown, which scores lower than hot.
+	if crashedScore >= idleScore {
+		t.Errorf("crashed score (%f) should be less than idle_shutdown score (%f)", crashedScore, idleScore)
+	}
+	if idleScore >= hotScore {
+		t.Errorf("idle_shutdown score (%f) should be less than hot score (%f)", idleScore, hotScore)
+	}
+
+	// Crashed penalty should be 0.05x vs idle_shutdown's 0.1x
+	ratio := idleScore / crashedScore
+	if ratio < 1.9 || ratio > 2.1 {
+		t.Errorf("idle/crashed score ratio = %f, expected ~2.0 (0.1x vs 0.05x)", ratio)
+	}
+}
+
+// TestFindProviderPrefersCrashedLast verifies that when the only provider
+// has a crashed slot for the requested model, it is still returned (with
+// low score) rather than returning nil.
+func TestFindProviderPrefersCrashedLast(t *testing.T) {
+	reg := New(testLogger())
+	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
+	msg := testRegisterMessage()
+
+	// Register two providers: one crashed, one hot.
+	crashed := reg.Register("crashed-provider", nil, msg)
+	crashed.TrustLevel = TrustHardware
+	crashed.LastChallengeVerified = time.Now()
+	crashed.DecodeTPS = 100.0
+	crashed.RuntimeVerified = true
+	crashed.mu.Lock()
+	crashed.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{
+			{Model: model, State: "crashed"},
+		},
+	}
+	crashed.mu.Unlock()
+
+	hot := reg.Register("hot-provider", nil, msg)
+	hot.TrustLevel = TrustHardware
+	hot.LastChallengeVerified = time.Now()
+	hot.DecodeTPS = 100.0
+	hot.RuntimeVerified = true
+	hot.mu.Lock()
+	hot.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{
+			{Model: model, State: "running"},
+		},
+	}
+	hot.mu.Unlock()
+
+	// FindProvider should strongly prefer the hot provider.
+	found := reg.FindProvider(model)
+	if found == nil {
+		t.Fatal("FindProvider returned nil when providers are available")
+	}
+	if found.ID != "hot-provider" {
+		t.Errorf("expected hot-provider, got %q", found.ID)
+	}
+}
+
+// TestFindProviderCrashedOnlyStillRoutes verifies that when a single
+// registered provider has a crashed backend, it is still returned (the
+// provider can attempt a reload) rather than returning nil.
+func TestFindProviderCrashedOnlyStillRoutes(t *testing.T) {
+	reg := New(testLogger())
+	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
+	msg := testRegisterMessage()
+
+	p := reg.Register("only-provider", nil, msg)
+	p.TrustLevel = TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.DecodeTPS = 100.0
+	p.RuntimeVerified = true
+	p.mu.Lock()
+	p.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{
+			{Model: model, State: "crashed"},
+		},
+	}
+	p.mu.Unlock()
+
+	found := reg.FindProvider(model)
+	if found == nil {
+		t.Error("FindProvider should still route to a crashed-only provider (it can attempt reload)")
 	}
 }

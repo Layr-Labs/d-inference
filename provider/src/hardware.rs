@@ -407,6 +407,100 @@ fn lookup_bandwidth(family: ChipFamily, tier: ChipTier, gpu_cores: u32) -> u32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Backend status polling (vllm-mlx /v1/status endpoint)
+// ---------------------------------------------------------------------------
+
+/// Result of polling a single vllm-mlx backend's /v1/status endpoint.
+#[derive(Debug, Clone)]
+pub struct BackendStatusResult {
+    /// Number of requests actively generating.
+    pub num_running: u32,
+    /// Number of requests queued in the scheduler.
+    pub num_waiting: u32,
+    /// Sum of (prompt_tokens + completion_tokens) across running requests.
+    pub active_tokens: i64,
+    /// Sum of max_tokens across running requests (worst-case growth).
+    pub max_tokens_potential: i64,
+    /// Metal active memory in GB.
+    pub gpu_memory_active_gb: f64,
+    /// Metal peak memory in GB.
+    pub gpu_memory_peak_gb: f64,
+    /// Metal cache memory in GB.
+    pub gpu_memory_cache_gb: f64,
+}
+
+/// Poll a single vllm-mlx backend's /v1/status endpoint.
+///
+/// Returns None on any failure (backend down, timeout, parse error).
+/// This is normal during idle-shutdown or crash states.
+pub async fn poll_backend_status(url: &str) -> Option<BackendStatusResult> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .ok()?;
+
+    let status_url = format!("{}/v1/status", url.trim_end_matches('/'));
+    let resp = client.get(&status_url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.ok()?;
+
+    let num_running = body
+        .get("num_running")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let num_waiting = body
+        .get("num_waiting")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+
+    // Sum active_tokens and max_tokens_potential from the requests array
+    let mut active_tokens: i64 = 0;
+    let mut max_tokens_potential: i64 = 0;
+    if let Some(requests) = body.get("requests").and_then(|v| v.as_array()) {
+        for req in requests {
+            let prompt = req
+                .get("prompt_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let completion = req
+                .get("completion_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let max = req.get("max_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+            active_tokens += prompt + completion;
+            max_tokens_potential += max;
+        }
+    }
+
+    // Extract Metal memory stats
+    let metal = body.get("metal");
+    let gpu_memory_active_gb = metal
+        .and_then(|m| m.get("active_memory_gb"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let gpu_memory_peak_gb = metal
+        .and_then(|m| m.get("peak_memory_gb"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let gpu_memory_cache_gb = metal
+        .and_then(|m| m.get("cache_memory_gb"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    Some(BackendStatusResult {
+        num_running,
+        num_waiting,
+        active_tokens,
+        max_tokens_potential,
+        gpu_memory_active_gb,
+        gpu_memory_peak_gb,
+        gpu_memory_cache_gb,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

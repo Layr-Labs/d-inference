@@ -106,12 +106,35 @@ type RegisterMessage struct {
 
 // HeartbeatMessage is sent periodically by connected providers.
 type HeartbeatMessage struct {
-	Type          string         `json:"type"`
-	Status        string         `json:"status"`
-	ActiveModel   *string        `json:"active_model"`
-	Stats         HeartbeatStats `json:"stats"`
-	WarmModels    []string       `json:"warm_models,omitempty"` // models currently loaded in memory
-	SystemMetrics SystemMetrics  `json:"system_metrics"`        // live resource utilization
+	Type            string           `json:"type"`
+	Status          string           `json:"status"`
+	ActiveModel     *string          `json:"active_model"`
+	Stats           HeartbeatStats   `json:"stats"`
+	WarmModels      []string         `json:"warm_models,omitempty"`      // models currently loaded in memory
+	SystemMetrics   SystemMetrics    `json:"system_metrics"`             // live resource utilization
+	BackendCapacity *BackendCapacity `json:"backend_capacity,omitempty"` // live backend capacity (nil for old providers)
+}
+
+// BackendSlotCapacity describes the capacity state of a single backend slot
+// (one vllm-mlx instance serving one model).
+type BackendSlotCapacity struct {
+	Model              string `json:"model"`                // model ID for this slot
+	State              string `json:"state"`                // "running", "idle_shutdown", "crashed", "reloading"
+	NumRunning         int    `json:"num_running"`          // requests actively generating
+	NumWaiting         int    `json:"num_waiting"`          // requests queued in backend scheduler
+	ActiveTokens       int64  `json:"active_tokens"`        // sum of (prompt_tokens + completion_tokens) across running requests
+	MaxTokensPotential int64  `json:"max_tokens_potential"` // sum of max_tokens across running requests (worst-case growth)
+}
+
+// BackendCapacity describes the aggregate capacity across all backend slots
+// on a provider. Reported in heartbeats so the coordinator can make informed
+// routing decisions based on actual GPU utilization rather than hardcoded limits.
+type BackendCapacity struct {
+	Slots             []BackendSlotCapacity `json:"slots"`                // per-model slot capacity
+	GPUMemoryActiveGB float64               `json:"gpu_memory_active_gb"` // Metal active memory (shared across all slots)
+	GPUMemoryPeakGB   float64               `json:"gpu_memory_peak_gb"`   // Metal peak memory
+	GPUMemoryCacheGB  float64               `json:"gpu_memory_cache_gb"`  // Metal cache memory (reclaimable)
+	TotalMemoryGB     float64               `json:"total_memory_gb"`      // total system/GPU memory
 }
 
 // SystemMetrics contains live resource utilization reported by a provider.

@@ -113,8 +113,8 @@ type Provider struct {
 	Reputation Reputation
 
 	// Version and runtime integrity verification
-	Version         string `json:"version,omitempty"`         // provider binary version (e.g. "0.2.31")
-	RuntimeVerified bool   `json:"runtime_verified"`          // true if runtime hashes match the known-good manifest
+	Version         string `json:"version,omitempty"` // provider binary version (e.g. "0.2.31")
+	RuntimeVerified bool   `json:"runtime_verified"`  // true if runtime hashes match the known-good manifest
 	PythonHash      string `json:"python_hash,omitempty"`
 	RuntimeHash     string `json:"runtime_hash,omitempty"`
 

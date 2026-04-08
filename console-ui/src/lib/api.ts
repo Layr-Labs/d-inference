@@ -388,7 +388,7 @@ export async function streamChat(
     if (!thinkDetectionDone) {
       contentAccum += text;
       // Wait for enough chars to decide (need ~18 for "Thinking Process:" / "<|channel>thought")
-      if (contentAccum.length < 18 && !contentAccum.includes("\n\n")) return;
+      if (contentAccum.length < 20 && !contentAccum.includes("\n\n") && !contentAccum.includes("<channel|>")) return;
 
       thinkDetectionDone = true;
       const trimmed = contentAccum.trimStart();
@@ -446,7 +446,11 @@ export async function streamChat(
       return;
     }
 
-    callbacks.onToken(text);
+    // Safety net: strip any residual thinking tags that the state machine missed
+    const cleaned = text
+      .replace(/<\|channel>thought[\s\S]*?<channel\|>/g, "")
+      .replace(/<think>[\s\S]*?<\/think>/g, "");
+    if (cleaned) callbacks.onToken(cleaned);
   }
 
   while (true) {

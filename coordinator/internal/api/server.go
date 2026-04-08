@@ -257,7 +257,7 @@ func (s *Server) SyncRuntimeManifest() {
 	// This forces older providers to update before they can serve traffic.
 	latestVersion := ""
 	for _, r := range releases {
-		if r.Active && r.Version > latestVersion {
+		if r.Active && semverGreater(r.Version, latestVersion) {
 			latestVersion = r.Version
 		}
 	}
@@ -287,6 +287,40 @@ type RuntimeManifest struct {
 
 // SetRuntimeManifest configures the known-good runtime manifest for provider
 // verification. Pass nil to disable runtime verification (all providers pass).
+// semverGreater returns true if version a is greater than version b.
+// Compares numeric components (e.g. "0.2.31" > "0.2.9" = true).
+func semverGreater(a, b string) bool {
+	if a == "" {
+		return false
+	}
+	if b == "" {
+		return true
+	}
+	aParts := strings.Split(a, ".")
+	bParts := strings.Split(b, ".")
+	for i := 0; i < len(aParts) || i < len(bParts); i++ {
+		var ai, bi int
+		if i < len(aParts) {
+			fmt.Sscanf(aParts[i], "%d", &ai)
+		}
+		if i < len(bParts) {
+			fmt.Sscanf(bParts[i], "%d", &bi)
+		}
+		if ai > bi {
+			return true
+		}
+		if ai < bi {
+			return false
+		}
+	}
+	return false // equal
+}
+
+// semverLess returns true if version a is less than version b.
+func semverLess(a, b string) bool {
+	return semverGreater(b, a)
+}
+
 func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 	s.knownRuntimeManifest = m
 }

@@ -171,20 +171,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				}
 			}
 
-			// Store provider version and check minimum version cutoff.
+			// Store provider version.
 			if regMsg.Version != "" {
 				provider.Mu().Lock()
 				provider.Version = regMsg.Version
-				provider.Mu().Unlock()
-			}
-			if s.minProviderVersion != "" && regMsg.Version != "" && regMsg.Version < s.minProviderVersion {
-				s.logger.Warn("provider version below minimum — excluded from routing",
-					"provider_id", providerID,
-					"version", regMsg.Version,
-					"min_version", s.minProviderVersion,
-				)
-				provider.Mu().Lock()
-				provider.RuntimeVerified = false
 				provider.Mu().Unlock()
 			}
 
@@ -227,6 +217,19 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				// No manifest configured — all providers pass by default.
 				provider.Mu().Lock()
 				provider.RuntimeVerified = true
+				provider.Mu().Unlock()
+			}
+
+			// Version cutoff check — runs AFTER runtime check so it takes precedence.
+			// If version is below minimum, override RuntimeVerified to false.
+			if s.minProviderVersion != "" && regMsg.Version != "" && semverLess(regMsg.Version, s.minProviderVersion) {
+				s.logger.Warn("provider version below minimum — excluded from routing",
+					"provider_id", providerID,
+					"version", regMsg.Version,
+					"min_version", s.minProviderVersion,
+				)
+				provider.Mu().Lock()
+				provider.RuntimeVerified = false
 				provider.Mu().Unlock()
 			}
 

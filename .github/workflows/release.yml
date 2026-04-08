@@ -150,6 +150,7 @@ jobs:
           # Staple the individual binaries
           xcrun stapler staple /tmp/eigeninference-bundle/eigeninference-provider || true
           xcrun stapler staple /tmp/eigeninference-bundle/eigeninference-enclave || true
+          xcrun stapler staple /tmp/eigeninference-bundle/gRPCServerCLI || true
 
           # Recreate tarball with stapled binaries
           cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
@@ -171,8 +172,23 @@ jobs:
           echo "grpc_binary_hash=$GRPC_HASH" >> "$GITHUB_OUTPUT"
           echo "gRPCServerCLI hash (signed): $GRPC_HASH"
 
-          # Hash image bridge Python source
-          IMAGE_BRIDGE_HASH=$(find /tmp/eigeninference-bundle/image-bridge -name '*.py' | sort | while read f; do shasum -a 256 "$f"; done | shasum -a 256 | cut -d' ' -f1)
+          # Hash image bridge Python source (same algorithm as Rust hash_files_sorted:
+          # sort files, SHA-256 each, combine raw digests into final SHA-256)
+          IMAGE_BRIDGE_HASH=$(python3 -c "
+          import hashlib, os, sys
+          d = sys.argv[1]
+          files = sorted(os.path.join(r, f) for r, _, fs in os.walk(d) for f in fs if f.endswith('.py'))
+          final = hashlib.sha256()
+          for path in files:
+              h = hashlib.sha256()
+              with open(path, 'rb') as fh:
+                  while True:
+                      chunk = fh.read(65536)
+                      if not chunk: break
+                      h.update(chunk)
+              final.update(h.digest())
+          print(final.hexdigest())
+          " /tmp/eigeninference-bundle/image-bridge/eigeninference_image_bridge)
           echo "image_bridge_hash=$IMAGE_BRIDGE_HASH" >> "$GITHUB_OUTPUT"
           echo "Image bridge hash: $IMAGE_BRIDGE_HASH"
 

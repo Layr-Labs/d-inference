@@ -628,7 +628,10 @@ fn download_ckpt_model_from_cdn(
 /// vllm-mlx calls `tokenizer.apply_chat_template()` which requires this field.
 /// If missing (common with custom quantizations or stripped configs), inject the
 /// standard ChatML template used by Qwen/Llama-family models.
-fn ensure_chat_template(model_path: &str, template_hashes: &std::collections::HashMap<String, String>) {
+fn ensure_chat_template(
+    model_path: &str,
+    template_hashes: &std::collections::HashMap<String, String>,
+) {
     let model_dir = std::path::Path::new(model_path);
     let jinja_path = model_dir.join("chat_template.jinja");
 
@@ -682,7 +685,10 @@ fn ensure_chat_template(model_path: &str, template_hashes: &std::collections::Ha
 
     // Verify a downloaded template against the manifest hash.
     // Returns true if verified or if no manifest hash is available (graceful degradation).
-    let verify_template = |path: &std::path::Path, name: &str, hashes: &std::collections::HashMap<String, String>| -> bool {
+    let verify_template = |path: &std::path::Path,
+                           name: &str,
+                           hashes: &std::collections::HashMap<String, String>|
+     -> bool {
         if let Some(expected) = hashes.get(name) {
             if let Some(actual) = security::hash_file(path) {
                 if &actual != expected {
@@ -706,7 +712,14 @@ fn ensure_chat_template(model_path: &str, template_hashes: &std::collections::Ha
 
     // Try R2 CDN first
     if let Ok(output) = std::process::Command::new("curl")
-        .args(["-fsSL", "--connect-timeout", "5", &r2_url, "-o", &jinja_path.to_string_lossy()])
+        .args([
+            "-fsSL",
+            "--connect-timeout",
+            "5",
+            &r2_url,
+            "-o",
+            &jinja_path.to_string_lossy(),
+        ])
         .output()
     {
         if output.status.success() {
@@ -723,18 +736,33 @@ fn ensure_chat_template(model_path: &str, template_hashes: &std::collections::Ha
 
     // Fallback: download from HuggingFace
     let hf_url = match template_name {
-        "gemma4" => Some("https://huggingface.co/mlx-community/gemma-4-26b-a4b-it-8bit/raw/main/chat_template.jinja"),
-        "trinity" => Some("https://huggingface.co/arcee-ai/Trinity-Mini/raw/main/chat_template.jinja"),
-        "minimax" => Some("https://huggingface.co/mlx-community/MiniMax-M2.5-8bit/raw/main/chat_template.jinja"),
+        "gemma4" => Some(
+            "https://huggingface.co/mlx-community/gemma-4-26b-a4b-it-8bit/raw/main/chat_template.jinja",
+        ),
+        "trinity" => {
+            Some("https://huggingface.co/arcee-ai/Trinity-Mini/raw/main/chat_template.jinja")
+        }
+        "minimax" => Some(
+            "https://huggingface.co/mlx-community/MiniMax-M2.5-8bit/raw/main/chat_template.jinja",
+        ),
         _ => None, // Qwen 3.5 needs special handling (inline in tokenizer_config.json)
     };
 
     if let Some(url) = hf_url {
         if let Ok(output) = std::process::Command::new("curl")
-            .args(["-fsSL", "--connect-timeout", "5", url, "-o", &jinja_path.to_string_lossy()])
+            .args([
+                "-fsSL",
+                "--connect-timeout",
+                "5",
+                url,
+                "-o",
+                &jinja_path.to_string_lossy(),
+            ])
             .output()
         {
-            if output.status.success() && verify_template(&jinja_path, template_name, template_hashes) {
+            if output.status.success()
+                && verify_template(&jinja_path, template_name, template_hashes)
+            {
                 tracing::info!("Installed {template_name} chat template from HuggingFace");
                 let _ = std::fs::create_dir_all(&templates_dir);
                 let _ = std::fs::copy(&jinja_path, &cached_template);
@@ -770,12 +798,15 @@ fn ensure_chat_template(model_path: &str, template_hashes: &std::collections::Ha
     );
 }
 
-
 /// Fetch the runtime manifest from the coordinator.
 /// Returns (python_hashes, runtime_hashes, template_hashes).
 fn fetch_runtime_manifest(
     coordinator_base: &str,
-) -> Option<(Vec<String>, Vec<String>, std::collections::HashMap<String, String>)> {
+) -> Option<(
+    Vec<String>,
+    Vec<String>,
+    std::collections::HashMap<String, String>,
+)> {
     let url = format!("{coordinator_base}/v1/runtime/manifest");
     let output = std::process::Command::new("curl")
         .args(["-fsSL", "--connect-timeout", "5", &url])
@@ -830,8 +861,7 @@ fn fetch_runtime_manifest(
 /// This prevents MITM attacks on the update channel.
 fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) {
     const REQUIRED_VLLM_MLX_VERSION: &str = "0.2.7";
-    const DOWNLOAD_URL: &str =
-        "https://github.com/Gajesh2007/vllm-mlx/archive/refs/heads/main.zip";
+    const DOWNLOAD_URL: &str = "https://github.com/Gajesh2007/vllm-mlx/archive/refs/heads/main.zip";
 
     // Check current vllm-mlx version and features
     let current_version = std::process::Command::new(python_cmd)
@@ -843,7 +873,10 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) {
         .unwrap_or_default();
 
     let has_responses = std::process::Command::new(python_cmd)
-        .args(["-c", "from vllm_mlx.server import create_response; print('ok')"])
+        .args([
+            "-c",
+            "from vllm_mlx.server import create_response; print('ok')",
+        ])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
@@ -876,7 +909,14 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) {
     // Download to temp file, install, then verify the INSTALLED package hash
     let tmp_zip = "/tmp/eigeninference-vllm-mlx-update.zip";
     let download = std::process::Command::new("curl")
-        .args(["-fsSL", "--connect-timeout", "30", DOWNLOAD_URL, "-o", tmp_zip])
+        .args([
+            "-fsSL",
+            "--connect-timeout",
+            "30",
+            DOWNLOAD_URL,
+            "-o",
+            tmp_zip,
+        ])
         .output();
 
     match download {
@@ -887,7 +927,13 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) {
                 .unwrap_or_else(|| std::path::PathBuf::from("pip3"));
 
             let install = std::process::Command::new(&pip_cmd)
-                .args(["install", "--force-reinstall", "--no-deps", "--quiet", tmp_zip])
+                .args([
+                    "install",
+                    "--force-reinstall",
+                    "--no-deps",
+                    "--quiet",
+                    tmp_zip,
+                ])
                 .output();
 
             let _ = std::fs::remove_file(tmp_zip);
@@ -911,7 +957,9 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) {
                             }
                         }
                     } else {
-                        tracing::info!("Updated vllm-mlx ✓ (no manifest for post-install verification)");
+                        tracing::info!(
+                            "Updated vllm-mlx ✓ (no manifest for post-install verification)"
+                        );
                     }
                 }
                 Ok(o) => {
@@ -5060,7 +5108,11 @@ async fn cmd_update(coordinator: String) -> Result<()> {
     let bundled_python = eigeninference_dir.join("python/bin/python3.12");
     if bundled_python.exists() {
         if let Some(hash) = security::hash_file(&bundled_python) {
-            println!("  Python hash: {}...{}", &hash[..8], &hash[hash.len()-8..]);
+            println!(
+                "  Python hash: {}...{}",
+                &hash[..8],
+                &hash[hash.len() - 8..]
+            );
         }
         // Verify vllm-mlx is importable
         let check = std::process::Command::new(&bundled_python)

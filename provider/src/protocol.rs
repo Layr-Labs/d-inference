@@ -1273,7 +1273,12 @@ mod tests {
         let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
         // Compare fields individually (HashMap order is non-deterministic)
         match deserialized {
-            ProviderMessage::Register { python_hash, runtime_hash, template_hashes, .. } => {
+            ProviderMessage::Register {
+                python_hash,
+                runtime_hash,
+                template_hashes,
+                ..
+            } => {
                 assert_eq!(python_hash, Some("pythonhash123".to_string()));
                 assert_eq!(runtime_hash, Some("runtimehash456".to_string()));
                 assert_eq!(template_hashes.get("chatml"), Some(&"abc123".to_string()));

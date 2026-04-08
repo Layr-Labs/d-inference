@@ -75,30 +75,31 @@ impl VllmMlxBackend {
         // Enable tool call parsing so vllm-mlx converts model tool-call output
         // into structured tool_calls fields in the OpenAI response format.
         let model_lower = self.model.to_lowercase();
-        let tool_parser =
-            if model_lower.contains("gemma") {
-                "gemma4" // <|tool_call>call:name{args}<tool_call|>
-            } else if model_lower.contains("deepseek") || model_lower.contains("trinity") {
-                "hermes" // <tool_call>{"name":..., "arguments":...}</tool_call>
-            } else if model_lower.contains("qwen") {
-                "nemotron" // <tool_call><function=name><parameter=k>v</parameter></function></tool_call>
-            } else {
-                "auto" // covers MiniMax and other formats
-            };
+        let tool_parser = if model_lower.contains("gemma") {
+            "gemma4" // <|tool_call>call:name{args}<tool_call|>
+        } else if model_lower.contains("deepseek") || model_lower.contains("trinity") {
+            "hermes" // <tool_call>{"name":..., "arguments":...}</tool_call>
+        } else if model_lower.contains("qwen") {
+            "nemotron" // <tool_call><function=name><parameter=k>v</parameter></function></tool_call>
+        } else {
+            "auto" // covers MiniMax and other formats
+        };
         args.push("--enable-auto-tool-choice".to_string());
         args.push("--tool-call-parser".to_string());
         args.push(tool_parser.to_string());
 
         // Extract <think>...</think> into reasoning_content field instead of
         // leaking thinking tags into the response content.
-        let reasoning_parser =
-            if model_lower.contains("gemma") {
-                "gemma4" // <|channel>thought\n...<channel|>
-            } else if model_lower.contains("deepseek") || model_lower.contains("trinity") || model_lower.contains("minimax") {
-                "deepseek_r1" // <think>...</think> (supports implicit reasoning)
-            } else {
-                "qwen3" // safe default: no-op if model doesn't output <think> tags
-            };
+        let reasoning_parser = if model_lower.contains("gemma") {
+            "gemma4" // <|channel>thought\n...<channel|>
+        } else if model_lower.contains("deepseek")
+            || model_lower.contains("trinity")
+            || model_lower.contains("minimax")
+        {
+            "deepseek_r1" // <think>...</think> (supports implicit reasoning)
+        } else {
+            "qwen3" // safe default: no-op if model doesn't output <think> tags
+        };
         args.push("--reasoning-parser".to_string());
         args.push(reasoning_parser.to_string());
 
@@ -286,7 +287,8 @@ mod tests {
 
     #[test]
     fn test_build_args_gemma4_model() {
-        let backend = VllmMlxBackend::new("mlx-community/gemma-4-26b-a4b-it-8bit".into(), 8100, false);
+        let backend =
+            VllmMlxBackend::new("mlx-community/gemma-4-26b-a4b-it-8bit".into(), 8100, false);
         let args = backend.build_args();
         assert!(args.contains(&"--tool-call-parser".to_string()));
         assert!(args.contains(&"gemma4".to_string()));

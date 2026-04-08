@@ -493,7 +493,17 @@ export async function streamChat(
           tokenCount++;
           if (!firstTokenTime) firstTokenTime = performance.now();
 
-          if (reasoning) callbacks.onThinking(reasoning);
+          if (reasoning) {
+            // If we have buffered content that was waiting for think detection,
+            // and reasoning just started, the buffered content is the opening
+            // think tag (e.g. "<|channel>thought"). Discard it — it's not real content.
+            if (!thinkDetectionDone && contentAccum) {
+              thinkDetectionDone = true;
+              inThinkBlock = false; // server handles the extraction
+              contentAccum = "";
+            }
+            callbacks.onThinking(reasoning);
+          }
           if (content) handleContentToken(content);
 
           // Emit metrics every 5 tokens to avoid excessive updates

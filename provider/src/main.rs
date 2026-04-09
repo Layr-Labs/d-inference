@@ -3110,6 +3110,10 @@ async fn cmd_serve(
                                         "Backend auto-restart failed for {}: {e}",
                                         model_id
                                     );
+                                    // Reset counter to 0 so we don't retry every 15s.
+                                    // The next 5 consecutive failures (75s) will trigger
+                                    // another attempt — acts as exponential-ish backoff.
+                                    consecutive_failures[idx] = 0;
                                     let mut slots = health_shared_slots.lock().unwrap();
                                     if let Some(slot) = slots.get_mut(idx) {
                                         slot.restarting = false;
@@ -3264,7 +3268,12 @@ async fn cmd_serve(
                                 // Use the REQUESTED model, not the last-served one.
                                 // Send InferenceError (not Accepted) if reload fails so
                                 // the coordinator can retry on another provider.
-                                if !is_backend_running() {
+                                // Check `restarting` flag to avoid racing with health monitor.
+                                let health_monitor_restarting = {
+                                    let slots = shared_slots.lock().unwrap();
+                                    slots.iter().any(|s| s.port == idle_be_port && s.restarting)
+                                };
+                                if !is_backend_running() && !health_monitor_restarting {
                                     let (reload_path, reload_id) = if !req_model_id.is_empty() {
                                         let path = model_to_path.get(&req_model_id)
                                             .cloned()

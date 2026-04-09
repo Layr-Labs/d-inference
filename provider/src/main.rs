@@ -3275,68 +3275,101 @@ async fn cmd_serve(
                                     .unwrap_or("")
                                     .to_string();
 
-                                // Reload backend if it was idle-shutdown.
-                                // Use the REQUESTED model, not the last-served one.
-                                // Send InferenceError (not Accepted) if reload fails so
-                                // the coordinator can retry on another provider.
-                                // Check `restarting` flag to avoid racing with health monitor.
-                                let health_monitor_restarting = {
+                                // Find the correct slot for the requested model.
+                                // Each slot has a fixed (model, port) assignment that
+                                // never changes — a Gemma request always goes to the
+                                // Gemma slot, never overwrites a Qwen slot.
+                                let slot_info = {
                                     let slots = shared_slots.lock().unwrap();
-                                    slots.iter().any(|s| s.port == idle_be_port && s.restarting)
+                                    slots.iter()
+                                        .find(|s| s.model_id == req_model_id
+                                            || s.model_id.contains(&req_model_id)
+                                            || req_model_id.contains(&s.model_id))
+                                        .map(|s| (s.model_id.clone(), s.model_path.clone(), s.port, s.pid, s.healthy, s.restarting))
                                 };
-                                if !is_backend_running() && !health_monitor_restarting {
-                                    let (reload_path, reload_id) = if !req_model_id.is_empty() {
-                                        let path = model_to_path.get(&req_model_id)
-                                            .cloned()
-                                            .unwrap_or_else(|| {
-                                                model_to_path.iter()
-                                                    .find(|(k, _)| k.contains(&req_model_id) || req_model_id.contains(k.as_str()))
-                                                    .map(|(_, v)| v.clone())
-                                                    .unwrap_or_else(|| idle_model.clone())
-                                            });
-                                        if path != idle_model {
-                                            tracing::info!(
-                                                "Reloading with requested model {} (last-served was {})",
-                                                req_model_id, idle_model_id
-                                            );
-                                        }
-                                        (path, req_model_id.clone())
-                                    } else {
-                                        (idle_model.clone(), idle_model_id.clone())
-                                    };
 
-                                    tracing::info!("Backend not running — reloading for incoming request");
-                                    match reload_backend(
-                                        &idle_python_cmd,
-                                        &idle_backend_name,
-                                        &reload_path,
-                                        idle_be_port,
-                                    ).await {
-                                        Ok(_new_pid) => {
-                                            set_backend_state(BACKEND_RUNNING);
-                                            idle_model = reload_path;
-                                            idle_model_id = reload_id;
-                                            // Re-hash model weights on reload to detect
-                                            // any tampering that occurred while idle.
-                                            if let Some(ref hash_arc) = rehash_handle {
-                                                if let Some(new_hash) = models::compute_weight_hash(&idle_model_id) {
-                                                    *hash_arc.lock().unwrap() = Some(new_hash);
-                                                    tracing::info!("Model weight hash refreshed after reload");
-                                                }
+                                if let Some((slot_model_id, slot_model_path, slot_port, slot_pid, slot_healthy, slot_restarting)) = slot_info {
+                                    // Check if this slot's backend needs reloading.
+                                    let backend_url = format!("http://127.0.0.1:{}", slot_port);
+                                    let needs_reload = !slot_healthy || !backend::check_health(&backend_url).await;
+
+                                    if needs_reload && !slot_restarting {
+                                        tracing::info!(
+                                            "Slot for {} on port {} not running — reloading (original model, never overwritten)",
+                                            slot_model_id, slot_port
+                                        );
+
+                                        // Kill any zombie process on this port before respawning.
+                                        if let Some(pid) = slot_pid {
+                                            if pid > 0 {
+                                                unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+                                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                                             }
                                         }
-                                        Err(e) => {
-                                            tracing::error!("Failed to reload backend: {e}");
-                                            let _ = outbound_tx.send(
-                                                protocol::ProviderMessage::InferenceError {
-                                                    request_id,
-                                                    error: format!("backend reload failed: {e}"),
-                                                    status_code: 503,
+
+                                        // Mark slot as restarting to prevent race with health monitor.
+                                        {
+                                            let mut slots = shared_slots.lock().unwrap();
+                                            if let Some(s) = slots.iter_mut().find(|s| s.port == slot_port) {
+                                                s.restarting = true;
+                                            }
+                                        }
+
+                                        match reload_backend(
+                                            &idle_python_cmd,
+                                            &idle_backend_name,
+                                            &slot_model_path,
+                                            slot_port,
+                                        ).await {
+                                            Ok(new_pid) => {
+                                                set_backend_state(BACKEND_RUNNING);
+                                                // Update slot PID and health, clear restarting flag.
+                                                {
+                                                    let mut slots = shared_slots.lock().unwrap();
+                                                    if let Some(s) = slots.iter_mut().find(|s| s.port == slot_port) {
+                                                        s.pid = Some(new_pid);
+                                                        s.healthy = true;
+                                                        s.restarting = false;
+                                                    }
                                                 }
-                                            ).await;
-                                            continue;
+                                                if let Some(ref hash_arc) = rehash_handle {
+                                                    if let Some(new_hash) = models::compute_weight_hash(&slot_model_id) {
+                                                        *hash_arc.lock().unwrap() = Some(new_hash);
+                                                        tracing::info!("Model weight hash refreshed after reload");
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::error!("Failed to reload {} on port {}: {e}", slot_model_id, slot_port);
+                                                {
+                                                    let mut slots = shared_slots.lock().unwrap();
+                                                    if let Some(s) = slots.iter_mut().find(|s| s.port == slot_port) {
+                                                        s.restarting = false;
+                                                    }
+                                                }
+                                                let _ = outbound_tx.send(
+                                                    protocol::ProviderMessage::InferenceError {
+                                                        request_id,
+                                                        error: format!("backend reload failed: {e}"),
+                                                        status_code: 503,
+                                                    }
+                                                ).await;
+                                                continue;
+                                            }
                                         }
                                     }
+                                } else {
+                                    // No slot found for this model — shouldn't happen if
+                                    // the coordinator routes correctly, but handle gracefully.
+                                    tracing::warn!("No slot configured for model {}", req_model_id);
+                                    let _ = outbound_tx.send(
+                                        protocol::ProviderMessage::InferenceError {
+                                            request_id,
+                                            error: format!("no backend slot for model {}", req_model_id),
+                                            status_code: 404,
+                                        }
+                                    ).await;
+                                    continue;
                                 }
 
                                 // (InferenceAccepted already sent above, before reload)

@@ -215,16 +215,20 @@ pub async fn check_model_loaded(base_url: &str) -> bool {
     let client = health_client();
 
     // vllm-mlx reports explicit model_loaded state on /health.
+    // Only trust an explicit `true` — if the field is missing or the
+    // body isn't JSON, fall through to the /v1/models check below.
+    // Previously, missing field defaulted to true, causing us to skip
+    // the wait loop and jump to warmup before weights were in GPU memory.
     let health_url = format!("{base_url}/health");
     if let Ok(resp) = client.get(&health_url).send().await {
         if resp.status().is_success() {
             if let Ok(body) = resp.json::<serde_json::Value>().await {
-                return body
-                    .get("model_loaded")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
+                if let Some(loaded) = body.get("model_loaded").and_then(|v| v.as_bool()) {
+                    return loaded;
+                }
+                // Field missing — don't assume loaded, fall through.
             }
-            return true;
+            // Non-JSON 200 — server is up but can't confirm model state.
         }
     }
 
@@ -246,7 +250,29 @@ pub async fn warmup_backend(base_url: &str) -> bool {
         .build()
         .unwrap_or_default();
 
+    // Fetch the model name from /v1/models so the warmup request
+    // uses the correct model identifier. The model field is required
+    // by the OpenAI schema — without it, vllm-mlx returns 422.
+    let models_url = format!("{base_url}/v1/models");
+    let model_name = match client.get(&models_url).send().await {
+        Ok(resp) if resp.status().is_success() => resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| {
+                v.get("data")
+                    .and_then(|d| d.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|m| m.get("id"))
+                    .and_then(|id| id.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| "default".to_string()),
+        _ => "default".to_string(),
+    };
+
     let body = serde_json::json!({
+        "model": model_name,
         "messages": [{"role": "user", "content": "hi"}],
         "max_tokens": 1,
         "stream": false,

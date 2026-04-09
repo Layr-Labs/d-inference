@@ -263,6 +263,8 @@ Always think from first principles. When fixing a bug or designing a feature:
 
 5. **Ask "what breaks next?" after every fix.** If you exclude .pyc from hashing, what can an attacker do with .pyc? If you purge before hashing, what regenerates .pyc between purge and the next check? Each fix must not create a new hole.
 
+6. **Pull the thread on every component.** When debugging a failure, map every component in the chain (coordinator → provider → backend → vllm-mlx). Trace the actual flow step by step — look at real logs, real source code, real API responses at each boundary. When you see a specific error (e.g. "422 Unprocessable Entity"), immediately ask "what causes that exact status code in that exact server?" and trace it to the source. Don't theorize about what MIGHT be wrong — verify what IS wrong. Example: warmup was returning 422 for months because the request was missing a required `model` field. The 422 was right there in the logs the whole time. Instead of reading it, we spent time theorizing about timing windows and false positives in health checks. The error message IS the clue — follow it.
+
 ## Common Pitfalls
 
 - Protocol changes require updating both `provider/src/protocol.rs` (Rust) AND `coordinator/internal/protocol/messages.go` (Go). They must stay in sync.

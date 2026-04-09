@@ -22,7 +22,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"log/slog"
-	"sort"
+	"math"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -878,29 +879,44 @@ func ScoreProvider(p *Provider, model string) float64 {
 	backendCap := p.BackendCapacity
 	p.mu.Unlock()
 
-	// Base decode TPS — use 1.0 as minimum to avoid zero scores
+	// Base decode TPS — when not reported by the provider, estimate from
+	// hardware memory bandwidth using sqrt scaling. Linear bandwidth
+	// ratios (e.g. 546 vs 300 = 1.8x) create too much routing skew;
+	// sqrt dampens this to ~1.35x, giving faster hardware a mild
+	// preference while still distributing load across all providers.
 	if decodeTPS <= 0 {
-		decodeTPS = 1.0
+		bw := float64(p.Hardware.MemoryBandwidthGBs)
+		if bw > 0 {
+			decodeTPS = math.Sqrt(bw) // sqrt scaling: 546→23.4, 400→20, 300→17.3, 150→12.2
+		} else {
+			decodeTPS = 1.0
+		}
 	}
 
 	trustMul := TrustMultiplier(trustLevel)
 
-	// Warm model bonus: 1.5x if the model is already warm, 1.0x otherwise
+	// Warm model bonus: only applies when the provider is IDLE (no pending
+	// requests). This prevents a warm provider from monopolizing all traffic.
+	// Once a warm provider has any pending requests, cold providers compete
+	// on equal terms — a 20s parallel cold-start beats waiting in a serial
+	// queue behind a single warm provider.
 	warmBonus := 1.0
-	for _, wm := range warmModels {
-		if wm == model {
+	isIdle := pending == 0
+	if isIdle {
+		for _, wm := range warmModels {
+			if wm == model {
+				warmBonus = 1.5
+				break
+			}
+		}
+		if currentModel == model {
 			warmBonus = 1.5
-			break
 		}
 	}
-	if currentModel == model {
-		warmBonus = 1.5
-	}
 
-	// Cold-start / crash penalty: apply multipliers based on the backend
-	// slot state reported by the provider's capacity polling task.
-	//   "idle_shutdown" → 0.1x (provider intentionally killed backend, can reload ~30s)
-	//   "crashed"       → 0.05x (backend died unexpectedly, health monitor may restart)
+	// Cold-start / crash penalty: apply regardless of load. These represent
+	// providers whose backend is DOWN (not just cold in cache). Loading from
+	// idle_shutdown takes ~30s, crashed backends may not recover at all.
 	if backendCap != nil {
 		for _, slot := range backendCap.Slots {
 			if slot.Model == model {
@@ -992,10 +1008,11 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 	}
 
 	// Challenge staleness threshold: providers must have passed a
-	// challenge within the last interval + grace period. A provider
-	// that reconnects without passing the immediate challenge (or whose
-	// last challenge is too old) won't be routed requests.
-	challengeMaxAge := 3*time.Minute + 30*time.Second
+	// challenge within the last interval + grace period. The challenge
+	// interval is 5 minutes, so we allow up to 6 minutes (interval +
+	// 1-minute grace) to avoid a gap where providers are unroutable
+	// between challenge cycles.
+	challengeMaxAge := 6 * time.Minute
 	now := time.Now()
 
 	var candidates []*Provider
@@ -1044,13 +1061,33 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 		return nil
 	}
 
-	// Sort candidates by score descending (highest score first).
-	// Providers with fewer pending requests score higher due to load factor.
-	sort.Slice(candidates, func(i, j int) bool {
-		return ScoreProvider(candidates[i], model) > ScoreProvider(candidates[j], model)
-	})
+	// Score all candidates and pick the highest.
+	bestIdx := 0
+	bestScore := ScoreProvider(candidates[0], model)
+	for i := 1; i < len(candidates); i++ {
+		s := ScoreProvider(candidates[i], model)
+		if s > bestScore {
+			bestScore = s
+			bestIdx = i
+		}
+	}
 
-	selected := candidates[0]
+	// When multiple candidates tie for the best score (common when all
+	// providers have the same hardware/TPS and load), randomly pick among
+	// them to distribute load instead of always picking the first one.
+	var ties []*Provider
+	for _, c := range candidates {
+		if ScoreProvider(c, model) >= bestScore-0.001 {
+			ties = append(ties, c)
+		}
+	}
+	var selected *Provider
+	if len(ties) > 1 {
+		selected = ties[rand.Intn(len(ties))]
+	} else {
+		selected = candidates[bestIdx]
+	}
+
 	selected.mu.Lock()
 	selected.Status = StatusServing
 	selected.mu.Unlock()

@@ -554,7 +554,7 @@ func TestScoringHigherDecodeTPS(t *testing.T) {
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now()
 
-	// p2 should be selected (higher decode_tps).
+	// p2 has 4x higher decode TPS → should be selected.
 	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if selected == nil {
 		t.Fatal("FindProvider returned nil")
@@ -956,7 +956,7 @@ func TestFindProviderSkipsZeroLastChallenge(t *testing.T) {
 }
 
 // TestFindProviderSkipsStaleChallenge verifies that a provider whose last
-// challenge verification is older than the staleness threshold (3m30s) is
+// challenge verification is older than the staleness threshold (6m) is
 // excluded from routing. This prevents routing to a provider that might
 // have rebooted with SIP disabled after passing an earlier challenge.
 func TestFindProviderSkipsStaleChallenge(t *testing.T) {
@@ -964,12 +964,12 @@ func TestFindProviderSkipsStaleChallenge(t *testing.T) {
 	msg := testRegisterMessage()
 	p := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
-	// Set LastChallengeVerified to 4 minutes ago (beyond 3m30s threshold).
-	p.LastChallengeVerified = time.Now().Add(-4 * time.Minute)
+	// Set LastChallengeVerified to 7 minutes ago (beyond 6m threshold).
+	p.LastChallengeVerified = time.Now().Add(-7 * time.Minute)
 
 	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
-		t.Error("FindProvider should skip provider with stale LastChallengeVerified (4m ago)")
+		t.Error("FindProvider should skip provider with stale LastChallengeVerified (7m ago)")
 	}
 }
 
@@ -994,32 +994,32 @@ func TestFindProviderAcceptsRecentChallenge(t *testing.T) {
 }
 
 // TestFindProviderChallengeBoundaryJustInside verifies that a provider
-// exactly at 3 minutes (inside the 3m30s window) is still accepted.
+// at 5 minutes (inside the 6-minute window) is still accepted.
 func TestFindProviderChallengeBoundaryJustInside(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	p := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
-	p.LastChallengeVerified = time.Now().Add(-3 * time.Minute)
+	p.LastChallengeVerified = time.Now().Add(-5 * time.Minute)
 
 	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found == nil {
-		t.Error("FindProvider should accept provider at exactly 3m (within 3m30s threshold)")
+		t.Error("FindProvider should accept provider at 5m (within 6m threshold)")
 	}
 }
 
 // TestFindProviderChallengeBoundaryJustOutside verifies that a provider
-// just beyond 3m30s is rejected.
+// just beyond 6 minutes is rejected.
 func TestFindProviderChallengeBoundaryJustOutside(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	p := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
-	p.LastChallengeVerified = time.Now().Add(-3*time.Minute - 31*time.Second)
+	p.LastChallengeVerified = time.Now().Add(-6*time.Minute - 1*time.Second)
 
 	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
-		t.Error("FindProvider should reject provider at 3m31s (beyond 3m30s threshold)")
+		t.Error("FindProvider should reject provider at 6m1s (beyond 6m threshold)")
 	}
 }
 
@@ -1041,11 +1041,11 @@ func TestFindProviderMixedChallengeState(t *testing.T) {
 	p2.TrustLevel = TrustHardware
 	p2.DecodeTPS = 200.0 // Higher score, but should still be skipped.
 
-	// p3: verified 5 minutes ago — stale, should be skipped.
+	// p3: verified 7 minutes ago — stale, should be skipped.
 	p3 := reg.Register("p3", nil, msg)
 	p3.TrustLevel = TrustHardware
 	p3.DecodeTPS = 200.0
-	p3.LastChallengeVerified = time.Now().Add(-5 * time.Minute)
+	p3.LastChallengeVerified = time.Now().Add(-7 * time.Minute)
 
 	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found == nil {
@@ -1121,8 +1121,8 @@ func TestChallengeExpirationRemovesRoutability(t *testing.T) {
 	}
 	reg.SetProviderIdle("p1")
 
-	// Backdate the challenge to simulate time passing.
-	p.LastChallengeVerified = time.Now().Add(-4 * time.Minute)
+	// Backdate the challenge to simulate time passing beyond 6m threshold.
+	p.LastChallengeVerified = time.Now().Add(-7 * time.Minute)
 
 	// Should no longer be routable.
 	found = reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -1249,41 +1249,54 @@ func TestWarmModelBonusRouting(t *testing.T) {
 	pB.LastChallengeVerified = time.Now()
 	pB.WarmModels = []string{model}
 
-	// Verify scoring: warm provider should have 1.5x bonus.
+	// Verify scoring: warm IDLE provider should have 1.5x bonus.
 	coldScore := ScoreProvider(pA, model)
 	warmScore := ScoreProvider(pB, model)
 	if warmScore <= coldScore {
-		t.Errorf("warm score (%f) should be greater than cold score (%f)", warmScore, coldScore)
+		t.Errorf("warm idle score (%f) should be greater than cold idle score (%f)", warmScore, coldScore)
 	}
-	// The ratio should be approximately 1.5x (both have identical stats otherwise).
 	ratio := warmScore / coldScore
 	if ratio < 1.45 || ratio > 1.55 {
 		t.Errorf("warm/cold score ratio = %f, expected ~1.5", ratio)
 	}
 
-	// FindProvider should always pick the warm provider.
-	for i := 0; i < 5; i++ {
-		selected := reg.FindProvider(model)
-		if selected == nil {
-			t.Fatalf("FindProvider returned nil on iteration %d", i)
-		}
-		if selected.ID != "warm" {
-			t.Errorf("iteration %d: expected warm provider, got %q", i, selected.ID)
-		}
-		reg.SetProviderIdle(selected.ID)
+	// First request should go to warm provider (idle + warm bonus).
+	selected := reg.FindProvider(model)
+	if selected == nil {
+		t.Fatal("FindProvider returned nil")
 	}
+	if selected.ID != "warm" {
+		t.Errorf("first request: expected warm provider, got %q", selected.ID)
+	}
+	// Simulate real flow: add a pending request so provider is busy.
+	selected.AddPending(&PendingRequest{RequestID: "req-1"})
+
+	// Second request: warm provider has pending=1, loses warm bonus.
+	// Cold idle provider should win: cold score (1.0) > warm busy score (0.75 with load).
+	selected2 := reg.FindProvider(model)
+	if selected2 == nil {
+		t.Fatal("FindProvider returned nil for second request")
+	}
+	if selected2.ID != "cold" {
+		t.Errorf("second request: expected cold provider (warm is busy), got %q", selected2.ID)
+	}
+
+	// Release both providers.
+	pB.RemovePending("req-1")
+	reg.SetProviderIdle("warm")
+	reg.SetProviderIdle("cold")
 
 	// Also test CurrentModel as an alternative warm signal.
 	pA.WarmModels = nil
 	pB.WarmModels = nil
 	pB.CurrentModel = model
 
-	selected := reg.FindProvider(model)
-	if selected == nil {
+	selected3 := reg.FindProvider(model)
+	if selected3 == nil {
 		t.Fatal("FindProvider returned nil for CurrentModel test")
 	}
-	if selected.ID != "warm" {
-		t.Errorf("CurrentModel test: expected warm provider, got %q", selected.ID)
+	if selected3.ID != "warm" {
+		t.Errorf("CurrentModel test: expected warm provider, got %q", selected3.ID)
 	}
 }
 

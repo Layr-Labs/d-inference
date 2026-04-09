@@ -3258,6 +3258,17 @@ async fn cmd_serve(
                                 last_request_time = tokio::time::Instant::now();
                                 inference_active.store(true, std::sync::atomic::Ordering::Relaxed);
 
+                                // Immediately tell the coordinator we accepted this request.
+                                // This MUST happen before any cold-start reload so the
+                                // coordinator switches from the 10s first-chunk timeout to
+                                // the full inference timeout (~600s). Without this, cold
+                                // starts (10-30s model load) always hit the 10s timeout.
+                                let _ = outbound_tx.send(
+                                    protocol::ProviderMessage::InferenceAccepted {
+                                        request_id: request_id.clone(),
+                                    }
+                                ).await;
+
                                 // Determine which model the request actually wants.
                                 let req_model_id = body.get("model")
                                     .and_then(|v| v.as_str())
@@ -3328,15 +3339,7 @@ async fn cmd_serve(
                                     }
                                 }
 
-                                // Backend is ready — tell the coordinator we accepted.
-                                // This commits the coordinator to this provider (no more
-                                // retries) and allows it to wait with the full inference
-                                // timeout for chunks.
-                                let _ = outbound_tx.send(
-                                    protocol::ProviderMessage::InferenceAccepted {
-                                        request_id: request_id.clone(),
-                                    }
-                                ).await;
+                                // (InferenceAccepted already sent above, before reload)
 
                                 // Route to the correct backend based on the requested model.
                                 let requested_model = body.get("model")

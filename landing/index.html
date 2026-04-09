@@ -3,18 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>EigenInference -- Private AI on Verified Macs</title>
-  <meta name="description" content="Run AI inference through hardware-attested Apple Silicon machines. End-to-end encrypted. Mac owners earn from idle compute.">
+  <title>Project Lattice — An Eigen Labs Research Initiative</title>
+  <meta name="description" content="Decentralized AI inference on hardware-attested Apple Silicon. End-to-end encrypted. Every Mac becomes a verified compute node.">
 
   <!-- Open Graph -->
   <meta property="og:type" content="website">
-  <meta property="og:title" content="EigenInference">
-  <meta property="og:description" content="Private AI inference on a network of verified Macs. End-to-end encrypted. Mac owners earn from idle compute.">
+  <meta property="og:title" content="Project Lattice — Eigen Labs">
+  <meta property="og:description" content="What if every idle Mac could become a verified node in a global inference network? An Eigen Labs research initiative pushing the frontier of decentralized AI.">
 
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Nunito:ital,wght@0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 
   <style>
     /* ==================== RESET ==================== */
@@ -22,105 +22,89 @@
 
     /* ==================== PALETTE ==================== */
     :root {
-      --bg:         #FFF8E7;
-      --bg-warm:    #FFF3D4;
-      --ink:        #3B2C35;
-      --ink-light:  #6B5B65;
-      --ink-faint:  #9B8B95;
-      --coral:      #F4845F;
-      --coral-light:#FBBDA4;
-      --teal:       #2D9E7A;
-      --teal-light: #A8E6CF;
-      --teal-dark:  #1B6B50;
-      --blue:       #5B8DEF;
-      --blue-light: #BDD4FF;
-      --purple:     #9B72CF;
-      --purple-light:#D8C5F0;
-      --gold:       #E8A838;
-      --gold-light: #FFE0A0;
-      --pink:       #F4A2C4;
-      --pink-light: #FDDDE6;
-      --white:      #FFFFFF;
+      --bg:         #08080c;
+      --bg-surface: #0f0f16;
+      --bg-card:    #141420;
+      --bg-elevated:#1a1a2e;
+      --border:     rgba(149, 191, 255, 0.08);
+      --border-hover:rgba(149, 191, 255, 0.15);
+
+      --text:       #e8eaf0;
+      --text-secondary: #8b8fa4;
+      --text-tertiary:  #5a5e72;
+
+      --indigo:     #1a0c6d;
+      --indigo-light:#2d1f9e;
+      --blue:       #95bfff;
+      --blue-dim:   rgba(149, 191, 255, 0.15);
+      --blue-glow:  rgba(149, 191, 255, 0.06);
+      --green:      #34d399;
+      --green-dim:  rgba(52, 211, 153, 0.12);
+      --amber:      #fbbf24;
+      --amber-dim:  rgba(251, 191, 36, 0.12);
+      --red:        #f87171;
+      --purple:     #a78bfa;
+      --purple-dim: rgba(167, 139, 250, 0.12);
     }
 
     /* ==================== BASE ==================== */
     html { scroll-behavior: smooth; }
 
     body {
-      font-family: 'Nunito', -apple-system, sans-serif;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: var(--bg);
-      color: var(--ink);
+      color: var(--text);
       line-height: 1.7;
-      letter-spacing: 0.01em;
+      letter-spacing: -0.01em;
       -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
       overflow-x: hidden;
     }
 
-    /* Paper grain texture */
+    /* Subtle noise texture */
     body::before {
       content: '';
       position: fixed;
       inset: 0;
-      opacity: 0.04;
+      opacity: 0.03;
       pointer-events: none;
       z-index: 9999;
-      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
     }
 
-    h1, h2, h3 {
-      font-family: 'Caveat', cursive;
+    h1, h2, h3, h4 {
+      font-family: 'Inter', sans-serif;
       font-weight: 700;
-      line-height: 1.2;
+      line-height: 1.15;
+      letter-spacing: -0.03em;
     }
 
-    a { color: var(--ink); text-decoration: none; font-weight: 700; }
-    a:hover { color: var(--coral); }
+    a { color: var(--blue); text-decoration: none; transition: color 0.2s; }
+    a:hover { color: #b8d4ff; }
 
     .container {
-      max-width: 720px;
+      max-width: 1080px;
       margin: 0 auto;
-      padding: 0 24px;
+      padding: 0 32px;
     }
 
-    /* ==================== SKETCHY BORDERS ==================== */
-    .sketch-box {
-      position: relative;
-      border-radius: 6px;
+    .mono {
+      font-family: 'JetBrains Mono', 'SF Mono', Monaco, monospace;
     }
-    .sketch-box::before {
-      content: '';
-      position: absolute;
-      inset: -2px;
-      border: 3px solid var(--ink);
-      border-radius: 8px;
-      mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='r'%3E%3CfeTurbulence baseFrequency='0.04' numOctaves='5'/%3E%3CfeDisplacementMap in='SourceGraphic' scale='4'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23r)'/%3E%3C/svg%3E");
-      pointer-events: none;
-    }
-
-    /* Colored sketch borders */
-    .sketch-coral::before { border-color: var(--coral); }
-    .sketch-teal::before { border-color: var(--teal); }
-    .sketch-blue::before { border-color: var(--blue); }
-    .sketch-purple::before { border-color: var(--purple); }
-    .sketch-gold::before { border-color: var(--gold); }
-    .sketch-pink::before { border-color: var(--pink); }
 
     /* ==================== HEADER ==================== */
     header {
-      padding: 20px 0;
-      border-bottom: 2px solid var(--ink);
-      border-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='4'%3E%3Cpath d='M0 2 Q20 0,40 2 Q60 4,80 2 Q100 0,120 2 Q140 4,160 2 Q180 0,200 2 Q220 4,240 2 Q260 0,280 2 Q300 4,320 2 Q340 0,360 2 Q380 4,400 2' fill='none' stroke='%233B2C35' stroke-width='2.5'/%3E%3C/svg%3E") 2 stretch;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      padding: 16px 0;
+      background: rgba(8, 8, 12, 0.8);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
     }
-
-    header .logo {
-      font-family: 'Caveat', cursive;
-      font-size: 28px;
-      font-weight: 700;
-      color: var(--ink);
-      text-decoration: none;
-    }
-    header .logo:hover { color: var(--coral); }
-    header .logo span { color: var(--coral); }
 
     header nav {
       display: flex;
@@ -128,365 +112,446 @@
       justify-content: space-between;
     }
 
+    .logo-group {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-eigen {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .logo-divider {
+      width: 1px;
+      height: 20px;
+      background: var(--border-hover);
+    }
+
+    .logo-project {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--blue);
+      letter-spacing: 0.02em;
+    }
+
     header .links {
       display: flex;
-      gap: 24px;
+      gap: 32px;
       align-items: center;
-      font-size: 15px;
-      font-weight: 600;
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.01em;
     }
-    header .links a { color: var(--ink-light); }
-    header .links a:hover { color: var(--coral); }
+    header .links a {
+      color: var(--text-secondary);
+      transition: color 0.2s;
+    }
+    header .links a:hover { color: var(--text); }
 
     /* ==================== HERO ==================== */
     .hero {
-      padding: 64px 0 48px;
-      text-align: center;
+      padding: 180px 0 120px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* Gradient orb behind hero */
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -200px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 800px;
+      height: 600px;
+      background: radial-gradient(ellipse, rgba(26, 12, 109, 0.4) 0%, rgba(149, 191, 255, 0.08) 40%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--blue);
+      background: var(--blue-dim);
+      border: 1px solid rgba(149, 191, 255, 0.2);
+      padding: 8px 16px;
+      border-radius: 100px;
+      margin-bottom: 32px;
+    }
+
+    .hero-label .dot {
+      width: 6px;
+      height: 6px;
+      background: var(--green);
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
     }
 
     .hero h1 {
-      font-size: clamp(42px, 8vw, 72px);
-      color: var(--ink);
-      margin-bottom: 20px;
+      font-size: clamp(48px, 7vw, 80px);
+      font-weight: 800;
+      color: var(--text);
+      margin-bottom: 24px;
       position: relative;
+      max-width: 800px;
     }
 
-    .hero-badge {
-      position: absolute;
-      top: -18px;
-      right: -24px;
-      width: 110px;
-      height: 110px;
-      animation: badge-wobble 4s ease-in-out infinite;
+    .hero h1 .gradient-text {
+      background: linear-gradient(135deg, var(--blue) 0%, #c4b5fd 50%, var(--blue) 100%);
+      background-size: 200% 200%;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      animation: gradient-shift 8s ease infinite;
     }
-    @media (max-width: 560px) {
-      .hero-badge {
-        position: relative;
-        top: auto;
-        right: auto;
-        display: block;
-        margin: 0 auto 12px;
-        width: 96px;
-        height: 96px;
-      }
-    }
-    @keyframes badge-wobble {
-      0%, 100% { transform: rotate(-6deg); }
-      50% { transform: rotate(2deg); }
-    }
-    .hero h1 .highlight {
-      color: var(--coral);
-      position: relative;
-    }
-    .hero h1 .highlight::after {
-      content: '';
-      position: absolute;
-      bottom: 2px;
-      left: -4px;
-      right: -4px;
-      height: 8px;
-      background: var(--coral-light);
-      border-radius: 4px;
-      z-index: -1;
-      transform: rotate(-1deg);
+
+    @keyframes gradient-shift {
+      0%, 100% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
     }
 
     .hero .subtitle {
       font-size: 18px;
-      color: var(--ink-light);
-      max-width: 520px;
-      margin: 0 auto 32px;
+      color: var(--text-secondary);
+      max-width: 560px;
       line-height: 1.8;
+      margin-bottom: 40px;
+      font-weight: 400;
     }
 
     .hero .ctas {
       display: flex;
       gap: 16px;
-      justify-content: center;
       flex-wrap: wrap;
     }
 
+    /* ==================== BUTTONS ==================== */
     .btn {
       display: inline-flex;
       align-items: center;
       gap: 8px;
       padding: 14px 28px;
       border-radius: 8px;
-      font-family: 'Nunito', sans-serif;
-      font-size: 15px;
-      font-weight: 700;
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      font-weight: 600;
       cursor: pointer;
-      border: 3px solid var(--ink);
-      transition: transform 0.15s, box-shadow 0.15s;
+      border: 1px solid transparent;
+      transition: all 0.2s;
+      text-decoration: none;
     }
-    .btn:hover {
-      transform: translate(-2px, -2px);
-      box-shadow: 4px 4px 0 var(--ink);
+    .btn-primary {
+      background: var(--blue);
+      color: var(--bg);
+      border-color: var(--blue);
     }
-    .btn-coral {
-      background: var(--coral);
-      color: var(--white);
-      border-color: var(--ink);
+    .btn-primary:hover {
+      background: #b8d4ff;
+      color: var(--bg);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 20px rgba(149, 191, 255, 0.25);
     }
-    .btn-coral:hover { color: var(--white); }
-    .btn-gold {
-      background: var(--gold-light);
-      color: var(--ink);
-      border-color: var(--ink);
+    .btn-secondary {
+      background: transparent;
+      color: var(--text);
+      border-color: var(--border-hover);
     }
-    .btn-gold:hover { color: var(--ink); }
+    .btn-secondary:hover {
+      border-color: var(--text-secondary);
+      background: var(--bg-card);
+      transform: translateY(-1px);
+    }
 
-    /* ==================== HERO ILLUSTRATION ==================== */
-    .hero-illustration {
-      margin: 48px auto 0;
-      max-width: 600px;
+    /* ==================== HERO NETWORK VIS ==================== */
+    .hero-visual {
+      margin-top: 80px;
+      position: relative;
     }
 
-    /* ==================== SQUIGGLY DIVIDER ==================== */
-    .squiggle {
+    .network-diagram {
       width: 100%;
-      height: 20px;
-      margin: 0;
-      opacity: 0.25;
+      max-width: 900px;
+      margin: 0 auto;
+      display: block;
     }
 
     /* ==================== SECTION SPACING ==================== */
     section {
-      padding: 56px 0;
+      padding: 100px 0;
+      position: relative;
     }
 
     section h2 {
-      font-size: clamp(36px, 6vw, 52px);
-      margin-bottom: 12px;
+      font-size: clamp(36px, 5vw, 52px);
+      margin-bottom: 16px;
     }
     section .section-sub {
-      font-size: 16px;
-      color: var(--ink-light);
-      margin-bottom: 40px;
-      max-width: 480px;
+      font-size: 17px;
+      color: var(--text-secondary);
+      margin-bottom: 56px;
+      max-width: 520px;
+      line-height: 1.7;
     }
 
-    /* ==================== HOW IT WORKS ==================== */
-    .steps {
-      display: flex;
-      flex-direction: column;
-      gap: 32px;
+    .section-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--blue);
+      margin-bottom: 16px;
+      display: block;
     }
 
-    .step {
-      display: flex;
-      gap: 20px;
-      align-items: flex-start;
+    /* Divider line */
+    .divider {
+      height: 1px;
+      background: var(--border);
+      margin: 0 auto;
     }
 
-    .step-icon {
-      flex-shrink: 0;
-      width: 64px;
-      height: 64px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .step-content h3 {
-      font-size: 28px;
-      margin-bottom: 4px;
-    }
-    .step-content p {
-      color: var(--ink-light);
-      font-size: 15px;
-    }
-
-    /* ==================== TRUST CARDS ==================== */
-    .trust-grid {
+    /* ==================== THESIS SECTION ==================== */
+    .thesis-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 20px;
-    }
-    @media (max-width: 560px) {
-      .trust-grid { grid-template-columns: 1fr; }
+      gap: 24px;
     }
 
-    .trust-card {
-      padding: 24px;
-      background: var(--white);
-      border: 3px solid var(--ink);
+    .thesis-card {
+      padding: 32px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
       border-radius: 12px;
-      transition: transform 0.15s;
+      transition: border-color 0.3s, transform 0.2s;
     }
-    .trust-card:hover {
-      transform: rotate(-1deg) scale(1.02);
+    .thesis-card:hover {
+      border-color: var(--border-hover);
+      transform: translateY(-2px);
     }
-    .trust-card:nth-child(2):hover { transform: rotate(1deg) scale(1.02); }
-    .trust-card:nth-child(3):hover { transform: rotate(0.5deg) scale(1.02); }
-    .trust-card:nth-child(4):hover { transform: rotate(-0.5deg) scale(1.02); }
 
-    .trust-card .card-icon {
-      width: 48px;
-      height: 48px;
+    .thesis-card .card-num {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-tertiary);
+      margin-bottom: 16px;
+      letter-spacing: 0.05em;
+    }
+
+    .thesis-card h3 {
+      font-size: 20px;
+      margin-bottom: 10px;
+      font-weight: 700;
+    }
+    .thesis-card p {
+      font-size: 14px;
+      color: var(--text-secondary);
+      line-height: 1.7;
+    }
+
+    /* Card accent icon */
+    .thesis-icon {
+      width: 40px;
+      height: 40px;
       border-radius: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
-      margin-bottom: 14px;
+      margin-bottom: 16px;
+    }
+    .icon-blue { background: var(--blue-dim); }
+    .icon-green { background: var(--green-dim); }
+    .icon-purple { background: var(--purple-dim); }
+    .icon-amber { background: var(--amber-dim); }
+
+    /* ==================== HOW IT WORKS ==================== */
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
     }
 
+    .step {
+      padding: 32px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      transition: border-color 0.3s;
+    }
+    .step:hover { border-color: var(--border-hover); }
+
+    .step-num {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 48px;
+      font-weight: 700;
+      color: var(--blue);
+      opacity: 0.3;
+      line-height: 1;
+      margin-bottom: 16px;
+    }
+
+    .step h3 {
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+    .step p {
+      font-size: 14px;
+      color: var(--text-secondary);
+      line-height: 1.7;
+    }
+
+    /* ==================== TRUST / SECURITY ==================== */
+    .trust-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+
+    .trust-card {
+      padding: 32px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      transition: border-color 0.3s;
+    }
+    .trust-card:hover { border-color: var(--border-hover); }
+
     .trust-card h3 {
-      font-size: 24px;
-      margin-bottom: 6px;
+      font-size: 18px;
+      margin-bottom: 8px;
     }
     .trust-card p {
       font-size: 14px;
-      color: var(--ink-light);
-      line-height: 1.6;
+      color: var(--text-secondary);
+      line-height: 1.7;
     }
 
-    /* Card accent colors */
-    .card-teal .card-icon { background: var(--teal-light); }
-    .card-blue .card-icon { background: var(--blue-light); }
-    .card-purple .card-icon { background: var(--purple-light); }
-    .card-coral .card-icon { background: var(--coral-light); }
+    /* Status bar inside trust card */
+    .trust-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--green);
+      background: var(--green-dim);
+      padding: 4px 10px;
+      border-radius: 4px;
+      margin-bottom: 16px;
+    }
 
-    /* Slight rotations for hand-placed feel */
-    .trust-card:nth-child(1) { transform: rotate(-0.5deg); }
-    .trust-card:nth-child(2) { transform: rotate(0.3deg); }
-    .trust-card:nth-child(3) { transform: rotate(0.4deg); }
-    .trust-card:nth-child(4) { transform: rotate(-0.3deg); }
+    .trust-status .dot {
+      width: 5px;
+      height: 5px;
+      background: var(--green);
+      border-radius: 50%;
+    }
 
     /* ==================== CODE BLOCK ==================== */
     .code-wrapper {
-      background: var(--ink);
-      border: 3px solid var(--ink);
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
       border-radius: 12px;
       overflow: hidden;
-      margin-top: 24px;
-      box-shadow: 6px 6px 0 rgba(59, 44, 53, 0.15);
     }
     .code-bar {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 12px 16px;
-      border-bottom: 1px solid rgba(255,255,255,0.06);
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
     }
     .code-dot {
-      width: 12px;
-      height: 12px;
+      width: 10px;
+      height: 10px;
       border-radius: 50%;
+      opacity: 0.5;
     }
-    .code-dot.r { background: var(--coral); }
-    .code-dot.y { background: var(--gold); }
-    .code-dot.g { background: var(--teal); }
+    .code-dot.r { background: #f87171; }
+    .code-dot.y { background: #fbbf24; }
+    .code-dot.g { background: #34d399; }
     .code-lang {
-      margin-left: 8px;
-      font-size: 12px;
-      color: rgba(255,255,255,0.3);
-      font-family: 'Nunito', sans-serif;
+      margin-left: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-tertiary);
     }
     pre {
-      padding: 20px;
-      font-size: 14px;
-      line-height: 1.7;
+      padding: 24px;
+      font-size: 13px;
+      line-height: 1.8;
       overflow-x: auto;
-      font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
-      color: rgba(255,255,255,0.88);
+      font-family: 'JetBrains Mono', 'SF Mono', Monaco, monospace;
+      color: var(--text-secondary);
     }
-    pre .kw { color: var(--coral-light); }
-    pre .str { color: var(--gold-light); }
-    pre .comment { color: rgba(255,255,255,0.3); }
+    pre .kw { color: var(--purple); }
+    pre .str { color: var(--green); }
+    pre .comment { color: var(--text-tertiary); }
 
     /* ==================== FEATURES LIST ==================== */
     .features {
-      margin-top: 28px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
+      margin-top: 32px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
     }
     .feature-item {
       display: flex;
-      align-items: flex-start;
-      gap: 12px;
-      font-size: 15px;
-      color: var(--ink-light);
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      color: var(--text-secondary);
+      padding: 12px 16px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
     }
-    .feature-dot {
+    .feature-check {
+      color: var(--green);
       flex-shrink: 0;
-      width: 20px;
-      height: 20px;
-      margin-top: 2px;
     }
     .feature-item strong {
-      color: var(--ink);
-      font-weight: 700;
-    }
-
-    /* ==================== EARN SECTION ==================== */
-    .earn-card {
-      background: var(--gold-light);
-      border: 3px solid var(--ink);
-      border-radius: 16px;
-      padding: 40px;
-      margin-top: 32px;
-      transform: rotate(0.3deg);
-      box-shadow: 6px 6px 0 rgba(59, 44, 53, 0.1);
-    }
-    .earn-card h3 {
-      font-size: 32px;
-      margin-bottom: 8px;
-    }
-    .earn-card p {
-      color: var(--ink-light);
-      margin-bottom: 20px;
-    }
-    .earn-steps {
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-    }
-    .earn-step {
-      display: flex;
-      align-items: flex-start;
-      gap: 12px;
-      font-size: 15px;
-    }
-    .earn-num {
-      flex-shrink: 0;
-      width: 28px;
-      height: 28px;
-      background: var(--ink);
-      color: var(--gold-light);
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-family: 'Caveat', cursive;
-      font-weight: 700;
-      font-size: 16px;
+      color: var(--text);
+      font-weight: 600;
     }
 
     /* ==================== PRICING ==================== */
     .pricing-banner {
       text-align: center;
-      margin-bottom: 40px;
+      margin-bottom: 48px;
     }
     .pricing-banner .savings {
-      display: inline-block;
-      font-family: 'Caveat', cursive;
-      font-size: clamp(48px, 8vw, 72px);
-      font-weight: 700;
-      color: var(--teal-dark);
-      background: var(--teal-light);
-      padding: 4px 20px;
-      border-radius: 8px;
-      border: 3px solid var(--ink);
-      transform: rotate(-2deg);
-      box-shadow: 4px 4px 0 rgba(59, 44, 53, 0.12);
+      font-size: clamp(48px, 7vw, 72px);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      background: linear-gradient(135deg, var(--green) 0%, var(--blue) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
     }
     .pricing-banner .savings-sub {
       display: block;
-      font-family: 'Caveat', cursive;
-      font-size: 22px;
-      color: var(--ink-light);
+      font-size: 17px;
+      color: var(--text-secondary);
       margin-top: 8px;
     }
 
@@ -494,169 +559,442 @@
       width: 100%;
       border-collapse: separate;
       border-spacing: 0;
-      border: 3px solid var(--ink);
+      border: 1px solid var(--border);
       border-radius: 12px;
       overflow: hidden;
-      background: var(--white);
-      box-shadow: 5px 5px 0 rgba(59, 44, 53, 0.1);
+      background: var(--bg-surface);
     }
     .pricing-table thead {
-      background: var(--ink);
-      color: var(--white);
+      background: var(--bg-card);
     }
     .pricing-table th {
-      font-family: 'Caveat', cursive;
-      font-size: 18px;
-      font-weight: 700;
-      padding: 14px 16px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 14px 20px;
       text-align: left;
+      color: var(--text-secondary);
     }
     .pricing-table th:not(:first-child) {
       text-align: center;
     }
     .pricing-table td {
-      padding: 14px 16px;
-      border-top: 2px solid rgba(59, 44, 53, 0.08);
+      padding: 16px 20px;
+      border-top: 1px solid var(--border);
       font-size: 14px;
     }
     .pricing-table td:not(:first-child) {
       text-align: center;
-      font-family: 'SF Mono', Monaco, monospace;
+      font-family: 'JetBrains Mono', monospace;
       font-size: 13px;
     }
+    .pricing-table tbody tr {
+      transition: background 0.15s;
+    }
     .pricing-table tbody tr:hover {
-      background: var(--bg-warm);
+      background: var(--bg-card);
     }
     .pricing-table .model-cell {
-      font-weight: 700;
-      font-size: 15px;
+      font-weight: 600;
+      font-size: 14px;
     }
     .pricing-table .model-cell small {
       display: block;
       font-weight: 400;
       font-size: 12px;
-      color: var(--ink-faint);
+      color: var(--text-tertiary);
+      margin-top: 2px;
     }
     .pricing-table .competitor-price {
-      color: var(--ink-faint);
+      color: var(--text-tertiary);
       text-decoration: line-through;
-      text-decoration-color: var(--coral);
-      text-decoration-thickness: 2px;
+      text-decoration-color: var(--red);
+      text-decoration-thickness: 1px;
     }
     .pricing-table .our-price {
-      color: var(--teal-dark);
-      font-weight: 700;
+      color: var(--green);
+      font-weight: 600;
     }
     .pricing-table .savings-tag {
       display: inline-block;
-      background: var(--teal-light);
-      color: var(--teal-dark);
-      font-family: 'Caveat', cursive;
-      font-size: 15px;
-      font-weight: 700;
-      padding: 2px 8px;
-      border-radius: 6px;
-      border: 1.5px solid var(--teal-dark);
+      background: var(--green-dim);
+      color: var(--green);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 4px;
     }
 
     .pricing-note {
-      margin-top: 20px;
-      font-size: 14px;
-      color: var(--ink-faint);
+      margin-top: 16px;
+      font-size: 13px;
+      color: var(--text-tertiary);
       text-align: center;
     }
 
     .pricing-categories {
-      display: flex;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
       gap: 16px;
       margin-top: 24px;
-      flex-wrap: wrap;
     }
     .pricing-mini {
-      flex: 1;
-      min-width: 200px;
-      background: var(--white);
-      border: 2px solid var(--ink);
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
       border-radius: 10px;
-      padding: 20px;
+      padding: 24px;
       text-align: center;
-      transition: transform 0.1s;
+      transition: border-color 0.2s;
     }
     .pricing-mini:hover {
-      transform: translate(-2px, -2px);
-      box-shadow: 3px 3px 0 var(--ink);
+      border-color: var(--border-hover);
     }
     .pricing-mini h4 {
-      font-family: 'Caveat', cursive;
-      font-size: 22px;
-      font-weight: 700;
-      margin-bottom: 4px;
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: var(--text-secondary);
     }
     .pricing-mini .mini-price {
-      font-family: 'SF Mono', Monaco, monospace;
-      font-size: 20px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 24px;
       font-weight: 700;
-      color: var(--teal-dark);
+      color: var(--green);
     }
     .pricing-mini .mini-unit {
       font-size: 12px;
-      color: var(--ink-faint);
-      margin-top: 2px;
+      color: var(--text-tertiary);
+      margin-top: 4px;
     }
     .pricing-mini .mini-vs {
       font-size: 12px;
-      color: var(--ink-faint);
-      margin-top: 6px;
+      color: var(--text-tertiary);
+      margin-top: 8px;
       text-decoration: line-through;
-      text-decoration-color: var(--coral);
+      text-decoration-color: var(--red);
     }
 
     /* ==================== MODELS ==================== */
     .model-list {
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 8px;
     }
     .model-item {
       display: flex;
       align-items: center;
       justify-content: space-between;
       padding: 16px 20px;
-      background: var(--white);
-      border: 2px solid var(--ink);
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
       border-radius: 10px;
-      transition: transform 0.1s;
+      transition: border-color 0.2s;
     }
     .model-item:hover {
-      transform: translate(-2px, -2px);
-      box-shadow: 3px 3px 0 var(--ink);
+      border-color: var(--border-hover);
     }
     .model-name {
-      font-family: 'Caveat', cursive;
-      font-size: 22px;
-      font-weight: 700;
+      font-size: 15px;
+      font-weight: 600;
     }
     .model-desc {
       font-size: 13px;
-      color: var(--ink-faint);
+      color: var(--text-tertiary);
+      margin-top: 2px;
     }
     .model-tag {
       flex-shrink: 0;
       padding: 4px 12px;
-      border-radius: 20px;
-      font-size: 12px;
-      font-weight: 700;
-      border: 2px solid;
+      border-radius: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
     }
-    .tag-text { border-color: var(--teal); color: var(--teal); background: var(--teal-light); }
-    .tag-image { border-color: var(--purple); color: var(--purple); background: var(--purple-light); }
-    .tag-audio { border-color: var(--blue); color: var(--blue); background: var(--blue-light); }
+    .tag-text { color: var(--green); background: var(--green-dim); }
+    .tag-image { color: var(--purple); background: var(--purple-dim); }
+    .tag-audio { color: var(--blue); background: var(--blue-dim); }
+
+    /* ==================== EARN SECTION ==================== */
+    .earn-header {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      margin-bottom: 40px;
+    }
+
+    .stat-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 28px;
+      text-align: center;
+    }
+    .stat-card .stat-value {
+      font-size: 48px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1;
+    }
+    .stat-green { color: var(--green); }
+    .stat-amber { color: var(--amber); }
+    .stat-card .stat-label {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-top: 8px;
+      font-weight: 500;
+    }
+    .stat-card .stat-detail {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      margin-top: 4px;
+    }
+
+    /* Install card */
+    .install-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .install-tabs {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+    }
+    .install-tabs button {
+      flex: 1;
+      padding: 14px 20px;
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: var(--bg-card);
+      color: var(--text-tertiary);
+    }
+    .install-tabs button.active {
+      background: var(--bg-surface);
+      color: var(--text);
+      box-shadow: inset 0 -2px 0 var(--blue);
+    }
+
+    .install-panel {
+      padding: 32px;
+    }
+
+    .install-panel .install-title {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .install-panel .install-desc {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-bottom: 20px;
+    }
+
+    .install-features {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-top: 20px;
+    }
+    .install-features span {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .install-meta {
+      display: flex;
+      gap: 16px;
+      margin-top: 12px;
+      font-size: 11px;
+      color: var(--text-tertiary);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* Calculator */
+    .calc-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+      margin-top: 32px;
+    }
+
+    .calc-card h3 {
+      font-size: 22px;
+      margin-bottom: 4px;
+    }
+
+    .calc-card .calc-desc {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-bottom: 28px;
+    }
+
+    .calc-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      display: block;
+      margin-bottom: 10px;
+    }
+
+    .calc-section {
+      margin-bottom: 24px;
+    }
+
+    .pill-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .calc-results {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 28px;
+    }
+
+    .result-card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 24px;
+      text-align: center;
+    }
+    .result-card.result-text {
+      background: rgba(52, 211, 153, 0.04);
+      border-color: rgba(52, 211, 153, 0.15);
+    }
+    .result-card.result-image {
+      background: rgba(167, 139, 250, 0.04);
+      border-color: rgba(167, 139, 250, 0.15);
+    }
+
+    .result-badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .badge-text { color: var(--green); background: var(--green-dim); }
+    .badge-image { color: var(--purple); background: var(--purple-dim); }
+
+    .result-model {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 4px;
+    }
+    .result-monthly {
+      font-size: 42px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1;
+    }
+    .monthly-green { color: var(--green); }
+    .monthly-purple { color: var(--purple); }
+    .result-annual {
+      font-size: 13px;
+      color: var(--text-tertiary);
+      margin-top: 6px;
+    }
+    .result-breakdown {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+    }
+    .result-breakdown .label {
+      font-size: 10px;
+      color: var(--text-tertiary);
+      font-family: 'JetBrains Mono', monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .result-breakdown .value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    /* Slider */
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 4px;
+      background: var(--bg-card);
+      border-radius: 2px;
+      outline: none;
+      margin-top: 8px;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--blue);
+      cursor: pointer;
+      border: 2px solid var(--bg);
+      box-shadow: 0 0 10px rgba(149, 191, 255, 0.3);
+    }
+
+    /* ==================== RESEARCH BANNER ==================== */
+    .research-banner {
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 0;
+      text-align: center;
+      font-size: 13px;
+      color: var(--text-secondary);
+      position: fixed;
+      top: 57px;
+      left: 0;
+      right: 0;
+      z-index: 99;
+    }
+    .research-banner .tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--amber);
+      background: var(--amber-dim);
+      padding: 3px 8px;
+      border-radius: 3px;
+      margin-right: 8px;
+    }
 
     /* ==================== FOOTER ==================== */
     footer {
-      padding: 40px 0;
-      border-top: 2px solid var(--ink);
-      border-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='4'%3E%3Cpath d='M0 2 Q20 0,40 2 Q60 4,80 2 Q100 0,120 2 Q140 4,160 2 Q180 0,200 2 Q220 4,240 2 Q260 0,280 2 Q300 4,320 2 Q340 0,360 2 Q380 4,400 2' fill='none' stroke='%233B2C35' stroke-width='2'/%3E%3C/svg%3E") 2 stretch;
+      padding: 48px 0;
+      border-top: 1px solid var(--border);
     }
     footer .footer-inner {
       display: flex;
@@ -666,66 +1004,52 @@
       gap: 16px;
     }
     footer .copy {
-      font-size: 14px;
-      color: var(--ink-faint);
+      font-size: 13px;
+      color: var(--text-tertiary);
     }
     footer .footer-links {
       display: flex;
-      gap: 20px;
-      font-size: 14px;
+      gap: 24px;
+      font-size: 13px;
     }
     footer .footer-links a {
-      color: var(--ink-faint);
-      font-weight: 600;
+      color: var(--text-tertiary);
+      font-weight: 500;
     }
-    footer .footer-links a:hover { color: var(--coral); }
-
-    /* ==================== RESEARCH BANNER ==================== */
-    .research-banner {
-      background: var(--gold-light);
-      border-bottom: 2.5px solid var(--ink);
-      border-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='4'%3E%3Cpath d='M0 2 Q20 0,40 2 Q60 4,80 2 Q100 0,120 2 Q140 4,160 2 Q180 0,200 2 Q220 4,240 2 Q260 0,280 2 Q300 4,320 2 Q340 0,360 2 Q380 4,400 2' fill='none' stroke='%233B2C35' stroke-width='2'/%3E%3C/svg%3E") 2 stretch;
-      padding: 10px 0;
-      text-align: center;
-      font-size: 14px;
-      color: var(--ink);
-    }
-    .research-banner svg {
-      vertical-align: -3px;
-      margin-right: 6px;
-    }
-    .research-banner strong {
-      font-family: 'Caveat', cursive;
-      font-size: 17px;
-      font-weight: 700;
-    }
-
-    /* ==================== DOODLES / DECORATIONS ==================== */
-    .doodle-star {
-      display: inline-block;
-      animation: twinkle 3s ease-in-out infinite;
-    }
-    @keyframes twinkle {
-      0%, 100% { opacity: 0.6; transform: scale(1); }
-      50% { opacity: 1; transform: scale(1.15); }
-    }
-
-    .float {
-      animation: float 6s ease-in-out infinite;
-    }
-    @keyframes float {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-8px); }
-    }
+    footer .footer-links a:hover { color: var(--text); }
 
     /* ==================== RESPONSIVE ==================== */
-    @media (max-width: 560px) {
-      .hero { padding: 40px 0 32px; }
-      .hero h1 { font-size: 38px; }
-      section { padding: 40px 0; }
-      .step { flex-direction: column; align-items: center; text-align: center; }
-      .earn-card { padding: 24px; }
+    @media (max-width: 768px) {
+      .hero { padding: 160px 0 80px; }
+      .hero h1 { font-size: 36px; }
+      section { padding: 64px 0; }
+      .thesis-grid, .trust-grid, .earn-header, .calc-results { grid-template-columns: 1fr; }
+      .steps { grid-template-columns: 1fr; }
+      .features { grid-template-columns: 1fr; }
+      .pricing-categories { grid-template-columns: 1fr; }
       .model-item { flex-direction: column; align-items: flex-start; gap: 8px; }
+      header .links { display: none; }
+    }
+
+    /* ==================== QUOTE SECTION ==================== */
+    .quote-block {
+      padding: 60px 0;
+      text-align: center;
+    }
+    .quote-block blockquote {
+      font-size: clamp(22px, 3vw, 32px);
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      line-height: 1.5;
+      color: var(--text);
+      max-width: 700px;
+      margin: 0 auto;
+      font-style: italic;
+    }
+    .quote-block .quote-attr {
+      margin-top: 16px;
+      font-size: 14px;
+      color: var(--text-tertiary);
     }
   </style>
 </head>
@@ -735,12 +1059,17 @@
   <header>
     <div class="container">
       <nav>
-        <a href="/" class="logo">Eigen<span>Inference</span></a>
+        <div class="logo-group">
+          <span class="logo-eigen">Eigen Labs</span>
+          <div class="logo-divider"></div>
+          <span class="logo-project">Project Lattice</span>
+        </div>
         <div class="links">
-          <a href="#how">How it works</a>
-          <a href="#pricing">Pricing</a>
+          <a href="#thesis">Thesis</a>
+          <a href="#how">Architecture</a>
           <a href="#developers">API</a>
-          <a href="#earn">Earn</a>
+          <a href="#pricing">Pricing</a>
+          <a href="#earn">Run a Node</a>
         </div>
       </nav>
     </div>
@@ -749,314 +1078,221 @@
   <!-- ============ RESEARCH BANNER ============ -->
   <div class="research-banner">
     <div class="container">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--ink)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2v-4M9 21H5a2 2 0 0 1-2-2v-4"/><path d="M3 9h18M3 15h18"/></svg>
-      <strong>Research Project</strong> &mdash; EigenInference is an experimental research prototype, not a production service. Expect rough edges, breaking changes, and downtime.
+      <span class="tag">Research Preview</span>
+      Experimental prototype — active development, expect breaking changes.
     </div>
   </div>
 
   <main>
 
     <!-- ============ HERO ============ -->
-    <section class="hero">
+    <section class="hero" style="padding-top: 200px;">
       <div class="container">
+        <div class="hero-label">
+          <span class="dot"></span>
+          An Eigen Labs Research Initiative
+        </div>
+
         <h1>
-          <!-- Hand-drawn "50% cheaper" sticker badge -->
-          <svg class="hero-badge" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M60 4 L68 22 L86 10 L82 30 L102 28 L90 44 L110 50 L92 58 L106 74 L86 72 L90 92 L72 82 L66 102 L58 82 L42 96 L44 76 L24 82 L34 64 L14 56 L32 48 L18 34 L38 34 L30 16 L48 24 L52 6Z" fill="var(--teal-light)" stroke="var(--ink)" stroke-width="2.5" stroke-linejoin="round"/>
-            <circle cx="60" cy="54" r="36" fill="var(--teal)" stroke="var(--ink)" stroke-width="2"/>
-            <text x="60" y="44" text-anchor="middle" font-family="Caveat, cursive" font-size="24" font-weight="700" fill="var(--white)">50%</text>
-            <text x="60" y="64" text-anchor="middle" font-family="Caveat, cursive" font-size="15" font-weight="700" fill="var(--teal-light)">cheaper</text>
-          </svg>
-          Use AI models<br>
-          <span class="highlight">privately</span>
+          What if every idle Mac<br>
+          became a <span class="gradient-text">verified AI node</span>?
         </h1>
+
         <p class="subtitle">
-          OpenAI-compatible inference on hardware-verified Apple Silicon Macs.
-          Your prompts are encrypted end-to-end. No one sees your data &mdash; not even us.
+          Project Lattice is building the first decentralized inference network
+          where every compute node is hardware-attested, every prompt is end-to-end
+          encrypted, and every Mac owner gets paid. OpenAI-compatible. Drop-in ready.
         </p>
+
         <div class="ctas">
-          <a href="#developers" class="btn btn-coral">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="16,18 22,12 16,6"/><polyline points="8,6 2,12 8,18"/></svg>
+          <a href="#developers" class="btn btn-primary">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="16,18 22,12 16,6"/><polyline points="8,6 2,12 8,18"/></svg>
             Start building
           </a>
-          <a href="#earn" class="btn btn-gold">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M14.5 9.5a3 3 0 1 0 0 5M12 6v1.5M12 16.5V18"/></svg>
-            Earn with your Mac
+          <a href="#earn" class="btn btn-secondary">
+            Run a node
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/></svg>
           </a>
         </div>
 
-        <!-- Hero Illustration: hand-drawn network diagram -->
-        <div class="hero-illustration float">
-          <svg viewBox="0 0 600 280" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <!-- User with laptop -->
-            <g transform="translate(40, 80)">
-              <!-- person head -->
-              <circle cx="35" cy="20" r="16" fill="var(--coral-light)" stroke="var(--ink)" stroke-width="3"/>
-              <!-- eyes -->
-              <circle cx="30" cy="18" r="2" fill="var(--ink)"/>
-              <circle cx="40" cy="18" r="2" fill="var(--ink)"/>
-              <!-- smile -->
-              <path d="M30 24 Q35 29, 40 24" stroke="var(--ink)" stroke-width="2" fill="none" stroke-linecap="round"/>
-              <!-- body -->
-              <path d="M20 36 Q18 45, 20 60 Q22 62, 35 62 Q48 62, 50 60 Q52 45, 50 36 Q48 34, 35 34 Q22 34, 20 36Z" fill="var(--blue-light)" stroke="var(--ink)" stroke-width="2.5"/>
-              <!-- laptop -->
-              <rect x="10" y="56" width="50" height="32" rx="4" fill="var(--white)" stroke="var(--ink)" stroke-width="2.5"/>
-              <rect x="15" y="60" width="40" height="22" rx="2" fill="var(--bg-warm)" stroke="var(--ink)" stroke-width="1.5"/>
-              <!-- screen content - lock -->
-              <path d="M32 67 L32 72 Q32 75, 38 75 Q44 75, 44 72 L44 67 Q44 64, 38 64 Q32 64, 32 67Z" fill="var(--teal-light)" stroke="var(--teal-dark)" stroke-width="1.5"/>
-              <!-- laptop base -->
-              <path d="M5 88 Q7 92, 35 93 Q63 92, 65 88 L60 88 Q58 90, 35 90 Q12 90, 10 88Z" fill="var(--white)" stroke="var(--ink)" stroke-width="2"/>
-              <!-- label -->
-              <text x="35" y="110" text-anchor="middle" font-family="Caveat, cursive" font-size="16" font-weight="700" fill="var(--ink)">You</text>
+        <!-- Hero Network Visualization -->
+        <div class="hero-visual">
+          <svg class="network-diagram" viewBox="0 0 900 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Connection lines (drawn first, behind everything) -->
+            <path d="M190 160 Q300 140, 370 160" stroke="var(--blue)" stroke-width="1" opacity="0.3" stroke-dasharray="4 4">
+              <animate attributeName="stroke-dashoffset" values="8;0" dur="2s" repeatCount="indefinite"/>
+            </path>
+            <path d="M530 160 Q600 80, 680 60" stroke="var(--blue)" stroke-width="1" opacity="0.3" stroke-dasharray="4 4">
+              <animate attributeName="stroke-dashoffset" values="8;0" dur="2s" repeatCount="indefinite"/>
+            </path>
+            <path d="M530 160 Q600 160, 680 155" stroke="var(--blue)" stroke-width="1" opacity="0.3" stroke-dasharray="4 4">
+              <animate attributeName="stroke-dashoffset" values="8;0" dur="1.8s" repeatCount="indefinite"/>
+            </path>
+            <path d="M530 160 Q600 240, 680 260" stroke="var(--blue)" stroke-width="1" opacity="0.3" stroke-dasharray="4 4">
+              <animate attributeName="stroke-dashoffset" values="8;0" dur="2.2s" repeatCount="indefinite"/>
+            </path>
+
+            <!-- User node -->
+            <g transform="translate(80, 110)">
+              <rect x="0" y="0" width="110" height="100" rx="10" fill="var(--bg-surface)" stroke="var(--border-hover)" stroke-width="1.5"/>
+              <text x="55" y="35" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="var(--text-tertiary)" font-weight="600">CLIENT</text>
+              <!-- Terminal icon -->
+              <rect x="30" y="45" width="50" height="35" rx="4" fill="var(--bg-card)" stroke="var(--border-hover)" stroke-width="1"/>
+              <text x="40" y="66" font-family="JetBrains Mono, monospace" font-size="9" fill="var(--green)">$_</text>
             </g>
 
-            <!-- Encrypted arrow 1 -->
-            <g transform="translate(115, 135)">
-              <path d="M0 10 Q30 5, 60 10 Q90 15, 115 10" stroke="var(--ink)" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-dasharray="6 4"/>
-              <polygon points="115,10 105,4 107,10 105,16" fill="var(--ink)"/>
-              <text x="58" y="0" text-anchor="middle" font-family="Caveat, cursive" font-size="13" fill="var(--ink-faint)">encrypted</text>
+            <!-- Encrypted label -->
+            <g transform="translate(230, 140)">
+              <rect x="0" y="0" width="100" height="24" rx="4" fill="var(--green-dim)"/>
+              <text x="50" y="16" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="var(--green)" font-weight="600">E2E ENCRYPTED</text>
             </g>
 
-            <!-- Coordinator box -->
-            <g transform="translate(230, 65)">
-              <rect x="0" y="0" width="130" height="80" rx="8" fill="var(--teal-light)" stroke="var(--ink)" stroke-width="3"/>
-              <!-- hatching for TEE look -->
-              <line x1="10" y1="10" x2="25" y2="25" stroke="var(--teal)" stroke-width="1" opacity="0.3"/>
-              <line x1="25" y1="10" x2="40" y2="25" stroke="var(--teal)" stroke-width="1" opacity="0.3"/>
-              <line x1="40" y1="10" x2="55" y2="25" stroke="var(--teal)" stroke-width="1" opacity="0.3"/>
-              <line x1="55" y1="10" x2="70" y2="25" stroke="var(--teal)" stroke-width="1" opacity="0.3"/>
-              <!-- shield icon -->
-              <g transform="translate(45, 12)">
-                <path d="M20 0 L38 8 L38 24 Q38 38, 20 44 Q2 38, 2 24 L2 8Z" fill="var(--teal)" stroke="var(--ink)" stroke-width="2"/>
-                <polyline points="12,22 18,28 28,16" fill="none" stroke="var(--white)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+            <!-- Coordinator -->
+            <g transform="translate(370, 100)">
+              <rect x="0" y="0" width="160" height="120" rx="10" fill="var(--bg-surface)" stroke="rgba(149, 191, 255, 0.2)" stroke-width="1.5"/>
+              <!-- Shield -->
+              <g transform="translate(56, 16)">
+                <path d="M24 0 L46 10 L46 28 Q46 42, 24 48 Q2 42, 2 28 L2 10Z" fill="var(--indigo)" stroke="rgba(149, 191, 255, 0.3)" stroke-width="1.5"/>
+                <polyline points="14,24 20,30 34,18" fill="none" stroke="var(--blue)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
               </g>
-              <text x="65" y="72" text-anchor="middle" font-family="Caveat, cursive" font-size="16" font-weight="700" fill="var(--ink)">Coordinator</text>
+              <text x="80" y="80" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="var(--text-tertiary)" font-weight="600">COORDINATOR</text>
+              <text x="80" y="96" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="var(--text-tertiary)">score &amp; route</text>
             </g>
 
-            <!-- Coordinator label: routes to trusted Macs -->
-            <text x="295" y="60" text-anchor="middle" font-family="Caveat, cursive" font-size="13" fill="var(--ink-faint)">routes to verified Macs</text>
-
-            <!-- Arrows from coordinator to Macs -->
-            <g>
-              <!-- top arrow -->
-              <path d="M360 90 Q400 50, 440 40" stroke="var(--ink)" stroke-width="2" fill="none" stroke-linecap="round"/>
-              <polygon points="440,40 432,34 434,42 430,48" fill="var(--ink)"/>
-              <!-- middle arrow -->
-              <path d="M360 105 Q400 105, 440 105" stroke="var(--ink)" stroke-width="2" fill="none" stroke-linecap="round"/>
-              <polygon points="440,105 432,99 434,105 432,111" fill="var(--ink)"/>
-              <!-- bottom arrow -->
-              <path d="M360 120 Q400 160, 440 170" stroke="var(--ink)" stroke-width="2" fill="none" stroke-linecap="round"/>
-              <polygon points="440,170 432,164 434,172 430,178" fill="var(--ink)"/>
+            <!-- Mac nodes -->
+            <g transform="translate(680, 20)">
+              <rect x="0" y="0" width="140" height="76" rx="8" fill="var(--bg-surface)" stroke="var(--border-hover)" stroke-width="1.5"/>
+              <text x="14" y="22" font-family="JetBrains Mono, monospace" font-size="9" fill="var(--text-tertiary)" font-weight="600">NODE-01</text>
+              <rect x="96" y="10" width="32" height="16" rx="3" fill="var(--green-dim)"/>
+              <text x="112" y="22" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="8" fill="var(--green)" font-weight="600">LIVE</text>
+              <text x="14" y="42" font-family="JetBrains Mono, monospace" font-size="11" fill="var(--text)" font-weight="600">M4 Max · 128GB</text>
+              <text x="14" y="58" font-family="JetBrains Mono, monospace" font-size="9" fill="var(--text-tertiary)">SE attested · SIP ✓</text>
             </g>
 
-            <!-- Mac 1 -->
-            <g transform="translate(440, 10)">
-              <rect x="0" y="0" width="100" height="55" rx="6" fill="var(--white)" stroke="var(--ink)" stroke-width="2.5"/>
-              <rect x="6" y="5" width="88" height="38" rx="3" fill="var(--purple-light)" stroke="var(--ink)" stroke-width="1.5"/>
-              <text x="50" y="28" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="var(--purple)">M3 Max</text>
-              <path d="M30 55 Q32 60, 50 61 Q68 60, 70 55" stroke="var(--ink)" stroke-width="2" fill="var(--white)"/>
-              <!-- apple-ish icon -->
-              <circle cx="50" cy="50" r="3" fill="var(--ink-faint)"/>
-              <!-- lock overlay -->
-              <g transform="translate(75, 2)">
-                <rect x="0" y="6" width="16" height="12" rx="3" fill="var(--teal)" stroke="var(--ink)" stroke-width="1.5"/>
-                <path d="M4 6 L4 3 Q4 0, 8 0 Q12 0, 12 3 L12 6" stroke="var(--ink)" stroke-width="1.5" fill="none"/>
-              </g>
+            <g transform="translate(690, 118)">
+              <rect x="0" y="0" width="140" height="76" rx="8" fill="var(--bg-surface)" stroke="var(--border-hover)" stroke-width="1.5"/>
+              <text x="14" y="22" font-family="JetBrains Mono, monospace" font-size="9" fill="var(--text-tertiary)" font-weight="600">NODE-02</text>
+              <rect x="96" y="10" width="32" height="16" rx="3" fill="var(--green-dim)"/>
+              <text x="112" y="22" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="8" fill="var(--green)" font-weight="600">LIVE</text>
+              <text x="14" y="42" font-family="JetBrains Mono, monospace" font-size="11" fill="var(--text)" font-weight="600">M3 Ultra · 192GB</text>
+              <text x="14" y="58" font-family="JetBrains Mono, monospace" font-size="9" fill="var(--text-tertiary)">SE attested · SIP ✓</text>
             </g>
 
-            <!-- Mac 2 -->
-            <g transform="translate(450, 78)">
-              <rect x="0" y="0" width="100" height="55" rx="6" fill="var(--white)" stroke="var(--ink)" stroke-width="2.5"/>
-              <rect x="6" y="5" width="88" height="38" rx="3" fill="var(--gold-light)" stroke="var(--ink)" stroke-width="1.5"/>
-              <text x="50" y="28" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="var(--gold)">M4 Max</text>
-              <path d="M30 55 Q32 60, 50 61 Q68 60, 70 55" stroke="var(--ink)" stroke-width="2" fill="var(--white)"/>
-              <circle cx="50" cy="50" r="3" fill="var(--ink-faint)"/>
-              <g transform="translate(75, 2)">
-                <rect x="0" y="6" width="16" height="12" rx="3" fill="var(--teal)" stroke="var(--ink)" stroke-width="1.5"/>
-                <path d="M4 6 L4 3 Q4 0, 8 0 Q12 0, 12 3 L12 6" stroke="var(--ink)" stroke-width="1.5" fill="none"/>
-              </g>
-            </g>
-
-            <!-- Mac 3 -->
-            <g transform="translate(440, 150)">
-              <rect x="0" y="0" width="100" height="55" rx="6" fill="var(--white)" stroke="var(--ink)" stroke-width="2.5"/>
-              <rect x="6" y="5" width="88" height="38" rx="3" fill="var(--coral-light)" stroke="var(--ink)" stroke-width="1.5"/>
-              <text x="50" y="28" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="var(--coral)">Mac Studio</text>
-              <path d="M30 55 Q32 60, 50 61 Q68 60, 70 55" stroke="var(--ink)" stroke-width="2" fill="var(--white)"/>
-              <circle cx="50" cy="50" r="3" fill="var(--ink-faint)"/>
-              <g transform="translate(75, 2)">
-                <rect x="0" y="6" width="16" height="12" rx="3" fill="var(--teal)" stroke="var(--ink)" stroke-width="1.5"/>
-                <path d="M4 6 L4 3 Q4 0, 8 0 Q12 0, 12 3 L12 6" stroke="var(--ink)" stroke-width="1.5" fill="none"/>
-              </g>
-            </g>
-
-            <!-- Decorative stars -->
-            <g class="doodle-star" transform="translate(180, 50)">
-              <path d="M4 0 L5 3 L8 4 L5 5 L4 8 L3 5 L0 4 L3 3Z" fill="var(--gold)"/>
-            </g>
-            <g class="doodle-star" style="animation-delay: 1s" transform="translate(420, 155)">
-              <path d="M4 0 L5 3 L8 4 L5 5 L4 8 L3 5 L0 4 L3 3Z" fill="var(--coral)"/>
-            </g>
-            <g class="doodle-star" style="animation-delay: 2s" transform="translate(350, 30)">
-              <path d="M3 0 L4 2 L6 3 L4 4 L3 6 L2 4 L0 3 L2 2Z" fill="var(--purple)"/>
-            </g>
-
-            <!-- Checkmarks below Macs -->
-            <g transform="translate(460, 220)">
-              <text x="55" y="14" text-anchor="middle" font-family="Caveat, cursive" font-size="13" fill="var(--ink-faint)">hardware-attested &amp; encrypted</text>
+            <g transform="translate(680, 220)">
+              <rect x="0" y="0" width="140" height="76" rx="8" fill="var(--bg-surface)" stroke="var(--border-hover)" stroke-width="1.5"/>
+              <text x="14" y="22" font-family="JetBrains Mono, monospace" font-size="9" fill="var(--text-tertiary)" font-weight="600">NODE-03</text>
+              <rect x="96" y="10" width="32" height="16" rx="3" fill="var(--amber-dim)"/>
+              <text x="112" y="22" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="8" fill="var(--amber)" font-weight="600">BUSY</text>
+              <text x="14" y="42" font-family="JetBrains Mono, monospace" font-size="11" fill="var(--text)" font-weight="600">Mac Studio · 96GB</text>
+              <text x="14" y="58" font-family="JetBrains Mono, monospace" font-size="9" fill="var(--text-tertiary)">SE attested · SIP ✓</text>
             </g>
           </svg>
         </div>
       </div>
     </section>
 
-    <!-- Squiggly divider -->
-    <div class="container">
-      <svg class="squiggle" viewBox="0 0 600 12" preserveAspectRatio="none">
-        <path d="M0 6 Q15 2,30 6 Q45 10,60 6 Q75 2,90 6 Q105 10,120 6 Q135 2,150 6 Q165 10,180 6 Q195 2,210 6 Q225 10,240 6 Q255 2,270 6 Q285 10,300 6 Q315 2,330 6 Q345 10,360 6 Q375 2,390 6 Q405 10,420 6 Q435 2,450 6 Q465 10,480 6 Q495 2,510 6 Q525 10,540 6 Q555 2,570 6 Q585 10,600 6" fill="none" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>
-      </svg>
-    </div>
+    <div class="container"><div class="divider"></div></div>
+
+    <!-- ============ THESIS ============ -->
+    <section id="thesis">
+      <div class="container">
+        <span class="section-label">The Thesis</span>
+        <h2>AI inference shouldn't require trust</h2>
+        <p class="section-sub">
+          Cloud inference asks you to trust a corporation with your prompts, your data, your IP.
+          We're building the alternative.
+        </p>
+
+        <div class="thesis-grid">
+          <div class="thesis-card">
+            <div class="thesis-icon icon-blue">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            </div>
+            <div class="card-num">01</div>
+            <h3>End-to-end encrypted</h3>
+            <p>Your prompts are encrypted with the provider's X25519 public key before they leave your machine. The coordinator routes but never reads. NaCl box construction.</p>
+          </div>
+
+          <div class="thesis-card">
+            <div class="thesis-icon icon-green">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            </div>
+            <div class="card-num">02</div>
+            <h3>Hardware-attested</h3>
+            <p>Every node proves identity through Apple Secure Enclave. P-256 keys in tamper-resistant silicon. Apple Enterprise Attestation CA chains verified by the coordinator.</p>
+          </div>
+
+          <div class="thesis-card">
+            <div class="thesis-icon icon-purple">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            </div>
+            <div class="card-num">03</div>
+            <h3>Hardened runtime</h3>
+            <p>Anti-debug (PT_DENY_ATTACH), binary self-hash, SIP enforced, Hypervisor.framework memory isolation. The Mac owner cannot access inference memory.</p>
+          </div>
+
+          <div class="thesis-card">
+            <div class="thesis-icon icon-amber">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            </div>
+            <div class="card-num">04</div>
+            <h3>Decentralized by design</h3>
+            <p>No cloud vendor lock-in. No GPU rental queues. A global mesh of Apple Silicon machines scored by decode speed, trust level, and hardware health.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="container"><div class="divider"></div></div>
 
     <!-- ============ HOW IT WORKS ============ -->
     <section id="how">
       <div class="container">
+        <span class="section-label">Architecture</span>
         <h2>How it works</h2>
-        <p class="section-sub">Three steps. No GPU rentals, no cloud lock-in.</p>
+        <p class="section-sub">Three steps. No GPU rentals, no cloud accounts, no data retention.</p>
 
         <div class="steps">
-          <!-- Step 1 -->
           <div class="step">
-            <div class="step-icon">
-              <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
-                <circle cx="32" cy="32" r="28" fill="var(--coral-light)" stroke="var(--ink)" stroke-width="3"/>
-                <text x="32" y="40" text-anchor="middle" font-family="Caveat, cursive" font-size="28" font-weight="700" fill="var(--ink)">1</text>
-              </svg>
-            </div>
-            <div class="step-content">
-              <h3>Send a request</h3>
-              <p>Use the OpenAI-compatible API. Your prompt is encrypted with the provider's public key before it leaves your machine. The coordinator never sees plaintext.</p>
-            </div>
+            <div class="step-num">01</div>
+            <h3>Send a request</h3>
+            <p>Use the OpenAI-compatible API. Your prompt is encrypted with the provider's public key before it leaves your machine. The coordinator never sees plaintext.</p>
           </div>
 
-          <!-- Step 2 -->
           <div class="step">
-            <div class="step-icon">
-              <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
-                <circle cx="32" cy="32" r="28" fill="var(--teal-light)" stroke="var(--ink)" stroke-width="3"/>
-                <text x="32" y="40" text-anchor="middle" font-family="Caveat, cursive" font-size="28" font-weight="700" fill="var(--ink)">2</text>
-              </svg>
-            </div>
-            <div class="step-content">
-              <h3>Matched to a verified Mac</h3>
-              <p>The coordinator scores providers by decode speed, trust level, hardware health, and thermal state -- then routes to the best available Apple Silicon machine.</p>
-            </div>
+            <div class="step-num">02</div>
+            <h3>Matched to a verified node</h3>
+            <p>The coordinator scores providers by decode speed, trust level, thermal state, and memory pressure — then routes to the optimal Apple Silicon machine.</p>
           </div>
 
-          <!-- Step 3 -->
           <div class="step">
-            <div class="step-icon">
-              <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
-                <circle cx="32" cy="32" r="28" fill="var(--gold-light)" stroke="var(--ink)" stroke-width="3"/>
-                <text x="32" y="40" text-anchor="middle" font-family="Caveat, cursive" font-size="28" font-weight="700" fill="var(--ink)">3</text>
-              </svg>
-            </div>
-            <div class="step-content">
-              <h3>Get your response</h3>
-              <p>Inference runs in a hardened, isolated process with anti-tamper protections. Results stream back encrypted. The Mac owner cannot see your prompt or output.</p>
-            </div>
+            <div class="step-num">03</div>
+            <h3>Get your response</h3>
+            <p>Inference runs in a hardened, isolated process with anti-tamper protections. Results stream back encrypted. The node operator cannot see your prompt or output.</p>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Squiggly divider -->
+    <div class="container"><div class="divider"></div></div>
+
+    <!-- ============ QUOTE ============ -->
     <div class="container">
-      <svg class="squiggle" viewBox="0 0 600 12" preserveAspectRatio="none">
-        <path d="M0 6 Q15 2,30 6 Q45 10,60 6 Q75 2,90 6 Q105 10,120 6 Q135 2,150 6 Q165 10,180 6 Q195 2,210 6 Q225 10,240 6 Q255 2,270 6 Q285 10,300 6 Q315 2,330 6 Q345 10,360 6 Q375 2,390 6 Q405 10,420 6 Q435 2,450 6 Q465 10,480 6 Q495 2,510 6 Q525 10,540 6 Q555 2,570 6 Q585 10,600 6" fill="none" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>
-      </svg>
-    </div>
-
-    <!-- ============ TRUST / SECURITY ============ -->
-    <section id="trust">
-      <div class="container">
-        <h2>Verify, don't trust</h2>
-        <p class="section-sub">Every layer gives you proof, not promises.</p>
-
-        <div class="trust-grid">
-          <!-- Card 1: Hardware -->
-          <div class="trust-card card-teal">
-            <div class="card-icon">
-              <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-                <rect x="4" y="4" width="20" height="20" rx="4" fill="var(--teal)" stroke="var(--ink)" stroke-width="2"/>
-                <rect x="8" y="8" width="12" height="12" rx="2" fill="var(--teal-light)" stroke="var(--ink)" stroke-width="1.5"/>
-                <line x1="1" y1="10" x2="4" y2="10" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>
-                <line x1="1" y1="18" x2="4" y2="18" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>
-                <line x1="24" y1="10" x2="27" y2="10" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>
-                <line x1="24" y1="18" x2="27" y2="18" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>
-                <line x1="10" y1="1" x2="10" y2="4" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>
-                <line x1="18" y1="1" x2="18" y2="4" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>
-                <line x1="10" y1="24" x2="10" y2="27" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>
-                <line x1="18" y1="24" x2="18" y2="27" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>
-              </svg>
-            </div>
-            <h3>Hardware Verified</h3>
-            <p>Every Mac proves it's genuine via Apple Secure Enclave. P-256 keys generated in tamper-resistant silicon.</p>
-          </div>
-
-          <!-- Card 2: E2E -->
-          <div class="trust-card card-blue">
-            <div class="card-icon">
-              <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-                <rect x="3" y="12" width="22" height="14" rx="4" fill="var(--blue)" stroke="var(--ink)" stroke-width="2"/>
-                <path d="M8 12 L8 8 Q8 3, 14 3 Q20 3, 20 8 L20 12" stroke="var(--ink)" stroke-width="2.5" fill="none" stroke-linecap="round"/>
-                <circle cx="14" cy="19" r="2.5" fill="var(--white)"/>
-                <line x1="14" y1="21" x2="14" y2="24" stroke="var(--white)" stroke-width="2" stroke-linecap="round"/>
-              </svg>
-            </div>
-            <h3>End-to-End Encrypted</h3>
-            <p>Prompts encrypted with provider's X25519 key using NaCl box. The coordinator routes but never reads.</p>
-          </div>
-
-          <!-- Card 3: Apple Signed -->
-          <div class="trust-card card-purple">
-            <div class="card-icon">
-              <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-                <path d="M14 2 L25 8 L25 16 Q25 24, 14 27 Q3 24, 3 16 L3 8Z" fill="var(--purple)" stroke="var(--ink)" stroke-width="2"/>
-                <polyline points="9,15 12,18 19,11" fill="none" stroke="var(--white)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            </div>
-            <h3>Apple-Signed Attestation</h3>
-            <p>Device certs from Apple's Enterprise Attestation CA. MDM SecurityInfo cross-check validates hardware identity.</p>
-          </div>
-
-          <!-- Card 4: Hardened -->
-          <div class="trust-card card-coral">
-            <div class="card-icon">
-              <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-                <path d="M14 2 L25 8 L25 16 Q25 24, 14 27 Q3 24, 3 16 L3 8Z" fill="var(--coral)" stroke="var(--ink)" stroke-width="2"/>
-                <line x1="14" y1="10" x2="14" y2="17" stroke="var(--white)" stroke-width="2.5" stroke-linecap="round"/>
-                <circle cx="14" cy="21" r="1.5" fill="var(--white)"/>
-              </svg>
-            </div>
-            <h3>Hardened Process</h3>
-            <p>Anti-debug, binary self-hash, SIP enforced. No memory access to prompts or outputs -- even by the Mac owner.</p>
-          </div>
-        </div>
+      <div class="quote-block">
+        <blockquote>
+          "The question isn't whether AI inference will decentralize — it's whether the decentralized network can be trusted. That's the hard problem. That's what Lattice solves."
+        </blockquote>
       </div>
-    </section>
-
-    <!-- Squiggly divider -->
-    <div class="container">
-      <svg class="squiggle" viewBox="0 0 600 12" preserveAspectRatio="none">
-        <path d="M0 6 Q15 2,30 6 Q45 10,60 6 Q75 2,90 6 Q105 10,120 6 Q135 2,150 6 Q165 10,180 6 Q195 2,210 6 Q225 10,240 6 Q255 2,270 6 Q285 10,300 6 Q315 2,330 6 Q345 10,360 6 Q375 2,390 6 Q405 10,420 6 Q435 2,450 6 Q465 10,480 6 Q495 2,510 6 Q525 10,540 6 Q555 2,570 6 Q585 10,600 6" fill="none" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>
-      </svg>
     </div>
+
+    <div class="container"><div class="divider"></div></div>
 
     <!-- ============ FOR DEVELOPERS ============ -->
     <section id="developers">
       <div class="container">
-        <h2>For developers</h2>
-        <p class="section-sub">Drop-in replacement for the OpenAI API. Change one line.</p>
+        <span class="section-label">For Developers</span>
+        <h2>One line to switch</h2>
+        <p class="section-sub">Drop-in replacement for the OpenAI API. Change your base URL.</p>
 
         <div class="code-wrapper">
           <div class="code-bar">
@@ -1068,7 +1304,7 @@
           <pre><code><span class="kw">from</span> openai <span class="kw">import</span> OpenAI
 
 client = OpenAI(
-    base_url=<span class="str">"https://inference-test.openinnovation.dev/v1"</span>,
+    base_url=<span class="str">"https://inference.eigencloud.xyz/v1"</span>,
     api_key=<span class="str">"your-api-key"</span>
 )
 
@@ -1084,56 +1320,39 @@ response = client.chat.completions.create(
 
         <div class="features">
           <div class="feature-item">
-            <svg class="feature-dot" viewBox="0 0 20 20" fill="none">
-              <circle cx="10" cy="10" r="8" fill="var(--teal-light)" stroke="var(--ink)" stroke-width="2"/>
-              <polyline points="6,10 9,13 14,7" fill="none" stroke="var(--ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span><strong>Streaming</strong> -- server-sent events, same format as OpenAI</span>
+            <svg class="feature-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
+            <span><strong>Streaming</strong> — SSE, same format as OpenAI</span>
           </div>
           <div class="feature-item">
-            <svg class="feature-dot" viewBox="0 0 20 20" fill="none">
-              <circle cx="10" cy="10" r="8" fill="var(--purple-light)" stroke="var(--ink)" stroke-width="2"/>
-              <polyline points="6,10 9,13 14,7" fill="none" stroke="var(--ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span><strong>Image generation</strong> -- FLUX.2 via Metal-accelerated diffusion</span>
+            <svg class="feature-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
+            <span><strong>Image generation</strong> — FLUX.2 via Metal</span>
           </div>
           <div class="feature-item">
-            <svg class="feature-dot" viewBox="0 0 20 20" fill="none">
-              <circle cx="10" cy="10" r="8" fill="var(--blue-light)" stroke="var(--ink)" stroke-width="2"/>
-              <polyline points="6,10 9,13 14,7" fill="none" stroke="var(--ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span><strong>Speech-to-text</strong> -- Cohere Transcribe, best-in-class accuracy</span>
+            <svg class="feature-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
+            <span><strong>Speech-to-text</strong> — Cohere Transcribe</span>
           </div>
           <div class="feature-item">
-            <svg class="feature-dot" viewBox="0 0 20 20" fill="none">
-              <circle cx="10" cy="10" r="8" fill="var(--gold-light)" stroke="var(--ink)" stroke-width="2"/>
-              <polyline points="6,10 9,13 14,7" fill="none" stroke="var(--ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span><strong>Large models</strong> -- up to 239B MoE on high-RAM Mac Studios</span>
+            <svg class="feature-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
+            <span><strong>Large MoE models</strong> — up to 239B params</span>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Squiggly divider -->
-    <div class="container">
-      <svg class="squiggle" viewBox="0 0 600 12" preserveAspectRatio="none">
-        <path d="M0 6 Q15 2,30 6 Q45 10,60 6 Q75 2,90 6 Q105 10,120 6 Q135 2,150 6 Q165 10,180 6 Q195 2,210 6 Q225 10,240 6 Q255 2,270 6 Q285 10,300 6 Q315 2,330 6 Q345 10,360 6 Q375 2,390 6 Q405 10,420 6 Q435 2,450 6 Q465 10,480 6 Q495 2,510 6 Q525 10,540 6 Q555 2,570 6 Q585 10,600 6" fill="none" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>
-      </svg>
-    </div>
+    <div class="container"><div class="divider"></div></div>
 
     <!-- ============ PRICING ============ -->
     <section id="pricing">
       <div class="container">
-        <h2>Pricing</h2>
-        <p class="section-sub">Same models, half the price. No subscriptions.</p>
+        <span class="section-label">Pricing</span>
+        <h2>Same models, half the price</h2>
+        <p class="section-sub">No subscriptions. Pay per token. No minimums.</p>
 
         <div class="pricing-banner">
           <span class="savings">50% cheaper</span>
           <span class="savings-sub">than OpenRouter, for every model</span>
         </div>
 
-        <!-- Text models pricing table -->
         <div style="overflow-x: auto;">
           <table class="pricing-table">
             <thead>
@@ -1142,7 +1361,7 @@ response = client.chat.completions.create(
                 <th>Input</th>
                 <th>Output</th>
                 <th>OpenRouter</th>
-                <th>You save</th>
+                <th>Savings</th>
               </tr>
             </thead>
             <tbody>
@@ -1181,7 +1400,6 @@ response = client.chat.completions.create(
         </div>
         <p class="pricing-note">Prices per million tokens. Input tokens always cheaper than output.</p>
 
-        <!-- Image + Audio mini cards -->
         <div class="pricing-categories">
           <div class="pricing-mini">
             <h4>Image Generation</h4>
@@ -1197,100 +1415,93 @@ response = client.chat.completions.create(
           </div>
           <div class="pricing-mini">
             <h4>Platform Fee</h4>
-            <div class="mini-price">5%</div>
-            <div class="mini-unit">providers keep 95%</div>
-            <div class="mini-vs" style="text-decoration: none; color: var(--teal);">transparent split</div>
+            <div class="mini-price" style="color: var(--text);">5%</div>
+            <div class="mini-unit">node operators keep 95%</div>
+            <div class="mini-vs" style="text-decoration: none; color: var(--green);">transparent split</div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Squiggly divider -->
-    <div class="container">
-      <svg class="squiggle" viewBox="0 0 600 12" preserveAspectRatio="none">
-        <path d="M0 6 Q15 2,30 6 Q45 10,60 6 Q75 2,90 6 Q105 10,120 6 Q135 2,150 6 Q165 10,180 6 Q195 2,210 6 Q225 10,240 6 Q255 2,270 6 Q285 10,300 6 Q315 2,330 6 Q345 10,360 6 Q375 2,390 6 Q405 10,420 6 Q435 2,450 6 Q465 10,480 6 Q495 2,510 6 Q525 10,540 6 Q555 2,570 6 Q585 10,600 6" fill="none" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>
-      </svg>
-    </div>
+    <div class="container"><div class="divider"></div></div>
 
-    <!-- ============ EARN ============ -->
+    <!-- ============ EARN / RUN A NODE ============ -->
     <section id="earn">
       <div class="container">
-        <h2>For Mac owners</h2>
-        <p class="section-sub">Put your idle Mac to work. Experimental &mdash; join the research network.</p>
+        <span class="section-label">Run a Node</span>
+        <h2>Put your Mac to work</h2>
+        <p class="section-sub">Every idle Apple Silicon machine is wasted compute. Join the lattice.</p>
 
-        <!-- START EARNING CTA -- first thing they see -->
-        <div class="earn-card" style="margin-bottom: 32px;">
-          <h3>Start earning in 60 seconds</h3>
-          <p style="margin-bottom: 20px;">Choose your install method:</p>
+        <!-- Stats -->
+        <div class="earn-header">
+          <div class="stat-card">
+            <div class="stat-value stat-green">95%</div>
+            <div class="stat-label">goes to you</div>
+            <div class="stat-detail">only 5% platform fee</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value stat-amber">~90%+</div>
+            <div class="stat-label">profit margin</div>
+            <div class="stat-detail">electricity costs are negligible on Apple Silicon</div>
+          </div>
+        </div>
 
-          <!-- Toggle tabs -->
-          <div style="display: flex; gap: 0; margin-bottom: 0;" id="install-tabs">
-            <button id="tab-app" onclick="switchInstallTab('app')"
-              style="flex: 1; padding: 12px 20px; font-family: 'Caveat', cursive; font-size: 20px; font-weight: 700; border: 3px solid var(--ink); border-radius: 10px 10px 0 0; border-bottom: none; cursor: pointer; transition: background 0.15s; background: var(--gold-light); color: var(--ink);">
-              <!-- mac icon -->
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display: inline; vertical-align: -3px; margin-right: 6px;"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <!-- Install -->
+        <div class="install-card">
+          <div class="install-tabs" id="install-tabs">
+            <button class="active" id="tab-app" onclick="switchInstallTab('app')">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
               Mac App
             </button>
-            <button id="tab-cli" onclick="switchInstallTab('cli')"
-              style="flex: 1; padding: 12px 20px; font-family: 'Caveat', cursive; font-size: 20px; font-weight: 700; border: 3px solid var(--ink); border-radius: 10px 10px 0 0; border-bottom: none; cursor: pointer; transition: background 0.15s; background: var(--bg-warm); color: var(--ink-light);">
-              <!-- terminal icon -->
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display: inline; vertical-align: -3px; margin-right: 6px;"><polyline points="4,17 10,11 4,5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+            <button id="tab-cli" onclick="switchInstallTab('cli')">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4,17 10,11 4,5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
               CLI
             </button>
           </div>
 
-          <!-- App install panel -->
-          <div id="panel-app" style="border: 3px solid var(--ink); border-top: none; border-radius: 0 0 12px 12px; padding: 24px; background: var(--white);">
-            <div style="text-align: center; margin-bottom: 20px;">
-              <!-- App icon illustration -->
-              <svg width="72" height="72" viewBox="0 0 72 72" fill="none" style="margin: 0 auto 12px;">
-                <rect x="4" y="4" width="64" height="64" rx="14" fill="var(--gold-light)" stroke="var(--ink)" stroke-width="3"/>
-                <text x="36" y="32" text-anchor="middle" font-family="Caveat, cursive" font-size="14" font-weight="700" fill="var(--ink)">Eigen</text>
-                <text x="36" y="48" text-anchor="middle" font-family="Caveat, cursive" font-size="12" font-weight="700" fill="var(--coral)">Inference</text>
-                <!-- menu bar indicator -->
-                <rect x="22" y="55" width="28" height="6" rx="3" fill="var(--teal)" stroke="var(--ink)" stroke-width="1.5"/>
-              </svg>
-              <div style="font-family: 'Caveat', cursive; font-size: 22px; font-weight: 700;">Native macOS Menu Bar App</div>
-              <p style="font-size: 14px; color: var(--ink-light); margin-top: 4px;">One click install. Runs quietly in your menu bar.</p>
-            </div>
-            <a href="https://inference-test.openinnovation.dev/dl/EigenInference.dmg" class="btn btn-coral" style="display: flex; justify-content: center; width: 100%; text-decoration: none;">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <!-- App panel -->
+          <div id="panel-app" class="install-panel">
+            <div class="install-title">Native macOS Menu Bar App</div>
+            <div class="install-desc">One-click install. Runs quietly in your menu bar. Start and stop anytime.</div>
+            <a href="https://inference-test.openinnovation.dev/dl/EigenInference.dmg" class="btn btn-primary" style="width: 100%; justify-content: center;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               Download for macOS
             </a>
-            <div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 20px; justify-content: center;">
-              <div style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-light);">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg>
+            <div class="install-features">
+              <span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg>
                 Start and stop anytime
-              </div>
-              <div style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-light);">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg>
+              </span>
+              <span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg>
                 Schedule serving hours
-              </div>
-              <div style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-light);">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg>
+              </span>
+              <span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg>
                 You stay in control
-              </div>
+              </span>
             </div>
-            <div style="display: flex; gap: 16px; margin-top: 12px; font-size: 12px; color: var(--ink-faint); justify-content: center;">
+            <div class="install-meta">
               <span>Apple Silicon only</span>
               <span>macOS 14+</span>
               <span>Includes CLI + backend</span>
             </div>
           </div>
 
-          <!-- CLI install panel (hidden by default) -->
-          <div id="panel-cli" style="border: 3px solid var(--ink); border-top: none; border-radius: 0 0 12px 12px; padding: 24px; background: var(--white); display: none;">
-            <p style="font-size: 14px; color: var(--ink-light); margin-bottom: 16px;">Paste this in Terminal. It downloads the provider binary and sets up a launchd service.</p>
-            <div class="code-wrapper" style="margin-top: 0; box-shadow: 4px 4px 0 rgba(59,44,53,0.15);">
+          <!-- CLI panel -->
+          <div id="panel-cli" class="install-panel" style="display: none;">
+            <div class="install-title">Install via Terminal</div>
+            <div class="install-desc">Downloads the provider binary and sets up a launchd service.</div>
+            <div class="code-wrapper" style="margin-top: 0;">
               <div class="code-bar">
                 <div class="code-dot r"></div>
                 <div class="code-dot y"></div>
                 <div class="code-dot g"></div>
                 <span class="code-lang">terminal</span>
               </div>
-              <pre><code><span style="color: rgba(255,255,255,0.3); user-select: none;">$ </span>curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash</code></pre>
+              <pre><code><span style="color: var(--text-tertiary); user-select: none;">$ </span>curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash</code></pre>
             </div>
-            <div style="display: flex; gap: 16px; margin-top: 16px; font-size: 13px; color: var(--ink-faint); justify-content: center;">
+            <div class="install-meta" style="margin-top: 16px;">
               <span>No dependencies</span>
               <span>Auto-updates</span>
               <span>Runs as service</span>
@@ -1305,109 +1516,85 @@ response = client.chat.completions.create(
           const panelApp = document.getElementById('panel-app');
           const panelCli = document.getElementById('panel-cli');
           if (tab === 'app') {
-            tabApp.style.background = 'var(--gold-light)';
-            tabApp.style.color = 'var(--ink)';
-            tabCli.style.background = 'var(--bg-warm)';
-            tabCli.style.color = 'var(--ink-light)';
+            tabApp.classList.add('active');
+            tabCli.classList.remove('active');
             panelApp.style.display = 'block';
             panelCli.style.display = 'none';
           } else {
-            tabCli.style.background = 'var(--gold-light)';
-            tabCli.style.color = 'var(--ink)';
-            tabApp.style.background = 'var(--bg-warm)';
-            tabApp.style.color = 'var(--ink-light)';
+            tabCli.classList.add('active');
+            tabApp.classList.remove('active');
             panelCli.style.display = 'block';
             panelApp.style.display = 'none';
           }
         }
         </script>
 
-        <!-- Profit margin callout -->
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 32px;">
-          <div style="background: var(--teal-light); border: 3px solid var(--ink); border-radius: 12px; padding: 24px; text-align: center; transform: rotate(-0.5deg);">
-            <div style="font-family: 'Caveat', cursive; font-size: 42px; font-weight: 700; color: var(--teal-dark);">95%</div>
-            <div style="font-size: 14px; color: var(--ink); font-weight: 600;">goes to you</div>
-            <div style="font-size: 12px; color: var(--ink-light); margin-top: 4px;">only 5% platform fee</div>
-          </div>
-          <div style="background: var(--gold-light); border: 3px solid var(--ink); border-radius: 12px; padding: 24px; text-align: center; transform: rotate(0.5deg);">
-            <div style="font-family: 'Caveat', cursive; font-size: 42px; font-weight: 700; color: var(--ink);">~90%+</div>
-            <div style="font-size: 14px; color: var(--ink); font-weight: 600;">profit margin</div>
-            <div style="font-size: 12px; color: var(--ink-light); margin-top: 4px;">electricity costs are negligible</div>
-          </div>
-        </div>
+        <!-- Earnings Calculator -->
+        <div class="calc-card">
+          <h3>Earnings calculator</h3>
+          <p class="calc-desc">Select your hardware. See what it can earn.</p>
 
-        <!-- Interactive earnings calculator -->
-        <div style="background: var(--white); border: 3px solid var(--ink); border-radius: 16px; padding: 32px; box-shadow: 6px 6px 0 rgba(59,44,53,0.1);">
-          <h3 style="font-size: 30px; margin-bottom: 4px;">Earnings calculator</h3>
-          <p style="color: var(--ink-light); font-size: 14px; margin-bottom: 24px;">Pick your Mac and see what it can earn.</p>
-
-          <!-- Hardware selector -->
-          <div style="margin-bottom: 20px;">
-            <label style="font-family: 'Caveat', cursive; font-size: 20px; font-weight: 700; display: block; margin-bottom: 8px;">Your Mac</label>
-            <div style="display: flex; flex-wrap: wrap; gap: 8px;" id="mac-selector"></div>
+          <div class="calc-section">
+            <label class="calc-label">Machine</label>
+            <div class="pill-group" id="mac-selector"></div>
           </div>
 
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;">
-            <div>
-              <label style="font-family: 'Caveat', cursive; font-size: 20px; font-weight: 700; display: block; margin-bottom: 8px;">Chip</label>
-              <div style="display: flex; flex-wrap: wrap; gap: 6px;" id="chip-selector"></div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+            <div class="calc-section">
+              <label class="calc-label">Chip</label>
+              <div class="pill-group" id="chip-selector"></div>
             </div>
-            <div>
-              <label style="font-family: 'Caveat', cursive; font-size: 20px; font-weight: 700; display: block; margin-bottom: 8px;">Memory</label>
-              <div style="display: flex; flex-wrap: wrap; gap: 6px;" id="ram-selector"></div>
+            <div class="calc-section">
+              <label class="calc-label">Memory</label>
+              <div class="pill-group" id="ram-selector"></div>
             </div>
           </div>
 
-          <!-- Hours slider -->
-          <div style="margin-bottom: 24px;">
-            <label style="font-family: 'Caveat', cursive; font-size: 20px; font-weight: 700;">
-              Hours per day: <span id="hours-display" style="color: var(--coral);">18</span>
+          <div class="calc-section">
+            <label class="calc-label">
+              Hours per day: <span id="hours-display" style="color: var(--blue);">18</span>
             </label>
-            <input type="range" id="hours-slider" min="1" max="24" value="18" style="width: 100%; margin-top: 8px; accent-color: var(--coral);">
+            <input type="range" id="hours-slider" min="1" max="24" value="18">
           </div>
 
-          <!-- Results: two models side by side -->
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;" id="results-grid">
-            <!-- Text model result -->
-            <div id="result-text" style="background: var(--teal-light); border: 3px solid var(--ink); border-radius: 12px; padding: 20px; text-align: center;">
-              <div style="display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; border: 2px solid var(--teal-dark); color: var(--teal-dark); background: rgba(255,255,255,0.4); margin-bottom: 8px;">Text</div>
-              <div id="text-model-name" style="font-family: 'Caveat', cursive; font-size: 18px; font-weight: 700; color: var(--ink); margin-bottom: 4px;">--</div>
-              <div id="text-monthly" style="font-family: 'Caveat', cursive; font-size: 44px; font-weight: 700; color: var(--teal-dark); line-height: 1;">$0</div>
-              <div id="text-annual" style="font-size: 13px; color: var(--ink-light); margin-top: 4px;">$0 / year</div>
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 2px solid rgba(59,44,53,0.1);">
+          <div class="calc-results" id="results-grid">
+            <div id="result-text" class="result-card result-text">
+              <span class="result-badge badge-text">Text</span>
+              <div id="text-model-name" class="result-model">--</div>
+              <div id="text-monthly" class="result-monthly monthly-green">$0</div>
+              <div id="text-annual" class="result-annual">$0 / year</div>
+              <div class="result-breakdown">
                 <div>
-                  <div style="font-size: 10px; color: var(--ink-faint);">Revenue</div>
-                  <div id="text-revenue" style="font-family: 'SF Mono', monospace; font-size: 13px; font-weight: 700; color: var(--ink);">$0</div>
+                  <div class="label">Revenue</div>
+                  <div id="text-revenue" class="value" style="color: var(--text);">$0</div>
                 </div>
                 <div>
-                  <div style="font-size: 10px; color: var(--ink-faint);">Electricity</div>
-                  <div id="text-elec" style="font-family: 'SF Mono', monospace; font-size: 13px; font-weight: 700; color: var(--coral);">-$0</div>
+                  <div class="label">Electricity</div>
+                  <div id="text-elec" class="value" style="color: var(--red);">-$0</div>
                 </div>
               </div>
             </div>
 
-            <!-- Image model result -->
-            <div id="result-image" style="background: var(--purple-light); border: 3px solid var(--ink); border-radius: 12px; padding: 20px; text-align: center;">
-              <div style="display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; border: 2px solid var(--purple); color: var(--purple); background: rgba(255,255,255,0.4); margin-bottom: 8px;">Image</div>
-              <div id="img-model-name" style="font-family: 'Caveat', cursive; font-size: 18px; font-weight: 700; color: var(--ink); margin-bottom: 4px;">--</div>
-              <div id="img-monthly" style="font-family: 'Caveat', cursive; font-size: 44px; font-weight: 700; color: var(--purple); line-height: 1;">$0</div>
-              <div id="img-annual" style="font-size: 13px; color: var(--ink-light); margin-top: 4px;">$0 / year</div>
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 2px solid rgba(59,44,53,0.1);">
+            <div id="result-image" class="result-card result-image">
+              <span class="result-badge badge-image">Image</span>
+              <div id="img-model-name" class="result-model">--</div>
+              <div id="img-monthly" class="result-monthly monthly-purple">$0</div>
+              <div id="img-annual" class="result-annual">$0 / year</div>
+              <div class="result-breakdown">
                 <div>
-                  <div style="font-size: 10px; color: var(--ink-faint);">Revenue</div>
-                  <div id="img-revenue" style="font-family: 'SF Mono', monospace; font-size: 13px; font-weight: 700; color: var(--ink);">$0</div>
+                  <div class="label">Revenue</div>
+                  <div id="img-revenue" class="value" style="color: var(--text);">$0</div>
                 </div>
                 <div>
-                  <div style="font-size: 10px; color: var(--ink-faint);">Electricity</div>
-                  <div id="img-elec" style="font-family: 'SF Mono', monospace; font-size: 13px; font-weight: 700; color: var(--coral);">-$0</div>
+                  <div class="label">Electricity</div>
+                  <div id="img-elec" class="value" style="color: var(--red);">-$0</div>
                 </div>
               </div>
             </div>
           </div>
 
-          <!-- Disclaimer -->
-          <p id="calc-disclaimer" style="font-size: 12px; color: var(--ink-faint); margin-top: 16px; line-height: 1.6; text-align: center; font-style: italic;">
-            These are estimates only, not guaranteed earnings. Actual results depend on network demand, provider reputation, number of competing providers, and model popularity. Estimates assume you already own the Mac -- hardware acquisition cost is not included. This is designed for idle machines you already have.
+          <p id="calc-disclaimer" style="font-size: 12px; color: var(--text-tertiary); margin-top: 20px; line-height: 1.6; text-align: center;">
+            Estimates only, not guaranteed earnings. Actual results depend on network demand, provider reputation, and model popularity. Assumes you already own the Mac — hardware cost not included.
           </p>
         </div>
       </div>
@@ -1443,7 +1630,6 @@ response = client.chat.completions.create(
 
       let state = { macType: "MacBook Pro", chip: "M4 Max", ram: 48, hours: 18 };
 
-      // Electricity cost auto-detected by region, overridable
       const ELEC_BY_REGION = {
         'US': 0.15, 'CA': 0.12, 'MX': 0.10,
         'GB': 0.28, 'DE': 0.35, 'FR': 0.21, 'ES': 0.24, 'IT': 0.27, 'NL': 0.30, 'BE': 0.31, 'AT': 0.27, 'CH': 0.21, 'SE': 0.10, 'NO': 0.08, 'DK': 0.36, 'FI': 0.12, 'PL': 0.18, 'PT': 0.22, 'IE': 0.30, 'CZ': 0.22,
@@ -1457,13 +1643,11 @@ response = client.chat.completions.create(
         try {
           const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
           const locale = navigator.language || 'en-US';
-          // Try locale country code first
           const parts = locale.split('-');
           if (parts.length >= 2) {
             const cc = parts[parts.length - 1].toUpperCase();
             if (ELEC_BY_REGION[cc]) return cc;
           }
-          // Fallback: timezone to country mapping (common ones)
           const tzMap = {
             'America/New_York': 'US', 'America/Chicago': 'US', 'America/Denver': 'US', 'America/Los_Angeles': 'US',
             'America/Phoenix': 'US', 'America/Anchorage': 'US', 'Pacific/Honolulu': 'US',
@@ -1491,7 +1675,6 @@ response = client.chat.completions.create(
       const detectedRegion = detectRegion();
       let elecCost = ELEC_BY_REGION[detectedRegion] || 0.15;
 
-      // Locale-aware formatters
       const userLocale = navigator.language || 'en-US';
       const fmtCurrency = (n, decimals) => {
         return new Intl.NumberFormat(userLocale, {
@@ -1506,10 +1689,6 @@ response = client.chat.completions.create(
           minimumFractionDigits: 0, maximumFractionDigits: 0,
         }).format(n);
       };
-      const fmtNum = (n) => new Intl.NumberFormat(userLocale).format(n);
-      const fmtPct = (n) => new Intl.NumberFormat(userLocale, {
-        minimumFractionDigits: 1, maximumFractionDigits: 1,
-      }).format(n) + '%';
 
       function getMacTypes() { return [...new Set(MAC_CONFIGS.map(c => c.macType))]; }
       function getChips(mt) { return [...new Set(MAC_CONFIGS.filter(c => c.macType === mt).map(c => c.chip))]; }
@@ -1536,23 +1715,24 @@ response = client.chat.completions.create(
         const monthly = netPerHr * hours * 30;
         const monthlyRev = revPerHr * hours * 30;
         const monthlyElec = elecPerHr * hours * 30;
-        const elecPct = monthlyRev > 0 ? (monthlyElec / monthlyRev) * 100 : 0;
-        return { name: model.name, monthly, annual: monthly * 12, monthlyRev, monthlyElec, elecPct };
+        return { name: model.name, monthly, annual: monthly * 12, monthlyRev, monthlyElec };
       }
 
       function pillBtn(label, active, onClick) {
         const b = document.createElement("button");
         b.textContent = label;
-        b.style.cssText = `padding: 8px 16px; border-radius: 8px; font-size: 14px; font-weight: 700; font-family: 'Nunito', sans-serif; border: 2.5px solid var(--ink); cursor: pointer; transition: all 0.12s;`;
+        b.style.cssText = `padding: 8px 14px; border-radius: 6px; font-size: 13px; font-weight: 600; font-family: 'Inter', sans-serif; cursor: pointer; transition: all 0.15s; border: 1px solid;`;
         if (active) {
-          b.style.background = "var(--coral)";
-          b.style.color = "var(--white)";
+          b.style.background = "var(--blue)";
+          b.style.color = "var(--bg)";
+          b.style.borderColor = "var(--blue)";
         } else {
-          b.style.background = "var(--bg-warm)";
-          b.style.color = "var(--ink)";
+          b.style.background = "var(--bg-card)";
+          b.style.color = "var(--text-secondary)";
+          b.style.borderColor = "var(--border-hover)";
         }
-        b.addEventListener("mouseenter", () => { if (!active) { b.style.transform = "translate(-1px,-1px)"; b.style.boxShadow = "2px 2px 0 var(--ink)"; }});
-        b.addEventListener("mouseleave", () => { b.style.transform = ""; b.style.boxShadow = ""; });
+        b.addEventListener("mouseenter", () => { if (!active) { b.style.borderColor = "var(--text-tertiary)"; }});
+        b.addEventListener("mouseleave", () => { if (!active) { b.style.borderColor = "var(--border-hover)"; }});
         b.addEventListener("click", onClick);
         return b;
       }
@@ -1563,7 +1743,6 @@ response = client.chat.completions.create(
         const ramOpts = config.ram;
         if (!ramOpts.includes(state.ram)) state.ram = ramOpts[ramOpts.length - 1];
 
-        // Mac type pills
         const macSel = document.getElementById("mac-selector");
         macSel.innerHTML = "";
         getMacTypes().forEach(mt => macSel.appendChild(pillBtn(mt, state.macType === mt, () => {
@@ -1573,7 +1752,6 @@ response = client.chat.completions.create(
           render();
         })));
 
-        // Chip pills
         const chipSel = document.getElementById("chip-selector");
         chipSel.innerHTML = "";
         getChips(state.macType).forEach(ch => chipSel.appendChild(pillBtn(ch, state.chip === ch, () => {
@@ -1581,7 +1759,6 @@ response = client.chat.completions.create(
           render();
         })));
 
-        // RAM pills
         const ramSel = document.getElementById("ram-selector");
         ramSel.innerHTML = "";
         ramOpts.forEach(r => ramSel.appendChild(pillBtn(r + " GB", state.ram === r, () => {
@@ -1589,9 +1766,7 @@ response = client.chat.completions.create(
           render();
         })));
 
-        // Find best text model and best image model separately
         const eligible = MODELS.filter(m => m.minRAM <= state.ram);
-
         let bestText = null, bestTextResult = null;
         let bestImg = null, bestImgResult = null;
 
@@ -1605,7 +1780,6 @@ response = client.chat.completions.create(
           }
         });
 
-        // Update text model card
         const textCard = document.getElementById("result-text");
         if (bestTextResult) {
           textCard.style.display = "block";
@@ -1618,7 +1792,6 @@ response = client.chat.completions.create(
           textCard.style.display = "none";
         }
 
-        // Update image model card
         const imgCard = document.getElementById("result-image");
         if (bestImgResult) {
           imgCard.style.display = "block";
@@ -1631,16 +1804,10 @@ response = client.chat.completions.create(
           imgCard.style.display = "none";
         }
 
-        // If only one type, make it full width
         const grid = document.getElementById("results-grid");
-        if (bestTextResult && bestImgResult) {
-          grid.style.gridTemplateColumns = "1fr 1fr";
-        } else {
-          grid.style.gridTemplateColumns = "1fr";
-        }
+        grid.style.gridTemplateColumns = (bestTextResult && bestImgResult) ? "1fr 1fr" : "1fr";
       }
 
-      // Show detected electricity cost in disclaimer
       const regionNames = {
         'US':'US','CA':'Canada','MX':'Mexico','GB':'UK','DE':'Germany','FR':'France','ES':'Spain',
         'IT':'Italy','NL':'Netherlands','BE':'Belgium','AT':'Austria','CH':'Switzerland','SE':'Sweden',
@@ -1652,7 +1819,7 @@ response = client.chat.completions.create(
       };
       const regionLabel = regionNames[detectedRegion] || detectedRegion;
       const disclaimer = document.getElementById("calc-disclaimer");
-      disclaimer.textContent += ` Electricity cost set to $${elecCost.toFixed(2)}/kWh based on ${regionLabel} average.`;
+      disclaimer.textContent += ` Electricity cost: $${elecCost.toFixed(2)}/kWh (${regionLabel} avg).`;
 
       document.getElementById("hours-slider").addEventListener("input", (e) => {
         state.hours = parseInt(e.target.value);
@@ -1660,29 +1827,22 @@ response = client.chat.completions.create(
         render();
       });
 
-      // Localize static pricing table
       function localizeStaticPrices() {
         document.querySelectorAll('.our-price, .competitor-price').forEach(el => {
           const raw = el.textContent.trim();
           const match = raw.match(/^\$?([\d.]+)$/);
-          if (match) {
-            el.textContent = fmtCurrency(parseFloat(match[1]));
-          }
+          if (match) el.textContent = fmtCurrency(parseFloat(match[1]));
         });
         document.querySelectorAll('.mini-price').forEach(el => {
           const raw = el.textContent.trim();
           if (raw === '5%') return;
           const match = raw.match(/^\$?([\d.]+)$/);
-          if (match) {
-            el.textContent = fmtCurrency(parseFloat(match[1]), 4);
-          }
+          if (match) el.textContent = fmtCurrency(parseFloat(match[1]), 4);
         });
         document.querySelectorAll('.mini-vs').forEach(el => {
           const raw = el.textContent.trim();
           const match = raw.match(/([\w.]+):\s*\$?([\d.]+)/);
-          if (match) {
-            el.textContent = match[1] + ': ' + fmtCurrency(parseFloat(match[2]), 4);
-          }
+          if (match) el.textContent = match[1] + ': ' + fmtCurrency(parseFloat(match[2]), 4);
         });
       }
 
@@ -1691,16 +1851,12 @@ response = client.chat.completions.create(
     })();
     </script>
 
-    <!-- Squiggly divider -->
-    <div class="container">
-      <svg class="squiggle" viewBox="0 0 600 12" preserveAspectRatio="none">
-        <path d="M0 6 Q15 2,30 6 Q45 10,60 6 Q75 2,90 6 Q105 10,120 6 Q135 2,150 6 Q165 10,180 6 Q195 2,210 6 Q225 10,240 6 Q255 2,270 6 Q285 10,300 6 Q315 2,330 6 Q345 10,360 6 Q375 2,390 6 Q405 10,420 6 Q435 2,450 6 Q465 10,480 6 Q495 2,510 6 Q525 10,540 6 Q555 2,570 6 Q585 10,600 6" fill="none" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>
-      </svg>
-    </div>
+    <div class="container"><div class="divider"></div></div>
 
     <!-- ============ MODELS ============ -->
     <section id="models">
       <div class="container">
+        <span class="section-label">Model Catalog</span>
         <h2>Available models</h2>
         <p class="section-sub">Curated for quality. Only models worth paying for.</p>
 
@@ -1710,35 +1866,35 @@ response = client.chat.completions.create(
               <div class="model-name">Qwen3.5 27B</div>
               <div class="model-desc">Dense, frontier-quality reasoning</div>
             </div>
-            <span class="model-tag tag-text">Text</span>
+            <span class="model-tag tag-text">text</span>
           </div>
           <div class="model-item">
             <div>
               <div class="model-name">Qwen3.5 122B MoE</div>
-              <div class="model-desc">10B active params -- best quality per token</div>
+              <div class="model-desc">10B active params — best quality per token</div>
             </div>
-            <span class="model-tag tag-text">Text</span>
+            <span class="model-tag tag-text">text</span>
           </div>
           <div class="model-item">
             <div>
               <div class="model-name">MiniMax M2.5 239B</div>
               <div class="model-desc">SOTA coding, 100 tok/s on Mac Studio</div>
             </div>
-            <span class="model-tag tag-text">Text</span>
+            <span class="model-tag tag-text">text</span>
           </div>
           <div class="model-item">
             <div>
               <div class="model-name">FLUX.2 Klein</div>
-              <div class="model-desc">4B and 9B -- Metal-accelerated diffusion</div>
+              <div class="model-desc">4B and 9B — Metal-accelerated diffusion</div>
             </div>
-            <span class="model-tag tag-image">Image</span>
+            <span class="model-tag tag-image">image</span>
           </div>
           <div class="model-item">
             <div>
               <div class="model-name">Cohere Transcribe</div>
-              <div class="model-desc">2B conformer -- best-in-class STT</div>
+              <div class="model-desc">2B conformer — best-in-class STT accuracy</div>
             </div>
-            <span class="model-tag tag-audio">Audio</span>
+            <span class="model-tag tag-audio">audio</span>
           </div>
         </div>
       </div>
@@ -1750,7 +1906,7 @@ response = client.chat.completions.create(
   <footer>
     <div class="container">
       <div class="footer-inner">
-        <span class="copy">EigenInference &copy; 2026 &mdash; Experimental research project. Not production software.</span>
+        <span class="copy">Project Lattice &middot; An Eigen Labs Research Initiative &middot; 2026</span>
         <div class="footer-links">
           <a href="#developers">Docs</a>
           <a href="https://github.com/eigeninference">GitHub</a>

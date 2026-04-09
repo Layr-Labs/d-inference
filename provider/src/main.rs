@@ -2692,6 +2692,7 @@ async fn cmd_serve(
         port: u16,
         pid: Option<u32>,
         healthy: bool,
+        restarting: bool, // guard: prevents health monitor + event loop from restarting simultaneously
     }
     let shared_slots: std::sync::Arc<std::sync::Mutex<Vec<SharedSlotState>>> =
         std::sync::Arc::new(std::sync::Mutex::new(
@@ -2703,6 +2704,7 @@ async fn cmd_serve(
                     port: s.port,
                     pid: s.pid,
                     healthy: s.healthy,
+                    restarting: false,
                 })
                 .collect(),
         ));
@@ -3039,7 +3041,24 @@ async fn cmd_serve(
                             port,
                             consecutive_failures[idx]
                         );
-                        if consecutive_failures[idx] >= 3 {
+                        // 5 consecutive failures (75 seconds) before restart.
+                        // Higher threshold than single-backend (was 3) because
+                        // the Python GIL can block /health during long generations,
+                        // and we don't want to kill a busy-but-healthy backend.
+                        if consecutive_failures[idx] >= 5 {
+                            // Check if another task (event loop) is already restarting this slot.
+                            let already_restarting = {
+                                let slots = health_shared_slots.lock().unwrap();
+                                slots.get(idx).map_or(false, |s| s.restarting)
+                            };
+                            if already_restarting {
+                                tracing::info!(
+                                    "Backend for {} restart already in progress — skipping",
+                                    model_id
+                                );
+                                continue;
+                            }
+
                             tracing::error!(
                                 "Backend for {} appears crashed — restarting (port {})...",
                                 model_id,
@@ -3047,11 +3066,12 @@ async fn cmd_serve(
                             );
                             any_crashed = true;
 
-                            // Mark slot as unhealthy before restart.
+                            // Mark slot as unhealthy and restarting.
                             {
                                 let mut slots = health_shared_slots.lock().unwrap();
                                 if let Some(slot) = slots.get_mut(idx) {
                                     slot.healthy = false;
+                                    slot.restarting = true;
                                 }
                             }
 
@@ -3078,11 +3098,11 @@ async fn cmd_serve(
                                         new_pid
                                     );
                                     consecutive_failures[idx] = 0;
-                                    // Update PID and healthy state in shared slots.
                                     let mut slots = health_shared_slots.lock().unwrap();
                                     if let Some(slot) = slots.get_mut(idx) {
                                         slot.pid = Some(new_pid);
                                         slot.healthy = true;
+                                        slot.restarting = false;
                                     }
                                 }
                                 Err(e) => {
@@ -3090,6 +3110,10 @@ async fn cmd_serve(
                                         "Backend auto-restart failed for {}: {e}",
                                         model_id
                                     );
+                                    let mut slots = health_shared_slots.lock().unwrap();
+                                    if let Some(slot) = slots.get_mut(idx) {
+                                        slot.restarting = false;
+                                    }
                                 }
                             }
                         }

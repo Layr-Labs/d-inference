@@ -47,7 +47,11 @@ if [ -n "$MICROMDM_API_KEY" ]; then
     if [ -n "$MDM_PUSH_CERT_B64" ] && [ ! -f /data/micromdm/push.crt ]; then
         echo "Decoding MDM push certificate from env..."
         echo "$MDM_PUSH_CERT_B64" | base64 -d > /data/micromdm/push.crt
-        echo "$MDM_PUSH_KEY_B64" | base64 -d > /data/micromdm/push.key
+        echo "$MDM_PUSH_KEY_B64" | base64 -d > /tmp/push_raw.key
+        # Convert PKCS#8 to traditional RSA format (mdmctl requires PKCS#1)
+        openssl rsa -in /tmp/push_raw.key -out /data/micromdm/push.key 2>/dev/null || \
+            cp /tmp/push_raw.key /data/micromdm/push.key
+        rm -f /tmp/push_raw.key
         chmod 600 /data/micromdm/push.key
     fi
 

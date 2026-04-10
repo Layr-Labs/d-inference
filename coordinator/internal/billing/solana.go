@@ -636,7 +636,7 @@ func (p *SolanaProcessor) SendWithdrawal(req SolanaWithdrawRequest) (*SolanaWith
 	}
 
 	if p.signingKey == "" {
-		return nil, fmt.Errorf("solana: mnemonic not configured — withdrawals require EIGENINFERENCE_SOLANA_MNEMONIC")
+		return nil, fmt.Errorf("solana: mnemonic not configured — withdrawals require MNEMONIC")
 	}
 
 	// Build the SPL token transfer instruction via Solana JSON-RPC.

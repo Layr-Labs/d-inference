@@ -116,7 +116,7 @@ func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cf
 				)
 			}
 		} else if !cfg.MockMode {
-			logger.Warn("billing: EIGENINFERENCE_SOLANA_MNEMONIC not set — deposits will work but withdrawals are disabled")
+			logger.Warn("billing: MNEMONIC not set — deposits will work but withdrawals are disabled")
 			coordAddr = cfg.SolanaCoordinatorAddress
 		}
 

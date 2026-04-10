@@ -43,7 +43,14 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		"serial_number", req.SerialNumber,
 	)
 
-	profile := generateCombinedProfile(req.SerialNumber)
+	// Derive base URL from the incoming request (respects reverse proxy headers)
+	scheme := "https"
+	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") == "" {
+		scheme = "http"
+	}
+	baseURL := fmt.Sprintf("%s://%s", scheme, r.Host)
+
+	profile := generateCombinedProfile(req.SerialNumber, baseURL)
 
 	w.Header().Set("Content-Type", "application/x-apple-aspen-config")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="EigenInference-Enroll-%s.mobileconfig"`, req.SerialNumber))
@@ -58,7 +65,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 //
 // AccessRights=1041: profile inspection (1) + device lock/passcode (16) + security queries (1024).
 // This is read-only MDM — no app management or device wipe capabilities.
-func generateCombinedProfile(serialNumber string) string {
+func generateCombinedProfile(serialNumber, baseURL string) string {
 	acmePayloadUUID := uuid.New().String()
 	profileUUID := uuid.New().String()
 
@@ -98,7 +105,7 @@ func generateCombinedProfile(serialNumber string) string {
           </array>
         </array>
         <key>URL</key>
-        <string>https://inference-test.openinnovation.dev/scep</string>
+        <string>%s/scep</string>
       </dict>
       <key>PayloadDescription</key>
       <string>Configures SCEP for MDM enrollment</string>
@@ -120,7 +127,7 @@ func generateCombinedProfile(serialNumber string) string {
       <key>AccessRights</key>
       <integer>1041</integer>
       <key>CheckInURL</key>
-      <string>https://inference-test.openinnovation.dev/mdm/checkin</string>
+      <string>%s/mdm/checkin</string>
       <key>CheckOutWhenRemoved</key>
       <true/>
       <key>IdentityCertificateUUID</key>
@@ -143,7 +150,7 @@ func generateCombinedProfile(serialNumber string) string {
         <string>com.apple.mdm.bootstraptoken</string>
       </array>
       <key>ServerURL</key>
-      <string>https://inference-test.openinnovation.dev/mdm/connect</string>
+      <string>%s/mdm/connect</string>
       <key>SignMessage</key>
       <true/>
       <key>Topic</key>
@@ -166,7 +173,7 @@ func generateCombinedProfile(serialNumber string) string {
       <key>PayloadOrganization</key>
       <string>EigenInference</string>
       <key>DirectoryURL</key>
-      <string>https://inference-test.openinnovation.dev/acme/dginf-acme/directory</string>
+      <string>%s/acme/eigeninference-acme/directory</string>
       <key>ClientIdentifier</key>
       <string>%s</string>
       <key>KeySize</key>
@@ -211,5 +218,5 @@ func generateCombinedProfile(serialNumber string) string {
   <key>PayloadVersion</key>
   <integer>1</integer>
 </dict>
-</plist>`, serialNumber, acmePayloadUUID, serialNumber, serialNumber, serialNumber, serialNumber, profileUUID)
+</plist>`, baseURL, baseURL, baseURL, serialNumber, acmePayloadUUID, serialNumber, baseURL, serialNumber, serialNumber, serialNumber, profileUUID)
 }

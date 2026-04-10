@@ -186,13 +186,13 @@ func main() {
 		SolanaRPCURL:             os.Getenv("EIGENINFERENCE_SOLANA_RPC_URL"),
 		SolanaUSDCMint:           envOr("EIGENINFERENCE_SOLANA_USDC_MINT", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), // mainnet USDC
 		SolanaCoordinatorAddress: os.Getenv("EIGENINFERENCE_SOLANA_COORDINATOR_ADDRESS"),                                   // fallback if no mnemonic (deposit-only, no withdrawals)
-		SolanaMnemonic:           os.Getenv("EIGENINFERENCE_SOLANA_MNEMONIC"),                                              // BIP39 mnemonic → derive keypair + deposit address
+		SolanaMnemonic:           envOr("MNEMONIC", os.Getenv("EIGENINFERENCE_SOLANA_MNEMONIC")),                           // BIP39 mnemonic → derive keypair + deposit address (legacy: EIGENINFERENCE_SOLANA_MNEMONIC)
 
 		// Stripe — present but not activated day-1 (set env vars to enable)
 		StripeSecretKey:     os.Getenv("EIGENINFERENCE_STRIPE_SECRET_KEY"),
 		StripeWebhookSecret: os.Getenv("EIGENINFERENCE_STRIPE_WEBHOOK_SECRET"),
-		StripeSuccessURL:    envOr("EIGENINFERENCE_STRIPE_SUCCESS_URL", "https://inference-test.openinnovation.dev/billing/success"),
-		StripeCancelURL:     envOr("EIGENINFERENCE_STRIPE_CANCEL_URL", "https://inference-test.openinnovation.dev/billing/cancel"),
+		StripeSuccessURL:    os.Getenv("EIGENINFERENCE_STRIPE_SUCCESS_URL"),
+		StripeCancelURL:     os.Getenv("EIGENINFERENCE_STRIPE_CANCEL_URL"),
 	}
 
 	// Mock billing mode — skips on-chain verification, auto-credits test balance.

@@ -1,0 +1,13 @@
+# Base image with all tools pre-installed. Rebuild only when tool versions change.
+# docker build -f Dockerfile.base -t eigengajesh/d-inference-base:latest .
+# docker push eigengajesh/d-inference-base:latest
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates su-exec openssl jq \
+    && wget -qO /tmp/micromdm.zip https://github.com/micromdm/micromdm/releases/download/v1.13.1/micromdm_v1.13.1.zip \
+    && unzip -o /tmp/micromdm.zip -d /tmp && mv /tmp/build/linux/micromdm /usr/local/bin/micromdm \
+    && mv /tmp/build/linux/mdmctl /usr/local/bin/mdmctl && rm -rf /tmp/micromdm.zip /tmp/build \
+    && wget -qO- https://dl.smallstep.com/gh-release/certificates/gh-release-header/v0.28.3/step-ca_linux_0.28.3_amd64.tar.gz \
+       | tar -xz -C /tmp && mv /tmp/step-ca /usr/local/bin/step-ca && rm -rf /tmp/LICENSE /tmp/README.md \
+    && wget -qO- https://dl.smallstep.com/gh-release/cli/gh-release-header/v0.28.3/step_linux_0.28.3_amd64.tar.gz \
+       | tar -xz -C /tmp && mv /tmp/step_0.28.3/bin/step /usr/local/bin/step && rm -rf /tmp/step_0.28.3

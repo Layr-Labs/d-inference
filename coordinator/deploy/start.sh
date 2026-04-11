@@ -1,11 +1,24 @@
 #!/bin/sh
 set -e
 
+# EigenCloud persistent storage (survives upgrades via blue-green disk transfer).
+PERSIST=${USER_PERSISTENT_DATA_PATH:-/mnt/disks/userdata}
+mkdir -p "$PERSIST/step-ca" "$PERSIST/micromdm"
+
+# Symlink /data -> persistent storage so all components use the same paths.
+ln -sfn "$PERSIST" /data
+
 # ---- step-ca ----
 if [ ! -d "/data/step-ca/config" ]; then
     echo "Initializing step-ca (first boot)..."
     mkdir -p /data/step-ca/secrets
     echo "eigeninference-step-ca" > /data/step-ca/secrets/password
+
+    # Copy Apple attestation root CA and ACME template to persistent storage
+    mkdir -p /data/step-ca/apple /data/step-ca/templates
+    cp /opt/step-ca-seed/Apple_Enterprise_Attestation_Root_CA.pem /data/step-ca/apple/
+    cp /opt/step-ca-seed/acme-device.tpl /data/step-ca/templates/
+
     STEPPATH=/data/step-ca step ca init \
         --name "EigenInference CA" \
         --dns "${DOMAIN:-localhost}" \
@@ -43,12 +56,19 @@ echo "step-ca started (port 9000)."
 
 # ---- MicroMDM ----
 if [ -n "$MICROMDM_API_KEY" ]; then
-    # Decode push cert from env vars on first boot
-    if [ -n "$MDM_PUSH_CERT_B64" ] && [ ! -f /data/micromdm/push.crt ]; then
-        echo "Decoding MDM push certificate from env..."
-        echo "$MDM_PUSH_CERT_B64" | base64 -d > /data/micromdm/push.crt
-        echo "$MDM_PUSH_KEY_B64" | base64 -d > /data/micromdm/push.key
+    # Decode push cert from PKCS#12 bundle on first boot
+    # P12 is base64url-encoded (no +/) to survive KMS/shell pipeline intact.
+    if [ -n "$MDM_PUSH_P12_B64" ] && [ ! -f /data/micromdm/push.crt ]; then
+        echo "Decoding MDM push certificate from PKCS#12..."
+        printf '%s' "$MDM_PUSH_P12_B64" | tr '_-' '/+' | base64 -d > /tmp/push.p12
+        openssl pkcs12 -in /tmp/push.p12 -clcerts -nokeys -passin pass:eigeninference \
+            -out /data/micromdm/push.crt 2>/dev/null
+        openssl pkcs12 -in /tmp/push.p12 -nocerts -nodes -passin pass:eigeninference \
+            -out /tmp/push_pkcs8.key 2>/dev/null
+        openssl rsa -in /tmp/push_pkcs8.key -traditional -out /data/micromdm/push.key 2>/dev/null
+        rm -f /tmp/push.p12 /tmp/push_pkcs8.key
         chmod 600 /data/micromdm/push.key
+        echo "Key format: $(head -1 /data/micromdm/push.key)"
     fi
 
     # Generate self-signed TLS cert for MicroMDM on first boot (internal only)

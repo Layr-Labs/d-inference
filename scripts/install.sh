@@ -135,12 +135,13 @@ RC="$HOME/.zshrc"
 if [ -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ]; then
     RC="$HOME/.bashrc"
 fi
-if ! grep -q "eigeninference" "$RC" 2>/dev/null; then
+if ! grep -q "\.darkbloom/bin" "$RC" 2>/dev/null; then
+    # Remove old PATH entries from previous installs
+    sed -i '' '/\.dginf\/bin/d; /\.eigeninference\/bin/d; /alias eigeninf/d; /alias dginf/d; /# EigenInference/d; /# Darkbloom$/d' "$RC" 2>/dev/null || true
     cat >> "$RC" << 'SHELL'
 
 # Darkbloom
 export PATH="$HOME/.darkbloom/bin:$PATH"
-alias eigeninf='darkbloom'
 SHELL
 fi
 export PATH="$BIN_DIR:$PATH"

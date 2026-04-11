@@ -12,7 +12,7 @@
     <!-- Keychain access for wallet storage -->
     <key>com.apple.security.keychain-access-groups</key>
     <array>
-        <string>$(AppIdentifierPrefix)io.eigeninference.provider</string>
+        <string>$(AppIdentifierPrefix)io.darkbloom.provider</string>
     </array>
 </dict>
 </plist>

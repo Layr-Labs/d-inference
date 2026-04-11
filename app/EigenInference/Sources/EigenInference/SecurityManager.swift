@@ -128,7 +128,7 @@ final class SecurityManager: ObservableObject {
         return false
     }
 
-    /// Check if the eigeninference-provider binary is available.
+    /// Check if the darkbloom binary is available.
     private func checkBinary() async -> Bool {
         CLIRunner.resolveBinaryPath() != nil
     }
@@ -138,8 +138,8 @@ final class SecurityManager: ObservableObject {
     /// Falls back to checking the legacy node_key file.
     private func checkNodeKey() async -> Bool {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let seKeyPath = "\(home)/.eigeninference/enclave_e2e_ka.data"
-        let legacyKeyPath = "\(home)/.eigeninference/node_key"
+        let seKeyPath = "\(home)/.darkbloom/enclave_e2e_ka.data"
+        let legacyKeyPath = "\(home)/.darkbloom/node_key"
         return FileManager.default.fileExists(atPath: seKeyPath) ||
                FileManager.default.fileExists(atPath: legacyKeyPath)
     }

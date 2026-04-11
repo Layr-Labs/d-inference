@@ -7,7 +7,7 @@
 //!   - Coordinator connection settings (URL, heartbeat interval)
 //!
 //! A default config is generated based on detected hardware when the provider
-//! is first initialized (`eigeninference-provider init`). CLI flags can override
+//! is first initialized (`darkbloom init`). CLI flags can override
 //! config values at runtime.
 
 use crate::hardware::HardwareInfo;

@@ -1,6 +1,6 @@
 /// LogViewerView — Streaming log viewer for provider output.
 ///
-/// Reads `~/.eigeninference/provider.log` directly and supports tail-f style
+/// Reads `~/.darkbloom/provider.log` directly and supports tail-f style
 /// streaming using a DispatchSource file monitor.
 
 import SwiftUI
@@ -15,7 +15,7 @@ struct LogViewerView: View {
 
     private var logFilePath: String {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".eigeninference/provider.log").path
+            .appendingPathComponent(".darkbloom/provider.log").path
     }
 
     private var filteredLines: [String] {

@@ -69,19 +69,19 @@ const STEPS = [
     icon: Shield,
     title: "Link Your Account",
     description: "Link this machine to your Darkbloom account. You'll get a code to enter on the web to verify ownership.",
-    command: "eigeninference-provider login",
+    command: "darkbloom login",
   },
   {
     icon: Play,
     title: "Start the Provider",
     description: "Launch the provider. It will show an interactive picker to select models based on your hardware, download them, and start serving.",
-    command: "eigeninference-provider start",
+    command: "darkbloom start",
   },
   {
     icon: CheckCircle2,
     title: "Check Status",
     description: "Verify your provider is online and serving. Hardware attestation via Secure Enclave happens automatically.",
-    command: "eigeninference-provider status",
+    command: "darkbloom status",
   },
 ];
 

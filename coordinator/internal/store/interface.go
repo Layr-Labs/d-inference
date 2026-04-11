@@ -362,7 +362,7 @@ type SupportedModel struct {
 type Release struct {
 	Version         string    `json:"version"`                     // semver, e.g. "0.2.1"
 	Platform        string    `json:"platform"`                    // "macos-arm64"
-	BinaryHash      string    `json:"binary_hash"`                 // SHA-256 of eigeninference-provider binary (attestation verification)
+	BinaryHash      string    `json:"binary_hash"`                 // SHA-256 of darkbloom binary (attestation verification)
 	BundleHash      string    `json:"bundle_hash"`                 // SHA-256 of the bundle tarball (install.sh download verification)
 	PythonHash      string    `json:"python_hash,omitempty"`       // SHA-256 of bundled Python binary (runtime verification)
 	RuntimeHash     string    `json:"runtime_hash,omitempty"`      // SHA-256 of vllm-mlx package (runtime verification)

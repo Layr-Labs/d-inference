@@ -12,10 +12,10 @@ set -euo pipefail
 #   ./scripts/admin.sh models list              # List model catalog
 #   ./scripts/admin.sh raw GET /v1/admin/releases  # Raw API call
 #
-# The admin token is stored at ~/.eigeninference/admin_token and reused until it expires.
+# The admin token is stored at ~/.darkbloom/admin_token and reused until it expires.
 
 COORDINATOR_URL="${EIGENINFERENCE_COORDINATOR_URL:-https://api.darkbloom.dev}"
-TOKEN_FILE="$HOME/.eigeninference/admin_token"
+TOKEN_FILE="$HOME/.darkbloom/admin_token"
 
 # ─── Auth helpers ───────────────────────────────────────────
 

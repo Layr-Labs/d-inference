@@ -1,14 +1,14 @@
-//! launchd user agent management for the eigeninference-provider.
+//! launchd user agent management for the darkbloom.
 //!
 //! The provider only runs when the user explicitly starts it via
-//! `eigeninference-provider start` or the macOS app's "Go Online" toggle.
+//! `darkbloom start` or the macOS app's "Go Online" toggle.
 //! It does NOT auto-start on login or auto-restart after crashes.
 //! The user is always in control of when their GPU is being used.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-const LABEL: &str = "io.eigeninference.provider";
+const LABEL: &str = "io.darkbloom.provider";
 
 fn plist_path() -> PathBuf {
     dirs::home_dir()
@@ -46,7 +46,7 @@ fn write_plist(
 
     let log_path = dirs::home_dir()
         .unwrap_or_default()
-        .join(".eigeninference/provider.log");
+        .join(".darkbloom/provider.log");
 
     let binary = binary_path.display();
     let log = log_path.display();
@@ -205,7 +205,7 @@ pub fn install_and_start(
     let binary_path = std::env::current_exe().unwrap_or_else(|_| {
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".eigeninference/bin/eigeninference-provider")
+            .join(".darkbloom/bin/darkbloom")
     });
 
     if is_loaded() {

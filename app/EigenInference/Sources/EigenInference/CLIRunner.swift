@@ -1,7 +1,7 @@
-/// CLIRunner — Centralized utility for running eigeninference-provider subcommands.
+/// CLIRunner — Centralized utility for running darkbloom subcommands.
 ///
 /// Every feature in the app (doctor, wallet, earnings, enroll, models, status)
-/// shells out to the Rust `eigeninference-provider` binary. This class centralizes
+/// shells out to the Rust `darkbloom` binary. This class centralizes
 /// Process management, binary resolution, and output capture.
 
 import Foundation
@@ -20,21 +20,21 @@ struct CLIResult {
     }
 }
 
-/// Runs eigeninference-provider subcommands and captures output.
+/// Runs darkbloom subcommands and captures output.
 final class CLIRunner {
 
-    /// Resolve the path to the eigeninference-provider binary.
+    /// Resolve the path to the darkbloom binary.
     ///
     /// Searches in order:
-    ///   1. `~/.eigeninference/bin/eigeninference-provider` (shared install, preferred)
+    ///   1. `~/.darkbloom/bin/darkbloom` (shared install, preferred)
     ///   2. Inside the app bundle (fallback for first-run before CLI install)
     ///   3. PATH lookup
     static func resolveBinaryPath() -> String? {
         let fm = FileManager.default
 
-        // 1. ~/.eigeninference/bin/eigeninference-provider (shared with CLI — single source of truth)
+        // 1. ~/.darkbloom/bin/darkbloom (shared with CLI — single source of truth)
         let home = fm.homeDirectoryForCurrentUser
-        let homeBin = home.appendingPathComponent(".eigeninference/bin/eigeninference-provider").path
+        let homeBin = home.appendingPathComponent(".darkbloom/bin/darkbloom").path
         if fm.isExecutableFile(atPath: homeBin) {
             return homeBin
         }
@@ -42,7 +42,7 @@ final class CLIRunner {
         // 2. Inside app bundle (fallback)
         if let bundlePath = Bundle.main.executablePath {
             let bundleDir = (bundlePath as NSString).deletingLastPathComponent
-            let adjacent = (bundleDir as NSString).appendingPathComponent("eigeninference-provider")
+            let adjacent = (bundleDir as NSString).appendingPathComponent("darkbloom")
             if fm.isExecutableFile(atPath: adjacent) {
                 return adjacent
             }
@@ -52,7 +52,7 @@ final class CLIRunner {
         let whichProcess = Process()
         let whichPipe = Pipe()
         whichProcess.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        whichProcess.arguments = ["eigeninference-provider"]
+        whichProcess.arguments = ["darkbloom"]
         whichProcess.standardOutput = whichPipe
         whichProcess.standardError = Pipe()
         do {
@@ -71,7 +71,7 @@ final class CLIRunner {
         return nil
     }
 
-    /// Run a eigeninference-provider subcommand and wait for completion.
+    /// Run a darkbloom subcommand and wait for completion.
     ///
     /// - Parameter args: Arguments to pass (e.g., `["doctor", "--coordinator", url]`)
     /// - Returns: CLIResult with exit code, stdout, and stderr
@@ -80,7 +80,7 @@ final class CLIRunner {
             return CLIResult(
                 exitCode: -1,
                 stdout: "",
-                stderr: "eigeninference-provider binary not found"
+                stderr: "darkbloom binary not found"
             )
         }
 
@@ -99,8 +99,8 @@ final class CLIRunner {
                 var env = ProcessInfo.processInfo.environment
                 let home = FileManager.default.homeDirectoryForCurrentUser.path
                 let extraPaths = [
-                    "\(home)/.eigeninference/bin",
-                    "\(home)/.eigeninference/python/bin",
+                    "\(home)/.darkbloom/bin",
+                    "\(home)/.darkbloom/python/bin",
                     "/opt/homebrew/bin",
                     "/usr/local/bin",
                 ]
@@ -133,7 +133,7 @@ final class CLIRunner {
     /// Run a subcommand with streaming line-by-line output.
     ///
     /// - Parameters:
-    ///   - args: Arguments for eigeninference-provider
+    ///   - args: Arguments for darkbloom
     ///   - onLine: Called for each line of combined stdout/stderr output
     /// - Returns: The process for lifecycle management (caller should retain)
     static func stream(
@@ -155,7 +155,7 @@ final class CLIRunner {
 
         var env = ProcessInfo.processInfo.environment
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let extraPaths = ["\(home)/.eigeninference/bin", "\(home)/.eigeninference/python/bin", "/opt/homebrew/bin"]
+        let extraPaths = ["\(home)/.darkbloom/bin", "\(home)/.darkbloom/python/bin", "/opt/homebrew/bin"]
         let existingPath = env["PATH"] ?? "/usr/bin:/bin"
         env["PATH"] = (extraPaths + [existingPath]).joined(separator: ":")
         proc.environment = env
@@ -176,7 +176,7 @@ final class CLIRunner {
         return proc
     }
 
-    /// Run a simple shell command (not eigeninference-provider).
+    /// Run a simple shell command (not darkbloom).
     static func shell(_ command: String) async -> CLIResult {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -219,7 +219,7 @@ enum CLIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .binaryNotFound:
-            return "eigeninference-provider binary not found. Run the installer first."
+            return "darkbloom binary not found. Run the installer first."
         }
     }
 }

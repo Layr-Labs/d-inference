@@ -156,7 +156,7 @@ pub fn verify_security_posture() -> Result<(), String> {
              4. From the menu bar: Utilities → Terminal\n\
              5. Type: csrutil enable\n\
              6. Restart your Mac\n\n\
-             Then retry: eigeninference-provider serve"
+             Then retry: darkbloom serve"
                 .to_string(),
         );
     }
@@ -176,7 +176,7 @@ pub fn verify_security_posture() -> Result<(), String> {
                  To disable RDMA:\n\
                  1. Open System Settings → Sharing\n\
                  2. Disable Remote Direct Memory Access\n\n\
-                 Then retry: eigeninference-provider serve"
+                 Then retry: darkbloom serve"
                 .to_string());
         }
     }
@@ -370,7 +370,7 @@ pub struct RuntimeHashes {
     /// SHA-256 hash of all .py files in the vllm_mlx package directory,
     /// combined in sorted order (same algorithm as `hash_files_sorted`).
     pub runtime_hash: Option<String>,
-    /// Per-file SHA-256 hashes of Jinja templates in ~/.eigeninference/templates/.
+    /// Per-file SHA-256 hashes of Jinja templates in ~/.darkbloom/templates/.
     pub template_hashes: std::collections::HashMap<String, String>,
     /// SHA-256 hash of the gRPCServerCLI binary (image generation backend).
     pub grpc_binary_hash: Option<String>,
@@ -447,7 +447,7 @@ pub fn compute_runtime_hashes(python_cmd: &str) -> RuntimeHashes {
     // file's contents with SHA-256, then combines the per-file digests into a
     // final SHA-256 hash. CI computes this at build time; the provider recomputes
     // it here and the coordinator compares them.
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
     let site_packages_dir = eigeninference_dir.join("python/lib/python3.12/site-packages");
     let runtime_hash = if site_packages_dir.exists() {
         let hash_script = format!(
@@ -492,7 +492,7 @@ print(final.hexdigest())
         None
     };
 
-    // Hash templates in ~/.eigeninference/templates/
+    // Hash templates in ~/.darkbloom/templates/
     let templates_dir = eigeninference_dir.join("templates");
     let mut template_hashes = std::collections::HashMap::new();
     if templates_dir.exists() {
@@ -528,9 +528,9 @@ print(final.hexdigest())
 /// Compute the SHA-256 hash of the gRPCServerCLI binary.
 ///
 /// This binary is the Draw Things gRPC backend used for image generation.
-/// Located at ~/.eigeninference/bin/gRPCServerCLI when installed via the bundle.
+/// Located at ~/.darkbloom/bin/gRPCServerCLI when installed via the bundle.
 pub fn compute_grpc_binary_hash() -> Option<String> {
-    let eigeninference_dir = dirs::home_dir()?.join(".eigeninference");
+    let eigeninference_dir = dirs::home_dir()?.join(".darkbloom");
     let path = eigeninference_dir.join("bin/gRPCServerCLI");
     if path.exists() {
         hash_file(&path)
@@ -541,10 +541,10 @@ pub fn compute_grpc_binary_hash() -> Option<String> {
 
 /// Compute a combined SHA-256 hash of the image bridge Python source files.
 ///
-/// Hashes all .py files under ~/.eigeninference/image-bridge/eigeninference_image_bridge/
+/// Hashes all .py files under ~/.darkbloom/image-bridge/eigeninference_image_bridge/
 /// in sorted order, producing a single deterministic fingerprint.
 pub fn compute_image_bridge_hash() -> Option<String> {
-    let eigeninference_dir = dirs::home_dir()?.join(".eigeninference");
+    let eigeninference_dir = dirs::home_dir()?.join(".darkbloom");
     let bridge_dir = eigeninference_dir.join("image-bridge/eigeninference_image_bridge");
     if !bridge_dir.exists() {
         return None;
@@ -825,7 +825,7 @@ mod tests {
         // With a non-existent Python binary, python_hash should be None
         let hashes = compute_runtime_hashes("/nonexistent/python3");
         assert!(hashes.python_hash.is_none());
-        // runtime_hash and template_hashes depend on ~/.eigeninference presence,
+        // runtime_hash and template_hashes depend on ~/.darkbloom presence,
         // but should never panic.
     }
 
@@ -863,7 +863,7 @@ mod tests {
             hashes.python_hash.is_some(),
             "should hash the mock python binary"
         );
-        // runtime_hash and template_hashes depend on the real ~/.eigeninference
+        // runtime_hash and template_hashes depend on the real ~/.darkbloom
         // directory, not our tmp dir, so we can't assert specific values here.
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -875,7 +875,7 @@ mod tests {
 pub fn se_sign(data: &[u8]) -> Option<String> {
     use std::io::Write;
 
-    let eigeninference_dir = dirs::home_dir()?.join(".eigeninference");
+    let eigeninference_dir = dirs::home_dir()?.join(".darkbloom");
     let enclave_bin = eigeninference_dir.join("bin/eigeninference-enclave");
 
     if !enclave_bin.exists() {

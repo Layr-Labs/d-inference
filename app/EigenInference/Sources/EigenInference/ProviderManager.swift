@@ -1,7 +1,7 @@
 /// ProviderManager — Manages the Rust provider binary as a subprocess.
 ///
 /// This class wraps Foundation's `Process` to spawn, monitor, and stop the
-/// `eigeninference-provider` binary. It captures stdout/stderr for status parsing,
+/// `darkbloom` binary. It captures stdout/stderr for status parsing,
 /// auto-restarts on unexpected crashes, and sets up the same environment
 /// (PATH, PYTHONHOME) that the CLI uses.
 ///
@@ -9,13 +9,13 @@
 /// consistency — both the app and CLI use the same search order.
 ///
 /// The provider binary is invoked as:
-///   eigeninference-provider serve --coordinator <url> --model <model> --backend-port <port>
+///   darkbloom serve --coordinator <url> --model <model> --backend-port <port>
 
 import Combine
 import Foundation
 import UserNotifications
 
-/// Manages the eigeninference-provider subprocess lifecycle.
+/// Manages the darkbloom subprocess lifecycle.
 ///
 /// Spawns the Rust binary, captures its output, monitors for crashes,
 /// and provides clean shutdown via SIGTERM/SIGKILL.
@@ -44,10 +44,10 @@ final class ProviderManager: ObservableObject {
 
     // MARK: - Binary Path Resolution
 
-    /// Resolve the path to the eigeninference-provider binary.
+    /// Resolve the path to the darkbloom binary.
     ///
     /// Uses the same resolution order as CLIRunner for consistency:
-    ///   1. `~/.eigeninference/bin/eigeninference-provider` (shared install — single source of truth)
+    ///   1. `~/.darkbloom/bin/darkbloom` (shared install — single source of truth)
     ///   2. Adjacent to the app bundle (fallback for first-run)
     ///   3. PATH lookup (development)
     nonisolated static func resolveBinaryPath() -> String? {
@@ -129,7 +129,7 @@ final class ProviderManager: ObservableObject {
     /// Spawn the provider process and wire up output capture.
     private func spawnProcess() {
         guard let binaryPath = Self.resolveBinaryPath() else {
-            lastError = "eigeninference-provider binary not found. Run the installer:\n"
+            lastError = "darkbloom binary not found. Run the installer:\n"
                 + "  curl -fsSL https://api.darkbloom.dev/install.sh | bash"
             return
         }
@@ -147,15 +147,15 @@ final class ProviderManager: ObservableObject {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var env = ProcessInfo.processInfo.environment
         let extraPaths = [
-            "\(home)/.eigeninference/bin",
-            "\(home)/.eigeninference/python/bin",
+            "\(home)/.darkbloom/bin",
+            "\(home)/.darkbloom/python/bin",
             "/opt/homebrew/bin",
             "/usr/local/bin",
         ]
         let existingPath = env["PATH"] ?? "/usr/bin:/bin"
         env["PATH"] = (extraPaths + [existingPath]).joined(separator: ":")
 
-        let pythonHome = "\(home)/.eigeninference/python"
+        let pythonHome = "\(home)/.darkbloom/python"
         if FileManager.default.fileExists(atPath: "\(pythonHome)/bin/python3.12") {
             env["PYTHONHOME"] = pythonHome
         }
@@ -218,7 +218,7 @@ final class ProviderManager: ObservableObject {
                     self.autoRestartEnabled = false
                     let content = UNMutableNotificationContent()
                     content.title = "Darkbloom Provider Stopped"
-                    content.body = "Provider crashed \(self.maxRestarts) times. Check logs: eigeninference-provider logs"
+                    content.body = "Provider crashed \(self.maxRestarts) times. Check logs: darkbloom logs"
                     content.sound = .default
                     let request = UNNotificationRequest(identifier: "crash-limit", content: content, trigger: nil)
                     try? await UNUserNotificationCenter.current().add(request)

@@ -19,12 +19,12 @@ import Foundation
 
 let identityPath: URL = {
     let home = FileManager.default.homeDirectoryForCurrentUser
-    return home.appendingPathComponent(".eigeninference/enclave_key.data")
+    return home.appendingPathComponent(".darkbloom/enclave_key.data")
 }()
 
 let e2eKeyAgreementPath: URL = {
     let home = FileManager.default.homeDirectoryForCurrentUser
-    return home.appendingPathComponent(".eigeninference/enclave_e2e_ka.data")
+    return home.appendingPathComponent(".darkbloom/enclave_e2e_ka.data")
 }()
 
 func loadOrCreateIdentity() throws -> SecureEnclaveIdentity {

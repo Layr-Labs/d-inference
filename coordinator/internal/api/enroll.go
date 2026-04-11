@@ -112,7 +112,7 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
       <key>PayloadDisplayName</key>
       <string>SCEP</string>
       <key>PayloadIdentifier</key>
-      <string>io.eigeninference.enroll.scep</string>
+      <string>io.darkbloom.enroll.scep</string>
       <key>PayloadOrganization</key>
       <string>EigenInference</string>
       <key>PayloadType</key>
@@ -135,7 +135,7 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
       <key>PayloadDescription</key>
       <string>Enrolls with the Darkbloom coordinator for security verification</string>
       <key>PayloadIdentifier</key>
-      <string>io.eigeninference.enroll.mdm</string>
+      <string>io.darkbloom.enroll.mdm</string>
       <key>PayloadOrganization</key>
       <string>EigenInference</string>
       <key>PayloadType</key>
@@ -163,7 +163,7 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
       <key>PayloadVersion</key>
       <integer>1</integer>
       <key>PayloadIdentifier</key>
-      <string>io.eigeninference.enroll.acme.%s</string>
+      <string>io.darkbloom.enroll.acme.%s</string>
       <key>PayloadUUID</key>
       <string>%s</string>
       <key>PayloadDisplayName</key>
@@ -208,7 +208,7 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
   <key>PayloadDisplayName</key>
   <string>Darkbloom Provider Enrollment</string>
   <key>PayloadIdentifier</key>
-  <string>io.eigeninference.enroll.%s</string>
+  <string>io.darkbloom.enroll.%s</string>
   <key>PayloadOrganization</key>
   <string>EigenInference</string>
   <key>PayloadType</key>

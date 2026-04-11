@@ -1,6 +1,6 @@
 /// EigenInferenceApp — Main entry point for the Darkbloom macOS menu bar application.
 ///
-/// Menu-bar-only app (no dock icon) that wraps the Rust `eigeninference-provider`
+/// Menu-bar-only app (no dock icon) that wraps the Rust `darkbloom`
 /// binary. Uses SwiftUI's MenuBarExtra (macOS 13+) for the status icon.
 ///
 /// Activation policy management:

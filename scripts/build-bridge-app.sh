@@ -10,7 +10,7 @@ BUILD_DIR="$PROJECT_DIR/build"
 APP_DIR="$BUILD_DIR/EigenInferenceBridge.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
-BUNDLE_ID="io.eigeninference.ws-bridge"
+BUNDLE_ID="io.darkbloom.ws-bridge"
 
 echo "Building WebSocket bridge app..."
 

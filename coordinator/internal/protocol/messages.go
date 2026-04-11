@@ -96,7 +96,7 @@ type RegisterMessage struct {
 	Attestation   json.RawMessage `json:"attestation,omitempty"`    // signed Secure Enclave attestation blob
 	PrefillTPS    float64         `json:"prefill_tps,omitempty"`    // benchmark: prefill tokens per second
 	DecodeTPS     float64         `json:"decode_tps,omitempty"`     // benchmark: decode tokens per second
-	AuthToken     string          `json:"auth_token,omitempty"`     // device-linked provider token (from eigeninference-provider login)
+	AuthToken     string          `json:"auth_token,omitempty"`     // device-linked provider token (from darkbloom login)
 
 	// Runtime integrity hashes — used for runtime verification against known-good manifests.
 	PythonHash      string            `json:"python_hash,omitempty"`       // SHA-256 of Python runtime

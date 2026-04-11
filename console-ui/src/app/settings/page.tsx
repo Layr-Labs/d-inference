@@ -76,7 +76,7 @@ export default function SettingsPage() {
               type="text"
               value={coordinatorUrl}
               onChange={(e) => setCoordinatorUrl(e.target.value)}
-              placeholder="https://coordinator.eigeninference.io"
+              placeholder="https://coordinator.darkbloom.io"
               className="w-full bg-bg-tertiary border border-border-subtle rounded-lg px-4 py-3 text-text-primary font-mono text-sm outline-none focus:border-accent-green/50 transition-colors"
             />
 

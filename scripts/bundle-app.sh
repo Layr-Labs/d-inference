@@ -7,7 +7,7 @@
 #     Info.plist
 #     MacOS/
 #       EigenInference                  ← Swift menu bar app (main executable)
-#       eigeninference-provider         ← Rust CLI binary
+#       darkbloom         ← Rust CLI binary
 #       eigeninference-enclave          ← Swift Secure Enclave CLI
 #     Frameworks/
 #       python/                ← python-build-standalone 3.12
@@ -32,7 +32,7 @@
 # Prerequisites:
 #   cargo build --release --no-default-features   (provider)
 #   swift build -c release                         (enclave + app)
-#   Python bundle at ~/.eigeninference/python/              (from install.sh)
+#   Python bundle at ~/.darkbloom/python/              (from install.sh)
 
 set -euo pipefail
 
@@ -57,7 +57,7 @@ FRAMEWORKS="$CONTENTS/Frameworks"
 ENTITLEMENTS="$SCRIPT_DIR/entitlements.plist"
 
 VERSION="0.1.0"
-BUNDLE_ID="io.eigeninference.provider"
+BUNDLE_ID="io.darkbloom.provider"
 
 echo "╔══════════════════════════════════════════════════╗"
 echo "║  Darkbloom App Bundle Builder                        ║"
@@ -129,7 +129,7 @@ cat > "$ENTITLEMENTS" << 'ENT'
     <!-- Keychain access for wallet storage -->
     <key>com.apple.security.keychain-access-groups</key>
     <array>
-        <string>$(AppIdentifierPrefix)io.eigeninference.provider</string>
+        <string>$(AppIdentifierPrefix)io.darkbloom.provider</string>
     </array>
 </dict>
 </plist>
@@ -152,17 +152,17 @@ echo "   ✓ EigenInference ($(du -h "$MACOS/EigenInference" | cut -f1))"
 # ─────────────────────────────────────────────────────────
 # 4. Build + copy Rust provider
 # ─────────────────────────────────────────────────────────
-echo "3. Building eigeninference-provider..."
+echo "3. Building darkbloom..."
 cd "$PROJECT_DIR/provider"
-if [ ! -f "target/release/eigeninference-provider" ]; then
+if [ ! -f "target/release/darkbloom" ]; then
     cargo build --release --no-default-features 2>&1 | tail -3
 fi
-cp "target/release/eigeninference-provider" "$MACOS/eigeninference-provider"
+cp "target/release/darkbloom" "$MACOS/darkbloom"
 # Also install to shared path so CLI and app use the same binary
-mkdir -p "$HOME/.eigeninference/bin"
-cp "target/release/eigeninference-provider" "$HOME/.eigeninference/bin/eigeninference-provider"
-chmod +x "$HOME/.eigeninference/bin/eigeninference-provider"
-echo "   ✓ eigeninference-provider ($(du -h "$MACOS/eigeninference-provider" | cut -f1)) → also installed to ~/.eigeninference/bin/"
+mkdir -p "$HOME/.darkbloom/bin"
+cp "target/release/darkbloom" "$HOME/.darkbloom/bin/darkbloom"
+chmod +x "$HOME/.darkbloom/bin/darkbloom"
+echo "   ✓ darkbloom ($(du -h "$MACOS/darkbloom" | cut -f1)) → also installed to ~/.darkbloom/bin/"
 
 # ─────────────────────────────────────────────────────────
 # 5. Build + copy enclave CLI
@@ -182,7 +182,7 @@ fi
 # 6. Bundle Python + inference runtime
 # ─────────────────────────────────────────────────────────
 echo "5. Bundling Python runtime..."
-PYTHON_SRC="$HOME/.eigeninference/python"
+PYTHON_SRC="$HOME/.darkbloom/python"
 PYTHON_DST="$RESOURCES/python"
 
 if [ -d "$PYTHON_SRC" ]; then
@@ -438,7 +438,7 @@ echo "  EigenInference.app    $APP_SIZE"
 echo ""
 echo "  Contents:"
 echo "    MacOS/EigenInference              SwiftUI menu bar app"
-echo "    MacOS/eigeninference-provider     Rust inference provider"
+echo "    MacOS/darkbloom     Rust inference provider"
 echo "    MacOS/eigeninference-enclave      Secure Enclave attestation"
 echo "    Resources/python/        Python 3.12 + MLX + vllm-mlx"
 echo ""

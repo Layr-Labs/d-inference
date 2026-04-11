@@ -107,14 +107,14 @@ Zero prerequisites. The installer bundles the provider binary, Python 3.12 runti
 ### Provider CLI
 
 ```bash
-eigeninference-provider serve          # Start serving (foreground)
-eigeninference-provider start          # Background daemon
-eigeninference-provider stop           # Stop daemon
-eigeninference-provider status         # Hardware and connection info
-eigeninference-provider doctor         # Diagnose issues
-eigeninference-provider models list    # Downloaded models
-eigeninference-provider earnings       # Earnings and usage
-eigeninference-provider update         # Check for updates
+darkbloom serve          # Start serving (foreground)
+darkbloom start          # Background daemon
+darkbloom stop           # Stop daemon
+darkbloom status         # Hardware and connection info
+darkbloom doctor         # Diagnose issues
+darkbloom models list    # Downloaded models
+darkbloom earnings       # Earnings and usage
+darkbloom update         # Check for updates
 ```
 
 ### macOS Menu Bar App

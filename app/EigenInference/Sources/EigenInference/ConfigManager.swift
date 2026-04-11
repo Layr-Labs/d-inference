@@ -34,7 +34,7 @@ struct ProviderConfig: Equatable {
     var heartbeatIntervalSecs: Int
 
     static let `default` = ProviderConfig(
-        providerName: "eigeninference-provider",
+        providerName: "darkbloom",
         memoryReserveGB: 4,
         backendPort: 8100,
         backendModel: nil,
@@ -58,7 +58,7 @@ enum ConfigManager {
 
     static var eigeninferenceDir: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".eigeninference")
+            .appendingPathComponent(".darkbloom")
     }
 
     static func load() -> ProviderConfig {

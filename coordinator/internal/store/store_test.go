@@ -358,7 +358,7 @@ func TestDeviceCodeExpiry(t *testing.T) {
 func TestProviderToken(t *testing.T) {
 	s := NewMemory("")
 
-	rawToken := "eigeninference-provider-token-abc123"
+	rawToken := "darkbloom-token-abc123"
 	tokenHash := sha256Hex(rawToken)
 
 	pt := &ProviderToken{

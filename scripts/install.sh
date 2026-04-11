@@ -18,7 +18,7 @@ set -euo pipefail
 # Zero prerequisites — just macOS + Apple Silicon.
 
 COORD_URL="https://api.darkbloom.dev"
-INSTALL_DIR="$HOME/.eigeninference"
+INSTALL_DIR="$HOME/.darkbloom"
 BIN_DIR="$INSTALL_DIR/bin"
 PYTHON_BIN="$INSTALL_DIR/python/bin/python3.12"
 PBS_TAG="20260408"
@@ -95,7 +95,7 @@ echo "  Hash verified ✓"
 
 echo "  Installing binaries..."
 tar xzf /tmp/eigeninference-bundle.tar.gz -C "$BIN_DIR"
-chmod +x "$BIN_DIR/eigeninference-provider" "$BIN_DIR/eigeninference-enclave" "$BIN_DIR/gRPCServerCLI" 2>/dev/null || true
+chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/eigeninference-enclave" "$BIN_DIR/gRPCServerCLI" 2>/dev/null || true
 # Move image bridge to the expected location
 if [ -d "$BIN_DIR/image-bridge" ]; then
     rm -rf "$INSTALL_DIR/image-bridge"
@@ -116,8 +116,8 @@ else
 fi
 
 # Verify code signature (codesign is part of base macOS, no CLT needed)
-if codesign --verify --verbose "$BIN_DIR/eigeninference-provider" 2>/dev/null; then
-    TEAM=$(codesign -dvv "$BIN_DIR/eigeninference-provider" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)
+if codesign --verify --verbose "$BIN_DIR/darkbloom" 2>/dev/null; then
+    TEAM=$(codesign -dvv "$BIN_DIR/darkbloom" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)
     echo "  Code signature verified ✓ (Team: $TEAM)"
 else
     echo "  ⚠ Code signature could not be verified"
@@ -126,7 +126,7 @@ fi
 # Make available in PATH
 # Try /usr/local/bin symlink first (may need sudo on newer macOS)
 SYMLINKED=false
-if ln -sf "$BIN_DIR/eigeninference-provider" /usr/local/bin/eigeninference-provider 2>/dev/null; then
+if ln -sf "$BIN_DIR/darkbloom" /usr/local/bin/darkbloom 2>/dev/null; then
     SYMLINKED=true
 fi
 
@@ -139,8 +139,8 @@ if ! grep -q "eigeninference" "$RC" 2>/dev/null; then
     cat >> "$RC" << 'SHELL'
 
 # Darkbloom
-export PATH="$HOME/.eigeninference/bin:$PATH"
-alias eigeninf='eigeninference-provider'
+export PATH="$HOME/.darkbloom/bin:$PATH"
+alias eigeninf='darkbloom'
 SHELL
 fi
 export PATH="$BIN_DIR:$PATH"
@@ -153,26 +153,28 @@ export PATH="$BIN_DIR:$PATH"
 set +eu; source "$RC" 2>/dev/null; set -eu
 
 echo "  Binaries installed ✓"
-echo "  Shortcut: eigeninf (alias for eigeninference-provider)"
+echo "  Shortcut: darkbloom"
 
-# ─── Migrate from old install (if exists) ─────────────────────
-if [ -d "$HOME/.dginf" ] && [ ! -L "$HOME/.dginf" ]; then
-    echo ""
-    echo "  Migrating from previous installation..."
-    # Copy over enclave keys, wallet, and config
-    for f in enclave_key.data enclave_e2e_ka.data wallet_key; do
-        [ -f "$HOME/.dginf/$f" ] && cp -n "$HOME/.dginf/$f" "$INSTALL_DIR/$f" 2>/dev/null || true
-    done
-    # Symlink python if not already present
-    if [ -d "$HOME/.dginf/python" ] && [ ! -d "$INSTALL_DIR/python" ]; then
-        ln -sf "$HOME/.dginf/python" "$INSTALL_DIR/python"
+# ─── Migrate from old installs ───────────────────────────────
+# Migration chain: ~/.dginf → ~/.eigeninference → ~/.darkbloom
+for OLD_DIR in "$HOME/.dginf" "$HOME/.eigeninference"; do
+    if [ -d "$OLD_DIR" ] && [ ! -L "$OLD_DIR" ]; then
+        echo ""
+        echo "  Migrating from $OLD_DIR..."
+        for f in enclave_key.data enclave_e2e_ka.data wallet_key; do
+            [ -f "$OLD_DIR/$f" ] && cp -n "$OLD_DIR/$f" "$INSTALL_DIR/$f" 2>/dev/null || true
+        done
+        if [ -d "$OLD_DIR/python" ] && [ ! -d "$INSTALL_DIR/python" ]; then
+            ln -sf "$OLD_DIR/python" "$INSTALL_DIR/python"
+        fi
+        if [ -f "$OLD_DIR/ffmpeg" ] && [ ! -f "$INSTALL_DIR/ffmpeg" ]; then
+            ln -sf "$OLD_DIR/ffmpeg" "$INSTALL_DIR/ffmpeg"
+        fi
+        # Symlink old path so stragglers still work
+        ln -sfn "$INSTALL_DIR" "$OLD_DIR" 2>/dev/null || true
+        echo "  Migration complete ✓"
     fi
-    # Symlink ffmpeg
-    if [ -f "$HOME/.dginf/ffmpeg" ] && [ ! -f "$INSTALL_DIR/ffmpeg" ]; then
-        ln -sf "$HOME/.dginf/ffmpeg" "$INSTALL_DIR/ffmpeg"
-    fi
-    echo "  Migration complete ✓"
-fi
+done
 
 # ─── Step 3: Python runtime + ffmpeg ─────────────────────────
 echo ""
@@ -316,7 +318,7 @@ elif [ -n "$SERIAL" ]; then
         fi
         echo "  Enrollment ✓"
     else
-        echo "  Enrollment ⚠ (coordinator unreachable — enroll later with: eigeninference-provider enroll)"
+        echo "  Enrollment ⚠ (coordinator unreachable — enroll later with: darkbloom enroll)"
     fi
 else
     echo "  Enrollment ⚠ (serial number not found)"
@@ -376,7 +378,7 @@ for m in data.get('models', []):
                     echo "  Invalid selection."
                 fi
             else
-                echo "  Skipped — download models later: eigeninference-provider models download"
+                echo "  Skipped — download models later: darkbloom models download"
             fi
         else
             echo "  Run interactively to select: curl -fsSL $COORD_URL/install.sh | bash -s"
@@ -432,9 +434,9 @@ echo "  Status:    ○ Installed (not running)"
 echo ""
 echo "  Start serving:"
 if [ -n "$MODEL" ]; then
-    echo "    eigeninference-provider serve --model $MODEL"
+    echo "    darkbloom serve --model $MODEL"
 else
-    echo "    eigeninference-provider serve"
+    echo "    darkbloom serve"
 fi
 echo ""
 
@@ -442,7 +444,7 @@ if [ ! -f "$HOME/.config/eigeninference/auth_token" ]; then
     echo "  ┌──────────────────────────────────────────────┐"
     echo "  │  Link your account to earn rewards:          │"
     echo "  │                                              │"
-    echo "  │    eigeninference-provider login              │"
+    echo "  │    darkbloom login              │"
     echo "  │                                              │"
     echo "  │  Without linking, earnings go to a local     │"
     echo "  │  wallet and cannot be withdrawn.             │"
@@ -451,12 +453,12 @@ if [ ! -f "$HOME/.config/eigeninference/auth_token" ]; then
 fi
 
 echo "  Commands:"
-echo "    eigeninference-provider serve       Start serving"
-echo "    eigeninference-provider status      Show status"
-echo "    eigeninference-provider logs -w     Stream logs"
-echo "    eigeninference-provider stop        Stop provider"
-echo "    eigeninference-provider update      Check for updates"
-echo "    eigeninference-provider doctor      Run diagnostics"
+echo "    darkbloom serve       Start serving"
+echo "    darkbloom status      Show status"
+echo "    darkbloom logs -w     Stream logs"
+echo "    darkbloom stop        Stop provider"
+echo "    darkbloom update      Check for updates"
+echo "    darkbloom doctor      Run diagnostics"
 echo ""
 echo "  Open a new terminal or run: source ~/.zshrc"
 echo ""

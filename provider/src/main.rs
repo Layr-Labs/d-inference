@@ -664,8 +664,8 @@ fn ensure_chat_template(
         "qwen3.5" // safe default for ChatML-family models
     };
 
-    // Check local cache first (~/.eigeninference/templates/)
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+    // Check local cache first (~/.darkbloom/templates/)
+    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
     let templates_dir = eigeninference_dir.join("templates");
     let cached_template = templates_dir.join(format!("{template_name}.jinja"));
 
@@ -861,7 +861,7 @@ fn fetch_runtime_manifest(
 fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
     const PBS_PYTHON_URL: &str = "https://github.com/astral-sh/python-build-standalone/releases/download/20260408/cpython-3.12.13+20260408-aarch64-apple-darwin-install_only.tar.gz";
 
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
     let manifest = fetch_runtime_manifest(coordinator_base);
     let expected_python_hashes: Vec<String> = manifest
         .as_ref()
@@ -1088,7 +1088,7 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
     tracing::warn!("Runtime hash mismatch — downloading canonical site-packages from R2...");
 
     let release_version = fetch_latest_release_version(coordinator_base);
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
     let site_packages_dir = eigeninference_dir.join("python/lib/python3.12/site-packages");
     let tmp_tarball = "/tmp/eigeninference-site-packages.tar.gz";
 
@@ -1325,7 +1325,7 @@ async fn fetch_catalog(coordinator_url: &str) -> Vec<CatalogModel> {
 }
 
 #[derive(Parser)]
-#[command(name = "eigeninference-provider", about = "Darkbloom provider agent for Apple Silicon Macs", version = env!("CARGO_PKG_VERSION"))]
+#[command(name = "darkbloom", about = "Darkbloom provider agent for Apple Silicon Macs", version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -1658,7 +1658,7 @@ async fn check_for_update_alert() {
         }
     }
     eprintln!("  │                                              │");
-    eprintln!("  │  Run: eigeninference-provider update                  │");
+    eprintln!("  │  Run: darkbloom update                  │");
     eprintln!("  ╰──────────────────────────────────────────────╯");
     eprintln!();
 }
@@ -1735,7 +1735,7 @@ async fn cmd_install(
                 "  ⚠ Could not download profile (HTTP {}). Skipping MDM enrollment.",
                 resp.status()
             );
-            println!("    You can enroll later: eigeninference-provider enroll");
+            println!("    You can enroll later: darkbloom enroll");
         } else {
             let profile_bytes = resp.bytes().await?;
             std::fs::write(&profile_path, &profile_bytes)?;
@@ -1851,7 +1851,7 @@ async fn cmd_install(
                     "  ⚠ Not enough disk space ({:.0} GB needed, {:.0} GB available)",
                     total_default_size, disk_available_gb
                 );
-                println!("  Free up disk space and retry: eigeninference-provider install");
+                println!("  Free up disk space and retry: darkbloom install");
             } else {
                 use std::io::Write;
                 print!(
@@ -1999,13 +1999,13 @@ async fn cmd_install(
 
     let log_path = dirs::home_dir()
         .unwrap_or_default()
-        .join(".eigeninference/provider.log");
+        .join(".darkbloom/provider.log");
 
     println!("╔══════════════════════════════════════════╗");
     println!("║  Provider is running as a system service! ║");
     println!("╚══════════════════════════════════════════╝");
     println!();
-    println!("  Service: io.eigeninference.provider (launchd)");
+    println!("  Service: io.darkbloom.provider (launchd)");
     println!("  Auto-restart: enabled (KeepAlive)");
     println!("  Logs: {}", log_path.display());
     println!();
@@ -2018,7 +2018,7 @@ async fn cmd_install(
         println!("  Run this command to connect your provider");
         println!("  to your Darkbloom account:");
         println!();
-        println!("    eigeninference-provider login");
+        println!("    darkbloom login");
         println!();
         println!("  Without linking, earnings go to a local");
         println!("  wallet and cannot be withdrawn.");
@@ -2026,11 +2026,11 @@ async fn cmd_install(
     }
 
     println!("Commands:");
-    println!("  eigeninference-provider login      Link to your account");
-    println!("  eigeninference-provider status     Show provider status");
-    println!("  eigeninference-provider logs       View logs");
-    println!("  eigeninference-provider stop       Stop the provider");
-    println!("  eigeninference-provider doctor     Run diagnostics");
+    println!("  darkbloom login      Link to your account");
+    println!("  darkbloom status     Show provider status");
+    println!("  darkbloom logs       View logs");
+    println!("  darkbloom stop       Stop the provider");
+    println!("  darkbloom doctor     Run diagnostics");
     println!();
 
     Ok(())
@@ -2050,7 +2050,7 @@ async fn cmd_serve(
     #[cfg(unix)]
     {
         let my_pid = std::process::id();
-        let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+        let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
         let pid_file = eigeninference_dir.join("provider.pid");
 
         // Check for an existing provider process
@@ -2309,8 +2309,8 @@ async fn cmd_serve(
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
-    // Find bundled Python at ~/.eigeninference/python (standalone Python 3.12 + vllm-mlx)
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+    // Find bundled Python at ~/.darkbloom/python (standalone Python 3.12 + vllm-mlx)
+    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
     let bundled_python = eigeninference_dir.join("python/bin/python3.12");
     let python_cmd = if bundled_python.exists() {
         // Only set PYTHONHOME if this is a real standalone Python install
@@ -2330,9 +2330,7 @@ async fn cmd_serve(
         }
         bundled_python.to_string_lossy().to_string()
     } else {
-        tracing::info!(
-            "Using system Python (bundled Python not found at ~/.eigeninference/python)"
-        );
+        tracing::info!("Using system Python (bundled Python not found at ~/.darkbloom/python)");
         "python3".to_string()
     };
 
@@ -2762,7 +2760,7 @@ async fn cmd_serve(
     // Start image generation bridge on be_port + 2 if configured.
     // EIGENINFERENCE_IMAGE_MODEL: model ID for the image bridge (e.g. "flux-klein-4b").
     // EIGENINFERENCE_IMAGE_MODEL_PATH: model directory for gRPCServerCLI (optional).
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
     let grpc_binary = eigeninference_dir.join("bin/gRPCServerCLI");
     let _image_available = if !image_model.is_empty() && !grpc_binary.exists() {
         tracing::error!(
@@ -2777,14 +2775,14 @@ async fn cmd_serve(
         let mut bridge_cmd = std::process::Command::new(&python_cmd);
 
         // Set PYTHONPATH so the image bridge package is importable.
-        // Look for it next to the binary, in ~/.eigeninference, or in the source tree.
+        // Look for it next to the binary, in ~/.darkbloom, or in the source tree.
         let bridge_paths: Vec<String> = [
             std::env::current_exe().ok().and_then(|p| {
                 p.parent()
                     .map(|d| d.join("image-bridge").to_string_lossy().to_string())
             }),
             dirs::home_dir().map(|d| {
-                d.join(".eigeninference/image-bridge")
+                d.join(".darkbloom/image-bridge")
                     .to_string_lossy()
                     .to_string()
             }),
@@ -3619,7 +3617,7 @@ async fn cmd_serve(
             .status();
         let pid_file = dirs::home_dir()
             .unwrap_or_default()
-            .join(".eigeninference/provider.pid");
+            .join(".darkbloom/provider.pid");
         let _ = std::fs::remove_file(pid_file);
     }
 
@@ -3953,10 +3951,10 @@ fn find_stt_server_script() -> Option<String> {
             .unwrap_or_default(),
         // In the provider source directory (development)
         std::path::PathBuf::from("stt_server.py"),
-        // In ~/.eigeninference
+        // In ~/.darkbloom
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".eigeninference/stt_server.py"),
+            .join(".darkbloom/stt_server.py"),
     ];
 
     for path in &candidates {
@@ -3972,10 +3970,10 @@ fn generate_attestation(
     binary_hash: Option<&str>,
 ) -> Option<Box<serde_json::value::RawValue>> {
     // Look for the enclave CLI binary in common locations
-    // Check ~/.eigeninference/bin first (standard install location)
+    // Check ~/.darkbloom/bin first (standard install location)
     let home_bin = dirs::home_dir()
         .unwrap_or_default()
-        .join(".eigeninference/bin/eigeninference-enclave");
+        .join(".darkbloom/bin/eigeninference-enclave");
     let home_bin_str = home_bin.to_string_lossy().to_string();
 
     let binary_paths = [
@@ -4030,7 +4028,7 @@ fn generate_attestation(
         if attempt == 1 {
             // Delete stale enclave key and retry
             let home = dirs::home_dir().unwrap_or_default();
-            let key_path = home.join(".eigeninference/enclave_key.data");
+            let key_path = home.join(".darkbloom/enclave_key.data");
             if key_path.exists() {
                 tracing::warn!("Deleting stale enclave key at {}", key_path.display());
                 let _ = std::fs::remove_file(&key_path);
@@ -4224,7 +4222,7 @@ async fn cmd_enroll(coordinator_url: String) -> Result<()> {
     if security::check_mdm_enrolled() {
         println!("✓ Already enrolled — no action needed.");
         println!();
-        println!("  Verify with: eigeninference-provider doctor");
+        println!("  Verify with: darkbloom doctor");
         return Ok(());
     }
 
@@ -4281,7 +4279,7 @@ async fn cmd_enroll(coordinator_url: String) -> Result<()> {
     }
 
     println!();
-    println!("After installing, verify with: eigeninference-provider doctor");
+    println!("After installing, verify with: darkbloom doctor");
     Ok(())
 }
 
@@ -4327,9 +4325,9 @@ async fn cmd_unenroll() -> Result<()> {
     println!();
     println!("Clean up local Darkbloom data? This removes:");
     println!("  - Config: ~/.config/eigeninference/");
-    println!("  - Node key: ~/.eigeninference/node_key");
-    println!("  - Enclave key: ~/.eigeninference/enclave_key.data");
-    println!("  - Auth token: ~/.eigeninference/auth_token");
+    println!("  - Node key: ~/.darkbloom/node_key");
+    println!("  - Enclave key: ~/.darkbloom/enclave_key.data");
+    println!("  - Auth token: ~/.darkbloom/auth_token");
     println!();
     println!("Type 'yes' to confirm:");
     let mut input = String::new();
@@ -4337,9 +4335,9 @@ async fn cmd_unenroll() -> Result<()> {
     if input.trim() == "yes" {
         let home = dirs::home_dir().unwrap_or_default();
         let _ = std::fs::remove_dir_all(home.join(".config/eigeninference"));
-        let _ = std::fs::remove_file(home.join(".eigeninference/node_key"));
-        let _ = std::fs::remove_file(home.join(".eigeninference/enclave_key.data"));
-        let _ = std::fs::remove_file(home.join(".eigeninference/wallet_key"));
+        let _ = std::fs::remove_file(home.join(".darkbloom/node_key"));
+        let _ = std::fs::remove_file(home.join(".darkbloom/enclave_key.data"));
+        let _ = std::fs::remove_file(home.join(".darkbloom/wallet_key"));
         println!("  ✓ Local data cleaned up");
     } else {
         println!("  Skipped cleanup");
@@ -4360,7 +4358,7 @@ async fn cmd_benchmark() -> Result<()> {
     println!();
 
     // Find bundled Python
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
     let bundled_python = eigeninference_dir.join("python/bin/python3.12");
     let python_cmd = if bundled_python.exists() {
         bundled_python.to_string_lossy().to_string()
@@ -4376,7 +4374,7 @@ async fn cmd_benchmark() -> Result<()> {
         .unwrap_or(false);
 
     if !has_vllm {
-        anyhow::bail!("vllm-mlx not found. Run: eigeninference-provider install");
+        anyhow::bail!("vllm-mlx not found. Run: darkbloom install");
     }
 
     // Scan downloaded models and filter by catalog
@@ -4391,7 +4389,7 @@ async fn cmd_benchmark() -> Result<()> {
         .collect();
 
     if servable.is_empty() {
-        anyhow::bail!("No catalog models downloaded. Run: eigeninference-provider models download");
+        anyhow::bail!("No catalog models downloaded. Run: darkbloom models download");
     }
 
     // Let user pick which model to benchmark
@@ -4541,7 +4539,7 @@ print(json.dumps({{"avg_tps": avg_tps, "avg_ttft_ms": avg_ttft, "runs": results}
 async fn cmd_status() -> Result<()> {
     let hw = hardware::detect()?;
     let home = dirs::home_dir().unwrap_or_default();
-    let eigeninference_dir = home.join(".eigeninference");
+    let eigeninference_dir = home.join(".darkbloom");
 
     println!();
     println!("  Darkbloom Provider Status");
@@ -4651,7 +4649,7 @@ async fn cmd_status() -> Result<()> {
         if linked {
             "✓ Yes"
         } else {
-            "✗ No — run: eigeninference-provider login"
+            "✗ No — run: darkbloom login"
         }
     );
     println!();
@@ -4692,13 +4690,13 @@ async fn cmd_status() -> Result<()> {
     if is_running {
         println!();
         println!("  Commands:");
-        println!("    eigeninference-provider logs -w    Stream live logs");
-        println!("    eigeninference-provider stop       Stop serving");
+        println!("    darkbloom logs -w    Stream live logs");
+        println!("    darkbloom stop       Stop serving");
     } else {
         println!();
         println!("  Commands:");
-        println!("    eigeninference-provider start       Start serving");
-        println!("    eigeninference-provider models download  Download models");
+        println!("    darkbloom start       Start serving");
+        println!("    darkbloom models download  Download models");
     }
     println!();
 
@@ -4844,7 +4842,7 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
                     let cache_dir = if is_image {
                         dirs::home_dir()
                             .unwrap_or_default()
-                            .join(".eigeninference/models")
+                            .join(".darkbloom/models")
                             .join(s3_name)
                     } else {
                         dirs::home_dir()
@@ -4916,7 +4914,7 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
         }
 
         _ => {
-            println!("Usage: eigeninference-provider models [list|download|remove]");
+            println!("Usage: darkbloom models [list|download|remove]");
         }
     }
 
@@ -5056,7 +5054,7 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
             .output()
             .or_else(|_| {
                 let home = dirs::home_dir().unwrap_or_default();
-                std::process::Command::new(home.join(".eigeninference/bin/eigeninference-enclave"))
+                std::process::Command::new(home.join(".darkbloom/bin/eigeninference-enclave"))
                     .args(["info"])
                     .output()
             })
@@ -5085,7 +5083,7 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
         #[cfg(target_os = "macos")]
         {
             println!("✗ Not enrolled");
-            issues.push("Run: eigeninference-provider enroll".to_string());
+            issues.push("Run: darkbloom enroll".to_string());
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -5096,7 +5094,7 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
 
     // 5. Inference runtime (vllm-mlx / mlx-lm)
     print!("5. Inference runtime........... ");
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
     let bundled_python = eigeninference_dir.join("python/bin/python3.12");
     let (python_cmd, python_home) = if bundled_python.exists() {
         (
@@ -5170,7 +5168,7 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
         passed += 1;
     } else {
         println!("✗ No models downloaded");
-        issues.push("Download a model: eigeninference-provider models download".to_string());
+        issues.push("Download a model: darkbloom models download".to_string());
     }
 
     // 7. Node key
@@ -5181,7 +5179,7 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
         passed += 1;
     } else {
         println!("✗ Not generated");
-        issues.push("Run: eigeninference-provider init".to_string());
+        issues.push("Run: darkbloom init".to_string());
     }
 
     // 8. Coordinator connectivity
@@ -5214,7 +5212,7 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
     println!("Result: {passed}/8 checks passed");
     if issues.is_empty() {
         println!();
-        println!("All good! Start serving with: eigeninference-provider serve");
+        println!("All good! Start serving with: darkbloom serve");
     } else {
         println!();
         println!("Issues to fix:");
@@ -5640,7 +5638,7 @@ async fn cmd_start(
 
     let log_path = dirs::home_dir()
         .unwrap_or_default()
-        .join(".eigeninference/provider.log");
+        .join(".darkbloom/provider.log");
 
     // Install as launchd user agent
     service::install_and_start(
@@ -5664,17 +5662,17 @@ async fn cmd_start(
         println!("  Image:   {}", im);
     }
     println!("  Logs:    {}", log_path.display());
-    println!("  Service: io.eigeninference.provider (launchd)");
+    println!("  Service: io.darkbloom.provider (launchd)");
     println!();
-    println!("  eigeninference-provider stop    Stop the provider");
-    println!("  eigeninference-provider logs    View logs");
-    println!("  eigeninference-provider status  Check status");
+    println!("  darkbloom stop    Stop the provider");
+    println!("  darkbloom logs    View logs");
+    println!("  darkbloom status  Check status");
 
     Ok(())
 }
 
 async fn cmd_stop() -> Result<()> {
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".eigeninference");
+    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
     let pid_path = eigeninference_dir.join("provider.pid");
     let caffeinate_pid_path = eigeninference_dir.join("caffeinate.pid");
 
@@ -5831,7 +5829,7 @@ async fn cmd_update(coordinator: String, force: bool) -> Result<()> {
     // Extract and install
     let eigeninference_dir = dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("cannot find home directory"))?
-        .join(".eigeninference");
+        .join(".darkbloom");
     let bin_dir = eigeninference_dir.join("bin");
 
     println!("  Installing...");
@@ -5844,8 +5842,8 @@ async fn cmd_update(coordinator: String, force: bool) -> Result<()> {
 
     // Move binaries to bin dir
     let _ = std::fs::rename(
-        eigeninference_dir.join("eigeninference-provider"),
-        bin_dir.join("eigeninference-provider"),
+        eigeninference_dir.join("darkbloom"),
+        bin_dir.join("darkbloom"),
     );
     let _ = std::fs::rename(
         eigeninference_dir.join("eigeninference-enclave"),
@@ -5856,7 +5854,7 @@ async fn cmd_update(coordinator: String, force: bool) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        for name in &["eigeninference-provider", "eigeninference-enclave"] {
+        for name in &["darkbloom", "eigeninference-enclave"] {
             let path = bin_dir.join(name);
             if path.exists() {
                 let mut perms = std::fs::metadata(&path)?.permissions();
@@ -5925,12 +5923,12 @@ async fn cmd_update(coordinator: String, force: bool) -> Result<()> {
         let domain = format!("gui/{uid}");
         let plist = dirs::home_dir()
             .unwrap_or_default()
-            .join("Library/LaunchAgents/io.eigeninference.provider.plist");
+            .join("Library/LaunchAgents/io.darkbloom.provider.plist");
         if plist.exists() {
             let _ = std::process::Command::new("launchctl")
                 .args(["bootstrap", &domain, &plist.to_string_lossy()])
                 .output();
-            let target = format!("gui/{uid}/io.eigeninference.provider");
+            let target = format!("gui/{uid}/io.darkbloom.provider");
             let _ = std::process::Command::new("launchctl")
                 .args(["kickstart", &target])
                 .output();
@@ -5956,11 +5954,11 @@ fn is_newer_version(current: &str, latest: &str) -> bool {
 async fn cmd_logs(lines: usize, watch: bool) -> Result<()> {
     let log_path = dirs::home_dir()
         .unwrap_or_default()
-        .join(".eigeninference/provider.log");
+        .join(".darkbloom/provider.log");
 
     if !log_path.exists() {
         println!("No log file found at {}", log_path.display());
-        println!("Start the provider first: eigeninference-provider start");
+        println!("Start the provider first: darkbloom start");
         return Ok(());
     }
 
@@ -6037,7 +6035,7 @@ async fn cmd_login(coordinator_url: String) -> Result<()> {
             "Already logged in (token: {}...)",
             &token[..std::cmp::min(20, token.len())]
         );
-        println!("Run 'eigeninference-provider logout' first to unlink.");
+        println!("Run 'darkbloom logout' first to unlink.");
         return Ok(());
     }
 
@@ -6100,7 +6098,7 @@ async fn cmd_login(coordinator_url: String) -> Result<()> {
 
     loop {
         if std::time::Instant::now() > deadline {
-            anyhow::bail!("Device code expired. Run 'eigeninference-provider login' again.");
+            anyhow::bail!("Device code expired. Run 'darkbloom login' again.");
         }
 
         tokio::time::sleep(poll_interval).await;
@@ -6143,7 +6141,7 @@ async fn cmd_login(coordinator_url: String) -> Result<()> {
                 println!("  Your provider will now be connected to your account.");
                 println!("  Earnings will be credited to your account wallet.");
                 println!();
-                println!("  Start serving with: eigeninference-provider serve");
+                println!("  Start serving with: darkbloom serve");
                 return Ok(());
             }
             _ => {

@@ -212,9 +212,9 @@ final class StatusViewModel: ObservableObject {
         }
     }
 
-    /// Check real system state: is eigeninference-provider running? Is the backend healthy?
+    /// Check real system state: is darkbloom running? Is the backend healthy?
     func pollProviderStatus() async {
-        // Check if a eigeninference-provider serve process is running
+        // Check if a darkbloom serve process is running
         let processRunning = Self.isProviderProcessRunning()
 
         // Check if the backend is healthy on port 8100
@@ -262,11 +262,11 @@ final class StatusViewModel: ObservableObject {
         }
     }
 
-    /// Check if a eigeninference-provider serve process is running via pgrep.
+    /// Check if a darkbloom serve process is running via pgrep.
     private static func isProviderProcessRunning() -> Bool {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        proc.arguments = ["-f", "eigeninference-provider serve"]
+        proc.arguments = ["-f", "darkbloom serve"]
         proc.standardOutput = Pipe()
         proc.standardError = Pipe()
         try? proc.run()
@@ -527,7 +527,7 @@ final class StatusViewModel: ObservableObject {
     private static func loadKeychainItem(key: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "io.eigeninference.provider",
+            kSecAttrService as String: "io.darkbloom.provider",
             kSecAttrAccount as String: key,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
@@ -542,7 +542,7 @@ final class StatusViewModel: ObservableObject {
         let data = value.data(using: .utf8)!
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "io.eigeninference.provider",
+            kSecAttrService as String: "io.darkbloom.provider",
             kSecAttrAccount as String: key,
             kSecValueData as String: data,
         ]

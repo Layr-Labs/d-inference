@@ -10,7 +10,7 @@
 //! stable across restarts.
 //!
 //! Fallback: if the Secure Enclave is unavailable, the key is loaded from
-//! ~/.eigeninference/node_key (32 bytes, 0600 perms).
+//! ~/.darkbloom/node_key (32 bytes, 0600 perms).
 
 use anyhow::{Context, Result};
 use crypto_box::{
@@ -48,7 +48,7 @@ impl NodeKeyPair {
     /// inside the SE hardware and returns a deterministic X25519 key. The
     /// private key never touches disk.
     ///
-    /// Fallback: loads from `~/.eigeninference/node_key` if the SE is unavailable.
+    /// Fallback: loads from `~/.darkbloom/node_key` if the SE is unavailable.
     pub fn load_or_generate(path: &Path) -> Result<Self> {
         match Self::from_secure_enclave() {
             Ok(kp) => {
@@ -211,16 +211,16 @@ impl NodeKeyPair {
     }
 }
 
-/// Return the default path for the node key file: ~/.eigeninference/node_key
+/// Return the default path for the node key file: ~/.darkbloom/node_key
 pub fn default_key_path() -> Result<std::path::PathBuf> {
     let home = dirs::home_dir().context("could not determine home directory")?;
-    Ok(home.join(".eigeninference").join("node_key"))
+    Ok(home.join(".darkbloom").join("node_key"))
 }
 
 fn enclave_binary_path() -> std::path::PathBuf {
     let eigeninference_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".eigeninference");
+        .join(".darkbloom");
 
     let bin_path = eigeninference_dir.join("bin/eigeninference-enclave");
     if bin_path.exists() {

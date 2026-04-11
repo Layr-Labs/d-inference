@@ -149,7 +149,7 @@ impl CoordinatorClient {
         self
     }
 
-    /// Set the device-linked auth token (from `eigeninference-provider login`).
+    /// Set the device-linked auth token (from `darkbloom login`).
     pub fn with_auth_token(mut self, auth_token: Option<String>) -> Self {
         self.auth_token = auth_token;
         self

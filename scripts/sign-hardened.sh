@@ -54,9 +54,9 @@ echo "Entitlements: $ENTITLEMENTS"
 echo ""
 
 # Sign provider binary
-PROVIDER_BIN="$PROJECT_DIR/provider/target/release/eigeninference-provider"
+PROVIDER_BIN="$PROJECT_DIR/provider/target/release/darkbloom"
 if [ -f "$PROVIDER_BIN" ]; then
-    echo "Signing eigeninference-provider..."
+    echo "Signing darkbloom..."
     codesign --force --options runtime \
         --entitlements "$ENTITLEMENTS" \
         --sign "$IDENTITY" \
@@ -67,7 +67,7 @@ if [ -f "$PROVIDER_BIN" ]; then
     codesign --display --verbose=2 "$PROVIDER_BIN" 2>&1 | grep -i "runtime\|flags"
     echo ""
 else
-    echo "WARNING: eigeninference-provider binary not found at $PROVIDER_BIN"
+    echo "WARNING: darkbloom binary not found at $PROVIDER_BIN"
     echo "  Build first with: cd provider && cargo build --release"
     echo ""
 fi

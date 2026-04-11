@@ -38,10 +38,10 @@ func TestGenerateCombinedProfile(t *testing.T) {
 	}
 
 	// Must contain serial number in payload identifiers
-	if !strings.Contains(profile, "io.eigeninference.enroll.acme."+serial) {
+	if !strings.Contains(profile, "io.darkbloom.enroll.acme."+serial) {
 		t.Error("profile missing ACME payload identifier with serial")
 	}
-	if !strings.Contains(profile, "io.eigeninference.enroll."+serial) {
+	if !strings.Contains(profile, "io.darkbloom.enroll."+serial) {
 		t.Error("profile missing profile identifier with serial")
 	}
 

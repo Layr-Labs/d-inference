@@ -163,13 +163,13 @@ struct ProviderManagerTests {
     func buildArgs() {
         let args = ProviderManager.buildArguments(
             model: "mlx-community/Qwen3.5-4B-4bit",
-            coordinatorURL: "https://coordinator.eigeninference.io",
+            coordinatorURL: "https://coordinator.darkbloom.io",
             port: 8321
         )
 
         #expect(args == [
             "serve",
-            "--coordinator", "https://coordinator.eigeninference.io",
+            "--coordinator", "https://coordinator.darkbloom.io",
             "--model", "mlx-community/Qwen3.5-4B-4bit",
             "--backend-port", "8321",
         ])

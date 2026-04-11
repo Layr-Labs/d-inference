@@ -94,7 +94,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p /tmp/eigeninference-bundle
 
-          cp provider/target/release/eigeninference-provider /tmp/eigeninference-bundle/
+          cp provider/target/release/darkbloom /tmp/eigeninference-bundle/
           cp enclave/.build/release/eigeninference-enclave /tmp/eigeninference-bundle/
 
           # Copy gRPCServerCLI and image bridge into bundle
@@ -107,7 +107,7 @@ jobs:
             --keychain "$KEYCHAIN_PATH" \
             --entitlements scripts/entitlements.plist \
             --options runtime \
-            /tmp/eigeninference-bundle/eigeninference-provider
+            /tmp/eigeninference-bundle/darkbloom
 
           codesign --force --sign "$DEVELOPER_ID" \
             --keychain "$KEYCHAIN_PATH" \
@@ -123,7 +123,7 @@ jobs:
             /tmp/eigeninference-bundle/gRPCServerCLI
 
           # Verify all signatures
-          codesign --verify --verbose /tmp/eigeninference-bundle/eigeninference-provider
+          codesign --verify --verbose /tmp/eigeninference-bundle/darkbloom
           codesign --verify --verbose /tmp/eigeninference-bundle/eigeninference-enclave
           codesign --verify --verbose /tmp/eigeninference-bundle/gRPCServerCLI
 
@@ -148,7 +148,7 @@ jobs:
             --wait --timeout 10m
 
           # Staple the individual binaries
-          xcrun stapler staple /tmp/eigeninference-bundle/eigeninference-provider || true
+          xcrun stapler staple /tmp/eigeninference-bundle/darkbloom || true
           xcrun stapler staple /tmp/eigeninference-bundle/eigeninference-enclave || true
           xcrun stapler staple /tmp/eigeninference-bundle/gRPCServerCLI || true
 
@@ -160,7 +160,7 @@ jobs:
       - name: Compute hashes
         id: hash
         run: |
-          BINARY_HASH=$(shasum -a 256 /tmp/eigeninference-bundle/eigeninference-provider | cut -d' ' -f1)
+          BINARY_HASH=$(shasum -a 256 /tmp/eigeninference-bundle/darkbloom | cut -d' ' -f1)
           BUNDLE_HASH=$(shasum -a 256 /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
           echo "binary_hash=$BINARY_HASH" >> "$GITHUB_OUTPUT"
           echo "bundle_hash=$BUNDLE_HASH" >> "$GITHUB_OUTPUT"
@@ -372,7 +372,7 @@ jobs:
           <dict>
             <key>CFBundleName</key><string>EigenInference</string>
             <key>CFBundleDisplayName</key><string>EigenInference</string>
-            <key>CFBundleIdentifier</key><string>io.eigeninference.provider</string>
+            <key>CFBundleIdentifier</key><string>io.darkbloom.provider</string>
             <key>CFBundleVersion</key><string>${VERSION}</string>
             <key>CFBundleShortVersionString</key><string>${VERSION}</string>
             <key>CFBundleExecutable</key><string>EigenInference</string>
@@ -387,7 +387,7 @@ jobs:
 
           # Copy binaries (same signed binaries as CLI bundle)
           cp "$APP_BIN" "$MACOS/EigenInference"
-          cp /tmp/eigeninference-bundle/eigeninference-provider "$MACOS/eigeninference-provider"
+          cp /tmp/eigeninference-bundle/darkbloom "$MACOS/darkbloom"
           cp /tmp/eigeninference-bundle/eigeninference-enclave "$MACOS/eigeninference-enclave" 2>/dev/null || true
 
           # Sign all binaries with Hardened Runtime

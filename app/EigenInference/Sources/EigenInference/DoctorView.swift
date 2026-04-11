@@ -1,4 +1,4 @@
-/// DoctorView — Displays results from `eigeninference-provider doctor`.
+/// DoctorView — Displays results from `darkbloom doctor`.
 ///
 /// Runs the 8-point diagnostic check and shows each result with
 /// a status icon and detail text. Provides remediation hints.
@@ -194,7 +194,7 @@ struct DoctorView: View {
         case 2: return "Reboot into Recovery Mode and run 'csrutil enable'."
         case 3: return "Secure Enclave requires Apple Silicon hardware."
         case 4: return "Run the setup wizard to enroll in MDM."
-        case 5: return "Run 'eigeninference-provider install' to set up the inference runtime."
+        case 5: return "Run 'darkbloom install' to set up the inference runtime."
         case 6: return "Download a model from the Model tab in Settings."
         case 7: return "The node key is auto-generated on first run."
         case 8: return "Check your internet connection and coordinator URL."

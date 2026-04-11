@@ -1,6 +1,6 @@
 /// SetupWizardView — Warm, vibrant onboarding wizard for first-time users.
 ///
-/// Mirrors the CLI `eigeninference-provider install` flow with a graphical UI:
+/// Mirrors the CLI `darkbloom install` flow with a graphical UI:
 ///   1. Welcome & hardware detection
 ///   2. Security verification
 ///   3. MDM enrollment

@@ -1,11 +1,11 @@
 [package]
-name = "eigeninference-provider"
+name = "darkbloom"
 version = "0.2.47"
 edition = "2024"
 description = "EigenInference provider agent for Apple Silicon Macs"
 
 [[bin]]
-name = "eigeninference-provider"
+name = "darkbloom"
 path = "src/main.rs"
 
 [dependencies]

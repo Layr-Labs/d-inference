@@ -4,7 +4,7 @@ set -euo pipefail
 # Build the EigenInference provider bundle tarball
 #
 # Creates a self-contained tarball with:
-#   eigeninference-provider     Rust CLI binary (no Python linking)
+#   darkbloom     Rust CLI binary (no Python linking)
 #   eigeninference-enclave      Swift Secure Enclave CLI
 #   ffmpeg             Static binary for audio transcription
 #   stt_server.py      Speech-to-text server script
@@ -43,10 +43,10 @@ echo ""
 
 # ─── 1. Build Rust provider ──────────────────────────────────
 if [ "$SKIP_BUILD" = false ]; then
-    echo "1. Building eigeninference-provider (Rust, --no-default-features)..."
+    echo "1. Building darkbloom (Rust, --no-default-features)..."
     cd "$PROJECT_DIR/provider"
     cargo build --release --no-default-features 2>&1 | tail -3
-    echo "   ✓ eigeninference-provider ($(du -h target/release/eigeninference-provider | cut -f1))"
+    echo "   ✓ darkbloom ($(du -h target/release/darkbloom | cut -f1))"
     echo ""
 else
     echo "1. Skipping Rust build (--skip-build)"
@@ -54,7 +54,7 @@ else
 fi
 
 # Verify binary exists
-PROVIDER_BIN="$PROJECT_DIR/provider/target/release/eigeninference-provider"
+PROVIDER_BIN="$PROJECT_DIR/provider/target/release/darkbloom"
 if [ ! -f "$PROVIDER_BIN" ]; then
     echo "   ERROR: $PROVIDER_BIN not found. Run without --skip-build."
     exit 1
@@ -140,9 +140,9 @@ echo ""
 echo "4. Copying and code-signing binaries..."
 ENTITLEMENTS="$SCRIPT_DIR/entitlements.plist"
 
-cp "$PROVIDER_BIN" "$BUNDLE_DIR/eigeninference-provider"
-codesign --force --sign - --entitlements "$ENTITLEMENTS" --options runtime "$BUNDLE_DIR/eigeninference-provider"
-echo "   ✓ eigeninference-provider (signed with hypervisor entitlement)"
+cp "$PROVIDER_BIN" "$BUNDLE_DIR/darkbloom"
+codesign --force --sign - --entitlements "$ENTITLEMENTS" --options runtime "$BUNDLE_DIR/darkbloom"
+echo "   ✓ darkbloom (signed with hypervisor entitlement)"
 
 if [ -f "$ENCLAVE_BIN" ]; then
     cp "$ENCLAVE_BIN" "$BUNDLE_DIR/eigeninference-enclave"
@@ -275,7 +275,7 @@ done
 TEMPLATE_HASHES_JSON+="}"
 
 # Write manifest.json into the bundle
-BINARY_HASH_PRE=$(shasum -a 256 "$BUNDLE_DIR/eigeninference-provider" | cut -d' ' -f1)
+BINARY_HASH_PRE=$(shasum -a 256 "$BUNDLE_DIR/darkbloom" | cut -d' ' -f1)
 cat > "$BUNDLE_DIR/manifest.json" << MANIFEST
 {
     "python_hash": "$PYTHON_HASH",
@@ -313,7 +313,7 @@ if [ -f "$APP_BIN" ]; then
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key><string>EigenInference</string>
-    <key>CFBundleIdentifier</key><string>io.eigeninference.app</string>
+    <key>CFBundleIdentifier</key><string>io.darkbloom.app</string>
     <key>CFBundleVersion</key><string>0.1.0</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleExecutable</key><string>EigenInference</string>

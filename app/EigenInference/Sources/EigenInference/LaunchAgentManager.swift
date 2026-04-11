@@ -1,6 +1,6 @@
 /// LaunchAgentManager — Install/remove a launchd LaunchAgent for app auto-launch on login.
 ///
-/// Creates a plist at ~/Library/LaunchAgents/com.eigeninference.app.plist that opens
+/// Creates a plist at ~/Library/LaunchAgents/com.darkbloom.app.plist that opens
 /// the Darkbloom app on login. This is separate from the provider service plist
 /// which is managed by the CLI's `start`/`stop`.
 ///
@@ -12,7 +12,7 @@ import Foundation
 
 enum LaunchAgentManager {
 
-    private static let plistName = "com.eigeninference.app.plist"
+    private static let plistName = "com.darkbloom.app.plist"
 
     private static var plistPath: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -24,7 +24,7 @@ enum LaunchAgentManager {
     private static var legacyPlistPath: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents")
-            .appendingPathComponent("io.eigeninference.app.plist")
+            .appendingPathComponent("io.darkbloom.app.plist")
     }
 
     /// Whether the LaunchAgent is currently installed.
@@ -64,16 +64,16 @@ enum LaunchAgentManager {
             ? ["/usr/bin/open", bundlePath]
             : [ProcessInfo.processInfo.arguments[0]]
 
-        // Ensure ~/.eigeninference/ directory exists for log files
+        // Ensure ~/.darkbloom/ directory exists for log files
         let appDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".eigeninference")
+            .appendingPathComponent(".darkbloom")
         try FileManager.default.createDirectory(
             at: appDir,
             withIntermediateDirectories: true
         )
 
         let plist: [String: Any] = [
-            "Label": "com.eigeninference.app",
+            "Label": "com.darkbloom.app",
             "ProgramArguments": programArgs,
             "RunAtLoad": true,
             "KeepAlive": false,

@@ -190,7 +190,7 @@ func (s *Server) handleDeviceApprove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if time.Now().After(dc.ExpiresAt) {
-		writeJSON(w, http.StatusGone, errorResponse("expired_code", "this code has expired — run 'eigeninference-provider login' again"))
+		writeJSON(w, http.StatusGone, errorResponse("expired_code", "this code has expired — run 'darkbloom login' again"))
 		return
 	}
 

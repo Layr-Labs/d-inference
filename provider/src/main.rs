@@ -1496,9 +1496,9 @@ enum Command {
 
 fn setup_logging(verbose: bool) {
     let filter = if verbose {
-        EnvFilter::new("eigeninference_provider=debug,info")
+        EnvFilter::new("darkbloom=debug,info")
     } else {
-        EnvFilter::new("eigeninference_provider=info,warn")
+        EnvFilter::new("darkbloom=info,warn")
     };
 
     tracing_subscriber::fmt()

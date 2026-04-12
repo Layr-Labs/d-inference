@@ -789,7 +789,14 @@ mod tests {
         let timestamp = "2025-01-15T10:30:00Z";
         let public_key = Some("cHVia2V5");
 
-        let response = handle_attestation_challenge(nonce, timestamp, public_key, None, None, std::collections::HashMap::new());
+        let response = handle_attestation_challenge(
+            nonce,
+            timestamp,
+            public_key,
+            None,
+            None,
+            std::collections::HashMap::new(),
+        );
 
         match response {
             ProviderMessage::AttestationResponse {
@@ -810,8 +817,14 @@ mod tests {
 
     #[test]
     fn test_handle_attestation_challenge_without_public_key() {
-        let response =
-            handle_attestation_challenge("bm9uY2U=", "2025-01-15T00:00:00Z", None, None, None, std::collections::HashMap::new());
+        let response = handle_attestation_challenge(
+            "bm9uY2U=",
+            "2025-01-15T00:00:00Z",
+            None,
+            None,
+            None,
+            std::collections::HashMap::new(),
+        );
 
         match response {
             ProviderMessage::AttestationResponse {
@@ -1093,8 +1106,14 @@ mod tests {
     fn test_attestation_response_correct_public_key_passthrough() {
         // The public key in the response should match what was passed in.
         let pk = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=";
-        let response =
-            handle_attestation_challenge("bm9uY2U=", "2026-06-15T00:00:00Z", Some(pk), None, None, std::collections::HashMap::new());
+        let response = handle_attestation_challenge(
+            "bm9uY2U=",
+            "2026-06-15T00:00:00Z",
+            Some(pk),
+            None,
+            None,
+            std::collections::HashMap::new(),
+        );
 
         match response {
             ProviderMessage::AttestationResponse { public_key, .. } => {
@@ -1107,8 +1126,14 @@ mod tests {
     #[test]
     fn test_attestation_response_none_public_key_becomes_empty() {
         // When no public key is configured, the response should use empty string.
-        let response =
-            handle_attestation_challenge("bm9uY2U=", "2026-06-15T00:00:00Z", None, None, None, std::collections::HashMap::new());
+        let response = handle_attestation_challenge(
+            "bm9uY2U=",
+            "2026-06-15T00:00:00Z",
+            None,
+            None,
+            None,
+            std::collections::HashMap::new(),
+        );
 
         match response {
             ProviderMessage::AttestationResponse { public_key, .. } => {
@@ -1155,8 +1180,14 @@ mod tests {
     fn test_attestation_response_serializes_for_go_coordinator() {
         // The response must serialize with snake_case field names and the
         // "attestation_response" type tag that the Go coordinator expects.
-        let response =
-            handle_attestation_challenge("YWJj", "2026-03-15T10:00:00Z", Some("cGs="), None, None, std::collections::HashMap::new());
+        let response = handle_attestation_challenge(
+            "YWJj",
+            "2026-03-15T10:00:00Z",
+            Some("cGs="),
+            None,
+            None,
+            std::collections::HashMap::new(),
+        );
 
         let json = serde_json::to_string(&response).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();

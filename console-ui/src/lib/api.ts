@@ -218,6 +218,18 @@ export async function deposit(amountUsd: number): Promise<void> {
   }
 }
 
+export async function withdraw(amountUsd: number, walletAddress: string): Promise<void> {
+  const res = await fetch("/api/payments/withdraw", {
+    method: "POST",
+    headers: proxyHeaders(),
+    body: JSON.stringify({ amount_usd: amountUsd, wallet_address: walletAddress }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || data?.error || `Withdrawal failed (${res.status})`);
+  }
+}
+
 export async function submitDepositTx(txSignature: string, referralCode?: string): Promise<void> {
   const res = await fetch("/api/payments/deposit", {
     method: "POST",

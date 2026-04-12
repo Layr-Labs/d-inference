@@ -1271,7 +1271,7 @@ mod tests {
                 template_hashes: std::collections::HashMap::new(),
                 grpc_binary_hash: None,
                 image_bridge_hash: None,
-            model_hashes: std::collections::HashMap::new(),
+                model_hashes: std::collections::HashMap::new(),
             },
         ];
 

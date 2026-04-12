@@ -2422,8 +2422,10 @@ async fn cmd_serve(
     // Do not advertise before confirming the backend is actually running.
 
     // Advertise image model if configured (backend starts later)
+    let mut image_weight_hash_computed: Option<String> = None;
     if !image_model.is_empty() && !image_model_id.is_empty() {
         let image_weight_hash = models::compute_weight_hash(&image_model_id);
+        image_weight_hash_computed = image_weight_hash.clone();
         advertised_models.push(models::ModelInfo {
             id: image_model_id.clone(),
             model_type: Some("image".to_string()),
@@ -2507,24 +2509,17 @@ async fn cmd_serve(
             std::sync::Arc::new(std::sync::Mutex::new(initial_model_hash.clone()));
         rehash_model_hash_opt = Some(current_model_hash.clone());
 
-        let mut all_model_hashes: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        // Primary text model hash
+        // Collect per-model weight hashes for attestation. Start with the text
+        // model; STT and image hashes are added after their backends pass health
+        // checks (computed once at advertisement time, reused here).
+        let mut all_model_hashes: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         if let Some(ref h) = initial_model_hash {
             all_model_hashes.insert(model.clone(), h.clone());
         }
-        // STT model hash (if STT model is available)
-        if !stt_model_path.is_empty() {
-            if let Some(h) = models::compute_weight_hash(&stt_model_id) {
-                all_model_hashes.insert(stt_model_id.clone(), h);
-            }
+        if let Some(ref h) = image_weight_hash_computed {
+            all_model_hashes.insert(image_model_id.clone(), h.clone());
         }
-        // Image model hash (if image model is configured)
-        if !image_model.is_empty() {
-            if let Some(h) = models::compute_weight_hash(&image_model_id) {
-                all_model_hashes.insert(image_model_id.clone(), h);
-            }
-        }
-        tracing::info!("Computed weight hashes for {} model(s)", all_model_hashes.len());
 
         // Shared backend capacity data (updated by polling task, read by heartbeats).
         let backend_capacity: std::sync::Arc<std::sync::Mutex<Option<protocol::BackendCapacity>>> =
@@ -2571,7 +2566,10 @@ async fn cmd_serve(
                     .spawn();
                 match stt_result {
                     Ok(child) => {
-                        tracing::info!("STT server started (PID: {:?}) on port {stt_port}", child.id());
+                        tracing::info!(
+                            "STT server started (PID: {:?}) on port {stt_port}",
+                            child.id()
+                        );
                         let stt_url = format!("http://127.0.0.1:{stt_port}");
                         let mut stt_healthy = false;
                         for i in 0..30 {
@@ -2584,6 +2582,9 @@ async fn cmd_serve(
                         }
                         if stt_healthy {
                             let stt_weight_hash = models::compute_weight_hash(&stt_model_id);
+                            if let Some(ref h) = stt_weight_hash {
+                                all_model_hashes.insert(stt_model_id.clone(), h.clone());
+                            }
                             advertised_models.push(models::ModelInfo {
                                 id: stt_model_id.clone(),
                                 model_type: Some("stt".to_string()),
@@ -2593,9 +2594,13 @@ async fn cmd_serve(
                                 estimated_memory_gb: 4.0,
                                 weight_hash: stt_weight_hash,
                             });
-                            tracing::info!("STT backend healthy — advertising model: {stt_model_id}");
+                            tracing::info!(
+                                "STT backend healthy — advertising model: {stt_model_id}"
+                            );
                         } else {
-                            tracing::warn!("STT backend failed health check — model will NOT be advertised");
+                            tracing::warn!(
+                                "STT backend failed health check — model will NOT be advertised"
+                            );
                         }
                     }
                     Err(e) => {
@@ -2606,6 +2611,11 @@ async fn cmd_serve(
                 tracing::warn!("stt_server.py not found — STT will not be available");
             }
         }
+
+        tracing::info!(
+            "Model weight hashes for attestation: {} model(s)",
+            all_model_hashes.len()
+        );
 
         let client = coordinator::CoordinatorClient::new(
             coordinator_url,

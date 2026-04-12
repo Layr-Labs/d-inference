@@ -112,13 +112,13 @@ export default function ImagesPage() {
       <div className="border-b border-border-dim px-6 py-4">
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-semibold text-ink">Image Generation</h1>
-          <span className="px-2 py-0.5 rounded-full bg-accent-amber/15 border border-accent-amber/30 text-accent-amber text-[10px] font-bold uppercase tracking-wider">
-            Experimental
+          <span className="px-2 py-0.5 rounded-full bg-coral/10 border border-coral/30 text-coral text-[10px] font-bold uppercase tracking-wider">
+            Coming Soon
           </span>
         </div>
         <p className="text-sm text-text-tertiary mt-0.5">
           Generate images with FLUX models running on attested Apple Silicon.
-          Image providers may not always be available.
+          Image generation is coming soon as we onboard image providers to the network.
         </p>
       </div>
 

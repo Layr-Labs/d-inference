@@ -4,7 +4,8 @@
   "overrides": {
     "@solana-program/memo": {
       "@solana/kit": "$@solana/kit"
-    }
+    },
+    "axios": "^1.15.0"
   },
   "private": true,
   "scripts": {

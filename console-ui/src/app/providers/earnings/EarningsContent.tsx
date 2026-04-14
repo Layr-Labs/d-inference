@@ -153,9 +153,9 @@ export default function EarningsContent() {
     const amount = parseFloat(withdrawAmount);
     if (isNaN(amount) || amount <= 0) return;
 
-    const embeddedWallet = wallets.find((w) => w.walletClientType === "privy");
+    const embeddedWallet = wallets.find((w) => w.address === walletAddress);
     if (!embeddedWallet) {
-      setWithdrawResult({ ok: false, msg: "No embedded wallet found. Sign in again." });
+      setWithdrawResult({ ok: false, msg: "No wallet found. Sign in again." });
       return;
     }
 

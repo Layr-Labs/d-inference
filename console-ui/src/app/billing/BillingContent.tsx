@@ -126,9 +126,9 @@ export default function BillingContent() {
   }, [loadData]);
 
   const handleBuyCredits = async () => {
-    const embeddedWallet = wallets.find((w) => w.walletClientType === "privy");
+    const embeddedWallet = wallets.find((w) => w.address === walletAddress);
     if (!embeddedWallet) {
-      addToast("No embedded wallet found. Sign in again.");
+      addToast("No wallet found. Sign in again.");
       return;
     }
     const coordAddr = walletInfo?.coordinator_address;

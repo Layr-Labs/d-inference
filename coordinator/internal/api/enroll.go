@@ -63,8 +63,23 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 //  2. MDM — enrolls with MicroMDM (SecurityInfo verification)
 //  3. ACME — device-attest-01 (SE key binding via Apple attestation)
 //
-// AccessRights=1041: profile inspection (1) + device lock/passcode (16) + security queries (1024).
-// This is read-only MDM — no app management or device wipe capabilities.
+// AccessRights=1041: profile inspection (1) + device info queries (16) + security queries (1024).
+// This is strictly read-only MDM — no device control or personal data access.
+//
+// Apple MDM AccessRights bitmask reference:
+//   Bit 0  (1)    — Inspect installed config profiles          ✓ REQUESTED
+//   Bit 1  (2)    — Install/remove config profiles             ✗ NOT requested
+//   Bit 2  (4)    — Device lock and passcode removal           ✗ NOT requested
+//   Bit 3  (8)    — Device erase (remote wipe)                 ✗ NOT requested
+//   Bit 4  (16)   — Query device information (name, serial)    ✓ REQUESTED
+//   Bit 5  (32)   — Query network information                  ✗ NOT requested
+//   Bit 6  (64)   — Inspect installed provisioning profiles    ✗ NOT requested
+//   Bit 7  (128)  — Install/remove provisioning profiles       ✗ NOT requested
+//   Bit 8  (256)  — Inspect installed applications             ✗ NOT requested
+//   Bit 9  (512)  — Restriction-related queries                ✗ NOT requested
+//   Bit 10 (1024) — Security-related queries (SIP, SecureBoot) ✓ REQUESTED
+//   Bit 11 (2048) — Change device settings                     ✗ NOT requested
+//   Bit 12 (4096) — App management                             ✗ NOT requested
 func generateCombinedProfile(serialNumber, baseURL string) string {
 	acmePayloadUUID := uuid.New().String()
 	profileUUID := uuid.New().String()

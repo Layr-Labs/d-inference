@@ -156,7 +156,7 @@ Darkbloom prevents anyone -- including providers -- from reading consumer prompt
 | Challenge-response | SIP/SecureBoot re-verified every 5 minutes |
 | MDM SecurityInfo | Apple MDM cross-checks hardware integrity (SIP, Secure Boot, FileVault) |
 | MDA certificate chain | Optional Apple Enterprise Attestation Root CA verification |
-| RDMA detection | Refuses to serve if Thunderbolt 5 DMA is enabled |
+| RDMA detection | Enables hypervisor and runs inside it |
 
 Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 

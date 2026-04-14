@@ -86,6 +86,12 @@ function PrivyClientProviderInner({ children }: { children: React.ReactNode }) {
         embeddedWallets: {
           solana: { createOnLogin: "all-users" },
         },
+        solanaClusters: [
+          {
+            name: "mainnet-beta",
+            rpcUrl: process.env.NEXT_PUBLIC_SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com",
+          },
+        ],
       }}
     >
       <PrivyAuthBridge>{children}</PrivyAuthBridge>

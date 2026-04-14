@@ -66,16 +66,28 @@ export function Sidebar() {
       <nav className="px-3 space-y-1">
         {[
           { href: "/", icon: MessageSquare, label: "Chat" },
-          { href: "/images", icon: ImageIcon, label: "Images" },
+          { href: "/images", icon: ImageIcon, label: "Images", disabled: true },
           { href: "/stats", icon: Activity, label: "Stats" },
           { href: "/providers", icon: Server, label: "Providers" },
           { href: "/earn", icon: Coins, label: "Earn" },
           { href: "/api-console", icon: Code, label: "API" },
-        ].map(({ href, icon: Icon, label }) => {
+        ].map(({ href, icon: Icon, label, disabled }) => {
           const isActive =
             href === "/"
               ? pathname === "/"
               : pathname.startsWith(href);
+          if (disabled) {
+            return (
+              <div
+                key={href}
+                className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold text-text-tertiary/50 border-2 border-transparent cursor-not-allowed"
+              >
+                <Icon size={18} className="opacity-30" />
+                {label}
+                <span className="ml-auto text-[9px] uppercase tracking-wider opacity-60">Soon</span>
+              </div>
+            );
+          }
           return (
             <Link
               key={href}

@@ -1,0 +1,59 @@
+version: 2
+updates:
+
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "08:00"
+      timezone: "America/Los_Angeles"
+    target-branch: "master"
+    commit-message:
+      prefix: "[golang-version]"
+      include: "scope"
+    pull-request-branch-name:
+      separator: "-"
+    open-pull-requests-limit: 8
+    labels:
+      - "version"
+      - "golang"
+    allow:
+      - dependency-type: "direct"
+    groups:
+      # Creates one consolidated PR for all minor/patch updates to reduce PR
+      # Major version updates (e.g., 1.x.x -> 2.x.x) are excluded since they
+      golang-version-updates:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Group Security Updates
+  - package-ecosystem: "npm" # same for both npm & yarn
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "08:00"
+      timezone: "America/Los_Angeles"
+    target-branch: "master"
+    commit-message:
+      prefix: "[npm-security]"
+      include: "scope"
+    pull-request-branch-name:
+      separator: "-"
+    open-pull-requests-limit: 0
+    labels:
+      - "security"
+    allow:
+      - dependency-type: "direct"
+    groups:
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+          - "major"

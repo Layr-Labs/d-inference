@@ -37,7 +37,7 @@ import { UsageChart } from "@/components/UsageChart";
 
 const USDC_MINT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 const USDC_DECIMALS = 6;
-const SOLANA_RPC = "https://api.mainnet-beta.solana.com";
+const SOLANA_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
 
 function Modal({
   open,

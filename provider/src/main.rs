@@ -1378,6 +1378,10 @@ enum Command {
         /// Minutes of inactivity before backend shuts down to free GPU memory (0 = never)
         #[arg(long)]
         idle_timeout: Option<u64>,
+
+        /// Disable automatic update checks (enabled by default)
+        #[arg(long)]
+        no_auto_update: bool,
     },
 
     /// One-command setup: enroll in MDM, download model, start serving
@@ -1538,6 +1542,7 @@ async fn main() -> Result<()> {
             image_model,
             image_model_path,
             idle_timeout,
+            no_auto_update,
         } => {
             // CLI flags override env vars for image model
             if let Some(ref im) = image_model {
@@ -1560,6 +1565,7 @@ async fn main() -> Result<()> {
                 backend_port,
                 all_models,
                 idle_timeout,
+                !no_auto_update,
             )
             .await
         }
@@ -2044,6 +2050,7 @@ async fn cmd_serve(
     backend_port_override: Option<u16>,
     _all_models: bool,
     idle_timeout_override: Option<u64>,
+    auto_update: bool,
 ) -> Result<()> {
     // Ensure only one provider instance runs at a time.
     // Kill any existing provider serve process + its backend children.
@@ -2905,6 +2912,38 @@ async fn cmd_serve(
             }
         });
         coordinator_handle = Some(handle);
+    }
+
+    // =========================================================================
+    // Auto-update: periodically check for new versions and self-update.
+    // =========================================================================
+    if auto_update && !local {
+        let update_coordinator = coordinator_http_base.clone();
+        tokio::spawn(async move {
+            // Wait 5 minutes before the first check so startup completes cleanly.
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1800));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                match auto_update_check(&update_coordinator).await {
+                    Ok(true) => {
+                        // Update installed — restart the service and exit this process.
+                        tracing::info!("Auto-update complete — restarting provider");
+                        if let Err(e) = auto_update_restart() {
+                            tracing::error!("Failed to restart after update: {e}");
+                        }
+                        // Exit so launchd restarts us with the new binary.
+                        std::process::exit(0);
+                    }
+                    Ok(false) => {} // already up to date
+                    Err(e) => {
+                        tracing::warn!("Auto-update check failed: {e}");
+                    }
+                }
+            }
+        });
+        tracing::info!("Auto-update enabled (checks every 30 minutes)");
     }
 
     // =========================================================================
@@ -6041,6 +6080,123 @@ fn is_newer_version(current: &str, latest: &str) -> bool {
     parse(latest) > parse(current)
 }
 
+/// Check for updates and install if available. Returns Ok(true) if an update was installed.
+async fn auto_update_check(coordinator_base_url: &str) -> Result<bool> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let version_url = format!("{coordinator_base_url}/api/version");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+
+    let resp = client.get(&version_url).send().await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("coordinator returned {}", resp.status());
+    }
+
+    let info: serde_json::Value = resp.json().await?;
+    let latest = info["version"].as_str().unwrap_or("unknown");
+
+    if !is_newer_version(current_version, latest) {
+        return Ok(false);
+    }
+
+    let download_url = info["download_url"].as_str().unwrap_or("");
+    if download_url.is_empty() {
+        tracing::warn!("Update {current_version} → {latest} available but no download URL");
+        return Ok(false);
+    }
+
+    tracing::info!("Downloading update: {current_version} → {latest}");
+
+    let download = client.get(download_url).send().await?;
+    if !download.status().is_success() {
+        anyhow::bail!("download failed: {}", download.status());
+    }
+    let bytes = download.bytes().await?;
+
+    // Verify bundle hash
+    let expected_hash = info["bundle_hash"].as_str().unwrap_or("");
+    if !expected_hash.is_empty() {
+        let actual_hash = security::sha256_hex(&bytes);
+        if actual_hash != expected_hash {
+            anyhow::bail!("bundle hash mismatch — aborting update");
+        }
+        tracing::info!("Bundle hash verified");
+    }
+
+    // Extract and install
+    let tmp_path = "/tmp/darkbloom-auto-update.tar.gz";
+    std::fs::write(tmp_path, &bytes)?;
+
+    let eigeninference_dir = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("cannot find home directory"))?
+        .join(".darkbloom");
+    let bin_dir = eigeninference_dir.join("bin");
+
+    let status = std::process::Command::new("tar")
+        .args(["xzf", tmp_path, "-C", &eigeninference_dir.to_string_lossy()])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("tar extraction failed");
+    }
+
+    // Move binaries to bin dir
+    let _ = std::fs::rename(
+        eigeninference_dir.join("darkbloom"),
+        bin_dir.join("darkbloom"),
+    );
+    let _ = std::fs::rename(
+        eigeninference_dir.join("eigeninference-enclave"),
+        bin_dir.join("eigeninference-enclave"),
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for name in &["darkbloom", "eigeninference-enclave"] {
+            let path = bin_dir.join(name);
+            if path.exists() {
+                let mut perms = std::fs::metadata(&path)?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&path, perms)?;
+            }
+        }
+    }
+
+    std::fs::remove_file(tmp_path).ok();
+    tracing::info!("Update installed: {current_version} → {latest}");
+    Ok(true)
+}
+
+/// Restart the launchd service after an auto-update. The plist already has the
+/// correct args from the last `start`, so we just stop and re-kickstart.
+fn auto_update_restart() -> Result<()> {
+    if !service::is_loaded() {
+        // Not running as a launchd service — caller should just exit.
+        return Ok(());
+    }
+
+    service::stop()?;
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    let uid = unsafe { libc::getuid() };
+    let domain = format!("gui/{uid}");
+    let plist = dirs::home_dir()
+        .unwrap_or_default()
+        .join("Library/LaunchAgents/io.darkbloom.provider.plist");
+    if plist.exists() {
+        let _ = std::process::Command::new("launchctl")
+            .args(["bootstrap", &domain, &plist.to_string_lossy()])
+            .output();
+        let target = format!("gui/{uid}/io.darkbloom.provider");
+        let _ = std::process::Command::new("launchctl")
+            .args(["kickstart", &target])
+            .output();
+    }
+    Ok(())
+}
+
 async fn cmd_logs(lines: usize, watch: bool) -> Result<()> {
     let log_path = dirs::home_dir()
         .unwrap_or_default()
@@ -6420,5 +6576,64 @@ mod tests {
                 // If spawn itself fails (no python3), that's OK for this test
             }
         }
+    }
+
+    #[test]
+    fn test_is_newer_version_basic() {
+        assert!(is_newer_version("0.3.5", "0.3.6"));
+        assert!(is_newer_version("0.3.5", "0.4.0"));
+        assert!(is_newer_version("0.3.5", "1.0.0"));
+        assert!(!is_newer_version("0.3.6", "0.3.6"));
+        assert!(!is_newer_version("0.3.6", "0.3.5"));
+        assert!(!is_newer_version("1.0.0", "0.9.9"));
+    }
+
+    #[test]
+    fn test_is_newer_version_edge_cases() {
+        assert!(is_newer_version("0.0.1", "0.0.2"));
+        assert!(!is_newer_version("0.0.2", "0.0.1"));
+        assert!(is_newer_version("0.9.9", "0.10.0"));
+        assert!(is_newer_version("0.3.5", "0.3.10"));
+    }
+
+    /// Verify auto_update_check returns Ok(false) when coordinator reports same version.
+    #[tokio::test]
+    async fn test_auto_update_check_already_up_to_date() {
+        // Start a mock server that returns our current version
+        let current = env!("CARGO_PKG_VERSION");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let mock_handle = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 4096];
+                let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+                let body = format!(
+                    r#"{{"version":"{}","download_url":"","bundle_hash":"","changelog":""}}"#,
+                    current
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes()).await;
+            }
+        });
+
+        let result = auto_update_check(&format!("http://127.0.0.1:{port}")).await;
+        assert!(result.is_ok());
+        assert!(
+            !result.unwrap(),
+            "should return false when already up to date"
+        );
+        mock_handle.abort();
+    }
+
+    /// Verify auto_update_check returns error when coordinator is unreachable.
+    #[tokio::test]
+    async fn test_auto_update_check_unreachable() {
+        let result = auto_update_check("http://127.0.0.1:1").await;
+        assert!(result.is_err());
     }
 }

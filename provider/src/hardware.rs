@@ -403,8 +403,6 @@ fn lookup_bandwidth(family: ChipFamily, tier: ChipTier, gpu_cores: u32) -> u32 {
                 410 // 32-core
             }
         }
-        (ChipFamily::M4, ChipTier::Ultra) => 819, // expected, not released yet
-
         // M5 family
         (ChipFamily::M5, ChipTier::Base) => 153,
         (ChipFamily::M5, ChipTier::Pro) => 307,
@@ -415,7 +413,6 @@ fn lookup_bandwidth(family: ChipFamily, tier: ChipTier, gpu_cores: u32) -> u32 {
                 460 // 32-core
             }
         }
-        (ChipFamily::M5, ChipTier::Ultra) => 1228, // expected: 2x M5 Max
 
         // Unknown — conservative estimate
         _ => 100,

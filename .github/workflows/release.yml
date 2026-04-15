@@ -252,13 +252,14 @@ jobs:
 
           # Upgrade pip and install packages
           /tmp/eigeninference-python/bin/python3.12 -m pip install --upgrade pip --quiet
-          /tmp/eigeninference-python/bin/python3.12 -m pip install --quiet /tmp/vllm-mlx-source.zip
-          /tmp/eigeninference-python/bin/python3.12 -m pip install --quiet mlx-lm
+          /tmp/eigeninference-python/bin/python3.12 -m pip install --quiet --no-cache-dir 'mlx-lm>=0.31.2'
+          /tmp/eigeninference-python/bin/python3.12 -m pip install --quiet --no-cache-dir /tmp/vllm-mlx-source.zip
           /tmp/eigeninference-python/bin/python3.12 -m pip install --quiet grpcio flatbuffers soundfile mlx-audio
 
-          # Verify packages work
+          # Verify packages work and vllm-mlx can actually import (catches version mismatches)
           /tmp/eigeninference-python/bin/python3.12 -c "import vllm_mlx; print(f'vllm-mlx {vllm_mlx.__version__}')"
           /tmp/eigeninference-python/bin/python3.12 -c "import mlx_lm; print(f'mlx-lm {mlx_lm.__version__}')"
+          /tmp/eigeninference-python/bin/python3.12 -c "from vllm_mlx.server import app; print('vllm-mlx server imports OK')"
 
           # Strip unnecessary packages to keep it small (keep pip — providers need it)
           cd /tmp/eigeninference-python/lib/python*/site-packages

@@ -104,7 +104,8 @@ echo "   Using $PYTHON312 ($($PYTHON312 --version))"
 source "$BUNDLE_DIR/python/bin/activate"
 
 echo "   Installing vllm-mlx from our fork..."
-pip install --quiet 'git+https://github.com/Gajesh2007/vllm-mlx.git@main'
+pip install --quiet --no-cache-dir 'mlx-lm>=0.31.2'
+pip install --quiet --no-cache-dir 'git+https://github.com/Gajesh2007/vllm-mlx.git@main'
 
 echo "   Installing image bridge dependencies..."
 pip install --quiet grpcio flatbuffers Pillow
@@ -134,6 +135,16 @@ for pkg in mlx mlx_lm vllm_mlx huggingface_hub; do
         echo "     ⚠ $pkg not found"
     fi
 done
+
+# Verify vllm-mlx can actually import (catches dependency version mismatches)
+echo "   Verifying vllm-mlx imports..."
+if "$BUNDLE_DIR/python/bin/python3.12" -c "from vllm_mlx.server import app; print('     ✓ vllm-mlx server imports OK')"; then
+    :
+else
+    echo "   ERROR: vllm-mlx failed to import — dependency version mismatch?"
+    echo "   Check mlx-lm version: $("$BUNDLE_DIR/python/bin/python3.12" -c "import mlx_lm; print(mlx_lm.__version__)" 2>/dev/null || echo "unknown")"
+    exit 1
+fi
 echo ""
 
 # ─── 4. Copy and code-sign binaries ──────────────────────────

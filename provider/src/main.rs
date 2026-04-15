@@ -2573,9 +2573,7 @@ async fn cmd_serve(
                         if let Some(stderr) = child.stderr.take() {
                             spawn_backend_log_forwarder(stderr, "stt", true);
                         }
-                        tracing::info!(
-                            "STT server started (PID: {stt_pid}) on port {stt_port}"
-                        );
+                        tracing::info!("STT server started (PID: {stt_pid}) on port {stt_port}");
                         let stt_url = format!("http://127.0.0.1:{stt_port}");
                         let mut stt_healthy = false;
                         for i in 0..30 {
@@ -6271,7 +6269,10 @@ mod tests {
     async fn test_log_forwarder_captures_output() {
         // Spawn a process that writes to both stdout and stderr
         let mut child = tokio::process::Command::new("sh")
-            .args(["-c", "echo 'stdout line 1'; echo 'stderr line 1' >&2; echo 'stdout line 2'"])
+            .args([
+                "-c",
+                "echo 'stdout line 1'; echo 'stderr line 1' >&2; echo 'stdout line 2'",
+            ])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()

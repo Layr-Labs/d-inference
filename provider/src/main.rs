@@ -371,7 +371,7 @@ fn download_model_from_cdn(s3_name: &str, cache_dir: &std::path::Path, display_n
     let is_image_model = s3_name.contains("flux") || s3_name.contains("klein");
 
     if is_image_model {
-        return download_ckpt_model_from_cdn(&base, cache_dir, display_name);
+        return download_ckpt_model_from_cdn(&base, cache_dir, display_name, s3_name);
     }
 
     // 1. Download config.json to verify the model exists on CDN
@@ -498,35 +498,11 @@ fn download_ckpt_model_from_cdn(
     base_url: &str,
     cache_dir: &std::path::Path,
     display_name: &str,
+    model_key: &str,
 ) -> bool {
     // Define the full pipeline for each known image model
-    struct ImagePipeline {
-        model_file: &'static str,
-        text_encoder: &'static str,
-        vae: &'static str,
-        version: &'static str,
-        name: &'static str,
-    }
-
-    let pipeline = if cache_dir.to_string_lossy().contains("flux_2_klein_9b_q8p") {
-        Some(ImagePipeline {
-            model_file: "flux_2_klein_9b_q8p.ckpt",
-            text_encoder: "qwen_3_8b_q8p.ckpt",
-            vae: "flux_2_vae_f16.ckpt",
-            version: "flux2_9b",
-            name: "FLUX.2 [klein] 9B",
-        })
-    } else if cache_dir.to_string_lossy().contains("flux_2_klein_4b_q8p") {
-        Some(ImagePipeline {
-            model_file: "flux_2_klein_4b_q8p.ckpt",
-            text_encoder: "qwen_3_4b_q8p.ckpt",
-            vae: "flux_2_vae_f16.ckpt",
-            version: "flux2_4b",
-            name: "FLUX.2 [klein] 4B",
-        })
-    } else {
-        None
-    };
+    let pipeline = resolve_image_pipeline(model_key)
+        .or_else(|| resolve_image_pipeline(&cache_dir.to_string_lossy()));
 
     let Some(pipeline) = pipeline else {
         println!("  ⚠ Unknown image model");
@@ -621,6 +597,36 @@ fn download_ckpt_model_from_cdn(
 
     println!("  ✓ {} pipeline complete", display_name);
     true
+}
+
+struct ImagePipeline {
+    model_file: &'static str,
+    text_encoder: &'static str,
+    vae: &'static str,
+    version: &'static str,
+    name: &'static str,
+}
+
+fn resolve_image_pipeline(model_key: &str) -> Option<ImagePipeline> {
+    if model_key.contains("flux-klein-9b-q8") || model_key.contains("flux_2_klein_9b_q8p") {
+        Some(ImagePipeline {
+            model_file: "flux_2_klein_9b_q8p.ckpt",
+            text_encoder: "qwen_3_8b_q8p.ckpt",
+            vae: "flux_2_vae_f16.ckpt",
+            version: "flux2_9b",
+            name: "FLUX.2 [klein] 9B",
+        })
+    } else if model_key.contains("flux-klein-4b-q8") || model_key.contains("flux_2_klein_4b_q8p") {
+        Some(ImagePipeline {
+            model_file: "flux_2_klein_4b_q8p.ckpt",
+            text_encoder: "qwen_3_4b_q8p.ckpt",
+            vae: "flux_2_vae_f16.ckpt",
+            version: "flux2_4b",
+            name: "FLUX.2 [klein] 4B",
+        })
+    } else {
+        None
+    }
 }
 
 /// Ensure a model's tokenizer_config.json contains a chat_template.
@@ -6445,6 +6451,42 @@ async fn cmd_autoupdate(action: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_resolve_image_pipeline_catalog_4b() {
+        let pipeline = resolve_image_pipeline("flux-klein-4b-q8").unwrap();
+        assert_eq!(pipeline.model_file, "flux_2_klein_4b_q8p.ckpt");
+        assert_eq!(pipeline.text_encoder, "qwen_3_4b_q8p.ckpt");
+        assert_eq!(pipeline.vae, "flux_2_vae_f16.ckpt");
+        assert_eq!(pipeline.version, "flux2_4b");
+        assert_eq!(pipeline.name, "FLUX.2 [klein] 4B");
+    }
+
+    #[test]
+    fn test_resolve_image_pipeline_catalog_9b() {
+        let pipeline = resolve_image_pipeline("flux-klein-9b-q8").unwrap();
+        assert_eq!(pipeline.model_file, "flux_2_klein_9b_q8p.ckpt");
+        assert_eq!(pipeline.text_encoder, "qwen_3_8b_q8p.ckpt");
+        assert_eq!(pipeline.vae, "flux_2_vae_f16.ckpt");
+        assert_eq!(pipeline.version, "flux2_9b");
+        assert_eq!(pipeline.name, "FLUX.2 [klein] 9B");
+    }
+
+    #[test]
+    fn test_resolve_image_pipeline_legacy_model_names() {
+        let pipeline_4b =
+            resolve_image_pipeline("models--flux_2_klein_4b_q8p.ckpt/snapshots/main").unwrap();
+        assert_eq!(pipeline_4b.model_file, "flux_2_klein_4b_q8p.ckpt");
+
+        let pipeline_9b =
+            resolve_image_pipeline("models--flux_2_klein_9b_q8p.ckpt/snapshots/main").unwrap();
+        assert_eq!(pipeline_9b.model_file, "flux_2_klein_9b_q8p.ckpt");
+    }
+
+    #[test]
+    fn test_resolve_image_pipeline_unknown_model() {
+        assert!(resolve_image_pipeline("flux-klein-unknown-q8").is_none());
+    }
 
     /// Verify that spawn_backend_log_forwarder captures stdout/stderr from a child
     /// process instead of dropping it to /dev/null. This is the core regression test:

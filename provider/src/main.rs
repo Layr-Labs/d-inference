@@ -5627,6 +5627,8 @@ async fn cmd_start(
 
             let mut items: Vec<PickerItem> = catalog
                 .iter()
+                // Image generation disabled — hide image models from picker
+                .filter(|c| c.model_type != "image")
                 .filter(|c| (c.min_ram_gb as f64) <= hw.memory_gb as f64)
                 .map(|c| {
                     // Check if model is downloaded AND complete.

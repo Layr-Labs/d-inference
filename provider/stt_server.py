@@ -320,6 +320,71 @@ async def stats():
 
 
 # ---------------------------------------------------------------------------
+# HuggingFace fast-tokenizer shim for cohere-transcribe-03-2026
+# ---------------------------------------------------------------------------
+
+class _CohereAsrTokenizerHF:
+    """Drop-in replacement for CohereAsrTokenizer when the model ships
+    tokenizer.json (HuggingFace fast tokenizer) instead of tokenizer.model
+    (SentencePiece).  CohereLabs/cohere-transcribe-03-2026 is the first
+    release to do this; mlx_audio ≤ 0.4.2 doesn't handle it.
+    """
+
+    def __init__(self, tokenizer_json_path: str):
+        from tokenizers import Tokenizer  # pip install tokenizers
+
+        self._tok = Tokenizer.from_file(tokenizer_json_path)
+        self.vocab_size = self._tok.get_vocab_size()
+
+    def _id(self, token: str) -> int:
+        tid = self._tok.token_to_id(token)
+        if tid is None:
+            raise KeyError(f"Token not in vocab: {token!r}")
+        return tid
+
+    @property
+    def eos_token_id(self) -> int:
+        return self._id("<|endoftext|>")
+
+    @property
+    def bos_token_id(self) -> int:
+        return self._id("<|startoftranscript|>")
+
+    @property
+    def pad_token_id(self) -> int:
+        return self._id("<pad>")
+
+    @property
+    def unk_token_id(self) -> int:
+        return self._id("<unk>")
+
+    def build_prompt_tokens(self, language: str, punctuation: bool = True) -> list:
+        tokens = [
+            "<|startofcontext|>",
+            "<|startoftranscript|>",
+            "<|emo:undefined|>",
+            f"<|{language}|>",
+            f"<|{language}|>",
+            "<|pnc|>" if punctuation else "<|nopnc|>",
+            "<|noitn|>",
+            "<|notimestamp|>",
+            "<|nodiarize|>",
+        ]
+        return [self._id(t) for t in tokens]
+
+    def encode(self, text: str, add_special_tokens: bool = False) -> list:
+        return self._tok.encode(text, add_special_tokens=add_special_tokens).ids
+
+    def decode(self, ids, skip_special_tokens: bool = True) -> str:
+        ids = [int(i) for i in ids if int(i) >= 0]
+        return self._tok.decode(ids, skip_special_tokens=skip_special_tokens)
+
+    def batch_decode(self, batch_ids, skip_special_tokens: bool = True) -> list:
+        processed = [[int(i) for i in ids if int(i) >= 0] for ids in batch_ids]
+        return self._tok.decode_batch(processed, skip_special_tokens=skip_special_tokens)
+
+
+# ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
 
@@ -354,6 +419,34 @@ def load_model(model_path: str):
             orig_load(self, mp)
 
     audio_mod.CohereAudioFrontend.load_buffers_from_checkpoint = patched_load
+
+    # Patch post_load_hook to support tokenizer.json (HuggingFace fast tokenizer)
+    # in addition to the legacy tokenizer.model (SentencePiece).
+    # mlx_audio ≤ 0.4.2 hardcodes tokenizer.model; CohereLabs/cohere-transcribe-03-2026
+    # ships only tokenizer.json.
+    from mlx_audio.stt.models.cohere_asr import cohere_asr as _cohere_asr_mod
+
+    _orig_post_load = _cohere_asr_mod.Model.post_load_hook.__func__
+
+    @classmethod
+    def _patched_post_load_hook(cls, model, model_path):
+        model_path = Path(model_path)
+        sp_path = model_path / "tokenizer.model"
+        json_path = model_path / "tokenizer.json"
+
+        if sp_path.exists():
+            return _orig_post_load(cls, model, model_path)
+
+        if json_path.exists():
+            model._tokenizer = _CohereAsrTokenizerHF(str(json_path))
+            model.audio_frontend.load_buffers_from_checkpoint(model_path)
+            return model
+
+        raise FileNotFoundError(
+            f"No tokenizer found in {model_path}: expected tokenizer.model or tokenizer.json"
+        )
+
+    _cohere_asr_mod.Model.post_load_hook = _patched_post_load_hook
 
     from mlx_audio.stt.utils import load_model as mlx_load_model
     model = mlx_load_model(model_path)

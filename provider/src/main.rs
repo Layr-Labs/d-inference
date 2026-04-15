@@ -1382,6 +1382,10 @@ enum Command {
         /// Disable automatic update checks (enabled by default)
         #[arg(long)]
         no_auto_update: bool,
+
+        /// Inference backend to use: vllm_mlx (default), mlx_lm, omlx, vmlx
+        #[arg(long, value_name = "BACKEND")]
+        backend: Option<String>,
     },
 
     /// One-command setup: enroll in MDM, download model, start serving
@@ -1461,6 +1465,10 @@ enum Command {
         /// Minutes of inactivity before backend shuts down to free GPU memory (0 = never)
         #[arg(long)]
         idle_timeout: Option<u64>,
+
+        /// Inference backend to use: vllm_mlx (default), mlx_lm, omlx, vmlx
+        #[arg(long, value_name = "BACKEND")]
+        backend: Option<String>,
     },
 
     /// Stop the provider gracefully
@@ -1550,6 +1558,7 @@ async fn main() -> Result<()> {
             image_model_path,
             idle_timeout,
             no_auto_update,
+            backend,
         } => {
             // Image generation disabled — ignore image_model/image_model_path args
             let _ = (&image_model, &image_model_path);
@@ -1562,6 +1571,7 @@ async fn main() -> Result<()> {
                 all_models,
                 idle_timeout,
                 !no_auto_update,
+                backend,
             )
             .await
         }
@@ -1581,10 +1591,11 @@ async fn main() -> Result<()> {
             image_model,
             image_model_path,
             idle_timeout,
+            backend,
         } => {
             // Image generation disabled — pass None for image args
             let _ = (&image_model, &image_model_path);
-            cmd_start(coordinator, model, None, None, idle_timeout).await
+            cmd_start(coordinator, model, None, None, idle_timeout, backend).await
         }
         Command::Stop => cmd_stop().await,
         Command::Logs { lines, watch } => cmd_logs(lines, watch).await,
@@ -1993,7 +2004,7 @@ async fn cmd_install(
     println!("  Model: {}", model);
     println!();
 
-    service::install_and_start(&coordinator_url, &[model.clone()], None, None, None, None)?;
+    service::install_and_start(&coordinator_url, &[model.clone()], None, None, None, None, None)?;
 
     let log_path = dirs::home_dir()
         .unwrap_or_default()
@@ -2043,6 +2054,7 @@ async fn cmd_serve(
     _all_models: bool,
     idle_timeout_override: Option<u64>,
     auto_update: bool,
+    backend_override: Option<String>,
 ) -> Result<()> {
     // Ensure only one provider instance runs at a time.
     // Kill any existing provider serve process + its backend children.
@@ -2096,6 +2108,12 @@ async fn cmd_serve(
             .status();
         let _ = std::process::Command::new("pkill")
             .args(["-f", "vllm_mlx"])
+            .status();
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "omlx"])
+            .status();
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "vmlx"])
             .status();
         // Kill legacy DGInf/dginf-provider processes
         let _ = std::process::Command::new("pkill")
@@ -2153,13 +2171,23 @@ async fn cmd_serve(
 
     // Load or create config
     let config_path = config::default_config_path()?;
-    let cfg = if config_path.exists() {
+    let mut cfg = if config_path.exists() {
         config::load(&config_path)?
     } else {
         let cfg = config::ProviderConfig::default_for_hardware(&hw);
         config::save(&config_path, &cfg)?;
         cfg
     };
+
+    // --backend flag overrides the config value (does not persist to disk)
+    if let Some(ref b) = backend_override {
+        cfg.backend.backend_type = match b.as_str() {
+            "mlx_lm" | "mlx-lm" => config::BackendType::MlxLm,
+            "omlx" => config::BackendType::Omlx,
+            "vmlx" => config::BackendType::Vmlx,
+            "vllm_mlx" | "vllm-mlx" | _ => config::BackendType::VllmMlx,
+        };
+    }
 
     // Parse schedule from config
     let schedule = cfg
@@ -2230,7 +2258,7 @@ async fn cmd_serve(
         selected_models
     );
 
-    // Build backend slots: one vllm-mlx process per model on sequential ports.
+    // Build backend slots: one backend process per model on sequential ports.
     // Shared state struct for per-slot health monitoring and lifecycle management.
     struct BackendSlot {
         model_id: String,
@@ -2440,7 +2468,9 @@ async fn cmd_serve(
         let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(64);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-        let backend_name = "vllm_mlx";
+        let backend_name = backend_name_for_module(
+            preferred_inference_backend_module(cfg.backend.backend_type),
+        );
 
         let public_key_b64 = node_keypair.public_key_base64();
 
@@ -2645,8 +2675,8 @@ async fn cmd_serve(
     // =========================================================================
 
     // Resolve model ID to local path on disk so the backend loads from disk
-    // Spawn one vllm-mlx backend per selected model on sequential ports.
-    let backend_module = preferred_inference_backend_module();
+    // Spawn one backend process per selected model on sequential ports.
+    let backend_module = preferred_inference_backend_module(cfg.backend.backend_type);
     let backend_name = backend_name_for_module(backend_module);
 
     // Fetch template hashes from manifest once (not per model)
@@ -2929,10 +2959,10 @@ async fn cmd_serve(
         let provider_stats = provider_stats_opt.unwrap();
         let coordinator_handle = coordinator_handle.unwrap();
 
-        let backend_name = "vllm_mlx";
+        let backend_name = backend_name_for_module(backend_module);
 
         // Spawn backend capacity polling task — periodically polls each
-        // vllm-mlx backend's /v1/status endpoint to collect live capacity data
+        // backend's /v1/status endpoint to collect live capacity data
         // (running requests, token counts, GPU memory). This data is included
         // in heartbeats so the coordinator can make informed routing decisions.
         if let Some(cap_arc) = backend_capacity_opt {
@@ -3028,8 +3058,9 @@ async fn cmd_serve(
         }
 
         // Spawn per-slot backend health monitor — detects crashes and auto-restarts
-        // each backend independently. Only monitors text backends (vllm-mlx slots);
-        // image-only providers don't have text backends to health-check.
+        // each backend independently. Only monitors per-model text backend slots
+        // (vllm-mlx and mlx-lm); image-only providers and omlx (which manages its
+        // own model directory as a single process) don't use this slot-based monitor.
         let has_text_backends = !backend_slots.is_empty();
         let health_shared_slots = shared_slots.clone();
         let health_python = python_cmd.clone();
@@ -3676,6 +3707,12 @@ async fn cmd_serve(
         let _ = std::process::Command::new("pkill")
             .args(["-f", "vllm_mlx"])
             .status();
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "omlx"])
+            .status();
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "vmlx"])
+            .status();
         let pid_file = dirs::home_dir()
             .unwrap_or_default()
             .join(".darkbloom/provider.pid");
@@ -3711,6 +3748,12 @@ async fn shutdown_backends(pids: &[(String, Option<u32>)]) {
             let _ = std::process::Command::new("pkill")
                 .args(["-f", "mlx_lm.server"])
                 .status();
+            let _ = std::process::Command::new("pkill")
+                .args(["-f", "omlx"])
+                .status();
+            let _ = std::process::Command::new("pkill")
+                .args(["-f", "vmlx"])
+                .status();
         }
     }
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -3718,14 +3761,22 @@ async fn shutdown_backends(pids: &[(String, Option<u32>)]) {
 }
 
 /// Restart the inference backend and wait for it to become healthy.
-fn preferred_inference_backend_module() -> &'static str {
+fn preferred_inference_backend_module(config_type: crate::config::BackendType) -> &'static str {
+    // Env var takes precedence over config.
     match std::env::var("EIGENINFERENCE_INFERENCE_BACKEND")
         .ok()
         .as_deref()
     {
         Some("vllm-mlx") | Some("vllm_mlx") | Some("vllm_mlx.server") => "vllm_mlx.server",
         Some("mlx_lm") | Some("mlx_lm.server") => "mlx_lm.server",
-        _ => "vllm_mlx.server",
+        Some("omlx") | Some("omlx.server") => "omlx.server",
+        Some("vmlx") | Some("vmlx.server") => "vmlx.server",
+        _ => match config_type {
+            crate::config::BackendType::VllmMlx => "vllm_mlx.server",
+            crate::config::BackendType::MlxLm => "mlx_lm.server",
+            crate::config::BackendType::Omlx => "omlx.server",
+            crate::config::BackendType::Vmlx => "vmlx.server",
+        },
     }
 }
 
@@ -3733,6 +3784,8 @@ fn backend_name_for_module(module: &str) -> &'static str {
     match module {
         "vllm_mlx.server" => "vllm-mlx",
         "mlx_lm.server" => "mlx_lm",
+        "omlx.server" => "omlx",
+        "vmlx.server" => "vmlx",
         _ => "unknown",
     }
 }
@@ -3762,6 +3815,27 @@ fn spawn_inference_backend(
     model: &str,
     port: u16,
 ) -> std::io::Result<u32> {
+    // omlx and vmlx are pip-installed CLI scripts, not python -m modules.
+    let cli_binary = match module {
+        "omlx.server" => Some("omlx"),
+        "vmlx.server" => Some("vmlx"),
+        _ => None,
+    };
+    if let Some(binary) = cli_binary {
+        let mut child = tokio::process::Command::new(binary)
+            .args(["serve", model, "--port", &port.to_string()])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(stdout) = child.stdout.take() {
+            spawn_backend_log_forwarder(stdout, binary, false);
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_backend_log_forwarder(stderr, binary, true);
+        }
+        return Ok(child.id().unwrap_or(0));
+    }
+
     let mut cmd = tokio::process::Command::new(python_cmd);
     cmd.args(["-m", module, "--model", model, "--port", &port.to_string()]);
 
@@ -3820,10 +3894,12 @@ async fn reload_backend(
     model: &str,
     port: u16,
 ) -> anyhow::Result<u32> {
-    let module = if backend_name == "vllm-mlx" || backend_name == "vllm_mlx" {
-        "vllm_mlx.server"
-    } else {
-        "mlx_lm.server"
+    let module = match backend_name {
+        "vllm-mlx" | "vllm_mlx" => "vllm_mlx.server",
+        "mlx_lm" => "mlx_lm.server",
+        "omlx" => "omlx.server",
+        "vmlx" => "vmlx.server",
+        _ => "vllm_mlx.server",
     };
 
     tracing::info!("Reloading backend: {module} for model {model} on port {port}");
@@ -5518,6 +5594,7 @@ async fn cmd_start(
     image_model: Option<String>,
     image_model_path: Option<String>,
     idle_timeout: Option<u64>,
+    backend_override: Option<String>,
 ) -> Result<()> {
     // Stop any existing provider first
     cmd_stop().await?;
@@ -5745,6 +5822,7 @@ async fn cmd_start(
         final_image_model_path.as_deref(),
         picked_stt.as_deref(),
         idle_timeout,
+        backend_override.as_deref(),
     )?;
 
     println!("Provider installed as system service");
@@ -5820,6 +5898,12 @@ async fn cmd_stop() -> Result<()> {
             .status();
         let _ = std::process::Command::new("pkill")
             .args(["-f", "vllm_mlx"])
+            .status();
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "omlx"])
+            .status();
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "vmlx"])
             .status();
     }
 
@@ -6664,5 +6748,87 @@ mod tests {
     async fn test_auto_update_check_unreachable() {
         let result = auto_update_check("http://127.0.0.1:1").await;
         assert!(result.is_err());
+    }
+
+    // ── preferred_inference_backend_module ───────────────────────────────────
+
+    #[test]
+    fn test_preferred_module_vllm_mlx_config() {
+        assert_eq!(
+            preferred_inference_backend_module(crate::config::BackendType::VllmMlx),
+            "vllm_mlx.server"
+        );
+    }
+
+    #[test]
+    fn test_preferred_module_mlx_lm_config() {
+        assert_eq!(
+            preferred_inference_backend_module(crate::config::BackendType::MlxLm),
+            "mlx_lm.server"
+        );
+    }
+
+    #[test]
+    fn test_preferred_module_omlx_config() {
+        assert_eq!(
+            preferred_inference_backend_module(crate::config::BackendType::Omlx),
+            "omlx.server"
+        );
+    }
+
+    #[test]
+    fn test_preferred_module_vmlx_config() {
+        assert_eq!(
+            preferred_inference_backend_module(crate::config::BackendType::Vmlx),
+            "vmlx.server"
+        );
+    }
+
+    // ── backend_name_for_module ──────────────────────────────────────────────
+
+    #[test]
+    fn test_backend_name_for_vllm_mlx() {
+        assert_eq!(backend_name_for_module("vllm_mlx.server"), "vllm-mlx");
+    }
+
+    #[test]
+    fn test_backend_name_for_mlx_lm() {
+        assert_eq!(backend_name_for_module("mlx_lm.server"), "mlx_lm");
+    }
+
+    #[test]
+    fn test_backend_name_for_omlx() {
+        assert_eq!(backend_name_for_module("omlx.server"), "omlx");
+    }
+
+    #[test]
+    fn test_backend_name_for_vmlx() {
+        assert_eq!(backend_name_for_module("vmlx.server"), "vmlx");
+    }
+
+    #[test]
+    fn test_backend_name_for_unknown_falls_back() {
+        assert_eq!(backend_name_for_module("unknown_module"), "unknown");
+    }
+
+    #[test]
+    fn test_backend_name_for_module_roundtrips() {
+        // The module string produced by preferred_inference_backend_module
+        // must map back to a meaningful name via backend_name_for_module.
+        let pairs = [
+            (crate::config::BackendType::VllmMlx, "vllm-mlx"),
+            (crate::config::BackendType::MlxLm, "mlx_lm"),
+            (crate::config::BackendType::Omlx, "omlx"),
+            (crate::config::BackendType::Vmlx, "vmlx"),
+        ];
+        for (bt, expected_name) in pairs {
+            let module = preferred_inference_backend_module(bt);
+            let name = backend_name_for_module(module);
+            assert_eq!(
+                name, expected_name,
+                "BackendType {:?} → module {module:?} → name {name:?}, expected {expected_name:?}",
+                bt
+            );
+        }
     }
 }

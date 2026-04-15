@@ -24,6 +24,21 @@ fn default_true() -> bool {
     true
 }
 
+/// Which inference backend to use for serving models.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendType {
+    /// vllm-mlx: continuous batching, tool calls, reasoning parsers.
+    #[default]
+    VllmMlx,
+    /// mlx-lm: simpler, single-request server, always available with MLX.
+    MlxLm,
+    /// omlx: multi-model server, manages a whole model directory.
+    Omlx,
+    /// vmlx: MLX Studio engine, per-model server with rich caching options.
+    Vmlx,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderConfig {
     pub provider: ProviderSettings,
@@ -55,6 +70,10 @@ pub struct BackendSettings {
     /// 0 = never shut down. Default: 60 (1 hour).
     #[serde(default = "default_idle_timeout_mins")]
     pub idle_timeout_mins: u64,
+    /// Which inference backend to use. Default: vllm_mlx.
+    /// Can also be overridden at runtime via the EIGENINFERENCE_INFERENCE_BACKEND env var.
+    #[serde(default)]
+    pub backend_type: BackendType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -82,6 +101,7 @@ impl ProviderConfig {
                 continuous_batching: true,
                 enabled_models: Vec::new(),
                 idle_timeout_mins: 60,
+                backend_type: BackendType::default(),
             },
             coordinator: CoordinatorSettings {
                 url: "ws://localhost:8080/ws/provider".to_string(),
@@ -393,6 +413,7 @@ heartbeat_interval_secs = 30
                 continuous_batching: false,
                 enabled_models: vec!["m1".to_string(), "m2".to_string()],
                 idle_timeout_mins: 30,
+                backend_type: BackendType::default(),
             },
             coordinator: CoordinatorSettings {
                 url: "wss://example.com/ws/provider".to_string(),
@@ -457,5 +478,148 @@ heartbeat_interval_secs = 30
             config.provider.auto_update,
             "missing field should default to true"
         );
+    }
+
+    #[test]
+    fn test_backend_type_default_is_vllm_mlx() {
+        let hw = sample_hardware();
+        let config = ProviderConfig::default_for_hardware(&hw);
+        assert_eq!(config.backend.backend_type, BackendType::VllmMlx);
+    }
+
+    #[test]
+    fn test_backend_type_backward_compat_missing_field() {
+        // Old configs won't have backend_type — should default to VllmMlx
+        let toml_str = r#"
+[provider]
+name = "old-provider"
+memory_reserve_gb = 4
+
+[backend]
+port = 8100
+continuous_batching = true
+
+[coordinator]
+url = "ws://localhost:8080/ws/provider"
+heartbeat_interval_secs = 5
+"#;
+        let config: ProviderConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.backend.backend_type,
+            BackendType::VllmMlx,
+            "missing backend_type should default to VllmMlx"
+        );
+    }
+
+    #[test]
+    fn test_backend_type_toml_vllm_mlx() {
+        let toml_str = r#"
+[provider]
+name = "p"
+memory_reserve_gb = 4
+
+[backend]
+port = 8100
+continuous_batching = true
+backend_type = "vllm_mlx"
+
+[coordinator]
+url = "ws://localhost:8080/ws/provider"
+heartbeat_interval_secs = 5
+"#;
+        let config: ProviderConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.backend.backend_type, BackendType::VllmMlx);
+    }
+
+    #[test]
+    fn test_backend_type_toml_mlx_lm() {
+        let toml_str = r#"
+[provider]
+name = "p"
+memory_reserve_gb = 4
+
+[backend]
+port = 8100
+continuous_batching = true
+backend_type = "mlx_lm"
+
+[coordinator]
+url = "ws://localhost:8080/ws/provider"
+heartbeat_interval_secs = 5
+"#;
+        let config: ProviderConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.backend.backend_type, BackendType::MlxLm);
+    }
+
+    #[test]
+    fn test_backend_type_toml_omlx() {
+        let toml_str = r#"
+[provider]
+name = "p"
+memory_reserve_gb = 4
+
+[backend]
+port = 8100
+continuous_batching = true
+backend_type = "omlx"
+
+[coordinator]
+url = "ws://localhost:8080/ws/provider"
+heartbeat_interval_secs = 5
+"#;
+        let config: ProviderConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.backend.backend_type, BackendType::Omlx);
+    }
+
+    #[test]
+    fn test_backend_type_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("provider.toml");
+
+        let hw = sample_hardware();
+        let mut config = ProviderConfig::default_for_hardware(&hw);
+        config.backend.backend_type = BackendType::Omlx;
+
+        save(&path, &config).unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.backend.backend_type, BackendType::Omlx);
+    }
+
+    #[test]
+    fn test_backend_type_toml_vmlx() {
+        let toml_str = r#"
+[provider]
+name = "p"
+memory_reserve_gb = 4
+
+[backend]
+port = 8100
+continuous_batching = true
+backend_type = "vmlx"
+
+[coordinator]
+url = "ws://localhost:8080/ws/provider"
+heartbeat_interval_secs = 5
+"#;
+        let config: ProviderConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.backend.backend_type, BackendType::Vmlx);
+    }
+
+    #[test]
+    fn test_backend_type_all_values_serialize() {
+        // Every BackendType variant must serialize to its snake_case string
+        // and round-trip cleanly. Use a wrapper table because TOML requires
+        // a top-level table — bare enum values can't be serialized directly.
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Wrapper {
+            backend_type: BackendType,
+        }
+
+        for bt in [BackendType::VllmMlx, BackendType::MlxLm, BackendType::Omlx, BackendType::Vmlx] {
+            let w = Wrapper { backend_type: bt };
+            let serialized = toml::to_string(&w).unwrap();
+            let deserialized: Wrapper = toml::from_str(&serialized).unwrap();
+            assert_eq!(deserialized.backend_type, bt);
+        }
     }
 }

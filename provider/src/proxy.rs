@@ -1,7 +1,7 @@
 //! Request proxy between the coordinator WebSocket and the local inference backend.
 //!
 //! When the coordinator sends an inference request over WebSocket, this module
-//! forwards it to the local backend (vllm-mlx or mlx-lm) via HTTP, reads the
+//! forwards it to the local backend (vllm-mlx, mlx-lm, or omlx) via HTTP, reads the
 //! response (streaming or non-streaming), and sends the results back to the
 //! coordinator as WebSocket messages.
 //!

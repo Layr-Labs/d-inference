@@ -118,6 +118,21 @@ darkbloom earnings       # Earnings and usage
 darkbloom update         # Check for updates
 ```
 
+The inference backend defaults to `vllm_mlx`. Use `--backend` to override:
+
+```bash
+darkbloom serve --backend omlx    # omlx: multi-model server, tiered KV cache
+darkbloom serve --backend vmlx    # vmlx: MLX Studio, paged KV, speculative decoding
+darkbloom serve --backend mlx_lm  # mlx-lm: lightweight fallback
+```
+
+The backend can also be set permanently in `~/.config/eigeninference/provider.toml`:
+
+```toml
+[backend]
+backend_type = "vmlx"
+```
+
 ### macOS Menu Bar App
 
 A native SwiftUI app is also available:

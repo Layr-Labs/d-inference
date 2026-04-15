@@ -36,6 +36,7 @@ fn write_plist(
     image_model_path: Option<&str>,
     stt_model: Option<&str>,
     idle_timeout: Option<u64>,
+    backend: Option<&str>,
 ) -> Result<()> {
     let launch_agents_dir = plist_path()
         .parent()
@@ -72,6 +73,10 @@ fn write_plist(
     if let Some(mins) = idle_timeout {
         args.push("        <string>--idle-timeout</string>".to_string());
         args.push(format!("        <string>{mins}</string>"));
+    }
+    if let Some(b) = backend {
+        args.push("        <string>--backend</string>".to_string());
+        args.push(format!("        <string>{b}</string>"));
     }
     let args_xml = args.join("\n");
 
@@ -201,6 +206,7 @@ pub fn install_and_start(
     image_model_path: Option<&str>,
     stt_model: Option<&str>,
     idle_timeout: Option<u64>,
+    backend: Option<&str>,
 ) -> Result<()> {
     let binary_path = std::env::current_exe().unwrap_or_else(|_| {
         dirs::home_dir()
@@ -221,6 +227,7 @@ pub fn install_and_start(
         image_model_path,
         stt_model,
         idle_timeout,
+        backend,
     )?;
     load_service().context("Failed to load launchd service")?;
 

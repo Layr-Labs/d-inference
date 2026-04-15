@@ -36,7 +36,7 @@ provider/             Rust provider agent for Apple Silicon Macs
 │   ├── main.rs       CLI (`serve`, `start`, `stop`, `models`, `benchmark`, `status`, `doctor`, `login`, etc.)
 │   ├── coordinator.rs WebSocket client, registration, heartbeats, request handling
 │   ├── proxy.rs      text, transcription, and image proxying to local backends
-│   ├── backend/      vllm-mlx backend process management
+│   ├── backend/      inference backend process management (vllm-mlx, mlx-lm, omlx)
 │   ├── service.rs    launchd install/start/stop helpers
 │   ├── server.rs     local-only HTTP server mode
 │   ├── config.rs     TOML config + hardware-based defaults

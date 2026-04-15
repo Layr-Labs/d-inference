@@ -275,14 +275,17 @@ User-verifiable attestation API    Working     GET /v1/providers/attestation —
 
 ## Inference
 
-EigenInference runs inference **in-process** — no subprocess architecture. The Python MLX engine is embedded directly in the Rust process via PyO3.
+The provider supports three inference backends, selected via `backend_type` in `provider.toml` (or the `EIGENINFERENCE_INFERENCE_BACKEND` env var):
 
-| Backend | Mode | Features |
-|---------|------|----------|
-| **mlx-lm** | In-process (PyO3) | Primary backend, auto-installed if missing |
-| **vllm-mlx** | In-process (PyO3) | Preferred when available — continuous batching, prefix caching |
+| Backend | Mode | Invocation | Features |
+|---------|------|------------|----------|
+| **vllm-mlx** (default) | Subprocess | `vllm-mlx serve <model> --port <port>` | One process per model, continuous batching, tool calls, reasoning parsers |
+| **mlx-lm** | Subprocess | `python -m mlx_lm.server --model <model> --port <port>` | One process per model, simpler single-request server |
+| **omlx** | Subprocess | `omlx serve --model-dir <dir>` | Single process for all models, continuous batching, tiered KV cache |
 
-There is no subprocess fallback. If the in-process engine cannot initialize, the provider refuses to start and instructs the user to install mlx-lm.
+`vllm-mlx` and `mlx-lm` are spawned once per model on sequential ports. `omlx` is a multi-model server that manages an entire model directory from a single process.
+
+The provider also supports in-process inference via PyO3 (behind the `python` Cargo feature flag) — but this path is disabled for distributed bundles (`--no-default-features`).
 
 ## Payments
 

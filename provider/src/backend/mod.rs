@@ -1,19 +1,22 @@
 //! Inference backend management for the Darkbloom provider.
 //!
-//! Supported backends are vllm-mlx and mlx-lm.
+//! Supported backends:
+//!   - vllm-mlx  — one process per model, continuous batching, tool calls, reasoning parsers
+//!   - mlx-lm    — one process per model, simpler single-request server
+//!   - omlx      — one process for a whole model directory, multi-model continuous batching
 //!
 //! We prefer mlx-lm in production right now because vllm-mlx has been observed
 //! to accept HTTP requests and then hang indefinitely on generation for some
-//! large quantized models. Both expose an OpenAI-compatible API.
+//! large quantized models. All three expose an OpenAI-compatible HTTP API.
 //!
-//! The BackendManager wraps the backend with health monitoring and automatic
-//! restart. It periodically checks the backend's /health endpoint and
-//! restarts it with exponential backoff if it becomes unhealthy.
+//! The `Backend` trait abstracts process lifecycle (start/stop/health/base_url).
+//! The `BackendManager` wraps any `Box<dyn Backend>` with health monitoring and
+//! automatic restart using exponential backoff.
 //!
-//! The backend is spawned as a child process and communicates via HTTP
-//! on localhost. Its stdout/stderr are forwarded to the provider's
-//! tracing output for unified logging.
+//! Backends are spawned as child processes and communicate via HTTP on localhost.
+//! Their stdout/stderr are forwarded to the provider's tracing output.
 
+pub mod omlx;
 pub mod vllm_mlx;
 
 use anyhow::Result;
@@ -139,6 +142,59 @@ impl BackendManager {
     pub fn backend(&self) -> &Arc<Mutex<Box<dyn Backend>>> {
         &self.backend
     }
+}
+
+/// Create a per-model backend (vllm-mlx or mlx-lm).
+///
+/// For omlx, use `create_omlx_backend` instead — omlx is a single server
+/// that manages a whole model directory, not one process per model.
+///
+/// The env var `EIGENINFERENCE_INFERENCE_BACKEND` takes precedence over
+/// the `backend_type` argument.
+pub fn create_backend(
+    backend_type: crate::config::BackendType,
+    model: String,
+    port: u16,
+    continuous_batching: bool,
+) -> Box<dyn Backend> {
+    let effective_type = match std::env::var("EIGENINFERENCE_INFERENCE_BACKEND")
+        .ok()
+        .as_deref()
+    {
+        Some("vllm-mlx") | Some("vllm_mlx") | Some("vllm_mlx.server") => {
+            crate::config::BackendType::VllmMlx
+        }
+        Some("mlx_lm") | Some("mlx_lm.server") => crate::config::BackendType::MlxLm,
+        // omlx is not per-model; fall back to vllm-mlx if someone mistakenly
+        // uses create_backend with Omlx type.
+        Some("omlx") | Some("omlx.server") => crate::config::BackendType::VllmMlx,
+        _ => backend_type,
+    };
+
+    match effective_type {
+        crate::config::BackendType::VllmMlx | crate::config::BackendType::Omlx => {
+            Box::new(vllm_mlx::VllmMlxBackend::new(model, port, continuous_batching))
+        }
+        crate::config::BackendType::MlxLm => {
+            // mlx-lm uses the same OpenAI-compatible HTTP interface as vllm-mlx
+            // but is invoked via `mlx_lm.server`. VllmMlxBackend with continuous
+            // batching disabled approximates its behavior; a dedicated MlxLmBackend
+            // can be added here when needed.
+            Box::new(vllm_mlx::VllmMlxBackend::new(model, port, false))
+        }
+    }
+}
+
+/// Create the omlx backend.
+///
+/// omlx is a single server that manages all models in `model_dir`. It is
+/// started once — not once per model like vllm-mlx. The port is passed via
+/// the `OMLX_PORT` environment variable.
+pub fn create_omlx_backend(
+    model_dir: std::path::PathBuf,
+    port: u16,
+) -> Box<dyn Backend> {
+    Box::new(omlx::OmlxBackend::new(model_dir, port))
 }
 
 /// Exponential backoff calculator: 1s, 2s, 4s, 8s, ... max 60s.
@@ -1345,5 +1401,74 @@ mod tests {
 
         backend.stop().await.unwrap();
         eprintln!("\n=== All edge case tests passed! ===\n");
+    }
+
+    // ── create_backend / create_omlx_backend factory tests ──────────────────
+
+    #[test]
+    fn test_create_backend_vllm_mlx_returns_correct_name() {
+        let backend = create_backend(
+            crate::config::BackendType::VllmMlx,
+            "mlx-community/Qwen2.5-7B-4bit".into(),
+            8100,
+            true,
+        );
+        assert_eq!(backend.name(), "vllm-mlx");
+    }
+
+    #[test]
+    fn test_create_backend_mlx_lm_returns_vllm_mlx_impl() {
+        // MlxLm uses the VllmMlxBackend impl (with continuous_batching = false)
+        let backend = create_backend(
+            crate::config::BackendType::MlxLm,
+            "mlx-community/Llama-3-8B".into(),
+            8101,
+            false,
+        );
+        assert_eq!(backend.name(), "vllm-mlx");
+        assert_eq!(backend.base_url(), "http://127.0.0.1:8101");
+    }
+
+    #[test]
+    fn test_create_backend_omlx_type_falls_back_to_vllm_mlx() {
+        // create_backend(Omlx) is a misuse — omlx is multi-model. It falls
+        // back to vllm-mlx to avoid a panic.
+        let backend = create_backend(
+            crate::config::BackendType::Omlx,
+            "mlx-community/model".into(),
+            8102,
+            false,
+        );
+        assert_eq!(backend.name(), "vllm-mlx");
+    }
+
+    #[test]
+    fn test_create_backend_preserves_port_in_base_url() {
+        let backend = create_backend(
+            crate::config::BackendType::VllmMlx,
+            "some-model".into(),
+            9999,
+            false,
+        );
+        assert_eq!(backend.base_url(), "http://127.0.0.1:9999");
+    }
+
+    #[test]
+    fn test_create_omlx_backend_name_and_url() {
+        let backend = create_omlx_backend(
+            std::path::PathBuf::from("/home/user/models"),
+            8000,
+        );
+        assert_eq!(backend.name(), "omlx");
+        assert_eq!(backend.base_url(), "http://127.0.0.1:8000");
+    }
+
+    #[test]
+    fn test_create_omlx_backend_custom_port() {
+        let backend = create_omlx_backend(
+            std::path::PathBuf::from("/models"),
+            9876,
+        );
+        assert_eq!(backend.base_url(), "http://127.0.0.1:9876");
     }
 }

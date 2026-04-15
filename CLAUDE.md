@@ -27,7 +27,7 @@ provider/             Rust — runs on Apple Silicon Macs
 │   ├── proxy.rs      Forwards text/transcription/image requests to local backends
 │   ├── hardware.rs   Apple Silicon detection, system metrics (memory/CPU/thermal)
 │   ├── protocol.rs   Message types (mirrors coordinator/internal/protocol)
-│   ├── backend/      Backend process management (vllm_mlx.rs, health checks)
+│   ├── backend/      Backend process management (vllm_mlx.rs, omlx.rs, health checks)
 │   ├── crypto.rs     X25519 key pair (NaCl), E2E decryption
 │   ├── security.rs   SIP checks, binary self-hash, anti-debug (PT_DENY_ATTACH)
 │   ├── models.rs     Scans ~/.cache/huggingface for available models (fast discovery, on-demand hashing)

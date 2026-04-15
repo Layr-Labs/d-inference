@@ -14,6 +14,7 @@
 ///   model = "mlx-community/Qwen3.5-4B-4bit"
 ///   continuous_batching = true
 ///   enabled_models = []
+///   backend_type = "vllm_mlx"   # vllm_mlx | mlx_lm | omlx (default: vllm_mlx)
 ///
 ///   [coordinator]
 ///   url = "wss://api.darkbloom.dev/ws/provider"
@@ -29,6 +30,8 @@ struct ProviderConfig: Equatable {
     var backendModel: String?
     var continuousBatching: Bool
     var enabledModels: [String]
+    /// Inference backend: "vllm_mlx" (default), "mlx_lm", or "omlx".
+    var backendType: String?
 
     var coordinatorURL: String
     var heartbeatIntervalSecs: Int
@@ -40,6 +43,7 @@ struct ProviderConfig: Equatable {
         backendModel: nil,
         continuousBatching: true,
         enabledModels: [],
+        backendType: nil,
         coordinatorURL: "wss://api.darkbloom.dev/ws/provider",
         heartbeatIntervalSecs: 30
     )
@@ -126,6 +130,7 @@ enum ConfigManager {
                     config.backendModel = m
                 case "continuous_batching": config.continuousBatching = (value == "true")
                 case "enabled_models": config.enabledModels = parseArray(rawValue)
+                case "backend_type": config.backendType = value.isEmpty ? nil : value
                 default: break
                 }
 
@@ -161,6 +166,9 @@ enum ConfigManager {
         lines.append("continuous_batching = \(config.continuousBatching)")
         let modelsArray = config.enabledModels.map { quote($0) }.joined(separator: ", ")
         lines.append("enabled_models = [\(modelsArray)]")
+        if let bt = config.backendType {
+            lines.append("backend_type = \(quote(bt))")
+        }
         lines.append("")
 
         lines.append("[coordinator]")

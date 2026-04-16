@@ -123,6 +123,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Start as accessory (no dock icon, menu bar only)
         NSApplication.shared.setActivationPolicy(.accessory)
 
+        // Wire the telemetry reporter as early as possible so even
+        // initialization errors can be reported.
+        configureTelemetry()
+
+        // Uncaught Objective-C exceptions — rare in Swift but still possible
+        // when bridging into AppKit.
+        NSSetUncaughtExceptionHandler { exception in
+            TelemetryReporter.shared.emit(
+                kind: .panic,
+                severity: .fatal,
+                message: "uncaught NSException: \(exception.name.rawValue)",
+                fields: [
+                    "component": "app",
+                    "reason": "ns_exception",
+                    "error": exception.reason ?? "<no reason>",
+                ],
+                stack: exception.callStackSymbols.joined(separator: "\n")
+            )
+            TelemetryReporter.shared.flushNow()
+        }
+
         // Watch for windows appearing/disappearing
         let center = NotificationCenter.default
 
@@ -177,5 +198,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     deinit {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
+    }
+
+    /// Configure TelemetryReporter with the coordinator URL derived from the
+    /// provider config. We intentionally accept a plain HTTPS base URL even
+    /// though the provider config uses `wss://` for the WebSocket — the
+    /// telemetry endpoint lives on a different scheme/path.
+    private func configureTelemetry() {
+        let cfg = ConfigManager.load()
+        // provider config holds something like "wss://api.darkbloom.dev/ws/provider".
+        // Convert to the HTTPS base the ingest endpoint lives under.
+        let httpsBase = Self.httpsBase(from: cfg.coordinatorURL)
+        TelemetryReporter.shared.coordinatorBaseURL = httpsBase
+    }
+
+    /// Translate a `wss://host[:port]/...` URL into `https://host[:port]/`.
+    /// Falls back to the production endpoint if parsing fails.
+    static func httpsBase(from ws: String) -> URL? {
+        guard var comps = URLComponents(string: ws) else {
+            return URL(string: "https://api.darkbloom.dev")
+        }
+        comps.path = ""
+        comps.query = nil
+        switch comps.scheme {
+        case "wss": comps.scheme = "https"
+        case "ws": comps.scheme = "http"
+        default: break
+        }
+        return comps.url
     }
 }

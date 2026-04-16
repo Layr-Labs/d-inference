@@ -40,6 +40,7 @@ mod secure_enclave_key;
 mod security;
 mod server;
 mod service;
+mod telemetry;
 mod wallet;
 
 use anyhow::{Context, Result};

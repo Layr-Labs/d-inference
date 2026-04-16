@@ -368,6 +368,30 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_provider_payouts_address ON provider_payouts(provider_address, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_provider_payouts_settled ON provider_payouts(settled, created_at DESC)`,
+
+		// Telemetry events — production observability table. Append-heavy, read
+		// from the admin console. TTL'd by the retention loop in the coordinator.
+		`CREATE TABLE IF NOT EXISTS telemetry_events (
+			id UUID PRIMARY KEY,
+			ts TIMESTAMPTZ NOT NULL,
+			source TEXT NOT NULL,
+			severity TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			version TEXT NOT NULL DEFAULT '',
+			machine_id TEXT NOT NULL DEFAULT '',
+			account_id TEXT NOT NULL DEFAULT '',
+			request_id TEXT NOT NULL DEFAULT '',
+			session_id TEXT NOT NULL DEFAULT '',
+			message TEXT NOT NULL,
+			fields JSONB NOT NULL DEFAULT '{}'::jsonb,
+			stack TEXT NOT NULL DEFAULT '',
+			received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_telemetry_ts ON telemetry_events(ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_telemetry_source_sev ON telemetry_events(source, severity, ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_telemetry_kind ON telemetry_events(kind, ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_telemetry_machine ON telemetry_events(machine_id, ts DESC) WHERE machine_id != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_telemetry_request ON telemetry_events(request_id) WHERE request_id != ''`,
 	}
 
 	for _, m := range migrations {

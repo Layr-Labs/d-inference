@@ -128,6 +128,13 @@ type Server struct {
 	// requests from senders. Set via SetCoordinatorKey. nil disables the
 	// /v1/encryption-key endpoint and the sealed-request middleware.
 	coordinatorKey *e2e.CoordinatorKey
+
+	// metrics is the in-process metrics registry exposed via /v1/admin/metrics
+	// and used by internal counters/histograms. Never nil.
+	metrics *Metrics
+
+	// telemetryLimiter throttles telemetry ingestion per submitter.
+	telemetryLimiter *telemetryLimiter
 }
 
 // NewServer creates a configured Server with all routes mounted.
@@ -142,7 +149,10 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 		logger:               logger,
 		mux:                  http.NewServeMux(),
 		knownRuntimeManifest: &RuntimeManifest{},
+		metrics:              NewMetrics(),
+		telemetryLimiter:     newTelemetryLimiter(),
 	}
+	s.registerDefaultGauges()
 	s.routes()
 
 	// Load stored provider records into a lookup table for matching
@@ -704,6 +714,40 @@ func (s *Server) routes() {
 
 	// Invite code redemption (user)
 	s.mux.HandleFunc("POST /v1/invite/redeem", s.requireAuth(s.handleRedeemInviteCode))
+
+	// Telemetry ingestion — authentication is resolved inside the handler
+	// because providers, consumers, and anonymous clients all hit this path.
+	s.mux.HandleFunc("POST /v1/telemetry/events", s.handleTelemetryIngest)
+
+	// Telemetry admin reads
+	s.mux.HandleFunc("GET /v1/admin/telemetry", s.handleAdminTelemetryList)
+	s.mux.HandleFunc("GET /v1/admin/telemetry/summary", s.handleAdminTelemetrySummary)
+
+	// Metrics snapshot (admin only)
+	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
+}
+
+// registerDefaultGauges wires live-computed gauges (fleet size, etc.) into
+// the metrics registry at construction time.
+func (s *Server) registerDefaultGauges() {
+	s.metrics.RegisterGauge("providers_online", func() float64 {
+		return float64(s.registry.ProviderCount())
+	})
+}
+
+// handleAdminMetrics returns the metrics snapshot in JSON or Prometheus text.
+func (s *Server) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdminAuthorized(w, r) {
+		return
+	}
+	snap := s.metrics.Snapshot()
+	if r.URL.Query().Get("format") == "prom" {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(snap.RenderProm()))
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
 }
 
 // Handler returns the root http.Handler with global middleware applied.

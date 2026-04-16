@@ -43,6 +43,7 @@ import (
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/telemetry"
 )
 
 func main() {
@@ -376,6 +377,21 @@ func main() {
 
 	// Start background eviction of stale providers.
 	reg.StartEvictionLoop(ctx, 90*time.Second)
+
+	// Prune old telemetry events (default: 14d retention, checked hourly).
+	retentionInterval := time.Hour
+	if v := os.Getenv("EIGENINFERENCE_TELEMETRY_PRUNE_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			retentionInterval = d
+		}
+	}
+	retentionMaxAge := 14 * 24 * time.Hour
+	if v := os.Getenv("EIGENINFERENCE_TELEMETRY_MAX_AGE"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			retentionMaxAge = d
+		}
+	}
+	go telemetry.RunRetentionLoop(ctx, st, logger, retentionInterval, retentionMaxAge)
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{

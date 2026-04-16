@@ -52,6 +52,14 @@ const (
 	KindCustom             TelemetryKind = "custom"
 )
 
+// TelemetrySourceCustom is returned when a source value can't be classified
+// into a known bucket but we still want to keep the event.
+const TelemetrySourceCustomValue TelemetrySource = "custom"
+
+// TelemetrySourceCustom returns the fallback source used when an incoming
+// value isn't in KnownSources.
+func TelemetrySourceCustom() TelemetrySource { return TelemetrySourceCustomValue }
+
 // KnownSources returns the set of supported source values for validation.
 func KnownSources() map[TelemetrySource]struct{} {
 	return map[TelemetrySource]struct{}{

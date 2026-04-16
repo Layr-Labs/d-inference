@@ -57,7 +57,7 @@ func consumerKeyFromContext(ctx context.Context) string {
 
 // LatestProviderVersion is the current version of the provider CLI.
 // Update this when uploading a new provider bundle.
-var LatestProviderVersion = "0.3.9"
+var LatestProviderVersion = "0.3.10"
 
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
@@ -237,6 +237,22 @@ func (s *Server) SyncBinaryHashes() {
 // Called after a release is registered to auto-update the expected hashes.
 func (s *Server) SyncRuntimeManifest() {
 	releases := s.store.ListReleases()
+
+	// Set minimum provider version to the latest active release version.
+	// This forces older providers to update before they can serve traffic.
+	latestVersion := ""
+	for _, r := range releases {
+		if r.Active && semverGreater(r.Version, latestVersion) {
+			latestVersion = r.Version
+		}
+	}
+	if latestVersion != "" {
+		s.minProviderVersion = latestVersion
+		s.logger.Info("minimum provider version set from latest release", "min_version", latestVersion)
+	} else {
+		s.minProviderVersion = ""
+	}
+
 	manifest := &RuntimeManifest{
 		PythonHashes:      make(map[string]bool),
 		RuntimeHashes:     make(map[string]bool),
@@ -247,7 +263,7 @@ func (s *Server) SyncRuntimeManifest() {
 
 	hasAny := false
 	for _, r := range releases {
-		if !r.Active {
+		if !r.Active || r.Version != latestVersion {
 			continue
 		}
 		if r.PythonHash != "" {
@@ -278,28 +294,18 @@ func (s *Server) SyncRuntimeManifest() {
 		}
 	}
 
-	// Set minimum provider version to the latest active release version.
-	// This forces older providers to update before they can serve traffic.
-	latestVersion := ""
-	for _, r := range releases {
-		if r.Active && semverGreater(r.Version, latestVersion) {
-			latestVersion = r.Version
-		}
-	}
-	if latestVersion != "" {
-		s.minProviderVersion = latestVersion
-		s.logger.Info("minimum provider version set from latest release", "min_version", latestVersion)
-	}
-
 	if hasAny {
 		s.knownRuntimeManifest = manifest
 		s.logger.Info("runtime manifest synced from releases",
+			"version", latestVersion,
 			"python_hashes", len(manifest.PythonHashes),
 			"runtime_hashes", len(manifest.RuntimeHashes),
 			"template_hashes", len(manifest.TemplateHashes),
 			"grpc_binary_hashes", len(manifest.GrpcBinaryHashes),
 			"image_bridge_hashes", len(manifest.ImageBridgeHashes),
 		)
+	} else {
+		s.knownRuntimeManifest = nil
 	}
 }
 

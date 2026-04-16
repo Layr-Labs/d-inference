@@ -189,7 +189,7 @@ echo ""
 echo "→ [3/7] Verifying inference runtime..."
 
 # Check for Python runtime
-if [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "import vllm_mlx" 2>/dev/null; then
+if [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "import mlx_lm, vllm_mlx; from vllm_mlx.server import app" 2>/dev/null; then
     echo "  Python runtime ✓"
 else
     echo "  Downloading Python runtime (~105 MB)..."
@@ -236,7 +236,11 @@ if [ -f "$PYTHON_BIN" ] && ! "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
                 echo "  Packages installed from R2 ✓"
             else
                 # Fallback: pip install from GitHub
-                "$PYTHON_BIN" -m pip install --quiet "https://github.com/Gajesh2007/vllm-mlx/archive/refs/heads/main.zip" mlx-lm 2>/dev/null || true
+                "$PYTHON_BIN" -m pip install --quiet --no-cache-dir \
+                    "https://github.com/Gajesh2007/vllm-mlx/archive/refs/heads/main.zip" \
+                    "mlx-lm>=0.31.2" 2>/dev/null || true
+                "$PYTHON_BIN" -m pip install --quiet --no-cache-dir --upgrade \
+                    "mlx-lm>=0.31.2" 2>/dev/null || true
             fi
         else
             echo "  ✗ Portable Python also failed — please report this issue"
@@ -252,8 +256,8 @@ if [ -f "$PYTHON_BIN" ]; then
         echo "  ✗ Python binary does not execute"
     else
         PYTHONHOME="$INSTALL_DIR/python" "$PYTHON_BIN" -c \
-            "import vllm_mlx; print(f'  vllm-mlx {vllm_mlx.__version__} ✓')" 2>/dev/null \
-            || echo "  ⚠ vllm-mlx import failed"
+            "import mlx_lm, vllm_mlx; from vllm_mlx.server import app; print(f'  vllm-mlx {vllm_mlx.__version__} / mlx-lm {mlx_lm.__version__} ✓')" 2>/dev/null \
+            || echo "  ⚠ vllm-mlx server import failed"
     fi
 fi
 

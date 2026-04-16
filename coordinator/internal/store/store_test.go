@@ -794,3 +794,37 @@ func TestReleases(t *testing.T) {
 		t.Error("expected error for empty version")
 	}
 }
+
+func TestGetLatestReleasePrefersHigherSemverOverNewerTimestamp(t *testing.T) {
+	s := NewMemory("")
+
+	if err := s.SetRelease(&Release{
+		Version:    "0.3.9",
+		Platform:   "macos-arm64",
+		BinaryHash: "higher-semver",
+		BundleHash: "bundle-higher-semver",
+		URL:        "https://r2.example.com/releases/v0.3.9/bundle.tar.gz",
+		CreatedAt:  time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("SetRelease 0.3.9: %v", err)
+	}
+
+	if err := s.SetRelease(&Release{
+		Version:    "0.3.8",
+		Platform:   "macos-arm64",
+		BinaryHash: "newer-timestamp",
+		BundleHash: "bundle-newer-timestamp",
+		URL:        "https://r2.example.com/releases/v0.3.8/bundle.tar.gz",
+		CreatedAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("SetRelease 0.3.8: %v", err)
+	}
+
+	latest := s.GetLatestRelease("macos-arm64")
+	if latest == nil {
+		t.Fatal("expected non-nil latest release")
+	}
+	if latest.Version != "0.3.9" {
+		t.Fatalf("latest version = %q, want %q", latest.Version, "0.3.9")
+	}
+}

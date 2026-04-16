@@ -113,13 +113,20 @@ jobs:
       - name: Sign binaries and create bundle
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          mkdir -p /tmp/eigeninference-bundle/bin
+          mkdir -p /tmp/eigeninference-bundle/bin /tmp/eigeninference-bundle/python
 
           cp provider/target/release/darkbloom /tmp/eigeninference-bundle/bin/
           cp enclave/.build/release/eigeninference-enclave /tmp/eigeninference-bundle/bin/
 
           # Copy stt_server.py
           cp provider/stt_server.py /tmp/eigeninference-bundle/bin/
+
+          # Bundle the signed Python core that hardened darkbloom links against.
+          # Keep site-packages separate so broken installs can refresh libpython and
+          # stdlib native extensions without inflating every CLI bundle.
+          cp -R /tmp/eigeninference-python/bin /tmp/eigeninference-bundle/python/
+          cp -R /tmp/eigeninference-python/lib /tmp/eigeninference-bundle/python/
+          rm -rf /tmp/eigeninference-bundle/python/lib/python3.12/site-packages
 
           # Bundle ffmpeg (installed via Homebrew which verifies bottle checksums)
           FFMPEG_BIN="$(brew --prefix ffmpeg 2>/dev/null)/bin/ffmpeg"
@@ -179,6 +186,8 @@ jobs:
           # Verify all signatures
           codesign --verify --verbose /tmp/eigeninference-bundle/bin/darkbloom
           codesign --verify --verbose /tmp/eigeninference-bundle/bin/eigeninference-enclave
+          codesign --verify --verbose /tmp/eigeninference-bundle/python/bin/python3.12
+          codesign --verify --verbose /tmp/eigeninference-bundle/python/lib/libpython3.12.dylib
           # codesign --verify --verbose /tmp/eigeninference-bundle/gRPCServerCLI
 
           cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .

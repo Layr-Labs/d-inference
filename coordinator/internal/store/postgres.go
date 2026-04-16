@@ -1189,22 +1189,38 @@ func (s *PostgresStore) GetLatestRelease(platform string) *Release {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var r Release
-	err := s.pool.QueryRow(ctx,
+	rows, err := s.pool.Query(ctx,
 		`SELECT version, platform, binary_hash, bundle_hash,
 		        COALESCE(python_hash, ''), COALESCE(runtime_hash, ''), COALESCE(template_hashes, ''),
 		        COALESCE(grpc_binary_hash, ''), COALESCE(image_bridge_hash, ''),
 		        url, changelog, active, created_at
-		 FROM releases WHERE platform = $1 AND active = TRUE
-		 ORDER BY created_at DESC LIMIT 1`, platform,
-	).Scan(&r.Version, &r.Platform, &r.BinaryHash, &r.BundleHash,
-		&r.PythonHash, &r.RuntimeHash, &r.TemplateHashes,
-		&r.GrpcBinaryHash, &r.ImageBridgeHash,
-		&r.URL, &r.Changelog, &r.Active, &r.CreatedAt)
+		 FROM releases WHERE platform = $1 AND active = TRUE`, platform,
+	)
 	if err != nil {
 		return nil
 	}
-	return &r
+	defer rows.Close()
+
+	var latest *Release
+	for rows.Next() {
+		var r Release
+		if err := rows.Scan(&r.Version, &r.Platform, &r.BinaryHash, &r.BundleHash,
+			&r.PythonHash, &r.RuntimeHash, &r.TemplateHashes,
+			&r.GrpcBinaryHash, &r.ImageBridgeHash,
+			&r.URL, &r.Changelog, &r.Active, &r.CreatedAt); err != nil {
+			return nil
+		}
+		if latest == nil ||
+			releaseVersionGreater(r.Version, latest.Version) ||
+			(r.Version == latest.Version && r.CreatedAt.After(latest.CreatedAt)) {
+			copy := r
+			latest = &copy
+		}
+	}
+	if rows.Err() != nil || latest == nil {
+		return nil
+	}
+	return latest
 }
 
 func (s *PostgresStore) DeleteRelease(version, platform string) error {

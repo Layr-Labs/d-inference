@@ -1077,7 +1077,9 @@ func (s *MemoryStore) GetLatestRelease(platform string) *Release {
 		if r.Platform != platform || !r.Active {
 			continue
 		}
-		if latest == nil || r.CreatedAt.After(latest.CreatedAt) {
+		if latest == nil ||
+			releaseVersionGreater(r.Version, latest.Version) ||
+			(r.Version == latest.Version && r.CreatedAt.After(latest.CreatedAt)) {
 			latest = r
 		}
 	}

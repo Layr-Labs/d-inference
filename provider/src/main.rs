@@ -34,14 +34,14 @@ mod models;
 mod protocol;
 mod proxy;
 mod scheduling;
-mod security;
 #[cfg(target_os = "macos")]
 mod secure_enclave_key;
+mod security;
 mod server;
 mod service;
 mod wallet;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
@@ -1050,6 +1050,39 @@ fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
     false
 }
 
+fn runtime_smoke_test(python_cmd: &str) -> std::result::Result<String, String> {
+    let output = std::process::Command::new(python_cmd)
+        .args([
+            "-c",
+            "import mlx_lm, vllm_mlx; from vllm_mlx.server import app; print(f'vllm-mlx {vllm_mlx.__version__}; mlx-lm {mlx_lm.__version__}')",
+        ])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let summary = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if summary.is_empty() {
+                Ok("runtime smoke test passed".to_string())
+            } else {
+                Ok(summary)
+            }
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            let detail = if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                format!("process exited with status {}", o.status)
+            };
+            Err(detail)
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Ensure the Python runtime (vllm-mlx) is up to date and verified.
 ///
 /// Called once at startup. Downloads from a verified URL and checks
@@ -1071,15 +1104,17 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
     let current_hashes = security::compute_runtime_hashes(python_cmd);
     if let Some(ref actual_hash) = current_hashes.runtime_hash {
         if expected_runtime_hashes.is_empty() || expected_runtime_hashes.contains(actual_hash) {
-            let current_version = std::process::Command::new(python_cmd)
-                .args(["-c", "import vllm_mlx; print(vllm_mlx.__version__)"])
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-            tracing::info!("Runtime check: vllm-mlx {current_version} ✓");
-            return true;
+            match runtime_smoke_test(python_cmd) {
+                Ok(summary) => {
+                    tracing::info!("Runtime check: {summary} ✓");
+                    return true;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Runtime hash matched manifest but smoke test failed: {err}. Reinstalling canonical site-packages"
+                    );
+                }
+            }
         }
     }
 
@@ -1087,7 +1122,9 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
     // that CI built for this release. This replaces the ENTIRE Python
     // package directory — vllm-mlx, mlx-lm, mlx, and all dependencies.
     // Same packages → same .py files → same hash.
-    tracing::warn!("Runtime hash mismatch — downloading canonical site-packages from R2...");
+    tracing::warn!(
+        "Runtime hash mismatch or smoke test failure — downloading canonical site-packages from R2..."
+    );
 
     let release_version = fetch_latest_release_version(coordinator_base);
     let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
@@ -1151,29 +1188,37 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
                     }
 
                     // Test the new site-packages
-                    let import_test = std::process::Command::new(python_cmd)
-                        .args(["-c", "import vllm_mlx; print('ok')"])
-                        .output();
-                    if matches!(import_test, Ok(ref o) if o.status.success()) {
-                        let _ = std::fs::remove_dir_all(&backup_dir);
-                        // Verify hash
-                        let post_install = security::compute_runtime_hashes(python_cmd);
-                        if let Some(actual_hash) = post_install.runtime_hash {
-                            if expected_runtime_hashes.is_empty()
-                                || expected_runtime_hashes.contains(&actual_hash)
-                            {
-                                tracing::info!("Runtime updated — all packages verified ✓");
+                    match runtime_smoke_test(python_cmd) {
+                        Ok(summary) => {
+                            let _ = std::fs::remove_dir_all(&backup_dir);
+                            // Verify hash
+                            let post_install = security::compute_runtime_hashes(python_cmd);
+                            if let Some(actual_hash) = post_install.runtime_hash {
+                                if expected_runtime_hashes.is_empty()
+                                    || expected_runtime_hashes.contains(&actual_hash)
+                                {
+                                    tracing::info!(
+                                        "Runtime updated — all packages verified ({summary}) ✓"
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        "Runtime updated but hash differs from manifest"
+                                    );
+                                }
                             } else {
-                                tracing::warn!("Runtime updated but hash differs from manifest");
+                                tracing::info!("Runtime updated ✓ ({summary})");
                             }
+                            return true;
                         }
-                        return true;
-                    } else {
-                        // Rollback
-                        tracing::error!("New site-packages failed import test — rolling back");
-                        let _ = std::fs::remove_dir_all(&site_packages_dir);
-                        let _ = std::fs::rename(&backup_dir, &site_packages_dir);
-                        // Fall through to pip fallback
+                        Err(err) => {
+                            // Rollback
+                            tracing::error!(
+                                "New site-packages failed runtime smoke test: {err} — rolling back"
+                            );
+                            let _ = std::fs::remove_dir_all(&site_packages_dir);
+                            let _ = std::fs::rename(&backup_dir, &site_packages_dir);
+                            // Fall through to pip fallback
+                        }
                     }
                 }
             }
@@ -1234,7 +1279,9 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
             "--break-system-packages",
             "--force-reinstall",
             "--quiet",
+            "--no-cache-dir",
             tmp_zip,
+            "mlx-lm>=0.31.2",
         ])
         .output();
 
@@ -1242,21 +1289,52 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
 
     match install {
         Ok(o) if o.status.success() => {
-            let post_install = security::compute_runtime_hashes(python_cmd);
-            if let Some(actual_hash) = post_install.runtime_hash {
-                if expected_runtime_hashes.is_empty()
-                    || expected_runtime_hashes.contains(&actual_hash)
-                {
-                    tracing::info!("Updated vllm-mlx + deps — hash verified ✓");
-                } else {
-                    tracing::error!("Post-install hash MISMATCH!");
-                    tracing::error!("  Expected one of: {:?}", expected_runtime_hashes);
-                    tracing::error!("  Got: {actual_hash}");
+            let upgrade = std::process::Command::new(python_cmd)
+                .args([
+                    "-m",
+                    "pip",
+                    "install",
+                    "--break-system-packages",
+                    "--quiet",
+                    "--no-cache-dir",
+                    "--upgrade",
+                    "mlx-lm>=0.31.2",
+                ])
+                .output();
+            match upgrade {
+                Ok(u) if u.status.success() => match runtime_smoke_test(python_cmd) {
+                    Ok(summary) => {
+                        let post_install = security::compute_runtime_hashes(python_cmd);
+                        if let Some(actual_hash) = post_install.runtime_hash {
+                            if expected_runtime_hashes.is_empty()
+                                || expected_runtime_hashes.contains(&actual_hash)
+                            {
+                                tracing::info!(
+                                    "Updated vllm-mlx + deps — hash verified ({summary}) ✓"
+                                );
+                            } else {
+                                tracing::error!("Post-install hash MISMATCH!");
+                                tracing::error!("  Expected one of: {:?}", expected_runtime_hashes);
+                                tracing::error!("  Got: {actual_hash}");
+                            }
+                        } else {
+                            tracing::info!("Updated vllm-mlx ✓ ({summary})");
+                        }
+                        return true;
+                    }
+                    Err(err) => {
+                        tracing::error!("Updated runtime still fails smoke test: {err}");
+                    }
+                },
+                Ok(u) => {
+                    let stderr = String::from_utf8_lossy(&u.stderr);
+                    tracing::error!(
+                        "mlx-lm upgrade failed: {}",
+                        stderr.chars().take(200).collect::<String>()
+                    );
                 }
-            } else {
-                tracing::info!("Updated vllm-mlx ✓");
+                Err(e) => tracing::error!("Failed to run pip upgrade for mlx-lm: {e}"),
             }
-            return true;
         }
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
@@ -3146,85 +3224,92 @@ async fn cmd_serve(
                                 port,
                                 consecutive_failures[idx]
                             );
-                        // 5 consecutive failures (75 seconds) before restart.
-                        // Higher threshold than single-backend (was 3) because
-                        // the Python GIL can block /health during long generations,
-                        // and we don't want to kill a busy-but-healthy backend.
+                            // 5 consecutive failures (75 seconds) before restart.
+                            // Higher threshold than single-backend (was 3) because
+                            // the Python GIL can block /health during long generations,
+                            // and we don't want to kill a busy-but-healthy backend.
                             if consecutive_failures[idx] >= 5 {
-                            // Check if another task (event loop) is already restarting this slot.
-                            let already_restarting = {
-                                let slots = health_shared_slots.lock().unwrap();
-                                slots.get(idx).map_or(false, |s| s.restarting)
-                            };
-                            if already_restarting {
-                                tracing::info!(
-                                    "Backend for {} restart already in progress — skipping",
-                                    model_id
-                                );
-                                continue;
-                            }
-
-                            tracing::error!(
-                                "Backend for {} appears crashed — restarting (port {})...",
-                                model_id,
-                                port
-                            );
-                            any_crashed = true;
-
-                            // Mark slot as unhealthy and restarting.
-                            {
-                                let mut slots = health_shared_slots.lock().unwrap();
-                                if let Some(slot) = slots.get_mut(idx) {
-                                    slot.healthy = false;
-                                    slot.restarting = true;
-                                }
-                            }
-
-                            // Kill only THIS slot's process by PID (not all backends).
-                            // Guard: PID must be > 0. PID 0 would kill all processes in
-                            // the group, negative PIDs kill process groups.
-                            #[cfg(unix)]
-                            if let Some(slot_pid) = pid {
-                                if *slot_pid > 0 {
-                                    let _ = unsafe { libc::kill(*slot_pid as i32, libc::SIGTERM) };
-                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                                    let _ = unsafe { libc::kill(*slot_pid as i32, libc::SIGKILL) };
-                                }
-                            }
-
-                            // Restart only this slot's model on its port.
-                            match reload_backend(&health_python, &health_backend, model_path, *port)
-                                .await
-                            {
-                                Ok(new_pid) => {
+                                // Check if another task (event loop) is already restarting this slot.
+                                let already_restarting = {
+                                    let slots = health_shared_slots.lock().unwrap();
+                                    slots.get(idx).map_or(false, |s| s.restarting)
+                                };
+                                if already_restarting {
                                     tracing::info!(
-                                        "Backend for {} auto-restarted successfully (new PID: {})",
-                                        model_id,
-                                        new_pid
-                                    );
-                                    consecutive_failures[idx] = 0;
-                                    let mut slots = health_shared_slots.lock().unwrap();
-                                    if let Some(slot) = slots.get_mut(idx) {
-                                        slot.pid = Some(new_pid);
-                                        slot.healthy = true;
-                                        slot.restarting = false;
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        "Backend auto-restart failed for {}: {e}",
+                                        "Backend for {} restart already in progress — skipping",
                                         model_id
                                     );
-                                    // Reset counter to 0 so we don't retry every 15s.
-                                    // The next 5 consecutive failures (75s) will trigger
-                                    // another attempt — acts as exponential-ish backoff.
-                                    consecutive_failures[idx] = 0;
+                                    continue;
+                                }
+
+                                tracing::error!(
+                                    "Backend for {} appears crashed — restarting (port {})...",
+                                    model_id,
+                                    port
+                                );
+                                any_crashed = true;
+
+                                // Mark slot as unhealthy and restarting.
+                                {
                                     let mut slots = health_shared_slots.lock().unwrap();
                                     if let Some(slot) = slots.get_mut(idx) {
-                                        slot.restarting = false;
+                                        slot.healthy = false;
+                                        slot.restarting = true;
                                     }
                                 }
-                            }
+
+                                // Kill only THIS slot's process by PID (not all backends).
+                                // Guard: PID must be > 0. PID 0 would kill all processes in
+                                // the group, negative PIDs kill process groups.
+                                #[cfg(unix)]
+                                if let Some(slot_pid) = pid {
+                                    if *slot_pid > 0 {
+                                        let _ =
+                                            unsafe { libc::kill(*slot_pid as i32, libc::SIGTERM) };
+                                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                        let _ =
+                                            unsafe { libc::kill(*slot_pid as i32, libc::SIGKILL) };
+                                    }
+                                }
+
+                                // Restart only this slot's model on its port.
+                                match reload_backend(
+                                    &health_python,
+                                    &health_backend,
+                                    model_path,
+                                    *port,
+                                )
+                                .await
+                                {
+                                    Ok(new_pid) => {
+                                        tracing::info!(
+                                            "Backend for {} auto-restarted successfully (new PID: {})",
+                                            model_id,
+                                            new_pid
+                                        );
+                                        consecutive_failures[idx] = 0;
+                                        let mut slots = health_shared_slots.lock().unwrap();
+                                        if let Some(slot) = slots.get_mut(idx) {
+                                            slot.pid = Some(new_pid);
+                                            slot.healthy = true;
+                                            slot.restarting = false;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Backend auto-restart failed for {}: {e}",
+                                            model_id
+                                        );
+                                        // Reset counter to 0 so we don't retry every 15s.
+                                        // The next 5 consecutive failures (75s) will trigger
+                                        // another attempt — acts as exponential-ish backoff.
+                                        consecutive_failures[idx] = 0;
+                                        let mut slots = health_shared_slots.lock().unwrap();
+                                        if let Some(slot) = slots.get_mut(idx) {
+                                            slot.restarting = false;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -4451,7 +4536,12 @@ fn find_stt_server_script() -> Option<String> {
         // Bundled inside the macOS app Resources directory
         std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().and_then(|d| d.parent().map(|c| c.join("Resources").join("stt_server.py"))))
+            .and_then(|p| {
+                p.parent().and_then(|d| {
+                    d.parent()
+                        .map(|c| c.join("Resources").join("stt_server.py"))
+                })
+            })
             .unwrap_or_default(),
         // In the provider source directory (development)
         std::path::PathBuf::from("stt_server.py"),
@@ -6375,40 +6465,11 @@ async fn cmd_update(coordinator: String, force: bool) -> Result<()> {
 
     std::fs::remove_file(tmp_path).ok();
 
-    // Verify runtime integrity after extraction
-    let bundled_python = eigeninference_dir.join("python/bin/python3.12");
-    if bundled_python.exists() {
-        if let Some(hash) = security::hash_file(&bundled_python) {
-            println!(
-                "  Python hash: {}...{}",
-                &hash[..8],
-                &hash[hash.len() - 8..]
-            );
-        }
-        // Verify vllm-mlx is importable
-        let check = std::process::Command::new(&bundled_python)
-            .args(["-c", "import vllm_mlx; print(vllm_mlx.__version__)"])
-            .output();
-        match check {
-            Ok(o) if o.status.success() => {
-                let ver = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                println!("  vllm-mlx: {ver} ✓");
-            }
-            _ => println!("  ⚠ vllm-mlx import check failed"),
-        }
-    }
-
-    // Heal Python runtime if needed
-    println!("  Verifying Python runtime...");
     let coordinator_http = base_url
         .replace("wss://", "https://")
         .replace("ws://", "http://")
         .replace("/ws/provider", "");
-    if !ensure_python_verified(&bundled_python.to_string_lossy(), &coordinator_http) {
-        println!("  ⚠ Python runtime could not be verified");
-    } else {
-        ensure_runtime_updated(&bundled_python.to_string_lossy(), &coordinator_http);
-    }
+    verify_installed_update_runtime(&eigeninference_dir, &coordinator_http, true)?;
 
     // Verify manifest if included in bundle
     let manifest_path = eigeninference_dir.join("manifest.json");
@@ -6458,6 +6519,208 @@ fn is_newer_version(current: &str, latest: &str) -> bool {
         (major, minor, patch)
     };
     parse(latest) > parse(current)
+}
+
+fn emit_update_status(stdout: bool, message: &str) {
+    if stdout {
+        println!("{message}");
+    } else {
+        tracing::info!("{message}");
+    }
+}
+
+fn emit_update_warning(stdout: bool, message: &str) {
+    if stdout {
+        println!("{message}");
+    } else {
+        tracing::warn!("{message}");
+    }
+}
+
+fn parse_codesign_team_identifier(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("TeamIdentifier=")
+            .map(str::trim)
+            .filter(|team| !team.is_empty() && *team != "not set")
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn codesign_team_identifier(path: &std::path::Path) -> Result<String> {
+    let output = std::process::Command::new("codesign")
+        .args(["-dvv", &path.to_string_lossy()])
+        .output()
+        .with_context(|| format!("failed to inspect code signature for {}", path.display()))?;
+
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    parse_codesign_team_identifier(&combined)
+        .ok_or_else(|| anyhow::anyhow!("{} is missing a TeamIdentifier", path.display()))
+}
+
+fn collect_python_core_signature_targets(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_python_core_signature_targets(&path, out);
+            continue;
+        }
+
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("dylib") | Some("so") => out.push(path),
+            _ => {}
+        }
+    }
+}
+
+fn verify_python_core_signature_match(eigeninference_dir: &std::path::Path) -> Result<()> {
+    let darkbloom_path = eigeninference_dir.join("bin/darkbloom");
+    if !darkbloom_path.exists() {
+        anyhow::bail!("updated darkbloom binary missing after install");
+    }
+
+    let darkbloom_team = codesign_team_identifier(&darkbloom_path)?;
+    let mut targets = Vec::new();
+
+    let bundled_python = eigeninference_dir.join("python/bin/python3.12");
+    if bundled_python.exists() {
+        targets.push(bundled_python);
+    }
+    collect_python_core_signature_targets(&eigeninference_dir.join("python/lib"), &mut targets);
+    targets.sort();
+    targets.dedup();
+
+    if targets.is_empty() {
+        anyhow::bail!("bundled Python core missing after update");
+    }
+
+    for target in targets {
+        let verify = std::process::Command::new("codesign")
+            .args(["--verify", "--verbose", &target.to_string_lossy()])
+            .output()
+            .with_context(|| format!("failed to verify code signature for {}", target.display()))?;
+        if !verify.status.success() {
+            let detail = String::from_utf8_lossy(&verify.stderr).trim().to_string();
+            let detail = if detail.is_empty() {
+                format!("codesign exited with {}", verify.status)
+            } else {
+                detail
+            };
+            anyhow::bail!("{} has an invalid signature: {}", target.display(), detail);
+        }
+
+        let team = codesign_team_identifier(&target)?;
+        if team != darkbloom_team {
+            anyhow::bail!(
+                "{} Team ID {} does not match darkbloom Team ID {}",
+                target.display(),
+                team,
+                darkbloom_team
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn verify_installed_update_runtime(
+    eigeninference_dir: &std::path::Path,
+    coordinator_http: &str,
+    stdout: bool,
+) -> Result<()> {
+    let bundled_python = eigeninference_dir.join("python/bin/python3.12");
+
+    if let Err(err) = verify_python_core_signature_match(eigeninference_dir) {
+        emit_update_warning(
+            stdout,
+            &format!("  ⚠ {err} — forcing canonical Python runtime reinstall"),
+        );
+        std::fs::remove_file(&bundled_python).ok();
+    }
+
+    if let Some(hash) = security::hash_file(&bundled_python) {
+        let prefix_len = hash.len().min(8);
+        let suffix_start = hash.len().saturating_sub(8);
+        emit_update_status(
+            stdout,
+            &format!(
+                "  Python hash: {}...{}",
+                &hash[..prefix_len],
+                &hash[suffix_start..]
+            ),
+        );
+    }
+
+    if bundled_python.exists() {
+        let check = std::process::Command::new(&bundled_python)
+            .args(["-c", "import vllm_mlx; print(vllm_mlx.__version__)"])
+            .output();
+        match check {
+            Ok(o) if o.status.success() => {
+                let ver = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                emit_update_status(stdout, &format!("  vllm-mlx: {ver} ✓"));
+            }
+            _ => emit_update_warning(stdout, "  ⚠ vllm-mlx import check failed"),
+        }
+    } else {
+        emit_update_warning(
+            stdout,
+            "  ⚠ Bundled Python missing — downloading canonical runtime",
+        );
+    }
+
+    emit_update_status(stdout, "  Verifying Python runtime...");
+    let python_cmd = bundled_python.to_string_lossy().to_string();
+    if !ensure_python_verified(&python_cmd, coordinator_http) {
+        anyhow::bail!("Python runtime could not be verified after update");
+    }
+    verify_python_core_signature_match(eigeninference_dir)
+        .context("bundled Python core still failed signature validation after reinstall")?;
+    if !ensure_runtime_updated(&python_cmd, coordinator_http) {
+        anyhow::bail!("Python site-packages could not be verified after update");
+    }
+
+    Ok(())
+}
+
+fn backup_installed_binary(path: &std::path::Path) -> Result<Option<std::path::PathBuf>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let backup_path = path.with_extension("auto-update-backup");
+    let _ = std::fs::remove_file(&backup_path);
+    std::fs::copy(path, &backup_path)?;
+    Ok(Some(backup_path))
+}
+
+fn restore_installed_binary(
+    path: &std::path::Path,
+    backup_path: Option<&std::path::Path>,
+) -> Result<()> {
+    let Some(backup_path) = backup_path else {
+        return Ok(());
+    };
+
+    std::fs::copy(backup_path, path)?;
+    std::fs::remove_file(backup_path).ok();
+    Ok(())
+}
+
+fn remove_binary_backup(backup_path: Option<&std::path::Path>) {
+    if let Some(backup_path) = backup_path {
+        std::fs::remove_file(backup_path).ok();
+    }
 }
 
 /// Check for updates and install if available. Returns Ok(true) if an update was installed.
@@ -6513,6 +6776,8 @@ async fn auto_update_check(coordinator_base_url: &str) -> Result<bool> {
         .ok_or_else(|| anyhow::anyhow!("cannot find home directory"))?
         .join(".darkbloom");
     let bin_dir = eigeninference_dir.join("bin");
+    let darkbloom_backup = backup_installed_binary(&bin_dir.join("darkbloom"))?;
+    let enclave_backup = backup_installed_binary(&bin_dir.join("eigeninference-enclave"))?;
 
     let status = std::process::Command::new("tar")
         .args(["xzf", tmp_path, "-C", &eigeninference_dir.to_string_lossy()])
@@ -6545,6 +6810,24 @@ async fn auto_update_check(coordinator_base_url: &str) -> Result<bool> {
     }
 
     std::fs::remove_file(tmp_path).ok();
+    let coordinator_http = coordinator_base_url
+        .replace("wss://", "https://")
+        .replace("ws://", "http://")
+        .replace("/ws/provider", "");
+    if let Err(err) = verify_installed_update_runtime(&eigeninference_dir, &coordinator_http, false)
+    {
+        tracing::error!(
+            "Auto-update runtime verification failed after installing {latest}: {err}. Restoring previous binaries"
+        );
+        restore_installed_binary(&bin_dir.join("darkbloom"), darkbloom_backup.as_deref())?;
+        restore_installed_binary(
+            &bin_dir.join("eigeninference-enclave"),
+            enclave_backup.as_deref(),
+        )?;
+        anyhow::bail!("auto-update runtime verification failed: {err}");
+    }
+    remove_binary_backup(darkbloom_backup.as_deref());
+    remove_binary_backup(enclave_backup.as_deref());
     tracing::info!("Update installed: {current_version} → {latest}");
     Ok(true)
 }
@@ -6857,10 +7140,72 @@ async fn cmd_autoupdate(action: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn write_test_command(script: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "darkbloom-runtime-smoke-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("failed to create temp dir");
+        let path = dir.join("python.sh");
+        std::fs::write(&path, script).expect("failed to write temp script");
+        let mut perms = std::fs::metadata(&path)
+            .expect("failed to stat temp script")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).expect("failed to chmod temp script");
+        path
+    }
+
+    #[test]
+    fn test_runtime_smoke_test_reports_success() {
+        let path = write_test_command("#!/bin/sh\nprintf 'vllm-mlx 0.2.7; mlx-lm 0.31.2\\n'\n");
+        let result = runtime_smoke_test(path.to_str().expect("non-utf8 path"));
+        assert_eq!(
+            result.expect("smoke test should succeed"),
+            "vllm-mlx 0.2.7; mlx-lm 0.31.2"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().expect("missing parent"));
+    }
+
+    #[test]
+    fn test_runtime_smoke_test_reports_failure_output() {
+        let path = write_test_command(
+            "#!/bin/sh\necho 'ImportError: cannot import name GenerationBatch' >&2\nexit 1\n",
+        );
+        let err = runtime_smoke_test(path.to_str().expect("non-utf8 path"))
+            .expect_err("smoke test should fail");
+        assert!(err.contains("GenerationBatch"));
+        let _ = std::fs::remove_dir_all(path.parent().expect("missing parent"));
+    }
+
+    #[test]
+    fn test_parse_codesign_team_identifier_extracts_team_id() {
+        let output =
+            "Authority=Developer ID Application: Eigen Labs, Inc.\nTeamIdentifier=SLDQ2GJ6TL\n";
+        assert_eq!(
+            parse_codesign_team_identifier(output).as_deref(),
+            Some("SLDQ2GJ6TL")
+        );
+    }
+
+    #[test]
+    fn test_parse_codesign_team_identifier_rejects_missing_team_id() {
+        let output = "Authority=Apple Development: Someone\nTeamIdentifier=not set\n";
+        assert!(parse_codesign_team_identifier(output).is_none());
+    }
 
     #[test]
     fn test_preferred_text_backend_mode_is_inprocess() {
-        assert_eq!(preferred_text_backend_mode(false), TextBackendMode::InProcess);
+        assert_eq!(
+            preferred_text_backend_mode(false),
+            TextBackendMode::InProcess
+        );
     }
 
     #[cfg(feature = "python")]

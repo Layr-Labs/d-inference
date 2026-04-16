@@ -124,8 +124,8 @@ jobs:
           # Bundle the signed Python core that hardened darkbloom links against.
           # Keep site-packages separate so broken installs can refresh libpython and
           # stdlib native extensions without inflating every CLI bundle.
-          cp -R /tmp/eigeninference-python/bin /tmp/eigeninference-bundle/python/
-          cp -R /tmp/eigeninference-python/lib /tmp/eigeninference-bundle/python/
+          cp -R /tmp/eigeninference-build-python/bin /tmp/eigeninference-bundle/python/
+          cp -R /tmp/eigeninference-build-python/lib /tmp/eigeninference-bundle/python/
           rm -rf /tmp/eigeninference-bundle/python/lib/python3.12/site-packages
 
           # Bundle ffmpeg (installed via Homebrew which verifies bottle checksums)

@@ -2404,6 +2404,48 @@ async fn cmd_serve(
             tracing::info!("Provider linked to account (auth token loaded)");
         }
 
+        // ------------------------------------------------------------------
+        // Initialize telemetry pipeline.
+        //
+        // The client spawns a background batcher that flushes to the
+        // coordinator's /v1/telemetry/events endpoint. Panics, backend
+        // crashes, and tracing WARN+ events are forwarded automatically.
+        // ------------------------------------------------------------------
+        let telemetry_cfg = telemetry::TelemetryConfig {
+            coordinator_url: coordinator_url.clone(),
+            auth_token: auth_token.clone(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            machine_id: public_key_b64.clone(),
+            account_id: None,
+            source: telemetry::Source::Provider,
+            disk_queue_path: dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                .join(".darkbloom/telemetry-queue.jsonl"),
+            max_batch: 50,
+            flush_interval: std::time::Duration::from_secs(5),
+            mem_queue_cap: 1024,
+        };
+        let tel_client = telemetry::init(telemetry_cfg).clone();
+        telemetry::panic_hook::install(tel_client.clone());
+        tracing::info!(
+            "Telemetry pipeline ready (session_id={})",
+            telemetry::event::SESSION_ID.as_str()
+        );
+
+        // Emit a provider_start event so operators can see fleet boots
+        // from the admin dashboard.
+        telemetry::emit(
+            telemetry::TelemetryEvent::new(
+                telemetry::Source::Provider,
+                telemetry::Severity::Info,
+                telemetry::Kind::Log,
+                "provider_start",
+            )
+            .with_field("component", "provider")
+            .with_field("hardware_chip", hw.chip_name.clone())
+            .with_field("memory_gb", hw.memory_gb as i64),
+        );
+
         // Shared flag: true when inference is in progress. Health monitor
         // skips crash detection while the backend is busy generating tokens,
         // because the Python GIL blocks /health during inference.

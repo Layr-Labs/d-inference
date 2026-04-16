@@ -55,10 +55,8 @@ where
 
         let mut ev = TelemetryEvent::new(self.source, severity, Kind::Log, message);
         ev.fields = fields;
-        ev.fields.insert(
-            "target".into(),
-            Value::String(meta.target().to_string()),
-        );
+        ev.fields
+            .insert("target".into(), Value::String(meta.target().to_string()));
         self.client.emit(ev);
     }
 }
@@ -87,7 +85,8 @@ impl tracing::field::Visit for FieldVisitor {
     }
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
         if let Some(n) = serde_json::Number::from_f64(value) {
-            self.fields.insert(field.name().to_string(), Value::Number(n));
+            self.fields
+                .insert(field.name().to_string(), Value::Number(n));
         }
     }
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {

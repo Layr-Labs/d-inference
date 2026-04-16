@@ -39,7 +39,10 @@ impl DiskQueue {
             Err(_) => return Ok(()), // unencodable — best-effort drop
         };
         self.rotate_if_needed()?;
-        let mut f = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
         writeln!(f, "{}", line)?;
         Ok(())
     }

@@ -210,6 +210,14 @@ Dev coordinator deploy (Google Cloud): see `docs/dev-environment.md`.
 ## Important Sync Points
 
 - Protocol changes must be mirrored in both `provider/src/protocol.rs` and `coordinator/internal/protocol/messages.go`.
+- Telemetry wire types live in three places and MUST stay aligned:
+  - `coordinator/internal/protocol/telemetry.go` (canonical),
+  - `provider/src/telemetry/event.rs` (Rust mirror),
+  - `console-ui/src/lib/telemetry-types.ts` (TS mirror).
+  Symmetry tests in each language pin enum casing and optional-field omission.
+  Field allowlist additions need parallel updates in
+  `coordinator/internal/api/telemetry_handlers.go`,
+  `provider/src/telemetry/layer.rs`, and the TS set above.
 - If you change provider bundle semantics, keep `scripts/build-bundle.sh`, `scripts/install.sh`, the app launcher code, and `LatestProviderVersion` in sync.
 - If you change install paths or process invocation, update both the CLI/install flow and the Swift app's `CLIRunner` / `ProviderManager`.
 - Image generation changes often span three places: coordinator consumer/provider handlers, provider proxying, and `image-bridge/`.

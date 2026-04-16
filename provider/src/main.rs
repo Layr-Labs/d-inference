@@ -4448,6 +4448,11 @@ fn find_stt_server_script() -> Option<String> {
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("stt_server.py")))
             .unwrap_or_default(),
+        // Bundled inside the macOS app Resources directory
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().and_then(|d| d.parent().map(|c| c.join("Resources").join("stt_server.py"))))
+            .unwrap_or_default(),
         // In the provider source directory (development)
         std::path::PathBuf::from("stt_server.py"),
         // In ~/.darkbloom

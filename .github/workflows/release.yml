@@ -446,8 +446,7 @@ jobs:
           cp "$APP_BIN" "$MACOS/EigenInference"
           cp /tmp/eigeninference-bundle/bin/darkbloom "$MACOS/darkbloom"
           cp /tmp/eigeninference-bundle/bin/eigeninference-enclave "$MACOS/eigeninference-enclave" 2>/dev/null || true
-          cp provider/stt_server.py "$MACOS/stt_server.py"
-          chmod +x "$MACOS/stt_server.py"
+          cp provider/stt_server.py "$RESOURCES/stt_server.py"
           cp -a /tmp/eigeninference-python/. "$PYTHON_ROOT/"
 
           find "$PYTHON_ROOT" -type f | while read -r file; do

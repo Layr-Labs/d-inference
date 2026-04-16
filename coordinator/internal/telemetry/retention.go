@@ -37,6 +37,12 @@ func RunRetentionLoop(ctx context.Context, st store.Store, logger *slog.Logger, 
 	}
 }
 
+// RunRetentionLoopOnce runs a single prune pass synchronously. Useful for
+// tests and admin tooling that want to force-trigger the cleanup.
+func RunRetentionLoopOnce(ctx context.Context, st store.Store, logger *slog.Logger, maxAge time.Duration) {
+	pruneOnce(ctx, st, logger, maxAge)
+}
+
 func pruneOnce(ctx context.Context, st store.Store, logger *slog.Logger, maxAge time.Duration) {
 	cutoff := time.Now().Add(-maxAge)
 	removed, err := st.DeleteTelemetryEventsOlderThan(ctx, cutoff)

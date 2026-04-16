@@ -269,7 +269,7 @@ jobs:
           /tmp/eigeninference-python/bin/python3.12 -m pip install --quiet --no-cache-dir \
             'mlx-lm>=0.31.2' \
             /tmp/vllm-mlx-source.zip \
-            grpcio flatbuffers soundfile mlx-audio
+            grpcio flatbuffers soundfile mlx-audio tokenizers
           # Force-upgrade mlx-lm in case a transitive dep pinned an older version
           /tmp/eigeninference-python/bin/python3.12 -m pip install --quiet --no-cache-dir --upgrade 'mlx-lm>=0.31.2'
 
@@ -447,6 +447,7 @@ jobs:
           cp /tmp/eigeninference-bundle/bin/darkbloom "$MACOS/darkbloom"
           cp /tmp/eigeninference-bundle/bin/eigeninference-enclave "$MACOS/eigeninference-enclave" 2>/dev/null || true
           cp provider/stt_server.py "$MACOS/stt_server.py"
+          chmod +x "$MACOS/stt_server.py"
           cp -a /tmp/eigeninference-python/. "$PYTHON_ROOT/"
 
           find "$PYTHON_ROOT" -type f | while read -r file; do

@@ -16,12 +16,13 @@ The server exposes:
 import argparse
 import asyncio
 import io
+import json
 import os
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 import numpy as np
 import uvicorn
@@ -320,6 +321,151 @@ async def stats():
 
 
 # ---------------------------------------------------------------------------
+# HuggingFace fast-tokenizer shim for cohere-transcribe-03-2026
+# ---------------------------------------------------------------------------
+
+class _CohereAsrTokenizerHF:
+    """Compatibility shim for models that ship tokenizer.json instead of
+    tokenizer.model.
+
+    Mirrors the upstream CohereAsrTokenizer contract closely so the rest of
+    mlx_audio's Cohere ASR path can stay untouched.
+    """
+
+    def __init__(
+        self,
+        tokenizer_json_path: str,
+        tokenizer_config_path: Optional[str] = None,
+        special_tokens_map_path: Optional[str] = None,
+    ):
+        from tokenizers import Tokenizer
+
+        self._tok = Tokenizer.from_file(tokenizer_json_path)
+
+        tokenizer_config = self._load_json(tokenizer_config_path)
+        special_tokens_map = self._load_json(special_tokens_map_path)
+
+        self.bos_token = tokenizer_config.get(
+            "bos_token",
+            special_tokens_map.get("bos_token", "<|startoftranscript|>"),
+        )
+        self.eos_token = tokenizer_config.get(
+            "eos_token",
+            special_tokens_map.get("eos_token", "<|endoftext|>"),
+        )
+        self.pad_token = tokenizer_config.get(
+            "pad_token",
+            special_tokens_map.get("pad_token", " "),
+        )
+        self.unk_token = tokenizer_config.get(
+            "unk_token",
+            special_tokens_map.get("unk_token", " "),
+        )
+
+        additional = tokenizer_config.get("additional_special_tokens", [])
+        if not additional:
+            additional = special_tokens_map.get("additional_special_tokens", [])
+        self.additional_special_tokens = list(additional)
+
+        self.special_tokens = {
+            self.bos_token,
+            self.eos_token,
+            self.pad_token,
+            self.unk_token,
+            *self.additional_special_tokens,
+        }
+        self.special_token_ids = {
+            token_id
+            for token in self.special_tokens
+            if (token_id := self._tok.token_to_id(token)) is not None and token_id >= 0
+        }
+        self.vocab_size = self._tok.get_vocab_size()
+
+    @staticmethod
+    def _load_json(path: Optional[str]) -> dict:
+        if path is None:
+            return {}
+        p = Path(path)
+        if not p.exists():
+            return {}
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+
+    def _id(self, token: str) -> int:
+        token_id = self._tok.token_to_id(token)
+        if token_id is None:
+            raise KeyError(f"Token not in vocab: {token!r}")
+        return token_id
+
+    @property
+    def bos_token_id(self) -> int:
+        return self._id(self.bos_token)
+
+    @property
+    def eos_token_id(self) -> int:
+        return self._id(self.eos_token)
+
+    @property
+    def pad_token_id(self) -> int:
+        return self._id(self.pad_token)
+
+    @property
+    def unk_token_id(self) -> int:
+        return self._id(self.unk_token)
+
+    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+        token_ids = self._tok.encode(text, add_special_tokens=False).ids
+        if add_special_tokens:
+            token_ids = [self.bos_token_id, *token_ids, self.eos_token_id]
+        return token_ids
+
+    def decode(self, ids: Iterable[int], skip_special_tokens: bool = True) -> str:
+        token_ids = [int(token_id) for token_id in ids if int(token_id) >= 0]
+        if skip_special_tokens:
+            filtered = [
+                token_id for token_id in token_ids if token_id not in self.special_token_ids
+            ]
+            return self._tok.decode(filtered, skip_special_tokens=False)
+
+        output = []
+        buffer = []
+        for token_id in token_ids:
+            token = self._tok.id_to_token(token_id)
+            if token in self.special_tokens:
+                if buffer:
+                    output.append(self._tok.decode(buffer, skip_special_tokens=False))
+                    buffer = []
+                output.append(token)
+            else:
+                buffer.append(token_id)
+        if buffer:
+            output.append(self._tok.decode(buffer, skip_special_tokens=False))
+        return "".join(output)
+
+    def batch_decode(
+        self, batch_ids: list[Iterable[int]], skip_special_tokens: bool = True
+    ) -> list[str]:
+        return [
+            self.decode(token_ids, skip_special_tokens=skip_special_tokens)
+            for token_ids in batch_ids
+        ]
+
+    def build_prompt_tokens(self, language: str, punctuation: bool = True) -> list[int]:
+        tokens = [
+            "<|startofcontext|>",
+            "<|startoftranscript|>",
+            "<|emo:undefined|>",
+            f"<|{language}|>",
+            f"<|{language}|>",
+            "<|pnc|>" if punctuation else "<|nopnc|>",
+            "<|noitn|>",
+            "<|notimestamp|>",
+            "<|nodiarize|>",
+        ]
+        return [self._id(token) for token in tokens]
+
+
+# ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
 
@@ -354,6 +500,38 @@ def load_model(model_path: str):
             orig_load(self, mp)
 
     audio_mod.CohereAudioFrontend.load_buffers_from_checkpoint = patched_load
+
+    # Patch post_load_hook to support tokenizer.json (HuggingFace fast tokenizer)
+    # in addition to the legacy tokenizer.model (SentencePiece).
+    from mlx_audio.stt.models.cohere_asr import cohere_asr as _cohere_asr_mod
+
+    _orig_post_load = _cohere_asr_mod.Model.post_load_hook.__func__
+
+    @classmethod
+    def _patched_post_load_hook(cls, model, model_path):
+        model_path = Path(model_path)
+        sp_path = model_path / "tokenizer.model"
+        json_path = model_path / "tokenizer.json"
+        tokenizer_config_path = model_path / "tokenizer_config.json"
+        special_tokens_map_path = model_path / "special_tokens_map.json"
+
+        if sp_path.exists():
+            return _orig_post_load(cls, model, model_path)
+
+        if json_path.exists():
+            model._tokenizer = _CohereAsrTokenizerHF(
+                str(json_path),
+                str(tokenizer_config_path),
+                str(special_tokens_map_path),
+            )
+            model.audio_frontend.load_buffers_from_checkpoint(model_path)
+            return model
+
+        raise FileNotFoundError(
+            f"No tokenizer found in {model_path}: expected tokenizer.model or tokenizer.json"
+        )
+
+    _cohere_asr_mod.Model.post_load_hook = _patched_post_load_hook
 
     from mlx_audio.stt.utils import load_model as mlx_load_model
     model = mlx_load_model(model_path)

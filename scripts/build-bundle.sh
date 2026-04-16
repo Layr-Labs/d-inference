@@ -90,7 +90,7 @@ echo "   Installing vllm-mlx and dependencies..."
 "$PYTHON312" -m pip install --quiet --no-cache-dir \
   'mlx-lm>=0.31.2' \
   'git+https://github.com/Gajesh2007/vllm-mlx.git@main' \
-  grpcio flatbuffers Pillow mlx-audio
+  grpcio flatbuffers Pillow mlx-audio tokenizers
 # Force-upgrade mlx-lm in case a transitive dep pinned an older version
 "$PYTHON312" -m pip install --quiet --no-cache-dir --upgrade 'mlx-lm>=0.31.2'
 

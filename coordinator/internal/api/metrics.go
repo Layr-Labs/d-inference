@@ -46,6 +46,16 @@ func (m *Metrics) IncCounter(name string, labels ...MetricLabel) {
 	m.AddCounter(name, 1, labels...)
 }
 
+// IncCounterEvent is the cross-package adapter used by
+// telemetry.Emitter — hides our MetricLabel type behind a stable signature.
+func (m *Metrics) IncCounterEvent(source, severity, kind string) {
+	m.IncCounter("telemetry_events_total",
+		MetricLabel{"source", source},
+		MetricLabel{"severity", severity},
+		MetricLabel{"kind", kind},
+	)
+}
+
 // AddCounter atomically adds delta to the named counter.
 func (m *Metrics) AddCounter(name string, delta int64, labels ...MetricLabel) {
 	key := metricKey(name, labels)
@@ -213,30 +223,74 @@ func (h *Histogram) Snapshot() HistogramSnapshot {
 // RenderProm returns the snapshot in Prometheus exposition format.
 func (s MetricsSnapshot) RenderProm() string {
 	var b strings.Builder
-	for name, v := range s.Counters {
-		fmt.Fprintf(&b, "# TYPE %s counter\n%s %d\n", sanitizePromName(name), name, v)
-	}
-	for name, g := range s.Gauges {
-		fmt.Fprintf(&b, "# TYPE %s gauge\n%s %g\n", sanitizePromName(name), name, g)
-	}
-	for name, h := range s.Histograms {
-		promName := sanitizePromName(name)
-		fmt.Fprintf(&b, "# TYPE %s histogram\n", promName)
-		for i, bucket := range h.Buckets {
-			fmt.Fprintf(&b, "%s_bucket{le=\"%g\"} %d\n", name, bucket, h.Counts[i])
+
+	// Counters — the metric key already has the Prometheus-style label suffix.
+	// Convert internal "name{a=1,b=2}" into Prom "name{a=\"1\",b=\"2\"}".
+	writtenTypes := map[string]struct{}{}
+	for key, v := range s.Counters {
+		name, labels := splitPromKey(key)
+		if _, ok := writtenTypes[name]; !ok {
+			fmt.Fprintf(&b, "# TYPE %s counter\n", name)
+			writtenTypes[name] = struct{}{}
 		}
-		fmt.Fprintf(&b, "%s_bucket{le=\"+Inf\"} %d\n", name, h.Counts[len(h.Counts)-1])
-		fmt.Fprintf(&b, "%s_sum %g\n", name, h.Sum)
-		fmt.Fprintf(&b, "%s_count %d\n", name, h.Count)
+		fmt.Fprintf(&b, "%s%s %d\n", name, labels, v)
+	}
+	for key, g := range s.Gauges {
+		name, labels := splitPromKey(key)
+		if _, ok := writtenTypes[name]; !ok {
+			fmt.Fprintf(&b, "# TYPE %s gauge\n", name)
+			writtenTypes[name] = struct{}{}
+		}
+		fmt.Fprintf(&b, "%s%s %g\n", name, labels, g)
+	}
+	for key, h := range s.Histograms {
+		name, labels := splitPromKey(key)
+		if _, ok := writtenTypes[name]; !ok {
+			fmt.Fprintf(&b, "# TYPE %s histogram\n", name)
+			writtenTypes[name] = struct{}{}
+		}
+		// Each bucket gets a synthetic label le="<upper>" appended to existing labels.
+		for i, bucket := range h.Buckets {
+			fmt.Fprintf(&b, "%s_bucket%s %d\n", name, mergeLabels(labels, "le", fmt.Sprintf("%g", bucket)), h.Counts[i])
+		}
+		fmt.Fprintf(&b, "%s_bucket%s %d\n", name, mergeLabels(labels, "le", "+Inf"), h.Counts[len(h.Counts)-1])
+		fmt.Fprintf(&b, "%s_sum%s %g\n", name, labels, h.Sum)
+		fmt.Fprintf(&b, "%s_count%s %d\n", name, labels, h.Count)
 	}
 	return b.String()
 }
 
-// sanitizePromName strips labels from a metric key, returning just the bare
-// metric name (required for `# TYPE` lines).
-func sanitizePromName(key string) string {
-	if i := strings.IndexByte(key, '{'); i >= 0 {
-		return key[:i]
+// splitPromKey separates the metric name from the Prom-style label block.
+// Input:  "foo{a=1,b=2}"
+// Output: name="foo", labels=`{a="1",b="2"}`
+func splitPromKey(key string) (string, string) {
+	i := strings.IndexByte(key, '{')
+	if i < 0 {
+		return key, ""
 	}
-	return key
+	name := key[:i]
+	inner := strings.TrimSuffix(strings.TrimPrefix(key[i:], "{"), "}")
+	if inner == "" {
+		return name, ""
+	}
+	pairs := strings.Split(inner, ",")
+	out := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		if eq := strings.IndexByte(p, '='); eq > 0 {
+			k := p[:eq]
+			v := p[eq+1:]
+			out = append(out, fmt.Sprintf("%s=%q", k, v))
+		}
+	}
+	return name, "{" + strings.Join(out, ",") + "}"
+}
+
+// mergeLabels appends one more label (k=v) to an existing "{...}" block.
+func mergeLabels(existing, key, val string) string {
+	quoted := fmt.Sprintf("%s=%q", key, val)
+	if existing == "" {
+		return "{" + quoted + "}"
+	}
+	// existing is already "{...}" — splice the new label in.
+	return existing[:len(existing)-1] + "," + quoted + "}"
 }

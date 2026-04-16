@@ -102,6 +102,11 @@ func main() {
 	srv := api.NewServer(reg, st, logger)
 	srv.SetAdminKey(adminKey)
 
+	// Coordinator self-telemetry emitter. Writes directly to the store so
+	// panics and handler errors are observable from the admin console.
+	telemetryEmitter := telemetry.NewEmitter(logger, st, srv.Metrics(), telemetry.CoordinatorVersion)
+	srv.SetEmitter(telemetryEmitter)
+
 	// Sync the model catalog to the registry so providers and consumers
 	// are filtered against the admin-managed whitelist.
 	srv.SyncModelCatalog()

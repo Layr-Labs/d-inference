@@ -136,6 +136,18 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				s.logger.Info("provider websocket closed", "provider_id", providerID)
 			} else {
 				s.logger.Error("provider websocket read error", "provider_id", providerID, "error", err)
+				s.emit(context.Background(), protocol.SeverityWarn, protocol.KindConnectivity,
+					"provider websocket read error",
+					map[string]any{
+						"provider_id": providerID,
+						"ws_state":    "read_error",
+						"last_error":  err.Error(),
+					})
+				if s.metrics != nil {
+					s.metrics.IncCounter("ws_disconnects_total",
+						MetricLabel{"reason", "read_error"},
+					)
+				}
 			}
 			return
 		}
@@ -151,6 +163,21 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
 			provider = s.registry.Register(providerID, conn, regMsg)
 			s.verifyProviderAttestation(providerID, provider, regMsg)
+
+			// Record registration outcome metrics + telemetry.
+			if s.metrics != nil {
+				s.metrics.IncCounter("provider_registrations_total",
+					MetricLabel{"trust_level", string(provider.TrustLevel)},
+				)
+			}
+			s.emit(context.Background(), protocol.SeverityInfo, protocol.KindLog,
+				"provider registered",
+				map[string]any{
+					"provider_id":   providerID,
+					"trust_level":   string(provider.TrustLevel),
+					"hardware_chip": regMsg.Hardware.ChipName,
+					"memory_gb":     regMsg.Hardware.MemoryGB,
+				})
 
 			// Resolve auth token → account linkage.
 			if regMsg.AuthToken != "" {
@@ -720,8 +747,22 @@ func (s *Server) handleChallengeFailure(providerID string, reason string) {
 		"consecutive_failures", failures,
 	)
 
+	severity := protocol.SeverityWarn
 	if failures >= MaxFailedChallenges {
+		severity = protocol.SeverityError
 		s.registry.MarkUntrusted(providerID)
+	}
+	s.emit(context.Background(), severity, protocol.KindAttestationFailure,
+		"attestation challenge failed",
+		map[string]any{
+			"provider_id":     providerID,
+			"reason":          reason,
+			"reconnect_count": failures,
+		})
+	if s.metrics != nil {
+		s.metrics.IncCounter("attestation_failures_total",
+			MetricLabel{"reason", reason},
+		)
 	}
 }
 

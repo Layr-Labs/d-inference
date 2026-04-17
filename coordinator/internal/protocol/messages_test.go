@@ -36,7 +36,7 @@ func TestRegisterMessageMarshal(t *testing.T) {
 	}
 
 	var decoded RegisterMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err = json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -74,7 +74,7 @@ func TestHeartbeatMessageMarshal(t *testing.T) {
 	}
 
 	var decoded HeartbeatMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err = json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -104,7 +104,7 @@ func TestHeartbeatWithActiveModel(t *testing.T) {
 	}
 
 	var decoded HeartbeatMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err = json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -129,7 +129,7 @@ func TestInferenceResponseChunkMarshal(t *testing.T) {
 	}
 
 	var decoded InferenceResponseChunkMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err = json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -154,7 +154,7 @@ func TestInferenceCompleteMarshal(t *testing.T) {
 	}
 
 	var decoded InferenceCompleteMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err = json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -180,7 +180,7 @@ func TestInferenceErrorMarshal(t *testing.T) {
 	}
 
 	var decoded InferenceErrorMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err = json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -211,7 +211,7 @@ func TestInferenceRequestMarshal(t *testing.T) {
 	}
 
 	var decoded InferenceRequestMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err = json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -241,7 +241,7 @@ func TestCancelMarshal(t *testing.T) {
 	}
 
 	var decoded CancelMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err = json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -380,7 +380,7 @@ func TestRegisterMessageWithWalletAddress(t *testing.T) {
 	}
 
 	var decoded RegisterMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err = json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -410,7 +410,7 @@ func TestRegisterMessageWithAttestation(t *testing.T) {
 	}
 
 	var decoded RegisterMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err = json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -420,7 +420,7 @@ func TestRegisterMessageWithAttestation(t *testing.T) {
 
 	// Verify it contains expected fields
 	var attMap map[string]any
-	if err := json.Unmarshal(decoded.Attestation, &attMap); err != nil {
+	if err = json.Unmarshal(decoded.Attestation, &attMap); err != nil {
 		t.Fatalf("unmarshal attestation: %v", err)
 	}
 	if attMap["signature"] != "c2ln" {
@@ -498,7 +498,7 @@ func TestAttestationChallengeMessageMarshal(t *testing.T) {
 	}
 
 	var decoded AttestationChallengeMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err = json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -527,7 +527,7 @@ func TestAttestationResponseMessageMarshal(t *testing.T) {
 	}
 
 	var decoded AttestationResponseMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err = json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -563,7 +563,7 @@ func TestHeartbeatWithSystemMetricsMarshal(t *testing.T) {
 	}
 
 	var decoded HeartbeatMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err = json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -659,7 +659,7 @@ func TestBackendCapacityMarshalRoundtrip(t *testing.T) {
 	}
 
 	var decoded BackendCapacity
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err = json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -709,7 +709,7 @@ func TestHeartbeatWithBackendCapacityMarshal(t *testing.T) {
 	}
 
 	var decoded HeartbeatMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err = json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 

@@ -397,6 +397,15 @@ type ProviderMessage struct {
 	Payload any // one of: *RegisterMessage, *HeartbeatMessage, etc.
 }
 
+// unmarshalTyped unmarshals data into target and wraps any error with the
+// given message type name for diagnostics.
+func unmarshalTyped(data []byte, typeName string, target any) error {
+	if err := json.Unmarshal(data, target); err != nil {
+		return fmt.Errorf("protocol: failed to unmarshal %s: %w", typeName, err)
+	}
+	return nil
+}
+
 // UnmarshalJSON reads the "type" field first, then unmarshals the full object
 // into the appropriate concrete struct.
 func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
@@ -411,64 +420,64 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 	switch envelope.Type {
 	case TypeRegister:
 		var msg RegisterMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return fmt.Errorf("protocol: failed to unmarshal register: %w", err)
+		if err := unmarshalTyped(data, "register", &msg); err != nil {
+			return err
 		}
 		pm.Payload = &msg
 
 	case TypeHeartbeat:
 		var msg HeartbeatMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return fmt.Errorf("protocol: failed to unmarshal heartbeat: %w", err)
+		if err := unmarshalTyped(data, "heartbeat", &msg); err != nil {
+			return err
 		}
 		pm.Payload = &msg
 
 	case TypeInferenceAccepted:
 		var msg InferenceAcceptedMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return fmt.Errorf("protocol: failed to unmarshal inference_accepted: %w", err)
+		if err := unmarshalTyped(data, "inference_accepted", &msg); err != nil {
+			return err
 		}
 		pm.Payload = &msg
 
 	case TypeInferenceResponseChunk:
 		var msg InferenceResponseChunkMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return fmt.Errorf("protocol: failed to unmarshal inference_response_chunk: %w", err)
+		if err := unmarshalTyped(data, "inference_response_chunk", &msg); err != nil {
+			return err
 		}
 		pm.Payload = &msg
 
 	case TypeInferenceComplete:
 		var msg InferenceCompleteMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return fmt.Errorf("protocol: failed to unmarshal inference_complete: %w", err)
+		if err := unmarshalTyped(data, "inference_complete", &msg); err != nil {
+			return err
 		}
 		pm.Payload = &msg
 
 	case TypeInferenceError:
 		var msg InferenceErrorMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return fmt.Errorf("protocol: failed to unmarshal inference_error: %w", err)
+		if err := unmarshalTyped(data, "inference_error", &msg); err != nil {
+			return err
 		}
 		pm.Payload = &msg
 
 	case TypeAttestationResponse:
 		var msg AttestationResponseMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return fmt.Errorf("protocol: failed to unmarshal attestation_response: %w", err)
+		if err := unmarshalTyped(data, "attestation_response", &msg); err != nil {
+			return err
 		}
 		pm.Payload = &msg
 
 	case TypeTranscriptionComplete:
 		var msg TranscriptionCompleteMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return fmt.Errorf("protocol: failed to unmarshal transcription_complete: %w", err)
+		if err := unmarshalTyped(data, "transcription_complete", &msg); err != nil {
+			return err
 		}
 		pm.Payload = &msg
 
 	case TypeImageGenerationComplete:
 		var msg ImageGenerationCompleteMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return fmt.Errorf("protocol: failed to unmarshal image_generation_complete: %w", err)
+		if err := unmarshalTyped(data, "image_generation_complete", &msg); err != nil {
+			return err
 		}
 		pm.Payload = &msg
 

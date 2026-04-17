@@ -1,22 +1,15 @@
 # Darkbloom Privacy Policy
 
-Draft date: April 11, 2026.
+Updated: April 17, 2026
 
-Publication checklist:
-- Replace bracketed placeholders for effective date and any region-specific request portal.
-- Confirm the final subprocessor list before publication.
-- Confirm whether you want a separate Data Processing Addendum for enterprise customers.
-- Confirm whether you want a dedicated privacy inbox later instead of the shared notices inbox.
+This Privacy Policy explains how Eigen Labs, Inc., operating the Darkbloom platform ("Eigen Labs," "Darkbloom," "we," "us," or "our") collects, uses, discloses, and otherwise processes personal information in connection with Darkbloom's websites, console, APIs, software, provider applications, hosted services, and related products and features (collectively, the "Services").
 
-Effective date: [Month DD, YYYY]
-
-This Privacy Policy explains how Eigen Labs, Inc. d/b/a Darkbloom ("Eigen Labs," "Darkbloom," "we," "us," or "our") collects, uses, discloses, and otherwise processes personal information in connection with Darkbloom's websites, console, APIs, software, provider applications, hosted services, and related products and features (collectively, the "Services").
-
-This Privacy Policy is designed for the Darkbloom product reflected in this repository, including consumer-facing API and console features and provider-facing node software. It does not apply to third-party services we do not control, even if they interoperate with the Services.
+**Standalone Document.** This Privacy Policy is a standalone document governing the Darkbloom Services only. It is separate from and does not incorporate the Eigen Labs Privacy Policy or other privacy notices governing EigenLayer, EigenCloud, EigenDA, EigenCompute, or other Eigen Labs products. Your use of those products is governed solely by their respective privacy notices. This Privacy Policy is designed for the Darkbloom product, including consumer-facing API and console features and provider-facing node software. It does not apply to third-party services we do not control, even if they interoperate with the Services.
 
 ## 1. Scope
 
 This Privacy Policy applies when you:
+
 - visit our websites or console;
 - create or use an account, API key, wallet-linked session, or device-link flow;
 - submit prompts, files, images, or audio to the Services;
@@ -29,18 +22,17 @@ Additional notices may apply to specific products, integrations, or enterprise r
 
 The categories of personal information we collect depend on how you use the Services.
 
-### 2.1 Account and identity information
+**2.1 Account and identity information.** We may collect:
 
-We may collect:
 - name and business details you provide to us;
 - email address;
 - authentication identifiers from our identity providers, including Privy user identifiers;
 - wallet addresses and related wallet identifiers used for authentication or payment-related features;
-- API keys and account identifiers associated with the Services.
+- API keys and account identifiers associated with the Services;
+- tax identification information (such as W-9 or W-8BEN data) collected from providers for tax reporting purposes.
 
-### 2.2 Payment, transaction, and billing information
+**2.2 Payment, transaction, and billing information.** We may collect:
 
-We may collect:
 - billing session identifiers;
 - payment method type;
 - deposit and withdrawal information;
@@ -50,9 +42,8 @@ We may collect:
 
 We generally do not receive full payment card numbers from Stripe or similar payment processors.
 
-### 2.3 Usage and service metadata
+**2.3 Usage and service metadata.** We collect service usage information such as:
 
-We collect service usage information such as:
 - request identifiers;
 - account and provider identifiers;
 - selected model or feature;
@@ -61,9 +52,8 @@ We collect service usage information such as:
 - per-request cost or billing metadata;
 - API route, status code, and related operational metrics.
 
-### 2.4 Content you submit and receive
+**2.4 Content you submit and receive.** Depending on the feature you use, we may process:
 
-Depending on the feature you use, we may process:
 - prompts, messages, and instructions;
 - files and attachments;
 - audio submitted for transcription;
@@ -72,31 +62,33 @@ Depending on the feature you use, we may process:
 
 We refer to this material as "Content."
 
-### 2.5 Provider and device information
+**2.5 Provider and device information.** If you run provider software or use provider-related features, we may collect:
 
-If you run provider software or use provider-related features, we may collect:
 - hardware and device characteristics, such as machine model, chip family, memory, CPU/GPU information, and available capacity;
 - provider wallet addresses;
-- attestation materials and related security data, such as Secure Enclave data, runtime hashes, binary integrity data, model hashes, certificate chains, serial numbers, and challenge-response results;
+- attestation materials and related security data, including: Secure Enclave-generated P-256 public keys and ECDSA attestation signatures; SHA-256 hashes of the provider binary; hardware serial numbers used to cross-reference device identity in our MDM server; SIP status, Secure Boot level, and Authenticated Root Volume integrity status as reported by the device;
+- challenge-response verification data: approximately every five minutes, our coordinator sends a 32-byte cryptographic nonce to the provider's device. The device signs the nonce using its Secure Enclave key and returns a response including fresh SIP and Secure Boot status. We collect and process the nonce, the signed response, and the accompanying security posture data for each challenge cycle;
 - heartbeats, health checks, thermal state, memory pressure, security posture, and version information;
 - device-linking tokens and account-link status.
 
-### 2.6 Technical and log information
+Further, provider Macs enrolled in the platform are subject to periodic automated SecurityInfo queries sent via Apple's MDM protocol through Apple's Push Notification service (APNs). These queries request SIP status, Secure Boot level, and Authenticated Root Volume integrity from the device's OS MDM client and not from Darkbloom software. This querying occurs on an ongoing basis throughout the provider's participation in the platform.
 
-When you use the Services, we may automatically collect:
+MDM enrollment is configured for security verification. Darkbloom requests only the minimum MDM permissions necessary to verify your device's security posture, specifically the ability to query device information and security status. We have deliberately not requested MDM permissions that would allow us to erase, lock, install or remove applications, or access user content or application data.
+
+**2.6 Technical and log information.** When you use the Services, we may automatically collect:
+
 - IP address and network information;
 - request logs, including route, response status, duration, and remote address;
 - device, browser, and operating system information exposed to us;
 - local storage or similar client-side state used to support the Services, such as stored API keys, preferred coordinator URL, theme preference, verification mode preference, and dismissed UI state;
 - cookies, SDK storage, or similar session technologies used by our authentication or wallet partners.
 
-### 2.7 Communications and support information
-
-If you contact us, we collect the contents of your message, attachments, and related contact details.
+**2.7 Communications and support information.** If you contact us, we collect the contents of your message, attachments, and related contact details.
 
 ## 3. How We Collect Personal Information
 
 We collect personal information:
+
 - directly from you when you create an account, authenticate, submit Content, operate provider software, make payments, or contact us;
 - automatically when you use the Services;
 - from service providers and partners that help us authenticate users, process payments, provide wallet functionality, operate infrastructure, or verify transactions;
@@ -105,10 +97,12 @@ We collect personal information:
 ## 4. How We Use Personal Information
 
 We use personal information to:
+
 - provide, operate, maintain, secure, and improve the Services;
 - authenticate users and devices, generate API keys, and manage access control;
 - route requests, return outputs, meter usage, and support billing, accounting, payouts, and fraud prevention;
-- operate provider onboarding, enrollment, attestation, integrity verification, and account-linking features;
+- operate provider onboarding, MDM enrollment, attestation, integrity verification, challenge-response verification, and account-linking features;
+- if applicable, collect tax identification information and fulfill tax reporting obligations, including IRS Form 1099-NEC reporting for qualifying US providers;
 - communicate with you about the Services, updates, support issues, and legal or security notices;
 - monitor performance, reliability, and abuse;
 - investigate and enforce compliance with our Terms of Service and other legal requirements;
@@ -119,33 +113,22 @@ We use personal information to:
 
 Because Darkbloom is an inference platform, Content handling is central to how the Services work. The following disclosures are intended to be precise and conservative.
 
-### 5.1 Transit and relay
+**5.1 Transit and relay.** Content sent to the Services is transmitted to our coordinator over TLS. Depending on the service path and provider capabilities, we may also encrypt request bodies before relaying them to a selected provider.
 
-Content sent to the Services is transmitted to our coordinator over TLS. Depending on the service path and provider capabilities, we may also encrypt request bodies before relaying them to a selected provider.
+**5.2 Coordinator access.** The current service architecture requires our coordinator to process request payloads in plaintext on a transient basis for routing, compatibility, metering, and operation of the Services. You should not treat the current architecture as guaranteeing that the coordinator is technically incapable of accessing request payloads in every service path.
 
-### 5.2 Coordinator access
+**5.3 Logging.** Our coordinator code is designed not to log prompt content in ordinary request logs. However, we do log operational metadata such as request path, status, duration, and remote address. Content may also be disclosed to us if you intentionally provide it in support requests, bug reports, or other communications.
 
-Current service architecture may require our coordinator to process request payloads in plaintext on a transient basis for routing, compatibility, metering, or operation of the Services. You should not treat the current architecture as guaranteeing that the coordinator is technically incapable of accessing request payloads in every service path.
+**5.4 Selected providers.** To fulfill inference requests, we disclose relevant Content to the provider selected to process the request. If you operate provider software, that means customer requests may be routed to your device subject to the Services' security and attestation controls.
 
-### 5.3 Logging
+**5.5 Images and uploads.** Generated images may be temporarily stored in service memory pending retrieval and delivery to the requesting user. These in-memory image uploads are removed after retrieval, but no system can guarantee perfect deletion or eliminate all risk.
 
-Our coordinator code is designed not to log prompt content in ordinary request logs. However, we do log operational metadata such as request path, status, duration, and remote address. Content may also be disclosed to us if you intentionally provide it in support requests, bug reports, or other communications.
-
-### 5.4 Selected providers
-
-To fulfill inference requests, we disclose relevant Content to the provider selected to process the request. If you operate provider software, that means customer requests may be routed to your device subject to the Service's security and attestation controls.
-
-### 5.5 Images and uploads
-
-Generated images may be temporarily stored in service memory pending retrieval and delivery to the requesting user. The codebase indicates these in-memory image uploads are removed after retrieval, but no system can guarantee perfect deletion or eliminate all risk.
-
-### 5.6 Training
-
-This draft does not grant us a blanket right to use your Content for general-purpose model training. If we decide to do so in the future, we will update this Privacy Policy and any related contractual terms before doing so, to the extent required by law.
+**5.6 Training.** This Privacy Policy does not grant us a right to use your Content for general-purpose model training. If we decide to do so in the future, we will update this Privacy Policy and any related contractual terms before doing so, to the extent required by law.
 
 ## 6. How We Disclose Personal Information
 
 We may disclose personal information:
+
 - to service providers and subprocessors that host infrastructure, provide observability, process payments, verify transactions, support authentication, or otherwise help us operate the Services;
 - to identity, wallet, or payment partners such as Privy, Stripe, card networks, banks, blockchain RPC providers, or wallet providers when needed to authenticate you or complete a transaction;
 - to providers participating in the network, to the extent needed to process your requests;
@@ -155,6 +138,7 @@ We may disclose personal information:
 - with your direction or consent.
 
 Some information may also be public by design:
+
 - blockchain transaction data may be visible on public ledgers;
 - attestation or verification artifacts may be made available through public or customer-facing verification endpoints.
 
@@ -163,6 +147,7 @@ We do not sell personal information for money. We also do not share personal inf
 ## 7. Legal Bases
 
 If and to the extent a legal basis is required for our processing, we rely on:
+
 - performance of our contract with you;
 - our legitimate interests in operating, securing, improving, and enforcing the Services;
 - compliance with legal obligations;
@@ -171,6 +156,7 @@ If and to the extent a legal basis is required for our processing, we rely on:
 ## 8. Retention
 
 We retain personal information for as long as reasonably necessary for the purposes described in this Privacy Policy, including to:
+
 - provide the Services;
 - maintain account, billing, ledger, tax, and compliance records;
 - investigate incidents, fraud, or abuse;
@@ -178,14 +164,17 @@ We retain personal information for as long as reasonably necessary for the purpo
 - satisfy legal, regulatory, audit, accounting, or reporting requirements.
 
 Retention periods may vary by data type. For example:
+
 - account and billing records may be retained for legal and accounting periods;
 - usage and security logs may be retained for operational, fraud-prevention, and support purposes;
-- provider attestation and device-link data may be retained for trust, audit, and network-integrity purposes;
+- tax identification information (W-9/W-8BEN data) is retained for as long as required by IRS regulations;
+- provider attestation and device-link data, including hardware serial numbers, binary hashes, Secure Enclave public keys, MDM SecurityInfo responses, and challenge-response records, may be retained for trust, audit, and network-integrity purposes;
 - Content may be retained for shorter operational periods unless preserved longer for support, abuse review, legal compliance, or dispute resolution.
 
 ## 9. Your Privacy Choices and Rights
 
 Depending on where you live, you may have rights to:
+
 - know or access the personal information we hold about you;
 - correct inaccurate personal information;
 - delete personal information;
@@ -196,9 +185,7 @@ Depending on where you live, you may have rights to:
 
 We may need to verify your identity before fulfilling a request. We may deny or limit requests where permitted by law, including where we cannot verify identity, where the request is legally exempt, or where retention is necessary for security, billing, compliance, or dispute purposes.
 
-To submit a privacy request, contact us at:
-- notices@eigenlabs.org
-- [privacy request portal, if any]
+To submit a privacy request, contact us at notices@eigenlabs.org.
 
 Authorized agents may submit requests on your behalf where permitted by law, subject to verification.
 
@@ -207,6 +194,7 @@ California residents may have rights described in the California Consumer Privac
 ## 10. Cookies, Local Storage, and Similar Technologies
 
 We and our partners may use cookies, local storage, SDK storage, or similar technologies to:
+
 - keep you signed in or authenticated;
 - store API keys or configuration choices you elect to save in the browser;
 - remember preferences such as theme, coordinator URL, or verification mode;
@@ -221,8 +209,8 @@ Our websites and apps are not currently designed to respond to browser "Do Not T
 
 The Services may link to third-party websites, repositories, social channels, wallet providers, identity providers, and payment services. If you follow those links or use those services, your information will be governed by the applicable third party's terms and privacy practices, not ours.
 
-This includes services used for:
-- authentication and embedded wallet flows;
+This includes services used for authentication and embedded wallet flows:
+
 - payment processing and billing;
 - blockchain transaction broadcasting, indexing, or verification;
 - social, support, or community interactions outside our Services.
@@ -237,7 +225,7 @@ No security program is perfect, and we cannot guarantee absolute security.
 
 ## 13. International Transfers
 
-We may process personal information in the United States and other jurisdictions where we or our service providers operate. Those jurisdictions may not provide the same level of data protection as your home jurisdiction.
+We may process personal information in the United States and other jurisdictions where we or our service providers operate. Those jurisdictions may not provide the same level of data protection as your home jurisdiction. Where required by applicable law, we rely on appropriate legal mechanisms for international transfers of personal information, which may include Standard Contractual Clauses approved by the European Commission or other lawful transfer mechanisms. For more information about the transfer mechanisms we use, contact us at notices@eigenlabs.org.
 
 ## 14. Children's Privacy
 
@@ -251,9 +239,4 @@ We may update this Privacy Policy from time to time. If we make material changes
 
 ## 16. Contact Us
 
-For questions or requests about this Privacy Policy, contact:
-
-Eigen Labs, Inc. d/b/a Darkbloom  
-15790 Redmond Way #1176  
-Redmond, WA 98052  
-notices@eigenlabs.org
+For questions or requests about this Privacy Policy, contact: notices@eigenlabs.org

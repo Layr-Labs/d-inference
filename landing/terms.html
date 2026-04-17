@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Terms of Service — Darkbloom</title>
+  <meta name="description" content="Darkbloom Terms of Service" />
+  <style>
+    @font-face { font-family: 'ABC Repro'; src: url('fonts/ABCRepro-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+    @font-face { font-family: 'ABC Repro'; src: url('fonts/ABCRepro-Bold.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: swap; }
+    @font-face { font-family: 'ABC Repro Mono'; src: url('fonts/ABCReproMono-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+    @font-face { font-family: 'IBM Plex Mono'; src: url('fonts/IBMPlexMono-Regular.ttf') format('truetype'); font-weight: 400; font-style: normal; font-display: swap; }
+    @font-face { font-family: 'Louize'; src: url('fonts/Louize-Regular.otf') format('opentype'); font-weight: 400; font-style: normal; font-display: swap; }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --off-white:   #F2F2F2;
+      --white:       #FFFFFF;
+      --black:       #000000;
+      --eigen-blue:  #1A0C6D;
+      --grey-01:     #D8DCE5;
+      --grey-02:     #ACB1BC;
+      --grey-03:     #666F7C;
+      --font-sans:   'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono:   'ABC Repro Mono', 'IBM Plex Mono', monospace;
+      --font-logo:   'Louize', Georgia, serif;
+      --margin: 4%;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--white);
+      color: var(--black);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    a { color: var(--eigen-blue); text-decoration: underline; }
+    a:hover { opacity: 0.75; }
+
+    .container {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 0 var(--margin);
+    }
+
+    /* Nav */
+    .legal-nav {
+      height: 56px;
+      border-bottom: 1px solid var(--grey-01);
+      display: flex;
+      align-items: center;
+    }
+    .legal-nav a.back {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--grey-03);
+      text-decoration: none;
+      letter-spacing: 0.01em;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .legal-nav a.back:hover { color: var(--black); }
+    .legal-nav .brand {
+      font-family: var(--font-logo);
+      font-size: 22px;
+      color: var(--black);
+      text-decoration: none;
+      margin-left: 20px;
+    }
+
+    /* Content */
+    .legal-content {
+      max-width: 740px;
+      margin: 0 auto;
+      padding: 60px var(--margin) 80px;
+    }
+
+    .legal-content h1 {
+      font-family: var(--font-sans);
+      font-weight: 700;
+      font-size: 32px;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      color: var(--black);
+      margin-bottom: 8px;
+    }
+
+    .legal-content .date {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--grey-02);
+      letter-spacing: 0.01em;
+      margin-bottom: 32px;
+    }
+
+    .legal-content .lead {
+      font-size: 15px;
+      color: var(--grey-03);
+      line-height: 1.7;
+      margin-bottom: 40px;
+      padding-bottom: 40px;
+      border-bottom: 1px solid var(--grey-01);
+    }
+
+    .legal-content .standalone-note {
+      font-size: 13px;
+      color: var(--grey-03);
+      line-height: 1.6;
+      background: var(--off-white);
+      border-left: 3px solid var(--eigen-blue);
+      padding: 14px 18px;
+      margin-bottom: 40px;
+    }
+
+    .legal-section {
+      margin-bottom: 36px;
+    }
+
+    .legal-section h2 {
+      font-family: var(--font-sans);
+      font-weight: 700;
+      font-size: 14px;
+      letter-spacing: -0.01em;
+      color: var(--eigen-blue);
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    .legal-section p {
+      font-size: 14px;
+      color: var(--grey-03);
+      line-height: 1.75;
+    }
+
+    .legal-section p + p { margin-top: 10px; }
+
+    .legal-section ul {
+      margin-top: 10px;
+      padding-left: 20px;
+      list-style: disc;
+    }
+
+    .legal-section ul li {
+      font-size: 14px;
+      color: var(--grey-03);
+      line-height: 1.75;
+      margin-bottom: 4px;
+    }
+
+    /* Footer */
+    footer {
+      padding: 40px 0;
+      border-top: 1px solid var(--grey-01);
+    }
+    footer .fi {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    footer .copy {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--grey-02);
+      letter-spacing: 0.01em;
+    }
+    footer .fl { display: flex; gap: 20px; }
+    footer .fl a {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--grey-03);
+      text-decoration: none;
+      letter-spacing: 0.01em;
+    }
+    footer .fl a:hover { color: var(--black); }
+  </style>
+</head>
+<body>
+
+<nav class="legal-nav">
+  <div class="container" style="display:flex;align-items:center;gap:0;">
+    <a href="index.html" class="back">← Darkbloom</a>
+  </div>
+</nav>
+
+<div class="legal-content">
+  <h1>Terms of Service</h1>
+  <p class="date">Updated: April 17, 2026</p>
+
+  <p class="lead">These Terms of Service are a legal agreement between you and Eigen Labs, Inc., operating the Darkbloom platform governing your access to and use of Darkbloom's websites, console, APIs, software, provider applications, downloads, hosted services, and related products and features (collectively, the "Services").</p>
+
+  <div class="standalone-note">
+    <strong>Standalone Agreement.</strong> These Terms are a standalone agreement separate from other Eigen Labs products' terms. By accessing or using the Services, you agree to these Terms. If you do not agree, do not use the Services.
+  </div>
+
+  <div class="legal-section">
+    <h2>1. Eligibility</h2>
+    <p>You may use the Services only if you are at least 18 years old, legally able to enter into a binding contract, not located in a jurisdiction subject to trade restrictions or sanctions, and your use complies with applicable law.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>2. The Services</h2>
+    <p>Darkbloom is a privacy-focused decentralized inference platform enabling consumers to submit AI inference requests processed on independently operated Apple hardware. The Services may include OpenAI-compatible API endpoints, web console, developer tooling, provider software, and account and billing features.</p>
+    <p><strong>Research Preview Status:</strong> Features may change without notice and may be incomplete. No service-level agreements, uptime commitments, support commitments, or production warranties unless expressly agreed in writing. Provider earnings depend on consumer demand and platform availability. Services may be modified, suspended, or discontinued at any time.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>3. Accounts, Authentication, and API Keys</h2>
+    <p>You agree to provide accurate information, keep credentials confidential, use reasonable security measures, and promptly notify us of suspected compromise. You are responsible for all activity under your credentials unless caused by our breach. Notify us at <a href="mailto:notices@eigenlabs.org">notices@eigenlabs.org</a> if your credentials are compromised.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>4. Consumer Use of the Services</h2>
+    <p>Consumers are responsible for their prompts, uploaded files, model selections, tool calls, and downstream applications. You must ensure you have all rights and permissions needed to submit Inputs and use Outputs. You may not use Services in ways that violate law, infringe rights, or materially risk harm.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>5. Provider Participation</h2>
+    <p>Providers agree to:</p>
+    <ul>
+      <li>Operate only authorized hardware, networks, and accounts</li>
+      <li>Not bypass or tamper with attestation, security, or integrity controls</li>
+      <li>Maintain machines in a safe and compliant state including SIP and Secure Boot enabled</li>
+      <li>Not attempt to inspect or misuse customer content</li>
+      <li>Remain responsible for local taxes and operating costs</li>
+    </ul>
+    <p>Earnings may be delayed, reversed, withheld, or adjusted. Participation does not create an employment or partnership relationship.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>6. Fees, Credits, Deposits, and Payouts</h2>
+    <p><strong>6.1 Prepaid credits:</strong> Non-interest-bearing, usable only for eligible Services, generally final and non-refundable, and may be adjusted for errors or fraud.</p>
+    <p><strong>6.2 Third-party payment rails:</strong> Payments may involve Stripe, Privy, wallet providers, banks, or blockchain networks; their terms apply. We are not responsible for third-party delays or errors.</p>
+    <p><strong>6.3 Taxes:</strong> You are responsible for all taxes arising from your use of the Services.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>7. Acceptable Use</h2>
+    <p>You may not use the Services for illegal, fraudulent, harmful, or infringing activity; exploit or harm minors; submit material violating law or rights; develop malware or phishing infrastructure; probe or reverse engineer the Services; interfere with or disrupt Services; circumvent rate limits; scrape the Services except through authorized APIs; misrepresent Outputs; or use for medical diagnosis, legal advice, financial advice, emergency response, or critical infrastructure control unless expressly authorized.</p>
+    <p>Providers and consumers are each responsible for compliance with applicable model licenses. Current models may include Meta Llama Community License, Alibaba Qwen License, and other open-source licenses with use restrictions.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>8. Customer Content and Outputs</h2>
+    <p>You retain rights in your Inputs and own Outputs to the extent ownership rights arise. You grant us and our subprocessors a non-exclusive, limited license to host, copy, transmit, process, display, and use your Inputs and Outputs to provide the Services. We do not guarantee that Outputs are accurate, complete, available, or non-infringing.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>9. Privacy and Security</h2>
+    <p>Our <a href="privacy.html">Privacy Policy</a> is incorporated by reference. The Services involve transmission, processing, and storage of Inputs, Outputs, and service metadata. We use reasonable safeguards, but no method is completely secure. Certain service paths may use encryption, attestation, or trusted-execution features but do not eliminate all risk. You are responsible for using the Services in a manner appropriate to the sensitivity of your data. MDM enrollment is read-only security verification only.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>10. Beta, Research, and Experimental Features</h2>
+    <p>Services are offered "AS IS," may be incomplete, may contain bugs, and may change or be withdrawn. We may impose limits on usage, models, regions, features, access methods, or uptime. Unless expressly agreed in a separate contract, the Services are not a production service; no minimum availability or support response time commitments apply. You are responsible for determining appropriateness for your use case.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>11. Third-Party Services and Open Source</h2>
+    <p>The Services may incorporate or interoperate with third-party software, open-source software, and third-party services. Nothing in these Terms limits your rights under applicable open-source or third-party licenses. Third-party wallets, payment processors, providers, and blockchain networks are not controlled by us. Security features depend on Apple infrastructure. We are not responsible for third-party outages or errors.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>12. Intellectual Property</h2>
+    <p>We and our licensors own all rights in the Services except for your Inputs and Outputs. We grant you a limited, non-exclusive, non-transferable right to access and use the Services. You may not use our trademarks or logos without permission. Any feedback you provide grants us a non-exclusive, worldwide, perpetual right to use that feedback.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>13. Suspension and Termination</h2>
+    <p>We may suspend or terminate your access immediately if you breach these Terms, create risk, have overdue payment, are suspected of fraud, required third-party services become unavailable, or we discontinue the Services. Sections on fees, intellectual property, disclaimers, limitations of liability, and indemnity survive termination.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>14. Disclaimers</h2>
+    <p>SERVICES ARE PROVIDED "AS IS" AND "AS AVAILABLE." TO THE MAXIMUM EXTENT PERMITTED BY LAW, WE DISCLAIM ALL WARRANTIES. We do not warrant minimum uptime or availability; compatibility or stability of preview features; support availability; that Outputs are accurate, lawful, or suitable; that security features will detect every threat; or that privacy-preserving architecture will be effective against kernel zero-day exploits or undisclosed vulnerabilities.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>15. Limitation of Liability</h2>
+    <p>TO THE MAXIMUM EXTENT PERMITTED BY LAW: WE AND OUR AFFILIATES WILL NOT BE LIABLE FOR INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES OR LOSS OF PROFITS, REVENUE, GOODWILL, DATA, OR BUSINESS INTERRUPTION. OUR AGGREGATE LIABILITY WILL NOT EXCEED USD $100. These limitations do not apply to liability that cannot be excluded under applicable law.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>16. Indemnity</h2>
+    <p>You will defend, indemnify, and hold harmless Eigen Labs and its affiliates from third-party claims arising out of your use of the Services, your Inputs or Outputs, your breach of these Terms, your violation of law or third-party rights, or your violation of applicable open-source model license terms.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>17. Dispute Resolution, Arbitration, and Governing Law</h2>
+    <p><strong>17.1 Informal dispute process:</strong> Before arbitration or court, the party must send written notice and the parties must try to resolve the matter informally for 30 days.</p>
+    <p><strong>17.2 Agreement to arbitrate:</strong> Any dispute will be resolved by final and binding arbitration on an individual basis, administered by JAMS, conducted in English before a single arbitrator, governed by the Federal Arbitration Act.</p>
+    <p><strong>17.3 No class or representative proceedings:</strong> Claims must be individual; the arbitrator cannot consolidate claims or preside over class proceedings.</p>
+    <p><strong>17.4 Exceptions:</strong> Small claims court, injunctive relief, and intellectual property claims may be brought in court.</p>
+    <p><strong>17.5 Arbitration fees:</strong> Governed by JAMS rules; we may pay a portion if arbitration would be prohibitively expensive.</p>
+    <p><strong>17.6 Opt-out:</strong> You may opt out by sending written notice to <a href="mailto:notices@eigenlabs.org">notices@eigenlabs.org</a> within 30 days of first using the Services.</p>
+    <p><strong>17.7 Governing law and venue:</strong> Governed by California law. If not subject to arbitration, San Francisco courts have exclusive jurisdiction.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>18. Changes to the Terms</h2>
+    <p>We may modify these Terms with notice; continued use after changes become effective constitutes acceptance.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>19. Miscellaneous</h2>
+    <p>These Terms constitute the entire agreement between you and us regarding the Services. If any provision is unenforceable, the remaining provisions remain in effect. You may not assign these Terms without our permission. We may assign these Terms in connection with a merger or acquisition.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>20. Contact</h2>
+    <p>For notices or questions: <a href="mailto:notices@eigenlabs.org">notices@eigenlabs.org</a></p>
+  </div>
+</div>
+
+<footer>
+  <div class="container">
+    <div class="fi">
+      <span class="copy">Darkbloom · Eigen Labs · 2026</span>
+      <div class="fl">
+        <a href="https://github.com/Layr-Labs/d-inference/blob/master/papers/dginf-private-inference.pdf" target="_blank">Paper</a>
+        <a href="https://console.darkbloom.dev" target="_blank">Console</a>
+        <a href="https://github.com/Layr-Labs/d-inference" target="_blank">GitHub</a>
+        <a href="https://x.com/eigen_labs" target="_blank">X</a>
+        <a href="https://www.linkedin.com/company/eigenlabsorg" target="_blank">LinkedIn</a>
+        <a href="terms.html">Terms</a>
+        <a href="privacy.html">Privacy</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

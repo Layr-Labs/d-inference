@@ -71,7 +71,9 @@ We refer to this material as "Content."
 - heartbeats, health checks, thermal state, memory pressure, security posture, and version information;
 - device-linking tokens and account-link status.
 
-Further, provider Macs enrolled in the platform are subject to periodic automated SecurityInfo queries sent via Apple's MDM protocol through Apple's Push Notification service (APNs). These queries request SIP status, Secure Boot level, and Authenticated Root Volume integrity from the device's OS MDM client and not from Darkbloom software. This querying occurs on an ongoing basis throughout the provider's participation in the platform. MDM enrollment is configured for security verification. Darkbloom requests only the minimum MDM permissions necessary to verify your device's security posture, specifically the ability to query device information and security status. We have deliberately not requested MDM permissions that would allow us to erase, lock, install or remove applications, or access user content or application data.
+Further, provider Macs enrolled in the platform are subject to periodic automated SecurityInfo queries sent via Apple's MDM protocol through Apple's Push Notification service (APNs). These queries request SIP status, Secure Boot level, and Authenticated Root Volume integrity from the device's OS MDM client and not from Darkbloom software. This querying occurs on an ongoing basis throughout the provider's participation in the platform.
+
+MDM enrollment is configured for security verification. Darkbloom requests only the minimum MDM permissions necessary to verify your device's security posture, specifically the ability to query device information and security status. We have deliberately not requested MDM permissions that would allow us to erase, lock, install or remove applications, or access user content or application data.
 
 **2.6 Technical and log information.** When you use the Services, we may automatically collect:
 

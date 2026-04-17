@@ -18,7 +18,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/xml"
 	"fmt"
 	"io"
 	"log/slog"
@@ -62,7 +61,7 @@ func NewClient(baseURL, apiKey string, logger *slog.Logger) *Client {
 	// is issued for the public domain, not localhost/127.0.0.1.
 	if strings.Contains(baseURL, "localhost") || strings.Contains(baseURL, "127.0.0.1") {
 		httpClient.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // localhost only
 		}
 	}
 	return &Client{
@@ -137,7 +136,7 @@ func (c *Client) LookupDevice(serialNumber string) (*DeviceInfo, error) {
 	var result struct {
 		Devices []DeviceInfo `json:"devices"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("mdm device lookup decode failed: %w", err)
 	}
 
@@ -175,7 +174,7 @@ func (c *Client) SendSecurityInfoCommand(udid string) (string, error) {
 			CommandUUID string `json:"command_uuid"`
 		} `json:"payload"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", fmt.Errorf("mdm command response decode failed: %w", err)
 	}
 
@@ -201,38 +200,6 @@ func (c *Client) SendDeviceAttestationCommand(udid string, nonce ...string) (str
 		nonceStr = nonce[0]
 	}
 	return c.sendDeviceAttestationWithNonce(udid, nonceStr)
-}
-
-// sendDeviceAttestationStructured is the legacy structured API path (unused).
-func (c *Client) sendDeviceAttestationStructured(udid string) (string, error) {
-	body, _ := json.Marshal(map[string]interface{}{
-		"udid":         udid,
-		"request_type": "DeviceInformation",
-		"queries":      []string{"DevicePropertiesAttestation"},
-	})
-	req, err := http.NewRequest("POST", c.baseURL+"/v1/commands", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.SetBasicAuth("micromdm", c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("mdm send DeviceInformation command failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Payload struct {
-			CommandUUID string `json:"command_uuid"`
-		} `json:"payload"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("mdm DeviceInformation response decode failed: %w", err)
-	}
-
-	return result.Payload.CommandUUID, nil
 }
 
 // sendDeviceAttestationWithNonce sends a raw plist DeviceInformation command
@@ -291,7 +258,9 @@ func (c *Client) sendDeviceAttestationWithNonce(udid, nonce string) (string, err
 		return cmdUUID, nil // command queued, push failed
 	}
 	pushReq.SetBasicAuth("micromdm", c.apiKey)
-	c.client.Do(pushReq)
+	if _, err = c.client.Do(pushReq); err != nil {
+		c.logger.Debug("mdm push notification failed", "udid", udid, "error", err)
+	}
 
 	return cmdUUID, nil
 }
@@ -428,7 +397,9 @@ func (c *Client) WaitForSecurityInfo(udid string, timeout time.Duration) (*Secur
 //  3. Send SecurityInfo command
 //  4. Wait for and parse response
 //  5. Cross-check against attestation
-func (c *Client) VerifyProvider(serialNumber string, attestationSIP, attestationSecureBoot bool) (*VerificationResult, error) {
+func (c *Client) VerifyProvider(
+	serialNumber string, attestationSIP, attestationSecureBoot bool,
+) (*VerificationResult, error) {
 	result := &VerificationResult{
 		SerialNumber: serialNumber,
 	}
@@ -477,13 +448,14 @@ func (c *Client) VerifyProvider(serialNumber string, attestationSIP, attestation
 	result.SIPMatch = result.MDMSIPEnabled == attestationSIP
 	result.SecureBootMatch = result.MDMSecureBootFull == attestationSecureBoot
 
-	if !result.MDMSIPEnabled {
+	switch {
+	case !result.MDMSIPEnabled:
 		result.Error = "MDM reports SIP disabled"
-	} else if !result.MDMSecureBootFull {
+	case !result.MDMSecureBootFull:
 		result.Error = "MDM reports Secure Boot not full"
-	} else if !result.SIPMatch {
+	case !result.SIPMatch:
 		result.Error = "attestation SIP does not match MDM SIP — provider may be lying"
-	} else if !result.SecureBootMatch {
+	case !result.SecureBootMatch:
 		result.Error = "attestation SecureBoot does not match MDM — provider may be lying"
 	}
 	// Recovery Lock is recommended but not enforced yet — log a warning.
@@ -495,13 +467,6 @@ func (c *Client) VerifyProvider(serialNumber string, attestationSIP, attestation
 
 // parseSecurityInfoPlist extracts security fields from the MDM response plist.
 func parseSecurityInfoPlist(data []byte) *SecurityInfoResponse {
-	// MDM responses are Apple plist XML. Parse the relevant fields.
-	type PlistDict struct {
-		Keys   []string `xml:"key"`
-		Values []string `xml:"string"`
-		Bools  []bool   `xml:"true,omitempty"`
-	}
-
 	// Simple approach: look for known keys in the XML
 	result := &SecurityInfoResponse{}
 	found := false
@@ -509,16 +474,20 @@ func parseSecurityInfoPlist(data []byte) *SecurityInfoResponse {
 	if bytes.Contains(data, []byte("SecurityInfo")) {
 		found = true
 	}
-	if bytes.Contains(data, []byte("<key>SystemIntegrityProtectionEnabled</key>")) {
-		result.SystemIntegrityProtectionEnabled = bytes.Contains(data, []byte("<key>SystemIntegrityProtectionEnabled</key>\n\t\t<true/>")) ||
-			bytes.Contains(data, []byte("<key>SystemIntegrityProtectionEnabled</key>\r\n\t\t<true/>")) ||
-			bytes.Contains(data, []byte("SystemIntegrityProtectionEnabled</key>\n\t<true")) ||
-			bytes.Contains(data, []byte("SystemIntegrityProtectionEnabled</key><true"))
+	sipKey := "SystemIntegrityProtectionEnabled"
+	if bytes.Contains(data, []byte("<key>"+sipKey+"</key>")) {
+		result.SystemIntegrityProtectionEnabled =
+			bytes.Contains(data, []byte(sipKey+"</key>\n\t\t<true/>")) ||
+				bytes.Contains(data, []byte(sipKey+"</key>\r\n\t\t<true/>")) ||
+				bytes.Contains(data, []byte(sipKey+"</key>\n\t<true")) ||
+				bytes.Contains(data, []byte(sipKey+"</key><true"))
 		found = true
 	}
-	if bytes.Contains(data, []byte("<key>AuthenticatedRootVolumeEnabled</key>")) {
-		result.AuthenticatedRootVolumeEnabled = bytes.Contains(data, []byte("AuthenticatedRootVolumeEnabled</key>\n\t\t<true")) ||
-			bytes.Contains(data, []byte("AuthenticatedRootVolumeEnabled</key><true"))
+	arvKey := "AuthenticatedRootVolumeEnabled"
+	if bytes.Contains(data, []byte("<key>"+arvKey+"</key>")) {
+		result.AuthenticatedRootVolumeEnabled =
+			bytes.Contains(data, []byte(arvKey+"</key>\n\t\t<true")) ||
+				bytes.Contains(data, []byte(arvKey+"</key><true"))
 		found = true
 	}
 	if bytes.Contains(data, []byte("<key>FDE_Enabled</key>")) {
@@ -544,10 +513,6 @@ func parseSecurityInfoPlist(data []byte) *SecurityInfoResponse {
 			}
 		}
 	}
-
-	// Suppress unused import warning
-	_ = xml.Name{}
-	_ = io.EOF
 
 	if !found {
 		return nil

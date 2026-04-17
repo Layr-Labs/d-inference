@@ -20,8 +20,6 @@ const competitorPricing: Record<string, { output: number; name: string; competit
   "mlx-community/gemma-4-26b-a4b-it-8bit": { output: 400_000, name: "Gemma 4 26B", competitor: "OpenRouter" },
   "mlx-community/Qwen3.5-122B-A10B-8bit": { output: 2_080_000, name: "Qwen3.5 122B", competitor: "OpenRouter" },
   "mlx-community/MiniMax-M2.5-8bit": { output: 1_000_000, name: "MiniMax M2.5", competitor: "OpenRouter" },
-  "flux_2_klein_4b_q8p.ckpt": { output: 3_000, name: "FLUX.2 Klein 4B", competitor: "Together.ai", unit: "per image" },
-  "flux_2_klein_9b_q8p.ckpt": { output: 5_000, name: "FLUX.2 Klein 9B", competitor: "fal.ai", unit: "per image" },
   "CohereLabs/cohere-transcribe-03-2026": { output: 2_000, name: "Cohere Transcribe", competitor: "AssemblyAI", unit: "per audio-min" },
 };
 
@@ -35,9 +33,7 @@ function buildPricingLookup(pricing: PricingResponse | null): Record<string, { i
   for (const p of pricing.transcription_prices) {
     lookup[p.model] = { input: 0, output: p.price_per_minute, unit: "per audio-min" };
   }
-  for (const p of pricing.image_prices) {
-    lookup[p.model] = { input: 0, output: p.price_per_image, unit: "per image" };
-  }
+  // Image generation is paused for maintenance — don't surface image prices.
   return lookup;
 }
 
@@ -286,7 +282,7 @@ export default function ModelsPage() {
                 </tbody>
               </table>
               <div className="px-4 py-2 text-xs text-text-tertiary bg-bg-tertiary/50">
-                Competitor prices from OpenRouter, Together.ai, fal.ai, and AssemblyAI as of April 2026.
+                Competitor prices from OpenRouter and AssemblyAI as of April 2026. Image generation is paused for maintenance.
               </div>
             </div>
           </div>

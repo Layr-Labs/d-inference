@@ -7,11 +7,11 @@ export default function ImagesPage() {
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-semibold text-ink">Image Generation</h1>
           <span className="px-2 py-0.5 rounded-full bg-coral/10 border border-coral/30 text-coral text-[10px] font-bold uppercase tracking-wider">
-            In Progress
+            Under Maintenance
           </span>
         </div>
         <p className="text-sm text-text-tertiary mt-0.5">
-          Generate images with FLUX models running on attested Apple Silicon.
+          Image generation is paused while we upgrade the image pipeline.
         </p>
       </div>
 
@@ -24,9 +24,9 @@ export default function ImagesPage() {
               <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
             </svg>
           </div>
-          <h3 className="text-lg font-semibold text-text-primary mb-2">Image generation is in progress</h3>
+          <h3 className="text-lg font-semibold text-text-primary mb-2">Image generation is under maintenance</h3>
           <p className="text-sm text-text-tertiary">
-            We are actively onboarding image providers to the network. This feature will be available soon with FLUX models running on hardware-attested Apple Silicon.
+            We are not routing image requests to providers right now. Chat and speech-to-text endpoints remain fully available. Image generation will return once the upgrade is complete.
           </p>
         </div>
       </div>

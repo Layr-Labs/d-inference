@@ -1094,7 +1094,7 @@
         <div class="card">
           <div class="card-label">For users</div>
           <h3>Inference at half the cost</h3>
-          <p>Idle hardware has near-zero marginal cost. That saving passes through to price. OpenAI-compatible API for chat, image generation, and speech-to-text. Every request is end-to-end encrypted.</p>
+          <p>Idle hardware has near-zero marginal cost. That saving passes through to price. OpenAI-compatible API for chat and speech-to-text. Image generation is temporarily under maintenance. Every request is end-to-end encrypted.</p>
           <a href="https://console.darkbloom.dev" target="_blank" class="btn btn-primary" style="margin-top:20px;">Open Console ↗</a>
         </div>
         <div class="card">
@@ -1273,7 +1273,7 @@ response = client.chat.completions.create(
       </div>
       <div class="feat-grid rv">
         <div class="feat-item"><svg class="feat-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg><span><strong>Streaming</strong> — SSE, OpenAI format</span></div>
-        <div class="feat-item"><svg class="feat-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg><span><strong>Image generation</strong> — FLUX.2 on Metal</span></div>
+        <div class="feat-item" style="opacity:0.6;"><svg class="feat-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><span><strong>Image generation</strong> — under maintenance</span></div>
         <div class="feat-item"><svg class="feat-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg><span><strong>Speech-to-text</strong> — Cohere Transcribe</span></div>
         <div class="feat-item"><svg class="feat-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg><span><strong>Large MoE</strong> — up to 239B params</span></div>
       </div>
@@ -1303,7 +1303,7 @@ response = client.chat.completions.create(
       </div>
       <p class="pnote">Prices per million tokens</p>
       <div class="pmini-grid rv">
-        <div class="pmini"><h4>Image Generation</h4><div class="val">$0.0015</div><div class="unit">per image</div><div class="vs">Together.ai: $0.003</div></div>
+        <div class="pmini" style="opacity:0.55;"><h4>Image Generation</h4><div class="val" style="color:var(--grey-03);">—</div><div class="unit">under maintenance</div><div class="vs" style="text-decoration:none;color:var(--grey-03);">routing paused</div></div>
         <div class="pmini"><h4>Speech-to-Text</h4><div class="val">$0.001</div><div class="unit">per audio minute</div><div class="vs">AssemblyAI: $0.002</div></div>
         <div class="pmini"><h4>Platform Fee</h4><div class="val" style="color:var(--black);">0%</div><div class="unit">operators keep 100%</div><div class="vs" style="text-decoration:none;color:var(--eigen-blue);">transparent</div></div>
       </div>
@@ -1356,7 +1356,7 @@ response = client.chat.completions.create(
         <div class="csec"><label class="clabel">Hours per day: <span id="hrs-val" style="color:var(--eigen-blue);">18</span></label><input type="range" id="hrs-slider" min="1" max="24" value="18"></div>
         <div class="cresults" id="res-grid">
           <div id="res-text" class="rcard"><span class="rbadge rb-t">Text</span><div id="t-name" class="rmodel">--</div><div id="t-mo" class="rnum rnum-t">$0</div><div id="t-yr" class="rannual">$0 / year</div><div class="rbreak"><div><div class="lbl">Revenue</div><div id="t-rev" class="val">$0</div></div><div><div class="lbl">Electricity</div><div id="t-elec" class="val" style="color:#b91c1c;">-$0</div></div></div></div>
-          <div id="res-img" class="rcard"><span class="rbadge rb-i">Image</span><div id="i-name" class="rmodel">--</div><div id="i-mo" class="rnum rnum-i">$0</div><div id="i-yr" class="rannual">$0 / year</div><div class="rbreak"><div><div class="lbl">Revenue</div><div id="i-rev" class="val">$0</div></div><div><div class="lbl">Electricity</div><div id="i-elec" class="val" style="color:#b91c1c;">-$0</div></div></div></div>
+          <div id="res-img" class="rcard" style="display:none;"><span class="rbadge rb-i">Image</span><div id="i-name" class="rmodel">--</div><div id="i-mo" class="rnum rnum-i">$0</div><div id="i-yr" class="rannual">$0 / year</div><div class="rbreak"><div><div class="lbl">Revenue</div><div id="i-rev" class="val">$0</div></div><div><div class="lbl">Electricity</div><div id="i-elec" class="val" style="color:#b91c1c;">-$0</div></div></div></div>
         </div>
         <p id="calc-disc" style="font-family:var(--font-mono);font-size:10px;color:var(--grey-02);margin-top:16px;text-align:center;line-height:1.5;letter-spacing:0.01em;">Estimates only. Actual results depend on network demand and model popularity. Assumes you own the Mac.</p>
       </div>
@@ -1412,7 +1412,7 @@ response = client.chat.completions.create(
 <script>
 (function(){
   const C=[{t:"MacBook Air",c:"M3",r:[16,24],b:100,i:8,f:12},{t:"MacBook Air",c:"M4",r:[16,24,32],b:120,i:8,f:12},{t:"MacBook Pro",c:"M3 Pro",r:[18,36],b:150,i:15,f:35},{t:"MacBook Pro",c:"M3 Max",r:[36,48,64,96,128],b:300,i:20,f:45},{t:"MacBook Pro",c:"M4",r:[16,24,32],b:120,i:10,f:20},{t:"MacBook Pro",c:"M4 Pro",r:[24,48],b:273,i:12,f:30},{t:"MacBook Pro",c:"M4 Max",r:[36,48,64,128],b:546,i:20,f:50},{t:"MacBook Pro",c:"M5",r:[16,24,32],b:153,i:10,f:20},{t:"MacBook Pro",c:"M5 Pro",r:[24,48],b:307,i:12,f:30},{t:"MacBook Pro",c:"M5 Max",r:[36,48,64,128],b:614,i:20,f:50},{t:"Mac Mini",c:"M4",r:[16,24,32],b:120,i:5,f:15},{t:"Mac Mini",c:"M4 Pro",r:[24,48],b:273,i:8,f:25},{t:"Mac Studio",c:"M2 Ultra",r:[64,128,192],b:800,i:35,f:100},{t:"Mac Studio",c:"M3 Ultra",r:[96,256,512],b:819,i:35,f:110},{t:"Mac Studio",c:"M4 Max",r:[36,48,64,128],b:546,i:25,f:65},{t:"Mac Studio",c:"M5 Max",r:[36,48,64,128],b:614,i:25,f:65},{t:"Mac Pro",c:"M2 Ultra",r:[64,128,192],b:800,i:40,f:120},{t:"Mac Pro",c:"M3 Ultra",r:[96,256,512],b:819,i:40,f:120}];
-  const M=[{n:"FLUX.2 Klein 9B",y:"image",mr:24,bp:300,pm:2500,rb:150},{n:"Qwen3.5 27B",y:"text",mr:36,ag:27,sg:27,op:780000},{n:"Trinity Mini",y:"text",mr:48,ag:3,sg:26,op:75000},{n:"Qwen3.5 122B",y:"text",mr:128,ag:10,sg:122,op:1040000},{n:"MiniMax M2.5",y:"text",mr:256,ag:11,sg:243,op:500000}];
+  const M=[{n:"Qwen3.5 27B",y:"text",mr:36,ag:27,sg:27,op:780000},{n:"Trinity Mini",y:"text",mr:48,ag:3,sg:26,op:75000},{n:"Qwen3.5 122B",y:"text",mr:128,ag:10,sg:122,op:1040000},{n:"MiniMax M2.5",y:"text",mr:256,ag:11,sg:243,op:500000}];
   let s={t:"MacBook Pro",c:"M4 Max",r:48,h:18};
   const ER={'US':.15,'CA':.12,'GB':.28,'DE':.35,'FR':.21,'AU':.28,'JP':.26,'IN':.08,'SG':.18,'KR':.11};
   function dr(){try{const l=navigator.language||'en-US',p=l.split('-');if(p.length>=2){const c=p[p.length-1].toUpperCase();if(ER[c])return c;}return'US';}catch(e){return'US';}}

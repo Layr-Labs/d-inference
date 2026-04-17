@@ -98,8 +98,8 @@ interface CatalogModel {
 
 const CATALOG_MODELS: CatalogModel[] = [
   { id: "cohere-transcribe", name: "Cohere Transcribe", type: "transcription", minRAMGB: 8, baseAudioMinPerHour: 1800, pricePerMinMicro: 1_000, demandNote: "Lower demand — most users need text inference. STT requests are bursty and less frequent." },
-  { id: "flux-4b", name: "FLUX.2 Klein 4B", type: "image", minRAMGB: 16, baseImagesPerHour: 450, imagePriceMicro: 1_500, referenceBandwidth: 100, demandNote: "Moderate demand — image generation is growing but still niche vs text." },
-  { id: "flux-9b", name: "FLUX.2 Klein 9B", type: "image", minRAMGB: 24, baseImagesPerHour: 300, imagePriceMicro: 2_500, referenceBandwidth: 150, demandNote: "Moderate demand — higher quality images attract more requests than 4B." },
+  { id: "flux-4b", name: "FLUX.2 Klein 4B", type: "image", minRAMGB: 16, baseImagesPerHour: 450, imagePriceMicro: 1_500, referenceBandwidth: 100, demandNote: "Paused for maintenance — image routing is disabled right now. Earnings projection shown for reference; no image requests are being served currently." },
+  { id: "flux-9b", name: "FLUX.2 Klein 9B", type: "image", minRAMGB: 24, baseImagesPerHour: 300, imagePriceMicro: 2_500, referenceBandwidth: 150, demandNote: "Paused for maintenance — image routing is disabled right now. Earnings projection shown for reference; no image requests are being served currently." },
   { id: "qwen-27b", name: "Qwen3.5 27B Claude Opus", type: "text", minRAMGB: 36, activeParamsGB: 27, modelSizeGB: 27, outputPriceMicro: 780_000, demandNote: "High demand — text/chat inference is the primary workload on the network." },
   { id: "trinity-mini", name: "Trinity Mini", type: "text", minRAMGB: 48, activeParamsGB: 3, modelSizeGB: 26, outputPriceMicro: 75_000, demandNote: "High demand — fast MoE model popular for agentic and coding tasks." },
   { id: "gemma-4-26b", name: "Gemma 4 26B", type: "text", minRAMGB: 36, activeParamsGB: 4, modelSizeGB: 28, outputPriceMicro: 200_000, demandNote: "High demand — Google's latest MoE, strong quality at fast speed." },
@@ -626,6 +626,13 @@ export default function EarnPage() {
                       {/* Type badge */}
                       <ModelTypeBadge type={m.modelType} />
 
+                      {/* Paused badge for image models — routing is paused for maintenance */}
+                      {m.modelType === "image" && (
+                        <span className="px-2 py-0.5 rounded text-xs font-medium bg-coral/10 text-coral border border-coral/20 whitespace-nowrap">
+                          Paused
+                        </span>
+                      )}
+
                       {/* Monthly net */}
                       <span className={`text-sm font-mono tabular-nums whitespace-nowrap ${
                         m.monthlyNet >= 0 ? "text-accent-green" : "text-accent-red"
@@ -634,7 +641,7 @@ export default function EarnPage() {
                       </span>
 
                       {/* Best badge */}
-                      {isBest && m.monthlyNet > 0 && (
+                      {isBest && m.monthlyNet > 0 && m.modelType !== "image" && (
                         <span className="px-2 py-0.5 rounded text-xs font-medium bg-accent-green/10 text-accent-green border border-accent-green/20 whitespace-nowrap">
                           Best
                         </span>

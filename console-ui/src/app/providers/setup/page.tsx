@@ -115,7 +115,7 @@ const FAQ = [
   },
   {
     question: "What models can I serve?",
-    answer: "The interactive model picker shows all supported models that fit your hardware. Models include text (Qwen3.5 27B, Trinity Mini), image (FLUX Klein), and transcription (Cohere Transcribe). The provider downloads selected models automatically.",
+    answer: "The interactive model picker shows all supported models that fit your hardware. Models include text (Qwen3.5 27B, Trinity Mini) and transcription (Cohere Transcribe). Image generation is paused for maintenance and is not currently being routed. The provider downloads selected models automatically.",
   },
   {
     question: "What is hardware attestation?",

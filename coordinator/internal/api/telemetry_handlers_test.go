@@ -265,4 +265,3 @@ func TestSanitizeTruncatesLongMessage(t *testing.T) {
 		t.Fatalf("message not truncated: %d", len(rec.Message))
 	}
 }
-

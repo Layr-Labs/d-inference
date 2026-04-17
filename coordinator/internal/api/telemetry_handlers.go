@@ -46,23 +46,23 @@ const (
 // response content MUST NEVER appear here.
 var telemetryFieldAllowlist = map[string]struct{}{
 	// Generic
-	"component":         {},
-	"operation":         {},
-	"duration_ms":       {},
-	"attempt":           {},
-	"endpoint":          {},
-	"status_code":       {},
-	"error_class":       {},
-	"error":             {},
-	"target":            {},
+	"component":   {},
+	"operation":   {},
+	"duration_ms": {},
+	"attempt":     {},
+	"endpoint":    {},
+	"status_code": {},
+	"error_class": {},
+	"error":       {},
+	"target":      {},
 	// Provider / backend
-	"model":             {},
-	"backend":           {},
-	"exit_code":         {},
-	"signal":            {},
-	"hardware_chip":     {},
-	"memory_gb":         {},
-	"macos_version":     {},
+	"model":         {},
+	"backend":       {},
+	"exit_code":     {},
+	"signal":        {},
+	"hardware_chip": {},
+	"memory_gb":     {},
+	"macos_version": {},
 	// Coordinator
 	"handler":           {},
 	"provider_id":       {},
@@ -71,16 +71,16 @@ var telemetryFieldAllowlist = map[string]struct{}{
 	"reason":            {},
 	"runtime_component": {},
 	// Connectivity
-	"reconnect_count":   {},
-	"last_error":        {},
-	"ws_state":          {},
+	"reconnect_count": {},
+	"last_error":      {},
+	"ws_state":        {},
 	// Billing (booleans/enums only — no dollar amounts)
-	"billing_method":    {},
-	"payment_failed":    {},
+	"billing_method": {},
+	"payment_failed": {},
 	// Console UI context
-	"url":               {},
-	"user_agent":        {},
-	"route":             {},
+	"url":        {},
+	"user_agent": {},
+	"route":      {},
 }
 
 // ---------------------------------------------------------------------------

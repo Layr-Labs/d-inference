@@ -818,7 +818,9 @@ func (s *Server) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
 
 // Handler returns the root http.Handler with global middleware applied.
 // Middleware order (outside-in):
-//   cors → recover → logging → mux
+//
+//	cors → recover → logging → mux
+//
 // Recover must sit outside logging so a panic during logging doesn't leak.
 func (s *Server) Handler() http.Handler {
 	return s.corsMiddleware(s.recoverMiddleware(s.loggingMiddleware(s.mux)))

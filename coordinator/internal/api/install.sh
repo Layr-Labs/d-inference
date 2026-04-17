@@ -214,8 +214,8 @@ else
 fi
 
 # Test that extracted Python actually runs (catches dyld errors from non-portable builds)
-if [ -f "$PYTHON_BIN" ] && ! "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
-    echo "  ⚠ Downloaded Python binary doesn't run on this machine"
+if ! { [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; }; then
+    echo "  ⚠ Python runtime missing or broken"
     echo "  Downloading portable Python from python-build-standalone..."
     if curl -f#L "$PBS_URL" -o "/tmp/pbs-python.tar.gz" 2>/dev/null; then
         rm -rf "$INSTALL_DIR/python"

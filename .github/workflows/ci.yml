@@ -61,6 +61,14 @@ jobs:
       - name: Clippy
         run: cd provider && cargo clippy
 
+  test-install:
+    name: Install Script Tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Run PBS fallback tests
+        run: bash scripts/test-install-pbs-fallback.sh
+
   lint-console:
     name: Console UI Lint & Build
     runs-on: ubuntu-latest

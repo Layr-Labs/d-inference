@@ -32,6 +32,7 @@ import {
   CreditCard,
   Wallet,
   Copy,
+  Info,
 } from "lucide-react";
 import { UsageChart } from "@/components/UsageChart";
 
@@ -216,8 +217,46 @@ export default function BillingContent() {
 
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto px-3 sm:px-6 py-6 sm:py-8 space-y-8">
-          {/* Balance Card */}
-          <div className="relative overflow-hidden rounded-2xl border border-border-dim bg-bg-white p-6 sm:p-8 shadow-md">
+          {/* Research Preview Banner */}
+          <div className="rounded-2xl border-2 border-gold/40 bg-gold/10 p-5 sm:p-6 shadow-sm">
+            <div className="flex items-start gap-3">
+              <Info size={18} className="text-gold mt-0.5 flex-shrink-0" />
+              <div className="text-sm text-text-primary leading-relaxed">
+                <p className="font-semibold mb-2">We&apos;re in research preview.</p>
+                <p className="text-text-secondary mb-3">
+                  We&apos;re not taking funds from customers yet &mdash; we&apos;re personally paying for all the provider requests during this phase. Credit purchases are disabled.
+                </p>
+                <p className="text-text-secondary">
+                  Want an invite code? Email{" "}
+                  <a
+                    href="mailto:gajesh@eigenlabs.org"
+                    className="font-semibold text-coral hover:underline"
+                  >
+                    gajesh@eigenlabs.org
+                  </a>{" "}
+                  or DM{" "}
+                  <a
+                    href="https://x.com/gajesh"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-semibold text-coral hover:underline"
+                  >
+                    @gajesh
+                  </a>
+                  .
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Balance Card (disabled during research preview) */}
+          <div
+            className="relative overflow-hidden rounded-2xl border border-border-dim bg-bg-white p-6 sm:p-8 shadow-md opacity-60 pointer-events-none select-none"
+            aria-disabled="true"
+          >
+            <div className="absolute top-4 right-4 text-[10px] font-mono uppercase tracking-widest text-text-tertiary bg-bg-primary border border-border-dim rounded px-2 py-1">
+              Disabled during research preview
+            </div>
             <div className="relative">
               <p className="text-xs font-mono text-text-tertiary uppercase tracking-widest mb-2">
                 Available Credits
@@ -229,7 +268,7 @@ export default function BillingContent() {
                 </div>
               ) : (
                 <div className="flex items-baseline gap-1 mb-4">
-                  <span className="text-4xl font-bold text-text-primary font-mono tracking-tight">
+                  <span className="text-4xl font-bold text-text-tertiary font-mono tracking-tight">
                     ${Number(balance?.balance_usd ?? 0).toFixed(2)}
                   </span>
                   <span className="text-sm text-text-tertiary font-mono">
@@ -243,9 +282,8 @@ export default function BillingContent() {
                 <div className="flex items-center gap-2 mb-4 text-xs text-text-tertiary font-mono">
                   <Wallet size={12} />
                   <span>{truncatedWallet}</span>
-                  <CopyButton text={displayWallet!} />
                   {walletInfo?.wallet_usdc_usd && (
-                    <span className="ml-2 text-teal font-semibold">
+                    <span className="ml-2 text-text-tertiary font-semibold">
                       {walletInfo.wallet_usdc_usd} USDC
                     </span>
                   )}
@@ -253,9 +291,8 @@ export default function BillingContent() {
               )}
 
               <button
-                onClick={() => setBuyOpen(true)}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-coral border border-border-dim text-white text-sm font-bold
-                           hover:opacity-90 transition-all"
+                disabled
+                className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-text-tertiary/40 border border-border-dim text-white text-sm font-bold cursor-not-allowed"
               >
                 <CreditCard size={14} />
                 Buy Credits

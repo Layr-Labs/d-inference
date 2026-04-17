@@ -26,6 +26,13 @@ import (
 	"golang.org/x/crypto/nacl/box"
 )
 
+const (
+	// KeySize is the byte length of an X25519 public or private key.
+	KeySize = 32
+	// NonceSize is the byte length of a NaCl Box nonce (XSalsa20).
+	NonceSize = 24
+)
+
 // EncryptedPayload contains an encrypted message and the ephemeral public key
 // needed to decrypt it.
 type EncryptedPayload struct {
@@ -84,7 +91,7 @@ func Decrypt(payload *EncryptedPayload, session *SessionKeys) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid ephemeral public key: %w", err)
 	}
-	if len(senderPubBytes) != 32 {
+	if len(senderPubBytes) != KeySize {
 		return nil, fmt.Errorf("invalid public key length: %d", len(senderPubBytes))
 	}
 	var senderPub [32]byte
@@ -95,16 +102,16 @@ func Decrypt(payload *EncryptedPayload, session *SessionKeys) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid ciphertext: %w", err)
 	}
-	if len(ciphertext) < 24 {
+	if len(ciphertext) < NonceSize {
 		return nil, fmt.Errorf("ciphertext too short")
 	}
 
 	// Extract nonce
-	var nonce [24]byte
-	copy(nonce[:], ciphertext[:24])
+	var nonce [NonceSize]byte
+	copy(nonce[:], ciphertext[:NonceSize])
 
 	// Decrypt
-	plaintext, ok := box.Open(nil, ciphertext[24:], &nonce, &senderPub, &session.PrivateKey)
+	plaintext, ok := box.Open(nil, ciphertext[NonceSize:], &nonce, &senderPub, &session.PrivateKey)
 	if !ok {
 		return nil, fmt.Errorf("decryption failed — wrong key or tampered data")
 	}
@@ -125,8 +132,8 @@ func ParsePublicKey(b64 string) ([32]byte, error) {
 	if err != nil {
 		return key, fmt.Errorf("invalid base64 public key: %w", err)
 	}
-	if len(decoded) != 32 {
-		return key, fmt.Errorf("invalid public key length: %d (expected 32)", len(decoded))
+	if len(decoded) != KeySize {
+		return key, fmt.Errorf("invalid public key length: %d (expected %d)", len(decoded), KeySize)
 	}
 	copy(key[:], decoded)
 	return key, nil

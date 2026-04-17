@@ -1,4 +1,4 @@
-package e2e
+package e2e_test
 
 import (
 	"bytes"
@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/eigeninference/coordinator/internal/e2e"
 	"golang.org/x/crypto/nacl/box"
 )
 
@@ -95,13 +96,13 @@ func testCrossDecrypt(t *testing.T, binaryPath string, plaintext []byte) {
 	}
 
 	// Generate a coordinator ephemeral session (per-request forward secrecy).
-	session, err := GenerateSessionKeys()
+	session, err := e2e.GenerateSessionKeys()
 	if err != nil {
 		t.Fatalf("GenerateSessionKeys: %v", err)
 	}
 
 	// Encrypt using the Go e2e package.
-	encrypted, err := Encrypt(plaintext, *providerPub, session)
+	encrypted, err := e2e.Encrypt(plaintext, *providerPub, session)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
@@ -117,7 +118,7 @@ func testCrossDecrypt(t *testing.T, binaryPath string, plaintext []byte) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
+	if err = cmd.Run(); err != nil {
 		t.Fatalf("Rust decryptor failed: %v\nstderr: %s", err, stderr.String())
 	}
 

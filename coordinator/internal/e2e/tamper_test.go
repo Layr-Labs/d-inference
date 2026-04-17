@@ -1,4 +1,4 @@
-package e2e
+package e2e_test
 
 // Tamper detection tests for E2E encryption.
 // Verifies that corrupted nonces, truncated data, weak keys, and
@@ -9,15 +9,16 @@ import (
 	"encoding/base64"
 	"testing"
 
+	"github.com/eigeninference/coordinator/internal/e2e"
 	"golang.org/x/crypto/nacl/box"
 )
 
 func TestDecryptTamperedNonce(t *testing.T) {
 	// Encrypt a message, then flip bits in the nonce portion.
-	sender, _ := GenerateSessionKeys()
+	sender, _ := e2e.GenerateSessionKeys()
 	recipientPub, recipientPriv, _ := box.GenerateKey(rand.Reader)
 
-	payload, err := Encrypt([]byte("secret message"), *recipientPub, sender)
+	payload, err := e2e.Encrypt([]byte("secret message"), *recipientPub, sender)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,17 +29,17 @@ func TestDecryptTamperedNonce(t *testing.T) {
 	raw[12] ^= 0xFF // flip middle byte of nonce
 	payload.Ciphertext = base64.StdEncoding.EncodeToString(raw)
 
-	_, err = DecryptWithPrivateKey(payload, *recipientPriv)
+	_, err = e2e.DecryptWithPrivateKey(payload, *recipientPriv)
 	if err == nil {
 		t.Fatal("expected decryption to fail with tampered nonce")
 	}
 }
 
 func TestDecryptTruncatedEncryptedData(t *testing.T) {
-	sender, _ := GenerateSessionKeys()
+	sender, _ := e2e.GenerateSessionKeys()
 	recipientPub, recipientPriv, _ := box.GenerateKey(rand.Reader)
 
-	payload, _ := Encrypt([]byte("a longer message to have more ciphertext"), *recipientPub, sender)
+	payload, _ := e2e.Encrypt([]byte("a longer message to have more ciphertext"), *recipientPub, sender)
 
 	// Keep the nonce (24 bytes) but truncate the encrypted portion
 	raw, _ := base64.StdEncoding.DecodeString(payload.Ciphertext)
@@ -55,11 +56,11 @@ func TestDecryptTruncatedEncryptedData(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &EncryptedPayload{
+			p := &e2e.EncryptedPayload{
 				EphemeralPublicKey: payload.EphemeralPublicKey,
 				Ciphertext:         base64.StdEncoding.EncodeToString(tc.data),
 			}
-			_, err := DecryptWithPrivateKey(p, *recipientPriv)
+			_, err := e2e.DecryptWithPrivateKey(p, *recipientPriv)
 			if err == nil {
 				t.Errorf("expected decryption to fail with %s", tc.name)
 			}
@@ -69,10 +70,10 @@ func TestDecryptTruncatedEncryptedData(t *testing.T) {
 
 func TestDecryptTamperedEphemeralPublicKey(t *testing.T) {
 	// Valid base64 but corrupted key bytes
-	sender, _ := GenerateSessionKeys()
+	sender, _ := e2e.GenerateSessionKeys()
 	recipientPub, recipientPriv, _ := box.GenerateKey(rand.Reader)
 
-	payload, _ := Encrypt([]byte("secret"), *recipientPub, sender)
+	payload, _ := e2e.Encrypt([]byte("secret"), *recipientPub, sender)
 
 	// Corrupt the ephemeral public key (valid base64, wrong key)
 	keyBytes, _ := base64.StdEncoding.DecodeString(payload.EphemeralPublicKey)
@@ -80,23 +81,23 @@ func TestDecryptTamperedEphemeralPublicKey(t *testing.T) {
 	keyBytes[31] ^= 0xFF
 	payload.EphemeralPublicKey = base64.StdEncoding.EncodeToString(keyBytes)
 
-	_, err := DecryptWithPrivateKey(payload, *recipientPriv)
+	_, err := e2e.DecryptWithPrivateKey(payload, *recipientPriv)
 	if err == nil {
 		t.Fatal("expected decryption to fail with corrupted ephemeral key")
 	}
 }
 
 func TestDecryptAllZeroKey(t *testing.T) {
-	sender, _ := GenerateSessionKeys()
+	sender, _ := e2e.GenerateSessionKeys()
 	recipientPub, recipientPriv, _ := box.GenerateKey(rand.Reader)
 
-	payload, _ := Encrypt([]byte("test"), *recipientPub, sender)
+	payload, _ := e2e.Encrypt([]byte("test"), *recipientPub, sender)
 
 	// Replace ephemeral key with all zeros
 	var zeroKey [32]byte
 	payload.EphemeralPublicKey = base64.StdEncoding.EncodeToString(zeroKey[:])
 
-	_, err := DecryptWithPrivateKey(payload, *recipientPriv)
+	_, err := e2e.DecryptWithPrivateKey(payload, *recipientPriv)
 	if err == nil {
 		t.Fatal("expected decryption to fail with all-zero ephemeral key")
 	}
@@ -105,13 +106,13 @@ func TestDecryptAllZeroKey(t *testing.T) {
 func TestReplayDecryptionSucceeds(t *testing.T) {
 	// Same encrypted payload should decrypt successfully multiple times.
 	// NaCl Box does NOT prevent replay — that's the coordinator's job.
-	sender, _ := GenerateSessionKeys()
+	sender, _ := e2e.GenerateSessionKeys()
 	recipientPub, recipientPriv, _ := box.GenerateKey(rand.Reader)
 
-	payload, _ := Encrypt([]byte("replay me"), *recipientPub, sender)
+	payload, _ := e2e.Encrypt([]byte("replay me"), *recipientPub, sender)
 
 	for i := 0; i < 5; i++ {
-		plaintext, err := DecryptWithPrivateKey(payload, *recipientPriv)
+		plaintext, err := e2e.DecryptWithPrivateKey(payload, *recipientPriv)
 		if err != nil {
 			t.Fatalf("replay attempt %d failed: %v", i, err)
 		}
@@ -122,7 +123,7 @@ func TestReplayDecryptionSucceeds(t *testing.T) {
 }
 
 func TestCiphertextBoundaryLengths(t *testing.T) {
-	sender, _ := GenerateSessionKeys()
+	sender, _ := e2e.GenerateSessionKeys()
 	recipientPub, recipientPriv, _ := box.GenerateKey(rand.Reader)
 
 	// Test various plaintext sizes including boundaries
@@ -132,12 +133,12 @@ func TestCiphertextBoundaryLengths(t *testing.T) {
 			plaintext := make([]byte, size)
 			rand.Read(plaintext)
 
-			payload, err := Encrypt(plaintext, *recipientPub, sender)
+			payload, err := e2e.Encrypt(plaintext, *recipientPub, sender)
 			if err != nil {
 				t.Fatalf("encrypt %d bytes: %v", size, err)
 			}
 
-			decrypted, err := DecryptWithPrivateKey(payload, *recipientPriv)
+			decrypted, err := e2e.DecryptWithPrivateKey(payload, *recipientPriv)
 			if err != nil {
 				t.Fatalf("decrypt %d bytes: %v", size, err)
 			}

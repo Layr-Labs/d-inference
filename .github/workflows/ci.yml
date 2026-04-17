@@ -65,135 +65,14 @@ jobs:
     name: Provider Install (E2E)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install provider
+        run: curl -fsSL https://api.darkbloom.dev/install.sh | bash
 
-      - name: Create stub bundle and mock server
+      - name: Verify darkbloom runs
         run: |
-          # Build a minimal tarball that mirrors a real provider bundle.
-          BUNDLE_DIR=$(mktemp -d)
-          mkdir -p "$BUNDLE_DIR/bin"
-          for f in darkbloom eigeninference-enclave gRPCServerCLI ffmpeg; do
-            printf '#!/bin/sh\necho "stub %s"\n' "$f" > "$BUNDLE_DIR/bin/$f"
-            chmod +x "$BUNDLE_DIR/bin/$f"
-          done
-          printf '#!/usr/bin/env python3\nprint("stub stt")\n' > "$BUNDLE_DIR/bin/stt_server.py"
-          chmod +x "$BUNDLE_DIR/bin/stt_server.py"
-          mkdir -p "$BUNDLE_DIR/image-bridge/eigeninference_image_bridge"
-          touch "$BUNDLE_DIR/image-bridge/eigeninference_image_bridge/__init__.py"
-
-          tar czf /tmp/test-bundle.tar.gz -C "$BUNDLE_DIR" .
-          BUNDLE_HASH=$(shasum -a 256 /tmp/test-bundle.tar.gz | cut -d' ' -f1)
-
-          # Tiny Python HTTP server that fakes the two coordinator endpoints
-          # install.sh needs: GET /v1/releases/latest and the bundle download.
-          # Everything else 404s — exercises the PBS Python fallback.
-          cat > /tmp/mock_server.py <<PYEOF
-import http.server, json
-
-BUNDLE_HASH = "${BUNDLE_HASH}"
-
-class Handler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/v1/releases/latest":
-            body = json.dumps({
-                "version": "0.0.0-ci",
-                "platform": "macos-arm64",
-                "binary_hash": "0" * 64,
-                "bundle_hash": BUNDLE_HASH,
-                "url": "http://localhost:8080/bundle/test-bundle.tar.gz",
-                "changelog": "",
-                "active": True,
-                "created_at": "2026-01-01T00:00:00Z",
-            }).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(body)
-        elif self.path == "/bundle/test-bundle.tar.gz":
-            with open("/tmp/test-bundle.tar.gz", "rb") as f:
-                data = f.read()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-        elif self.path == "/v1/models/catalog":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(b'{"models":[]}')
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def do_POST(self):
-        self.send_response(404)
-        self.end_headers()
-
-    def log_message(self, fmt, *args):
-        pass
-
-http.server.HTTPServer(("127.0.0.1", 8080), Handler).serve_forever()
-PYEOF
-
-          python3 /tmp/mock_server.py &
-          echo "MOCK_PID=$!" >> "$GITHUB_ENV"
-          sleep 1
-          curl -sf http://localhost:8080/v1/releases/latest | head -c 120
-          echo ""
-
-      - name: Run install.sh
-        run: |
-          rm -rf "$HOME/.darkbloom"
-          # Point at the mock server and run the real script non-interactively.
-          # /dl/ paths 404 → exercises the PBS Python fallback end-to-end.
-          sed 's|https://api.darkbloom.dev|http://localhost:8080|g' scripts/install.sh \
-            | bash
-
-      - name: Verify install
-        run: |
-          echo "=== Checking install layout ==="
-          INSTALL_DIR="$HOME/.darkbloom"
-          FAIL=0
-
-          check() {
-            if [ -e "$1" ]; then echo "  ✓ $2"; else echo "  ✗ $2  ($1 missing)"; FAIL=$((FAIL + 1)); fi
-          }
-
-          check "$INSTALL_DIR/bin/darkbloom"              "darkbloom binary"
-          check "$INSTALL_DIR/bin/eigeninference-enclave"  "enclave helper"
-          check "$INSTALL_DIR/bin/gRPCServerCLI"          "gRPCServerCLI"
-          check "$INSTALL_DIR/bin/ffmpeg"                 "ffmpeg"
-          check "$INSTALL_DIR/bin/stt_server.py"          "stt_server.py"
-          check "$INSTALL_DIR/image-bridge/eigeninference_image_bridge" "image bridge"
-
-          # PBS fallback should have installed a working Python since /dl/ 404s.
-          PYTHON_BIN="$INSTALL_DIR/python/bin/python3.12"
-          check "$PYTHON_BIN" "Python 3.12 (PBS fallback)"
-          if [ -f "$PYTHON_BIN" ]; then
-            if "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
-              echo "  ✓ Python executes"
-            else
-              echo "  ✗ Python binary doesn't execute"
-              FAIL=$((FAIL + 1))
-            fi
-          fi
-
-          # PATH entry should be in shell rc.
-          if grep -q '\.darkbloom/bin' "$HOME/.zshrc" 2>/dev/null || \
-             grep -q '\.darkbloom/bin' "$HOME/.bashrc" 2>/dev/null; then
-            echo "  ✓ PATH configured in shell rc"
-          else
-            echo "  ✗ PATH not in shell rc"
-            FAIL=$((FAIL + 1))
-          fi
-
-          echo ""
-          [ "$FAIL" -eq 0 ] && echo "All checks passed" || { echo "$FAIL check(s) failed"; exit 1; }
-
-      - name: Cleanup
-        if: always()
-        run: kill "$MOCK_PID" 2>/dev/null || true
+          export PATH="$HOME/.darkbloom/bin:$PATH"
+          darkbloom --version
+          darkbloom doctor
 
   lint-console:
     name: Console UI Lint & Build

@@ -617,7 +617,7 @@ func (p *SolanaProcessor) GetTokenBalance(walletAddress string) (uint64, error) 
 
 	var balance uint64
 	amountStr := resp.Value[0].Account.Data.Parsed.Info.TokenAmount.Amount
-	fmt.Sscanf(amountStr, "%d", &balance)
+	_, _ = fmt.Sscanf(amountStr, "%d", &balance)
 	return balance, nil
 }
 
@@ -664,7 +664,7 @@ func (p *SolanaProcessor) sendSPLTransfer(req SolanaWithdrawRequest) (*SolanaWit
 	}
 
 	edPrivKey := ed25519.PrivateKey(privKeyBytes)
-	payerPubkey := edPrivKey.Public().(ed25519.PublicKey)
+	payerPubkey, _ := edPrivKey.Public().(ed25519.PublicKey)
 
 	// Step 2: Decode addresses.
 	mintBytes, err := base58Decode(p.usdcMint)

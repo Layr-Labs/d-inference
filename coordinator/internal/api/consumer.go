@@ -1390,11 +1390,12 @@ func extractMessage(chunks []string) extractedMessage {
 				if tc.Type != "" {
 					existing["type"] = tc.Type
 				}
-				fn := existing["function"].(map[string]any)
+				fn, _ := existing["function"].(map[string]any)
 				if tc.Function.Name != "" {
 					fn["name"] = tc.Function.Name
 				}
-				fn["arguments"] = fn["arguments"].(string) + tc.Function.Arguments
+				prevArgs, _ := fn["arguments"].(string)
+				fn["arguments"] = prevArgs + tc.Function.Arguments
 			}
 		}
 	}
@@ -1695,7 +1696,7 @@ func (s *Server) handleProviderEarnings(w http.ResponseWriter, r *http.Request) 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // handleCompletions handles POST /v1/completions.

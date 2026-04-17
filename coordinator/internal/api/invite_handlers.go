@@ -59,7 +59,7 @@ func (s *Server) handleAdminCreateInviteCode(w http.ResponseWriter, r *http.Requ
 	code := strings.ToUpper(strings.TrimSpace(req.Code))
 	if code == "" {
 		b := make([]byte, 4)
-		rand.Read(b)
+		_, _ = rand.Read(b)
 		code = "INV-" + strings.ToUpper(hex.EncodeToString(b))
 	}
 

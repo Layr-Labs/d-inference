@@ -55,7 +55,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-apple-aspen-config")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="EigenInference-Enroll-%s.mobileconfig"`, req.SerialNumber))
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(profile))
+	_, _ = w.Write([]byte(profile))
 }
 
 // generateCombinedProfile creates a .mobileconfig with three payloads:

@@ -510,7 +510,11 @@ fn download_ckpt_model_from_cdn(
         name: &'static str,
     }
 
-    let pipeline = if cache_dir.to_string_lossy().contains("flux_2_klein_9b_q8p") {
+    // Match on base_url (contains s3_name) or cache_dir (legacy HF cache layout),
+    // so both `~/.darkbloom/models/flux-klein-9b-q8` and
+    // `~/.cache/huggingface/hub/models--flux_2_klein_9b_q8p.ckpt/...` resolve correctly.
+    let key = format!("{} {}", base_url, cache_dir.to_string_lossy());
+    let pipeline = if key.contains("klein-9b") || key.contains("klein_9b") {
         Some(ImagePipeline {
             model_file: "flux_2_klein_9b_q8p.ckpt",
             text_encoder: "qwen_3_8b_q8p.ckpt",
@@ -518,7 +522,7 @@ fn download_ckpt_model_from_cdn(
             version: "flux2_9b",
             name: "FLUX.2 [klein] 9B",
         })
-    } else if cache_dir.to_string_lossy().contains("flux_2_klein_4b_q8p") {
+    } else if key.contains("klein-4b") || key.contains("klein_4b") {
         Some(ImagePipeline {
             model_file: "flux_2_klein_4b_q8p.ckpt",
             text_encoder: "qwen_3_4b_q8p.ckpt",

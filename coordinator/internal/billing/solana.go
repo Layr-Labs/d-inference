@@ -292,7 +292,10 @@ func DeriveKeypairFromMnemonic(mnemonic string) (ed25519.PrivateKey, string, err
 
 	// ed25519: seed (32 bytes) → 64-byte private key
 	privKey := ed25519.NewKeyFromSeed(key)
-	pubKey := privKey.Public().(ed25519.PublicKey)
+	pubKey, ok := privKey.Public().(ed25519.PublicKey)
+	if !ok {
+		return nil, "", fmt.Errorf("ed25519 public key type assertion failed")
+	}
 	address := base58Encode(pubKey)
 
 	return privKey, address, nil
@@ -416,14 +419,15 @@ func (p *SolanaProcessor) VerifyDeposit(txSignature string) (*SolanaDepositResul
 			if !ok {
 				continue
 			}
-			accountIndex := int(bMap["accountIndex"].(float64))
+			accountIndexF, _ := bMap["accountIndex"].(float64)
+			accountIndex := int(accountIndexF)
 			mint, _ := bMap["mint"].(string)
 			owner, _ := bMap["owner"].(string)
 			uiAmountInfo, _ := bMap["uiTokenAmount"].(map[string]any)
 			amountStr, _ := uiAmountInfo["amount"].(string)
 
 			var amount uint64
-			fmt.Sscanf(amountStr, "%d", &amount)
+			_, _ = fmt.Sscanf(amountStr, "%d", &amount)
 
 			result[accountIndex] = tokenBalance{
 				Mint:   mint,

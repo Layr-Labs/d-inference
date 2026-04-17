@@ -674,7 +674,7 @@ func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType
 	if err != nil {
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	if err := creditTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
 		return err
@@ -692,7 +692,7 @@ func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType 
 	if err != nil {
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Check and update balance atomically
 	var balanceAfter int64
@@ -1446,7 +1446,7 @@ func (s *PostgresStore) RedeemInviteCode(code string, accountID string) error {
 	if err != nil {
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Lock the invite code row
 	var ic InviteCode
@@ -1705,7 +1705,7 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	if err != nil {
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	if err := creditTx(ctx, tx, earning.AccountID, earning.AmountMicroUSD, LedgerPayout, earning.JobID, earning.CreatedAt); err != nil {
 		return err
@@ -1749,7 +1749,7 @@ func (s *PostgresStore) CreditProviderWallet(payout *ProviderPayout) error {
 	if err != nil {
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	if err := creditTx(ctx, tx, payout.ProviderAddress, payout.AmountMicroUSD, LedgerPayout, payout.JobID, payout.Timestamp); err != nil {
 		return err

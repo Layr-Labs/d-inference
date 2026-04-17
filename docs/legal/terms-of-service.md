@@ -56,7 +56,7 @@ You retain rights in your Inputs and own Outputs to the extent ownership rights 
 
 ## 9. Privacy and Security
 
-Our Privacy Policy is incorporated by reference. The Services involve transmission, processing, and storage of Inputs, Outputs, and service metadata. We use reasonable safeguards, but no method is completely secure. Certain service paths may use encryption, attestation, or trusted-execution features but do not eliminate all risk. You are responsible for using the Services in a manner appropriate to the sensitivity of your data. MDM enrollment is read-only security verification only.
+Our Privacy Policy is incorporated by reference. The Services involve transmission, processing, and storage of Inputs, Outputs, and service metadata. We use reasonable safeguards, but no method is completely secure. Certain service paths may use encryption, attestation, or trusted-execution features but do not eliminate all risk. You are responsible for using the Services in a manner appropriate to the sensitivity of your data. MDM enrollment is security verification only.
 
 ## 10. Beta, Research, and Experimental Features
 

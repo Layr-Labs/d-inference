@@ -15,7 +15,6 @@ package api
 //     nearest safe default — forward-compatible with newer clients.
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -398,11 +397,11 @@ func sanitizeTelemetryEvent(
 	}, true
 }
 
-func truncField(s string, max int) string {
-	if len(s) <= max {
+func truncField(s string, maxLen int) string {
+	if len(s) <= maxLen {
 		return s
 	}
-	return s[:max]
+	return s[:maxLen]
 }
 
 // ---------------------------------------------------------------------------
@@ -478,11 +477,3 @@ func parseTime(s string) time.Time {
 	return time.Time{}
 }
 
-// prettyJSON indents JSON when debugging — used in tests.
-func prettyJSON(v any) []byte {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(v)
-	return buf.Bytes()
-}

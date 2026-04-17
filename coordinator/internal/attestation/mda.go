@@ -22,6 +22,10 @@ import (
 )
 
 // Apple MDA OID constants — ACME device-attest-01 path (existing).
+// These are effectively constants but asn1.ObjectIdentifier is a slice type
+// which cannot be declared as const in Go.
+//
+//nolint:gochecknoglobals // ASN.1 OIDs are immutable package-level identifiers.
 var (
 	OIDSIPStatus        = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 13, 1}
 	OIDSecureBootStatus = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 13, 2}
@@ -29,6 +33,8 @@ var (
 )
 
 // Apple MDA OID constants — DevicePropertiesAttestation path (MDM DeviceInformation).
+//
+//nolint:gochecknoglobals // ASN.1 OIDs are immutable package-level identifiers.
 var (
 	OIDDeviceSerialNumber     = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 9, 1}
 	OIDDeviceUDID             = asn1.ObjectIdentifier{1, 2, 840, 113635, 100, 8, 9, 2}

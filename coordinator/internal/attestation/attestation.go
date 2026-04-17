@@ -114,6 +114,26 @@ type ecdsaSig struct {
 	R, S *big.Int
 }
 
+// newResultFromAttestation populates a VerificationResult with fields from
+// the attestation blob (before signature verification).
+func newResultFromAttestation(att AttestationBlob) VerificationResult {
+	return VerificationResult{
+		PublicKey:                att.PublicKey,
+		EncryptionPublicKey:      att.EncryptionPublicKey,
+		BinaryHash:               att.BinaryHash,
+		HardwareModel:            att.HardwareModel,
+		ChipName:                 att.ChipName,
+		SerialNumber:             att.SerialNumber,
+		SecureEnclaveAvailable:   att.SecureEnclaveAvailable,
+		SIPEnabled:               att.SIPEnabled,
+		SecureBootEnabled:        att.SecureBootEnabled,
+		HypervisorActive:         att.HypervisorActive,
+		RDMADisabled:             att.RDMADisabled,
+		AuthenticatedRootEnabled: att.AuthenticatedRootEnabled,
+		SystemVolumeHash:         att.SystemVolumeHash,
+	}
+}
+
 // Verify checks a signed attestation's P-256 ECDSA signature against
 // the public key embedded in the attestation blob.
 //
@@ -124,21 +144,7 @@ type ecdsaSig struct {
 // It also checks minimum security requirements: Secure Enclave must be
 // available, SIP must be enabled, and Secure Boot must be enabled.
 func Verify(signed SignedAttestation) VerificationResult {
-	result := VerificationResult{
-		PublicKey:                signed.Attestation.PublicKey,
-		EncryptionPublicKey:      signed.Attestation.EncryptionPublicKey,
-		BinaryHash:               signed.Attestation.BinaryHash,
-		HardwareModel:            signed.Attestation.HardwareModel,
-		ChipName:                 signed.Attestation.ChipName,
-		SerialNumber:             signed.Attestation.SerialNumber,
-		SecureEnclaveAvailable:   signed.Attestation.SecureEnclaveAvailable,
-		SIPEnabled:               signed.Attestation.SIPEnabled,
-		SecureBootEnabled:        signed.Attestation.SecureBootEnabled,
-		HypervisorActive:         signed.Attestation.HypervisorActive,
-		RDMADisabled:             signed.Attestation.RDMADisabled,
-		AuthenticatedRootEnabled: signed.Attestation.AuthenticatedRootEnabled,
-		SystemVolumeHash:         signed.Attestation.SystemVolumeHash,
-	}
+	result := newResultFromAttestation(signed.Attestation)
 
 	// Parse timestamp
 	ts, err := time.Parse(time.RFC3339Nano, signed.Attestation.Timestamp)

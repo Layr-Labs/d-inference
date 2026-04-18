@@ -13,15 +13,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/eigeninference/coordinator/internal/billing"
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
-	"github.com/coder/websocket"
 )
 
 // securityTestServer creates a Server with a quiet logger for security tests.
+//
+//nolint:unparam // MemoryStore returned for future assertions
 func securityTestServer(t *testing.T) (*Server, *store.MemoryStore) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))

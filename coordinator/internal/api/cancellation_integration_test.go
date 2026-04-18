@@ -19,10 +19,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
-	"github.com/coder/websocket"
 )
 
 // createTestAttestationJSONWithSerial creates a signed attestation blob with
@@ -142,6 +142,8 @@ func waitForChallenge(t *testing.T, ctx context.Context, conn *websocket.Conn, p
 
 // setupTestServer creates a test server with a short challenge interval and
 // returns the server, registry, store, and httptest server.
+//
+//nolint:unparam // *Server returned for future test extensions
 func setupTestServer(t *testing.T) (*Server, *registry.Registry, store.Store, *httptest.Server) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -503,7 +505,7 @@ func TestIntegration_ProviderDeduplicationBySerial(t *testing.T) {
 	// close frame arrives).
 	readCtx, readCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer readCancel()
-	connAClosed := false
+	var connAClosed bool
 	for {
 		_, _, readErr := connA.Read(readCtx)
 		if readErr != nil {
@@ -578,7 +580,7 @@ func TestIntegration_ProviderDeduplicationPreservesNewest(t *testing.T) {
 	// until we get a read error.
 	readCtx, readCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer readCancel()
-	connAClosed := false
+	var connAClosed bool
 	for {
 		_, _, readErr := connA.Read(readCtx)
 		if readErr != nil {

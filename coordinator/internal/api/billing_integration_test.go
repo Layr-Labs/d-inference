@@ -20,12 +20,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/eigeninference/coordinator/internal/billing"
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
-	"github.com/coder/websocket"
 )
 
 // billingTestServer creates a test server with billing enabled in mock mode.
@@ -57,6 +57,8 @@ func billingTestServer(t *testing.T) (*Server, *store.MemoryStore, *payments.Led
 
 // setupProviderForBilling connects a provider, sets trust, records challenge
 // success, and returns the WebSocket connection, provider ID, and public key.
+//
+//nolint:unparam // string returns kept for future test assertions
 func setupProviderForBilling(t *testing.T, ctx context.Context, ts *httptest.Server, reg *registry.Registry, model string) (*websocket.Conn, string, string) {
 	t.Helper()
 	pubKey := testPublicKeyB64()

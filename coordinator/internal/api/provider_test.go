@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
-	"github.com/coder/websocket"
 )
 
 func TestProviderWebSocketConnect(t *testing.T) {
@@ -247,6 +247,7 @@ type ecdsaSigHelper struct {
 	R, S *big.Int
 }
 
+//nolint:unparam // encryptionKey kept flexible for future test scenarios
 func createTestAttestationJSON(t *testing.T, encryptionKey string) json.RawMessage {
 	t.Helper()
 

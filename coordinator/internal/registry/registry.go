@@ -27,10 +27,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/store"
-	"github.com/coder/websocket"
 )
 
 // ProviderStatus represents the operational state of a provider.

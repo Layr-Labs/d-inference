@@ -16,12 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/eigeninference/coordinator/internal/e2e"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
 	"golang.org/x/crypto/nacl/box"
-	"github.com/coder/websocket"
 )
 
 // handleProviderMessages reads WebSocket messages in a loop, dispatches

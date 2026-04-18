@@ -37,12 +37,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/eigeninference/coordinator/internal/e2e"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
 	"golang.org/x/crypto/nacl/box"
-	"github.com/coder/websocket"
 )
 
 const (
@@ -402,6 +402,7 @@ func (p *simulatedProvider) requestsServed() int64 {
 // Consumer helper — sends requests through the coordinator
 // ---------------------------------------------------------------------------
 
+//nolint:unparam // apiKey kept as param for future multi-key test scenarios
 func consumerRequest(ctx context.Context, coordinatorURL, apiKey, model, prompt string, stream bool) (int, string, error) {
 	maxTokens := 20
 	temp := 0.0
@@ -677,14 +678,14 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 	var bwg sync.WaitGroup
 	for i := 0; i < 50; i++ {
 		bwg.Add(1)
-		go func(idx int) {
+		go func() {
 			defer bwg.Done()
 			code, _, err := consumerRequest(ctx, ts.URL, "test-key", testModel,
 				"hi", true)
 			if err == nil && code == 200 {
 				atomic.AddInt32(&burstSuccess, 1)
 			}
-		}(i)
+		}()
 	}
 	bwg.Wait()
 	burstDuration := time.Since(burstStart)

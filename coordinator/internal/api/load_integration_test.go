@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
-	"github.com/coder/websocket"
 )
 
 // ---------------------------------------------------------------------------
@@ -117,6 +117,8 @@ func sendRequest(ctx context.Context, url, apiKey, model string) (int, string, e
 // sendConcurrentRequests launches count goroutines, each sending one request,
 // and collects all status codes. maxInflight limits the number of concurrent
 // in-flight requests to stay within queue capacity.
+//
+//nolint:unparam // apiKey kept flexible for future multi-key tests
 func sendConcurrentRequests(t *testing.T, url, apiKey, model string, count, maxInflight int, timeout time.Duration) []int {
 	t.Helper()
 	results := make([]int, count)

@@ -33,13 +33,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
 	"github.com/google/uuid"
-	"github.com/coder/websocket"
 )
 
 const (
@@ -636,7 +636,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 	}
 }
 
-func (s *Server) handleInferenceAccepted(providerID string, provider *registry.Provider, msg *protocol.InferenceAcceptedMessage) {
+func (s *Server) handleInferenceAccepted(_ string, provider *registry.Provider, msg *protocol.InferenceAcceptedMessage) {
 	if provider == nil {
 		return
 	}

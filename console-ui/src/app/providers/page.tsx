@@ -358,38 +358,24 @@ export default function ProvidersPage() {
         </div>
       )}
 
-      {/* My provider dashboard */}
-      {myProvider && (
-        <div className="rounded-xl bg-accent-brand/5 shadow-sm p-6">
-          <h2 className="text-lg font-semibold text-text-primary mb-3">Your Provider Node</h2>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-4">
+      {/* My machines CTA — visible whenever the user is signed in, since the
+          dashboard now lists all machines linked to their account (not just
+          the one matching the connected wallet). */}
+      {authenticated && (
+        <Link
+          href="/providers/me"
+          className="block rounded-xl bg-accent-brand/5 hover:bg-accent-brand/10 transition-colors shadow-sm p-6"
+        >
+          <div className="flex items-center justify-between gap-4">
             <div>
-              <p className="text-xs text-text-tertiary mb-1">Hardware</p>
-              <p className="text-sm font-semibold text-text-primary">{myProvider.chip_name}</p>
+              <h2 className="text-lg font-semibold text-text-primary mb-1">My Machines</h2>
+              <p className="text-sm text-text-secondary">
+                Status, earnings, and warnings for every provider linked to your account.
+              </p>
             </div>
-            <div>
-              <p className="text-xs text-text-tertiary mb-1">Status</p>
-              <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-accent-green" />
-                <p className="text-sm font-semibold text-text-primary capitalize">{myProvider.status || "online"}</p>
-              </div>
-            </div>
-            <div>
-              <p className="text-xs text-text-tertiary mb-1">Memory</p>
-              <p className="text-sm font-semibold text-text-primary">{myProvider.memory_gb} GB</p>
-            </div>
-            <div>
-              <p className="text-xs text-text-tertiary mb-1">Trust</p>
-              <TrustBadge level={myProvider.trust_level} mdaVerified={myProvider.mda_verified} />
-            </div>
+            <ArrowRight size={18} className="text-accent-brand shrink-0" />
           </div>
-          <Link
-            href="/providers/earnings"
-            className="inline-flex items-center gap-1.5 mt-4 text-sm text-accent-brand font-medium hover:underline"
-          >
-            View Earnings <ArrowRight size={14} />
-          </Link>
-        </div>
+        </Link>
       )}
 
       {/* Network overview */}

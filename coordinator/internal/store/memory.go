@@ -1161,6 +1161,25 @@ func (s *MemoryStore) ListProviderRecords(_ context.Context) ([]ProviderRecord, 
 	return records, nil
 }
 
+func (s *MemoryStore) ListProvidersByAccount(_ context.Context, accountID string) ([]ProviderRecord, error) {
+	if accountID == "" {
+		return []ProviderRecord{}, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	records := make([]ProviderRecord, 0)
+	for _, p := range s.providerRecords {
+		if p.AccountID == accountID {
+			records = append(records, *p)
+		}
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].LastSeen.After(records[j].LastSeen)
+	})
+	return records, nil
+}
+
 func (s *MemoryStore) UpdateProviderLastSeen(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

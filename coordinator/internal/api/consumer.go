@@ -237,7 +237,7 @@ func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool) bool {
 // OpenAI-compatible fields (tools, tool_choice, response_format, top_p, etc.)
 // that would otherwise be lost if we parsed into a typed struct.
 //
-//nolint:gocognit
+//nolint:gocognit,gocyclo
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Read the raw request body so we can forward it as-is to the provider.
 	// We only parse minimally to extract model/stream/messages for routing.

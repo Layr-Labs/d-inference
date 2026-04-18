@@ -26,10 +26,10 @@ const (
 	USDCMintMainnet = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
 	// SPL Token Program ID.
-	TokenProgramID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+	TokenProgramID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" //nolint:gosec // not a credential
 
 	// Associated Token Account Program ID.
-	AssociatedTokenProgramID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+	AssociatedTokenProgramID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL" //nolint:gosec // not a credential
 
 	// System Program ID.
 	SystemProgramID = "11111111111111111111111111111111"
@@ -491,7 +491,7 @@ func (p *SolanaProcessor) VerifyDeposit(txSignature string) (*SolanaDepositResul
 			From:           sender,
 			To:             depositAddr,
 			AmountRaw:      received,
-			AmountMicroUSD: int64(received),
+			AmountMicroUSD: int64(received), //nolint:gosec // USDC amounts fit in int64
 			Slot:           uint64(slot),
 			Confirmed:      true,
 		}, nil
@@ -757,8 +757,8 @@ func (p *SolanaProcessor) sendSPLTransfer(req SolanaWithdrawRequest) (*SolanaWit
 	// Instruction data: [3 (Transfer opcode)] + [uint64 LE amount]
 	// USDC has 6 decimals; micro-USD maps 1:1 to raw USDC units.
 	transferData := make([]byte, 9)
-	transferData[0] = 3 // Transfer instruction discriminator
-	binary.LittleEndian.PutUint64(transferData[1:], uint64(req.AmountMicroUSD))
+	transferData[0] = 3                                                         // Transfer instruction discriminator
+	binary.LittleEndian.PutUint64(transferData[1:], uint64(req.AmountMicroUSD)) //nolint:gosec // validated positive
 
 	instructions = append(instructions, solanaInstruction{
 		programID: tokenProgramBytes,
@@ -980,7 +980,7 @@ func buildTransactionMessage(payer ed25519.PublicKey, instructions []solanaInstr
 // writeCompactU16 writes a Solana compact-u16 encoding to the buffer.
 // Values 0-127 use 1 byte, 128-16383 use 2 bytes, larger use 3 bytes.
 func writeCompactU16(buf *bytes.Buffer, val int) {
-	v := uint16(val)
+	v := uint16(val) //nolint:gosec // compact-u16 values are bounded
 	if v < 0x80 {
 		buf.WriteByte(byte(v))
 	} else if v < 0x4000 {

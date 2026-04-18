@@ -1110,7 +1110,7 @@ func selectHighestScoredProvider(candidates []*Provider, model string) *Provider
 		}
 	}
 	if len(ties) > 1 {
-		return ties[rand.Intn(len(ties))]
+		return ties[rand.Intn(len(ties))] //nolint:gosec // non-crypto random for load balancing
 	}
 	return candidates[bestIdx]
 }

@@ -167,7 +167,7 @@ func breakNearTies(nearTies []*routingCandidate) *routingCandidate {
 		}
 	}
 	if len(equivalent) > 1 {
-		return equivalent[rand.Intn(len(equivalent))]
+		return equivalent[rand.Intn(len(equivalent))] //nolint:gosec // non-crypto random for load balancing
 	}
 	return best
 }

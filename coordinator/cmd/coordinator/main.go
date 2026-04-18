@@ -44,7 +44,7 @@ import (
 	"github.com/eigeninference/coordinator/internal/store"
 )
 
-//nolint:gocognit
+//nolint:gocognit,gocyclo
 func main() {
 	// Structured logging.
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{

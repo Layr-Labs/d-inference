@@ -439,7 +439,7 @@ func consumerRequest(ctx context.Context, coordinatorURL, apiKey, model, prompt 
 // Full-stack tests
 // ============================================================================
 
-//nolint:gocognit
+//nolint:gocognit,gocyclo
 func TestFullStack_MultiProviderInference(t *testing.T) {
 	if !shouldRunFullStack() {
 		t.Skip("skipping full-stack test (set LIVE_FULLSTACK_TEST=1 to enable)")

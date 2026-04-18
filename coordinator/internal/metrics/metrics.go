@@ -92,10 +92,17 @@ var (
 	// rate() to spot regressions: a sudden surge in `over_capacity` means
 	// the fleet is undersized for a hot model; `no_provider` means the
 	// model has zero eligible providers (catalog/trust drift).
+	//
+	// Outcomes:
+	//   - selected:      provider acquired (immediate or via queue dispatch)
+	//   - queued:        request placed on the per-model wait queue
+	//   - no_provider:   no eligible provider for the model after retries
+	//   - over_capacity: queue full; will also fire from the future
+	//                    free-memory admission gate when implemented
 	RoutingDecisions = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "eigeninference_routing_decisions_total",
 		Help: "Routing attempts by outcome.",
-	}, []string{"model", "outcome"}) // outcome: selected, queued, no_provider, over_capacity
+	}, []string{"model", "outcome"})
 
 	// ProviderSelected counts how often each provider wins a routing
 	// decision. Distribution skew here is the primary signal for whether

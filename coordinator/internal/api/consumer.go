@@ -323,7 +323,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			// No idle provider — try queueing.
-			metrics.RoutingDecisions.WithLabelValues(model, "queued").Inc()
 			queuedReq := &registry.QueuedRequest{
 				RequestID:  requestID,
 				Model:      model,
@@ -331,10 +330,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				ResponseCh: make(chan *registry.Provider, 1),
 			}
 			if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
+				metrics.RoutingDecisions.WithLabelValues(model, "over_capacity").Inc()
 				refundReservation()
 				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider available for model %q and queue is full", model)))
 				return
 			}
+			metrics.RoutingDecisions.WithLabelValues(model, "queued").Inc()
 
 			s.logger.Info("request queued, waiting for provider",
 				"model", model,
@@ -1749,7 +1750,6 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	provider, decision := s.registry.ReserveProviderEx(model, pr)
 	if provider == nil {
-		metrics.RoutingDecisions.WithLabelValues(model, "queued").Inc()
 		queuedReq := &registry.QueuedRequest{
 			RequestID:  requestID,
 			Model:      model,
@@ -1757,10 +1757,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			ResponseCh: make(chan *registry.Provider, 1),
 		}
 		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
+			metrics.RoutingDecisions.WithLabelValues(model, "over_capacity").Inc()
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
 				fmt.Sprintf("no provider available for model %q", model)))
 			return
 		}
+		metrics.RoutingDecisions.WithLabelValues(model, "queued").Inc()
 		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {
 			if err == context.Canceled {

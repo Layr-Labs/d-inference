@@ -53,7 +53,6 @@ type scenarioProvider struct {
 	backendRun  int    // backend slot's NumRunning
 	backendWait int    // backend slot's NumWaiting
 	slotState   string // running, idle_shutdown, etc.
-	currentMod  string // CurrentModel; empty = no warm slot
 }
 
 func (sp scenarioProvider) register(t *testing.T, reg *Registry, model string) *Provider {
@@ -72,7 +71,6 @@ func (sp scenarioProvider) register(t *testing.T, reg *Registry, model string) *
 		CPUUsage:       0.1,
 		ThermalState:   "nominal",
 	}
-	p.CurrentModel = sp.currentMod
 	state := sp.slotState
 	if state == "" {
 		state = "running"
@@ -390,130 +388,37 @@ func TestAlgorithm_P4_LoadScaledTPSFlipsBatchedBigVsIdleSmall(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
-// Phase 5 scenarios — model-swap penalty
+// Warm vs cold provider (architectural regression guard)
+//
+// Providers run one vllm-mlx process per configured model (see
+// provider/src/main.rs:"one vllm-mlx process per model on sequential
+// ports"). Multiple models serve concurrently; they don't swap. A
+// per-slot warm vs idle_shutdown state is the real cost delta.
 // ---------------------------------------------------------------------
 
-// Provider A is warm on model X. Provider B is idle but cold for X.
-// Today: A wins (warm bonus + faster TPS). Should still win after P5
-// — this is a regression guard, not a behavior change.
-func TestAlgorithm_P5_WarmProviderStillWinsForSameModel(t *testing.T) {
+// A provider whose slot for the requested model is "running" must win
+// over a peer whose slot is "idle_shutdown" — the cold one has to
+// reload vllm-mlx before it can serve.
+func TestAlgorithm_WarmSlotWinsOverIdleShutdown(t *testing.T) {
 	reg := New(testLogger())
-	model := "p5-warm-same-model"
+	model := "warm-vs-cold-model"
 	reg.SetModelCatalog([]CatalogEntry{{ID: model}})
 
 	scenarioProvider{
-		id: "warm-x", decodeTPS: 80, totalMemGB: 128, currentMod: model,
+		id: "warm", decodeTPS: 80, totalMemGB: 128,
 	}.register(t, reg, model)
 	scenarioProvider{
-		id:        "cold-x",
-		decodeTPS: 80, totalMemGB: 128, slotState: "idle_shutdown",
-	}.register(t, reg, model)
-
-	p := reserveOne(reg, model, 256)
-	if p == nil {
-		t.Fatal("expected warm-x, got nil")
-	}
-	if p.ID != "warm-x" {
-		t.Fatalf("got %q, want warm-x. Warm provider should win for same-model requests.", p.ID)
-	}
-}
-
-// Provider A is warm on a DIFFERENT model. Provider B is cold for the
-// requested model. Today: A might win because no swap penalty.
-// Phase 5: A's swap cost should outweigh B's cold-start, so B wins.
-func TestAlgorithm_P5_PrefersColdProviderOverModelSwap(t *testing.T) {
-	reg := New(testLogger())
-	model := "p5-target-model"
-	otherModel := "p5-other-model"
-	reg.SetModelCatalog([]CatalogEntry{{ID: model}, {ID: otherModel}})
-
-	// Provider A serves both, currently warm on the OTHER model.
-	msgA := testRegisterMessage()
-	msgA.Models = []protocol.ModelInfo{
-		{ID: model, ModelType: "chat", Quantization: "4bit"},
-		{ID: otherModel, ModelType: "chat", Quantization: "4bit"},
-	}
-	msgA.DecodeTPS = 80
-	msgA.Hardware.MemoryGB = 128
-	pA := reg.Register("warm-other", nil, msgA)
-	pA.mu.Lock()
-	pA.TrustLevel = TrustHardware
-	pA.RuntimeVerified = true
-	pA.LastChallengeVerified = time.Now()
-	pA.SystemMetrics = protocol.SystemMetrics{ThermalState: "nominal"}
-	pA.CurrentModel = otherModel
-	pA.BackendCapacity = &protocol.BackendCapacity{
-		TotalMemoryGB: 128,
-		Slots: []protocol.BackendSlotCapacity{
-			{Model: otherModel, State: "running"},
-			{Model: model, State: "idle_shutdown"},
-		},
-	}
-	pA.mu.Unlock()
-
-	// Provider B serves only the requested model, cold (idle_shutdown).
-	scenarioProvider{
-		id: "cold-target", decodeTPS: 70, totalMemGB: 128,
+		id: "cold", decodeTPS: 80, totalMemGB: 128,
 		slotState: "idle_shutdown",
 	}.register(t, reg, model)
 
 	p := reserveOne(reg, model, 256)
 	if p == nil {
-		t.Fatal("expected cold-target, got nil")
+		t.Fatal("expected warm, got nil")
 	}
-	if p.ID != "cold-target" {
-		t.Fatalf("got %q, want cold-target. Phase 5 (model-swap penalty) should make "+
-			"swapping warm-other off its current model worse than cold-starting cold-target.", p.ID)
-	}
-}
-
-// Multi-slot regression: a provider may have the requested model
-// "running" alongside another also "running". CurrentModel only
-// tracks one, so a naive swap detector would charge the 15 s
-// penalty even though the requested model is already resident.
-// The fix gates swap on !modelLoaded.
-func TestAlgorithm_P5_NoSwapWhenRequestedModelAlsoRunning(t *testing.T) {
-	reg := New(testLogger())
-	requested := "p5-multi-target"
-	other := "p5-multi-other"
-	reg.SetModelCatalog([]CatalogEntry{{ID: requested}, {ID: other}})
-
-	msg := testRegisterMessage()
-	msg.Models = []protocol.ModelInfo{
-		{ID: requested, ModelType: "chat", Quantization: "4bit"},
-		{ID: other, ModelType: "chat", Quantization: "4bit"},
-	}
-	msg.DecodeTPS = 80
-	msg.Hardware.MemoryGB = 128
-	pMulti := reg.Register("multi", nil, msg)
-	pMulti.mu.Lock()
-	pMulti.TrustLevel = TrustHardware
-	pMulti.RuntimeVerified = true
-	pMulti.LastChallengeVerified = time.Now()
-	pMulti.SystemMetrics = protocol.SystemMetrics{ThermalState: "nominal"}
-	pMulti.CurrentModel = other // tracks one, but both slots are loaded
-	pMulti.BackendCapacity = &protocol.BackendCapacity{
-		TotalMemoryGB: 128,
-		Slots: []protocol.BackendSlotCapacity{
-			{Model: requested, State: "running"},
-			{Model: other, State: "running"},
-		},
-	}
-	pMulti.mu.Unlock()
-
-	// A peer that's also valid but slower; the multi-slot provider
-	// should win because its requested-model slot is already running.
-	scenarioProvider{
-		id: "alt", decodeTPS: 30, totalMemGB: 64,
-	}.register(t, reg, requested)
-
-	p := reserveOne(reg, requested, 256)
-	if p == nil {
-		t.Fatal("expected multi, got nil")
-	}
-	if p.ID != "multi" {
-		t.Fatalf("got %q, want multi. Swap penalty must not fire when the "+
-			"requested model is already loaded in another slot.", p.ID)
+	if p.ID != "warm" {
+		t.Fatalf("got %q, want warm. slotStatePenaltyIdleShutdown must "+
+			"keep cold providers at higher cost than running peers.", p.ID)
 	}
 }
 

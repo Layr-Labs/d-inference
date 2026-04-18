@@ -33,19 +33,7 @@ const (
 	gpuUtilizationPenaltyMs = 5_000.0
 	thermalPenaltyFairMs    = 2_000.0
 	thermalPenaltySeriousMs = 8_000.0
-	nearTieCostWindowMs     = 3_000.0
-	// modelSwapPenaltyMs is added when a provider is currently serving a
-	// different model than the one requested. Loading a fresh model
-	// requires unloading the current one, freeing GPU memory, loading
-	// new weights from disk, and warming caches.
-	//
-	// Measured on M4 Max 128 GB (Qwen2.5-7B ⇄ Qwen3.5-9B, both 4-bit):
-	// ~4.2 s from process start to first inference when weights are
-	// warm in the OS page cache. Cold-disk swap is higher. 5 s is
-	// calibrated (see scripts/calibrate-routing.sh swap-time). Prior
-	// value was 15 s — too pessimistic; would route around providers
-	// that could actually swap in ~5 s.
-	modelSwapPenaltyMs       = 5_000.0
+	nearTieCostWindowMs      = 3_000.0
 	challengeFreshnessMaxAge = 6 * time.Minute
 
 	// kvCacheBytesPerToken is a per-token KV-cache size estimate used by
@@ -93,7 +81,6 @@ type routingSnapshot struct {
 	totalMemoryGB      float64
 	modelSizeGB        float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
 	modelLoaded        bool    // true when the requested model is the currently-running slot
-	servingOtherModel  bool    // true when CurrentModel != "" and != requested (Phase 5)
 }
 
 type routingCandidate struct {
@@ -128,7 +115,6 @@ type costBreakdown struct {
 	BacklogMs float64
 	ThisReqMs float64
 	HealthMs  float64
-	SwapMs    float64 // model-swap penalty (Phase 5)
 	Total     float64
 }
 
@@ -145,7 +131,6 @@ type RoutingDecision struct {
 	BacklogMs          float64 // tokens-ahead / decodeTPS contribution
 	ThisReqMs          float64 // this request's prefill+decode contribution
 	HealthMs           float64 // memory/CPU/thermal/GPU-util contribution
-	SwapMs             float64 // model-swap penalty (Phase 5)
 	EffectiveQueue     int     // max(pendingForModel, backendRunning+backendWaiting)
 	CandidateCount     int     // total candidates that passed all gates
 	CapacityRejections int     // candidates rejected by the free-memory admission gate
@@ -221,7 +206,6 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		BacklogMs:          bd.BacklogMs,
 		ThisReqMs:          bd.ThisReqMs,
 		HealthMs:           bd.HealthMs,
-		SwapMs:             bd.SwapMs,
 		EffectiveQueue:     selected.effectiveQueue,
 		CandidateCount:     candidateCount,
 		CapacityRejections: capacityRejections,
@@ -351,7 +335,6 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 		"backlog_ms", bd.BacklogMs,
 		"this_req_ms", bd.ThisReqMs,
 		"health_ms", bd.HealthMs,
-		"swap_ms", bd.SwapMs,
 		"effective_tps", winner.effectiveTPS,
 		"effective_queue", winner.effectiveQueue,
 		"candidates", candidates,
@@ -424,7 +407,6 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 		}
 	}
 	snap.modelLoaded = snap.slotState == "running"
-	snap.servingOtherModel = p.CurrentModel != "" && p.CurrentModel != model
 
 	return snap, true
 }
@@ -519,15 +501,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	backlogMs := backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, effectiveTPS)
 	thisReqMs := float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
 	healthMs := healthPenaltyMs(snap.systemMetrics, snap.gpuMemoryActiveGB, snap.totalMemoryGB)
-	// Phase 5: penalize providers that would have to unload their
-	// currently-active model to serve this request. If the requested
-	// model is ALSO already running (multi-slot provider), no swap is
-	// needed — the weights are resident — so suppress the penalty.
-	swapMs := 0.0
-	if snap.servingOtherModel && !snap.modelLoaded {
-		swapMs = modelSwapPenaltyMs
-	}
-	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs + swapMs
+	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs
 
 	return &routingCandidate{
 		provider:       snap.provider,
@@ -542,7 +516,6 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 			BacklogMs: backlogMs,
 			ThisReqMs: thisReqMs,
 			HealthMs:  healthMs,
-			SwapMs:    swapMs,
 			Total:     cost,
 		},
 	}, rejectNone, true

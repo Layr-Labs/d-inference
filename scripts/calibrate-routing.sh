@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# calibrate-routing.sh — empirical measurement of the three routing
-# constants the scheduler currently guesses at.
+# calibrate-routing.sh — empirical measurement of routing constants.
 #
 # Run against a running vllm-mlx backend on an Apple Silicon machine.
 # Outputs measured values that should replace the defaults in
@@ -8,19 +7,16 @@
 #
 #   effectiveTPSLoadFactor  (Phase 4)
 #   kvCacheBytesPerToken    (Phase 1)
-#   modelSwapPenaltyMs      (Phase 5)
 #
 # Usage:
 #   scripts/calibrate-routing.sh load-factor
 #   scripts/calibrate-routing.sh kv-size
-#   scripts/calibrate-routing.sh swap-time
 #   scripts/calibrate-routing.sh all
 #
 # Env:
 #   VLLM_URL     base URL of the vllm-mlx server (default: http://localhost:8000)
-#   MODEL        primary model to benchmark       (required for load-factor/kv-size)
-#   SWAP_MODEL   second model for swap-time       (required for swap-time)
-#   PROMPT_FILE  path to a long prompt file       (default: generated from /usr/share/dict/words)
+#   MODEL        primary model to benchmark       (required)
+#   PROMPT_FILE  path to a long prompt file       (default: /usr/share/dict/words)
 #
 # Requires: curl, jq, python3.
 
@@ -28,7 +24,6 @@ set -euo pipefail
 
 VLLM_URL="${VLLM_URL:-http://localhost:8000}"
 MODEL="${MODEL:-}"
-SWAP_MODEL="${SWAP_MODEL:-}"
 PROMPT_FILE="${PROMPT_FILE:-}"
 
 LOG() { printf '\033[36m[calibrate]\033[0m %s\n' "$*" >&2; }
@@ -276,80 +271,20 @@ PY
   rm -f /tmp/kv_probe_resp.out
 }
 
-# ---------- swap time (Phase 5) ---------------------------------------
-
-calibrate_swap_time() {
-  LOG "=== Model-swap time calibration (Phase 5) ==="
-  [[ -z "$MODEL" || -z "$SWAP_MODEL" ]] && {
-    ERR "set MODEL and SWAP_MODEL env vars"
-    exit 1
-  }
-  WARN "this requires killing vllm-mlx and restarting with a different model."
-  WARN "vllm-mlx lifecycle is not managed by this script."
-  WARN "manual procedure:"
-  cat >&2 <<EOF
-
-  1. Kill the current vllm-mlx process.
-  2. Start fresh with: vllm-mlx serve $SWAP_MODEL --port 8000 &
-  3. Immediately run:
-       scripts/calibrate-routing.sh first-request-latency
-     which times from now until the first /v1/chat/completions
-     returns. That is the cold-start-plus-swap cost.
-  4. Repeat for a handful of models; the median is a reasonable
-     modelSwapPenaltyMs.
-
-EOF
-}
-
-first_request_latency() {
-  [[ -z "$MODEL" ]] && { ERR "set MODEL env var"; exit 1; }
-  LOG "measuring cold-start latency to first response..."
-  local start end
-  start=$(python3 -c 'import time; print(time.time())')
-  local attempts=0
-  until curl -fsS --max-time 3 "$VLLM_URL/v1/status" >/dev/null 2>&1; do
-    attempts=$((attempts + 1))
-    [[ $attempts -gt 300 ]] && { ERR "vllm-mlx never came up"; return; }
-    sleep 0.2
-  done
-  local up_at
-  up_at=$(python3 -c 'import time; print(time.time())')
-
-  # First full inference.
-  local short_prompt
-  short_prompt=$(synthesize_prompt 32)
-  run_request "$short_prompt" 8 >/dev/null
-  end=$(python3 -c 'import time; print(time.time())')
-
-  python3 - <<PY
-total = $end - $start
-until_up = $up_at - $start
-first_req = $end - $up_at
-print(f"time_until_status_ok = {until_up*1000:.0f} ms")
-print(f"first_request_latency = {first_req*1000:.0f} ms")
-print(f"total_cold_start      = {total*1000:.0f} ms")
-print(f"\nRECOMMENDED modelSwapPenaltyMs ≈ {int(total*1000)} (use median of several runs)")
-PY
-}
-
 # ---------- orchestration ---------------------------------------------
 
 usage() {
-  sed -n '2,25p' "$0"
+  sed -n '2,22p' "$0"
 }
 
 cmd="${1:-help}"
 case "$cmd" in
   load-factor) calibrate_load_factor ;;
   kv-size) calibrate_kv_size ;;
-  swap-time) calibrate_swap_time ;;
-  first-request-latency) first_request_latency ;;
   all)
     calibrate_load_factor
     echo
     calibrate_kv_size
-    echo
-    calibrate_swap_time
     ;;
   help|--help|-h|*) usage ;;
 esac

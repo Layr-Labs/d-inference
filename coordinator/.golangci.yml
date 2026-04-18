@@ -115,9 +115,6 @@ linters-settings:
     checks:
       - "-ST1003"
 
-  tenv:
-    all: false
-
 linters:
   disable-all: true
   enable:
@@ -184,12 +181,12 @@ linters:
     - spancheck
     - sqlclosecheck
     - stylecheck
-    - tenv
     - testableexamples
     - testifylint
     - tparallel
     - unconvert
     - unparam
+    - usetesting
     - usestdlibvars
     - wastedassign
     - whitespace

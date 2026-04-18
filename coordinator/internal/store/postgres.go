@@ -1521,6 +1521,8 @@ func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
 }
 
 // GetProviderEarnings returns earnings for a specific provider node (by public key), newest first.
+//
+//nolint:dupl // paired with GetAccountEarnings; different WHERE clauses
 func (s *PostgresStore) GetProviderEarnings(providerKey string, limit int) ([]ProviderEarning, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1554,6 +1556,8 @@ func (s *PostgresStore) GetProviderEarnings(providerKey string, limit int) ([]Pr
 }
 
 // GetAccountEarnings returns all earnings across all nodes for an account, newest first.
+//
+//nolint:dupl // paired with GetProviderEarnings; different WHERE clauses
 func (s *PostgresStore) GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1825,6 +1829,7 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 	return nil
 }
 
+//nolint:dupl // paired with GetProviderBySerial; different SQL predicates
 func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*ProviderRecord, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -1857,6 +1862,7 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 	return &p, nil
 }
 
+//nolint:dupl // paired with GetProviderRecord; different SQL predicates
 func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) (*ProviderRecord, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

@@ -27,6 +27,63 @@ use crate::protocol::{
 };
 use crate::security;
 
+fn public_model_value(public_model: Option<&str>) -> Option<String> {
+    public_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(|model| model.to_string())
+}
+
+fn rewrite_response_model(
+    mut response_json: serde_json::Value,
+    public_model: Option<&str>,
+) -> serde_json::Value {
+    let Some(public_model) = public_model_value(public_model) else {
+        return response_json;
+    };
+
+    if let Some(obj) = response_json.as_object_mut() {
+        if matches!(obj.get("model"), Some(serde_json::Value::String(_))) {
+            obj.insert(
+                "model".to_string(),
+                serde_json::Value::String(public_model.clone()),
+            );
+        }
+        if let Some(response_obj) = obj
+            .get_mut("response")
+            .and_then(|value| value.as_object_mut())
+        {
+            if matches!(
+                response_obj.get("model"),
+                Some(serde_json::Value::String(_))
+            ) {
+                response_obj.insert("model".to_string(), serde_json::Value::String(public_model));
+            }
+        }
+    }
+
+    response_json
+}
+
+fn sanitize_error_body(
+    error_body: String,
+    request_model: Option<&str>,
+    public_model: Option<&str>,
+) -> String {
+    let Some(public_model) = public_model_value(public_model) else {
+        return error_body;
+    };
+
+    let Some(request_model) = request_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    else {
+        return error_body;
+    };
+
+    error_body.replace(request_model, &public_model)
+}
+
 /// Handle an inference request by forwarding it to the local backend
 /// and streaming responses back via the outbound channel.
 ///
@@ -42,6 +99,34 @@ pub async fn handle_inference_request(
     request_id: String,
     body: serde_json::Value,
     backend_url: String,
+    outbound_tx: mpsc::Sender<ProviderMessage>,
+    _node_keypair: Option<Arc<NodeKeyPair>>,
+    cancel_token: CancellationToken,
+    stats: Option<Arc<AtomicProviderStats>>,
+) -> bool {
+    let public_model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(|model| model.to_string());
+
+    handle_inference_request_with_public_model(
+        request_id,
+        body,
+        backend_url,
+        public_model,
+        outbound_tx,
+        _node_keypair,
+        cancel_token,
+        stats,
+    )
+    .await
+}
+
+pub(crate) async fn handle_inference_request_with_public_model(
+    request_id: String,
+    body: serde_json::Value,
+    backend_url: String,
+    public_model: Option<String>,
     outbound_tx: mpsc::Sender<ProviderMessage>,
     _node_keypair: Option<Arc<NodeKeyPair>>,
     cancel_token: CancellationToken,
@@ -73,6 +158,7 @@ pub async fn handle_inference_request(
             &body,
             &backend_url,
             &outbound_tx,
+            public_model.as_deref(),
             &cancel_token,
             &stats,
         )
@@ -83,6 +169,7 @@ pub async fn handle_inference_request(
             &body,
             &backend_url,
             &outbound_tx,
+            public_model.as_deref(),
             &cancel_token,
             &stats,
         )
@@ -131,6 +218,7 @@ async fn handle_non_streaming_request(
     body: &serde_json::Value,
     backend_url: &str,
     outbound_tx: &mpsc::Sender<ProviderMessage>,
+    response_model: Option<&str>,
     cancel_token: &CancellationToken,
     stats: &Option<Arc<AtomicProviderStats>>,
 ) -> Result<()> {
@@ -138,6 +226,7 @@ async fn handle_non_streaming_request(
         .get("endpoint")
         .and_then(|v| v.as_str())
         .unwrap_or("/v1/chat/completions");
+    let request_model = body.get("model").and_then(|v| v.as_str());
     let url = format!("{backend_url}{endpoint}");
     let client = reqwest::Client::new();
 
@@ -152,7 +241,11 @@ async fn handle_non_streaming_request(
 
     let status = response.status();
     if !status.is_success() {
-        let error_body = response.text().await.unwrap_or_default();
+        let error_body = sanitize_error_body(
+            response.text().await.unwrap_or_default(),
+            request_model,
+            response_model,
+        );
         outbound_tx
             .send(ProviderMessage::InferenceError {
                 request_id: request_id.to_string(),
@@ -172,6 +265,7 @@ async fn handle_non_streaming_request(
             anyhow::bail!("request cancelled");
         }
     };
+    let response_json = rewrite_response_model(response_json, response_model);
 
     // Extract token usage info for billing (format-agnostic: handles both
     // chat completions prompt_tokens/completion_tokens and Responses API
@@ -238,6 +332,7 @@ async fn handle_streaming_request(
     body: &serde_json::Value,
     backend_url: &str,
     outbound_tx: &mpsc::Sender<ProviderMessage>,
+    response_model: Option<&str>,
     cancel_token: &CancellationToken,
     stats: &Option<Arc<AtomicProviderStats>>,
 ) -> Result<()> {
@@ -245,6 +340,7 @@ async fn handle_streaming_request(
         .get("endpoint")
         .and_then(|v| v.as_str())
         .unwrap_or("/v1/chat/completions");
+    let request_model = body.get("model").and_then(|v| v.as_str());
     let url = format!("{backend_url}{endpoint}");
     let client = reqwest::Client::new();
 
@@ -259,7 +355,11 @@ async fn handle_streaming_request(
 
     let status = response.status();
     if !status.is_success() {
-        let error_body = response.text().await.unwrap_or_default();
+        let error_body = sanitize_error_body(
+            response.text().await.unwrap_or_default(),
+            request_model,
+            response_model,
+        );
         outbound_tx
             .send(ProviderMessage::InferenceError {
                 request_id: request_id.to_string(),
@@ -341,8 +441,12 @@ async fn handle_streaming_request(
                     return Ok(());
                 }
 
+                let mut forwarded_line = line.clone();
+
                 // Try to extract usage from chunk (some backends include it)
                 if let Ok(chunk_json) = serde_json::from_str::<serde_json::Value>(data) {
+                    let chunk_json = rewrite_response_model(chunk_json, response_model);
+
                     if let Some(usage) = chunk_json.get("usage") {
                         if let Some(pt) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
                             prompt_tokens = pt;
@@ -373,13 +477,18 @@ async fn handle_streaming_request(
                             }
                         }
                     }
+
+                    forwarded_line = format!(
+                        "data: {}",
+                        serde_json::to_string(&chunk_json).unwrap_or_else(|_| data.to_string())
+                    );
                 }
 
                 // Forward the SSE line to coordinator
                 outbound_tx
                     .send(ProviderMessage::InferenceResponseChunk {
                         request_id: request_id.to_string(),
-                        data: line.clone(),
+                        data: forwarded_line,
                     })
                     .await
                     .ok();
@@ -1003,6 +1112,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_non_streaming_response_uses_public_model_id() {
+        use axum::{Json, Router, routing::post};
+
+        let leaked_model =
+            "/Users/provider/.cache/huggingface/hub/models--mlx-community--Qwen3.5/snapshots/main";
+        let public_model = "mlx-community/Qwen3.5-122B-A10B-8bit";
+        let leaked_model_for_server = leaked_model.to_string();
+
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move || {
+                let leaked_model = leaked_model_for_server.clone();
+                async move {
+                    Json(serde_json::json!({
+                        "id": "chatcmpl-test",
+                        "object": "chat.completion",
+                        "model": leaked_model,
+                        "choices": [{"message": {"role": "assistant", "content": "Hello!"}}],
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+                    }))
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({
+            "model": leaked_model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": false
+        });
+
+        let dead = handle_inference_request_with_public_model(
+            "req-public-model".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            Some(public_model.to_string()),
+            tx,
+            None,
+            CancellationToken::new(),
+            None,
+        )
+        .await;
+        assert!(!dead, "backend should not be reported as dead");
+
+        let chunk_msg = rx.recv().await.unwrap();
+        match chunk_msg {
+            ProviderMessage::InferenceResponseChunk { data, .. } => {
+                let payload = data.trim_start_matches("data: ");
+                let json: serde_json::Value = serde_json::from_str(payload).unwrap();
+                assert_eq!(
+                    json.get("model").and_then(|v| v.as_str()),
+                    Some(public_model)
+                );
+                assert!(
+                    !payload.contains(leaked_model),
+                    "response should not expose backend model path"
+                );
+            }
+            other => panic!("Expected InferenceResponseChunk, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
     async fn test_handle_error_response() {
         use axum::{Router, http::StatusCode, routing::post};
 
@@ -1119,6 +1298,228 @@ mod tests {
             "Expected InferenceComplete as last message, got {:?}",
             last
         );
+    }
+
+    #[tokio::test]
+    async fn test_streaming_response_uses_public_model_id() {
+        use axum::{Router, body::Body, http::StatusCode, response::Response, routing::post};
+
+        let leaked_model =
+            "/Users/provider/.cache/huggingface/hub/models--mlx-community--Qwen3.5/snapshots/main";
+        let public_model = "mlx-community/Qwen3.5-122B-A10B-8bit";
+        let chunk = serde_json::json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "model": leaked_model,
+            "choices": [{"delta": {"content": "Hello"}}]
+        });
+        let sse_data = format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            serde_json::to_string(&chunk).unwrap()
+        );
+
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move || {
+                let sse_data = sse_data.clone();
+                async move {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from(sse_data))
+                        .unwrap()
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({
+            "model": leaked_model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true
+        });
+
+        let dead = handle_inference_request_with_public_model(
+            "req-stream-public-model".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            Some(public_model.to_string()),
+            tx,
+            None,
+            CancellationToken::new(),
+            None,
+        )
+        .await;
+        assert!(!dead, "backend should not be reported as dead");
+
+        let first_msg = rx.recv().await.unwrap();
+        match first_msg {
+            ProviderMessage::InferenceResponseChunk { data, .. } => {
+                let payload = data.trim_start_matches("data: ");
+                let json: serde_json::Value = serde_json::from_str(payload).unwrap();
+                assert_eq!(
+                    json.get("model").and_then(|v| v.as_str()),
+                    Some(public_model)
+                );
+                assert!(
+                    !payload.contains(leaked_model),
+                    "stream chunk should not expose backend model path"
+                );
+            }
+            other => panic!("Expected InferenceResponseChunk, got {:?}", other),
+        }
+
+        let complete_msg = rx.recv().await.unwrap();
+        assert!(
+            matches!(complete_msg, ProviderMessage::InferenceComplete { .. }),
+            "Expected InferenceComplete, got {:?}",
+            complete_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_responses_streaming_event_uses_public_model_id() {
+        use axum::{Router, body::Body, http::StatusCode, response::Response, routing::post};
+
+        let leaked_model =
+            "/Users/provider/.cache/huggingface/hub/models--mlx-community--Qwen3.5/snapshots/main";
+        let public_model = "mlx-community/Qwen3.5-122B-A10B-8bit";
+        let chunk = serde_json::json!({
+            "type": "response.created",
+            "response": {
+                "id": "resp_123",
+                "model": leaked_model
+            }
+        });
+        let sse_data = format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            serde_json::to_string(&chunk).unwrap()
+        );
+
+        let app = Router::new().route(
+            "/v1/responses",
+            post(move || {
+                let sse_data = sse_data.clone();
+                async move {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from(sse_data))
+                        .unwrap()
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({
+            "model": leaked_model,
+            "input": "hi",
+            "endpoint": "/v1/responses",
+            "stream": true
+        });
+
+        let dead = handle_inference_request_with_public_model(
+            "req-stream-response-model".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            Some(public_model.to_string()),
+            tx,
+            None,
+            CancellationToken::new(),
+            None,
+        )
+        .await;
+        assert!(!dead, "backend should not be reported as dead");
+
+        let first_msg = rx.recv().await.unwrap();
+        match first_msg {
+            ProviderMessage::InferenceResponseChunk { data, .. } => {
+                let payload = data.trim_start_matches("data: ");
+                let json: serde_json::Value = serde_json::from_str(payload).unwrap();
+                assert_eq!(
+                    json.get("response")
+                        .and_then(|v| v.get("model"))
+                        .and_then(|v| v.as_str()),
+                    Some(public_model)
+                );
+                assert!(
+                    !payload.contains(leaked_model),
+                    "responses stream event should not expose backend model path"
+                );
+            }
+            other => panic!("Expected InferenceResponseChunk, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_error_response_scrubs_backend_model_path() {
+        use axum::{Router, http::StatusCode, routing::post};
+
+        let leaked_model =
+            "/Users/provider/.cache/huggingface/hub/models--mlx-community--Qwen3.5/snapshots/main";
+        let public_model = "mlx-community/Qwen3.5-122B-A10B-8bit";
+        let leaked_error = format!("unknown model: {leaked_model}");
+
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move || {
+                let leaked_error = leaked_error.clone();
+                async move { (StatusCode::BAD_REQUEST, leaked_error) }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let body = serde_json::json!({
+            "model": leaked_model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": false
+        });
+
+        let dead = handle_inference_request_with_public_model(
+            "req-error-public-model".to_string(),
+            body,
+            format!("http://127.0.0.1:{}", addr.port()),
+            Some(public_model.to_string()),
+            tx,
+            None,
+            CancellationToken::new(),
+            None,
+        )
+        .await;
+        assert!(!dead, "backend should not be reported as dead");
+
+        let msg = rx.recv().await.unwrap();
+        match msg {
+            ProviderMessage::InferenceError { error, .. } => {
+                assert!(error.contains(public_model));
+                assert!(
+                    !error.contains(leaked_model),
+                    "error body should not expose backend model path"
+                );
+            }
+            other => panic!("Expected InferenceError, got {:?}", other),
+        }
     }
 
     #[tokio::test]

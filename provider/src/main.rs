@@ -63,6 +63,18 @@ fn default_model_type() -> String {
     "text".into()
 }
 
+fn sanitize_public_model_error(
+    message: impl Into<String>,
+    local_model: &str,
+    public_model: &str,
+) -> String {
+    let message = message.into();
+    if local_model.is_empty() || public_model.is_empty() || local_model == public_model {
+        return message;
+    }
+    message.replace(local_model, public_model)
+}
+
 /// Hardcoded fallback catalog used when the coordinator is unreachable.
 fn fallback_catalog() -> Vec<CatalogModel> {
     vec![
@@ -3465,7 +3477,12 @@ async fn cmd_serve(
                                         .map(|s| (s.model_id.clone(), s.model_path.clone(), s.port, s.pid, s.healthy, s.restarting))
                                 };
 
-                                let mut inprocess_engine = None;
+                                #[cfg(feature = "python")]
+                                let mut inprocess_engine: Option<
+                                    std::sync::Arc<inference::SharedEngine>,
+                                > = None;
+                                let public_model = req_model_id.clone();
+
                                 if let Some((slot_model_id, slot_model_path, slot_port, slot_pid, slot_healthy, slot_restarting)) = slot_info {
                                     if is_inprocess {
                                         #[cfg(feature = "python")]
@@ -3529,7 +3546,11 @@ async fn cmd_serve(
                                                     let _ = outbound_tx.send(
                                                         protocol::ProviderMessage::InferenceError {
                                                             request_id,
-                                                            error: format!("in-process model load failed: {e}"),
+                                                            error: sanitize_public_model_error(
+                                                                format!("in-process model load failed: {e}"),
+                                                                &slot_model_path,
+                                                                &public_model,
+                                                            ),
                                                             status_code: 503,
                                                         }
                                                     ).await;
@@ -3637,10 +3658,7 @@ async fn cmd_serve(
                                 // (InferenceAccepted already sent above, before reload)
 
                                 // Route to the correct backend based on the requested model.
-                                let requested_model = body.get("model")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
+                                let requested_model = req_model_id.clone();
 
                                 // Find the backend URL for this model
                                 let target_url = model_to_url.get(&requested_model)
@@ -3679,16 +3697,36 @@ async fn cmd_serve(
                                         let engine = engine.clone();
                                         let rid2 = rid.clone();
                                         let stats = proxy_stats.clone();
+                                        let public_model = public_model.clone();
                                         tokio::spawn(async move {
-                                            handle_inprocess_request(rid2, body, engine, tx, Some(stats)).await;
+                                            handle_inprocess_request(
+                                                rid2,
+                                                body,
+                                                public_model,
+                                                engine,
+                                                tx,
+                                                Some(stats),
+                                            )
+                                            .await;
                                             let _ = done_tx.send((rid, false)).await;
                                         })
                                     } else {
                                         let kp = proxy_keypair.clone();
                                         let rid2 = rid.clone();
                                         let stats = proxy_stats.clone();
+                                        let public_model = public_model.clone();
                                         tokio::spawn(async move {
-                                            let dead = proxy::handle_inference_request(rid2, body, target_url, tx, Some(kp), token_clone, Some(stats)).await;
+                                            let dead = proxy::handle_inference_request_with_public_model(
+                                                rid2,
+                                                body,
+                                                target_url,
+                                                Some(public_model),
+                                                tx,
+                                                Some(kp),
+                                                token_clone,
+                                                Some(stats),
+                                            )
+                                            .await;
                                             let _ = done_tx.send((rid, dead)).await;
                                         })
                                     }
@@ -3698,8 +3736,19 @@ async fn cmd_serve(
                                         let kp = proxy_keypair.clone();
                                         let rid2 = rid.clone();
                                         let stats = proxy_stats.clone();
+                                        let public_model = public_model.clone();
                                         tokio::spawn(async move {
-                                            let dead = proxy::handle_inference_request(rid2, body, target_url, tx, Some(kp), token_clone, Some(stats)).await;
+                                            let dead = proxy::handle_inference_request_with_public_model(
+                                                rid2,
+                                                body,
+                                                target_url,
+                                                Some(public_model),
+                                                tx,
+                                                Some(kp),
+                                                token_clone,
+                                                Some(stats),
+                                            )
+                                            .await;
                                             let _ = done_tx.send((rid, dead)).await;
                                         })
                                     }
@@ -4289,6 +4338,7 @@ fn extract_inprocess_messages(body: &serde_json::Value) -> Vec<serde_json::Value
 #[cfg(feature = "python")]
 fn build_inprocess_response_json(
     body: &serde_json::Value,
+    public_model: &str,
     text: &str,
     prompt_tokens: u64,
     completion_tokens: u64,
@@ -4297,10 +4347,6 @@ fn build_inprocess_response_json(
         .get("endpoint")
         .and_then(|v| v.as_str())
         .unwrap_or("/v1/chat/completions");
-    let model = body
-        .get("model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
     let usage = serde_json::json!({
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
@@ -4311,7 +4357,7 @@ fn build_inprocess_response_json(
         "/v1/completions" => serde_json::json!({
             "id": format!("cmpl-{}", uuid::Uuid::new_v4()),
             "object": "text_completion",
-            "model": model,
+            "model": public_model,
             "choices": [{
                 "index": 0,
                 "text": text,
@@ -4323,7 +4369,7 @@ fn build_inprocess_response_json(
             "id": format!("msg_{}", uuid::Uuid::new_v4()),
             "type": "message",
             "role": "assistant",
-            "model": model,
+            "model": public_model,
             "content": [{
                 "type": "text",
                 "text": text,
@@ -4337,7 +4383,7 @@ fn build_inprocess_response_json(
         "/v1/responses" => serde_json::json!({
             "id": format!("resp_{}", uuid::Uuid::new_v4()),
             "object": "response",
-            "model": model,
+            "model": public_model,
             "output": [{
                 "id": format!("msg_{}", uuid::Uuid::new_v4()),
                 "type": "message",
@@ -4358,7 +4404,7 @@ fn build_inprocess_response_json(
         _ => serde_json::json!({
             "id": format!("chatcmpl-{}", uuid::Uuid::new_v4()),
             "object": "chat.completion",
-            "model": model,
+            "model": public_model,
             "choices": [{
                 "index": 0,
                 "message": {
@@ -4377,6 +4423,7 @@ fn build_inprocess_response_json(
 async fn handle_inprocess_request(
     request_id: String,
     body: serde_json::Value,
+    public_model: String,
     engine: std::sync::Arc<inference::SharedEngine>,
     outbound_tx: tokio::sync::mpsc::Sender<protocol::ProviderMessage>,
     stats: Option<std::sync::Arc<coordinator::AtomicProviderStats>>,
@@ -4418,6 +4465,7 @@ async fn handle_inprocess_request(
                     let chunk = serde_json::json!({
                         "id": format!("chatcmpl-{}", uuid::Uuid::new_v4()),
                         "object": "chat.completion.chunk",
+                        "model": public_model.clone(),
                         "choices": [{
                             "delta": {"content": token.text},
                             "index": 0,
@@ -4458,6 +4506,7 @@ async fn handle_inprocess_request(
             if !is_streaming {
                 let response_json = build_inprocess_response_json(
                     &body,
+                    &public_model,
                     &inference_result.text,
                     inference_result.prompt_tokens,
                     inference_result.completion_tokens,
@@ -4502,7 +4551,13 @@ async fn handle_inprocess_request(
             let _ = outbound_tx
                 .send(protocol::ProviderMessage::InferenceError {
                     request_id,
-                    error: e.to_string(),
+                    error: sanitize_public_model_error(
+                        e.to_string(),
+                        body.get("model")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default(),
+                        &public_model,
+                    ),
                     status_code: 500,
                 })
                 .await;
@@ -7140,6 +7195,8 @@ async fn cmd_autoupdate(action: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "python")]
+    use serde_json::json;
     use std::os::unix::fs::PermissionsExt;
 
     fn write_test_command(script: &str) -> std::path::PathBuf {
@@ -7238,6 +7295,43 @@ mod tests {
             std::env::remove_var("EIGENINFERENCE_INFERENCE_BACKEND");
         }
         assert!(validate_private_text_runtime(true).is_err());
+    }
+
+    #[cfg(feature = "python")]
+    #[test]
+    fn test_build_inprocess_response_json_uses_public_model_id() {
+        let leaked_model =
+            "/Users/provider/.cache/huggingface/hub/models--mlx-community--Qwen3.5/snapshots/main";
+        let public_model = "mlx-community/Qwen3.5-122B-A10B-8bit";
+        let body = json!({
+            "endpoint": "/v1/chat/completions",
+            "model": leaked_model,
+        });
+
+        let response = build_inprocess_response_json(&body, public_model, "Hello", 12, 5);
+
+        assert_eq!(
+            response.get("model").and_then(|v| v.as_str()),
+            Some(public_model)
+        );
+        let response_str = serde_json::to_string(&response).expect("response should serialize");
+        assert!(
+            !response_str.contains(leaked_model),
+            "in-process responses should not expose backend model paths"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_public_model_error_rewrites_local_path() {
+        let leaked_model =
+            "/Users/provider/.cache/huggingface/hub/models--mlx-community--Qwen3.5/snapshots/main";
+        let public_model = "mlx-community/Qwen3.5-122B-A10B-8bit";
+        let message = format!("failed to load model from {leaked_model}");
+
+        let sanitized = sanitize_public_model_error(message, leaked_model, public_model);
+
+        assert!(sanitized.contains(public_model));
+        assert!(!sanitized.contains(leaked_model));
     }
 
     /// Verify that spawn_backend_log_forwarder captures stdout/stderr from a child

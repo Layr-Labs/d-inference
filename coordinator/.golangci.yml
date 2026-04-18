@@ -110,7 +110,6 @@ linters-settings:
 
   sloglint:
     no-global: "all"
-    context: "scope"
 
   stylecheck:
     checks:

@@ -82,6 +82,11 @@ type PendingRequest struct {
 	// The post-inference charge adjusts for the difference between the
 	// actual cost and this reservation, preventing billing race conditions.
 	ReservedMicroUSD int64
+
+	// ChunksForwarded counts SSE data chunks the coordinator forwarded to the
+	// consumer. Used to sanity-check the provider's self-reported token count
+	// and prevent billing inflation attacks.
+	ChunksForwarded int64
 }
 
 // Provider represents a connected provider agent.

@@ -26,6 +26,15 @@ const (
 	thermalPenaltySeriousMs  = 8_000.0
 	nearTieCostWindowMs      = 750.0
 	challengeFreshnessMaxAge = 6 * time.Minute
+
+	// kvCacheBytesPerToken is a per-token KV-cache size estimate used by
+	// the free-memory admission gate. MLX 4-bit attention caches are
+	// roughly 0.5 MB/token for 7-8B models; larger models use ~1 MB/token.
+	// We use the smaller value as a conservative under-estimate so we
+	// don't reject valid placements during the initial rollout. Refine
+	// per-architecture later if measured behavior diverges.
+	kvCacheBytesPerToken = 524_288 // 0.5 MB
+	bytesPerGB           = 1 << 30
 )
 
 type routingSnapshot struct {
@@ -43,6 +52,8 @@ type routingSnapshot struct {
 	systemMetrics      protocol.SystemMetrics
 	gpuMemoryActiveGB  float64
 	totalMemoryGB      float64
+	modelSizeGB        float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
+	modelLoaded        bool    // true when the requested model is the currently-running slot
 }
 
 type routingCandidate struct {
@@ -52,6 +63,18 @@ type routingCandidate struct {
 	effectiveQueue int
 	breakdown      costBreakdown
 }
+
+// candidateRejection enumerates why a provider that passed structural
+// gates (status, trust, slot state, thermal) was nonetheless excluded
+// from selection. Used to populate RoutingDecision counters so callers
+// can distinguish "no provider serves this model" from "every fitting
+// provider is full".
+type candidateRejection int
+
+const (
+	rejectNone candidateRejection = iota
+	rejectCapacity
+)
 
 // costBreakdown decomposes the routing cost so callers can log or
 // expose individual contributions. The numeric values match the terms
@@ -71,17 +94,18 @@ type costBreakdown struct {
 // selection. Returned by ReserveProviderEx so callers can emit metrics
 // and structured logs without reaching into registry internals.
 type RoutingDecision struct {
-	ProviderID     string  // winning provider, empty if no selection
-	Model          string  // requested model
-	CostMs         float64 // total cost of the winning candidate
-	StateMs        float64 // slot-state penalty contribution
-	QueueMs        float64 // pendingForModel × queueDepthPenaltyMs
-	PendingMs      float64 // totalPending × totalPendingPenaltyMs
-	BacklogMs      float64 // tokens-ahead / decodeTPS contribution
-	ThisReqMs      float64 // this request's prefill+decode contribution
-	HealthMs       float64 // memory/CPU/thermal/GPU-util contribution
-	EffectiveQueue int     // max(pendingForModel, backendRunning+backendWaiting)
-	CandidateCount int     // total eligible candidates evaluated
+	ProviderID         string  // winning provider, empty if no selection
+	Model              string  // requested model
+	CostMs             float64 // total cost of the winning candidate
+	StateMs            float64 // slot-state penalty contribution
+	QueueMs            float64 // pendingForModel × queueDepthPenaltyMs
+	PendingMs          float64 // totalPending × totalPendingPenaltyMs
+	BacklogMs          float64 // tokens-ahead / decodeTPS contribution
+	ThisReqMs          float64 // this request's prefill+decode contribution
+	HealthMs           float64 // memory/CPU/thermal/GPU-util contribution
+	EffectiveQueue     int     // max(pendingForModel, backendRunning+backendWaiting)
+	CandidateCount     int     // total candidates that passed all gates
+	CapacityRejections int     // candidates rejected by the free-memory admission gate
 }
 
 // ReserveProvider selects a hardware-routable provider for the request and
@@ -112,9 +136,13 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	selected, candidateCount := r.selectBestCandidateLockedEx(model, pr, excludeIDs...)
+	selected, candidateCount, capacityRejections := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
 	if selected == nil {
-		return nil, RoutingDecision{Model: model, CandidateCount: candidateCount}
+		return nil, RoutingDecision{
+			Model:              model,
+			CandidateCount:     candidateCount,
+			CapacityRejections: capacityRejections,
+		}
 	}
 
 	p := selected.provider
@@ -124,7 +152,11 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	// Re-check capacity under the provider lock in case another goroutine
 	// changed the pending set between snapshot and reservation.
 	if !r.providerCanAdmitLocked(p, model) {
-		return nil, RoutingDecision{Model: model, CandidateCount: candidateCount}
+		return nil, RoutingDecision{
+			Model:              model,
+			CandidateCount:     candidateCount,
+			CapacityRejections: capacityRejections,
+		}
 	}
 
 	pr.ProviderID = p.ID
@@ -135,17 +167,18 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 
 	bd := selected.breakdown
 	decision := RoutingDecision{
-		ProviderID:     p.ID,
-		Model:          model,
-		CostMs:         bd.Total,
-		StateMs:        bd.StateMs,
-		QueueMs:        bd.QueueMs,
-		PendingMs:      bd.PendingMs,
-		BacklogMs:      bd.BacklogMs,
-		ThisReqMs:      bd.ThisReqMs,
-		HealthMs:       bd.HealthMs,
-		EffectiveQueue: selected.effectiveQueue,
-		CandidateCount: candidateCount,
+		ProviderID:         p.ID,
+		Model:              model,
+		CostMs:             bd.Total,
+		StateMs:            bd.StateMs,
+		QueueMs:            bd.QueueMs,
+		PendingMs:          bd.PendingMs,
+		BacklogMs:          bd.BacklogMs,
+		ThisReqMs:          bd.ThisReqMs,
+		HealthMs:           bd.HealthMs,
+		EffectiveQueue:     selected.effectiveQueue,
+		CandidateCount:     candidateCount,
+		CapacityRejections: capacityRejections,
 	}
 	return p, decision
 }
@@ -160,6 +193,17 @@ func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, e
 // eligible candidates evaluated. Used to populate
 // RoutingDecision.CandidateCount for metrics/log output.
 func (r *Registry) selectBestCandidateLockedEx(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, int) {
+	c, _, count := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
+	return c, count
+}
+
+// selectBestCandidateLockedFull is the full-fidelity selection that
+// also reports how many providers were rejected by capacity-style
+// gates (memory). Capacity rejection count lets ReserveProviderEx
+// distinguish "no provider serves this model" from "every fitting
+// provider is over-subscribed", which is the difference between the
+// no_provider and over_capacity outcome counters.
+func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, int, int) {
 	excludeSet := make(map[string]struct{}, len(excludeIDs))
 	for _, id := range excludeIDs {
 		excludeSet[id] = struct{}{}
@@ -168,6 +212,7 @@ func (r *Registry) selectBestCandidateLockedEx(model string, pr *PendingRequest,
 	var best *routingCandidate
 	var nearTies []*routingCandidate
 	candidateCount := 0
+	capacityRejections := 0
 	for _, p := range r.providers {
 		if _, excluded := excludeSet[p.ID]; excluded {
 			continue
@@ -176,8 +221,11 @@ func (r *Registry) selectBestCandidateLockedEx(model string, pr *PendingRequest,
 		if !ok {
 			continue
 		}
-		candidate, ok := r.buildCandidate(snap, pr)
+		candidate, reason, ok := r.buildCandidateWithReason(snap, pr)
 		if !ok {
+			if reason == rejectCapacity {
+				capacityRejections++
+			}
 			continue
 		}
 		candidateCount++
@@ -193,7 +241,7 @@ func (r *Registry) selectBestCandidateLockedEx(model string, pr *PendingRequest,
 	}
 
 	if best == nil {
-		return nil, candidateCount
+		return nil, candidateCount, capacityRejections
 	}
 	winner := best
 	if len(nearTies) > 1 {
@@ -223,7 +271,7 @@ func (r *Registry) selectBestCandidateLockedEx(model string, pr *PendingRequest,
 		}
 	}
 	r.logRoutingDecision(model, pr, winner, candidateCount)
-	return winner, candidateCount
+	return winner, candidateCount, capacityRejections
 }
 
 // logRoutingDecision emits a structured debug-level record of the
@@ -284,6 +332,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 		decodeTPS:     resolvedDecodeTPS(p),
 		prefillTPS:    resolvedPrefillTPS(p),
 		totalMemoryGB: float64(p.Hardware.MemoryGB),
+		modelSizeGB:   r.catalogSizeGBLocked(model),
 	}
 
 	for _, pr := range p.pendingReqs {
@@ -314,24 +363,49 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 			break
 		}
 	}
+	snap.modelLoaded = snap.slotState == "running"
 
 	return snap, true
 }
 
+// freeMemoryAdmits returns true when the provider has enough headroom
+// to serve the request. Disabled (always true) when the catalog has no
+// SizeGB for the model or the provider hasn't reported total memory —
+// no signal to gate on. Conservative on the load side: we assume a
+// cold provider needs full model + KV cache, while a provider already
+// running the model only needs incremental KV space.
+func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) bool {
+	if snap.modelSizeGB <= 0 || snap.totalMemoryGB <= 0 {
+		return true
+	}
+	required := snap.modelSizeGB
+	if snap.modelLoaded {
+		required = 0 // weights already resident; only KV is incremental
+	}
+	tokens := reqPromptTokens + reqMaxTokens
+	if tokens < 0 {
+		tokens = 0
+	}
+	required += float64(int64(tokens)*kvCacheBytesPerToken) / float64(bytesPerGB)
+	free := snap.totalMemoryGB - snap.gpuMemoryActiveGB
+	return free >= required
+}
+
 func (r *Registry) buildCandidate(snap routingSnapshot, pr *PendingRequest) (*routingCandidate, bool) {
+	c, _, ok := r.buildCandidateWithReason(snap, pr)
+	return c, ok
+}
+
+// buildCandidateWithReason returns the candidate plus, on rejection,
+// the reason so callers can split metrics by failure mode.
+func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingRequest) (*routingCandidate, candidateRejection, bool) {
 	statePenalty, eligible := slotStatePenalty(snap.slotState)
 	if !eligible {
-		return nil, false
+		return nil, rejectNone, false
 	}
 
 	if snap.systemMetrics.ThermalState == "critical" {
-		return nil, false
-	}
-
-	effectiveQueue := snap.pendingForModel
-	backendDepth := snap.backendRunning + snap.backendWaiting
-	if backendDepth > effectiveQueue {
-		effectiveQueue = backendDepth
+		return nil, rejectNone, false
 	}
 
 	reqMax := pr.RequestedMaxTokens
@@ -341,6 +415,19 @@ func (r *Registry) buildCandidate(snap routingSnapshot, pr *PendingRequest) (*ro
 	reqPrompt := pr.EstimatedPromptTokens
 	if reqPrompt < 0 {
 		reqPrompt = 0
+	}
+
+	// Free-memory admission gate (Phase 1). A provider that claims to
+	// serve the model but doesn't have headroom for weights + KV cache
+	// is rejected here so we don't OOM the backend post-routing.
+	if !freeMemoryAdmits(snap, reqPrompt, reqMax) {
+		return nil, rejectCapacity, false
+	}
+
+	effectiveQueue := snap.pendingForModel
+	backendDepth := snap.backendRunning + snap.backendWaiting
+	if backendDepth > effectiveQueue {
+		effectiveQueue = backendDepth
 	}
 
 	waitingBacklogTokens := float64(snap.backendWaiting * reqMax)
@@ -370,7 +457,7 @@ func (r *Registry) buildCandidate(snap routingSnapshot, pr *PendingRequest) (*ro
 			HealthMs:  healthMs,
 			Total:     cost,
 		},
-	}, true
+	}, rejectNone, true
 }
 
 func slotStatePenalty(state string) (float64, bool) {

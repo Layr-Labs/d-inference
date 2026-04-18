@@ -319,7 +319,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// providers already failed, waiting 120s for one of them
 			// to come back won't help. Break and return the last error.
 			if attempt > 0 {
-				metrics.RoutingDecisions.WithLabelValues(model, "no_provider").Inc()
+				outcome := "no_provider"
+				if decision.CapacityRejections > 0 && decision.CandidateCount == 0 {
+					// Every fitting candidate was rejected by the
+					// admission gate (memory). Surface as over_capacity
+					// so dashboards distinguish "no provider" from
+					// "fleet over-subscribed for this model size".
+					outcome = "over_capacity"
+				}
+				metrics.RoutingDecisions.WithLabelValues(model, outcome).Inc()
 				break
 			}
 			// No idle provider — try queueing.

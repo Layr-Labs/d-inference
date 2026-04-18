@@ -125,12 +125,14 @@ func TestAlgorithm_P1_RejectsProviderTooSmallForModel(t *testing.T) {
 	reg := New(testLogger())
 	model := "needs-32gb-model"
 	// Catalog says this model needs ~32 GB.
-	reg.SetModelCatalog([]CatalogEntry{{ID: model}})
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 32}})
 
-	// One small (24 GB) provider claiming to serve the model. With no
-	// memory gate, this provider would be selected and then crash.
+	// One small (24 GB) provider claiming to serve the model but not
+	// currently running it (cold backend). With no memory gate, this
+	// provider would be selected and then OOM trying to load the model.
 	scenarioProvider{
 		id: "small", decodeTPS: 30, totalMemGB: 24, gpuActiveGB: 1,
+		slotState: "idle_shutdown",
 	}.register(t, reg, model)
 
 	p := reserveOne(reg, model, 256)
@@ -146,7 +148,8 @@ func TestAlgorithm_P1_RejectsProviderTooSmallForModel(t *testing.T) {
 func TestAlgorithm_P1_PrefersBusyFitOverIdleNoFit(t *testing.T) {
 	reg := New(testLogger())
 	model := "p1-busy-vs-idle-model"
-	reg.SetModelCatalog([]CatalogEntry{{ID: model}})
+	// 32 GB model: only the 128 GB provider fits.
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 32}})
 
 	scenarioProvider{
 		id: "big-busy", decodeTPS: 80, totalMemGB: 128, gpuActiveGB: 50,
@@ -162,6 +165,54 @@ func TestAlgorithm_P1_PrefersBusyFitOverIdleNoFit(t *testing.T) {
 	}
 	if p.ID != "big-busy" {
 		t.Fatalf("got %q, want big-busy. The small provider can't fit the model — Phase 1 must reject it.", p.ID)
+	}
+}
+
+// A provider that ALREADY has the model loaded (slot.State == "running")
+// only needs incremental KV space, not the full weights footprint.
+// This guards against an over-eager gate that would reject a warm
+// provider as "no room for the model" when the model is already
+// resident.
+func TestAlgorithm_P1_DoesNotRejectWarmProviderWithoutWeightsHeadroom(t *testing.T) {
+	reg := New(testLogger())
+	model := "p1-warm-model"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 32}})
+
+	// 48 GB provider currently running the model with 35 GB of GPU
+	// memory active (model + some KV). Free memory is 13 GB — far less
+	// than the 32 GB model footprint. But the gate must accept this
+	// provider because the weights are already resident.
+	scenarioProvider{
+		id: "warm-running", decodeTPS: 60, totalMemGB: 48, gpuActiveGB: 35,
+		slotState: "running",
+	}.register(t, reg, model)
+
+	p := reserveOne(reg, model, 256)
+	if p == nil {
+		t.Fatal("expected warm-running to be admitted (model already loaded), got nil")
+	}
+	if p.ID != "warm-running" {
+		t.Fatalf("got %q, want warm-running", p.ID)
+	}
+}
+
+// When the catalog has no SizeGB for a model, the gate must not gate.
+// This preserves backwards compatibility with catalog entries written
+// before the SizeGB field existed.
+func TestAlgorithm_P1_NoSizeInCatalogDisablesGate(t *testing.T) {
+	reg := New(testLogger())
+	model := "p1-unsized-model"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model}}) // SizeGB unset
+
+	// Tiny provider that would fail the gate if SizeGB were set.
+	scenarioProvider{
+		id: "tiny", decodeTPS: 20, totalMemGB: 8, gpuActiveGB: 7,
+		slotState: "idle_shutdown",
+	}.register(t, reg, model)
+
+	p := reserveOne(reg, model, 256)
+	if p == nil {
+		t.Fatal("expected tiny to be admitted (gate disabled when SizeGB=0), got nil")
 	}
 }
 

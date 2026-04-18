@@ -223,6 +223,7 @@ func (s *Server) SyncModelCatalog() {
 			entries = append(entries, registry.CatalogEntry{
 				ID:         m.ID,
 				WeightHash: m.WeightHash,
+				SizeGB:     m.SizeGB,
 			})
 		}
 	}

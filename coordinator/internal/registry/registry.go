@@ -503,7 +503,8 @@ func TruncHash(h string) string {
 // CatalogEntry holds metadata about an active model in the catalog.
 type CatalogEntry struct {
 	ID         string
-	WeightHash string // expected SHA-256 weight fingerprint (empty = not enforced)
+	WeightHash string  // expected SHA-256 weight fingerprint (empty = not enforced)
+	SizeGB     float64 // disk/GPU footprint of the model weights (zero = unknown, gate disabled)
 }
 
 // SetModelCatalog updates the set of active models. Only models in this
@@ -544,6 +545,18 @@ func (r *Registry) CatalogWeightHash(model string) string {
 		return e.WeightHash
 	}
 	return ""
+}
+
+// catalogSizeGBLocked returns the model's reported weight footprint in GB,
+// or 0 when unknown. Caller must hold r.mu (read or write). Zero means the
+// memory-admission gate should not enforce for this model — typically a
+// catalog entry that pre-dates the SizeGB field, or a model the operator
+// hasn't sized yet.
+func (r *Registry) catalogSizeGBLocked(model string) float64 {
+	if e, ok := r.modelCatalog[model]; ok {
+		return e.SizeGB
+	}
+	return 0
 }
 
 // trustMeetsMinimum returns true if the given trust level meets the minimum.

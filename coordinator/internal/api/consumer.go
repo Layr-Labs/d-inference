@@ -366,9 +366,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		metrics.RoutingDecisions.WithLabelValues(model, "selected").Inc()
 		metrics.ProviderSelected.WithLabelValues(provider.ID, model).Inc()
 		metrics.RoutingCostMs.WithLabelValues(model).Observe(decision.CostMs)
-	if decision.EffectiveTPS > 0 {
-		metrics.EffectiveDecodeTPS.WithLabelValues(provider.ID).Set(decision.EffectiveTPS)
-	}
+		if decision.EffectiveTPS > 0 {
+			metrics.EffectiveDecodeTPS.WithLabelValues(provider.ID).Set(decision.EffectiveTPS)
+		}
 
 		// E2E encryption — must be done per provider (different keys).
 		if provider.PublicKey == "" {

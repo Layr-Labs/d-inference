@@ -26,14 +26,14 @@ const (
 	// slow-provider decode, so the cost function actually spreads load
 	// across the fleet. Wider tie window admits more candidates to the
 	// queue-depth tie-break + random distribution.
-	queueDepthPenaltyMs      = 3_000.0
-	totalPendingPenaltyMs    = 750.0
-	memoryPressurePenaltyMs  = 4_000.0
-	cpuUsagePenaltyMs        = 1_500.0
-	gpuUtilizationPenaltyMs  = 5_000.0
-	thermalPenaltyFairMs     = 2_000.0
-	thermalPenaltySeriousMs  = 8_000.0
-	nearTieCostWindowMs      = 3_000.0
+	queueDepthPenaltyMs     = 3_000.0
+	totalPendingPenaltyMs   = 750.0
+	memoryPressurePenaltyMs = 4_000.0
+	cpuUsagePenaltyMs       = 1_500.0
+	gpuUtilizationPenaltyMs = 5_000.0
+	thermalPenaltyFairMs    = 2_000.0
+	thermalPenaltySeriousMs = 8_000.0
+	nearTieCostWindowMs     = 3_000.0
 	// modelSwapPenaltyMs is added when a provider is currently serving a
 	// different model than the one requested. Loading a fresh model
 	// requires unloading the current one, freeing GPU memory, loading
@@ -41,7 +41,7 @@ const (
 	// for an 8 B model. We use 15 s as a representative midpoint so
 	// the cost function prefers a cold-but-correct provider over one
 	// that would have to swap.
-	modelSwapPenaltyMs = 15_000.0
+	modelSwapPenaltyMs       = 15_000.0
 	challengeFreshnessMaxAge = 6 * time.Minute
 
 	// kvCacheBytesPerToken is a per-token KV-cache size estimate used by
@@ -245,8 +245,13 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		excludeSet[id] = struct{}{}
 	}
 
-	var best *routingCandidate
-	var nearTies []*routingCandidate
+	// Two-pass selection: collect all eligible candidates first, then
+	// compute best + tie pool. The single-pass approach was order-
+	// dependent — when a new best replaced an older one within the tie
+	// window, candidates near the OLD best (and still near the NEW
+	// best) were dropped from the pool, making the queue-depth tie-
+	// break flaky under map iteration randomness.
+	candidates := make([]*routingCandidate, 0, len(r.providers))
 	candidateCount := 0
 	capacityRejections := 0
 	for _, p := range r.providers {
@@ -264,20 +269,25 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 			}
 			continue
 		}
+		candidates = append(candidates, candidate)
 		candidateCount++
-
-		if best == nil || candidate.costMs < best.costMs {
-			best = candidate
-			nearTies = []*routingCandidate{candidate}
-			continue
-		}
-		if math.Abs(candidate.costMs-best.costMs) <= nearTieCostWindowMs {
-			nearTies = append(nearTies, candidate)
-		}
 	}
 
-	if best == nil {
+	if len(candidates) == 0 {
 		return nil, candidateCount, capacityRejections
+	}
+
+	var best *routingCandidate
+	for _, c := range candidates {
+		if best == nil || c.costMs < best.costMs {
+			best = c
+		}
+	}
+	nearTies := make([]*routingCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		if math.Abs(c.costMs-best.costMs) <= nearTieCostWindowMs {
+			nearTies = append(nearTies, c)
+		}
 	}
 	winner := best
 	if len(nearTies) > 1 {
@@ -421,11 +431,20 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	if snap.modelLoaded {
 		required = 0 // weights already resident; only KV is incremental
 	}
-	tokens := reqPromptTokens + reqMaxTokens
+	tokens := int64(reqPromptTokens) + int64(reqMaxTokens)
 	if tokens < 0 {
 		tokens = 0
 	}
-	required += float64(int64(tokens)*kvCacheBytesPerToken) / float64(bytesPerGB)
+	// Defensive cap on token count for the KV calc. Realistic prompts top
+	// out around 1 M tokens on the largest context windows (Gemini-class);
+	// 16 M leaves comfortable slack for synthetic/abusive inputs without
+	// risking int64 overflow when multiplied by kvCacheBytesPerToken
+	// (16 M × 0.5 MB = 8 TB, comfortably under int64 max).
+	const maxTokensForCalc = 16 << 20
+	if tokens > maxTokensForCalc {
+		tokens = maxTokensForCalc
+	}
+	required += float64(tokens*kvCacheBytesPerToken) / float64(bytesPerGB)
 	free := snap.totalMemoryGB - snap.gpuMemoryActiveGB
 	return free >= required
 }
@@ -489,9 +508,11 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	thisReqMs := float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
 	healthMs := healthPenaltyMs(snap.systemMetrics, snap.gpuMemoryActiveGB, snap.totalMemoryGB)
 	// Phase 5: penalize providers that would have to unload their
-	// currently-active model to serve this request.
+	// currently-active model to serve this request. If the requested
+	// model is ALSO already running (multi-slot provider), no swap is
+	// needed — the weights are resident — so suppress the penalty.
 	swapMs := 0.0
-	if snap.servingOtherModel {
+	if snap.servingOtherModel && !snap.modelLoaded {
 		swapMs = modelSwapPenaltyMs
 	}
 	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs + swapMs
@@ -565,7 +586,14 @@ func healthPenaltyMs(m protocol.SystemMetrics, gpuActiveGB, totalMemGB float64) 
 // effectiveDecodeTPS scales the static decode TPS down by current
 // backend batch size. Returns the static value when the load factor is
 // disabled or batch is unknown. Floored at 1 token/s to avoid divide-
-// by-zero or absurd costs from a misreporting backend.
+// by-zero.
+//
+// Note on the floor + large reqMax: when effectiveTPS bottoms out, the
+// per-request decode cost (reqMax / effectiveTPS * 1000) can become
+// very large for big reqMax values. This is intentional — a saturated
+// provider should look strictly worse than less-saturated peers — and
+// the maxConcurrency gate in snapshotProviderLocked already prevents
+// us from getting here when batchSize exceeds the per-tier cap.
 func effectiveDecodeTPS(staticTPS float64, backendRunning int) float64 {
 	if staticTPS <= 0 {
 		return 1.0

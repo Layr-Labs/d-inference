@@ -251,4 +251,3 @@ func TestMetrics_RoutingMetricsAppearInExposition(t *testing.T) {
 		}
 	}
 }
-

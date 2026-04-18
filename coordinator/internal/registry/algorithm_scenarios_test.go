@@ -405,7 +405,7 @@ func TestAlgorithm_P5_WarmProviderStillWinsForSameModel(t *testing.T) {
 		id: "warm-x", decodeTPS: 80, totalMemGB: 128, currentMod: model,
 	}.register(t, reg, model)
 	scenarioProvider{
-		id:   "cold-x",
+		id:        "cold-x",
 		decodeTPS: 80, totalMemGB: 128, slotState: "idle_shutdown",
 	}.register(t, reg, model)
 
@@ -464,6 +464,56 @@ func TestAlgorithm_P5_PrefersColdProviderOverModelSwap(t *testing.T) {
 	if p.ID != "cold-target" {
 		t.Fatalf("got %q, want cold-target. Phase 5 (model-swap penalty) should make "+
 			"swapping warm-other off its current model worse than cold-starting cold-target.", p.ID)
+	}
+}
+
+// Multi-slot regression: a provider may have the requested model
+// "running" alongside another also "running". CurrentModel only
+// tracks one, so a naive swap detector would charge the 15 s
+// penalty even though the requested model is already resident.
+// The fix gates swap on !modelLoaded.
+func TestAlgorithm_P5_NoSwapWhenRequestedModelAlsoRunning(t *testing.T) {
+	reg := New(testLogger())
+	requested := "p5-multi-target"
+	other := "p5-multi-other"
+	reg.SetModelCatalog([]CatalogEntry{{ID: requested}, {ID: other}})
+
+	msg := testRegisterMessage()
+	msg.Models = []protocol.ModelInfo{
+		{ID: requested, ModelType: "chat", Quantization: "4bit"},
+		{ID: other, ModelType: "chat", Quantization: "4bit"},
+	}
+	msg.DecodeTPS = 80
+	msg.Hardware.MemoryGB = 128
+	pMulti := reg.Register("multi", nil, msg)
+	pMulti.mu.Lock()
+	pMulti.TrustLevel = TrustHardware
+	pMulti.RuntimeVerified = true
+	pMulti.LastChallengeVerified = time.Now()
+	pMulti.SystemMetrics = protocol.SystemMetrics{ThermalState: "nominal"}
+	pMulti.CurrentModel = other // tracks one, but both slots are loaded
+	pMulti.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 128,
+		Slots: []protocol.BackendSlotCapacity{
+			{Model: requested, State: "running"},
+			{Model: other, State: "running"},
+		},
+	}
+	pMulti.mu.Unlock()
+
+	// A peer that's also valid but slower; the multi-slot provider
+	// should win because its requested-model slot is already running.
+	scenarioProvider{
+		id: "alt", decodeTPS: 30, totalMemGB: 64,
+	}.register(t, reg, requested)
+
+	p := reserveOne(reg, requested, 256)
+	if p == nil {
+		t.Fatal("expected multi, got nil")
+	}
+	if p.ID != "multi" {
+		t.Fatalf("got %q, want multi. Swap penalty must not fire when the "+
+			"requested model is already loaded in another slot.", p.ID)
 	}
 }
 

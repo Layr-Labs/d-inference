@@ -507,16 +507,28 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		}
 	}
 
-	// Annotate logs with whether the status fields below are
-	// cryptographically bound (statusFieldsTrusted = true) or merely
-	// reported (false).
+	// Status-field enforcement policy (asymmetric, by design):
 	//
-	// TODO(security/v0.3.13+): Once the fleet is fully on v0.3.11+ (target:
-	// 2 release cycles after 0.3.11 GA), flip this to a hard requirement —
-	// providers that don't sign their status fields can lie about
-	// SIPEnabled/BinaryHash etc. with a stolen SE key. Track via
-	// `eigeninference_attestation_challenges_total{outcome="status_sig_missing"}`
-	// — once that counter is zero across the fleet for a week, enforce.
+	// The checks below act on resp.SIPEnabled / SecureBootEnabled /
+	// RDMADisabled / BinaryHash / ActiveModelHash regardless of
+	// statusFieldsTrusted. The asymmetry is intentional during the
+	// v0.3.11 rollout window:
+	//
+	//   - Negative reports (SIP=false, hash mismatch, etc.) ALWAYS mark
+	//     the provider untrusted. Acting on a negative is safe even if
+	//     the field is spoofable: the worst case is a compromised
+	//     provider DoS-ing itself, which we want anyway.
+	//
+	//   - Positive reports (SIP=true, hash matches) are accepted but
+	//     can only be fully trusted when statusFieldsTrusted is true.
+	//     A v0.3.10 provider with a compromised process (but intact SE
+	//     key) can echo a valid nonce signature while lying that
+	//     SIPEnabled=true. We accept this risk during rollout.
+	//
+	// TODO(security/v0.3.13+): Once `attestation_challenges_total{
+	// outcome="status_sig_missing"}` is zero across the fleet for a
+	// week, treat ErrStatusSignatureMissing as a hard challenge failure
+	// (target: 2 release cycles after v0.3.11 GA).
 	s.logger.Debug("attestation challenge response verified",
 		"provider_id", providerID,
 		"status_fields_trusted", statusFieldsTrusted,

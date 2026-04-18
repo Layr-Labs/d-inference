@@ -35,7 +35,7 @@ import (
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
 	"github.com/google/uuid"
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 const (

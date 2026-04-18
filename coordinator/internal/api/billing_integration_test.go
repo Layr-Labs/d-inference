@@ -25,7 +25,7 @@ import (
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // billingTestServer creates a test server with billing enabled in mock mode.

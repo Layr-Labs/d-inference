@@ -30,7 +30,7 @@ import (
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/store"
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // ProviderStatus represents the operational state of a provider.

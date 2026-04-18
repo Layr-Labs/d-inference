@@ -21,7 +21,7 @@ import (
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
 	"golang.org/x/crypto/nacl/box"
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // handleProviderMessages reads WebSocket messages in a loop, dispatches

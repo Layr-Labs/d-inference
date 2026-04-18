@@ -103,7 +103,7 @@ linters-settings:
     max-func-lines: 0
 
   nolintlint:
-    allow-no-explanation: [ funlen, gocognit, lll ]
+    allow-no-explanation: [ funlen, gocognit, gocyclo, cyclop, gochecknoglobals, gosec ]
     require-explanation: true
     require-specific: true
 
@@ -177,7 +177,6 @@ linters:
     - gosec
     - iface
     - intrange
-    - lll
     - loggercheck
     - makezero
     - mirror

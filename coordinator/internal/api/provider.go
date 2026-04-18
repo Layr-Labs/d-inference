@@ -117,7 +117,7 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 // providerReadLoop reads messages from the provider WebSocket and dispatches
 // them. It runs until the connection closes or the context is cancelled.
 //
-//nolint:gocognit,gocyclo,funlen // message dispatch loop with many message types
+//nolint:gocognit,gocyclo,cyclop,funlen // message dispatch loop with many message types
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, acmeResult *ACMEVerificationResult) {
 	var provider *registry.Provider
 	tracker := newChallengeTracker()

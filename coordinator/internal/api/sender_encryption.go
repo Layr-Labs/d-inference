@@ -286,7 +286,8 @@ func (w *sealingResponseWriter) Write(p []byte) (int, error) {
 	case sealModeBuffered:
 		return w.bodyBuf.Write(p)
 	default:
-		return w.inner.Write(p)
+		// Mode is always set by WriteHeader (invoked above when not yet).
+		return 0, fmt.Errorf("sealingResponseWriter: mode not set")
 	}
 }
 

@@ -24,6 +24,13 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	// privyHTTPTimeout bounds how long we wait for Privy REST API responses.
+	privyHTTPTimeout = 10 * time.Second
+	// privyErrorBodyLimit bounds the size of error response bodies we read and log.
+	privyErrorBodyLimit = 1024
+)
+
 // PrivyAuth handles JWT verification and user provisioning via Privy.
 type PrivyAuth struct {
 	appID           string
@@ -71,7 +78,7 @@ func NewPrivyAuth(cfg Config, st store.Store, logger *slog.Logger) (*PrivyAuth, 
 		verificationKey: ecKey,
 		store:           st,
 		logger:          logger,
-		httpClient:      &http.Client{Timeout: 10 * time.Second},
+		httpClient:      &http.Client{Timeout: privyHTTPTimeout},
 	}, nil
 }
 
@@ -190,7 +197,7 @@ func (p *PrivyAuth) fetchUserDetails(privyUserID string) (*privyUserDetails, err
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, privyErrorBodyLimit))
 		return nil, fmt.Errorf("privy: API returned %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -240,7 +247,7 @@ func (p *PrivyAuth) InitEmailOTP(email string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, privyErrorBodyLimit))
 		return fmt.Errorf("privy: OTP init returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -270,7 +277,7 @@ func (p *PrivyAuth) VerifyEmailOTP(email, code string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, privyErrorBodyLimit))
 		return "", fmt.Errorf("privy: OTP verify returned %d: %s", resp.StatusCode, string(respBody))
 	}
 

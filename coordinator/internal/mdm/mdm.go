@@ -28,6 +28,19 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	// webhookResponseBufferSize is the buffered channel capacity for async MDM responses.
+	webhookResponseBufferSize = 16
+	// plistPreviewBytes bounds the plist payload preview included in debug logs.
+	plistPreviewBytes = 2000
+	// securityInfoTimeout is how long we wait for a SecurityInfo webhook after sending.
+	securityInfoTimeout = 30 * time.Second
+	// httpStatusOK is the standard success response code.
+	httpStatusOK = 200
+	// httpStatusMultipleChoices is the lower bound for redirect/error responses (>=300).
+	httpStatusMultipleChoices = 300
+)
+
 // DeviceAttestationResponse contains the DER-encoded certificate chain
 // from Apple's DevicePropertiesAttestation response.
 type DeviceAttestationResponse struct {
@@ -69,8 +82,8 @@ func NewClient(baseURL, apiKey string, logger *slog.Logger) *Client {
 		apiKey:          apiKey,
 		client:          httpClient,
 		logger:          logger,
-		responses:       make(chan *SecurityInfoResponse, 16),
-		attestResponses: make(chan *DeviceAttestationResponse, 16),
+		responses:       make(chan *SecurityInfoResponse, webhookResponseBufferSize),
+		attestResponses: make(chan *DeviceAttestationResponse, webhookResponseBufferSize),
 	}
 }
 
@@ -129,7 +142,7 @@ func (c *Client) LookupDevice(serialNumber string) (*DeviceInfo, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != httpStatusOK {
 		return nil, fmt.Errorf("mdm device lookup returned %d", resp.StatusCode)
 	}
 
@@ -247,7 +260,7 @@ func (c *Client) sendDeviceAttestationWithNonce(udid, nonce string) (string, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 300 {
+	if resp.StatusCode >= httpStatusMultipleChoices {
 		respBody, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("mdm raw command failed (status %d): %s", resp.StatusCode, string(respBody))
 	}
@@ -329,7 +342,7 @@ func (c *Client) HandleWebhook(body []byte) {
 		"size", len(plistData),
 		"has_security_info", hasSecInfo,
 		"has_device_attestation", hasDeviceAttest,
-		"preview", string(plistData[:min(len(plistData), 2000)]),
+		"preview", string(plistData[:min(len(plistData), plistPreviewBytes)]),
 	)
 
 	// Parse the plist for SecurityInfo
@@ -435,7 +448,7 @@ func (c *Client) VerifyProvider(
 	}
 
 	// Step 3: Wait for response (via webhook)
-	secInfo, err := c.WaitForSecurityInfo(device.UDID, 30*time.Second)
+	secInfo, err := c.WaitForSecurityInfo(device.UDID, securityInfoTimeout)
 	if err != nil {
 		result.Error = fmt.Sprintf("SecurityInfo response: %v", err)
 		return result, nil

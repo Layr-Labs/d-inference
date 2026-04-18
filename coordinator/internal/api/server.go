@@ -30,6 +30,7 @@ import (
 
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/billing"
+	"github.com/eigeninference/coordinator/internal/e2e"
 	"github.com/eigeninference/coordinator/internal/mdm"
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
@@ -110,6 +111,11 @@ type Server struct {
 	// coordinator restart, this table is checked to restore trust/reputation.
 	// Populated once at startup from the store.
 	storedProviders map[string]*store.ProviderRecord
+
+	// coordinatorKey is the long-lived X25519 keypair used to receive sealed
+	// requests from senders. Set via SetCoordinatorKey. nil disables the
+	// /v1/encryption-key endpoint and the sealed-request middleware.
+	coordinatorKey *e2e.CoordinatorKey
 }
 
 // NewServer creates a configured Server with all routes mounted.
@@ -217,6 +223,18 @@ func (s *Server) SetConsoleURL(url string) {
 // SetReleaseKey configures the scoped release key for GitHub Actions.
 func (s *Server) SetReleaseKey(key string) {
 	s.releaseKey = key
+}
+
+// SetCoordinatorKey installs the X25519 keypair the coordinator publishes
+// for sender-to-coordinator request encryption. Pass nil to disable.
+func (s *Server) SetCoordinatorKey(k *e2e.CoordinatorKey) {
+	s.coordinatorKey = k
+}
+
+// CoordinatorKey returns the configured coordinator encryption key (or nil).
+// Exposed for tests; production code should not need this.
+func (s *Server) CoordinatorKey() *e2e.CoordinatorKey {
+	return s.coordinatorKey
 }
 
 // SyncBinaryHashes rebuilds knownBinaryHashes from all active releases.
@@ -487,13 +505,21 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/auth/keys", s.requireAuth(s.handleCreateKey))
 
 	// Consumer endpoints — API key auth required.
-	s.mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.handleChatCompletions))
-	s.mux.HandleFunc("POST /v1/responses", s.requireAuth(s.handleChatCompletions)) // Responses API — same handler, auto-detects input vs messages
-	s.mux.HandleFunc("POST /v1/completions", s.requireAuth(s.handleCompletions))
-	s.mux.HandleFunc("POST /v1/messages", s.requireAuth(s.handleAnthropicMessages))
-	s.mux.HandleFunc("POST /v1/audio/transcriptions", s.requireAuth(s.handleTranscriptions))
-	s.mux.HandleFunc("POST /v1/images/generations", s.requireAuth(s.handleImageGenerations))
+	// Inference endpoints are wrapped in sealedTransport so senders can opt into
+	// sender→coordinator encryption by setting Content-Type:
+	// application/eigeninference-sealed+json (see sender_encryption.go).
+	s.mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.sealedTransport(s.handleChatCompletions)))
+	s.mux.HandleFunc("POST /v1/responses", s.requireAuth(s.sealedTransport(s.handleChatCompletions))) // Responses API — same handler, auto-detects input vs messages
+	s.mux.HandleFunc("POST /v1/completions", s.requireAuth(s.sealedTransport(s.handleCompletions)))
+	s.mux.HandleFunc("POST /v1/messages", s.requireAuth(s.sealedTransport(s.handleAnthropicMessages)))
+	s.mux.HandleFunc("POST /v1/audio/transcriptions", s.requireAuth(s.handleTranscriptions)) // multipart, not sealed (binary audio)
+	s.mux.HandleFunc("POST /v1/images/generations", s.requireAuth(s.sealedTransport(s.handleImageGenerations)))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
+
+	// Sender encryption — public key publication for sender→coordinator E2E.
+	// Optional: senders may use this to encrypt request bodies; plaintext path
+	// continues to work unchanged when this header isn't set.
+	s.mux.HandleFunc("GET /v1/encryption-key", s.handleEncryptionKey)
 
 	// Provider image upload — providers POST generated images here (no API key auth,
 	// providers authenticate via request_id which is a secret between coordinator and provider).

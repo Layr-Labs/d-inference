@@ -227,6 +227,14 @@ func (p *Provider) MaxConcurrency() int {
 }
 
 // maxConcurrency is the lock-free version (caller must hold p.mu).
+//
+// Tier values were lowered in Phase 2 of the routing-algorithm rework
+// (was 4/8/16/24/32). The old caps were derived from "how many
+// requests can theoretically fit in GPU memory"; the new caps reflect
+// "how many concurrent decodes a single MLX backend can run before
+// per-request TPS collapses". Empirically this is much smaller than
+// the memory-derived ceiling. Pushing past it makes each request slow
+// without increasing fleet throughput.
 func (p *Provider) maxConcurrency() int {
 	if p.BackendCapacity == nil {
 		return DefaultMaxConcurrent
@@ -239,15 +247,15 @@ func (p *Provider) maxConcurrency() int {
 	var cap int
 	switch {
 	case memGB <= 24:
-		cap = 4
+		cap = 2
 	case memGB <= 48:
-		cap = 8
+		cap = 4
 	case memGB <= 96:
-		cap = 16
+		cap = 6
 	case memGB <= 128:
-		cap = 24
+		cap = 8
 	default:
-		cap = 32
+		cap = 12
 	}
 	return cap
 }

@@ -22,6 +22,9 @@ import (
 	"time"
 )
 
+// statusCompleted is the billing session status for completed sessions.
+const statusCompleted = "completed"
+
 // Compile-time check that MemoryStore implements Store.
 var _ Store = (*MemoryStore)(nil)
 
@@ -475,10 +478,10 @@ func (s *MemoryStore) CompleteBillingSession(sessionID string) error {
 	if !ok {
 		return fmt.Errorf("billing session %q not found", sessionID)
 	}
-	if session.Status == "completed" {
+	if session.Status == statusCompleted {
 		return fmt.Errorf("billing session %q already completed", sessionID)
 	}
-	session.Status = "completed"
+	session.Status = statusCompleted
 	now := time.Now()
 	session.CompletedAt = &now
 	return nil
@@ -490,7 +493,7 @@ func (s *MemoryStore) IsExternalIDProcessed(externalID string) bool {
 	defer s.mu.RUnlock()
 
 	for _, session := range s.billingSessions {
-		if session.ExternalID == externalID && session.Status == "completed" {
+		if session.ExternalID == externalID && session.Status == statusCompleted {
 			return true
 		}
 	}

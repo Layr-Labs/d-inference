@@ -44,9 +44,9 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Derive base URL from the incoming request (respects reverse proxy headers)
-	scheme := "https"
+	scheme := schemeHTTPS
 	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") == "" {
-		scheme = "http"
+		scheme = schemeHTTP
 	}
 	baseURL := fmt.Sprintf("%s://%s", scheme, r.Host)
 

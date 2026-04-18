@@ -58,6 +58,21 @@ const (
 	// firstChunkTimeout is how long to wait for the first chunk from a provider
 	// before considering the attempt failed and retrying.
 	firstChunkTimeout = 10 * time.Second
+
+	// jsonNull is the JSON literal "null", used when normalizing SSE chunks
+	// to detect null-valued fields that need fixing.
+	jsonNull = "null"
+
+	// finishReasonStop is the OpenAI finish_reason value for normal completion.
+	finishReasonStop = "stop"
+
+	// schemeHTTPS and schemeHTTP are URL scheme literals used when constructing
+	// public-facing URLs (download links, upload endpoints, verification URIs).
+	schemeHTTPS = "https"
+	schemeHTTP  = "http"
+
+	// platformMacOSARM64 is the default release platform identifier.
+	platformMacOSARM64 = "macos-arm64"
 )
 
 // chatCompletionRequest is the incoming OpenAI-compatible request body.
@@ -1269,7 +1284,7 @@ func normalizeSSEChunk(chunk string) string {
 	// Remove top-level null fields (usage, system_fingerprint, etc.)
 	// ForgeCode expects usage to be absent or a full object, not null.
 	for _, key := range []string{"usage", "system_fingerprint"} {
-		if v, ok := raw[key]; ok && string(v) == "null" {
+		if v, ok := raw[key]; ok && string(v) == jsonNull {
 			delete(raw, key)
 			changed = true
 		}
@@ -1284,12 +1299,12 @@ func normalizeSSEChunk(chunk string) string {
 					var delta map[string]json.RawMessage
 					if err := json.Unmarshal(deltaRaw, &delta); err == nil {
 						for _, field := range []string{"content", "reasoning_content", "reasoning", "refusal"} {
-							if v, ok := delta[field]; ok && string(v) == "null" {
+							if v, ok := delta[field]; ok && string(v) == jsonNull {
 								delta[field] = json.RawMessage(`""`)
 								changed = true
 							}
 						}
-						if v, ok := delta["tool_calls"]; ok && string(v) == "null" {
+						if v, ok := delta["tool_calls"]; ok && string(v) == jsonNull {
 							delta["tool_calls"] = json.RawMessage(`[]`)
 							changed = true
 						}
@@ -1438,7 +1453,7 @@ func buildNonStreamingResponse(requestID, model string, msg extractedMessage, us
 		message["reasoning"] = msg.Reasoning
 	}
 
-	finishReason := "stop"
+	finishReason := finishReasonStop
 	if len(msg.ToolCalls) > 0 {
 		message["tool_calls"] = msg.ToolCalls
 		finishReason = "tool_calls"
@@ -1565,7 +1580,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // to the hardcoded LatestProviderVersion.
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	// Try release table first.
-	if release := s.store.GetLatestRelease("macos-arm64"); release != nil {
+	if release := s.store.GetLatestRelease(platformMacOSARM64); release != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"version":      release.Version,
 			"download_url": release.URL,
@@ -1576,9 +1591,9 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fallback to hardcoded version + coordinator download.
-	scheme := "https"
+	scheme := schemeHTTPS
 	if r.TLS == nil && !strings.Contains(r.Host, "darkbloom.dev") {
-		scheme = "http"
+		scheme = schemeHTTP
 	}
 	downloadURL := fmt.Sprintf("%s://%s/dl/eigeninference-bundle-macos-arm64.tar.gz", scheme, r.Host)
 

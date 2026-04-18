@@ -968,9 +968,9 @@ func slotStateWarmOverride(backendCap *protocol.BackendCapacity, model string, w
 	for _, slot := range backendCap.Slots {
 		if slot.Model == model {
 			switch slot.State {
-			case "idle_shutdown":
+			case slotStateIdleShutdown:
 				return 0.1
-			case "crashed":
+			case slotStateCrashed:
 				return 0.05
 			}
 			return warmBonus
@@ -990,7 +990,7 @@ func computeHealthFactor(m protocol.SystemMetrics, backendCap *protocol.BackendC
 
 	thermalFactor := 1.0
 	switch m.ThermalState {
-	case "fair":
+	case thermalStateFair:
 		thermalFactor = 0.8
 	case "serious":
 		thermalFactor = 0.4

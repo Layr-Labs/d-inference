@@ -26,6 +26,14 @@ const (
 	thermalPenaltySeriousMs  = 8_000.0
 	nearTieCostWindowMs      = 750.0
 	challengeFreshnessMaxAge = 6 * time.Minute
+
+	// Backend slot states reported by provider heartbeats.
+	slotStateCrashed      = "crashed"
+	slotStateIdleShutdown = "idle_shutdown"
+	slotStateReloading    = "reloading"
+
+	// Thermal states from system metrics.
+	thermalStateFair = "fair"
 )
 
 type routingSnapshot struct {
@@ -290,9 +298,9 @@ func slotStatePenalty(state string) (float64, bool) {
 		return slotStatePenaltyRunning, true
 	case "unknown":
 		return slotStatePenaltyUnknown, true
-	case "idle_shutdown":
+	case slotStateIdleShutdown:
 		return slotStatePenaltyIdleShutdown, true
-	case "reloading", "crashed":
+	case slotStateReloading, slotStateCrashed:
 		return math.Inf(1), false
 	default:
 		return slotStatePenaltyUnknown, true
@@ -313,7 +321,7 @@ func backlogTokenMs(maxTokensPotential int64, waitingTokens, unaccountedPendingT
 func healthPenaltyMs(m protocol.SystemMetrics, gpuActiveGB, totalMemGB float64) float64 {
 	penalty := m.MemoryPressure*memoryPressurePenaltyMs + m.CPUUsage*cpuUsagePenaltyMs
 	switch m.ThermalState {
-	case "fair":
+	case thermalStateFair:
 		penalty += thermalPenaltyFairMs
 	case "serious":
 		penalty += thermalPenaltySeriousMs
@@ -391,7 +399,7 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string) bool {
 				continue
 			}
 			switch slot.State {
-			case "crashed", "reloading":
+			case slotStateCrashed, slotStateReloading:
 				return false
 			}
 			break

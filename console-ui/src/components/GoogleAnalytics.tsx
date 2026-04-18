@@ -2,43 +2,37 @@
 
 import { useEffect } from "react";
 import Script from "next/script";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname } from "next/navigation";
 import {
-  GA_MEASUREMENT_ID,
+  getGoogleAnalyticsMeasurementId,
+  isGoogleAnalyticsEnabled,
   initializeGoogleAnalytics,
-  trackPageView,
+  trackRouteChange,
 } from "@/lib/google-analytics";
 
 export function GoogleAnalytics() {
   const pathname = usePathname();
-  const searchParams = useSearchParams();
-  const queryString = searchParams.toString();
 
   useEffect(() => {
     initializeGoogleAnalytics();
   }, []);
 
   useEffect(() => {
-    if (!GA_MEASUREMENT_ID || !pathname) {
+    if (!isGoogleAnalyticsEnabled() || !pathname) {
       return;
     }
 
-    const pagePath = queryString ? `${pathname}?${queryString}` : pathname;
+    trackRouteChange(pathname);
+  }, [pathname]);
 
-    trackPageView({
-      page_location: window.location.href,
-      page_path: pagePath,
-      page_title: document.title,
-    });
-  }, [pathname, queryString]);
-
-  if (!GA_MEASUREMENT_ID) {
+  const measurementId = getGoogleAnalyticsMeasurementId();
+  if (!measurementId) {
     return null;
   }
 
   return (
     <Script
-      src={`https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`}
+      src={`https://www.googletagmanager.com/gtag/js?id=${measurementId}`}
       strategy="afterInteractive"
     />
   );

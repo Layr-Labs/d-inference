@@ -1,4 +1,3 @@
-import { Suspense } from "react";
 import type { Metadata } from "next";
 import "./globals.css";
 import { AppShell } from "@/components/AppShell";
@@ -27,9 +26,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="font-sans antialiased">
-        <Suspense fallback={null}>
-          <GoogleAnalytics />
-        </Suspense>
+        <GoogleAnalytics />
         <ThemeProvider>
           <PrivyClientProvider>
             <VerificationModeProvider>

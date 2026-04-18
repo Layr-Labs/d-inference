@@ -10,9 +10,9 @@ func TestOutputPriceKnownModels(t *testing.T) {
 		want  int64
 	}{
 		{"qwen3.5-27b-claude-opus-8bit", 780_000},
-		{"mlx-community/Trinity-Mini-8bit", 75_000},
-		{"mlx-community/Qwen3.5-122B-A10B-8bit", 1_040_000},
-		{"mlx-community/MiniMax-M2.5-8bit", 500_000},
+		{"Trinity-Mini-8bit", 75_000},
+		{"Qwen3.5-122B-A10B-8bit", 1_040_000},
+		{"MiniMax-M2.5-8bit", 500_000},
 	}
 
 	for _, tc := range tests {
@@ -29,9 +29,9 @@ func TestInputPriceKnownModels(t *testing.T) {
 		want  int64
 	}{
 		{"qwen3.5-27b-claude-opus-8bit", 100_000},
-		{"mlx-community/Trinity-Mini-8bit", 23_000},
-		{"mlx-community/Qwen3.5-122B-A10B-8bit", 130_000},
-		{"mlx-community/MiniMax-M2.5-8bit", 60_000},
+		{"Trinity-Mini-8bit", 23_000},
+		{"Qwen3.5-122B-A10B-8bit", 130_000},
+		{"MiniMax-M2.5-8bit", 60_000},
 	}
 
 	for _, tc := range tests {
@@ -74,42 +74,42 @@ func TestCalculateCost(t *testing.T) {
 	}{
 		{
 			name:             "1M output tokens at Trinity Mini rate, no input",
-			model:            "mlx-community/Trinity-Mini-8bit",
+			model:            "Trinity-Mini-8bit",
 			promptTokens:     0,
 			completionTokens: 1_000_000,
 			want:             75_000, // $0.075 output only
 		},
 		{
 			name:             "1M input + 1M output at Trinity Mini rate",
-			model:            "mlx-community/Trinity-Mini-8bit",
+			model:            "Trinity-Mini-8bit",
 			promptTokens:     1_000_000,
 			completionTokens: 1_000_000,
 			want:             98_000, // $0.023 input + $0.075 output = $0.098
 		},
 		{
 			name:             "only input tokens at MiniMax rate",
-			model:            "mlx-community/MiniMax-M2.5-8bit",
+			model:            "MiniMax-M2.5-8bit",
 			promptTokens:     1_000_000,
 			completionTokens: 0,
 			want:             60_000, // $0.06 input, no output
 		},
 		{
 			name:             "122B model 1M each",
-			model:            "mlx-community/Qwen3.5-122B-A10B-8bit",
+			model:            "Qwen3.5-122B-A10B-8bit",
 			promptTokens:     1_000_000,
 			completionTokens: 1_000_000,
 			want:             1_170_000, // $0.13 input + $1.04 output = $1.17
 		},
 		{
 			name:             "small request hits minimum",
-			model:            "mlx-community/Trinity-Mini-8bit",
+			model:            "Trinity-Mini-8bit",
 			promptTokens:     10,
 			completionTokens: 10,
 			want:             100, // minimum $0.0001
 		},
 		{
 			name:             "zero tokens hits minimum",
-			model:            "mlx-community/Trinity-Mini-8bit",
+			model:            "Trinity-Mini-8bit",
 			promptTokens:     0,
 			completionTokens: 0,
 			want:             100, // minimum
@@ -189,9 +189,9 @@ func TestAllModelPricesUndercutCompetitors(t *testing.T) {
 	// Competitor output prices (micro-USD per 1M tokens)
 	competitorOutput := map[string]int64{
 		"qwen3.5-27b-claude-opus-8bit":         1_560_000, // OpenRouter $1.56
-		"mlx-community/Trinity-Mini-8bit":      150_000,   // OpenRouter $0.15
-		"mlx-community/Qwen3.5-122B-A10B-8bit": 2_080_000, // OpenRouter $2.08
-		"mlx-community/MiniMax-M2.5-8bit":      1_000_000, // OpenRouter $1.00
+		"Trinity-Mini-8bit":      150_000,   // OpenRouter $0.15
+		"Qwen3.5-122B-A10B-8bit": 2_080_000, // OpenRouter $2.08
+		"MiniMax-M2.5-8bit":      1_000_000, // OpenRouter $1.00
 	}
 
 	for model, compPrice := range competitorOutput {
@@ -204,9 +204,9 @@ func TestAllModelPricesUndercutCompetitors(t *testing.T) {
 	// Competitor input prices (micro-USD per 1M tokens)
 	competitorInput := map[string]int64{
 		"qwen3.5-27b-claude-opus-8bit":         200_000, // OpenRouter $0.20
-		"mlx-community/Trinity-Mini-8bit":      46_000,  // OpenRouter $0.046
-		"mlx-community/Qwen3.5-122B-A10B-8bit": 260_000, // OpenRouter $0.26
-		"mlx-community/MiniMax-M2.5-8bit":      120_000, // OpenRouter $0.12
+		"Trinity-Mini-8bit":      46_000,  // OpenRouter $0.046
+		"Qwen3.5-122B-A10B-8bit": 260_000, // OpenRouter $0.26
+		"MiniMax-M2.5-8bit":      120_000, // OpenRouter $0.12
 	}
 
 	for model, compPrice := range competitorInput {

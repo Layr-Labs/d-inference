@@ -7,7 +7,7 @@ import (
 func BenchmarkCalculateCost(b *testing.B) {
 	b.ReportAllocs()
 	// Known model with explicit pricing
-	model := "mlx-community/Qwen3.5-122B-A10B-8bit"
+	model := "Qwen3.5-122B-A10B-8bit"
 	promptTokens := 1500
 	completionTokens := 800
 
@@ -19,7 +19,7 @@ func BenchmarkCalculateCost(b *testing.B) {
 
 func BenchmarkCalculateCostWithOverrides(b *testing.B) {
 	b.ReportAllocs()
-	model := "mlx-community/Qwen3.5-122B-A10B-8bit"
+	model := "Qwen3.5-122B-A10B-8bit"
 	promptTokens := 1500
 	completionTokens := 800
 	// Custom enterprise pricing: $0.05 input, $0.15 output per 1M tokens

@@ -31,6 +31,12 @@ struct LocalModel: Identifiable, Hashable {
 
     /// Whether this model is an MLX model (contains mlx or MLX in the path).
     let isMLX: Bool
+
+    /// Returns true when this on-disk model matches either the public API ID
+    /// or the source repo ID for a catalog entry.
+    func matches(_ entry: ModelCatalog.Entry) -> Bool {
+        id == entry.id || id == entry.sourceID
+    }
 }
 
 /// Discovers HuggingFace-cached models and manages downloads.

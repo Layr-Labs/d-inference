@@ -64,7 +64,9 @@ struct ModelCatalogView: View {
     }
 
     private func modelRow(_ entry: ModelCatalog.Entry) -> some View {
-        let isDownloaded = viewModel.modelManager.availableModels.contains { $0.id == entry.id }
+        let isDownloaded = viewModel.modelManager.availableModels.contains {
+            $0.id == entry.id || $0.id == entry.sourceID
+        }
         let fits = entry.fitsInMemory(totalGB: viewModel.memoryGB)
         let isActive = viewModel.currentModel == entry.id
         let isDownloading = downloadingModel == entry.id
@@ -198,7 +200,8 @@ struct ModelCatalogView: View {
     private func removeModel(_ modelId: String) async {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let cacheDir = home.appendingPathComponent(".cache/huggingface/hub")
-        let dirName = "models--" + modelId.replacingOccurrences(of: "/", with: "--")
+        let sourceModelId = ModelCatalog.models.first(where: { $0.id == modelId })?.sourceID ?? modelId
+        let dirName = "models--" + sourceModelId.replacingOccurrences(of: "/", with: "--")
         let modelDir = cacheDir.appendingPathComponent(dirName)
 
         do {

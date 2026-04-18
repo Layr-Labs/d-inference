@@ -1117,7 +1117,7 @@ mod tests {
 
         let leaked_model =
             "/Users/provider/.cache/huggingface/hub/models--mlx-community--Qwen3.5/snapshots/main";
-        let public_model = "mlx-community/Qwen3.5-122B-A10B-8bit";
+        let public_model = "Qwen3.5-122B-A10B-8bit";
         let leaked_model_for_server = leaked_model.to_string();
 
         let app = Router::new().route(
@@ -1306,7 +1306,7 @@ mod tests {
 
         let leaked_model =
             "/Users/provider/.cache/huggingface/hub/models--mlx-community--Qwen3.5/snapshots/main";
-        let public_model = "mlx-community/Qwen3.5-122B-A10B-8bit";
+        let public_model = "Qwen3.5-122B-A10B-8bit";
         let chunk = serde_json::json!({
             "id": "chatcmpl-test",
             "object": "chat.completion.chunk",
@@ -1390,7 +1390,7 @@ mod tests {
 
         let leaked_model =
             "/Users/provider/.cache/huggingface/hub/models--mlx-community--Qwen3.5/snapshots/main";
-        let public_model = "mlx-community/Qwen3.5-122B-A10B-8bit";
+        let public_model = "Qwen3.5-122B-A10B-8bit";
         let chunk = serde_json::json!({
             "type": "response.created",
             "response": {
@@ -1471,7 +1471,7 @@ mod tests {
 
         let leaked_model =
             "/Users/provider/.cache/huggingface/hub/models--mlx-community--Qwen3.5/snapshots/main";
-        let public_model = "mlx-community/Qwen3.5-122B-A10B-8bit";
+        let public_model = "Qwen3.5-122B-A10B-8bit";
         let leaked_error = format!("unknown model: {leaked_model}");
 
         let app = Router::new().route(

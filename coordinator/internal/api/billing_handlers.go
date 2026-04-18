@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -573,8 +574,9 @@ func (s *Server) handleGetPricing(w http.ResponseWriter, r *http.Request) {
 	// Overlay admin-set platform prices (account_id = "platform").
 	platformPrices := s.store.ListModelPrices("platform")
 	for _, mp := range platformPrices {
-		priceMap[mp.Model] = priceEntry{
-			Model:       mp.Model,
+		modelID := s.canonicalModelID(mp.Model)
+		priceMap[modelID] = priceEntry{
+			Model:       modelID,
 			InputPrice:  mp.InputPrice,
 			OutputPrice: mp.OutputPrice,
 			InputUSD:    fmt.Sprintf("$%.4f", float64(mp.InputPrice)/1_000_000),
@@ -651,6 +653,7 @@ func (s *Server) handleAdminPricing(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
 		return
 	}
+	req.Model = s.canonicalModelID(req.Model)
 	if req.InputPrice <= 0 || req.OutputPrice <= 0 {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "input_price and output_price must be positive"))
 		return
@@ -698,6 +701,7 @@ func (s *Server) handleSetPricing(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
 		return
 	}
+	req.Model = s.canonicalModelID(req.Model)
 	if req.InputPrice <= 0 || req.OutputPrice <= 0 {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "input_price and output_price must be positive (micro-USD per 1M tokens)"))
 		return
@@ -737,6 +741,7 @@ func (s *Server) handleDeletePricing(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
 		return
 	}
+	req.Model = s.canonicalModelID(req.Model)
 
 	accountID := s.resolveAccountID(r)
 	if err := s.store.DeleteModelPrice(accountID, req.Model); err != nil {
@@ -811,7 +816,7 @@ func (s *Server) handleAdminListModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	models := s.store.ListSupportedModels()
+	models := uniqueSupportedModels(s.store.ListSupportedModels())
 	if models == nil {
 		models = []store.SupportedModel{}
 	}
@@ -883,25 +888,43 @@ func (s *Server) handleAdminDeleteModel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := s.store.DeleteSupportedModel(req.ID); err != nil {
-		writeJSON(w, http.StatusNotFound, errorResponse("not_found", err.Error()))
+	modelID := s.canonicalModelID(req.ID)
+	catalog := s.store.ListSupportedModels()
+	toDelete := []string{modelID}
+	for _, model := range catalog {
+		if canonicalModelID(model.ID, catalog) == modelID && !slices.Contains(toDelete, model.ID) {
+			toDelete = append(toDelete, model.ID)
+		}
+	}
+
+	deleted := 0
+	var lastErr error
+	for _, id := range toDelete {
+		if err := s.store.DeleteSupportedModel(id); err != nil {
+			lastErr = err
+			continue
+		}
+		deleted++
+	}
+	if deleted == 0 {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", lastErr.Error()))
 		return
 	}
 
 	// Sync the updated catalog to the registry so routing reflects the change.
 	s.SyncModelCatalog()
 
-	s.logger.Info("admin: model removed from catalog", "model_id", req.ID)
+	s.logger.Info("admin: model removed from catalog", "model_id", modelID, "rows_deleted", deleted)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":   "model_deleted",
-		"model_id": req.ID,
+		"model_id": modelID,
 	})
 }
 
 // handleModelCatalog handles GET /v1/models/catalog.
 // Public endpoint — returns active models for providers and the install script.
 func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
-	allModels := s.store.ListSupportedModels()
+	allModels := uniqueSupportedModels(s.store.ListSupportedModels())
 
 	// Optional filter: ?type=text or ?type=transcription
 	typeFilter := r.URL.Query().Get("type")

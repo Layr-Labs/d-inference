@@ -148,6 +148,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		switch msg.Type {
 		case protocol.TypeRegister:
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
+			for i := range regMsg.Models {
+				regMsg.Models[i].ID = s.canonicalModelID(regMsg.Models[i].ID)
+			}
 			provider = s.registry.Register(providerID, conn, regMsg)
 			s.verifyProviderAttestation(providerID, provider, regMsg)
 
@@ -254,6 +257,17 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeHeartbeat:
 			hbMsg := msg.Payload.(*protocol.HeartbeatMessage)
+			hbMsg.WarmModels = s.canonicalModelIDs(hbMsg.WarmModels)
+			if hbMsg.ActiveModel != nil {
+				model := s.canonicalModelID(*hbMsg.ActiveModel)
+				hbMsg.ActiveModel = &model
+			}
+			if hbMsg.BackendCapacity != nil {
+				for i := range hbMsg.BackendCapacity.Slots {
+					hbMsg.BackendCapacity.Slots[i].Model =
+						s.canonicalModelID(hbMsg.BackendCapacity.Slots[i].Model)
+				}
+			}
 			s.registry.Heartbeat(providerID, hbMsg)
 
 		case protocol.TypeInferenceAccepted:

@@ -16,10 +16,10 @@ import {
 // Competitor pricing for comparison — static since these are external
 const competitorPricing: Record<string, { output: number; name: string; competitor: string; unit?: string }> = {
   "qwen3.5-27b-claude-opus-8bit": { output: 1_560_000, name: "Qwen3.5 27B Claude Opus", competitor: "OpenRouter" },
-  "mlx-community/Trinity-Mini-8bit": { output: 150_000, name: "Trinity Mini", competitor: "OpenRouter" },
-  "mlx-community/gemma-4-26b-a4b-it-8bit": { output: 400_000, name: "Gemma 4 26B", competitor: "OpenRouter" },
-  "mlx-community/Qwen3.5-122B-A10B-8bit": { output: 2_080_000, name: "Qwen3.5 122B", competitor: "OpenRouter" },
-  "mlx-community/MiniMax-M2.5-8bit": { output: 1_000_000, name: "MiniMax M2.5", competitor: "OpenRouter" },
+  "Trinity-Mini-8bit": { output: 150_000, name: "Trinity Mini", competitor: "OpenRouter" },
+  "gemma-4-26b-a4b-it-8bit": { output: 400_000, name: "Gemma 4 26B", competitor: "OpenRouter" },
+  "Qwen3.5-122B-A10B-8bit": { output: 2_080_000, name: "Qwen3.5 122B", competitor: "OpenRouter" },
+  "MiniMax-M2.5-8bit": { output: 1_000_000, name: "MiniMax M2.5", competitor: "OpenRouter" },
   "CohereLabs/cohere-transcribe-03-2026": { output: 2_000, name: "Cohere Transcribe", competitor: "AssemblyAI", unit: "per audio-min" },
 };
 

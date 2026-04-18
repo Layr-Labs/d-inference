@@ -502,6 +502,7 @@ func TruncHash(h string) string {
 // CatalogEntry holds metadata about an active model in the catalog.
 type CatalogEntry struct {
 	ID         string
+	SourceID   string
 	WeightHash string // expected SHA-256 weight fingerprint (empty = not enforced)
 }
 

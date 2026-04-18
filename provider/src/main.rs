@@ -49,6 +49,8 @@ use tracing_subscriber::EnvFilter;
 #[derive(Debug, Clone, serde::Deserialize)]
 struct CatalogModel {
     id: String,
+    #[serde(default)]
+    source_id: String,
     s3_name: String,
     display_name: String,
     #[serde(default = "default_model_type")]
@@ -61,6 +63,46 @@ struct CatalogModel {
 
 fn default_model_type() -> String {
     "text".into()
+}
+
+impl CatalogModel {
+    fn source_id(&self) -> &str {
+        if self.source_id.is_empty() {
+            &self.id
+        } else {
+            &self.source_id
+        }
+    }
+}
+
+fn find_catalog_model_by_public_or_source_id<'a>(
+    catalog: &'a [CatalogModel],
+    model_id: &str,
+) -> Option<&'a CatalogModel> {
+    catalog
+        .iter()
+        .find(|m| m.id == model_id || m.source_id() == model_id)
+}
+
+fn public_model_id_for<'a>(catalog: &'a [CatalogModel], model_id: &'a str) -> &'a str {
+    find_catalog_model_by_public_or_source_id(catalog, model_id)
+        .map(|m| m.id.as_str())
+        .unwrap_or(model_id)
+}
+
+fn source_model_id_for<'a>(catalog: &'a [CatalogModel], model_id: &'a str) -> &'a str {
+    find_catalog_model_by_public_or_source_id(catalog, model_id)
+        .map(|m| m.source_id())
+        .unwrap_or(model_id)
+}
+
+fn is_catalog_model_downloaded(
+    available_models: &[models::ModelInfo],
+    catalog: &[CatalogModel],
+    public_model_id: &str,
+) -> bool {
+    let source_model_id = source_model_id_for(catalog, public_model_id);
+    available_models.iter().any(|m| m.id == source_model_id)
 }
 
 fn sanitize_public_model_error(
@@ -80,6 +122,7 @@ fn fallback_catalog() -> Vec<CatalogModel> {
     vec![
         CatalogModel {
             id: "CohereLabs/cohere-transcribe-03-2026".into(),
+            source_id: String::new(),
             s3_name: "cohere-transcribe-03-2026".into(),
             display_name: "Cohere Transcribe".into(),
             model_type: "transcription".into(),
@@ -90,6 +133,7 @@ fn fallback_catalog() -> Vec<CatalogModel> {
         },
         CatalogModel {
             id: "flux_2_klein_4b_q8p.ckpt".into(),
+            source_id: String::new(),
             s3_name: "flux-klein-4b-q8".into(),
             display_name: "FLUX.2 Klein 4B".into(),
             model_type: "image".into(),
@@ -100,6 +144,7 @@ fn fallback_catalog() -> Vec<CatalogModel> {
         },
         CatalogModel {
             id: "flux_2_klein_9b_q8p.ckpt".into(),
+            source_id: String::new(),
             s3_name: "flux-klein-9b-q8".into(),
             display_name: "FLUX.2 Klein 9B".into(),
             model_type: "image".into(),
@@ -110,6 +155,7 @@ fn fallback_catalog() -> Vec<CatalogModel> {
         },
         CatalogModel {
             id: "qwen3.5-27b-claude-opus-8bit".into(),
+            source_id: String::new(),
             s3_name: "qwen35-27b-claude-opus-8bit".into(),
             display_name: "Qwen3.5 27B Claude Opus".into(),
             model_type: "text".into(),
@@ -119,7 +165,8 @@ fn fallback_catalog() -> Vec<CatalogModel> {
             min_ram_gb: 36,
         },
         CatalogModel {
-            id: "mlx-community/Trinity-Mini-8bit".into(),
+            id: "Trinity-Mini-8bit".into(),
+            source_id: "mlx-community/Trinity-Mini-8bit".into(),
             s3_name: "Trinity-Mini-8bit".into(),
             display_name: "Trinity Mini".into(),
             model_type: "text".into(),
@@ -129,7 +176,8 @@ fn fallback_catalog() -> Vec<CatalogModel> {
             min_ram_gb: 48,
         },
         CatalogModel {
-            id: "mlx-community/gemma-4-26b-a4b-it-8bit".into(),
+            id: "gemma-4-26b-a4b-it-8bit".into(),
+            source_id: "mlx-community/gemma-4-26b-a4b-it-8bit".into(),
             s3_name: "gemma-4-26b-a4b-it-8bit".into(),
             display_name: "Gemma 4 26B".into(),
             model_type: "text".into(),
@@ -139,7 +187,8 @@ fn fallback_catalog() -> Vec<CatalogModel> {
             min_ram_gb: 36,
         },
         CatalogModel {
-            id: "mlx-community/Qwen3.5-122B-A10B-8bit".into(),
+            id: "Qwen3.5-122B-A10B-8bit".into(),
+            source_id: "mlx-community/Qwen3.5-122B-A10B-8bit".into(),
             s3_name: "Qwen3.5-122B-A10B-8bit".into(),
             display_name: "Qwen3.5 122B".into(),
             model_type: "text".into(),
@@ -149,7 +198,8 @@ fn fallback_catalog() -> Vec<CatalogModel> {
             min_ram_gb: 128,
         },
         CatalogModel {
-            id: "mlx-community/MiniMax-M2.5-8bit".into(),
+            id: "MiniMax-M2.5-8bit".into(),
+            source_id: "mlx-community/MiniMax-M2.5-8bit".into(),
             s3_name: "MiniMax-M2.5-8bit".into(),
             display_name: "MiniMax M2.5".into(),
             model_type: "text".into(),
@@ -1930,7 +1980,9 @@ async fn cmd_install(
         println!("  Default models for your hardware:");
         let mut total_default_size = 0.0_f64;
         for m in &defaults {
-            let downloaded = available.iter().any(|a| a.id == m.id);
+            let downloaded = available
+                .iter()
+                .any(|a| a.id == source_model_id_for(&catalog, &m.id));
             let status = if downloaded { "✓ ready" } else { "  " };
             println!(
                 "    {} {:30} {:>5.1} GB  {:6}  {}",
@@ -1964,7 +2016,9 @@ async fn cmd_install(
                 let input = input.trim().to_lowercase();
                 if input.is_empty() || input == "y" || input == "yes" {
                     for m in &defaults {
-                        let downloaded = available.iter().any(|a| a.id == m.id);
+                        let downloaded = available
+                            .iter()
+                            .any(|a| a.id == source_model_id_for(&catalog, &m.id));
                         if !downloaded {
                             models_to_download.push(m.id.clone());
                         }
@@ -1980,7 +2034,9 @@ async fn cmd_install(
             println!();
             println!("  Optional models (your hardware can also run):");
             for (i, m) in optionals.iter().enumerate() {
-                let downloaded = available.iter().any(|a| a.id == m.id);
+                let downloaded = available
+                    .iter()
+                    .any(|a| a.id == source_model_id_for(&catalog, &m.id));
                 let status = if downloaded { "✓" } else { " " };
                 println!(
                     "    [{}] {} {:30} {:>5.1} GB  {:6}  {}",
@@ -2004,7 +2060,9 @@ async fn cmd_install(
                     if let Ok(n) = part.trim().parse::<usize>() {
                         if n >= 1 && n <= optionals.len() {
                             let m = optionals[n - 1];
-                            let downloaded = available.iter().any(|a| a.id == m.id);
+                            let downloaded = available
+                                .iter()
+                                .any(|a| a.id == source_model_id_for(&catalog, &m.id));
                             if !downloaded {
                                 models_to_download.push(m.id.clone());
                             }
@@ -2026,6 +2084,11 @@ async fn cmd_install(
                 .find(|cm| cm.id == *model_id)
                 .map(|cm| cm.s3_name.as_str())
                 .unwrap_or_else(|| model_id.split('/').last().unwrap_or(model_id));
+            let source_model_id = catalog
+                .iter()
+                .find(|cm| cm.id == *model_id)
+                .map(|cm| cm.source_id())
+                .unwrap_or(model_id);
 
             let display = catalog
                 .iter()
@@ -2039,7 +2102,7 @@ async fn cmd_install(
             let cache_dir = dirs::home_dir()
                 .unwrap_or_default()
                 .join(".cache/huggingface/hub")
-                .join(format!("models--{}", model_id.replace('/', "--")))
+                .join(format!("models--{}", source_model_id.replace('/', "--")))
                 .join("snapshots/main");
             std::fs::create_dir_all(&cache_dir)?;
 
@@ -2295,6 +2358,8 @@ async fn cmd_serve(
         tracing::info!("Idle GPU timeout: disabled (backend stays running)");
     }
 
+    let catalog = fetch_catalog(&coordinator_url).await;
+
     let text_backend_mode = preferred_text_backend_mode(local);
     let using_inprocess = matches!(text_backend_mode, TextBackendMode::InProcess);
     let text_backend_name = backend_name_for_mode(text_backend_mode);
@@ -2313,9 +2378,14 @@ async fn cmd_serve(
         model_overrides
             .into_iter()
             .filter(|m| !is_non_text(m))
+            .map(|m| public_model_id_for(&catalog, &m).to_string())
             .collect()
     } else if let Some(m) = cfg.backend.model.clone() {
-        if is_non_text(&m) { vec![] } else { vec![m] }
+        if is_non_text(&m) {
+            vec![]
+        } else {
+            vec![public_model_id_for(&catalog, &m).to_string()]
+        }
     } else {
         // No --model specified — don't auto-pick. The picker in cmd_start
         // explicitly chooses which models to serve. If only image models were
@@ -2343,6 +2413,7 @@ async fn cmd_serve(
     // Shared state struct for per-slot health monitoring and lifecycle management.
     struct BackendSlot {
         model_id: String,
+        source_model_id: String,
         model_path: String,
         port: u16,
         pid: Option<u32>,
@@ -2356,6 +2427,7 @@ async fn cmd_serve(
             let port = be_port + i as u16;
             BackendSlot {
                 model_id: model_id.clone(),
+                source_model_id: source_model_id_for(&catalog, model_id).to_string(),
                 model_path: String::new(), // resolved later during backend startup
                 port,
                 pid: None,
@@ -2369,14 +2441,21 @@ async fn cmd_serve(
         })
         .collect();
 
-    // For backwards compat, keep a "primary model" (first in list)
+    // For backwards compat, keep a "primary model" (first public ID in list)
     let model = selected_models.first().cloned().unwrap_or_default();
+    let primary_source_model = backend_slots
+        .first()
+        .map(|slot| slot.source_model_id.clone())
+        .unwrap_or_else(|| model.clone());
 
     // Hypervisor memory pool: sum of all model sizes × 2
     if hypervisor::is_active() {
         let total_model_bytes: u64 = selected_models
             .iter()
-            .filter_map(|mid| available_models.iter().find(|m| m.id == *mid))
+            .filter_map(|mid| {
+                let source_id = source_model_id_for(&catalog, mid);
+                available_models.iter().find(|m| m.id == source_id)
+            })
             .map(|m| m.size_bytes)
             .sum();
 
@@ -2487,7 +2566,14 @@ async fn cmd_serve(
         selected_models.iter().map(|s| s.as_str()).collect();
     let mut advertised_models: Vec<_> = all_scanned
         .into_iter()
-        .filter(|m| selected_set.contains(m.id.as_str()))
+        .filter_map(|m| {
+            let public_id = selected_models
+                .iter()
+                .find(|selected| m.id == source_model_id_for(&catalog, selected.as_str()))?;
+            let mut advertised = m.clone();
+            advertised.id = public_id.clone();
+            Some(advertised)
+        })
         .collect();
     tracing::info!(
         "Advertising {} model(s) (only loaded models)",
@@ -2542,6 +2628,7 @@ async fn cmd_serve(
     const BACKEND_CRASHED: u8 = 2;
     let backend_running_flag_opt: Option<std::sync::Arc<std::sync::atomic::AtomicU8>>;
     let mut rehash_model_hash_opt: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>> = None;
+    let current_model_handle_opt: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>;
     // Deferred coordinator spawn state — held until backends are ready.
     let mut deferred_coordinator: Option<(
         coordinator::CoordinatorClient,
@@ -2584,13 +2671,14 @@ async fn cmd_serve(
         // Shared current model name for heartbeat reporting.
         let current_model: std::sync::Arc<std::sync::Mutex<Option<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(Some(model.clone())));
+        let current_model_handle = current_model.clone();
 
         // All warm models (for multi-model heartbeat reporting).
         let warm_models: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(selected_models.clone()));
 
         // Compute weight hashes for all active models (text, STT, image).
-        let initial_model_hash = models::compute_weight_hash(&model);
+        let initial_model_hash = models::compute_weight_hash(&primary_source_model);
         let current_model_hash: std::sync::Arc<std::sync::Mutex<Option<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(initial_model_hash.clone()));
         rehash_model_hash_opt = Some(current_model_hash.clone());
@@ -2741,6 +2829,7 @@ async fn cmd_serve(
         inference_active_opt = Some(inference_active);
         health_inference_active_opt = Some(health_inference_active);
         provider_stats_opt = Some(provider_stats);
+        current_model_handle_opt = Some(current_model_handle);
     } else {
         coordinator_handle = None;
         event_rx_opt = None;
@@ -2751,6 +2840,7 @@ async fn cmd_serve(
         provider_stats_opt = None;
         backend_capacity_opt = None;
         backend_running_flag_opt = None;
+        current_model_handle_opt = None;
     }
 
     // =========================================================================
@@ -2779,14 +2869,14 @@ async fn cmd_serve(
     };
 
     for slot in &mut backend_slots {
-        let model_path = models::resolve_local_path(&slot.model_id)
+        let model_path = models::resolve_local_path(&slot.source_model_id)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| {
                 tracing::warn!(
                     "Could not resolve local path for {} — using ID directly",
-                    slot.model_id
+                    slot.source_model_id
                 );
-                slot.model_id.clone()
+                slot.source_model_id.clone()
             });
         slot.model_path = model_path.clone();
         tracing::info!(
@@ -2885,6 +2975,7 @@ async fn cmd_serve(
     // The event loop reads healthy to know which slots can serve, and updates pid on reload.
     struct SharedSlotState {
         model_id: String,
+        source_model_id: String,
         model_path: String,
         port: u16,
         pid: Option<u32>,
@@ -2897,6 +2988,7 @@ async fn cmd_serve(
                 .iter()
                 .map(|s| SharedSlotState {
                     model_id: s.model_id.clone(),
+                    source_model_id: s.source_model_id.clone(),
                     model_path: s.model_path.clone(),
                     port: s.port,
                     pid: s.pid,
@@ -3355,15 +3447,12 @@ async fn cmd_serve(
         let idle_backend_name = backend_name.to_string();
         let proxy_stats = provider_stats.clone();
         let model_to_url = model_to_url.clone();
+        let current_model_handle =
+            current_model_handle_opt.expect("current_model_handle must be set in non-local mode");
         // Build model→local-path lookup for rewriting the model field in requests
         let model_to_path: std::collections::HashMap<String, String> = backend_slots
             .iter()
-            .map(|s| {
-                let path = models::resolve_local_path(&s.model_id)
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| s.model_id.clone());
-                (s.model_id.clone(), path)
-            })
+            .map(|s| (s.model_id.clone(), s.model_path.clone()))
             .collect();
         // For idle reload: re-hash weights after reloading to detect tampering
         let rehash_handle = rehash_model_hash_opt.clone();
@@ -3474,7 +3563,7 @@ async fn cmd_serve(
                                         .find(|s| s.model_id == req_model_id
                                             || s.model_id.contains(&req_model_id)
                                             || req_model_id.contains(&s.model_id))
-                                        .map(|s| (s.model_id.clone(), s.model_path.clone(), s.port, s.pid, s.healthy, s.restarting))
+                                        .map(|s| (s.model_id.clone(), s.source_model_id.clone(), s.model_path.clone(), s.port, s.pid, s.healthy, s.restarting))
                                 };
 
                                 #[cfg(feature = "python")]
@@ -3483,7 +3572,7 @@ async fn cmd_serve(
                                 > = None;
                                 let public_model = req_model_id.clone();
 
-                                if let Some((slot_model_id, slot_model_path, slot_port, slot_pid, slot_healthy, slot_restarting)) = slot_info {
+                                if let Some((slot_model_id, slot_source_model_id, slot_model_path, slot_port, slot_pid, slot_healthy, slot_restarting)) = slot_info {
                                     if is_inprocess {
                                         #[cfg(feature = "python")]
                                         {
@@ -3520,10 +3609,12 @@ async fn cmd_serve(
                                                             s.restarting = false;
                                                         }
                                                     }
+                                                    *current_model_handle.lock().unwrap() =
+                                                        Some(slot_model_id.clone());
                                                     if let Some(ref hash_arc) = rehash_handle {
-                                                        if let Some(new_hash) =
-                                                            models::compute_weight_hash(&slot_model_id)
-                                                        {
+                                                        if let Some(new_hash) = models::compute_weight_hash(
+                                                            &slot_source_model_id,
+                                                        ) {
                                                             *hash_arc.lock().unwrap() = Some(new_hash);
                                                             tracing::info!(
                                                                 "Model weight hash refreshed after in-process load"
@@ -3614,8 +3705,12 @@ async fn cmd_serve(
                                                             s.restarting = false;
                                                         }
                                                     }
+                                                    *current_model_handle.lock().unwrap() =
+                                                        Some(slot_model_id.clone());
                                                     if let Some(ref hash_arc) = rehash_handle {
-                                                        if let Some(new_hash) = models::compute_weight_hash(&slot_model_id) {
+                                                        if let Some(new_hash) = models::compute_weight_hash(
+                                                            &slot_source_model_id,
+                                                        ) {
                                                             *hash_arc.lock().unwrap() = Some(new_hash);
                                                             tracing::info!("Model weight hash refreshed after reload");
                                                         }
@@ -5030,12 +5125,12 @@ async fn cmd_benchmark() -> Result<()> {
     // Scan downloaded models and filter by catalog
     let downloaded = models::scan_models(&hw);
     let catalog = fetch_catalog("https://api.darkbloom.dev").await;
-    let catalog_ids: std::collections::HashSet<String> =
-        catalog.iter().map(|c| c.id.clone()).collect();
+    let catalog_source_ids: std::collections::HashSet<String> =
+        catalog.iter().map(|c| c.source_id().to_string()).collect();
 
     let servable: Vec<_> = downloaded
         .iter()
-        .filter(|m| catalog_ids.contains(&m.id))
+        .filter(|m| catalog_source_ids.contains(&m.id))
         .collect();
 
     if servable.is_empty() {
@@ -5048,7 +5143,7 @@ async fn cmd_benchmark() -> Result<()> {
     for (i, m) in servable.iter().enumerate() {
         let display = catalog
             .iter()
-            .find(|c| c.id == m.id)
+            .find(|c| c.source_id() == m.id)
             .map(|c| c.display_name.as_str())
             .unwrap_or(&m.id);
         println!(
@@ -5077,7 +5172,7 @@ async fn cmd_benchmark() -> Result<()> {
 
     let display_name = catalog
         .iter()
-        .find(|c| c.id == selected.id)
+        .find(|c| c.source_id() == selected.id)
         .map(|c| c.display_name.as_str())
         .unwrap_or(&selected.id);
 
@@ -5307,25 +5402,24 @@ async fn cmd_status() -> Result<()> {
     // Models (catalog-filtered)
     let models = models::scan_models(&hw);
     let catalog = fetch_catalog("https://api.darkbloom.dev").await;
-    let catalog_ids: std::collections::HashSet<String> =
-        catalog.iter().map(|c| c.id.clone()).collect();
 
     let servable: Vec<_> = models
         .iter()
-        .filter(|m| catalog_ids.contains(&m.id))
+        .filter(|m| find_catalog_model_by_public_or_source_id(&catalog, &m.id).is_some())
         .collect();
     let extra: Vec<_> = models
         .iter()
-        .filter(|m| !catalog_ids.contains(&m.id))
+        .filter(|m| find_catalog_model_by_public_or_source_id(&catalog, &m.id).is_none())
         .collect();
 
     println!("  Models ({} servable):", servable.len());
     for m in &servable {
-        let active = serving_model.as_deref() == Some(&m.id);
+        let public_id = public_model_id_for(&catalog, &m.id);
+        let active = serving_model.as_deref() == Some(public_id);
         let marker = if active { "●" } else { " " };
         let display = catalog
             .iter()
-            .find(|c| c.id == m.id)
+            .find(|c| c.id == public_id)
             .map(|c| c.display_name.as_str())
             .unwrap_or(&m.id);
         println!(
@@ -5376,7 +5470,7 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
         println!("  Catalog:");
         for cm in &catalog {
             let fits = hw.memory_available_gb as f64 >= cm.size_gb;
-            let is_downloaded = downloaded.iter().any(|m| m.id == cm.id);
+            let is_downloaded = downloaded.iter().any(|m| m.id == cm.source_id());
             let (icon, label) = if is_downloaded {
                 ("✓", "downloaded")
             } else if fits {
@@ -5393,7 +5487,7 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
         // Non-catalog downloaded models
         let extra: Vec<_> = downloaded
             .iter()
-            .filter(|m| !catalog.iter().any(|cm| cm.id == m.id))
+            .filter(|m| !catalog.iter().any(|cm| cm.source_id() == m.id))
             .collect();
         if !extra.is_empty() {
             println!();
@@ -5437,7 +5531,7 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
             let mut downloadable: Vec<(usize, &CatalogModel)> = Vec::new();
             for cm in &catalog {
                 let fits = hw.memory_available_gb as f64 >= cm.size_gb;
-                let is_downloaded = downloaded.iter().any(|m| m.id == cm.id);
+                let is_downloaded = downloaded.iter().any(|m| m.id == cm.source_id());
                 if is_downloaded {
                     println!(
                         "  [✓] {:>5.1} GB  {} (already downloaded)",
@@ -5498,7 +5592,7 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
                         dirs::home_dir()
                             .unwrap_or_default()
                             .join(".cache/huggingface/hub")
-                            .join(format!("models--{}", cm.id.replace('/', "--")))
+                            .join(format!("models--{}", cm.source_id().replace('/', "--")))
                             .join("snapshots/main")
                     };
                     let _ = std::fs::create_dir_all(&cache_dir);
@@ -6103,6 +6197,7 @@ async fn cmd_start(
             // Build picker items from catalog: all models that fit in RAM.
             struct PickerItem {
                 id: String,
+                source_id: String,
                 display: String,
                 size_gb: f64,
                 downloaded: bool,
@@ -6116,7 +6211,10 @@ async fn cmd_start(
                 let client = reqwest::Client::new();
                 let mut sizes = std::collections::HashMap::new();
                 for c in &catalog {
-                    if let Some(on_disk) = downloaded.iter().find(|m| m.id == c.id) {
+                    if let Some(on_disk) = downloaded
+                        .iter()
+                        .find(|m| m.id == source_model_id_for(&catalog, &c.id))
+                    {
                         // Only HEAD-check models we have locally (to verify completeness)
                         let url = if c.id.ends_with(".ckpt") {
                             format!("{}/{}/{}", cdn_base, c.s3_name, c.id)
@@ -6147,7 +6245,8 @@ async fn cmd_start(
                     // Check if model is downloaded AND complete.
                     // For image models (.ckpt), also verify companion files exist
                     // (text encoder + VAE) since the pipeline needs all 3.
-                    let on_disk = downloaded.iter().find(|m| m.id == c.id);
+                    let source_id = source_model_id_for(&catalog, &c.id);
+                    let on_disk = downloaded.iter().find(|m| m.id == source_id);
                     let is_downloaded = on_disk.is_some_and(|m| {
                         let main_ok = if let Some(&expected) = cdn_sizes.get(&c.id) {
                             m.size_bytes >= expected
@@ -6159,7 +6258,7 @@ async fn cmd_start(
                         }
                         // For image models, parse models.json and verify all referenced files exist
                         if c.model_type == "image" {
-                            let model_dir = models::resolve_local_path(&c.id);
+                            let model_dir = models::resolve_local_path(source_id);
                             if let Some(dir) = model_dir.as_ref().and_then(|p| p.parent()) {
                                 let meta_path = dir.join("models.json");
                                 if !meta_path.exists() {
@@ -6204,6 +6303,7 @@ async fn cmd_start(
                     };
                     PickerItem {
                         id: c.id.clone(),
+                        source_id: source_id.to_string(),
                         display,
                         size_gb: size,
                         downloaded: is_downloaded,
@@ -6247,7 +6347,7 @@ async fn cmd_start(
                     let cache_dir = dirs::home_dir()
                         .unwrap_or_default()
                         .join(".cache/huggingface/hub")
-                        .join(format!("models--{}", item.id.replace('/', "--")))
+                        .join(format!("models--{}", item.source_id.replace('/', "--")))
                         .join("snapshots/main");
                     std::fs::create_dir_all(&cache_dir)?;
                     if !download_model_from_cdn(&item.s3_name, &cache_dir, &item.display) {
@@ -7302,7 +7402,7 @@ mod tests {
     fn test_build_inprocess_response_json_uses_public_model_id() {
         let leaked_model =
             "/Users/provider/.cache/huggingface/hub/models--mlx-community--Qwen3.5/snapshots/main";
-        let public_model = "mlx-community/Qwen3.5-122B-A10B-8bit";
+        let public_model = "Qwen3.5-122B-A10B-8bit";
         let body = json!({
             "endpoint": "/v1/chat/completions",
             "model": leaked_model,
@@ -7325,7 +7425,7 @@ mod tests {
     fn test_sanitize_public_model_error_rewrites_local_path() {
         let leaked_model =
             "/Users/provider/.cache/huggingface/hub/models--mlx-community--Qwen3.5/snapshots/main";
-        let public_model = "mlx-community/Qwen3.5-122B-A10B-8bit";
+        let public_model = "Qwen3.5-122B-A10B-8bit";
         let message = format!("failed to load model from {leaked_model}");
 
         let sanitized = sanitize_public_model_error(message, leaked_model, public_model);

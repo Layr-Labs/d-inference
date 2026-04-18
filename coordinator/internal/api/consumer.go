@@ -190,6 +190,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
 		return
 	}
+	model = s.canonicalModelID(model)
+	parsed["model"] = model
 
 	// Accept either chat completions format (messages) or Responses API
 	// format (input). The provider's backend handles both natively.
@@ -623,6 +625,7 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
 		return
 	}
+	model = s.canonicalModelID(model)
 
 	if !s.registry.IsModelInCatalog(model) {
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
@@ -813,6 +816,7 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "n must be between 1 and 4"))
 		return
 	}
+	req.Model = s.canonicalModelID(req.Model)
 	if !s.registry.IsModelInCatalog(req.Model) {
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", req.Model)))
@@ -1404,13 +1408,23 @@ func buildNonStreamingResponse(requestID, model string, msg extractedMessage, us
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	models := s.registry.ListModels()
 
-	// Filter to only show models from the catalog (active supported models).
+	// Filter to only show models from the active catalog. Deduplicate any
+	// upgraded rows where a legacy source ID and a new public ID both exist.
 	catalogModels := s.store.ListSupportedModels()
 	catalogByID := make(map[string]store.SupportedModel, len(catalogModels))
 	for _, cm := range catalogModels {
-		if cm.Active {
-			catalogByID[cm.ID] = cm
+		if !cm.Active {
+			continue
 		}
+		canonicalID := s.canonicalModelID(cm.ID)
+		if canonicalID == "" {
+			continue
+		}
+		cm.ID = canonicalID
+		if existing, ok := catalogByID[canonicalID]; ok && existing.SourceID != "" {
+			continue
+		}
+		catalogByID[canonicalID] = cm
 	}
 
 	data := make([]map[string]any, 0, len(models))
@@ -1670,6 +1684,8 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
 		return
 	}
+	model = s.canonicalModelID(model)
+	parsed["model"] = model
 	if !s.registry.IsModelInCatalog(model) {
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model)))

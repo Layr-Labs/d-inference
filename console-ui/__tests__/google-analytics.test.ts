@@ -54,7 +54,7 @@ describe("google analytics helpers", () => {
     const origin = window.location.origin;
     Object.defineProperty(document, "referrer", {
       configurable: true,
-      value: "https://google.com/",
+      value: `${origin}/login?next=%2Fbilling&invite=secret&utm_source=mail`,
     });
     initializeGoogleAnalytics();
     trackRouteChange("/billing");
@@ -67,7 +67,7 @@ describe("google analytics helpers", () => {
         "page_view",
         {
           page_location: `${origin}/billing?utm_source=search&gclid=abc123`,
-          page_referrer: "https://google.com/",
+          page_referrer: `${origin}/login`,
           page_title: "Darkbloom",
           send_to: "G-TEST123",
         },

@@ -66,6 +66,21 @@ function isAllowedAttributionParam(name: string) {
   return name.startsWith("utm_") || ATTRIBUTION_QUERY_PARAMS.has(name);
 }
 
+function sanitizeReferrer(referrer: string) {
+  if (!referrer) {
+    return undefined;
+  }
+
+  try {
+    const referrerUrl = new URL(referrer);
+    referrerUrl.search = "";
+    referrerUrl.hash = "";
+    return referrerUrl.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 export function buildTrackedPageLocation(pathname: string) {
   if (typeof window === "undefined") {
     return "";
@@ -115,7 +130,8 @@ function trackPageView(params: {
   }
 
   const pageReferrer =
-    window.__googleAnalyticsLastPageLocation || document.referrer || undefined;
+    window.__googleAnalyticsLastPageLocation ||
+    sanitizeReferrer(document.referrer);
 
   analytics.gtag("event", "page_view", {
     ...params,

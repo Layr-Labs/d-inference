@@ -122,6 +122,52 @@ func NewMemory(adminKey string) *MemoryStore {
 	return s
 }
 
+// DefaultPruneMaxEntries is the default per-slice cap used by Prune.
+// At ~1 KB per entry this keeps each slice around ~100 MB, well under the
+// coordinator's typical memory budget on a t3.small.
+const DefaultPruneMaxEntries = 100_000
+
+// Prune drops the oldest entries from append-only history slices so they
+// don't grow unboundedly in long-running processes. Entries are kept in
+// append order, so this is equivalent to a bounded ring buffer.
+//
+// This is a no-op when the PostgresStore is used — Postgres has its own
+// retention story (SQL DELETE or partitioning).
+//
+// maxEntries <= 0 uses DefaultPruneMaxEntries.
+func (s *MemoryStore) Prune(maxEntries int) {
+	if maxEntries <= 0 {
+		maxEntries = DefaultPruneMaxEntries
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if n := len(s.usage); n > maxEntries {
+		s.usage = append([]UsageRecord(nil), s.usage[n-maxEntries:]...)
+	}
+	if n := len(s.payments); n > maxEntries {
+		s.payments = append([]PaymentRecord(nil), s.payments[n-maxEntries:]...)
+	}
+	if n := len(s.ledgerEntries); n > maxEntries {
+		s.ledgerEntries = append([]LedgerEntry(nil), s.ledgerEntries[n-maxEntries:]...)
+	}
+	if n := len(s.providerEarnings); n > maxEntries {
+		s.providerEarnings = append([]ProviderEarning(nil), s.providerEarnings[n-maxEntries:]...)
+	}
+	if n := len(s.providerPayouts); n > maxEntries {
+		s.providerPayouts = append([]ProviderPayout(nil), s.providerPayouts[n-maxEntries:]...)
+	}
+
+	// Expired device codes can be dropped outright.
+	now := time.Now()
+	for code, dc := range s.deviceCodesByCode {
+		if now.After(dc.ExpiresAt) {
+			delete(s.deviceCodesByCode, code)
+			delete(s.deviceCodesByUserCode, dc.UserCode)
+		}
+	}
+}
+
 // CreateKey generates a cryptographically random API key, stores it, and
 // returns it.
 func (s *MemoryStore) CreateKey() (string, error) {

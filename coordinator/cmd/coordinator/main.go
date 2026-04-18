@@ -12,9 +12,12 @@
 //
 // Configuration (environment variables):
 //
-//	EIGENINFERENCE_PORT         - HTTP listen port (default: "8080")
-//	EIGENINFERENCE_ADMIN_KEY    - Pre-seeded API key for bootstrapping
-//	EIGENINFERENCE_DATABASE_URL - PostgreSQL connection string (omit for in-memory store)
+//	EIGENINFERENCE_PORT                  - HTTP listen port (default: "8080")
+//	EIGENINFERENCE_ADMIN_KEY             - Pre-seeded API key for bootstrapping
+//	EIGENINFERENCE_DATABASE_URL          - PostgreSQL connection string (REQUIRED in
+//	                                       production; omit + EIGENINFERENCE_ALLOW_MEMORY_STORE=true for dev)
+//	EIGENINFERENCE_ALLOW_MEMORY_STORE    - Set to "true" to permit MemoryStore boot
+//	                                       when DATABASE_URL is unset (dev/test only)
 //
 // Graceful shutdown: The coordinator handles SIGINT/SIGTERM, stops the
 // eviction loop, and drains active connections with a 15-second deadline.
@@ -39,8 +42,11 @@ import (
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/billing"
 	"github.com/eigeninference/coordinator/internal/mdm"
+	"github.com/eigeninference/coordinator/internal/metrics"
 	"github.com/eigeninference/coordinator/internal/payments"
+	"github.com/eigeninference/coordinator/internal/ratelimit"
 	"github.com/eigeninference/coordinator/internal/registry"
+	"github.com/eigeninference/coordinator/internal/saferun"
 	"github.com/eigeninference/coordinator/internal/store"
 )
 
@@ -81,14 +87,65 @@ func main() {
 			}
 		}
 	} else {
-		st = store.NewMemory(adminKey)
-		logger.Info("using in-memory store")
+		// MemoryStore loses ledger, balances, and earnings on restart.
+		// In production that would lose USDC deposits and provider payouts.
+		// Refuse to boot unless the operator has explicitly opted in (e.g.
+		// for local dev or integration tests).
+		if os.Getenv("EIGENINFERENCE_ALLOW_MEMORY_STORE") != "true" {
+			logger.Error("EIGENINFERENCE_DATABASE_URL is not set and EIGENINFERENCE_ALLOW_MEMORY_STORE is not \"true\" — refusing to start with non-durable store")
+			os.Exit(1)
+		}
+
+		memStore := store.NewMemory(adminKey)
+		st = memStore
+		logger.Warn("using in-memory store — billing state will not survive restart (set EIGENINFERENCE_DATABASE_URL for production)")
+
+		// MemoryStore's append-only slices (usage, ledger, earnings,
+		// payouts, payments) grow unboundedly over the lifetime of the
+		// process. Run a periodic pruner so RAM doesn't balloon over
+		// weeks of uptime on a small coordinator host.
+		pruneInterval := 15 * time.Minute
+		pruneMax := store.DefaultPruneMaxEntries
+		saferun.Go(logger, "memory_store_pruner", func() {
+			ticker := time.NewTicker(pruneInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					memStore.Prune(pruneMax)
+				}
+			}
+		})
 	}
 
 	// Seed the model catalog if empty (first startup or fresh DB).
 	seedModelCatalog(st, logger)
 
 	reg := registry.New(logger)
+
+	// Wire metrics observers. Done early so they catch all subsequent
+	// activity. Polling-based fleet metrics avoid coupling registry →
+	// metrics; panic observer is push-based since panics are rare.
+	saferun.SetPanicObserver(func(name string) {
+		metrics.PanicsRecovered.WithLabelValues(name).Inc()
+	})
+	saferun.Go(logger, "metrics_fleet_poller", func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				snap := reg.Snapshot()
+				metrics.ProvidersConnected.Set(float64(snap.Connected))
+				metrics.ProvidersIdle.Set(float64(snap.Idle))
+				metrics.QueueDepth.Set(float64(snap.QueueDepth))
+			}
+		}
+	})
 
 	// Set minimum trust level for routing. Default: hardware (production).
 	// Set EIGENINFERENCE_MIN_TRUST=none or EIGENINFERENCE_MIN_TRUST=self_signed for testing.
@@ -99,6 +156,36 @@ func main() {
 
 	srv := api.NewServer(reg, st, logger)
 	srv.SetAdminKey(adminKey)
+
+	// Per-account rate limiter on consumer (inference) endpoints. Defaults
+	// are conservative for slow OpenAI-style rollout; raise via env vars
+	// when confident in capacity. Set EIGENINFERENCE_RATE_LIMIT_RPS=0 to
+	// disable.
+	rateRPS := envFloat("EIGENINFERENCE_RATE_LIMIT_RPS", ratelimit.DefaultRPS)
+	rateBurst := envInt("EIGENINFERENCE_RATE_LIMIT_BURST", ratelimit.DefaultBurst)
+	if rateRPS > 0 {
+		rl := ratelimit.New(ratelimit.Config{RPS: rateRPS, Burst: rateBurst})
+		rl.StartPruner(ctx, logger, func() { saferun.Recover(logger, "ratelimit_pruner") })
+		srv.SetRateLimiter(rl)
+		logger.Info("per-account rate limiter enabled", "rps", rateRPS, "burst", rateBurst)
+	} else {
+		logger.Warn("per-account rate limiter DISABLED (EIGENINFERENCE_RATE_LIMIT_RPS=0)")
+	}
+
+	// Stricter per-account limiter on financial endpoints (deposit,
+	// withdraw, key creation, referral, invite redemption). These mutate
+	// balances or hit external on-chain RPCs so they're high-value abuse
+	// targets. Defaults: 0.2 RPS = 1 every 5s, burst 3.
+	finRPS := envFloat("EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS", 0.2)
+	finBurst := envInt("EIGENINFERENCE_FINANCIAL_RATE_LIMIT_BURST", 3)
+	if finRPS > 0 {
+		frl := ratelimit.New(ratelimit.Config{RPS: finRPS, Burst: finBurst})
+		frl.StartPruner(ctx, logger, func() { saferun.Recover(logger, "financial_ratelimit_pruner") })
+		srv.SetFinancialRateLimiter(frl)
+		logger.Info("financial-endpoint rate limiter enabled", "rps", finRPS, "burst", finBurst)
+	} else {
+		logger.Warn("financial-endpoint rate limiter DISABLED (EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS=0)")
+	}
 
 	// Sync the model catalog to the registry so providers and consumers
 	// are filtered against the admin-managed whitelist.
@@ -393,6 +480,24 @@ func main() {
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envFloat(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

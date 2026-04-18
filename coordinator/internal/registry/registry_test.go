@@ -1770,15 +1770,17 @@ func TestMaxConcurrencyWithCapacity(t *testing.T) {
 		memGB    float64
 		expected int
 	}{
-		{16, 4},
-		{24, 4},
-		{36, 8},
-		{48, 8},
-		{64, 16},
-		{96, 16},
-		{128, 24},
-		{192, 32},
-		{256, 32},
+		// Phase 2 tier values (lowered from 4/8/16/24/32). See
+		// maxConcurrency() in registry.go for the rationale.
+		{16, 2},
+		{24, 2},
+		{36, 4},
+		{48, 4},
+		{64, 6},
+		{96, 6},
+		{128, 8},
+		{192, 12},
+		{256, 12},
 	}
 
 	for _, tc := range cases {
@@ -1941,7 +1943,8 @@ func TestScoreProviderColdStartPenalty(t *testing.T) {
 }
 
 // TestFindProviderDynamicConcurrency verifies that with dynamic concurrency,
-// a provider with 5 pending requests is still eligible when its max is 8.
+// a provider with 5 pending requests on a 96 GB box is still eligible
+// (Phase 2 cap for 96 GB = 6).
 func TestFindProviderDynamicConcurrency(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
@@ -1949,22 +1952,21 @@ func TestFindProviderDynamicConcurrency(t *testing.T) {
 	p.TrustLevel = TrustHardware
 	p.LastChallengeVerified = time.Now()
 	p.DecodeTPS = 100.0
-	// Set backend capacity with 36GB -> max concurrency = 8
+	// 96 GB → cap=6 under Phase 2.
 	p.mu.Lock()
 	p.BackendCapacity = &protocol.BackendCapacity{
-		TotalMemoryGB: 36,
+		TotalMemoryGB: 96,
 	}
 	p.mu.Unlock()
 
-	// Add 5 pending requests (exceeds old limit of 4, within new limit of 8)
+	// 5 pending is below the new cap of 6.
 	for i := 0; i < 5; i++ {
 		p.AddPending(&PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
 	}
 
-	// With dynamic concurrency (max=8), provider should still be eligible.
 	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found == nil {
-		t.Error("FindProvider should return provider with 5/8 capacity used (dynamic limit)")
+		t.Error("FindProvider should return provider with 5/6 capacity used (Phase 2 cap)")
 	}
 }
 
@@ -2067,12 +2069,12 @@ func TestSetProviderIdleDynamicCap(t *testing.T) {
 	p.LastChallengeVerified = time.Now()
 	p.DecodeTPS = 100.0
 
-	// Set dynamic capacity (48GB -> max=8)
+	// 96 GB → cap=6 under Phase 2.
 	p.mu.Lock()
-	p.BackendCapacity = &protocol.BackendCapacity{TotalMemoryGB: 48}
+	p.BackendCapacity = &protocol.BackendCapacity{TotalMemoryGB: 96}
 	p.mu.Unlock()
 
-	// Add 5 pending requests (under max of 8)
+	// 5 pending (under cap of 6).
 	for i := 0; i < 5; i++ {
 		p.AddPending(&PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
 	}
@@ -2085,10 +2087,9 @@ func TestSetProviderIdleDynamicCap(t *testing.T) {
 	}
 	reg.Queue().Enqueue(qr)
 
-	// Complete one request
+	// Complete one pending → 4/6, queue should drain.
 	p.RemovePending("req-0")
 
-	// SetProviderIdle should drain queue since pending(4) < max(8)
 	reg.SetProviderIdle(p.ID)
 
 	select {

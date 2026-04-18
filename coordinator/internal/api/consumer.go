@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -74,27 +75,6 @@ const (
 	// platformMacOSARM64 is the default release platform identifier.
 	platformMacOSARM64 = "macos-arm64"
 )
-
-// chatCompletionRequest is the incoming OpenAI-compatible request body.
-// The consumer sends plain JSON — no encryption fields are needed because
-// TLS to the Confidential VM is the trust boundary.
-type chatCompletionRequest struct {
-	Model       string                 `json:"model"`
-	Messages    []protocol.ChatMessage `json:"messages"`
-	Stream      bool                   `json:"stream"`
-	MaxTokens   *int                   `json:"max_tokens,omitempty"`
-	Temperature *float64               `json:"temperature,omitempty"`
-}
-
-// genericInferenceRequest captures any inference request body as raw JSON.
-// Used for /v1/completions and /v1/messages endpoints where we pass the
-// body through to the provider without parsing the endpoint-specific fields.
-type genericInferenceRequest struct {
-	Model  string `json:"model"`
-	Stream bool   `json:"stream"`
-	// RawBody is the complete request JSON, forwarded as-is to the provider.
-	RawBody json.RawMessage `json:"-"`
-}
 
 func intFromRequestValue(v any) (int, bool) {
 	switch x := v.(type) {
@@ -237,7 +217,7 @@ func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool) bool {
 // OpenAI-compatible fields (tools, tool_choice, response_format, top_p, etc.)
 // that would otherwise be lost if we parsed into a typed struct.
 //
-//nolint:gocognit,gocyclo
+//nolint:gocognit,gocyclo,cyclop
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Read the raw request body so we can forward it as-is to the provider.
 	// We only parse minimally to extract model/stream/messages for routing.
@@ -391,7 +371,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			var err error
 			provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 			if err != nil {
-				if err == context.Canceled {
+				if errors.Is(err, context.Canceled) {
 					refundReservation()
 					return
 				}

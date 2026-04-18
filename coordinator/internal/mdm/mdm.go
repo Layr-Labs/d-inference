@@ -258,8 +258,11 @@ func (c *Client) sendDeviceAttestationWithNonce(udid, nonce string) (string, err
 		return cmdUUID, nil // command queued, push failed
 	}
 	pushReq.SetBasicAuth("micromdm", c.apiKey)
-	if _, err = c.client.Do(pushReq); err != nil {
+	pushResp, err := c.client.Do(pushReq)
+	if err != nil {
 		c.logger.Debug("mdm push notification failed", "udid", udid, "error", err)
+	} else {
+		pushResp.Body.Close()
 	}
 
 	return cmdUUID, nil

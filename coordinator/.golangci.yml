@@ -233,4 +233,10 @@ issues:
         - gosec
         - noctx
         - wrapcheck
+    # The main package contains the service entrypoint with complex
+    # initialization that's inherently branchy. Suppress cyclop's
+    # package-average check for this package.
+    - path: "cmd/coordinator/main\\.go"
+      linters:
+        - cyclop
   fix: true

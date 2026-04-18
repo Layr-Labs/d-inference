@@ -236,8 +236,8 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 				continue
 			}
 			snap.slotState = slot.State
-			snap.backendRunning = int(slot.NumRunning)
-			snap.backendWaiting = int(slot.NumWaiting)
+			snap.backendRunning = slot.NumRunning
+			snap.backendWaiting = slot.NumWaiting
 			snap.maxTokensPotential = slot.MaxTokensPotential
 			break
 		}

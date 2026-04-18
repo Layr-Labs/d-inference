@@ -1,8 +1,24 @@
 name: Release Provider Bundle
 
+# Two release paths share this workflow:
+#   1. tag push `vX.Y.Z`       -> prod   (reviewer approval required)
+#   2. tag push `vX.Y.Z-dev.N` -> dev    (auto)
+#   3. manual workflow_dispatch with environment input (either)
+# The `environment:` on the job selects which GitHub Environment's secrets
+# and vars get injected, so prod and dev use disjoint R2 buckets, release
+# keys, and coordinator URLs.
+
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options: [dev, prod]
+        default: dev
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,8 +28,27 @@ env:
   PBS_PYTHON_VERSION: "3.12.13"
 
 jobs:
+  # Resolve target environment from either workflow_dispatch input or tag shape.
+  # Dev tags look like `v0.3.6-dev.2`; prod tags are strict `v0.3.6`.
+  resolve-env:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.pick.outputs.environment }}
+    steps:
+      - id: pick
+        run: |
+          if [ -n "${{ inputs.environment }}" ]; then
+            echo "environment=${{ inputs.environment }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref_name }}" == *-dev.* ]]; then
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          else
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          fi
+
   build-and-release:
     name: Build, Sign, Upload, Register
+    needs: resolve-env
+    environment: ${{ needs.resolve-env.outputs.environment }}
     runs-on: macos-26-xlarge  # Apple Silicon, 16 cores
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -73,6 +108,11 @@ jobs:
           LIBRARY_PATH: /tmp/eigeninference-build-python/lib
           DYLD_LIBRARY_PATH: /tmp/eigeninference-build-python/lib
           RUSTFLAGS: -L native=/tmp/eigeninference-build-python/lib
+          # Bake the target environment's coordinator URL + R2 CDN into the
+          # binary via provider/build.rs. A dev bundle physically cannot reach
+          # prod R2 or the prod coordinator.
+          DARKBLOOM_COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
+          DARKBLOOM_R2_CDN_URL: ${{ vars.R2_CDN }}
         run: |
           cd provider
           cargo build --release
@@ -253,6 +293,8 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_CDN: ${{ vars.R2_CDN }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
 
@@ -361,24 +403,24 @@ jobs:
 
           # Upload Python runtime to R2 (providers download this)
           aws s3 cp /tmp/eigeninference-python-macos-arm64.tar.gz \
-            "s3://d-inf-app/releases/v${VERSION}/eigeninference-python-macos-arm64.tar.gz" \
+            "s3://${R2_BUCKET}/releases/v${VERSION}/eigeninference-python-macos-arm64.tar.gz" \
             --endpoint-url "$R2_ENDPOINT"
           echo "Python runtime uploaded to R2"
 
           # Upload site-packages tarball — providers use this for self-heal
           aws s3 cp /tmp/eigeninference-site-packages.tar.gz \
-            "s3://d-inf-app/releases/v${VERSION}/eigeninference-site-packages.tar.gz" \
+            "s3://${R2_BUCKET}/releases/v${VERSION}/eigeninference-site-packages.tar.gz" \
             --endpoint-url "$R2_ENDPOINT"
           echo "Site-packages uploaded to R2"
 
           # Upload the vllm-mlx source zip as fallback for older providers.
           aws s3 cp /tmp/vllm-mlx-source.zip \
-            "s3://d-inf-app/releases/v${VERSION}/vllm-mlx-source.zip" \
+            "s3://${R2_BUCKET}/releases/v${VERSION}/vllm-mlx-source.zip" \
             --endpoint-url "$R2_ENDPOINT"
           echo "vllm-mlx source zip uploaded to R2"
 
-          # Compute template hashes from R2 CDN
-          R2_CDN="https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev"
+          # Compute template hashes from R2 CDN (per-environment public bucket URL)
+          R2_CDN="${R2_CDN:-https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev}"
           TEMPLATE_HASHES=""
           for name in qwen3.5 trinity gemma4 minimax; do
             HASH=$(curl -fsSL "$R2_CDN/templates/${name}.jinja" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
@@ -404,10 +446,11 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           aws s3 cp /tmp/eigeninference-bundle-macos-arm64.tar.gz \
-            "s3://d-inf-app/releases/v${VERSION}/eigeninference-bundle-macos-arm64.tar.gz" \
+            "s3://${R2_BUCKET}/releases/v${VERSION}/eigeninference-bundle-macos-arm64.tar.gz" \
             --endpoint-url "$R2_ENDPOINT"
           echo "Uploaded to R2: releases/v${VERSION}/eigeninference-bundle-macos-arm64.tar.gz"
 
@@ -505,15 +548,16 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           # Versioned
           aws s3 cp /tmp/Darkbloom.dmg \
-            "s3://d-inf-app/releases/v${VERSION}/Darkbloom.dmg" \
+            "s3://${R2_BUCKET}/releases/v${VERSION}/Darkbloom.dmg" \
             --endpoint-url "$R2_ENDPOINT"
           # Latest (stable URL for website download button)
           aws s3 cp /tmp/Darkbloom.dmg \
-            "s3://d-inf-app/releases/latest/Darkbloom.dmg" \
+            "s3://${R2_BUCKET}/releases/latest/Darkbloom.dmg" \
             --endpoint-url "$R2_ENDPOINT"
           echo "DMG uploaded to R2: releases/v${VERSION}/Darkbloom.dmg + releases/latest/Darkbloom.dmg"
 
@@ -522,7 +566,7 @@ jobs:
       - name: Register release with coordinator
         env:
           COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
-          RELEASE_KEY: ${{ secrets.DGINF_RELEASE_KEY }}
+          RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
           R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -590,5 +634,5 @@ jobs:
 
             ### Install
             ```bash
-            curl -fsSL https://api.darkbloom.dev/install.sh | bash
+            curl -fsSL ${{ secrets.COORDINATOR_URL }}/install.sh | bash
             ```

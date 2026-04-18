@@ -110,6 +110,26 @@ func main() {
 		logger.Info("console URL configured", "url", consoleURL)
 	}
 
+	// Base URL — this coordinator's public origin (e.g. https://api.dev.darkbloom.dev).
+	// Templated into the embedded install.sh at serve time so a single binary
+	// can serve both prod and dev. Falls back to the request's Host header if unset.
+	if baseURL := os.Getenv("EIGENINFERENCE_BASE_URL"); baseURL != "" {
+		srv.SetBaseURL(baseURL)
+		logger.Info("base URL configured", "url", baseURL)
+	}
+
+	// R2 CDN URLs — substituted into install.sh at serve time. Each env has its
+	// own R2 bucket (prod: d-inf-app; dev: d-inf-app-dev). Dev can set only the
+	// primary CDN and the site-packages one defaults to the same bucket.
+	if cdn := os.Getenv("EIGENINFERENCE_R2_CDN_URL"); cdn != "" {
+		srv.SetR2CDNURL(cdn)
+		logger.Info("R2 CDN URL configured", "url", cdn)
+	}
+	if cdn := os.Getenv("EIGENINFERENCE_R2_SITE_PACKAGES_CDN_URL"); cdn != "" {
+		srv.SetR2SitePackagesCDNURL(cdn)
+		logger.Info("R2 site-packages CDN URL configured", "url", cdn)
+	}
+
 	// Scoped release key — GitHub Actions uses this to register new releases.
 	// Separate from admin key: can only POST /v1/releases, nothing else.
 	if releaseKey := os.Getenv("EIGENINFERENCE_RELEASE_KEY"); releaseKey != "" {

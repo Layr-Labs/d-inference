@@ -17,7 +17,11 @@ set -euo pipefail
 #
 # Zero prerequisites — just macOS + Apple Silicon.
 
-COORD_URL="https://api.darkbloom.dev"
+# Coordinator host. The coordinator substitutes __DARKBLOOM_COORD_URL__ at
+# serve time (see coordinator/internal/api/server.go). Users can override by
+# exporting COORD_URL before running the installer — useful when testing
+# against a dev coordinator without re-fetching the script.
+COORD_URL="${COORD_URL:-__DARKBLOOM_COORD_URL__}"
 INSTALL_DIR="$HOME/.darkbloom"
 BIN_DIR="$INSTALL_DIR/bin"
 PYTHON_BIN="$INSTALL_DIR/python/bin/python3.12"
@@ -227,7 +231,7 @@ if [ -f "$PYTHON_BIN" ] && ! "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
             echo "  Portable Python installed ✓"
             # Install packages from R2 site-packages tarball (same verified artifacts as CI)
             SITE_DIR="$INSTALL_DIR/python/lib/python3.12/site-packages"
-            R2_CDN="https://pub-3d1cb668259340eeb2276e1d375c846d.r2.dev"
+            R2_CDN="${R2_CDN:-__DARKBLOOM_R2_SITE_PACKAGES_CDN_URL__}"
             if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/eigeninference-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
                 rm -rf "$SITE_DIR"
                 mkdir -p "$SITE_DIR"
@@ -415,7 +419,7 @@ if [ -n "$MODEL" ]; then
             echo "  $MODEL_NAME downloaded ✓"
         else
             echo "  Tarball not available, downloading from R2..."
-            R2_BASE="https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev/$S3_NAME"
+            R2_BASE="${R2_CDN_URL:-__DARKBLOOM_R2_CDN_URL__}/$S3_NAME"
             for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json model.safetensors.index.json; do
                 curl -fsSL "$R2_BASE/$f" -o "$CACHE_DIR/$f" 2>/dev/null || true
             done

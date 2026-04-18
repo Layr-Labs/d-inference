@@ -173,7 +173,7 @@ func TestMemoryStoreImplementsInterface(t *testing.T) {
 	var _ Store = NewMemory("")
 }
 
-func TestSupportedModels(t *testing.T) {
+func TestSupportedModels(t *testing.T) { //nolint:gocognit
 	s := NewMemory("")
 
 	// Initially empty

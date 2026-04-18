@@ -892,104 +892,102 @@ const MaxConcurrentRequests = DefaultMaxConcurrent
 // Score = (1 - load) * decode_tps * trust_multiplier * reputation * warm_bonus * health_factor
 //
 // Uses dynamic max based on hardware when backend capacity is reported.
-func ScoreProvider(p *Provider, model string) float64 {
-	// Providers that have not passed runtime integrity verification score 0
-	// and should never be selected for routing.
+// scoreSnapshot holds the mutable provider fields needed by ScoreProvider,
+// captured under the provider lock to avoid repeated locking.
+type scoreSnapshot struct {
+	runtimeVerified bool
+	maxConcurrency  int
+	decodeTPS       float64
+	trustLevel      TrustLevel
+	warmModels      []string
+	currentModel    string
+	sysMetrics      protocol.SystemMetrics
+	repScore        float64
+	backendCap      *protocol.BackendCapacity
+	memBandwidthGBs float64
+	memoryGB        int
+}
+
+func snapshotForScore(p *Provider) scoreSnapshot {
+	pending := p.PendingCount()
+	_ = pending
 	p.mu.Lock()
-	runtimeVerified := p.RuntimeVerified
-	p.mu.Unlock()
-	if !runtimeVerified {
-		return 0
+	defer p.mu.Unlock()
+	return scoreSnapshot{
+		runtimeVerified: p.RuntimeVerified,
+		maxConcurrency:  p.maxConcurrency(),
+		decodeTPS:       p.DecodeTPS,
+		trustLevel:      p.TrustLevel,
+		warmModels:      append([]string{}, p.WarmModels...),
+		currentModel:    p.CurrentModel,
+		sysMetrics:      p.SystemMetrics,
+		repScore:        p.Reputation.Score(),
+		backendCap:      p.BackendCapacity,
+		memBandwidthGBs: p.Hardware.MemoryBandwidthGBs,
+		memoryGB:        p.Hardware.MemoryGB,
 	}
+}
 
-	// Load: gradient from 0.0 (idle) to 1.0 (at max concurrency).
-	// Uses dynamic max based on hardware when backend capacity is reported.
-	pending := float64(p.PendingCount())
-	p.mu.Lock()
-	maxConc := p.maxConcurrency()
-	p.mu.Unlock()
-	load := pending / float64(maxConc)
-	if load > 1.0 {
-		load = 1.0
+// estimateDecodeTPS returns the effective decode TPS, falling back to
+// a sqrt-scaled hardware bandwidth estimate when the provider has not
+// reported a value.
+func estimateDecodeTPS(reported float64, memBandwidthGBs float64) float64 {
+	if reported > 0 {
+		return reported
 	}
+	bw := memBandwidthGBs
+	if bw > 0 {
+		return math.Sqrt(bw) // sqrt scaling: 546→23.4, 400→20, 300→17.3, 150→12.2
+	}
+	return 1.0
+}
 
-	// Snapshot mutable fields under lock. These are written by Heartbeat
-	// and SetTrustLevel from other goroutines.
-	p.mu.Lock()
-	decodeTPS := p.DecodeTPS
-	trustLevel := p.TrustLevel
-	warmModels := append([]string{}, p.WarmModels...)
-	currentModel := p.CurrentModel
-	sysMetrics := p.SystemMetrics
-	repScore := p.Reputation.Score()
-	backendCap := p.BackendCapacity
-	p.mu.Unlock()
-
-	// Base decode TPS — when not reported by the provider, estimate from
-	// hardware memory bandwidth using sqrt scaling. Linear bandwidth
-	// ratios (e.g. 546 vs 300 = 1.8x) create too much routing skew;
-	// sqrt dampens this to ~1.35x, giving faster hardware a mild
-	// preference while still distributing load across all providers.
-	if decodeTPS <= 0 {
-		bw := float64(p.Hardware.MemoryBandwidthGBs)
-		if bw > 0 {
-			decodeTPS = math.Sqrt(bw) // sqrt scaling: 546→23.4, 400→20, 300→17.3, 150→12.2
-		} else {
-			decodeTPS = 1.0
+// warmModelBonus returns a multiplier for providers that already have the
+// requested model warm in cache. Only applies when the provider is idle.
+func warmModelBonus(model string, warmModels []string, currentModel string, idle bool) float64 {
+	if !idle {
+		return 1.0
+	}
+	for _, wm := range warmModels {
+		if wm == model {
+			return 1.5
 		}
 	}
+	if currentModel == model {
+		return 1.5
+	}
+	return 1.0
+}
 
-	trustMul := TrustMultiplier(trustLevel)
-
-	// Warm model bonus: only applies when the provider is IDLE (no pending
-	// requests). This prevents a warm provider from monopolizing all traffic.
-	// Once a warm provider has any pending requests, cold providers compete
-	// on equal terms — a 20s parallel cold-start beats waiting in a serial
-	// queue behind a single warm provider.
-	warmBonus := 1.0
-	isIdle := pending == 0
-	if isIdle {
-		for _, wm := range warmModels {
-			if wm == model {
-				warmBonus = 1.5
-				break
+// slotStateWarmOverride adjusts the warm bonus based on backend slot state.
+// Providers whose backend is DOWN get a heavy penalty.
+func slotStateWarmOverride(backendCap *protocol.BackendCapacity, model string, warmBonus float64) float64 {
+	if backendCap == nil {
+		return warmBonus
+	}
+	for _, slot := range backendCap.Slots {
+		if slot.Model == model {
+			switch slot.State {
+			case "idle_shutdown":
+				return 0.1
+			case "crashed":
+				return 0.05
 			}
-		}
-		if currentModel == model {
-			warmBonus = 1.5
+			return warmBonus
 		}
 	}
+	return warmBonus
+}
 
-	// Cold-start / crash penalty: apply regardless of load. These represent
-	// providers whose backend is DOWN (not just cold in cache). Loading from
-	// idle_shutdown takes ~30s, crashed backends may not recover at all.
-	if backendCap != nil {
-		for _, slot := range backendCap.Slots {
-			if slot.Model == model {
-				switch slot.State {
-				case "idle_shutdown":
-					warmBonus = 0.1
-				case "crashed":
-					warmBonus = 0.05
-				}
-				break
-			}
-		}
-	}
-
-	// Health factor from live system metrics
-	m := sysMetrics
-
-	// Memory pressure: linear penalty. At 0.9 -> factor 0.1
+// computeHealthFactor returns a combined health multiplier from system
+// metrics and GPU memory pressure.
+func computeHealthFactor(m protocol.SystemMetrics, backendCap *protocol.BackendCapacity, hwMemoryGB int) float64 {
 	memFactor := 1.0 - m.MemoryPressure
 	if memFactor < 0.1 {
 		memFactor = 0.1
 	}
-
-	// CPU usage: gentle penalty (max 50% reduction at full load)
 	cpuFactor := 1.0 - (m.CPUUsage * 0.5)
 
-	// Thermal: step penalties
 	thermalFactor := 1.0
 	switch m.ThermalState {
 	case "fair":
@@ -1001,25 +999,49 @@ func ScoreProvider(p *Provider, model string) float64 {
 	}
 
 	healthFactor := memFactor * cpuFactor * thermalFactor
+	healthFactor *= gpuMemoryFactor(backendCap, hwMemoryGB)
+	return healthFactor
+}
 
-	// GPU memory pressure from backend capacity: penalize providers with
-	// high GPU utilization to prefer those with more headroom.
-	if backendCap != nil && backendCap.GPUMemoryActiveGB > 0 {
-		totalMem := backendCap.TotalMemoryGB
-		if totalMem <= 0 {
-			totalMem = float64(p.Hardware.MemoryGB)
-		}
-		if totalMem > 0 {
-			gpuUtil := backendCap.GPUMemoryActiveGB / totalMem
-			gpuFactor := 1.0 - (gpuUtil * 0.5) // max 50% penalty at full GPU
-			if gpuFactor < 0.1 {
-				gpuFactor = 0.1
-			}
-			healthFactor *= gpuFactor
-		}
+// gpuMemoryFactor penalizes providers with high GPU utilization.
+func gpuMemoryFactor(backendCap *protocol.BackendCapacity, hwMemoryGB int) float64 {
+	if backendCap == nil || backendCap.GPUMemoryActiveGB <= 0 {
+		return 1.0
+	}
+	totalMem := backendCap.TotalMemoryGB
+	if totalMem <= 0 {
+		totalMem = float64(hwMemoryGB)
+	}
+	if totalMem <= 0 {
+		return 1.0
+	}
+	gpuUtil := backendCap.GPUMemoryActiveGB / totalMem
+	gpuFactor := 1.0 - (gpuUtil * 0.5)
+	if gpuFactor < 0.1 {
+		gpuFactor = 0.1
+	}
+	return gpuFactor
+}
+
+func ScoreProvider(p *Provider, model string) float64 {
+	snap := snapshotForScore(p)
+	if !snap.runtimeVerified {
+		return 0
 	}
 
-	return (1.0 - load) * decodeTPS * trustMul * repScore * warmBonus * healthFactor
+	pending := float64(p.PendingCount())
+	load := pending / float64(snap.maxConcurrency)
+	if load > 1.0 {
+		load = 1.0
+	}
+
+	decodeTPS := estimateDecodeTPS(snap.decodeTPS, snap.memBandwidthGBs)
+	trustMul := TrustMultiplier(snap.trustLevel)
+	wb := warmModelBonus(model, snap.warmModels, snap.currentModel, pending == 0)
+	wb = slotStateWarmOverride(snap.backendCap, model, wb)
+	healthFactor := computeHealthFactor(snap.sysMetrics, snap.backendCap, snap.memoryGB)
+
+	return (1.0 - load) * decodeTPS * trustMul * snap.repScore * wb * healthFactor
 }
 
 // FindProvider selects an available provider for the given model using
@@ -1037,77 +1059,40 @@ func (r *Registry) FindProvider(model string, excludeIDs ...string) *Provider {
 // MinTrustLevel is used. Consumers can request a specific trust level
 // (e.g. hardware) to filter providers. Optional excludeIDs are provider
 // IDs to skip during selection.
-func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excludeIDs ...string) *Provider {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+// providerEligibility holds the snapshot fields used to determine whether
+// a provider is eligible for routing in FindProviderWithTrust.
+type providerEligibility struct {
+	status          ProviderStatus
+	trust           TrustLevel
+	lastChallenge   time.Time
+	runtimeVerified bool
+}
 
-	// Build a set of excluded provider IDs for O(1) lookup.
-	excludeSet := make(map[string]struct{}, len(excludeIDs))
-	for _, id := range excludeIDs {
-		excludeSet[id] = struct{}{}
+// isEligible checks whether a provider is eligible for routing given the
+// effective minimum trust, current time, and challenge max age.
+func (e providerEligibility) isEligible(effectiveMin TrustLevel, now time.Time, challengeMaxAge time.Duration) bool {
+	if e.status == StatusOffline || e.status == StatusUntrusted {
+		return false
 	}
-
-	// Determine effective minimum: max of registry default and per-request
-	effectiveMin := r.MinTrustLevel
-	if minTrust != "" && trustRank(minTrust) > trustRank(effectiveMin) {
-		effectiveMin = minTrust
+	if trustRank(e.trust) < trustRank(effectiveMin) {
+		return false
 	}
-
-	// Challenge staleness threshold: providers must have passed a
-	// challenge within the last interval + grace period. The challenge
-	// interval is 5 minutes, so we allow up to 6 minutes (interval +
-	// 1-minute grace) to avoid a gap where providers are unroutable
-	// between challenge cycles.
-	challengeMaxAge := 6 * time.Minute
-	now := time.Now()
-
-	var candidates []*Provider
-	for _, p := range r.providers {
-		// Skip explicitly excluded providers (failed on previous retry attempts).
-		if _, excluded := excludeSet[p.ID]; excluded {
-			continue
-		}
-
-		// Snapshot mutable fields under the provider lock.
-		p.mu.Lock()
-		status := p.Status
-		trust := p.TrustLevel
-		lastChallenge := p.LastChallengeVerified
-		runtimeVerified := p.RuntimeVerified
-		p.mu.Unlock()
-
-		// Skip offline/untrusted providers
-		if status == StatusOffline || status == StatusUntrusted {
-			continue
-		}
-		if trustRank(trust) < trustRank(effectiveMin) {
-			continue
-		}
-		// Skip providers whose runtime integrity has not been verified.
-		if !runtimeVerified {
-			continue
-		}
-		// Skip providers that haven't passed a recent challenge.
-		if lastChallenge.IsZero() || now.Sub(lastChallenge) > challengeMaxAge {
-			continue
-		}
-		// Skip providers at max concurrency (dynamic limit based on hardware)
-		if p.PendingCount() >= p.MaxConcurrency() {
-			continue
-		}
-		for _, m := range p.Models {
-			if m.ID == model {
-				candidates = append(candidates, p)
-				break
-			}
-		}
+	if !e.runtimeVerified {
+		return false
 	}
+	if e.lastChallenge.IsZero() || now.Sub(e.lastChallenge) > challengeMaxAge {
+		return false
+	}
+	return true
+}
 
+// selectHighestScoredProvider picks the best provider from a list of
+// candidates using ScoreProvider, with random tie-breaking.
+func selectHighestScoredProvider(candidates []*Provider, model string) *Provider {
 	if len(candidates) == 0 {
 		return nil
 	}
 
-	// Score all candidates and pick the highest.
 	bestIdx := 0
 	bestScore := ScoreProvider(candidates[0], model)
 	for i := 1; i < len(candidates); i++ {
@@ -1118,20 +1103,64 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 		}
 	}
 
-	// When multiple candidates tie for the best score (common when all
-	// providers have the same hardware/TPS and load), randomly pick among
-	// them to distribute load instead of always picking the first one.
 	var ties []*Provider
 	for _, c := range candidates {
 		if ScoreProvider(c, model) >= bestScore-0.001 {
 			ties = append(ties, c)
 		}
 	}
-	var selected *Provider
 	if len(ties) > 1 {
-		selected = ties[rand.Intn(len(ties))]
-	} else {
-		selected = candidates[bestIdx]
+		return ties[rand.Intn(len(ties))]
+	}
+	return candidates[bestIdx]
+}
+
+func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excludeIDs ...string) *Provider {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	excludeSet := make(map[string]struct{}, len(excludeIDs))
+	for _, id := range excludeIDs {
+		excludeSet[id] = struct{}{}
+	}
+
+	effectiveMin := r.MinTrustLevel
+	if minTrust != "" && trustRank(minTrust) > trustRank(effectiveMin) {
+		effectiveMin = minTrust
+	}
+
+	challengeMaxAge := 6 * time.Minute
+	now := time.Now()
+
+	var candidates []*Provider
+	for _, p := range r.providers {
+		if _, excluded := excludeSet[p.ID]; excluded {
+			continue
+		}
+
+		p.mu.Lock()
+		elig := providerEligibility{
+			status:          p.Status,
+			trust:           p.TrustLevel,
+			lastChallenge:   p.LastChallengeVerified,
+			runtimeVerified: p.RuntimeVerified,
+		}
+		p.mu.Unlock()
+
+		if !elig.isEligible(effectiveMin, now, challengeMaxAge) {
+			continue
+		}
+		if p.PendingCount() >= p.MaxConcurrency() {
+			continue
+		}
+		if providerServesModelLocked(p, model) {
+			candidates = append(candidates, p)
+		}
+	}
+
+	selected := selectHighestScoredProvider(candidates, model)
+	if selected == nil {
+		return nil
 	}
 
 	selected.mu.Lock()
@@ -1181,25 +1210,50 @@ type AggregateModel struct {
 	Attestation       *AttestationSummary `json:"attestation,omitempty"`
 }
 
+// modelAgg accumulates per-model statistics across providers for ListModels.
+type modelAgg struct {
+	modelType     string
+	quantization  string
+	count         int
+	attestedCount int
+	highestTrust  TrustLevel
+	secureEnclave bool
+	sipEnabled    bool
+	secureBoot    bool
+}
+
+// aggregateProviderModels merges a single provider's models into the
+// aggregation map, updating counts, trust, and attestation flags.
+func aggregateProviderModels(p *Provider, trust TrustLevel, attested bool, attestResult *attestation.VerificationResult, agg map[string]*modelAgg) {
+	for _, m := range p.Models {
+		k := m.ID
+		a, ok := agg[k]
+		if !ok {
+			a = &modelAgg{
+				modelType:    m.ModelType,
+				quantization: m.Quantization,
+				highestTrust: TrustNone,
+			}
+			agg[k] = a
+		}
+		a.count++
+		if trustRank(trust) > trustRank(a.highestTrust) {
+			a.highestTrust = trust
+		}
+		if attested && attestResult != nil {
+			a.attestedCount++
+			a.secureEnclave = a.secureEnclave || attestResult.SecureEnclaveAvailable
+			a.sipEnabled = a.sipEnabled || attestResult.SIPEnabled
+			a.secureBoot = a.secureBoot || attestResult.SecureBootEnabled
+		}
+	}
+}
+
 // ListModels returns deduplicated models from all online providers.
 func (r *Registry) ListModels() []AggregateModel {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	type modelAgg struct {
-		modelType     string
-		quantization  string
-		count         int
-		attestedCount int
-		highestTrust  TrustLevel
-		secureEnclave bool
-		sipEnabled    bool
-		secureBoot    bool
-	}
-
-	// Aggregate by model ID only — consumers request by ID, so providers
-	// offering the same model ID should be counted together regardless of
-	// minor metadata differences.
 	agg := make(map[string]*modelAgg)
 	for _, p := range r.providers {
 		p.mu.Lock()
@@ -1215,31 +1269,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		if !r.trustMeetsMinimum(trust) {
 			continue
 		}
-		for _, m := range p.Models {
-			k := m.ID
-			a, ok := agg[k]
-			if !ok {
-				a = &modelAgg{
-					modelType:    m.ModelType,
-					quantization: m.Quantization,
-					highestTrust: TrustNone,
-				}
-				agg[k] = a
-			}
-			a.count++
-
-			// Update highest trust level
-			if trustRank(trust) > trustRank(a.highestTrust) {
-				a.highestTrust = trust
-			}
-
-			if attested && attestResult != nil {
-				a.attestedCount++
-				a.secureEnclave = a.secureEnclave || attestResult.SecureEnclaveAvailable
-				a.sipEnabled = a.sipEnabled || attestResult.SIPEnabled
-				a.secureBoot = a.secureBoot || attestResult.SecureBootEnabled
-			}
-		}
+		aggregateProviderModels(p, trust, attested, attestResult, agg)
 	}
 
 	models := make([]AggregateModel, 0, len(agg))

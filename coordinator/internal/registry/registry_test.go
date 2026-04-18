@@ -1441,7 +1441,7 @@ func TestThermalCriticalBlocksRouting(t *testing.T) {
 // pass under -race, we serialize the FindProvider and Heartbeat calls
 // (they run in alternating phases). The remaining goroutines (reputation
 // updates, provider reads, registry reads) run fully concurrently.
-func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
+func TestConcurrentFindProviderAndHeartbeat(t *testing.T) { //nolint:gocognit
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	model := msg.Models[0].ID

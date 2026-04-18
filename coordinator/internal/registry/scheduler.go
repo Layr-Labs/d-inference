@@ -133,7 +133,13 @@ func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, e
 		return best
 	}
 
-	best = nearTies[0]
+	return breakNearTies(nearTies)
+}
+
+// breakNearTies selects the best candidate from a set of near-tied
+// candidates using queue-depth, pending count, and random tie-breaking.
+func breakNearTies(nearTies []*routingCandidate) *routingCandidate {
+	best := nearTies[0]
 	for _, c := range nearTies[1:] {
 		if c.effectiveQueue < best.effectiveQueue {
 			best = c
@@ -144,8 +150,6 @@ func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, e
 		}
 	}
 
-	// If multiple candidates are still equivalent after queue-depth tie-breaks,
-	// randomize to avoid burst hot-spotting on a single provider.
 	equivalent := make([]*routingCandidate, 0, len(nearTies))
 	for _, c := range nearTies {
 		if c.effectiveQueue == best.effectiveQueue &&
@@ -160,28 +164,34 @@ func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, e
 	return best
 }
 
+// providerRoutableUnderLock checks basic routing eligibility for a provider
+// whose mutex is already held. Returns false if the provider should be skipped.
+func (r *Registry) providerRoutableUnderLock(p *Provider, model string, now time.Time) bool {
+	if !providerServesModelLocked(p, model) {
+		return false
+	}
+	if p.Status == StatusOffline || p.Status == StatusUntrusted {
+		return false
+	}
+	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
+		return false
+	}
+	if !p.RuntimeVerified {
+		return false
+	}
+	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+		return false
+	}
+	return p.pendingCount() < p.maxConcurrency()
+}
+
 func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSnapshot, bool) {
 	now := time.Now()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if !providerServesModelLocked(p, model) {
-		return routingSnapshot{}, false
-	}
-	if p.Status == StatusOffline || p.Status == StatusUntrusted {
-		return routingSnapshot{}, false
-	}
-	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
-		return routingSnapshot{}, false
-	}
-	if !p.RuntimeVerified {
-		return routingSnapshot{}, false
-	}
-	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
-		return routingSnapshot{}, false
-	}
-	if p.pendingCount() >= p.maxConcurrency() {
+	if !r.providerRoutableUnderLock(p, model, now) {
 		return routingSnapshot{}, false
 	}
 

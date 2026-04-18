@@ -372,10 +372,10 @@ func semverGreater(a, b string) bool {
 	for i := 0; i < len(aParts) || i < len(bParts); i++ {
 		var ai, bi int
 		if i < len(aParts) {
-			fmt.Sscanf(aParts[i], "%d", &ai)
+			_, _ = fmt.Sscanf(aParts[i], "%d", &ai)
 		}
 		if i < len(bParts) {
-			fmt.Sscanf(bParts[i], "%d", &bi)
+			_, _ = fmt.Sscanf(bParts[i], "%d", &bi)
 		}
 		if ai > bi {
 			return true
@@ -546,7 +546,7 @@ func (s *Server) routes() {
 		rendered = strings.ReplaceAll(rendered, installScriptR2SitePackagesPlaceholder, sitePackagesURL)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
-		io.WriteString(w, rendered)
+		_, _ = io.WriteString(w, rendered)
 	})
 
 	// Health check — no auth required.

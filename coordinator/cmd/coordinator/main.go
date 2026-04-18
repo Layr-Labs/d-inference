@@ -38,6 +38,7 @@ import (
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/billing"
+	"github.com/eigeninference/coordinator/internal/e2e"
 	"github.com/eigeninference/coordinator/internal/mdm"
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/registry"
@@ -231,6 +232,23 @@ func main() {
 	ledger := payments.NewLedger(st)
 	billingSvc := billing.NewService(st, ledger, logger, billingCfg)
 	srv.SetBilling(billingSvc)
+
+	// Derive the coordinator's long-lived X25519 key for sender→coordinator
+	// request encryption. Reuses the same BIP39 mnemonic as billing but with
+	// a distinct HKDF domain, so the encryption key is independent of the
+	// Solana keypair. Optional: dev environments without a mnemonic just get
+	// the /v1/encryption-key endpoint disabled (senders fall back to plaintext).
+	if coordKey, err := e2e.DeriveCoordinatorKey(billingCfg.SolanaMnemonic); err == nil {
+		srv.SetCoordinatorKey(coordKey)
+		logger.Info("sender→coordinator encryption enabled",
+			"kid", coordKey.KID,
+			"hkdf_info", e2e.CoordinatorKeyHKDFInfo,
+		)
+	} else if err != e2e.ErrNoMnemonic {
+		logger.Error("failed to derive coordinator encryption key", "error", err)
+	} else {
+		logger.Warn("sender→coordinator encryption disabled — no mnemonic configured")
+	}
 
 	// Configure admin accounts.
 	if adminEmails := os.Getenv("EIGENINFERENCE_ADMIN_EMAILS"); adminEmails != "" {

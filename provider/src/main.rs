@@ -3497,6 +3497,7 @@ async fn cmd_serve(
                                         .map(|s| (s.model_id.clone(), s.model_path.clone(), s.port, s.pid, s.healthy, s.restarting))
                                 };
 
+                                #[cfg(feature = "python")]
                                 let mut inprocess_engine = None;
                                 if let Some((slot_model_id, slot_model_path, slot_port, slot_pid, slot_healthy, slot_restarting)) = slot_info {
                                     if is_inprocess {
@@ -6045,6 +6046,15 @@ fn run_model_picker(entries: &[PickerEntry], memory_gb: f64) -> Result<Vec<usize
         .collect())
 }
 
+fn has_start_selection(
+    text_models: &[String],
+    image_model: Option<&str>,
+    stt_model: Option<&str>,
+) -> bool {
+    // This is hardware-independent: Mac model/RAM only affects picker availability.
+    !text_models.is_empty() || image_model.is_some() || stt_model.is_some()
+}
+
 async fn cmd_start(
     coordinator_url: String,
     model_override: Option<String>,
@@ -6262,7 +6272,11 @@ async fn cmd_start(
             .and_then(|id| models::resolve_local_path(id).map(|p| p.to_string_lossy().to_string()))
     });
 
-    if selected_models.is_empty() && final_image_model.is_none() {
+    if !has_start_selection(
+        &selected_models,
+        final_image_model.as_deref(),
+        picked_stt.as_deref(),
+    ) {
         anyhow::bail!("No models selected");
     }
 
@@ -6290,6 +6304,9 @@ async fn cmd_start(
     }
     if let Some(ref im) = final_image_model {
         println!("  Image:   {}", im);
+    }
+    if let Some(ref stt) = picked_stt {
+        println!("  STT:     {}", stt);
     }
     println!("  Logs:    {}", log_path.display());
     println!("  Service: io.darkbloom.provider (launchd)");
@@ -7269,6 +7286,42 @@ mod tests {
             std::env::remove_var("EIGENINFERENCE_INFERENCE_BACKEND");
         }
         assert!(validate_private_text_runtime(true).is_err());
+    }
+
+    #[test]
+    fn test_start_selection_accepts_text_model() {
+        let text_models = vec!["mlx-community/Qwen3.5-4B-4bit".to_string()];
+
+        assert!(has_start_selection(&text_models, None, None));
+    }
+
+    #[test]
+    fn test_start_selection_accepts_image_model() {
+        let text_models = Vec::new();
+
+        assert!(has_start_selection(
+            &text_models,
+            Some("flux-klein-4b-q8"),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_start_selection_accepts_stt_model() {
+        let text_models = Vec::new();
+
+        assert!(has_start_selection(
+            &text_models,
+            None,
+            Some("CohereLabs/cohere-transcribe-03-2026")
+        ));
+    }
+
+    #[test]
+    fn test_start_selection_rejects_empty_selection() {
+        let text_models = Vec::new();
+
+        assert!(!has_start_selection(&text_models, None, None));
     }
 
     /// Verify that spawn_backend_log_forwarder captures stdout/stderr from a child

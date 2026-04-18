@@ -16,6 +16,7 @@ package api
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
 	"crypto/x509"
 	_ "embed"
@@ -24,6 +25,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,10 +33,13 @@ import (
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/billing"
 	"github.com/eigeninference/coordinator/internal/mdm"
+	"github.com/eigeninference/coordinator/internal/metrics"
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/ratelimit"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // contextKey is an unexported type for context keys in this package.
@@ -43,7 +48,22 @@ type contextKey int
 
 const (
 	ctxKeyConsumer contextKey = iota
+	ctxKeyRequestID
 )
+
+// requestIDFromContext returns the per-request correlation ID set by
+// the logging middleware. Empty if the request didn't pass through the
+// middleware (e.g. raw test handlers).
+func requestIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxKeyRequestID).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// cryptoRand is a small wrapper to read random bytes. Defined as a var
+// so tests can stub it if needed; production uses crypto/rand.Read.
+var cryptoRand = rand.Read
 
 // consumerKeyFromContext retrieves the authenticated consumer's API key
 // from the request context. The key is stored by requireAuth middleware
@@ -110,6 +130,30 @@ type Server struct {
 	// coordinator restart, this table is checked to restore trust/reputation.
 	// Populated once at startup from the store.
 	storedProviders map[string]*store.ProviderRecord
+
+	// rateLimiter applies per-account token-bucket rate limits to consumer
+	// inference endpoints. Nil means unlimited (compatibility with old call
+	// sites and tests). Set via SetRateLimiter.
+	rateLimiter *ratelimit.Limiter
+
+	// financialRateLimiter is a separate, stricter limiter for endpoints
+	// that touch on-chain state or mutate balances (deposit, withdraw, key
+	// creation, referral apply, invite redemption). These are higher-value
+	// targets for spam/abuse than inference, so we throttle them harder.
+	// Nil means unlimited.
+	financialRateLimiter *ratelimit.Limiter
+}
+
+// SetRateLimiter configures the per-account rate limiter applied to
+// consumer inference endpoints. Pass nil to disable.
+func (s *Server) SetRateLimiter(rl *ratelimit.Limiter) {
+	s.rateLimiter = rl
+}
+
+// SetFinancialRateLimiter configures a stricter per-account limiter for
+// balance-mutating endpoints. Pass nil to disable.
+func (s *Server) SetFinancialRateLimiter(rl *ratelimit.Limiter) {
+	s.financialRateLimiter = rl
 }
 
 // NewServer creates a configured Server with all routes mounted.
@@ -480,19 +524,31 @@ func (s *Server) routes() {
 	// Health check — no auth required.
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 
+	// Prometheus metrics — exposed unauthenticated by convention. In a
+	// production deploy this should be reachable only from the metrics
+	// scraper's network (e.g. via firewall rule or a reverse proxy that
+	// strips it from the public listener). The data here is operational
+	// (request counts, latency histograms, queue depth) — no PII or keys.
+	s.mux.Handle("GET /metrics", promhttp.Handler())
+
 	// Provider WebSocket — no API key auth (providers authenticate differently).
 	s.mux.HandleFunc("GET /ws/provider", s.handleProviderWS)
 
 	// Key generation — requires Privy auth, key is linked to account.
-	s.mux.HandleFunc("POST /v1/auth/keys", s.requireAuth(s.handleCreateKey))
+	// Stricter financial limiter applied because key creation is a high-value
+	// operation (each key is a credential).
+	s.mux.HandleFunc("POST /v1/auth/keys", s.requireAuth(s.rateLimitFinancial(s.handleCreateKey)))
 
-	// Consumer endpoints — API key auth required.
-	s.mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.handleChatCompletions))
-	s.mux.HandleFunc("POST /v1/responses", s.requireAuth(s.handleChatCompletions)) // Responses API — same handler, auto-detects input vs messages
-	s.mux.HandleFunc("POST /v1/completions", s.requireAuth(s.handleCompletions))
-	s.mux.HandleFunc("POST /v1/messages", s.requireAuth(s.handleAnthropicMessages))
-	s.mux.HandleFunc("POST /v1/audio/transcriptions", s.requireAuth(s.handleTranscriptions))
-	s.mux.HandleFunc("POST /v1/images/generations", s.requireAuth(s.handleImageGenerations))
+	// Consumer endpoints — API key auth required + per-account rate limit.
+	// rateLimitConsumer is chained inside requireAuth so the accountID is in
+	// context. Read-only endpoints (GET /v1/models) skip rate limiting since
+	// they're cheap and clients poll them.
+	s.mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.rateLimitConsumer(s.handleChatCompletions)))
+	s.mux.HandleFunc("POST /v1/responses", s.requireAuth(s.rateLimitConsumer(s.handleChatCompletions))) // Responses API — same handler, auto-detects input vs messages
+	s.mux.HandleFunc("POST /v1/completions", s.requireAuth(s.rateLimitConsumer(s.handleCompletions)))
+	s.mux.HandleFunc("POST /v1/messages", s.requireAuth(s.rateLimitConsumer(s.handleAnthropicMessages)))
+	s.mux.HandleFunc("POST /v1/audio/transcriptions", s.requireAuth(s.rateLimitConsumer(s.handleTranscriptions)))
+	s.mux.HandleFunc("POST /v1/images/generations", s.requireAuth(s.rateLimitConsumer(s.handleImageGenerations)))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
 
 	// Provider image upload — providers POST generated images here (no API key auth,
@@ -532,20 +588,24 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/releases/latest", s.handleLatestRelease) // public (install.sh)
 
 	// Device authorization flow — providers link to user accounts.
-	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)                      // no auth — provider not yet authenticated
-	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)                    // no auth — polls with device_code secret
-	s.mux.HandleFunc("POST /v1/device/approve", s.requireAuth(s.handleDeviceApprove)) // Privy auth — user approves in browser
+	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)   // no auth — provider not yet authenticated
+	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken) // no auth — polls with device_code secret
+	// Device approve issues a long-lived provider→account linking token —
+	// same risk class as /v1/auth/keys, so financial-tier limit applies.
+	s.mux.HandleFunc("POST /v1/device/approve", s.requireAuth(s.rateLimitFinancial(s.handleDeviceApprove))) // Privy auth — user approves in browser
 
 	// --- Billing endpoints (multi-chain payments + referrals) ---
 
-	// Stripe
-	s.mux.HandleFunc("POST /v1/billing/stripe/create-session", s.requireAuth(s.handleStripeCreateSession))
+	// Stripe — financial limiter on session creation (creates a checkout
+	// intent, hits external API). Read-only status endpoint not throttled.
+	s.mux.HandleFunc("POST /v1/billing/stripe/create-session", s.requireAuth(s.rateLimitFinancial(s.handleStripeCreateSession)))
 	s.mux.HandleFunc("POST /v1/billing/stripe/webhook", s.handleStripeWebhook) // no auth — Stripe signs it
 	s.mux.HandleFunc("GET /v1/billing/stripe/session", s.requireAuth(s.handleStripeSessionStatus))
 
-	// Solana deposits and withdrawals
-	s.mux.HandleFunc("POST /v1/billing/deposit", s.requireAuth(s.handleSolanaDeposit))
-	s.mux.HandleFunc("POST /v1/billing/withdraw/solana", s.requireAuth(s.handleSolanaWithdraw))
+	// Solana deposits and withdrawals — both hit on-chain RPCs and mutate
+	// balances, so the stricter financial limiter applies.
+	s.mux.HandleFunc("POST /v1/billing/deposit", s.requireAuth(s.rateLimitFinancial(s.handleSolanaDeposit)))
+	s.mux.HandleFunc("POST /v1/billing/withdraw/solana", s.requireAuth(s.rateLimitFinancial(s.handleSolanaWithdraw)))
 	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
 
 	// Pricing — GET is public, PUT/DELETE require auth
@@ -574,19 +634,25 @@ func (s *Server) routes() {
 	// Payment methods info
 	s.mux.HandleFunc("GET /v1/billing/methods", s.handleBillingMethods) // no auth needed
 
-	// Referral system
-	s.mux.HandleFunc("POST /v1/referral/register", s.requireAuth(s.handleReferralRegister))
-	s.mux.HandleFunc("POST /v1/referral/apply", s.requireAuth(s.handleReferralApply))
+	// Referral system — register/apply mutate referral graph (financial
+	// limiter); stats/info are read-only.
+	s.mux.HandleFunc("POST /v1/referral/register", s.requireAuth(s.rateLimitFinancial(s.handleReferralRegister)))
+	s.mux.HandleFunc("POST /v1/referral/apply", s.requireAuth(s.rateLimitFinancial(s.handleReferralApply)))
 	s.mux.HandleFunc("GET /v1/referral/stats", s.requireAuth(s.handleReferralStats))
 	s.mux.HandleFunc("GET /v1/referral/info", s.requireAuth(s.handleReferralInfo))
 
 	// Invite codes (admin)
-	s.mux.HandleFunc("POST /v1/admin/invite-codes", s.requireAuth(s.handleAdminCreateInviteCode))
+	// Invite code creation accepts amount_usd and produces a credit-bearing
+	// code; redemption is already financial-tier so the issuance side must
+	// match (otherwise an admin-key holder could spam codes anyway, but
+	// keeping symmetry).
+	s.mux.HandleFunc("POST /v1/admin/invite-codes", s.requireAuth(s.rateLimitFinancial(s.handleAdminCreateInviteCode)))
 	s.mux.HandleFunc("GET /v1/admin/invite-codes", s.requireAuth(s.handleAdminListInviteCodes))
 	s.mux.HandleFunc("DELETE /v1/admin/invite-codes", s.requireAuth(s.handleAdminDeactivateInviteCode))
 
-	// Invite code redemption (user)
-	s.mux.HandleFunc("POST /v1/invite/redeem", s.requireAuth(s.handleRedeemInviteCode))
+	// Invite code redemption (user) — credits the redeemer's balance, so
+	// it's a financial-tier endpoint.
+	s.mux.HandleFunc("POST /v1/invite/redeem", s.requireAuth(s.rateLimitFinancial(s.handleRedeemInviteCode)))
 }
 
 // Handler returns the root http.Handler with global middleware applied.
@@ -653,6 +719,74 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// rateLimitConsumer wraps a consumer-facing handler with per-account rate
+// limiting. It must be chained AFTER requireAuth so the accountID is in
+// the context. Admin key requests bypass the limiter (they show up as the
+// "admin" pseudo-account from requireAuth — we let those through unmetered
+// so admin scripts and ops tooling aren't throttled).
+//
+// Note: Privy users with admin emails (s.adminEmails) currently do NOT
+// bypass — they receive a real accountID from requireAuth. This is
+// intentional: human admins shouldn't generate enough traffic to hit
+// limits, and treating them as untrusted callers preserves the invariant
+// that the limiter sees one identity per real user.
+//
+// Returns 429 with a Retry-After header on rejection. The Retry-After
+// duration is the time until at least one token replenishes, clamped to a
+// sane maximum to avoid pathological values.
+func (s *Server) rateLimitConsumer(next http.HandlerFunc) http.HandlerFunc {
+	return s.rateLimitWith(s.rateLimiterFn, next)
+}
+
+// rateLimitFinancial wraps a balance-mutating handler with the stricter
+// financial-endpoint limiter. Chain inside requireAuth.
+func (s *Server) rateLimitFinancial(next http.HandlerFunc) http.HandlerFunc {
+	return s.rateLimitWithTier(s.financialRateLimiterFn, "financial", next)
+}
+
+// The two getter methods exist so rateLimitWith can read the *current*
+// limiter at request time. Routes are registered in routes() during
+// NewServer, but SetRateLimiter / SetFinancialRateLimiter are called
+// AFTER NewServer in main.go. Capturing the field directly at registration
+// time would close over a nil pointer.
+func (s *Server) rateLimiterFn() *ratelimit.Limiter          { return s.rateLimiter }
+func (s *Server) financialRateLimiterFn() *ratelimit.Limiter { return s.financialRateLimiter }
+
+func (s *Server) rateLimitWith(getLimiter func() *ratelimit.Limiter, next http.HandlerFunc) http.HandlerFunc {
+	return s.rateLimitWithTier(getLimiter, "consumer", next)
+}
+
+// rateLimitWithTier is the actual implementation; callers thread a label
+// for the metrics counter so we can distinguish consumer vs financial
+// rejections in dashboards.
+func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rl := getLimiter()
+		if rl == nil {
+			next(w, r)
+			return
+		}
+		accountID := consumerKeyFromContext(r.Context())
+		if accountID == "admin" {
+			next(w, r)
+			return
+		}
+		if allowed, retryAfter := rl.Allow(accountID); !allowed {
+			seconds := int(retryAfter.Seconds())
+			if seconds < 1 {
+				seconds = 1
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(seconds))
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(retryAfter).Unix(), 10))
+			metrics.RateLimitRejections.WithLabelValues(tier).Inc()
+			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+				"too many requests — slow down and retry after the Retry-After interval"))
+			return
+		}
+		next(w, r)
+	}
+}
+
 // corsMiddleware adds permissive CORS headers for development.
 // In production, this should be restricted to the actual frontend origin.
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
@@ -676,16 +810,63 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 
+		// Generate (or honor) a request_id and stash it in context +
+		// response headers so logs and the client can correlate.
+		reqID := r.Header.Get("X-Request-ID")
+		if reqID == "" {
+			reqID = newRequestID()
+		}
+		w.Header().Set("X-Request-ID", reqID)
+		ctx := context.WithValue(r.Context(), ctxKeyRequestID, reqID)
+		r = r.WithContext(ctx)
+
 		next.ServeHTTP(sw, r)
 
+		// Resolve the route pattern that matched (Go 1.22+ method+path).
+		// Falls back to URL.Path when no pattern matched (404). Pattern
+		// label keeps cardinality bounded — never user input.
+		route := r.Pattern
+		if route == "" {
+			route = "unmatched"
+		}
+		statusLabel := strconv.Itoa(sw.status)
+		metrics.HTTPRequests.WithLabelValues(route, r.Method, statusLabel).Inc()
+		metrics.HTTPRequestDuration.WithLabelValues(route, r.Method).Observe(time.Since(start).Seconds())
+
+		// User correlation: if requireAuth attached an account, include
+		// it in the access log. Empty for unauthenticated paths.
+		userID := consumerKeyFromContext(ctx)
+
 		s.logger.Info("request",
+			"request_id", reqID,
 			"method", r.Method,
 			"path", r.URL.Path,
+			"route", route,
 			"status", sw.status,
 			"duration_ms", time.Since(start).Milliseconds(),
 			"remote", r.RemoteAddr,
+			"user_id", userID,
 		)
 	})
+}
+
+// newRequestID returns a short, URL-safe request identifier. We avoid
+// uuid here because request_id is hot-path and we don't need the entropy
+// of a UUID — 12 base32 chars (~60 bits) is plenty to distinguish
+// concurrent requests for trace correlation.
+func newRequestID() string {
+	const alphabet = "0123456789abcdefghijklmnopqrstuv"
+	var b [12]byte
+	if _, err := cryptoRand(b[:]); err != nil {
+		// Fall back to a time-based id; collision risk is negligible for
+		// log-correlation purposes.
+		t := time.Now().UnixNano()
+		return strconv.FormatInt(t, 36)
+	}
+	for i := range b {
+		b[i] = alphabet[int(b[i])&31]
+	}
+	return string(b[:])
 }
 
 // statusWriter wraps http.ResponseWriter to capture the status code

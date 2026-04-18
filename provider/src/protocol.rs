@@ -130,6 +130,16 @@ pub enum ProviderMessage {
     AttestationResponse {
         nonce: String,
         signature: String,
+        /// Signature over canonical JSON of all status fields below
+        /// (sip_enabled, binary_hash, etc.) plus nonce and timestamp.
+        /// Without this, the status fields would be trivially forgeable
+        /// — only nonce+timestamp is covered by `signature`.
+        ///
+        /// Optional for backward compatibility with pre-v0.3.11 providers;
+        /// the coordinator treats missing/empty as "status unsigned" and
+        /// downgrades trust accordingly.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status_signature: Option<String>,
         public_key: String,
         /// Fresh hypervisor status at time of challenge response.
         /// When true, inference memory is hardware-isolated via Stage 2
@@ -714,6 +724,7 @@ mod tests {
         let msg = ProviderMessage::AttestationResponse {
             nonce: "dGVzdG5vbmNl".to_string(),
             signature: "c2lnbmF0dXJl".to_string(),
+            status_signature: None,
             public_key: "cHVia2V5".to_string(),
             hypervisor_active: Some(true),
             rdma_disabled: Some(true),
@@ -1259,6 +1270,7 @@ mod tests {
             ProviderMessage::AttestationResponse {
                 nonce: "bm9uY2U=".to_string(),
                 signature: "c2ln".to_string(),
+                status_signature: None,
                 public_key: "cGs=".to_string(),
                 hypervisor_active: Some(false),
                 rdma_disabled: Some(true),

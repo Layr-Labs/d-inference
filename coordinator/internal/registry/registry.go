@@ -29,6 +29,7 @@ import (
 
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/saferun"
 	"github.com/eigeninference/coordinator/internal/store"
 	"nhooyr.io/websocket"
 )
@@ -401,7 +402,7 @@ func (r *Registry) persistProvider(p *Provider) {
 	if r.store == nil {
 		return
 	}
-	go func() {
+	saferun.Go(r.logger, "registry.persistProvider", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -460,7 +461,7 @@ func (r *Registry) persistProvider(p *Provider) {
 		if err := r.store.UpsertProvider(ctx, rec); err != nil {
 			r.logger.Warn("failed to persist provider", "provider_id", p.ID, "error", err)
 		}
-	}()
+	})
 }
 
 // persistReputation saves a provider's current reputation to the store.
@@ -469,7 +470,7 @@ func (r *Registry) persistReputation(p *Provider) {
 	if r.store == nil {
 		return
 	}
-	go func() {
+	saferun.Go(r.logger, "registry.persistReputation", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -488,7 +489,7 @@ func (r *Registry) persistReputation(p *Provider) {
 		if err := r.store.UpsertReputation(ctx, p.ID, rep); err != nil {
 			r.logger.Warn("failed to persist reputation", "provider_id", p.ID, "error", err)
 		}
-	}()
+	})
 }
 
 // TruncHash returns the first 16 chars of a hash string for logging.
@@ -563,9 +564,108 @@ func (r *Registry) SetQueue(q *RequestQueue) {
 	r.queue = q
 }
 
+// Sanity caps on provider-reported stats. A malicious (or broken) provider
+// could otherwise report absurd values to monopolize routing. These caps are
+// ~3-4x current hardware ceilings (M2 Ultra is ~800 GB/s, MLX decode is ~120
+// tok/s, max Mac Studio RAM is 512 GB) so legitimate future hardware isn't
+// clamped unnecessarily.
+const (
+	maxDecodeTPS          = 500.0
+	maxPrefillTPS         = 5000.0
+	maxMemoryBandwidthGBs = 2000.0
+	maxMemoryGB           = 1024
+	maxMemoryGBFloat      = 1024.0
+	maxTokensPotential    = 1_000_000
+)
+
+// clampNonNeg returns v clamped into [0, max]; NaN/negative become 0.
+// The bool is true if the value was out of range.
+func clampNonNeg(v, max float64) (float64, bool) {
+	if math.IsNaN(v) || v < 0 {
+		return 0, true
+	}
+	if v > max {
+		return max, true
+	}
+	return v, false
+}
+
+// clampBackendCapacity applies sanity caps to provider-reported backend
+// capacity fields that feed the routing scorer. A provider reporting
+// TotalMemoryGB=1e9 would make gpuUtil ~= 0 and dodge health penalties, so
+// we cap it at maxMemoryGBFloat. Same for MaxTokensPotential which directly
+// controls backlog cost. NaN/negative become 0.
+func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.BackendCapacity) {
+	if bc == nil {
+		return
+	}
+	if v, changed := clampNonNeg(bc.TotalMemoryGB, maxMemoryGBFloat); changed {
+		logger.Warn("provider total_memory_gb out of range, clamping",
+			"provider_id", providerID, "reported", bc.TotalMemoryGB, "clamped", v)
+		bc.TotalMemoryGB = v
+	}
+	if v, changed := clampNonNeg(bc.GPUMemoryActiveGB, maxMemoryGBFloat); changed {
+		logger.Warn("provider gpu_memory_active_gb out of range, clamping",
+			"provider_id", providerID, "reported", bc.GPUMemoryActiveGB, "clamped", v)
+		bc.GPUMemoryActiveGB = v
+	}
+	if v, changed := clampNonNeg(bc.GPUMemoryPeakGB, maxMemoryGBFloat); changed {
+		bc.GPUMemoryPeakGB = v
+	}
+	if v, changed := clampNonNeg(bc.GPUMemoryCacheGB, maxMemoryGBFloat); changed {
+		bc.GPUMemoryCacheGB = v
+	}
+	for i := range bc.Slots {
+		s := &bc.Slots[i]
+		if s.MaxTokensPotential < 0 || s.MaxTokensPotential > maxTokensPotential {
+			logger.Warn("provider slot max_tokens_potential out of range, clamping",
+				"provider_id", providerID, "model", s.Model, "reported", s.MaxTokensPotential)
+			if s.MaxTokensPotential < 0 {
+				s.MaxTokensPotential = 0
+			} else {
+				s.MaxTokensPotential = maxTokensPotential
+			}
+		}
+		if s.NumRunning < 0 {
+			s.NumRunning = 0
+		}
+		if s.NumWaiting < 0 {
+			s.NumWaiting = 0
+		}
+	}
+}
+
 // Register adds a new provider to the registry, returning its assigned ID.
 // If a model catalog is configured, only models in the catalog are kept.
 func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.RegisterMessage) *Provider {
+	// Clamp provider-reported performance stats used in routing score.
+	// Refuse to trust unbounded values — a malicious provider reporting
+	// DecodeTPS=1e9 would otherwise starve all other providers.
+	if v, changed := clampNonNeg(msg.DecodeTPS, maxDecodeTPS); changed {
+		r.logger.Warn("provider decode_tps out of range, clamping",
+			"provider_id", id, "reported", msg.DecodeTPS, "clamped", v)
+		msg.DecodeTPS = v
+	}
+	if v, changed := clampNonNeg(msg.PrefillTPS, maxPrefillTPS); changed {
+		r.logger.Warn("provider prefill_tps out of range, clamping",
+			"provider_id", id, "reported", msg.PrefillTPS, "clamped", v)
+		msg.PrefillTPS = v
+	}
+	if v, changed := clampNonNeg(msg.Hardware.MemoryBandwidthGBs, maxMemoryBandwidthGBs); changed {
+		r.logger.Warn("provider memory_bandwidth_gbs out of range, clamping",
+			"provider_id", id, "reported", msg.Hardware.MemoryBandwidthGBs, "clamped", v)
+		msg.Hardware.MemoryBandwidthGBs = v
+	}
+	if msg.Hardware.MemoryGB < 0 || msg.Hardware.MemoryGB > maxMemoryGB {
+		r.logger.Warn("provider memory_gb out of range, clamping",
+			"provider_id", id, "reported", msg.Hardware.MemoryGB)
+		if msg.Hardware.MemoryGB < 0 {
+			msg.Hardware.MemoryGB = 0
+		} else {
+			msg.Hardware.MemoryGB = maxMemoryGB
+		}
+	}
+
 	// Filter models against the catalog before storing.
 	models := msg.Models
 	r.mu.RLock()
@@ -694,6 +794,17 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	if !ok {
 		r.logger.Warn("heartbeat from unknown provider", "provider_id", id)
 		return
+	}
+
+	// Clamp heartbeat-reported capacity and metrics so a malicious provider
+	// can't skew routing by reporting absurd values (e.g. TotalMemoryGB=1e9
+	// would drive gpuUtil to 0 and sidestep health penalties).
+	clampBackendCapacity(r.logger, id, msg.BackendCapacity)
+	if v, changed := clampNonNeg(msg.SystemMetrics.MemoryPressure, 1.0); changed {
+		msg.SystemMetrics.MemoryPressure = v
+	}
+	if v, changed := clampNonNeg(msg.SystemMetrics.CPUUsage, 1.0); changed {
+		msg.SystemMetrics.CPUUsage = v
 	}
 
 	p.mu.Lock()
@@ -1321,6 +1432,44 @@ func (r *Registry) ProviderCount() int {
 	return len(r.providers)
 }
 
+// FleetSnapshot is the read-only summary used by metrics polling. We
+// don't lock individual providers — counts may be off-by-one under
+// heavy churn — that's acceptable for gauges.
+type FleetSnapshot struct {
+	Connected  int
+	Idle       int
+	QueueDepth int
+}
+
+// Snapshot returns aggregate counts for /metrics gauges. Cheap enough
+// to call every few seconds. Takes the registry's read lock for the
+// outer iteration AND each provider's mutex briefly to read Status and
+// pending count — those fields are written under p.mu elsewhere
+// (Heartbeat, AddPending, RemovePending), so reading them without
+// p.mu is a data race even if the gauge value is only advisory.
+func (r *Registry) Snapshot() FleetSnapshot {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	idle := 0
+	for _, p := range r.providers {
+		p.mu.Lock()
+		isIdle := p.Status == StatusOnline && len(p.pendingReqs) == 0
+		p.mu.Unlock()
+		if isIdle {
+			idle++
+		}
+	}
+	q := 0
+	if r.queue != nil {
+		q = r.queue.TotalSize()
+	}
+	return FleetSnapshot{
+		Connected:  len(r.providers),
+		Idle:       idle,
+		QueueDepth: q,
+	}
+}
+
 // ForEachProvider iterates over all registered providers (read lock held).
 func (r *Registry) ForEachProvider(fn func(p *Provider)) {
 	r.mu.RLock()
@@ -1346,7 +1495,7 @@ func (r *Registry) ProviderIDs() []string {
 // the context is cancelled.
 func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration) {
 	ticker := time.NewTicker(timeout / 3)
-	go func() {
+	saferun.Go(r.logger, "registry.evictionLoop", func() {
 		defer ticker.Stop()
 		for {
 			select {
@@ -1356,7 +1505,7 @@ func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration)
 				r.evictStale(timeout)
 			}
 		}
-	}()
+	})
 }
 
 func (r *Registry) evictStale(timeout time.Duration) {

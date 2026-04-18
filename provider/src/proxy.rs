@@ -15,7 +15,8 @@
 //! not used in the current request flow.
 
 use anyhow::{Context, Result};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -26,6 +27,31 @@ use crate::protocol::{
     TranscriptionSegment, TranscriptionUsage, UsageInfo,
 };
 use crate::security;
+
+/// Shared HTTP client for non-streaming backend calls (chat non-stream,
+/// transcription, image-gen error bodies). Bounded total timeout prevents a
+/// hung backend from pinning tokio tasks forever. `connect_timeout` bounds
+/// how long we wait for a TCP SYN-ACK — vllm-mlx binds the port eagerly but
+/// the process may be wedged, so the SYN succeeds while `accept` hangs.
+static BACKEND_HTTP: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(600))
+        .build()
+        .expect("failed to build backend HTTP client")
+});
+
+/// Shared HTTP client for streaming backend calls. No total `timeout()` —
+/// long generations can exceed any fixed deadline — but still bounded by
+/// `connect_timeout` and by the per-chunk cancel_token select in the
+/// streaming loop. The coordinator's consumer-disconnect cancellation and
+/// the provider's idle-GPU shutdown bound effective lifetime.
+static BACKEND_HTTP_STREAMING: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .expect("failed to build streaming backend HTTP client")
+});
 
 /// Handle an inference request by forwarding it to the local backend
 /// and streaming responses back via the outbound channel.
@@ -139,10 +165,9 @@ async fn handle_non_streaming_request(
         .and_then(|v| v.as_str())
         .unwrap_or("/v1/chat/completions");
     let url = format!("{backend_url}{endpoint}");
-    let client = reqwest::Client::new();
 
     let response = tokio::select! {
-        result = client.post(&url).json(body).send() => {
+        result = BACKEND_HTTP.post(&url).json(body).send() => {
             result.context("failed to send request to backend")?
         }
         _ = cancel_token.cancelled() => {
@@ -246,10 +271,9 @@ async fn handle_streaming_request(
         .and_then(|v| v.as_str())
         .unwrap_or("/v1/chat/completions");
     let url = format!("{backend_url}{endpoint}");
-    let client = reqwest::Client::new();
 
     let response = tokio::select! {
-        result = client.post(&url).json(body).send() => {
+        result = BACKEND_HTTP_STREAMING.post(&url).json(body).send() => {
             result.context("failed to send streaming request to backend")?
         }
         _ = cancel_token.cancelled() => {
@@ -514,10 +538,9 @@ async fn do_transcription(
     }
 
     let url = format!("{stt_backend_url}/v1/audio/transcriptions");
-    let client = reqwest::Client::new();
 
     let response = tokio::select! {
-        result = client.post(&url).multipart(form).send() => {
+        result = BACKEND_HTTP.post(&url).multipart(form).send() => {
             result.context("failed to send transcription request to STT backend")?
         }
         _ = cancel_token.cancelled() => {
@@ -709,7 +732,8 @@ async fn do_image_generation(
 
     let url = format!("{image_bridge_url}/v1/images/generations");
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300)) // 5 min timeout for image gen
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(300)) // 5 min timeout for image gen
         .build()
         .unwrap_or_default();
 

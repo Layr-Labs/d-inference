@@ -250,12 +250,21 @@ type AttestationChallengeMessage struct {
 }
 
 // AttestationResponseMessage is sent by the provider in response to an
-// attestation challenge. The signature covers nonce + timestamp.
-// Includes fresh security posture fields verified at challenge time.
+// attestation challenge. The Signature field covers nonce + timestamp only;
+// it proves the responder still holds the SE key. Status fields below
+// (SIPEnabled, BinaryHash, etc.) are NOT covered by Signature and would be
+// trivially forgeable if used in isolation.
+//
+// StatusSignature (added in v0.3.11) covers a canonical JSON of nonce +
+// timestamp + all status fields, sealing them against tampering. New
+// providers send both signatures; old providers send only Signature, in
+// which case the status fields are treated as advisory (not a basis for
+// trust upgrades).
 type AttestationResponseMessage struct {
 	Type              string `json:"type"`
 	Nonce             string `json:"nonce"`                         // echoed back from the challenge
 	Signature         string `json:"signature"`                     // base64-encoded signature of nonce+timestamp
+	StatusSignature   string `json:"status_signature,omitempty"`    // base64-encoded signature of canonical status JSON (see attestation.BuildStatusCanonical)
 	PublicKey         string `json:"public_key"`                    // base64-encoded public key
 	HypervisorActive  *bool  `json:"hypervisor_active,omitempty"`   // hypervisor memory isolation active (Stage 2 page tables)
 	RDMADisabled      *bool  `json:"rdma_disabled,omitempty"`       // fresh RDMA status (true = safe, false = remote memory access possible)

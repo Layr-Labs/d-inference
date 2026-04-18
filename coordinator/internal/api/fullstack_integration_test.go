@@ -662,7 +662,7 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 
 	// --- Test 8: Model not available ---
 	t.Log("--- Test 8: Model not available ---")
-	code, body, _ = consumerRequest(ctx, ts.URL, "test-key", "nonexistent-model-xyz",
+	code, _, _ = consumerRequest(ctx, ts.URL, "test-key", "nonexistent-model-xyz",
 		"hello", true)
 	if code == 200 {
 		t.Error("request for nonexistent model should not succeed")

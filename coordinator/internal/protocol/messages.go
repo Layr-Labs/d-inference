@@ -406,6 +406,22 @@ func unmarshalTyped(data []byte, typeName string, target any) error {
 	return nil
 }
 
+// providerMessageFactories maps message type to a factory that returns a
+// pointer to a fresh payload struct. Used by ProviderMessage.UnmarshalJSON.
+//
+//nolint:gochecknoglobals // immutable lookup table for JSON dispatch.
+var providerMessageFactories = map[string]func() any{
+	TypeRegister:                func() any { return &RegisterMessage{} },
+	TypeHeartbeat:               func() any { return &HeartbeatMessage{} },
+	TypeInferenceAccepted:       func() any { return &InferenceAcceptedMessage{} },
+	TypeInferenceResponseChunk:  func() any { return &InferenceResponseChunkMessage{} },
+	TypeInferenceComplete:       func() any { return &InferenceCompleteMessage{} },
+	TypeInferenceError:          func() any { return &InferenceErrorMessage{} },
+	TypeAttestationResponse:     func() any { return &AttestationResponseMessage{} },
+	TypeTranscriptionComplete:   func() any { return &TranscriptionCompleteMessage{} },
+	TypeImageGenerationComplete: func() any { return &ImageGenerationCompleteMessage{} },
+}
+
 // UnmarshalJSON reads the "type" field first, then unmarshals the full object
 // into the appropriate concrete struct.
 func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
@@ -417,73 +433,14 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 	}
 	pm.Type = envelope.Type
 
-	switch envelope.Type {
-	case TypeRegister:
-		var msg RegisterMessage
-		if err := unmarshalTyped(data, "register", &msg); err != nil {
-			return err
-		}
-		pm.Payload = &msg
-
-	case TypeHeartbeat:
-		var msg HeartbeatMessage
-		if err := unmarshalTyped(data, "heartbeat", &msg); err != nil {
-			return err
-		}
-		pm.Payload = &msg
-
-	case TypeInferenceAccepted:
-		var msg InferenceAcceptedMessage
-		if err := unmarshalTyped(data, "inference_accepted", &msg); err != nil {
-			return err
-		}
-		pm.Payload = &msg
-
-	case TypeInferenceResponseChunk:
-		var msg InferenceResponseChunkMessage
-		if err := unmarshalTyped(data, "inference_response_chunk", &msg); err != nil {
-			return err
-		}
-		pm.Payload = &msg
-
-	case TypeInferenceComplete:
-		var msg InferenceCompleteMessage
-		if err := unmarshalTyped(data, "inference_complete", &msg); err != nil {
-			return err
-		}
-		pm.Payload = &msg
-
-	case TypeInferenceError:
-		var msg InferenceErrorMessage
-		if err := unmarshalTyped(data, "inference_error", &msg); err != nil {
-			return err
-		}
-		pm.Payload = &msg
-
-	case TypeAttestationResponse:
-		var msg AttestationResponseMessage
-		if err := unmarshalTyped(data, "attestation_response", &msg); err != nil {
-			return err
-		}
-		pm.Payload = &msg
-
-	case TypeTranscriptionComplete:
-		var msg TranscriptionCompleteMessage
-		if err := unmarshalTyped(data, "transcription_complete", &msg); err != nil {
-			return err
-		}
-		pm.Payload = &msg
-
-	case TypeImageGenerationComplete:
-		var msg ImageGenerationCompleteMessage
-		if err := unmarshalTyped(data, "image_generation_complete", &msg); err != nil {
-			return err
-		}
-		pm.Payload = &msg
-
-	default:
+	factory, ok := providerMessageFactories[envelope.Type]
+	if !ok {
 		return fmt.Errorf("protocol: unknown message type %q", envelope.Type)
 	}
-
+	msg := factory()
+	if err := unmarshalTyped(data, envelope.Type, msg); err != nil {
+		return err
+	}
+	pm.Payload = msg
 	return nil
 }

@@ -62,8 +62,10 @@ BjAKBggqhkjOPQQDAwNpADBmAjEA1xpWmTLSpr1VH4f8Ypk8f3jMUKYz4QPG8mL5
 ZwFEh9bhKjJ+5VQ9/Do1os0u3LEkgN/r
 -----END CERTIFICATE-----`
 
+//nolint:gochecknoglobals // parsed once from embedded PEM on package init
 var appleEnterpriseAttestationRootCA *x509.Certificate
 
+//nolint:gochecknoinits // parses embedded Apple Root CA for attestation verification
 func init() {
 	block, _ := pem.Decode([]byte(appleEnterpriseAttestationRootCAPEM))
 	if block == nil {

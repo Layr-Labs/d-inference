@@ -57,6 +57,8 @@ func consumerKeyFromContext(ctx context.Context) string {
 
 // LatestProviderVersion is the current version of the provider CLI.
 // Update this when uploading a new provider bundle.
+//
+//nolint:gochecknoglobals // updated in lockstep with bundle uploads
 var LatestProviderVersion = "0.3.10"
 
 // Server is the main HTTP/WS server for the coordinator. It ties together
@@ -505,7 +507,9 @@ func (s *Server) HandleMDMWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+//
 //go:embed install.sh
+//nolint:gochecknoglobals // embedded resource
 var installScript []byte
 
 // installScriptPlaceholder is substituted with the coordinator's public URL at

@@ -69,7 +69,8 @@ func main() {
 		pgStore, err := store.NewPostgres(ctx, dbURL)
 		if err != nil {
 			logger.Error("failed to connect to PostgreSQL", "error", err)
-			os.Exit(1)
+			cancel()
+			os.Exit(1) //nolint:gocritic // cancel called explicitly above
 		}
 		defer pgStore.Close()
 		st = pgStore

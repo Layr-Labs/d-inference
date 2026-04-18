@@ -23,9 +23,13 @@ import (
 )
 
 // ErrQueueFull is returned when the queue for a model has reached maxSize.
+//
+//nolint:gochecknoglobals // sentinel error
 var ErrQueueFull = errors.New("request queue is full")
 
 // ErrQueueTimeout is returned when a queued request times out waiting for a provider.
+//
+//nolint:gochecknoglobals // sentinel error
 var ErrQueueTimeout = errors.New("request queue timeout")
 
 // QueuedRequest represents a request waiting for a provider.

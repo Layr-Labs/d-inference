@@ -14,6 +14,7 @@ type enrollRequest struct {
 	SerialNumber string `json:"serial_number"`
 }
 
+//nolint:gochecknoglobals // compiled regex, safe for concurrent use
 var serialRegex = regexp.MustCompile(`^[A-Z0-9]{8,14}$`)
 
 // handleEnroll generates a per-device .mobileconfig containing both MDM

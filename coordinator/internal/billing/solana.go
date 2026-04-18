@@ -905,11 +905,12 @@ func buildTransactionMessage(payer ed25519.PublicKey, instructions []solanaInstr
 	for _, key := range accountOrder {
 		info := accountMap[key]
 		cat := 3 // read-only non-signer (default)
-		if info.isSigner && info.isWritable {
+		switch {
+		case info.isSigner && info.isWritable:
 			cat = 0
-		} else if info.isSigner {
+		case info.isSigner:
 			cat = 1
-		} else if info.isWritable {
+		case info.isWritable:
 			cat = 2
 		}
 		sorted = append(sorted, categorizedAccount{key: key, category: cat})
@@ -983,12 +984,13 @@ func buildTransactionMessage(payer ed25519.PublicKey, instructions []solanaInstr
 // Values 0-127 use 1 byte, 128-16383 use 2 bytes, larger use 3 bytes.
 func writeCompactU16(buf *bytes.Buffer, val int) {
 	v := uint16(val) //nolint:gosec // compact-u16 values are bounded
-	if v < 0x80 {
+	switch {
+	case v < 0x80:
 		buf.WriteByte(byte(v))
-	} else if v < 0x4000 {
+	case v < 0x4000:
 		buf.WriteByte(byte(v&0x7f) | 0x80)
 		buf.WriteByte(byte(v >> 7))
-	} else {
+	default:
 		buf.WriteByte(byte(v&0x7f) | 0x80)
 		buf.WriteByte(byte((v>>7)&0x7f) | 0x80)
 		buf.WriteByte(byte(v >> 14))

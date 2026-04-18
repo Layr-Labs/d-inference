@@ -37,6 +37,7 @@ type modelPrice struct {
 	output int64
 }
 
+//nolint:gochecknoglobals // static pricing table keyed by model ID
 var modelPricing = map[string]modelPrice{
 	// Text generation — 50% of OpenRouter rates
 	"qwen3.5-27b-claude-opus-8bit":          {input: 100_000, output: 780_000},   // $0.10 / $0.78
@@ -47,6 +48,8 @@ var modelPricing = map[string]modelPrice{
 }
 
 // transcriptionPricing stores per-audio-minute prices in micro-USD.
+//
+//nolint:gochecknoglobals // static pricing table keyed by model ID
 var transcriptionPricing = map[string]int64{
 	"CohereLabs/cohere-transcribe-03-2026": 1_000, // $0.001 per audio-minute (50% of AssemblyAI Nano $0.002)
 }
@@ -54,6 +57,8 @@ var transcriptionPricing = map[string]int64{
 const defaultTranscriptionPricePerMinute int64 = 1_000
 
 // imagePricing stores per-image prices in micro-USD.
+//
+//nolint:gochecknoglobals // static pricing table keyed by model ID
 var imagePricing = map[string]int64{
 	"flux_2_klein_4b_q8p.ckpt": 1_500, // $0.0015 per image (50% of Together.ai $0.003)
 	"flux_2_klein_9b_q8p.ckpt": 2_500, // $0.0025 per image (50% of fal.ai $0.005)

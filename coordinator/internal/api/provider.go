@@ -668,38 +668,44 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	responseTime := time.Duration(msg.Usage.CompletionTokens) * time.Millisecond * 10
 	s.registry.RecordJobSuccess(providerID, responseTime)
 
-	// Calculate cost — check provider's custom price, then platform DB price,
-	// then hardcoded defaults.
-	providerWalletForPricing := ""
-	if p := s.registry.GetProvider(providerID); p != nil {
-		providerWalletForPricing = p.WalletAddress
-	}
-	customIn, customOut, hasCustom := s.store.GetModelPrice(providerWalletForPricing, pr.Model)
-	if !hasCustom {
-		customIn, customOut, hasCustom = s.store.GetModelPrice("platform", pr.Model)
-	}
-	totalCost := payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
+	totalCost := int64(0)
+	providerPayout := int64(0)
+	platformFee := int64(0)
+	if !pr.SelfHosted {
+		// Calculate cost — check provider's custom price, then platform DB price,
+		// then hardcoded defaults.
+		providerWalletForPricing := ""
+		if p := s.registry.GetProvider(providerID); p != nil {
+			providerWalletForPricing = p.WalletAddress
+		}
+		customIn, customOut, hasCustom := s.store.GetModelPrice(providerWalletForPricing, pr.Model)
+		if !hasCustom {
+			customIn, customOut, hasCustom = s.store.GetModelPrice("platform", pr.Model)
+		}
+		totalCost = payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
 
-	// Clamp reported cost at the pre-flight reservation. The reservation
-	// uses platform-default and platform-override pricing; a provider that
-	// sets a custom price above the platform rate accepts revenue capped at
-	// the reservation (this is documented by reservationCost). The clamp
-	// also neutralizes over-reporting: with max_tokens injected into the
-	// outgoing request a cooperating provider can never legitimately bill
-	// more than the reservation, so excess means miscounting or fraud.
-	// Logged at Error so misbehavior shows in the operator dashboards.
-	if pr.ReservedMicroUSD > 0 && totalCost > pr.ReservedMicroUSD {
-		s.logger.Error("provider reported cost above reservation — clamping",
-			"provider_id", providerID,
-			"request_id", msg.RequestID,
-			"reported_cost_micro_usd", totalCost,
-			"reserved_micro_usd", pr.ReservedMicroUSD,
-			"prompt_tokens", msg.Usage.PromptTokens,
-			"completion_tokens", msg.Usage.CompletionTokens,
-		)
-		totalCost = pr.ReservedMicroUSD
+		// Clamp reported cost at the pre-flight reservation. The reservation
+		// uses platform-default and platform-override pricing; a provider that
+		// sets a custom price above the platform rate accepts revenue capped at
+		// the reservation (this is documented by reservationCost). The clamp
+		// also neutralizes over-reporting: with max_tokens injected into the
+		// outgoing request a cooperating provider can never legitimately bill
+		// more than the reservation, so excess means miscounting or fraud.
+		// Logged at Error so misbehavior shows in the operator dashboards.
+		if pr.ReservedMicroUSD > 0 && totalCost > pr.ReservedMicroUSD {
+			s.logger.Error("provider reported cost above reservation — clamping",
+				"provider_id", providerID,
+				"request_id", msg.RequestID,
+				"reported_cost_micro_usd", totalCost,
+				"reserved_micro_usd", pr.ReservedMicroUSD,
+				"prompt_tokens", msg.Usage.PromptTokens,
+				"completion_tokens", msg.Usage.CompletionTokens,
+			)
+			totalCost = pr.ReservedMicroUSD
+		}
+		providerPayout = payments.ProviderPayout(totalCost)
+		platformFee = payments.PlatformFee(totalCost)
 	}
-	providerPayout := payments.ProviderPayout(totalCost)
 
 	// Adjust billing against the pre-flight reservation. After the clamp above
 	// totalCost <= reserved, so the only path here is a refund of the unused
@@ -733,53 +739,54 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	})
 	s.store.RecordUsageWithCost(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost)
 
-	// Credit the provider's pending payout.
-	// If the provider is linked to an account (via device auth), credit that account.
-	// Otherwise, fall back to the provider's self-reported wallet address.
-	if p := s.registry.GetProvider(providerID); p != nil {
-		if p.AccountID != "" {
-			// Provider is linked to a Privy account — atomically credit the
-			// account and record the per-node earning in one store transaction.
-			if err := s.store.CreditProviderAccount(&store.ProviderEarning{
-				AccountID:        p.AccountID,
-				ProviderID:       providerID,
-				ProviderKey:      p.PublicKey,
-				JobID:            msg.RequestID,
-				Model:            pr.Model,
-				AmountMicroUSD:   providerPayout,
-				PromptTokens:     msg.Usage.PromptTokens,
-				CompletionTokens: msg.Usage.CompletionTokens,
-				CreatedAt:        time.Now(),
-			}); err != nil {
-				s.logger.Error("failed to credit linked provider account",
-					"provider_id", providerID,
-					"account_id", p.AccountID,
-					"request_id", msg.RequestID,
-					"error", err,
-				)
-			}
-		} else if p.WalletAddress != "" {
-			// Unlinked provider — atomically credit the wallet and record payout history.
-			if err := s.ledger.CreditProvider(p.WalletAddress, providerPayout, pr.Model, msg.RequestID); err != nil {
-				s.logger.Error("failed to credit provider wallet payout",
-					"provider_id", providerID,
-					"wallet_address", p.WalletAddress,
-					"request_id", msg.RequestID,
-					"error", err,
-				)
+	if !pr.SelfHosted {
+		// Credit the provider's pending payout.
+		// If the provider is linked to an account (via device auth), credit that account.
+		// Otherwise, fall back to the provider's self-reported wallet address.
+		if p := s.registry.GetProvider(providerID); p != nil {
+			if p.AccountID != "" {
+				// Provider is linked to a Privy account — atomically credit the
+				// account and record the per-node earning in one store transaction.
+				if err := s.store.CreditProviderAccount(&store.ProviderEarning{
+					AccountID:        p.AccountID,
+					ProviderID:       providerID,
+					ProviderKey:      p.PublicKey,
+					JobID:            msg.RequestID,
+					Model:            pr.Model,
+					AmountMicroUSD:   providerPayout,
+					PromptTokens:     msg.Usage.PromptTokens,
+					CompletionTokens: msg.Usage.CompletionTokens,
+					CreatedAt:        time.Now(),
+				}); err != nil {
+					s.logger.Error("failed to credit linked provider account",
+						"provider_id", providerID,
+						"account_id", p.AccountID,
+						"request_id", msg.RequestID,
+						"error", err,
+					)
+				}
+			} else if p.WalletAddress != "" {
+				// Unlinked provider — atomically credit the wallet and record payout history.
+				if err := s.ledger.CreditProvider(p.WalletAddress, providerPayout, pr.Model, msg.RequestID); err != nil {
+					s.logger.Error("failed to credit provider wallet payout",
+						"provider_id", providerID,
+						"wallet_address", p.WalletAddress,
+						"request_id", msg.RequestID,
+						"error", err,
+					)
+				}
 			}
 		}
-	}
 
-	// Record platform fee, distributing referral rewards if applicable.
-	platformFee := payments.PlatformFee(totalCost)
-	if platformFee > 0 {
-		// Check if consumer has a referrer and distribute reward.
-		// The referral service deducts the referrer's share from the platform fee.
-		if s.billing != nil && s.billing.Referral() != nil {
-			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
+		// Record platform fee, distributing referral rewards if applicable.
+		if platformFee > 0 {
+			// Check if consumer has a referrer and distribute reward.
+			// The referral service deducts the referrer's share from the platform fee.
+			if s.billing != nil && s.billing.Referral() != nil {
+				platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
+			}
+			_ = s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID)
 		}
-		_ = s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID)
 	}
 
 	// Signal completion to the consumer response handler. This must happen
@@ -799,6 +806,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		"completion_tokens", msg.Usage.CompletionTokens,
 		"cost_micro_usd", totalCost,
 		"provider_payout_micro_usd", providerPayout,
+		"self_hosted", pr.SelfHosted,
 	)
 }
 

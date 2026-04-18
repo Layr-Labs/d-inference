@@ -72,6 +72,8 @@ func createTestMDACert(t *testing.T, sipEnabled, secureBootEnabled, kextsAllowed
 }
 
 // createTestMDACertChain creates a CA + leaf certificate chain with MDA OIDs.
+//
+//nolint:nonamedreturns // named returns used internally for progressive PEM construction
 func createTestMDACertChain(t *testing.T, sipEnabled, secureBootEnabled, kextsAllowed bool) (chainPEM []byte, rootCert *x509.Certificate) {
 	t.Helper()
 

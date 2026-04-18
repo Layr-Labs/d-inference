@@ -15,9 +15,11 @@ package mdm
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -40,6 +42,11 @@ const (
 	// httpStatusMultipleChoices is the lower bound for redirect/error responses (>=300).
 	httpStatusMultipleChoices = 300
 )
+
+// ErrDeviceNotFound is returned when an MDM device lookup finds no match.
+//
+//nolint:gochecknoglobals // sentinel error
+var ErrDeviceNotFound = errors.New("mdm: device not found")
 
 // DeviceAttestationResponse contains the DER-encoded certificate chain
 // from Apple's DevicePropertiesAttestation response.
@@ -129,7 +136,7 @@ type VerificationResult struct {
 // LookupDevice checks if a device with the given serial number is enrolled.
 func (c *Client) LookupDevice(serialNumber string) (*DeviceInfo, error) {
 	body, _ := json.Marshal(map[string]string{"serial_number": serialNumber})
-	req, err := http.NewRequest("POST", c.baseURL+"/v1/devices", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, c.baseURL+"/v1/devices", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +166,7 @@ func (c *Client) LookupDevice(serialNumber string) (*DeviceInfo, error) {
 		}
 	}
 
-	return nil, nil // not found
+	return nil, ErrDeviceNotFound
 }
 
 // SendSecurityInfoCommand sends a SecurityInfo command to a device by UDID.
@@ -169,7 +176,7 @@ func (c *Client) SendSecurityInfoCommand(udid string) (string, error) {
 		"udid":         udid,
 		"request_type": "SecurityInfo",
 	})
-	req, err := http.NewRequest("POST", c.baseURL+"/v1/commands", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, c.baseURL+"/v1/commands", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -247,7 +254,7 @@ func (c *Client) sendDeviceAttestationWithNonce(udid, nonce string) (string, err
 </dict>
 </plist>`, nonceXML, cmdUUID)
 
-	req, err := http.NewRequest("POST", c.baseURL+"/v1/commands/"+udid, bytes.NewReader([]byte(plist)))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, c.baseURL+"/v1/commands/"+udid, bytes.NewReader([]byte(plist)))
 	if err != nil {
 		return "", err
 	}
@@ -266,7 +273,7 @@ func (c *Client) sendDeviceAttestationWithNonce(udid, nonce string) (string, err
 	}
 
 	// Push to trigger device check-in
-	pushReq, err := http.NewRequest("GET", c.baseURL+"/push/"+udid, nil)
+	pushReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, c.baseURL+"/push/"+udid, nil)
 	if err != nil {
 		return cmdUUID, nil // command queued, push failed
 	}

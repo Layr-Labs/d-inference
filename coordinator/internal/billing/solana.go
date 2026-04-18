@@ -2,6 +2,7 @@ package billing
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -514,7 +515,12 @@ func (p *SolanaProcessor) rpcCall(method string, params []any) (json.RawMessage,
 		return nil, err
 	}
 
-	resp, err := p.httpClient.Post(p.rpcURL, "application/json", bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, p.rpcURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("rpc request build failed: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("rpc request failed: %w", err)
 	}

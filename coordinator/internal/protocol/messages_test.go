@@ -628,7 +628,7 @@ func TestProviderMessageUnmarshalAttestationResponse(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBackendCapacityMarshalRoundtrip(t *testing.T) {
-	cap := BackendCapacity{
+	capacity := BackendCapacity{
 		Slots: []BackendSlotCapacity{
 			{
 				Model:              "mlx-community/Qwen2.5-7B-4bit",
@@ -653,7 +653,7 @@ func TestBackendCapacityMarshalRoundtrip(t *testing.T) {
 		TotalMemoryGB:     128,
 	}
 
-	data, err := json.Marshal(cap)
+	data, err := json.Marshal(capacity)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -684,7 +684,7 @@ func TestBackendCapacityMarshalRoundtrip(t *testing.T) {
 }
 
 func TestHeartbeatWithBackendCapacityMarshal(t *testing.T) {
-	cap := &BackendCapacity{
+	capacity := &BackendCapacity{
 		Slots: []BackendSlotCapacity{
 			{
 				Model:      "test-model",
@@ -700,7 +700,7 @@ func TestHeartbeatWithBackendCapacityMarshal(t *testing.T) {
 		Type:            TypeHeartbeat,
 		Status:          "serving",
 		Stats:           HeartbeatStats{RequestsServed: 10, TokensGenerated: 5000},
-		BackendCapacity: cap,
+		BackendCapacity: capacity,
 	}
 
 	data, err := json.Marshal(msg)

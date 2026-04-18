@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -97,8 +98,8 @@ func (p *StripeProcessor) CreateCheckoutSession(req CheckoutSessionRequest) (*Ch
 	}
 	body := strings.Join(parts, "&")
 
-	httpReq, err := http.NewRequest("POST", "https://api.stripe.com/v1/checkout/sessions",
-		strings.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://api.stripe.com/v1/checkout/sessions", strings.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("stripe: build request: %w", err)
 	}
@@ -243,7 +244,7 @@ func (p *StripeProcessor) ParseCheckoutSession(event *WebhookEvent) (*CheckoutSe
 
 // RetrieveSession fetches a checkout session from the Stripe API.
 func (p *StripeProcessor) RetrieveSession(sessionID string) (*CheckoutSessionEvent, error) {
-	httpReq, err := http.NewRequest("GET",
+	httpReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 		"https://api.stripe.com/v1/checkout/sessions/"+sessionID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("stripe: build request: %w", err)

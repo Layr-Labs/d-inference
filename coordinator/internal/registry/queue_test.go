@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -50,7 +51,7 @@ func TestQueueMaxSizeEnforced(t *testing.T) {
 		ResponseCh: make(chan *Provider, 1),
 	}
 	err := q.Enqueue(req)
-	if err != ErrQueueFull {
+	if !errors.Is(err, ErrQueueFull) {
 		t.Errorf("expected ErrQueueFull, got %v", err)
 	}
 }
@@ -115,7 +116,7 @@ func TestQueueTimeoutReturnsError(t *testing.T) {
 
 	// No provider becomes available — should timeout.
 	_, err := q.WaitForProvider(req)
-	if err != ErrQueueTimeout {
+	if !errors.Is(err, ErrQueueTimeout) {
 		t.Errorf("expected ErrQueueTimeout, got %v", err)
 	}
 
@@ -276,7 +277,7 @@ func TestQueueDifferentModelsMaxSize(t *testing.T) {
 		Model:      "model-a",
 		ResponseCh: make(chan *Provider, 1),
 	}
-	if err := q.Enqueue(req3); err != ErrQueueFull {
+	if err := q.Enqueue(req3); !errors.Is(err, ErrQueueFull) {
 		t.Errorf("expected ErrQueueFull for model-a, got %v", err)
 	}
 }

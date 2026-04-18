@@ -873,6 +873,8 @@ func TrustMultiplier(t TrustLevel) float64 {
 		return 1.0
 	case TrustSelfSigned:
 		return 0.8
+	case TrustNone:
+		return 0.5
 	default:
 		return 0.5
 	}

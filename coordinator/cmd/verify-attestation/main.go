@@ -20,15 +20,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Attestation from: %s (%s)\n", result.ChipName, result.HardwareModel)
-	fmt.Printf("Secure Enclave: %v | SIP: %v | Secure Boot: %v\n",
+	fmt.Fprintf(os.Stdout, "Attestation from: %s (%s)\n", result.ChipName, result.HardwareModel)
+	fmt.Fprintf(os.Stdout, "Secure Enclave: %v | SIP: %v | Secure Boot: %v\n",
 		result.SecureEnclaveAvailable, result.SIPEnabled, result.SecureBootEnabled)
 
 	if result.Valid {
-		fmt.Println("\n✓ CROSS-LANGUAGE VERIFICATION PASSED")
-		fmt.Println("  Swift Secure Enclave P-256 signature verified by Go coordinator")
+		fmt.Fprintln(os.Stdout, "\n✓ CROSS-LANGUAGE VERIFICATION PASSED")
+		fmt.Fprintln(os.Stdout, "  Swift Secure Enclave P-256 signature verified by Go coordinator")
 	} else {
-		fmt.Printf("\n✗ VERIFICATION FAILED: %s\n", result.Error)
+		fmt.Fprintf(os.Stdout, "\n✗ VERIFICATION FAILED: %s\n", result.Error)
 		os.Exit(1)
 	}
 }

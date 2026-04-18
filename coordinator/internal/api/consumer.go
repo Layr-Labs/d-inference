@@ -1809,7 +1809,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {
-			if err == context.Canceled {
+			if errors.Is(err, context.Canceled) {
 				refundReservation()
 				return
 			}

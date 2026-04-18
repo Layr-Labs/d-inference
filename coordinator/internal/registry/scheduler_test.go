@@ -63,6 +63,71 @@ func TestReserveProviderSkipsSelfSigned(t *testing.T) {
 	}
 }
 
+func TestReserveProviderExReturnsCostBreakdown(t *testing.T) {
+	reg := New(testLogger())
+	model := "decision-model"
+	makeSchedulerProvider(t, reg, "p1", model, 100)
+	makeSchedulerProvider(t, reg, "p2", model, 80)
+
+	req := &PendingRequest{
+		RequestID:             "req-decision",
+		Model:                 model,
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    256,
+	}
+	provider, decision := reg.ReserveProviderEx(model, req)
+	if provider == nil {
+		t.Fatal("ReserveProviderEx returned nil provider")
+	}
+	if decision.ProviderID != provider.ID {
+		t.Fatalf("decision.ProviderID=%q, want %q", decision.ProviderID, provider.ID)
+	}
+	if decision.Model != model {
+		t.Fatalf("decision.Model=%q, want %q", decision.Model, model)
+	}
+	if decision.CandidateCount != 2 {
+		t.Fatalf("decision.CandidateCount=%d, want 2", decision.CandidateCount)
+	}
+	if decision.CostMs <= 0 {
+		t.Fatalf("decision.CostMs=%f, want > 0", decision.CostMs)
+	}
+	// ThisReqMs must be the dominant term for an idle provider with no backlog
+	// (decode 256 tokens / 100 TPS = 2560ms; prefill 100 / 400 = 250ms).
+	if decision.ThisReqMs < 2500 {
+		t.Fatalf("decision.ThisReqMs=%f, expected ~2810ms", decision.ThisReqMs)
+	}
+	// Sum of components should approximately equal the total cost.
+	sum := decision.StateMs + decision.QueueMs + decision.PendingMs +
+		decision.BacklogMs + decision.ThisReqMs + decision.HealthMs
+	if diff := sum - decision.CostMs; diff > 0.001 || diff < -0.001 {
+		t.Fatalf("breakdown sum %f != CostMs %f", sum, decision.CostMs)
+	}
+}
+
+func TestReserveProviderExWhenNoneAvailable(t *testing.T) {
+	reg := New(testLogger())
+	model := "missing-model"
+
+	req := &PendingRequest{
+		RequestID:          "req-empty",
+		Model:              model,
+		RequestedMaxTokens: 256,
+	}
+	provider, decision := reg.ReserveProviderEx(model, req)
+	if provider != nil {
+		t.Fatalf("expected nil provider, got %q", provider.ID)
+	}
+	if decision.ProviderID != "" {
+		t.Fatalf("decision.ProviderID=%q, want empty", decision.ProviderID)
+	}
+	if decision.Model != model {
+		t.Fatalf("decision.Model=%q, want %q", decision.Model, model)
+	}
+	if decision.CandidateCount != 0 {
+		t.Fatalf("decision.CandidateCount=%d, want 0", decision.CandidateCount)
+	}
+}
+
 func TestReserveProviderBalancesAcrossHotSlots(t *testing.T) {
 	reg := New(testLogger())
 	model := "balanced-model"

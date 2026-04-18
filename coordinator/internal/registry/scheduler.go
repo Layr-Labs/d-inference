@@ -50,17 +50,57 @@ type routingCandidate struct {
 	snapshot       routingSnapshot
 	costMs         float64
 	effectiveQueue int
+	breakdown      costBreakdown
+}
+
+// costBreakdown decomposes the routing cost so callers can log or
+// expose individual contributions. The numeric values match the terms
+// added in buildCandidate; total should equal costMs (modulo float
+// rounding).
+type costBreakdown struct {
+	StateMs   float64
+	QueueMs   float64
+	PendingMs float64
+	BacklogMs float64
+	ThisReqMs float64
+	HealthMs  float64
+	Total     float64
+}
+
+// RoutingDecision is the public, exportable record of a routing
+// selection. Returned by ReserveProviderEx so callers can emit metrics
+// and structured logs without reaching into registry internals.
+type RoutingDecision struct {
+	ProviderID     string  // winning provider, empty if no selection
+	Model          string  // requested model
+	CostMs         float64 // total cost of the winning candidate
+	StateMs        float64 // slot-state penalty contribution
+	QueueMs        float64 // pendingForModel × queueDepthPenaltyMs
+	PendingMs      float64 // totalPending × totalPendingPenaltyMs
+	BacklogMs      float64 // tokens-ahead / decodeTPS contribution
+	ThisReqMs      float64 // this request's prefill+decode contribution
+	HealthMs       float64 // memory/CPU/thermal/GPU-util contribution
+	EffectiveQueue int     // max(pendingForModel, backendRunning+backendWaiting)
+	CandidateCount int     // total eligible candidates evaluated
 }
 
 // ReserveProvider selects a hardware-routable provider for the request and
 // atomically reserves capacity by registering the request in the provider's
 // pending set before returning.
 func (r *Registry) ReserveProvider(model string, pr *PendingRequest, excludeIDs ...string) *Provider {
-	if pr == nil {
-		return nil
-	}
-	if pr.RequestID == "" {
-		return nil
+	p, _ := r.ReserveProviderEx(model, pr, excludeIDs...)
+	return p
+}
+
+// ReserveProviderEx is the metrics-aware variant of ReserveProvider. It
+// returns the same Provider plus a RoutingDecision describing the cost
+// breakdown of the winning candidate (or, on selection failure, an
+// empty decision with CandidateCount=0). Callers wire the decision into
+// Prometheus counters/histograms without the registry needing to import
+// the metrics package.
+func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeIDs ...string) (*Provider, RoutingDecision) {
+	if pr == nil || pr.RequestID == "" {
+		return nil, RoutingDecision{Model: model}
 	}
 	if pr.Model == "" {
 		pr.Model = model
@@ -72,9 +112,9 @@ func (r *Registry) ReserveProvider(model string, pr *PendingRequest, excludeIDs 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	selected := r.selectBestCandidateLocked(model, pr, excludeIDs...)
+	selected, candidateCount := r.selectBestCandidateLockedEx(model, pr, excludeIDs...)
 	if selected == nil {
-		return nil
+		return nil, RoutingDecision{Model: model, CandidateCount: candidateCount}
 	}
 
 	p := selected.provider
@@ -84,7 +124,7 @@ func (r *Registry) ReserveProvider(model string, pr *PendingRequest, excludeIDs 
 	// Re-check capacity under the provider lock in case another goroutine
 	// changed the pending set between snapshot and reservation.
 	if !r.providerCanAdmitLocked(p, model) {
-		return nil
+		return nil, RoutingDecision{Model: model, CandidateCount: candidateCount}
 	}
 
 	pr.ProviderID = p.ID
@@ -92,10 +132,34 @@ func (r *Registry) ReserveProvider(model string, pr *PendingRequest, excludeIDs 
 	if p.Status != StatusUntrusted && p.Status != StatusOffline {
 		p.Status = StatusServing
 	}
-	return p
+
+	bd := selected.breakdown
+	decision := RoutingDecision{
+		ProviderID:     p.ID,
+		Model:          model,
+		CostMs:         bd.Total,
+		StateMs:        bd.StateMs,
+		QueueMs:        bd.QueueMs,
+		PendingMs:      bd.PendingMs,
+		BacklogMs:      bd.BacklogMs,
+		ThisReqMs:      bd.ThisReqMs,
+		HealthMs:       bd.HealthMs,
+		EffectiveQueue: selected.effectiveQueue,
+		CandidateCount: candidateCount,
+	}
+	return p, decision
 }
 
 func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, excludeIDs ...string) *routingCandidate {
+	c, _ := r.selectBestCandidateLockedEx(model, pr, excludeIDs...)
+	return c
+}
+
+// selectBestCandidateLockedEx is the same selection as
+// selectBestCandidateLocked but additionally reports the number of
+// eligible candidates evaluated. Used to populate
+// RoutingDecision.CandidateCount for metrics/log output.
+func (r *Registry) selectBestCandidateLockedEx(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, int) {
 	excludeSet := make(map[string]struct{}, len(excludeIDs))
 	for _, id := range excludeIDs {
 		excludeSet[id] = struct{}{}
@@ -103,6 +167,7 @@ func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, e
 
 	var best *routingCandidate
 	var nearTies []*routingCandidate
+	candidateCount := 0
 	for _, p := range r.providers {
 		if _, excluded := excludeSet[p.ID]; excluded {
 			continue
@@ -115,6 +180,7 @@ func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, e
 		if !ok {
 			continue
 		}
+		candidateCount++
 
 		if best == nil || candidate.costMs < best.costMs {
 			best = candidate
@@ -127,37 +193,61 @@ func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, e
 	}
 
 	if best == nil {
-		return nil
+		return nil, candidateCount
 	}
-	if len(nearTies) == 1 {
-		return best
-	}
+	winner := best
+	if len(nearTies) > 1 {
+		winner = nearTies[0]
+		for _, c := range nearTies[1:] {
+			if c.effectiveQueue < winner.effectiveQueue {
+				winner = c
+				continue
+			}
+			if c.effectiveQueue == winner.effectiveQueue && c.snapshot.totalPending < winner.snapshot.totalPending {
+				winner = c
+			}
+		}
 
-	best = nearTies[0]
-	for _, c := range nearTies[1:] {
-		if c.effectiveQueue < best.effectiveQueue {
-			best = c
-			continue
+		// If multiple candidates are still equivalent after queue-depth tie-breaks,
+		// randomize to avoid burst hot-spotting on a single provider.
+		equivalent := make([]*routingCandidate, 0, len(nearTies))
+		for _, c := range nearTies {
+			if c.effectiveQueue == winner.effectiveQueue &&
+				c.snapshot.totalPending == winner.snapshot.totalPending &&
+				math.Abs(c.costMs-winner.costMs) <= nearTieCostWindowMs {
+				equivalent = append(equivalent, c)
+			}
 		}
-		if c.effectiveQueue == best.effectiveQueue && c.snapshot.totalPending < best.snapshot.totalPending {
-			best = c
+		if len(equivalent) > 1 {
+			winner = equivalent[rand.Intn(len(equivalent))]
 		}
 	}
+	r.logRoutingDecision(model, pr, winner, candidateCount)
+	return winner, candidateCount
+}
 
-	// If multiple candidates are still equivalent after queue-depth tie-breaks,
-	// randomize to avoid burst hot-spotting on a single provider.
-	equivalent := make([]*routingCandidate, 0, len(nearTies))
-	for _, c := range nearTies {
-		if c.effectiveQueue == best.effectiveQueue &&
-			c.snapshot.totalPending == best.snapshot.totalPending &&
-			math.Abs(c.costMs-best.costMs) <= nearTieCostWindowMs {
-			equivalent = append(equivalent, c)
-		}
+// logRoutingDecision emits a structured debug-level record of the
+// winning candidate and its cost breakdown. Cheap when the level is
+// disabled, since slog short-circuits before formatting.
+func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *routingCandidate, candidates int) {
+	if r.logger == nil || winner == nil {
+		return
 	}
-	if len(equivalent) > 1 {
-		return equivalent[rand.Intn(len(equivalent))]
-	}
-	return best
+	bd := winner.breakdown
+	r.logger.Debug("routing_decision",
+		"request_id", pr.RequestID,
+		"model", model,
+		"winner", winner.provider.ID,
+		"cost_ms", bd.Total,
+		"state_ms", bd.StateMs,
+		"queue_ms", bd.QueueMs,
+		"pending_ms", bd.PendingMs,
+		"backlog_ms", bd.BacklogMs,
+		"this_req_ms", bd.ThisReqMs,
+		"health_ms", bd.HealthMs,
+		"effective_queue", winner.effectiveQueue,
+		"candidates", candidates,
+	)
 }
 
 func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSnapshot, bool) {
@@ -259,18 +349,27 @@ func (r *Registry) buildCandidate(snap routingSnapshot, pr *PendingRequest) (*ro
 		unaccountedPendingTokens = 0
 	}
 
-	cost := statePenalty
-	cost += float64(effectiveQueue) * queueDepthPenaltyMs
-	cost += float64(snap.totalPending) * totalPendingPenaltyMs
-	cost += backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, snap.decodeTPS)
-	cost += float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/snap.decodeTPS*1000.0
-	cost += healthPenaltyMs(snap.systemMetrics, snap.gpuMemoryActiveGB, snap.totalMemoryGB)
+	queueMs := float64(effectiveQueue) * queueDepthPenaltyMs
+	pendingMs := float64(snap.totalPending) * totalPendingPenaltyMs
+	backlogMs := backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, snap.decodeTPS)
+	thisReqMs := float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/snap.decodeTPS*1000.0
+	healthMs := healthPenaltyMs(snap.systemMetrics, snap.gpuMemoryActiveGB, snap.totalMemoryGB)
+	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs
 
 	return &routingCandidate{
 		provider:       snap.provider,
 		snapshot:       snap,
 		costMs:         cost,
 		effectiveQueue: effectiveQueue,
+		breakdown: costBreakdown{
+			StateMs:   statePenalty,
+			QueueMs:   queueMs,
+			PendingMs: pendingMs,
+			BacklogMs: backlogMs,
+			ThisReqMs: thisReqMs,
+			HealthMs:  healthMs,
+			Total:     cost,
+		},
 	}, true
 }
 

@@ -29,6 +29,7 @@ import (
 
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/e2e"
+	"github.com/eigeninference/coordinator/internal/metrics"
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
@@ -311,15 +312,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
 		}
 
-		provider = s.registry.ReserveProvider(model, pr, excludeList()...)
+		var decision registry.RoutingDecision
+		provider, decision = s.registry.ReserveProviderEx(model, pr, excludeList()...)
 		if provider == nil {
 			// On retry attempts, don't queue — if the only available
 			// providers already failed, waiting 120s for one of them
 			// to come back won't help. Break and return the last error.
 			if attempt > 0 {
+				metrics.RoutingDecisions.WithLabelValues(model, "no_provider").Inc()
 				break
 			}
 			// No idle provider — try queueing.
+			metrics.RoutingDecisions.WithLabelValues(model, "queued").Inc()
 			queuedReq := &registry.QueuedRequest{
 				RequestID:  requestID,
 				Model:      model,
@@ -348,6 +352,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider became available for model %q (queue timeout)", model)))
 				return
 			}
+		} else {
+			metrics.RoutingDecisions.WithLabelValues(model, "selected").Inc()
+			metrics.ProviderSelected.WithLabelValues(provider.ID, model).Inc()
+			metrics.RoutingCostMs.WithLabelValues(model).Observe(decision.CostMs)
 		}
 
 		// E2E encryption — must be done per provider (different keys).
@@ -683,12 +691,16 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find and reserve a provider that serves the requested STT model.
-	provider := s.registry.ReserveProvider(model, pr)
+	provider, decision := s.registry.ReserveProviderEx(model, pr)
 	if provider == nil {
+		metrics.RoutingDecisions.WithLabelValues(model, "no_provider").Inc()
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
 			fmt.Sprintf("no hardware-attested provider available for STT model %q", model)))
 		return
 	}
+	metrics.RoutingDecisions.WithLabelValues(model, "selected").Inc()
+	metrics.ProviderSelected.WithLabelValues(provider.ID, model).Inc()
+	metrics.RoutingCostMs.WithLabelValues(model).Observe(decision.CostMs)
 
 	transcriptionBody := protocol.TranscriptionRequestBody{
 		Model:  model,
@@ -884,12 +896,16 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Find and reserve a hardware-attested provider that serves the requested image model.
-	provider := s.registry.ReserveProvider(req.Model, pr)
+	provider, decision := s.registry.ReserveProviderEx(req.Model, pr)
 	if provider == nil {
+		metrics.RoutingDecisions.WithLabelValues(req.Model, "no_provider").Inc()
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
 			fmt.Sprintf("no hardware-attested provider available for image model %q", req.Model)))
 		return
 	}
+	metrics.RoutingDecisions.WithLabelValues(req.Model, "selected").Inc()
+	metrics.ProviderSelected.WithLabelValues(provider.ID, req.Model).Inc()
+	metrics.RoutingCostMs.WithLabelValues(req.Model).Observe(decision.CostMs)
 
 	bodyJSON, _ := json.Marshal(req)
 
@@ -1731,8 +1747,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
 	}
 
-	provider := s.registry.ReserveProvider(model, pr)
+	provider, decision := s.registry.ReserveProviderEx(model, pr)
 	if provider == nil {
+		metrics.RoutingDecisions.WithLabelValues(model, "queued").Inc()
 		queuedReq := &registry.QueuedRequest{
 			RequestID:  requestID,
 			Model:      model,
@@ -1753,6 +1770,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				fmt.Sprintf("no provider became available for model %q", model)))
 			return
 		}
+	} else {
+		metrics.RoutingDecisions.WithLabelValues(model, "selected").Inc()
+		metrics.ProviderSelected.WithLabelValues(provider.ID, model).Inc()
+		metrics.RoutingCostMs.WithLabelValues(model).Observe(decision.CostMs)
 	}
 
 	inferenceBody, _ := json.Marshal(parsed)

@@ -87,4 +87,42 @@ var (
 		Name: "eigeninference_goroutine_panics_recovered_total",
 		Help: "Panics caught by saferun.Recover, by goroutine name.",
 	}, []string{"goroutine"})
+
+	// RoutingDecisions counts every routing attempt by outcome. Read with
+	// rate() to spot regressions: a sudden surge in `over_capacity` means
+	// the fleet is undersized for a hot model; `no_provider` means the
+	// model has zero eligible providers (catalog/trust drift).
+	RoutingDecisions = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "eigeninference_routing_decisions_total",
+		Help: "Routing attempts by outcome.",
+	}, []string{"model", "outcome"}) // outcome: selected, queued, no_provider, over_capacity
+
+	// ProviderSelected counts how often each provider wins a routing
+	// decision. Distribution skew here is the primary signal for whether
+	// the cost function is balancing load — a single provider with >>50%
+	// of selections while others sit idle indicates the scorer is biased.
+	// Cardinality is bounded by fleet size × catalog size (small).
+	ProviderSelected = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "eigeninference_provider_selected_total",
+		Help: "Routing wins per provider, partitioned by model.",
+	}, []string{"provider_id", "model"})
+
+	// RoutingCostMs is the winning candidate's cost (ms) at selection
+	// time. Buckets cover idle (sub-second) up to overloaded (60s+).
+	// Use to track whether the median routing cost climbs as load grows
+	// — a healthy fleet should keep p50 cost roughly flat.
+	RoutingCostMs = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "eigeninference_routing_cost_milliseconds",
+		Help:    "Cost (in ms) of the winning provider at selection time.",
+		Buckets: []float64{100, 250, 500, 1000, 2500, 5000, 10000, 20000, 40000, 60000, 120000},
+	}, []string{"model"})
+
+	// EffectiveDecodeTPS is the load-adjusted decode tokens-per-second
+	// the scheduler attributed to a provider at the time of selection.
+	// Only emitted when the load-scaling factor is in effect; otherwise
+	// matches the static benchmarked value.
+	EffectiveDecodeTPS = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "eigeninference_provider_effective_decode_tps",
+		Help: "Load-adjusted decode tokens-per-second used by the scheduler.",
+	}, []string{"provider_id"})
 )

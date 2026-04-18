@@ -370,6 +370,7 @@ func (s *Server) sendChallenge(ctx context.Context, conn *websocket.Conn, provid
 		tracker.remove(nonce)
 		return
 	}
+	metrics.AttestationChallenges.WithLabelValues("sent").Inc()
 
 	s.logger.Debug("sent attestation challenge", "provider_id", providerID, "nonce", nonce[:8]+"...")
 
@@ -492,6 +493,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		case nil:
 			statusFieldsTrusted = true
 		case attestation.ErrStatusSignatureMissing:
+			metrics.AttestationChallenges.WithLabelValues("status_sig_missing").Inc()
 			s.logger.Warn("provider sent no status_signature — status fields are advisory; upgrade provider to bind them",
 				"provider_id", providerID,
 			)
@@ -647,6 +649,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 
 	// Challenge passed.
 	s.registry.RecordChallengeSuccess(providerID)
+	metrics.AttestationChallenges.WithLabelValues("passed").Inc()
 	s.logger.Info("attestation challenge verified",
 		"provider_id", providerID,
 		"sip_enabled", resp.SIPEnabled,
@@ -670,6 +673,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 // as untrusted if the failure threshold is reached.
 func (s *Server) handleChallengeFailure(providerID string, reason string) {
 	failures := s.registry.RecordChallengeFailure(providerID)
+	metrics.AttestationChallenges.WithLabelValues("failed").Inc()
 	s.logger.Warn("attestation challenge failed",
 		"provider_id", providerID,
 		"reason", reason,

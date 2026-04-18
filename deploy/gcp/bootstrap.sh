@@ -52,7 +52,8 @@ gcloud services enable \
   sqladmin.googleapis.com \
   logging.googleapis.com \
   monitoring.googleapis.com \
-  iap.googleapis.com
+  iap.googleapis.com \
+  cloudkms.googleapis.com
 
 echo "==> Creating Artifact Registry repos"
 gcloud artifacts repositories describe coordinator --location="$REGION" >/dev/null 2>&1 || \
@@ -89,21 +90,113 @@ for ROLE in roles/iap.tunnelResourceAccessor roles/compute.instanceAdmin.v1 \
     --quiet >/dev/null
 done
 
-echo "==> Creating Secret Manager entries (empty — fill in next)"
-for SECRET in \
-  eigeninference-admin-key \
-  eigeninference-release-key \
-  eigeninference-solana-mnemonic \
-  eigeninference-privy-app-id \
-  eigeninference-privy-app-secret \
-  eigeninference-privy-verification-key \
-  eigeninference-database-url \
-  eigeninference-micromdm-api-key \
-  eigeninference-mdm-push-p12-b64 \
-  eigeninference-r2-cdn-url; do
-  gcloud secrets describe "$SECRET" >/dev/null 2>&1 || \
-    gcloud secrets create "$SECRET" --replication-policy=automatic
+echo "==> Creating Cloud KMS key ring + CMEK for high-sensitivity secrets"
+# CMEK = customer-managed encryption key. Used only for the MDM push cert +
+# Solana mnemonic — keys where destroying the CMEK instantly kills access,
+# and rotation doesn't require copying data around. Cheap (~$0.06/mo/key) and
+# worth it for the two most dangerous secrets in dev.
+KMS_RING="d-inference-dev"
+KMS_KEY_MDM="mdm-push-cert"
+KMS_KEY_SOLANA="solana-mnemonic"
+gcloud kms keyrings describe "$KMS_RING" --location="$REGION" >/dev/null 2>&1 || \
+  gcloud kms keyrings create "$KMS_RING" --location="$REGION"
+for K in "$KMS_KEY_MDM" "$KMS_KEY_SOLANA"; do
+  gcloud kms keys describe "$K" --keyring="$KMS_RING" --location="$REGION" >/dev/null 2>&1 || \
+    gcloud kms keys create "$K" \
+      --keyring="$KMS_RING" \
+      --location="$REGION" \
+      --purpose=encryption \
+      --rotation-period=90d \
+      --next-rotation-time="$(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+90 days' +%Y-%m-%dT%H:%M:%SZ)"
 done
+
+# Secret Manager's own service agent must be allowed to use the CMEK, or
+# secret creation will fail.
+SM_AGENT="service-${PROJECT_NUM}@gcp-sa-secretmanager.iam.gserviceaccount.com"
+for K in "$KMS_KEY_MDM" "$KMS_KEY_SOLANA"; do
+  gcloud kms keys add-iam-policy-binding "$K" \
+    --keyring="$KMS_RING" --location="$REGION" \
+    --member="serviceAccount:$SM_AGENT" \
+    --role="roles/cloudkms.cryptoKeyEncrypterDecrypter" \
+    --condition=None \
+    --quiet >/dev/null
+done
+
+echo "==> Creating Secret Manager entries"
+# Most secrets use Google-managed encryption (default). Two high-sensitivity
+# ones use CMEK so we can revoke by destroying the KMS key.
+CMEK_MDM="projects/${PROJECT}/locations/${REGION}/keyRings/${KMS_RING}/cryptoKeys/${KMS_KEY_MDM}"
+CMEK_SOLANA="projects/${PROJECT}/locations/${REGION}/keyRings/${KMS_RING}/cryptoKeys/${KMS_KEY_SOLANA}"
+
+create_secret() {
+  local name="$1"
+  local kms="${2:-}"
+  gcloud secrets describe "$name" >/dev/null 2>&1 && return 0
+  if [ -n "$kms" ]; then
+    gcloud secrets create "$name" \
+      --replication-policy=user-managed \
+      --locations="$REGION" \
+      --kms-key-name="$kms"
+  else
+    gcloud secrets create "$name" --replication-policy=automatic
+  fi
+}
+
+create_secret eigeninference-admin-key
+create_secret eigeninference-release-key
+create_secret eigeninference-solana-mnemonic "$CMEK_SOLANA"
+create_secret eigeninference-privy-app-id
+create_secret eigeninference-privy-app-secret
+create_secret eigeninference-privy-verification-key
+create_secret eigeninference-database-url
+create_secret eigeninference-micromdm-api-key
+create_secret eigeninference-mdm-push-p12-b64 "$CMEK_MDM"
+create_secret eigeninference-r2-cdn-url
+
+echo "==> Grant coord SA decrypt on the CMEK keys (scoped to the two keys only)"
+for K in "$KMS_KEY_MDM" "$KMS_KEY_SOLANA"; do
+  gcloud kms keys add-iam-policy-binding "$K" \
+    --keyring="$KMS_RING" --location="$REGION" \
+    --member="serviceAccount:$COORD_SA_EMAIL" \
+    --role="roles/cloudkms.cryptoKeyDecrypter" \
+    --condition=None \
+    --quiet >/dev/null
+done
+
+echo "==> Enabling Data Access audit logs for Secret Manager (logs every read)"
+# Data Access logs are OFF by default. Turn them on for Secret Manager so any
+# read of eigeninference-mdm-push-p12-b64 shows up in Cloud Logging, and we
+# can alert on unexpected readers (anyone other than the coord SA).
+AUDIT_TMP=$(mktemp)
+gcloud projects get-iam-policy "$PROJECT" --format=json > "$AUDIT_TMP"
+python3 - <<'PY' "$AUDIT_TMP"
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    policy = json.load(f)
+policy.setdefault("auditConfigs", [])
+sm = next((c for c in policy["auditConfigs"] if c.get("service") == "secretmanager.googleapis.com"), None)
+want = [{"logType": "DATA_READ"}, {"logType": "DATA_WRITE"}, {"logType": "ADMIN_READ"}]
+if sm is None:
+    policy["auditConfigs"].append({"service": "secretmanager.googleapis.com", "auditLogConfigs": want})
+else:
+    sm["auditLogConfigs"] = want
+with open(path, "w") as f:
+    json.dump(policy, f)
+PY
+gcloud projects set-iam-policy "$PROJECT" "$AUDIT_TMP" --quiet >/dev/null
+rm -f "$AUDIT_TMP"
+
+echo "==> Scope Secret Manager access per-secret (tighter than project-level)"
+# Project-level secretAccessor was granted earlier as a fallback for operational
+# simplicity. Override the MDM push cert secret specifically so only the coord
+# SA can read it — no human, no other service. Revoke here if we ever had wider
+# bindings.
+gcloud secrets add-iam-policy-binding eigeninference-mdm-push-p12-b64 \
+  --member="serviceAccount:$COORD_SA_EMAIL" \
+  --role="roles/secretmanager.secretAccessor" \
+  --condition=None \
+  --quiet >/dev/null
 
 echo "==> Creating Cloud SQL Postgres instance (5-10 min on first run)"
 if ! gcloud sql instances describe "$SQL_INSTANCE" >/dev/null 2>&1; then
@@ -188,9 +281,17 @@ Next steps:
                 eigeninference-micromdm-api-key; do
          echo -n "\$(openssl rand -hex 32)" | gcloud secrets versions add \$S --data-file=-
        done
-     Then add Privy values, Solana mnemonic (NEW — never reuse prod), the MDM
-     push PKCS#12 (base64url-encoded), and the dev R2 CDN URL
-     (eigeninference-r2-cdn-url — the public URL of the d-inf-app-dev bucket).
+     Then add Privy values, Solana mnemonic (generated fresh for dev — not prod's),
+     the dev R2 CDN URL (public URL of d-inf-app-dev), and the MDM push PKCS#12.
+
+  1a. MDM push cert — reusing prod's cert as a time-bound bridge:
+      Export the prod PKCS#12 from prod's KMS. On a trusted machine:
+        echo -n "<prod-p12-base64url>" \\
+          | gcloud secrets versions add eigeninference-mdm-push-p12-b64 --data-file=-
+      This secret is CMEK-encrypted with projects/$PROJECT/.../cryptoKeys/mdm-push-cert.
+      IAM is scoped to only $COORD_SA_EMAIL — no humans, no other SAs.
+      Target: rotate to a dev-specific cert within 30 days once Apple issues
+      the MDM Vendor CSR signing certificate.
 
   2. Add DNS records on Vercel Domains:
        api.dev.darkbloom.dev      A     $EXTERNAL_IP

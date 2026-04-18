@@ -121,11 +121,12 @@ func (r *Reputation) Score() float64 {
 	var responseTimeFactor float64
 	if r.SuccessfulJobs > 0 && r.AvgResponseTime > 0 {
 		avgMs := float64(r.AvgResponseTime) / float64(time.Millisecond)
-		if avgMs <= 1000 {
+		switch {
+		case avgMs <= 1000:
 			responseTimeFactor = 1.0
-		} else if avgMs >= 10000 {
+		case avgMs >= 10000:
 			responseTimeFactor = 0.0
-		} else {
+		default:
 			responseTimeFactor = 1.0 - (avgMs-1000)/9000
 		}
 	} else {

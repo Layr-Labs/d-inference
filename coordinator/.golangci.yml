@@ -79,9 +79,7 @@ linters-settings:
     enable-all: true
     disable:
       - fieldalignment # too strict
-    settings:
-      shadow:
-        strict: true
+      - shadow # too many legitimate shadowing patterns (if err := ...)
 
   inamedparam:
     skip-single-param: true

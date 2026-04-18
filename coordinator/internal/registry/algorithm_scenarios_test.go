@@ -155,8 +155,11 @@ func TestAlgorithm_P1_PrefersBusyFitOverIdleNoFit(t *testing.T) {
 		id: "big-busy", decodeTPS: 80, totalMemGB: 128, gpuActiveGB: 50,
 		pending: 1, backendRun: 1,
 	}.register(t, reg, model)
+	// Small provider has the model in its catalog but no slot loaded,
+	// so the gate must compute weights + KV against free memory.
 	scenarioProvider{
 		id: "small-idle", decodeTPS: 20, totalMemGB: 24, gpuActiveGB: 1,
+		slotState: "idle_shutdown",
 	}.register(t, reg, model)
 
 	p := reserveOne(reg, model, 256)

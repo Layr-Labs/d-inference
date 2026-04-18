@@ -17,14 +17,23 @@ const (
 	slotStatePenaltyUnknown      = 2_500.0
 	slotStatePenaltyIdleShutdown = 20_000.0
 
-	queueDepthPenaltyMs      = 1_000.0
-	totalPendingPenaltyMs    = 250.0
+	// Penalty constants. Phase 3 raised queueDepthPenaltyMs (1000→3000),
+	// totalPendingPenaltyMs (250→750), and nearTieCostWindowMs (750→2500).
+	// The old values let a fast provider with 1-2 in-flight requests
+	// outscore an idle slow provider, because the per-request decode-cost
+	// gap (~3-10 s) dwarfed the queue penalty (~1 s/request). The new
+	// values make one queued request roughly equivalent to one
+	// slow-provider decode, so the cost function actually spreads load
+	// across the fleet. Wider tie window admits more candidates to the
+	// queue-depth tie-break + random distribution.
+	queueDepthPenaltyMs      = 3_000.0
+	totalPendingPenaltyMs    = 750.0
 	memoryPressurePenaltyMs  = 4_000.0
 	cpuUsagePenaltyMs        = 1_500.0
 	gpuUtilizationPenaltyMs  = 5_000.0
 	thermalPenaltyFairMs     = 2_000.0
 	thermalPenaltySeriousMs  = 8_000.0
-	nearTieCostWindowMs      = 750.0
+	nearTieCostWindowMs      = 3_000.0
 	challengeFreshnessMaxAge = 6 * time.Minute
 
 	// kvCacheBytesPerToken is a per-token KV-cache size estimate used by

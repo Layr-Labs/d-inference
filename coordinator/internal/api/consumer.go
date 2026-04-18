@@ -1728,7 +1728,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 // It reads the raw request body, extracts model/stream, sets the endpoint field,
 // and reuses the same E2E encryption + provider routing as chat completions.
 //
-//nolint:funlen
+//nolint:funlen,gocognit // dispatch handler with sequential validation + reservation steps
 func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, endpoint string) {
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {

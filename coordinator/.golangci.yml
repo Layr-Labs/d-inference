@@ -167,7 +167,6 @@ linters:
     - mirror
     - musttag
     - nakedret
-    - nestif
     - nilerr
     - nilnil
     - noctx

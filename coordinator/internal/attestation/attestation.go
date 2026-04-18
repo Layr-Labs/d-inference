@@ -91,22 +91,22 @@ func (s *SignedAttestation) UnmarshalJSON(data []byte) error {
 
 // VerificationResult contains the outcome of attestation verification.
 type VerificationResult struct {
-	Valid                    bool
-	PublicKey                string
-	EncryptionPublicKey      string
-	BinaryHash               string
-	HardwareModel            string
-	ChipName                 string
-	SerialNumber             string
-	SecureEnclaveAvailable   bool
-	SIPEnabled               bool
-	SecureBootEnabled        bool
-	HypervisorActive         bool
-	RDMADisabled             bool
-	AuthenticatedRootEnabled bool
-	SystemVolumeHash         string
-	Timestamp                time.Time
-	Error                    string
+	Valid                    bool      `json:"valid"`
+	PublicKey                string    `json:"public_key"`
+	EncryptionPublicKey      string    `json:"encryption_public_key"`
+	BinaryHash               string    `json:"binary_hash"`
+	HardwareModel            string    `json:"hardware_model"`
+	ChipName                 string    `json:"chip_name"`
+	SerialNumber             string    `json:"serial_number"`
+	SecureEnclaveAvailable   bool      `json:"secure_enclave_available"`
+	SIPEnabled               bool      `json:"sip_enabled"`
+	SecureBootEnabled        bool      `json:"secure_boot_enabled"`
+	HypervisorActive         bool      `json:"hypervisor_active"`
+	RDMADisabled             bool      `json:"rdma_disabled"`
+	AuthenticatedRootEnabled bool      `json:"authenticated_root_enabled"`
+	SystemVolumeHash         string    `json:"system_volume_hash"`
+	Timestamp                time.Time `json:"timestamp"`
+	Error                    string    `json:"error,omitempty"`
 }
 
 // ecdsaSig holds the two integers in a DER-encoded ECDSA signature.

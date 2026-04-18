@@ -64,20 +64,28 @@ num_running() {
 
 # Generate a prompt of approximately N tokens. Uses ~4 chars/token as a
 # rough estimate; exact token count is read back from the usage field.
+# Implemented in python3 to sidestep `yes | head -c` tripping pipefail
+# on SIGPIPE when head closes the pipe.
 synthesize_prompt() {
   local target_tokens="$1"
   local char_count=$((target_tokens * 4))
-  if [[ -n "${PROMPT_FILE}" && -f "${PROMPT_FILE}" ]]; then
-    head -c "$char_count" "$PROMPT_FILE"
-    return
-  fi
-  # Fallback: repeat dictionary words to hit target length.
-  if [[ -f /usr/share/dict/words ]]; then
-    yes "$(head -200 /usr/share/dict/words | paste -sd' ' -)" | head -c "$char_count"
-  else
-    # Last resort: repeat lorem-ipsum-ish text.
-    yes "The quick brown fox jumps over the lazy dog while the sun sets behind the hills and stars begin to glimmer in the deepening indigo sky." | head -c "$char_count"
-  fi
+  local source_file="${PROMPT_FILE:-/usr/share/dict/words}"
+  python3 - "$char_count" "$source_file" <<'PY'
+import os, sys
+n = int(sys.argv[1])
+src = sys.argv[2]
+base = ""
+if os.path.isfile(src):
+    with open(src, "r", errors="ignore") as f:
+        base = " ".join(f.read().split()[:200])
+if not base:
+    base = ("The quick brown fox jumps over the lazy dog while the sun sets "
+            "behind the hills and stars begin to glimmer in the deepening sky. ")
+# Repeat until we have enough chars, then truncate.
+if len(base) < n:
+    base = (base + " ") * (n // len(base) + 1)
+sys.stdout.write(base[:n])
+PY
 }
 
 # Fire one inference request. Streams not used (simpler).
@@ -169,26 +177,33 @@ PY
     return
   fi
   LOG "fitting k for tps(N) = tps(1)/(1 + k*N)  [tps(1)=$tps1]"
-  # Pass samples on stdin, one "N tps" pair per line.
-  printf '%s\n' "${tps_results[@]}" | python3 - <<PY
-import sys, statistics
-tps1 = $tps1
+  # Write samples to a file so the python heredoc doesn't shadow stdin.
+  # Pass tps1 as an env var (TPS1) rather than interpolating into the
+  # heredoc so the python block can be quoted verbatim.
+  local samples_file
+  samples_file=$(mktemp)
+  printf '%s\n' "${tps_results[@]}" >"$samples_file"
+  TPS1="$tps1" SAMPLES="$samples_file" python3 - <<'PY'
+import os, statistics
+tps1 = float(os.environ["TPS1"])
 ks = []
-for line in sys.stdin:
-    parts = line.strip().split()
-    if len(parts) != 2: continue
-    try: n, tps = int(parts[0]), float(parts[1])
-    except ValueError: continue
-    if n <= 1 or tps <= 0: continue
-    k = (tps1 / tps - 1) / n
-    ks.append((n, k))
-    print(f"  at N={n}, implied k={k:.3f}")
+with open(os.environ["SAMPLES"]) as f:
+    for line in f:
+        parts = line.strip().split()
+        if len(parts) != 2: continue
+        try: n, tps = int(parts[0]), float(parts[1])
+        except ValueError: continue
+        if n <= 1 or tps <= 0: continue
+        k = (tps1 / tps - 1) / n
+        ks.append((n, k))
+        print(f"  at N={n}, implied k={k:.3f}")
 if ks:
     median_k = statistics.median(k for _, k in ks)
     print(f"\nRECOMMENDED effectiveTPSLoadFactor = {median_k:.2f}")
 else:
     print("no valid samples; keep the default")
 PY
+  rm -f "$samples_file"
 }
 
 # ---------- KV cache bytes/token (Phase 1) ----------------------------

@@ -271,6 +271,8 @@ func (s *Server) SyncBinaryHashes() {
 
 // SyncRuntimeManifest builds the runtime manifest from active releases.
 // Called after a release is registered to auto-update the expected hashes.
+//
+//nolint:gocognit
 func (s *Server) SyncRuntimeManifest() {
 	releases := s.store.ListReleases()
 
@@ -399,6 +401,8 @@ func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 // verifyRuntimeHashes checks provider-reported runtime hashes against the
 // known-good manifest. Returns (true, nil) if all hashes match or no manifest
 // is configured. Returns (false, mismatches) if any component fails verification.
+//
+//nolint:gocognit
 func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHashes map[string]string, grpcBinaryHash, imageBridgeHash string) (bool, []protocol.RuntimeMismatch) {
 	if s.knownRuntimeManifest == nil {
 		return true, nil // no manifest configured, pass by default
@@ -669,6 +673,8 @@ func (s *Server) Handler() http.Handler {
 // requireAuth wraps a handler with authentication. It tries Privy JWT first
 // (if configured), then falls back to API key validation. The authenticated
 // identity is stored in the request context for downstream use.
+//
+//nolint:gocognit
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := extractBearerToken(r)

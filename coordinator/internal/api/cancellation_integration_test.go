@@ -165,6 +165,8 @@ func makeProviderRoutable(reg *registry.Registry) {
 // TestIntegration_RequestCancellationOnConsumerDisconnect verifies that when a
 // consumer disconnects mid-stream, the coordinator sends a Cancel message to
 // the provider so it stops generating tokens.
+//
+//nolint:gocognit
 func TestIntegration_RequestCancellationOnConsumerDisconnect(t *testing.T) {
 	_, reg, _, ts := setupTestServer(t)
 	defer ts.Close()
@@ -531,6 +533,8 @@ func TestIntegration_ProviderDeduplicationBySerial(t *testing.T) {
 // TestIntegration_ProviderDeduplicationPreservesNewest verifies that after
 // provider B replaces provider A (same serial), inference requests go to
 // provider B and provider A's WebSocket is closed.
+//
+//nolint:gocognit
 func TestIntegration_ProviderDeduplicationPreservesNewest(t *testing.T) {
 	_, reg, _, ts := setupTestServer(t)
 	defer ts.Close()

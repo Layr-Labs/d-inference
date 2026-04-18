@@ -429,6 +429,7 @@ func TestSecurity_AuthBypass(t *testing.T) {
 // Test 4: Challenge Nonce Replay
 // ---------------------------------------------------------------------------
 
+//nolint:gocognit
 func TestSecurity_ChallengeNonceReplay(t *testing.T) {
 	srv, _ := securityTestServer(t)
 	// Use a very fast challenge interval for this test.
@@ -717,6 +718,7 @@ func TestSecurity_WithdrawalToForeignWallet(t *testing.T) {
 // Test 8: SQL Injection
 // ---------------------------------------------------------------------------
 
+//nolint:gocognit
 func TestSecurity_SQLInjection(t *testing.T) {
 	srv, _ := securityTestServer(t)
 
@@ -876,6 +878,7 @@ func TestSecurity_HeaderInjection(t *testing.T) {
 // Test 10: Concurrent Auth Attempts
 // ---------------------------------------------------------------------------
 
+//nolint:gocognit
 func TestSecurity_ConcurrentAuthAttempts(t *testing.T) {
 	srv, _ := securityTestServer(t)
 

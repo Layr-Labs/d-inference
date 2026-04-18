@@ -215,6 +215,8 @@ func testPublicKeyB64() string {
 
 // TestStreamingE2E sets up a full end-to-end streaming test with a simulated
 // provider connected via WebSocket.
+//
+//nolint:gocognit
 func TestStreamingE2E(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory("test-key")

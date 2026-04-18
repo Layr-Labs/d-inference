@@ -30,6 +30,8 @@ import (
 // simulated streaming chunks + a complete message. It returns when the
 // context is cancelled or the connection is closed, and reports how many
 // inference requests were served.
+//
+//nolint:gocognit
 func runProviderLoop(ctx context.Context, t *testing.T, conn *websocket.Conn, pubKey, responseContent string) int {
 	t.Helper()
 	served := 0

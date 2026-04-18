@@ -152,6 +152,8 @@ func connectProviderWithToken(t *testing.T, ctx context.Context, tsURL string, m
 
 // TestIntegration_ProviderReconnectRequiresChallenge verifies that a provider
 // that disconnects and reconnects is NOT routable until it passes a new challenge.
+//
+//nolint:gocognit
 func TestIntegration_ProviderReconnectRequiresChallenge(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory("test-key")
@@ -276,6 +278,8 @@ func TestIntegration_ProviderReconnectRequiresChallenge(t *testing.T) {
 
 // TestIntegration_ChallengeFailureBlocksRouting verifies that a provider
 // responding with wrong nonces gets marked untrusted after MaxFailedChallenges.
+//
+//nolint:gocognit
 func TestIntegration_ChallengeFailureBlocksRouting(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory("test-key")
@@ -384,6 +388,8 @@ func TestIntegration_ChallengeFailureBlocksRouting(t *testing.T) {
 // TestIntegration_E2EEncryptionRoundtrip tests that the coordinator's
 // encryption can be decrypted by Go code using the same NaCl Box primitives
 // that the Rust provider uses.
+//
+//nolint:gocognit
 func TestIntegration_E2EEncryptionRoundtrip(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory("test-key")
@@ -542,6 +548,8 @@ func TestIntegration_E2EEncryptionRoundtrip(t *testing.T) {
 
 // TestIntegration_AccountLinkedEarnings verifies that inference payouts go to the
 // linked account (not the wallet address) when a provider authenticates via device token.
+//
+//nolint:gocognit
 func TestIntegration_AccountLinkedEarnings(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory("test-key")

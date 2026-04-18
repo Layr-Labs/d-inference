@@ -651,6 +651,7 @@ func (s *Server) handleInferenceAccepted(providerID string, provider *registry.P
 	}
 }
 
+//nolint:gocognit
 func (s *Server) handleComplete(providerID string, provider *registry.Provider, msg *protocol.InferenceCompleteMessage) {
 	if provider == nil {
 		s.logger.Warn("complete from unregistered provider", "provider_id", providerID)
@@ -983,6 +984,8 @@ func (s *Server) handleImageGenerationComplete(providerID string, provider *regi
 // if one was included in the registration message. If the attestation is valid,
 // the provider is marked as attested. If missing or invalid, the provider is
 // still accepted (Open Mode) but marked as not attested.
+//
+//nolint:gocognit
 func (s *Server) verifyProviderAttestation(providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage) {
 	if len(regMsg.Attestation) == 0 {
 		s.logger.Info("provider registered without attestation (Open Mode)",

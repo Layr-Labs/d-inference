@@ -1008,6 +1008,8 @@ func runBatchingBenchmark(t *testing.T, numProviders, numRequests int, continuou
 // memory pressure, and generation quality. Requires the model to be downloaded.
 //
 //	LIVE_FULLSTACK_TEST=1 go test ./internal/api/ -run TestFullStack_LargeModel -v -timeout=600s
+//
+//nolint:gocognit
 func TestFullStack_LargeModelInference(t *testing.T) {
 	if !shouldRunFullStack() {
 		t.Skip("skipping full-stack test (set LIVE_FULLSTACK_TEST=1 to enable)")

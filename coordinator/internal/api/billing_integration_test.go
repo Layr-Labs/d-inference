@@ -486,6 +486,8 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 // TestIntegration_DeviceAuthFullFlow tests the complete device authorization
 // flow: code generation, approval, token issuance, and provider registration
 // with account linking. Verifies that inference earnings go to the linked account.
+//
+//nolint:gocognit
 func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	srv, st, _ := billingTestServer(t)
 

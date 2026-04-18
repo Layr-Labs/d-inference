@@ -667,6 +667,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 // This is the OpenAI-compatible audio transcription endpoint. It accepts
 // multipart/form-data with an audio file and routes it to an STT-capable
 // provider.
+//
+//nolint:gocognit
 func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	// Parse multipart form (max 25MB audio)
 	if err := r.ParseMultipartForm(25 << 20); err != nil {
@@ -854,6 +856,8 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 //
 // This is the OpenAI-compatible image generation endpoint. It accepts a JSON
 // body with model, prompt, size, etc. and routes it to an image-capable provider.
+//
+//nolint:gocognit
 func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) {
 	var req protocol.ImageGenerationRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1052,6 +1056,8 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 // If firstChunk is non-empty, it is written before reading further chunks
 // from the channel. This allows the dispatch loop to "peek" at the first
 // chunk for retry decisions without losing it.
+//
+//nolint:gocognit
 func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -1334,6 +1340,8 @@ type extractedMessage struct {
 
 // extractMessage parses SSE data lines and reconstructs the full assistant
 // message from streaming chunks, including content, reasoning, and tool_calls.
+//
+//nolint:gocognit
 func extractMessage(chunks []string) extractedMessage {
 	var contentBuilder strings.Builder
 	var reasoningBuilder strings.Builder

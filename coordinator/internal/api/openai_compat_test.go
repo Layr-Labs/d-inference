@@ -147,6 +147,7 @@ func sendComplete(ctx context.Context, conn *websocket.Conn, requestID string, u
 // Test 1: Streaming chat completion format
 // --------------------------------------------------------------------------
 
+//nolint:gocognit
 func TestOpenAI_ChatCompletionStreamingFormat(t *testing.T) {
 	ts, cleanup, providerDone := setupE2ETest(t, "test-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage) {
 		// Send 3 chunks + complete.
@@ -496,6 +497,7 @@ func TestOpenAI_ErrorFormat(t *testing.T) {
 // Test 5: Auth required
 // --------------------------------------------------------------------------
 
+//nolint:gocognit
 func TestOpenAI_AuthRequired(t *testing.T) {
 	srv, _ := testServer(t)
 

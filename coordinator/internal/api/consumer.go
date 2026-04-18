@@ -366,6 +366,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		metrics.RoutingDecisions.WithLabelValues(model, "selected").Inc()
 		metrics.ProviderSelected.WithLabelValues(provider.ID, model).Inc()
 		metrics.RoutingCostMs.WithLabelValues(model).Observe(decision.CostMs)
+	if decision.EffectiveTPS > 0 {
+		metrics.EffectiveDecodeTPS.WithLabelValues(provider.ID).Set(decision.EffectiveTPS)
+	}
 
 		// E2E encryption — must be done per provider (different keys).
 		if provider.PublicKey == "" {
@@ -710,6 +713,9 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	metrics.RoutingDecisions.WithLabelValues(model, "selected").Inc()
 	metrics.ProviderSelected.WithLabelValues(provider.ID, model).Inc()
 	metrics.RoutingCostMs.WithLabelValues(model).Observe(decision.CostMs)
+	if decision.EffectiveTPS > 0 {
+		metrics.EffectiveDecodeTPS.WithLabelValues(provider.ID).Set(decision.EffectiveTPS)
+	}
 
 	transcriptionBody := protocol.TranscriptionRequestBody{
 		Model:  model,
@@ -915,6 +921,9 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	metrics.RoutingDecisions.WithLabelValues(req.Model, "selected").Inc()
 	metrics.ProviderSelected.WithLabelValues(provider.ID, req.Model).Inc()
 	metrics.RoutingCostMs.WithLabelValues(req.Model).Observe(decision.CostMs)
+	if decision.EffectiveTPS > 0 {
+		metrics.EffectiveDecodeTPS.WithLabelValues(provider.ID).Set(decision.EffectiveTPS)
+	}
 
 	bodyJSON, _ := json.Marshal(req)
 
@@ -1785,6 +1794,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	metrics.RoutingDecisions.WithLabelValues(model, "selected").Inc()
 	metrics.ProviderSelected.WithLabelValues(provider.ID, model).Inc()
 	metrics.RoutingCostMs.WithLabelValues(model).Observe(decision.CostMs)
+	if decision.EffectiveTPS > 0 {
+		metrics.EffectiveDecodeTPS.WithLabelValues(provider.ID).Set(decision.EffectiveTPS)
+	}
 
 	inferenceBody, _ := json.Marshal(parsed)
 

@@ -44,6 +44,16 @@ const (
 	// per-architecture later if measured behavior diverges.
 	kvCacheBytesPerToken = 524_288 // 0.5 MB
 	bytesPerGB           = 1 << 30
+
+	// effectiveTPSLoadFactor controls how aggressively decode TPS
+	// degrades as a provider takes on more concurrent requests. The
+	// effective TPS used in cost is `decodeTPS / (1 + k * batchSize)`
+	// where batchSize is the backend's currently-running request count.
+	// Empirically MLX per-request throughput halves around batch ~3 on
+	// most chips, so k=0.4 gives a 60% effective TPS at batch=1, 33%
+	// at batch=5, and 20% at batch=10 — close to measured behavior.
+	// Set to 0 to disable load scaling (Phase 4 toggle).
+	effectiveTPSLoadFactor = 0.4
 )
 
 type routingSnapshot struct {
@@ -71,6 +81,7 @@ type routingCandidate struct {
 	costMs         float64
 	effectiveQueue int
 	breakdown      costBreakdown
+	effectiveTPS   float64 // Phase 4 load-scaled TPS used in this candidate's cost
 }
 
 // candidateRejection enumerates why a provider that passed structural
@@ -115,6 +126,8 @@ type RoutingDecision struct {
 	EffectiveQueue     int     // max(pendingForModel, backendRunning+backendWaiting)
 	CandidateCount     int     // total candidates that passed all gates
 	CapacityRejections int     // candidates rejected by the free-memory admission gate
+	EffectiveTPS       float64 // load-scaled decode TPS used in cost (Phase 4)
+	StaticTPS          float64 // benchmarked decode TPS before load scaling
 }
 
 // ReserveProvider selects a hardware-routable provider for the request and
@@ -188,6 +201,8 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		EffectiveQueue:     selected.effectiveQueue,
 		CandidateCount:     candidateCount,
 		CapacityRejections: capacityRejections,
+		EffectiveTPS:       selected.effectiveTPS,
+		StaticTPS:          selected.snapshot.decodeTPS,
 	}
 	return p, decision
 }
@@ -445,10 +460,18 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 		unaccountedPendingTokens = 0
 	}
 
+	// Phase 4: load-scale decode TPS by current backend batch size.
+	// Static benchmarked TPS represents batch=1 throughput, but real
+	// per-request TPS degrades as the backend takes on more concurrent
+	// decodes. Using the load-adjusted value in cost makes a heavily
+	// batched fast provider effectively as slow as an idle slow one,
+	// which is the actual user-perceived behavior.
+	effectiveTPS := effectiveDecodeTPS(snap.decodeTPS, snap.backendRunning)
+
 	queueMs := float64(effectiveQueue) * queueDepthPenaltyMs
 	pendingMs := float64(snap.totalPending) * totalPendingPenaltyMs
-	backlogMs := backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, snap.decodeTPS)
-	thisReqMs := float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/snap.decodeTPS*1000.0
+	backlogMs := backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, effectiveTPS)
+	thisReqMs := float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
 	healthMs := healthPenaltyMs(snap.systemMetrics, snap.gpuMemoryActiveGB, snap.totalMemoryGB)
 	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs
 
@@ -457,6 +480,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 		snapshot:       snap,
 		costMs:         cost,
 		effectiveQueue: effectiveQueue,
+		effectiveTPS:   effectiveTPS,
 		breakdown: costBreakdown{
 			StateMs:   statePenalty,
 			QueueMs:   queueMs,
@@ -514,6 +538,24 @@ func healthPenaltyMs(m protocol.SystemMetrics, gpuActiveGB, totalMemGB float64) 
 		penalty += gpuUtil * gpuUtilizationPenaltyMs
 	}
 	return penalty
+}
+
+// effectiveDecodeTPS scales the static decode TPS down by current
+// backend batch size. Returns the static value when the load factor is
+// disabled or batch is unknown. Floored at 1 token/s to avoid divide-
+// by-zero or absurd costs from a misreporting backend.
+func effectiveDecodeTPS(staticTPS float64, backendRunning int) float64 {
+	if staticTPS <= 0 {
+		return 1.0
+	}
+	if effectiveTPSLoadFactor <= 0 || backendRunning <= 0 {
+		return staticTPS
+	}
+	tps := staticTPS / (1.0 + effectiveTPSLoadFactor*float64(backendRunning))
+	if tps < 1.0 {
+		tps = 1.0
+	}
+	return tps
 }
 
 func resolvedDecodeTPS(p *Provider) float64 {

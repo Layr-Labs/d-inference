@@ -351,6 +351,44 @@ func TestAlgorithm_P4_HighlyBatchedBigLosesToIdleSmall(t *testing.T) {
 	}
 }
 
+// Phase 4 isolated: same provider configuration, but the only signal
+// the cost function sees is the load-scaled TPS difference. Both
+// providers have backendRunning=N but no queued tokens, no health
+// penalty, and no idle alternative. The big provider with batch=4
+// must lose to the small provider with batch=0 because the static
+// TPS edge collapses under the load factor.
+func TestAlgorithm_P4_LoadScaledTPSFlipsBatchedBigVsIdleSmall(t *testing.T) {
+	reg := New(testLogger())
+	model := "p4-load-scaled-model"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 8}})
+
+	// Big provider: batch=4 in flight (running, no waiting), no
+	// pending-token backlog reported, healthy. Static TPS=80, with
+	// k=0.4 effective TPS = 80/(1+0.4*4) = 80/2.6 ≈ 30.8.
+	scenarioProvider{
+		id: "big-batched", decodeTPS: 80, totalMemGB: 128,
+		gpuActiveGB: 8, // model resident, low headroom impact
+		backendRun:  4,
+		slotState:   "running",
+	}.register(t, reg, model)
+
+	// Small idle: static TPS=30, no batch scaling applies.
+	scenarioProvider{
+		id: "small-idle", decodeTPS: 30, totalMemGB: 24,
+		gpuActiveGB: 1,
+		slotState:   "running",
+	}.register(t, reg, model)
+
+	p := reserveOne(reg, model, 256)
+	if p == nil {
+		t.Fatal("expected small-idle, got nil")
+	}
+	if p.ID != "small-idle" {
+		t.Fatalf("got %q, want small-idle. Phase 4 load scaling should make "+
+			"big-batched effectively slower than small-idle (30.8 vs 30 TPS).", p.ID)
+	}
+}
+
 // ---------------------------------------------------------------------
 // Phase 5 scenarios — model-swap penalty
 // ---------------------------------------------------------------------

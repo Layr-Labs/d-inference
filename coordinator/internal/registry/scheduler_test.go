@@ -104,6 +104,53 @@ func TestReserveProviderExReturnsCostBreakdown(t *testing.T) {
 	}
 }
 
+func TestDrainQueuedRequestsPopulatesDecision(t *testing.T) {
+	reg := New(testLogger())
+	model := "queue-decision-model"
+	p := makeSchedulerProvider(t, reg, "p1", model, 90)
+	p.mu.Lock()
+	p.BackendCapacity = nil
+	p.mu.Unlock()
+
+	req := &QueuedRequest{
+		RequestID:  "queued-decision",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending: &PendingRequest{
+			RequestID:             "queued-decision",
+			Model:                 model,
+			RequestedMaxTokens:    256,
+			EstimatedPromptTokens: 50,
+		},
+	}
+	if err := reg.Queue().Enqueue(req); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	// SetProviderIdle triggers drainQueuedRequestsForModels which fills
+	// req.Decision before signaling ResponseCh.
+	reg.SetProviderIdle(p.ID)
+
+	select {
+	case assigned := <-req.ResponseCh:
+		if assigned == nil {
+			t.Fatal("expected provider, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for queue dispatch")
+	}
+
+	if req.Decision.ProviderID != p.ID {
+		t.Fatalf("Decision.ProviderID=%q, want %q", req.Decision.ProviderID, p.ID)
+	}
+	if req.Decision.CostMs <= 0 {
+		t.Fatalf("Decision.CostMs=%f, want > 0", req.Decision.CostMs)
+	}
+	if req.Decision.CandidateCount != 1 {
+		t.Fatalf("Decision.CandidateCount=%d, want 1", req.Decision.CandidateCount)
+	}
+}
+
 func TestReserveProviderExWhenNoneAvailable(t *testing.T) {
 	reg := New(testLogger())
 	model := "missing-model"

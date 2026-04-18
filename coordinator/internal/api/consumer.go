@@ -352,11 +352,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider became available for model %q (queue timeout)", model)))
 				return
 			}
-		} else {
-			metrics.RoutingDecisions.WithLabelValues(model, "selected").Inc()
-			metrics.ProviderSelected.WithLabelValues(provider.ID, model).Inc()
-			metrics.RoutingCostMs.WithLabelValues(model).Observe(decision.CostMs)
+			decision = queuedReq.Decision
 		}
+		metrics.RoutingDecisions.WithLabelValues(model, "selected").Inc()
+		metrics.ProviderSelected.WithLabelValues(provider.ID, model).Inc()
+		metrics.RoutingCostMs.WithLabelValues(model).Observe(decision.CostMs)
 
 		// E2E encryption — must be done per provider (different keys).
 		if provider.PublicKey == "" {
@@ -1770,11 +1770,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				fmt.Sprintf("no provider became available for model %q", model)))
 			return
 		}
-	} else {
-		metrics.RoutingDecisions.WithLabelValues(model, "selected").Inc()
-		metrics.ProviderSelected.WithLabelValues(provider.ID, model).Inc()
-		metrics.RoutingCostMs.WithLabelValues(model).Observe(decision.CostMs)
+		decision = queuedReq.Decision
 	}
+	metrics.RoutingDecisions.WithLabelValues(model, "selected").Inc()
+	metrics.ProviderSelected.WithLabelValues(provider.ID, model).Inc()
+	metrics.RoutingCostMs.WithLabelValues(model).Observe(decision.CostMs)
 
 	inferenceBody, _ := json.Marshal(parsed)
 

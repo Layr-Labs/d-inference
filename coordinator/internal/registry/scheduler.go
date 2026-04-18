@@ -506,11 +506,12 @@ func (r *Registry) drainQueuedRequestsForModels(models []string) {
 					RequestedMaxTokens: defaultRequestedMaxTokens,
 				}
 			}
-			provider := r.ReserveProvider(model, req.Pending)
+			provider, decision := r.ReserveProviderEx(model, req.Pending)
 			if provider == nil {
 				r.queue.RequeueFront(req)
 				break
 			}
+			req.Decision = decision
 
 			select {
 			case <-req.Done():

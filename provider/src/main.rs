@@ -45,6 +45,41 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
+// Compile-time coordinator URL defaults. CI bakes the right environment via
+// `DARKBLOOM_COORDINATOR_URL` — see `provider/build.rs`. Unset means local
+// build: use prod URLs so dev-on-a-laptop still hits prod when users override
+// via --coordinator flags and config files.
+const DEFAULT_COORDINATOR_HTTP_URL: &str = match option_env!("DARKBLOOM_COORDINATOR_HTTP_URL") {
+    Some(v) => v,
+    None => "https://api.darkbloom.dev",
+};
+const DEFAULT_COORDINATOR_WS_URL: &str = match option_env!("DARKBLOOM_COORDINATOR_WS_URL") {
+    Some(v) => v,
+    None => "wss://api.darkbloom.dev/ws/provider",
+};
+const DEFAULT_ENROLL_PROFILE_URL: &str = match option_env!("DARKBLOOM_ENROLL_PROFILE_URL") {
+    Some(v) => v,
+    None => "https://api.darkbloom.dev/enroll.mobileconfig",
+};
+const DEFAULT_INSTALL_URL: &str = match option_env!("DARKBLOOM_INSTALL_URL") {
+    Some(v) => v,
+    None => "https://api.darkbloom.dev/install.sh",
+};
+// Public R2 CDN URL for releases/templates/models. Dev uses a different bucket
+// (d-inf-app-dev) with its own public URL — build.rs wires DARKBLOOM_R2_CDN_URL
+// from CI. When unset, we fall back to the prod R2 CDN.
+const DEFAULT_R2_CDN_URL: &str = match option_env!("DARKBLOOM_R2_CDN_URL") {
+    Some(v) => v,
+    None => "https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev",
+};
+// Site-packages tarball CDN (separate prod bucket historically, co-located for
+// dev). Falls back to the long-used prod bucket when unset.
+const DEFAULT_R2_SITE_PACKAGES_CDN_URL: &str =
+    match option_env!("DARKBLOOM_R2_SITE_PACKAGES_CDN_URL") {
+        Some(v) => v,
+        None => "https://pub-3d1cb668259340eeb2276e1d375c846d.r2.dev",
+    };
+
 /// A model from the coordinator's supported model catalog.
 #[derive(Debug, Clone, serde::Deserialize)]
 struct CatalogModel {
@@ -364,10 +399,7 @@ fn curl_download(url: &str, dest: &std::path::Path) -> bool {
 ///
 /// Handles text models (safetensors) and image models (.ckpt) from R2.
 fn download_model_from_cdn(s3_name: &str, cache_dir: &std::path::Path, display_name: &str) -> bool {
-    let base = format!(
-        "https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev/{}",
-        s3_name
-    );
+    let base = format!("{}/{}", DEFAULT_R2_CDN_URL, s3_name);
 
     // Check if this is an image model (.ckpt files, no config.json)
     let is_image_model = s3_name.contains("flux") || s3_name.contains("klein");
@@ -707,8 +739,7 @@ fn ensure_chat_template(
     };
 
     // Download from our R2 CDN (primary) or HuggingFace (fallback)
-    const R2_BASE: &str = "https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev";
-    let r2_url = format!("{R2_BASE}/templates/{template_name}.jinja");
+    let r2_url = format!("{}/templates/{template_name}.jinja", DEFAULT_R2_CDN_URL);
 
     tracing::info!("Downloading {template_name} chat template...");
 
@@ -1089,7 +1120,7 @@ fn runtime_smoke_test(python_cmd: &str) -> std::result::Result<String, String> {
 /// the hash against the coordinator's runtime manifest before installing.
 /// This prevents MITM attacks on the update channel.
 fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
-    const R2_CDN: &str = "https://pub-3d1cb668259340eeb2276e1d375c846d.r2.dev";
+    let r2_cdn: &str = DEFAULT_R2_SITE_PACKAGES_CDN_URL;
     const GITHUB_FALLBACK: &str =
         "https://github.com/Gajesh2007/vllm-mlx/archive/refs/heads/main.zip";
 
@@ -1135,7 +1166,7 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
     let mut downloaded = false;
     if !release_version.is_empty() {
         let r2_url =
-            format!("{R2_CDN}/releases/v{release_version}/eigeninference-site-packages.tar.gz");
+            format!("{r2_cdn}/releases/v{release_version}/eigeninference-site-packages.tar.gz");
         tracing::info!("Downloading site-packages from R2 (release v{release_version})...");
         downloaded = std::process::Command::new("curl")
             .args([
@@ -1238,7 +1269,7 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
     let tmp_zip = "/tmp/eigeninference-vllm-mlx-update.zip";
     let mut zip_downloaded = false;
     if !release_version.is_empty() {
-        let r2_url = format!("{R2_CDN}/releases/v{release_version}/vllm-mlx-source.zip");
+        let r2_url = format!("{r2_cdn}/releases/v{release_version}/vllm-mlx-source.zip");
         zip_downloaded = std::process::Command::new("curl")
             .args(["-fsSL", "--connect-timeout", "10", &r2_url, "-o", tmp_zip])
             .output()
@@ -1427,7 +1458,7 @@ enum Command {
         local: bool,
 
         /// Coordinator WebSocket URL
-        #[arg(long, default_value = "wss://api.darkbloom.dev/ws/provider")]
+        #[arg(long, default_value = DEFAULT_COORDINATOR_WS_URL)]
         coordinator: String,
 
         /// Port for local API server
@@ -1467,11 +1498,11 @@ enum Command {
     /// One-command setup: enroll in MDM, download model, start serving
     Install {
         /// Coordinator URL (WebSocket for serving, HTTPS for API)
-        #[arg(long, default_value = "wss://api.darkbloom.dev/ws/provider")]
+        #[arg(long, default_value = DEFAULT_COORDINATOR_WS_URL)]
         coordinator: String,
 
         /// MDM enrollment profile URL
-        #[arg(long, default_value = "https://api.darkbloom.dev/enroll.mobileconfig")]
+        #[arg(long, default_value = DEFAULT_ENROLL_PROFILE_URL)]
         profile_url: String,
 
         /// Model to serve (auto-selects if not specified)
@@ -1482,7 +1513,7 @@ enum Command {
     /// Enroll this Mac in Darkbloom MDM (without starting to serve)
     Enroll {
         /// Coordinator URL for device attestation enrollment
-        #[arg(long, default_value = "https://api.darkbloom.dev")]
+        #[arg(long, default_value = DEFAULT_COORDINATOR_HTTP_URL)]
         coordinator: String,
     },
 
@@ -1505,28 +1536,28 @@ enum Command {
         action: String,
 
         /// Coordinator URL to fetch model catalog
-        #[arg(long, default_value = "https://api.darkbloom.dev")]
+        #[arg(long, default_value = DEFAULT_COORDINATOR_HTTP_URL)]
         coordinator: String,
     },
 
     /// Show earnings and usage history
     Earnings {
         /// Coordinator API URL
-        #[arg(long, default_value = "https://api.darkbloom.dev")]
+        #[arg(long, default_value = DEFAULT_COORDINATOR_HTTP_URL)]
         coordinator: String,
     },
 
     /// Diagnose issues: check SIP, Secure Enclave, MDM, models, connectivity
     Doctor {
         /// Coordinator URL to test connectivity
-        #[arg(long, default_value = "https://api.darkbloom.dev")]
+        #[arg(long, default_value = DEFAULT_COORDINATOR_HTTP_URL)]
         coordinator: String,
     },
 
     /// Start the provider in the background (uses existing config)
     Start {
         /// Coordinator WebSocket URL
-        #[arg(long, default_value = "wss://api.darkbloom.dev/ws/provider")]
+        #[arg(long, default_value = DEFAULT_COORDINATOR_WS_URL)]
         coordinator: String,
 
         /// Model to serve
@@ -1563,7 +1594,7 @@ enum Command {
     /// Check for updates and install the latest version
     Update {
         /// Coordinator URL to check for latest version
-        #[arg(long, default_value = "https://api.darkbloom.dev")]
+        #[arg(long, default_value = DEFAULT_COORDINATOR_HTTP_URL)]
         coordinator: String,
         /// Force re-download even if already on the latest version
         #[arg(long)]
@@ -1573,7 +1604,7 @@ enum Command {
     /// Link this machine to your Darkbloom account
     Login {
         /// Coordinator URL
-        #[arg(long, default_value = "https://api.darkbloom.dev")]
+        #[arg(long, default_value = DEFAULT_COORDINATOR_HTTP_URL)]
         coordinator: String,
     },
 
@@ -1694,7 +1725,7 @@ async fn check_for_update_alert() {
                 .replace("wss://", "https://")
                 .replace("/ws/provider", "")
         })
-        .unwrap_or_else(|| "https://api.darkbloom.dev".to_string());
+        .unwrap_or_else(|| DEFAULT_COORDINATOR_HTTP_URL.to_string());
 
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
@@ -2450,7 +2481,8 @@ async fn cmd_serve(
     if !ensure_python_verified(&python_cmd, &coordinator_http_base) {
         anyhow::bail!(
             "Python runtime is broken and could not be recovered. \
-             Please run: curl -fsSL https://api.darkbloom.dev/install.sh | bash"
+             Please run: curl -fsSL {} | bash",
+            DEFAULT_INSTALL_URL
         );
     }
     ensure_runtime_updated(&python_cmd, &coordinator_http_base);
@@ -4974,7 +5006,7 @@ async fn cmd_benchmark() -> Result<()> {
 
     // Scan downloaded models and filter by catalog
     let downloaded = models::scan_models(&hw);
-    let catalog = fetch_catalog("https://api.darkbloom.dev").await;
+    let catalog = fetch_catalog(DEFAULT_COORDINATOR_HTTP_URL).await;
     let catalog_ids: std::collections::HashSet<String> =
         catalog.iter().map(|c| c.id.clone()).collect();
 
@@ -5251,7 +5283,7 @@ async fn cmd_status() -> Result<()> {
 
     // Models (catalog-filtered)
     let models = models::scan_models(&hw);
-    let catalog = fetch_catalog("https://api.darkbloom.dev").await;
+    let catalog = fetch_catalog(DEFAULT_COORDINATOR_HTTP_URL).await;
     let catalog_ids: std::collections::HashSet<String> =
         catalog.iter().map(|c| c.id.clone()).collect();
 
@@ -5730,11 +5762,10 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
                 }
                 _ => {
                     println!("✗ Not installed");
-                    issues.push(
-                        "Inference runtime not found. Reinstall:\n\
-                         \x20    curl -fsSL https://api.darkbloom.dev/install.sh | bash"
-                            .to_string(),
-                    );
+                    issues.push(format!(
+                        "Inference runtime not found. Reinstall:\n     curl -fsSL {} | bash",
+                        DEFAULT_INSTALL_URL
+                    ));
                 }
             }
         }
@@ -6056,7 +6087,7 @@ async fn cmd_start(
             }
 
             // Fetch expected file sizes from CDN via HEAD requests to detect partial downloads.
-            let cdn_base = "https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev";
+            let cdn_base = DEFAULT_R2_CDN_URL;
             let cdn_sizes: std::collections::HashMap<String, u64> = {
                 let client = reqwest::Client::new();
                 let mut sizes = std::collections::HashMap::new();

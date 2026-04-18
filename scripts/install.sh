@@ -17,7 +17,10 @@ set -euo pipefail
 #
 # Zero prerequisites — just macOS + Apple Silicon.
 
-COORD_URL="https://api.darkbloom.dev"
+# Direct-fetch copy: no serve-time templating applied. Override with
+#   curl ... | COORD_URL=https://api.dev.darkbloom.dev bash
+# Or fetch the coordinator-served copy at $COORD_URL/install.sh for templating.
+COORD_URL="${COORD_URL:-https://api.darkbloom.dev}"
 INSTALL_DIR="$HOME/.darkbloom"
 BIN_DIR="$INSTALL_DIR/bin"
 PYTHON_BIN="$INSTALL_DIR/python/bin/python3.12"
@@ -227,7 +230,9 @@ if [ -f "$PYTHON_BIN" ] && ! "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
             echo "  Portable Python installed ✓"
             # Install packages from R2 site-packages tarball (same verified artifacts as CI)
             SITE_DIR="$INSTALL_DIR/python/lib/python3.12/site-packages"
-            R2_CDN="https://pub-3d1cb668259340eeb2276e1d375c846d.r2.dev"
+            # Prefer the coordinator-served install.sh (templated) — this copy is
+            # a direct-fetch fallback and stays pinned to the prod CDN defaults.
+            R2_CDN="${R2_CDN:-https://pub-3d1cb668259340eeb2276e1d375c846d.r2.dev}"
             if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/eigeninference-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
                 rm -rf "$SITE_DIR"
                 mkdir -p "$SITE_DIR"
@@ -419,7 +424,7 @@ if [ -n "$MODEL" ]; then
             echo "  $MODEL_NAME downloaded ✓"
         else
             echo "  Tarball not available, downloading from R2..."
-            R2_BASE="https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev/$S3_NAME"
+            R2_BASE="${R2_CDN_URL:-https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev}/$S3_NAME"
             for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json model.safetensors.index.json; do
                 curl -fsSL "$R2_BASE/$f" -o "$CACHE_DIR/$f" 2>/dev/null || true
             done

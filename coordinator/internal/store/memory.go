@@ -370,8 +370,8 @@ func (s *MemoryStore) GetReferrerByCode(code string) (*Referrer, error) {
 	if !ok {
 		return nil, fmt.Errorf("referral code %q not found", code)
 	}
-	copy := *ref
-	return &copy, nil
+	clone := *ref
+	return &clone, nil
 }
 
 // GetReferrerByAccount returns the referrer record for an account.
@@ -383,8 +383,8 @@ func (s *MemoryStore) GetReferrerByAccount(accountID string) (*Referrer, error) 
 	if !ok {
 		return nil, fmt.Errorf("account %q is not a referrer", accountID)
 	}
-	copy := *ref
-	return &copy, nil
+	clone := *ref
+	return &clone, nil
 }
 
 // RecordReferral records that referredAccountID was referred by referrerCode.
@@ -451,8 +451,8 @@ func (s *MemoryStore) CreateBillingSession(session *BillingSession) error {
 	if _, exists := s.billingSessions[session.ID]; exists {
 		return fmt.Errorf("billing session %q already exists", session.ID)
 	}
-	copy := *session
-	s.billingSessions[session.ID] = &copy
+	clone := *session
+	s.billingSessions[session.ID] = &clone
 	return nil
 }
 
@@ -465,8 +465,8 @@ func (s *MemoryStore) GetBillingSession(sessionID string) (*BillingSession, erro
 	if !ok {
 		return nil, fmt.Errorf("billing session %q not found", sessionID)
 	}
-	copy := *session
-	return &copy, nil
+	clone := *session
+	return &clone, nil
 }
 
 // CompleteBillingSession marks a session as completed.
@@ -607,10 +607,10 @@ func (s *MemoryStore) CreateUser(user *User) error {
 		return fmt.Errorf("user with account ID %q already exists", user.AccountID)
 	}
 
-	copy := *user
-	copy.CreatedAt = time.Now()
-	s.usersByPrivyID[user.PrivyUserID] = &copy
-	s.usersByAccountID[user.AccountID] = &copy
+	clone := *user
+	clone.CreatedAt = time.Now()
+	s.usersByPrivyID[user.PrivyUserID] = &clone
+	s.usersByAccountID[user.AccountID] = &clone
 	return nil
 }
 
@@ -623,8 +623,8 @@ func (s *MemoryStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 	if !ok {
 		return nil, fmt.Errorf("user with Privy ID %q not found", privyUserID)
 	}
-	copy := *u
-	return &copy, nil
+	clone := *u
+	return &clone, nil
 }
 
 // GetUserByAccountID returns the user for an internal account ID.
@@ -636,8 +636,8 @@ func (s *MemoryStore) GetUserByAccountID(accountID string) (*User, error) {
 	if !ok {
 		return nil, fmt.Errorf("user with account ID %q not found", accountID)
 	}
-	copy := *u
-	return &copy, nil
+	clone := *u
+	return &clone, nil
 }
 
 // --- Device Authorization ---
@@ -649,9 +649,9 @@ func (s *MemoryStore) CreateDeviceCode(dc *DeviceCode) error {
 	if _, exists := s.deviceCodesByUserCode[dc.UserCode]; exists {
 		return fmt.Errorf("user code %q already exists", dc.UserCode)
 	}
-	copy := *dc
-	s.deviceCodesByCode[dc.DeviceCode] = &copy
-	s.deviceCodesByUserCode[dc.UserCode] = &copy
+	clone := *dc
+	s.deviceCodesByCode[dc.DeviceCode] = &clone
+	s.deviceCodesByUserCode[dc.UserCode] = &clone
 	return nil
 }
 
@@ -663,8 +663,8 @@ func (s *MemoryStore) GetDeviceCode(deviceCode string) (*DeviceCode, error) {
 	if !ok {
 		return nil, fmt.Errorf("device code not found")
 	}
-	copy := *dc
-	return &copy, nil
+	clone := *dc
+	return &clone, nil
 }
 
 func (s *MemoryStore) GetDeviceCodeByUserCode(userCode string) (*DeviceCode, error) {
@@ -675,8 +675,8 @@ func (s *MemoryStore) GetDeviceCodeByUserCode(userCode string) (*DeviceCode, err
 	if !ok {
 		return nil, fmt.Errorf("user code %q not found", userCode)
 	}
-	copy := *dc
-	return &copy, nil
+	clone := *dc
+	return &clone, nil
 }
 
 func (s *MemoryStore) ApproveDeviceCode(deviceCode, accountID string) error {
@@ -722,8 +722,8 @@ func (s *MemoryStore) CreateProviderToken(pt *ProviderToken) error {
 	if _, exists := s.providerTokens[pt.TokenHash]; exists {
 		return fmt.Errorf("provider token already exists")
 	}
-	copy := *pt
-	s.providerTokens[pt.TokenHash] = &copy
+	clone := *pt
+	s.providerTokens[pt.TokenHash] = &clone
 	return nil
 }
 
@@ -739,8 +739,8 @@ func (s *MemoryStore) GetProviderToken(token string) (*ProviderToken, error) {
 	if !pt.Active {
 		return nil, fmt.Errorf("provider token is revoked")
 	}
-	copy := *pt
-	return &copy, nil
+	clone := *pt
+	return &clone, nil
 }
 
 func (s *MemoryStore) RevokeProviderToken(token string) error {
@@ -1089,8 +1089,8 @@ func (s *MemoryStore) GetLatestRelease(platform string) *Release {
 	if latest == nil {
 		return nil
 	}
-	copy := *latest
-	return &copy
+	clone := *latest
+	return &clone
 }
 
 func (s *MemoryStore) DeleteRelease(version, platform string) error {

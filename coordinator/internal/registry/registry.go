@@ -235,20 +235,20 @@ func (p *Provider) maxConcurrency() int {
 	if memGB <= 0 {
 		memGB = float64(p.Hardware.MemoryGB)
 	}
-	var cap int
+	var capacity int
 	switch {
 	case memGB <= 24:
-		cap = 4
+		capacity = 4
 	case memGB <= 48:
-		cap = 8
+		capacity = 8
 	case memGB <= 96:
-		cap = 16
+		capacity = 16
 	case memGB <= 128:
-		cap = 24
+		capacity = 24
 	default:
-		cap = 32
+		capacity = 32
 	}
-	return cap
+	return capacity
 }
 
 // Registry holds all connected providers and provides routing.

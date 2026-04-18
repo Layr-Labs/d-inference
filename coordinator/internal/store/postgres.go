@@ -1215,8 +1215,8 @@ func (s *PostgresStore) GetLatestRelease(platform string) *Release {
 		if latest == nil ||
 			releaseVersionGreater(r.Version, latest.Version) ||
 			(r.Version == latest.Version && r.CreatedAt.After(latest.CreatedAt)) {
-			copy := r
-			latest = &copy
+			clone := r
+			latest = &clone
 		}
 	}
 	if rows.Err() != nil || latest == nil {

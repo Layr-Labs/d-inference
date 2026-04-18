@@ -1975,7 +1975,7 @@ func TestHeartbeatBackendCapacity(t *testing.T) {
 	msg := testRegisterMessage()
 	reg.Register("p1", nil, msg)
 
-	cap := &protocol.BackendCapacity{
+	capacity := &protocol.BackendCapacity{
 		Slots: []protocol.BackendSlotCapacity{
 			{
 				Model:              "mlx-community/Qwen3.5-9B-Instruct-4bit",
@@ -1996,7 +1996,7 @@ func TestHeartbeatBackendCapacity(t *testing.T) {
 		Type:            protocol.TypeHeartbeat,
 		Status:          "serving",
 		Stats:           protocol.HeartbeatStats{},
-		BackendCapacity: cap,
+		BackendCapacity: capacity,
 	}
 	reg.Heartbeat("p1", hb)
 

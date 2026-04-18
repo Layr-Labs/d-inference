@@ -19,7 +19,7 @@ fi
 
 case "$ENV_NAME" in
   dev)
-    COORD_URL="https://api.dev.darkbloom.dev"
+    COORD_URL="https://api.dev.darkbloom.xyz"
     INVENTORY="$(dirname "$0")/dev-inventory.txt"
     ;;
   prod)

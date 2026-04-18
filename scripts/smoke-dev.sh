@@ -4,7 +4,7 @@
 # so the calling job can alert.
 #
 # Usage:
-#   COORD=https://api.dev.darkbloom.dev \
+#   COORD=https://api.dev.darkbloom.xyz \
 #   API_KEY=$DEV_API_KEY \
 #   scripts/smoke-dev.sh
 #
@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-COORD="${COORD:-https://api.dev.darkbloom.dev}"
+COORD="${COORD:-https://api.dev.darkbloom.xyz}"
 API_KEY="${API_KEY:-}"
 FAIL=0
 
@@ -58,7 +58,7 @@ else
 fi
 
 step "install.sh templating"
-if curl -fsS "$COORD/install.sh" | grep -q 'https://api.dev.darkbloom.dev'; then
+if curl -fsS "$COORD/install.sh" | grep -q 'https://api.dev.darkbloom.xyz'; then
   green "install.sh references dev coordinator"
 else
   fail "install.sh does not reference dev coordinator (templating broken?)"

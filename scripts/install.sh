@@ -18,7 +18,7 @@ set -euo pipefail
 # Zero prerequisites — just macOS + Apple Silicon.
 
 # Direct-fetch copy: no serve-time templating applied. Override with
-#   curl ... | COORD_URL=https://api.dev.darkbloom.dev bash
+#   curl ... | COORD_URL=https://api.dev.darkbloom.xyz bash
 # Or fetch the coordinator-served copy at $COORD_URL/install.sh for templating.
 COORD_URL="${COORD_URL:-https://api.darkbloom.dev}"
 INSTALL_DIR="$HOME/.darkbloom"

@@ -91,14 +91,14 @@ cat > "$ENV_FILE" <<EOF
 EIGENINFERENCE_PORT=8080
 EIGENINFERENCE_MIN_TRUST=hardware
 EIGENINFERENCE_BILLING_MOCK=false
-EIGENINFERENCE_BASE_URL=https://api.dev.darkbloom.dev
-EIGENINFERENCE_CONSOLE_URL=https://console.dev.darkbloom.dev
+EIGENINFERENCE_BASE_URL=https://api.dev.darkbloom.xyz
+EIGENINFERENCE_CONSOLE_URL=https://console.dev.darkbloom.xyz
 EIGENINFERENCE_R2_CDN_URL=$(fetch eigeninference-r2-cdn-url)
 EIGENINFERENCE_SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 EIGENINFERENCE_SOLANA_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
 EIGENINFERENCE_ADMIN_EMAILS=gajesh@eigenlabs.org
 EIGENINFERENCE_REFERRAL_SHARE_PCT=15
-DOMAIN=api.dev.darkbloom.dev
+DOMAIN=api.dev.darkbloom.xyz
 APP_PORT=8080
 EIGENINFERENCE_MDM_URL=https://localhost:9002
 EIGENINFERENCE_STEP_CA_ROOT=/data/step-ca/certs/root_ca.crt

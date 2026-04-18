@@ -110,7 +110,7 @@ func main() {
 		logger.Info("console URL configured", "url", consoleURL)
 	}
 
-	// Base URL — this coordinator's public origin (e.g. https://api.dev.darkbloom.dev).
+	// Base URL — this coordinator's public origin (e.g. https://api.dev.darkbloom.xyz).
 	// Templated into the embedded install.sh at serve time so a single binary
 	// can serve both prod and dev. Falls back to the request's Host header if unset.
 	if baseURL := os.Getenv("EIGENINFERENCE_BASE_URL"); baseURL != "" {

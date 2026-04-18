@@ -100,7 +100,7 @@ type Server struct {
 	consoleURL string
 
 	// baseURL is the public URL clients reach this coordinator at
-	// (e.g. "https://api.darkbloom.dev" for prod, "https://api.dev.darkbloom.dev" for dev).
+	// (e.g. "https://api.darkbloom.dev" for prod, "https://api.dev.darkbloom.xyz" for dev).
 	// Substituted into the embedded install.sh at serve time so the same binary
 	// can serve both environments. Falls back to "https://" + request.Host when empty.
 	baseURL string

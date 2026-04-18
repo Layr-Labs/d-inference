@@ -18,7 +18,7 @@ import (
 // install.sh source while providers end up talking to the right environment.
 func TestInstallScriptTemplating(t *testing.T) {
 	t.Run("uses baseURL when set", func(t *testing.T) {
-		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.dev")
+		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
 		defer srv.Close()
 
 		body := fetchInstallScript(t, srv.URL)
@@ -26,7 +26,7 @@ func TestInstallScriptTemplating(t *testing.T) {
 		if strings.Contains(body, "__DARKBLOOM_COORD_URL__") {
 			t.Error("install.sh still contains placeholder after serve-time substitution")
 		}
-		if !strings.Contains(body, `COORD_URL:-https://api.dev.darkbloom.dev`) {
+		if !strings.Contains(body, `COORD_URL:-https://api.dev.darkbloom.xyz`) {
 			t.Errorf("install.sh does not reference configured baseURL; got first 400 chars:\n%s", headOf(body, 400))
 		}
 	})
@@ -46,7 +46,7 @@ func TestInstallScriptTemplating(t *testing.T) {
 	})
 
 	t.Run("trailing slash in baseURL is stripped", func(t *testing.T) {
-		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.dev/")
+		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz/")
 		defer srv.Close()
 
 		body := fetchInstallScript(t, srv.URL)
@@ -94,7 +94,7 @@ func newTestServerWithR2(t *testing.T, cdnURL, sitePackagesURL string) *httptest
 	st := store.NewMemory("")
 	reg := registry.New(logger)
 	s := NewServer(reg, st, logger)
-	s.SetBaseURL("https://api.dev.darkbloom.dev")
+	s.SetBaseURL("https://api.dev.darkbloom.xyz")
 	s.SetR2CDNURL(cdnURL)
 	if sitePackagesURL != "" {
 		s.SetR2SitePackagesCDNURL(sitePackagesURL)

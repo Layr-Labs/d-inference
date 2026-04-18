@@ -116,6 +116,8 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 
 // providerReadLoop reads messages from the provider WebSocket and dispatches
 // them. It runs until the connection closes or the context is cancelled.
+//
+//nolint:gocognit
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, acmeResult *ACMEVerificationResult) {
 	var provider *registry.Provider
 	tracker := newChallengeTracker()
@@ -413,6 +415,8 @@ func (s *Server) handleAttestationResponse(providerID string, provider *registry
 // In addition to verifying the nonce and signature, it checks the fresh
 // SIP status reported by the provider. If SIP has been disabled since
 // registration, the provider is marked untrusted immediately.
+//
+//nolint:gocognit
 func (s *Server) verifyChallengeResponse(providerID string, provider *registry.Provider, pc *pendingChallenge, resp *protocol.AttestationResponseMessage) {
 	// Verify the nonce matches.
 	if resp.Nonce != pc.nonce {

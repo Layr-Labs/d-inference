@@ -221,6 +221,8 @@ func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool) bool {
 // The raw request body is passed through to the provider, preserving all
 // OpenAI-compatible fields (tools, tool_choice, response_format, top_p, etc.)
 // that would otherwise be lost if we parsed into a typed struct.
+//
+//nolint:gocognit
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Read the raw request body so we can forward it as-is to the provider.
 	// We only parse minimally to extract model/stream/messages for routing.
@@ -1158,6 +1160,8 @@ func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, r *http.Reque
 // handleNonStreamingResponseWithFirstChunk collects all chunks from the
 // provider and assembles them into a single OpenAI-compatible JSON response.
 // If firstChunk is non-empty, it is prepended to the collected chunks.
+//
+//nolint:gocognit
 func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) {
 	ctx, cancel := context.WithTimeout(r.Context(), inferenceTimeout)
 	defer cancel()
@@ -1230,6 +1234,8 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 // Some backends (e.g. vllm-mlx) emit "content":null instead of "content":"",
 // and include "usage":null which strict parsers (ForgeCode, Codex) reject
 // because they expect usage to be either absent or a full object.
+//
+//nolint:gocognit
 func normalizeSSEChunk(chunk string) string {
 	line := strings.TrimPrefix(chunk, "data: ")
 	// Only trigger the expensive JSON parse for fields we actually fix.

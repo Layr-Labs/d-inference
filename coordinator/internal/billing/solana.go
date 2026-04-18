@@ -382,6 +382,8 @@ type SolanaDepositResult struct {
 
 // VerifyDeposit verifies a Solana transaction contains a USDC-SPL transfer
 // to the deposit address.
+//
+//nolint:gocognit
 func (p *SolanaProcessor) VerifyDeposit(txSignature string) (*SolanaDepositResult, error) {
 	// Fetch transaction details via Solana RPC
 	tx, err := p.getTransaction(txSignature)
@@ -851,6 +853,8 @@ type solanaInstruction struct {
 
 // buildTransactionMessage serializes a Solana v0-legacy transaction message.
 // Format: header + account keys + recent blockhash + instructions.
+//
+//nolint:gocognit
 func buildTransactionMessage(payer ed25519.PublicKey, instructions []solanaInstruction, recentBlockhash []byte) []byte {
 	// Collect all unique account keys and classify them.
 	type accountInfo struct {

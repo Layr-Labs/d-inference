@@ -249,6 +249,7 @@ func (p *simulatedProvider) handleChallenge(ctx context.Context, data []byte) {
 	p.conn.Write(ctx, websocket.MessageText, respData)
 }
 
+//nolint:gocognit
 func (p *simulatedProvider) handleInferenceRequest(ctx context.Context, data []byte, client *http.Client) {
 	var msg struct {
 		Type      string `json:"type"`
@@ -438,6 +439,7 @@ func consumerRequest(ctx context.Context, coordinatorURL, apiKey, model, prompt 
 // Full-stack tests
 // ============================================================================
 
+//nolint:gocognit
 func TestFullStack_MultiProviderInference(t *testing.T) {
 	if !shouldRunFullStack() {
 		t.Skip("skipping full-stack test (set LIVE_FULLSTACK_TEST=1 to enable)")

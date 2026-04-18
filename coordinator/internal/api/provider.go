@@ -149,7 +149,11 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		switch msg.Type {
 		case protocol.TypeRegister:
-			regMsg, _ := msg.Payload.(*protocol.RegisterMessage)
+			regMsg, ok := msg.Payload.(*protocol.RegisterMessage)
+			if !ok || regMsg == nil {
+				s.logger.Warn("register message has wrong payload type", "provider_id", providerID)
+				continue
+			}
 			provider = s.registry.Register(providerID, conn, regMsg)
 			s.verifyProviderAttestation(providerID, provider, regMsg)
 
@@ -255,35 +259,59 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			go s.challengeLoop(loopCtx, conn, providerID, provider, tracker)
 
 		case protocol.TypeHeartbeat:
-			hbMsg, _ := msg.Payload.(*protocol.HeartbeatMessage)
+			hbMsg, ok := msg.Payload.(*protocol.HeartbeatMessage)
+			if !ok || hbMsg == nil {
+				continue
+			}
 			s.registry.Heartbeat(providerID, hbMsg)
 
 		case protocol.TypeInferenceAccepted:
-			acceptMsg, _ := msg.Payload.(*protocol.InferenceAcceptedMessage)
+			acceptMsg, ok := msg.Payload.(*protocol.InferenceAcceptedMessage)
+			if !ok || acceptMsg == nil {
+				continue
+			}
 			s.handleInferenceAccepted(providerID, provider, acceptMsg)
 
 		case protocol.TypeInferenceResponseChunk:
-			chunkMsg, _ := msg.Payload.(*protocol.InferenceResponseChunkMessage)
+			chunkMsg, ok := msg.Payload.(*protocol.InferenceResponseChunkMessage)
+			if !ok || chunkMsg == nil {
+				continue
+			}
 			s.handleChunk(providerID, provider, chunkMsg)
 
 		case protocol.TypeInferenceComplete:
-			completeMsg, _ := msg.Payload.(*protocol.InferenceCompleteMessage)
+			completeMsg, ok := msg.Payload.(*protocol.InferenceCompleteMessage)
+			if !ok || completeMsg == nil {
+				continue
+			}
 			s.handleComplete(providerID, provider, completeMsg)
 
 		case protocol.TypeInferenceError:
-			errMsg, _ := msg.Payload.(*protocol.InferenceErrorMessage)
+			errMsg, ok := msg.Payload.(*protocol.InferenceErrorMessage)
+			if !ok || errMsg == nil {
+				continue
+			}
 			s.handleInferenceError(providerID, provider, errMsg)
 
 		case protocol.TypeTranscriptionComplete:
-			tcMsg, _ := msg.Payload.(*protocol.TranscriptionCompleteMessage)
+			tcMsg, ok := msg.Payload.(*protocol.TranscriptionCompleteMessage)
+			if !ok || tcMsg == nil {
+				continue
+			}
 			s.handleTranscriptionComplete(providerID, provider, tcMsg)
 
 		case protocol.TypeImageGenerationComplete:
-			igMsg, _ := msg.Payload.(*protocol.ImageGenerationCompleteMessage)
+			igMsg, ok := msg.Payload.(*protocol.ImageGenerationCompleteMessage)
+			if !ok || igMsg == nil {
+				continue
+			}
 			s.handleImageGenerationComplete(providerID, provider, igMsg)
 
 		case protocol.TypeAttestationResponse:
-			respMsg, _ := msg.Payload.(*protocol.AttestationResponseMessage)
+			respMsg, ok := msg.Payload.(*protocol.AttestationResponseMessage)
+			if !ok || respMsg == nil {
+				continue
+			}
 			s.handleAttestationResponse(providerID, provider, respMsg, tracker)
 
 		default:

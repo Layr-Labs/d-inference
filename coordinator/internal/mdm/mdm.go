@@ -23,8 +23,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
-	"strings"
+	"net/url"
 	"time"
 
 	"github.com/google/uuid"
@@ -72,16 +73,34 @@ type Client struct {
 	onMDA OnMDACallback
 }
 
+// isLoopbackHost reports whether host is exactly "localhost" or a loopback IP
+// literal ("127.0.0.1", "::1", etc.). Unlike substring matching, this rejects
+// spoofed hostnames such as "localhost.evil.com".
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
+}
+
 // NewClient creates an MDM client.
 func NewClient(baseURL, apiKey string, logger *slog.Logger) *Client {
 	httpClient := &http.Client{
 		Timeout: 10 * time.Second,
 	}
-	// When talking to localhost MDM, skip TLS verification since the cert
-	// is issued for the public domain, not localhost/127.0.0.1.
-	if strings.Contains(baseURL, "localhost") || strings.Contains(baseURL, "127.0.0.1") {
+	// When talking to a loopback MDM server, skip TLS verification since the
+	// cert is typically issued for the public domain, not localhost/127.0.0.1.
+	// Parse the URL and check the hostname explicitly to avoid matching
+	// hostile names like "localhost.evil.com".
+	if u, err := url.Parse(baseURL); err == nil && isLoopbackHost(u.Hostname()) {
 		httpClient.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // localhost only
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, //nolint:gosec // verified loopback host only
+				MinVersion:         tls.VersionTLS12,
+			},
 		}
 	}
 	return &Client{
@@ -430,12 +449,11 @@ func (c *Client) VerifyProvider(
 	// Step 1: Look up device
 	device, err := c.LookupDevice(serialNumber)
 	if err != nil {
+		if errors.Is(err, ErrDeviceNotFound) {
+			result.Error = "device not found in MDM — provider must install enrollment profile"
+			return result, nil
+		}
 		result.Error = fmt.Sprintf("device lookup failed: %v", err)
-		return result, nil
-	}
-
-	if device == nil {
-		result.Error = "device not found in MDM — provider must install enrollment profile"
 		return result, nil
 	}
 

@@ -911,8 +911,6 @@ type scoreSnapshot struct {
 }
 
 func snapshotForScore(p *Provider) scoreSnapshot {
-	pending := p.PendingCount()
-	_ = pending
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return scoreSnapshot{
@@ -1089,25 +1087,28 @@ func (e providerEligibility) isEligible(effectiveMin TrustLevel, now time.Time, 
 }
 
 // selectHighestScoredProvider picks the best provider from a list of
-// candidates using ScoreProvider, with random tie-breaking.
+// candidates using ScoreProvider, with random tie-breaking. Scores are
+// computed once per candidate to avoid repeating locked work.
 func selectHighestScoredProvider(candidates []*Provider, model string) *Provider {
 	if len(candidates) == 0 {
 		return nil
 	}
 
+	scores := make([]float64, len(candidates))
 	bestIdx := 0
-	bestScore := ScoreProvider(candidates[0], model)
+	scores[0] = ScoreProvider(candidates[0], model)
+	bestScore := scores[0]
 	for i := 1; i < len(candidates); i++ {
-		s := ScoreProvider(candidates[i], model)
-		if s > bestScore {
-			bestScore = s
+		scores[i] = ScoreProvider(candidates[i], model)
+		if scores[i] > bestScore {
+			bestScore = scores[i]
 			bestIdx = i
 		}
 	}
 
 	var ties []*Provider
-	for _, c := range candidates {
-		if ScoreProvider(c, model) >= bestScore-0.001 {
+	for i, c := range candidates {
+		if scores[i] >= bestScore-0.001 {
 			ties = append(ties, c)
 		}
 	}
@@ -1155,7 +1156,12 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 		if p.PendingCount() >= p.MaxConcurrency() {
 			continue
 		}
-		if providerServesModelLocked(p, model) {
+		// providerServesModelLocked requires the provider lock since it
+		// iterates p.Models. Take the lock briefly for this check.
+		p.mu.Lock()
+		serves := providerServesModelLocked(p, model)
+		p.mu.Unlock()
+		if serves {
 			candidates = append(candidates, p)
 		}
 	}
@@ -1226,8 +1232,8 @@ type modelAgg struct {
 
 // aggregateProviderModels merges a single provider's models into the
 // aggregation map, updating counts, trust, and attestation flags.
-func aggregateProviderModels(p *Provider, trust TrustLevel, attested bool, attestResult *attestation.VerificationResult, agg map[string]*modelAgg) {
-	for _, m := range p.Models {
+func aggregateProviderModels(models []protocol.ModelInfo, trust TrustLevel, attested bool, attestResult *attestation.VerificationResult, agg map[string]*modelAgg) {
+	for _, m := range models {
 		k := m.ID
 		a, ok := agg[k]
 		if !ok {
@@ -1263,6 +1269,8 @@ func (r *Registry) ListModels() []AggregateModel {
 		trust := p.TrustLevel
 		attested := p.Attested
 		attestResult := p.AttestationResult
+		// Snapshot models under the lock to avoid races on concurrent updates.
+		models := append([]protocol.ModelInfo(nil), p.Models...)
 		p.mu.Unlock()
 
 		if status == StatusOffline || status == StatusUntrusted {
@@ -1271,7 +1279,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		if !r.trustMeetsMinimum(trust) {
 			continue
 		}
-		aggregateProviderModels(p, trust, attested, attestResult, agg)
+		aggregateProviderModels(models, trust, attested, attestResult, agg)
 	}
 
 	models := make([]AggregateModel, 0, len(agg))

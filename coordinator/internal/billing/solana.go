@@ -422,11 +422,17 @@ func (p *SolanaProcessor) VerifyDeposit(txSignature string) (*SolanaDepositResul
 			if !ok {
 				continue
 			}
-			accountIndexF, _ := bMap["accountIndex"].(float64)
+			accountIndexF, hasIdx := bMap["accountIndex"].(float64)
+			if !hasIdx {
+				continue
+			}
 			accountIndex := int(accountIndexF)
 			mint, _ := bMap["mint"].(string)
 			owner, _ := bMap["owner"].(string)
 			uiAmountInfo, _ := bMap["uiTokenAmount"].(map[string]any)
+			if uiAmountInfo == nil {
+				continue
+			}
 			amountStr, _ := uiAmountInfo["amount"].(string)
 
 			var amount uint64
@@ -674,7 +680,10 @@ func (p *SolanaProcessor) sendSPLTransfer(req SolanaWithdrawRequest) (*SolanaWit
 	}
 
 	edPrivKey := ed25519.PrivateKey(privKeyBytes)
-	payerPubkey, _ := edPrivKey.Public().(ed25519.PublicKey)
+	payerPubkey, ok := edPrivKey.Public().(ed25519.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("solana: ed25519 public key type assertion failed")
+	}
 
 	// Step 2: Decode addresses.
 	mintBytes, err := base58Decode(p.usdcMint)

@@ -1399,7 +1399,11 @@ func extractMessage(chunks []string) extractedMessage {
 				if tc.Type != "" {
 					existing["type"] = tc.Type
 				}
-				fn, _ := existing["function"].(map[string]any)
+				fn, ok := existing["function"].(map[string]any)
+				if !ok || fn == nil {
+					fn = map[string]any{"arguments": ""}
+					existing["function"] = fn
+				}
 				if tc.Function.Name != "" {
 					fn["name"] = tc.Function.Name
 				}

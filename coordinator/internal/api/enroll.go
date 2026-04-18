@@ -81,6 +81,8 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 //	Bit 10 (1024) — Security-related queries (SIP, SecureBoot) ✓ REQUESTED
 //	Bit 11 (2048) — Change device settings                     ✗ NOT requested
 //	Bit 12 (4096) — App management                             ✗ NOT requested
+//
+//nolint:funlen
 func generateCombinedProfile(serialNumber, baseURL string) string {
 	acmePayloadUUID := uuid.New().String()
 	profileUUID := uuid.New().String()

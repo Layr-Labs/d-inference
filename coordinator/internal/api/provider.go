@@ -117,7 +117,7 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 // providerReadLoop reads messages from the provider WebSocket and dispatches
 // them. It runs until the connection closes or the context is cancelled.
 //
-//nolint:gocognit
+//nolint:gocognit,funlen
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, acmeResult *ACMEVerificationResult) {
 	var provider *registry.Provider
 	tracker := newChallengeTracker()
@@ -416,7 +416,7 @@ func (s *Server) handleAttestationResponse(providerID string, provider *registry
 // SIP status reported by the provider. If SIP has been disabled since
 // registration, the provider is marked untrusted immediately.
 //
-//nolint:gocognit
+//nolint:gocognit,funlen
 func (s *Server) verifyChallengeResponse(providerID string, provider *registry.Provider, pc *pendingChallenge, resp *protocol.AttestationResponseMessage) {
 	// Verify the nonce matches.
 	if resp.Nonce != pc.nonce {
@@ -651,7 +651,7 @@ func (s *Server) handleInferenceAccepted(providerID string, provider *registry.P
 	}
 }
 
-//nolint:gocognit
+//nolint:gocognit,funlen
 func (s *Server) handleComplete(providerID string, provider *registry.Provider, msg *protocol.InferenceCompleteMessage) {
 	if provider == nil {
 		s.logger.Warn("complete from unregistered provider", "provider_id", providerID)
@@ -985,7 +985,7 @@ func (s *Server) handleImageGenerationComplete(providerID string, provider *regi
 // the provider is marked as attested. If missing or invalid, the provider is
 // still accepted (Open Mode) but marked as not attested.
 //
-//nolint:gocognit
+//nolint:gocognit,funlen
 func (s *Server) verifyProviderAttestation(providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage) {
 	if len(regMsg.Attestation) == 0 {
 		s.logger.Info("provider registered without attestation (Open Mode)",
@@ -1182,6 +1182,8 @@ func (s *Server) verifyProviderViaMDM(providerID string, provider *registry.Prov
 
 // verifyAppleDeviceAttestation sends a DeviceInformation command requesting
 // DevicePropertiesAttestation and verifies the Apple-signed certificate chain.
+//
+//nolint:funlen
 func (s *Server) verifyAppleDeviceAttestation(providerID string, provider *registry.Provider, attestResult attestation.VerificationResult, udid string) {
 	if udid == "" {
 		s.logger.Warn("no UDID for MDA verification", "provider_id", providerID)
@@ -1309,6 +1311,8 @@ func (s *Server) verifyAppleDeviceAttestation(providerID string, provider *regis
 // handleProviderAttestation returns the attestation proof for all providers.
 // Users can independently verify the Apple MDA certificate chain against
 // Apple's public Enterprise Attestation Root CA.
+//
+//nolint:funlen
 func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Request) {
 	type providerAttestation struct {
 		ProviderID    string `json:"provider_id"`

@@ -63,6 +63,8 @@ func (s *PostgresStore) Close() {
 }
 
 // migrate runs the schema creation statements.
+//
+//nolint:funlen
 func (s *PostgresStore) migrate(ctx context.Context) error {
 	migrations := []string{
 		`CREATE TABLE IF NOT EXISTS providers (

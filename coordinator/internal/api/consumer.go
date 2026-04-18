@@ -217,7 +217,7 @@ func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool) bool {
 // OpenAI-compatible fields (tools, tool_choice, response_format, top_p, etc.)
 // that would otherwise be lost if we parsed into a typed struct.
 //
-//nolint:gocognit,gocyclo,cyclop
+//nolint:gocognit,gocyclo,cyclop,funlen
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Read the raw request body so we can forward it as-is to the provider.
 	// We only parse minimally to extract model/stream/messages for routing.
@@ -663,7 +663,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 // multipart/form-data with an audio file and routes it to an STT-capable
 // provider.
 //
-//nolint:gocognit
+//nolint:gocognit,funlen
 func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	// Parse multipart form (max 25MB audio)
 	if err := r.ParseMultipartForm(25 << 20); err != nil {
@@ -852,7 +852,7 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 // This is the OpenAI-compatible image generation endpoint. It accepts a JSON
 // body with model, prompt, size, etc. and routes it to an image-capable provider.
 //
-//nolint:gocognit
+//nolint:gocognit,funlen
 func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) {
 	var req protocol.ImageGenerationRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1723,6 +1723,8 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 // handleGenericInference is the shared dispatch for completions and Anthropic endpoints.
 // It reads the raw request body, extracts model/stream, sets the endpoint field,
 // and reuses the same E2E encryption + provider routing as chat completions.
+//
+//nolint:funlen
 func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, endpoint string) {
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {

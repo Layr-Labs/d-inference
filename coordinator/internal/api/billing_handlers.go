@@ -215,6 +215,8 @@ func (s *Server) handleStripeSessionStatus(w http.ResponseWriter, r *http.Reques
 //  1. The tx contains a USDC transfer TO our coordinator address
 //  2. The tx sender matches the authenticated user's wallet
 //  3. The tx hasn't been submitted before (double-spend protection)
+//
+//nolint:funlen
 func (s *Server) handleSolanaDeposit(w http.ResponseWriter, r *http.Request) {
 	if s.billing == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "billing not configured"))

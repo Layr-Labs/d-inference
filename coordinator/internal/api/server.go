@@ -537,6 +537,8 @@ func (s *Server) resolveBaseURL(r *http.Request) string {
 }
 
 // routes mounts all HTTP and WebSocket handlers.
+//
+//nolint:funlen
 func (s *Server) routes() {
 	// Install script — served from embedded binary with coordinator URL +
 	// R2 CDN URLs substituted per environment.

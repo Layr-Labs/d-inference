@@ -9,6 +9,8 @@ import (
 )
 
 // handleStats returns aggregate platform statistics for the frontend dashboard.
+//
+//nolint:funlen
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	var (
 		totalRequests    int64

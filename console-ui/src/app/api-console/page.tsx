@@ -393,7 +393,7 @@ export DARKBLOOM_BASE_URL="${u}/v1"`,
   -H "Authorization: Bearer ${k}" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "mlx-community/gemma-4-26b-a4b-it-8bit",
+    "model": "gemma-4-26b-a4b-it-8bit",
     "messages": [{"role": "user", "content": "Explain quantum computing"}],
     "stream": true,
     "max_tokens": 1024
@@ -410,7 +410,7 @@ client = OpenAI(
 )
 
 stream = client.chat.completions.create(
-    model="mlx-community/gemma-4-26b-a4b-it-8bit",
+    model="gemma-4-26b-a4b-it-8bit",
     messages=[{"role": "user", "content": "Explain quantum computing"}],
     stream=True,
     max_tokens=1024,
@@ -432,7 +432,7 @@ const client = new OpenAI({
 });
 
 const stream = await client.chat.completions.create({
-  model: "mlx-community/gemma-4-26b-a4b-it-8bit",
+  model: "gemma-4-26b-a4b-it-8bit",
   messages: [{ role: "user", content: "Explain quantum computing" }],
   stream: true,
   max_tokens: 1024,
@@ -457,7 +457,7 @@ const darkbloom = createOpenAICompatible({
 
 // Streaming response
 const { textStream } = streamText({
-  model: darkbloom.chatModel("mlx-community/gemma-4-26b-a4b-it-8bit"),
+  model: darkbloom.chatModel("gemma-4-26b-a4b-it-8bit"),
   prompt: "Explain quantum computing",
 });
 
@@ -467,7 +467,7 @@ for await (const text of textStream) {
 
 // Single response
 const { text } = await generateText({
-  model: darkbloom.chatModel("mlx-community/gemma-4-26b-a4b-it-8bit"),
+  model: darkbloom.chatModel("gemma-4-26b-a4b-it-8bit"),
   prompt: "Write a haiku about Apple Silicon",
 });
 console.log(text);`,
@@ -657,10 +657,10 @@ for model in models.data:
                 </thead>
                 <tbody>
                   {[
-                    { id: "mlx-community/gemma-4-26b-a4b-it-8bit", type: "text", arch: "26B MoE, 4B active — recommended" },
+                    { id: "gemma-4-26b-a4b-it-8bit", type: "text", arch: "26B MoE, 4B active — recommended" },
                     { id: "qwen3.5-27b-claude-opus-8bit", type: "text", arch: "27B dense, Claude Opus distilled" },
-                    { id: "mlx-community/Qwen3.5-122B-A10B-8bit", type: "text", arch: "122B MoE, 10B active" },
-                    { id: "mlx-community/MiniMax-M2.5-8bit", type: "text", arch: "239B MoE, 11B active" },
+                    { id: "Qwen3.5-122B-A10B-8bit", type: "text", arch: "122B MoE, 10B active" },
+                    { id: "MiniMax-M2.5-8bit", type: "text", arch: "239B MoE, 11B active" },
                     { id: "CohereLabs/cohere-transcribe-03-2026", type: "stt", arch: "2B conformer" },
                   ].map((m) => (
                     <tr key={m.id} className="border-b border-border-dim/50 last:border-0">

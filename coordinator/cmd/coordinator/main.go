@@ -403,28 +403,81 @@ func envOr(key, fallback string) string {
 func seedModelCatalog(st store.Store, logger *slog.Logger) {
 	existing := st.ListSupportedModels()
 	existingIDs := make(map[string]bool, len(existing))
+	existingBySourceID := make(map[string][]store.SupportedModel, len(existing))
 	for _, m := range existing {
 		existingIDs[m.ID] = true
+		sourceID := m.SourceID
+		if sourceID == "" {
+			sourceID = m.ID
+		}
+		existingBySourceID[sourceID] = append(existingBySourceID[sourceID], m)
 	}
 
 	models := []store.SupportedModel{
 		// --- Transcription (speech-to-text) ---
-		{ID: "CohereLabs/cohere-transcribe-03-2026", S3Name: "cohere-transcribe-03-2026", DisplayName: "Cohere Transcribe", ModelType: "transcription", SizeGB: 4.2, Architecture: "2B conformer", Description: "Best-in-class STT", MinRAMGB: 8, Active: true},
+		{ID: "CohereLabs/cohere-transcribe-03-2026", SourceID: "CohereLabs/cohere-transcribe-03-2026", S3Name: "cohere-transcribe-03-2026", DisplayName: "Cohere Transcribe", ModelType: "transcription", SizeGB: 4.2, Architecture: "2B conformer", Description: "Best-in-class STT", MinRAMGB: 8, Active: true},
 
 		// --- Image generation (Draw Things + Metal FlashAttention) ---
-		{ID: "flux_2_klein_4b_q8p.ckpt", S3Name: "flux-klein-4b-q8", DisplayName: "FLUX.2 Klein 4B", ModelType: "image", SizeGB: 8.1, Architecture: "4B diffusion", Description: "Fast image gen", MinRAMGB: 16, Active: true},
-		{ID: "flux_2_klein_9b_q8p.ckpt", S3Name: "flux-klein-9b-q8", DisplayName: "FLUX.2 Klein 9B", ModelType: "image", SizeGB: 17.4, Architecture: "9B diffusion + Qwen 8B encoder", Description: "Higher quality image gen", MinRAMGB: 32, Active: true},
+		{ID: "flux_2_klein_4b_q8p.ckpt", SourceID: "flux_2_klein_4b_q8p.ckpt", S3Name: "flux-klein-4b-q8", DisplayName: "FLUX.2 Klein 4B", ModelType: "image", SizeGB: 8.1, Architecture: "4B diffusion", Description: "Fast image gen", MinRAMGB: 16, Active: true},
+		{ID: "flux_2_klein_9b_q8p.ckpt", SourceID: "flux_2_klein_9b_q8p.ckpt", S3Name: "flux-klein-9b-q8", DisplayName: "FLUX.2 Klein 9B", ModelType: "image", SizeGB: 17.4, Architecture: "9B diffusion + Qwen 8B encoder", Description: "Higher quality image gen", MinRAMGB: 32, Active: true},
 
 		// --- Text generation (8-bit quantization) ---
-		{ID: "qwen3.5-27b-claude-opus-8bit", S3Name: "qwen35-27b-claude-opus-8bit", DisplayName: "Qwen3.5 27B Claude Opus Distilled", ModelType: "text", SizeGB: 27.0, Architecture: "27B dense, Claude Opus distilled", Description: "Frontier quality reasoning", MinRAMGB: 36, Active: true},
-		{ID: "mlx-community/Trinity-Mini-8bit", S3Name: "Trinity-Mini-8bit", DisplayName: "Trinity Mini", ModelType: "text", SizeGB: 26.0, Architecture: "27B Adaptive MoE", Description: "Fast agentic inference", MinRAMGB: 48, Active: true},
-		{ID: "mlx-community/gemma-4-26b-a4b-it-8bit", S3Name: "gemma-4-26b-a4b-it-8bit", DisplayName: "Gemma 4 26B", ModelType: "text", SizeGB: 28.0, Architecture: "26B MoE, 4B active", Description: "Fast multimodal MoE", MinRAMGB: 36, Active: true},
-		{ID: "mlx-community/Qwen3.5-122B-A10B-8bit", S3Name: "Qwen3.5-122B-A10B-8bit", DisplayName: "Qwen3.5 122B", ModelType: "text", SizeGB: 122.0, Architecture: "122B MoE, 10B active", Description: "Best quality", MinRAMGB: 128, Active: true},
-		{ID: "mlx-community/MiniMax-M2.5-8bit", S3Name: "MiniMax-M2.5-8bit", DisplayName: "MiniMax M2.5", ModelType: "text", SizeGB: 243.0, Architecture: "239B MoE, 11B active", Description: "SOTA coding, 100 tok/s", MinRAMGB: 256, Active: true},
+		{ID: "qwen3.5-27b-claude-opus-8bit", SourceID: "qwen3.5-27b-claude-opus-8bit", S3Name: "qwen35-27b-claude-opus-8bit", DisplayName: "Qwen3.5 27B Claude Opus Distilled", ModelType: "text", SizeGB: 27.0, Architecture: "27B dense, Claude Opus distilled", Description: "Frontier quality reasoning", MinRAMGB: 36, Active: true},
+		{ID: "Trinity-Mini-8bit", SourceID: "mlx-community/Trinity-Mini-8bit", S3Name: "Trinity-Mini-8bit", DisplayName: "Trinity Mini", ModelType: "text", SizeGB: 26.0, Architecture: "27B Adaptive MoE", Description: "Fast agentic inference", MinRAMGB: 48, Active: true},
+		{ID: "gemma-4-26b-a4b-it-8bit", SourceID: "mlx-community/gemma-4-26b-a4b-it-8bit", S3Name: "gemma-4-26b-a4b-it-8bit", DisplayName: "Gemma 4 26B", ModelType: "text", SizeGB: 28.0, Architecture: "26B MoE, 4B active", Description: "Fast multimodal MoE", MinRAMGB: 36, Active: true},
+		{ID: "Qwen3.5-122B-A10B-8bit", SourceID: "mlx-community/Qwen3.5-122B-A10B-8bit", S3Name: "Qwen3.5-122B-A10B-8bit", DisplayName: "Qwen3.5 122B", ModelType: "text", SizeGB: 122.0, Architecture: "122B MoE, 10B active", Description: "Best quality", MinRAMGB: 128, Active: true},
+		{ID: "MiniMax-M2.5-8bit", SourceID: "mlx-community/MiniMax-M2.5-8bit", S3Name: "MiniMax-M2.5-8bit", DisplayName: "MiniMax M2.5", ModelType: "text", SizeGB: 243.0, Architecture: "239B MoE, 11B active", Description: "SOTA coding, 100 tok/s", MinRAMGB: 256, Active: true},
 	}
 
 	added := 0
 	for i := range models {
+		if legacyRows, ok := existingBySourceID[models[i].SourceID]; ok {
+			var canonicalPresent bool
+			var legacyRowsToDelete []store.SupportedModel
+			for _, legacy := range legacyRows {
+				if legacy.ID == models[i].ID {
+					canonicalPresent = true
+					continue
+				}
+				legacyRowsToDelete = append(legacyRowsToDelete, legacy)
+			}
+			for _, legacy := range legacyRowsToDelete {
+				migrated := legacy
+				migrated.ID = models[i].ID
+				if migrated.SourceID == "" {
+					migrated.SourceID = models[i].SourceID
+				}
+				migrated.S3Name = models[i].S3Name
+				migrated.DisplayName = models[i].DisplayName
+				migrated.ModelType = models[i].ModelType
+				migrated.SizeGB = models[i].SizeGB
+				migrated.Architecture = models[i].Architecture
+				migrated.Description = models[i].Description
+				migrated.MinRAMGB = models[i].MinRAMGB
+				migrated.Active = models[i].Active
+				if err := st.SetSupportedModel(&migrated); err != nil {
+					logger.Warn("failed to migrate legacy model id",
+						"legacy_id", legacy.ID,
+						"new_id", migrated.ID,
+						"error", err,
+					)
+					continue
+				}
+				if err := st.DeleteSupportedModel(legacy.ID); err != nil {
+					logger.Warn("failed to delete legacy model id after migration",
+						"legacy_id", legacy.ID,
+						"new_id", migrated.ID,
+						"error", err,
+					)
+				}
+				canonicalPresent = true
+				existingIDs[migrated.ID] = true
+				added++
+			}
+			if canonicalPresent {
+				continue
+			}
+		}
 		if existingIDs[models[i].ID] {
 			continue
 		}

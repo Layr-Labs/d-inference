@@ -632,7 +632,9 @@ struct SetupWizardView: View {
     }
 
     private func downloadModelIfNeeded(_ model: ModelCatalog.Entry) async {
-        let alreadyDownloaded = viewModel.modelManager.availableModels.contains { $0.id == model.id }
+        let alreadyDownloaded = viewModel.modelManager.availableModels.contains {
+            $0.id == model.id || $0.id == model.sourceID
+        }
         if alreadyDownloaded {
             downloadStatus = ""
             return

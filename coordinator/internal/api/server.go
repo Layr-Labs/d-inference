@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -127,6 +128,72 @@ type Server struct {
 	storedProviders map[string]*store.ProviderRecord
 }
 
+func canonicalModelID(model string, catalog []store.SupportedModel) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
+	}
+	for _, m := range catalog {
+		if m.SourceID == model && m.ID != model {
+			return m.ID
+		}
+	}
+	for _, m := range catalog {
+		if m.ID == model || m.SourceID == model {
+			return m.ID
+		}
+	}
+	return model
+}
+
+func uniqueSupportedModels(models []store.SupportedModel) []store.SupportedModel {
+	if len(models) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(models))
+	deduped := make([]store.SupportedModel, 0, len(models))
+	for _, model := range models {
+		canonical := canonicalModelID(model.ID, models)
+		if canonical == "" {
+			canonical = model.ID
+		}
+		if _, ok := seen[canonical]; ok {
+			continue
+		}
+		if model.ID != canonical {
+			for _, candidate := range models {
+				if candidate.ID == canonical {
+					model = candidate
+					break
+				}
+			}
+		}
+		seen[canonical] = struct{}{}
+		deduped = append(deduped, model)
+	}
+	return deduped
+}
+
+func (s *Server) canonicalModelID(model string) string {
+	return canonicalModelID(model, s.store.ListSupportedModels())
+}
+
+func (s *Server) canonicalModelIDs(models []string) []string {
+	if len(models) == 0 {
+		return nil
+	}
+	catalog := s.store.ListSupportedModels()
+	normalized := make([]string, 0, len(models))
+	for _, model := range models {
+		id := canonicalModelID(model, catalog)
+		if id == "" || slices.Contains(normalized, id) {
+			continue
+		}
+		normalized = append(normalized, id)
+	}
+	return normalized
+}
+
 // NewServer creates a configured Server with all routes mounted.
 func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Server {
 	// Wire the store into the registry for provider fleet persistence.
@@ -208,12 +275,13 @@ func (s *Server) SetMDMClient(client *mdm.Client) {
 // SyncModelCatalog reads active models from the store and updates the
 // registry's model catalog. Call this at startup and after admin catalog changes.
 func (s *Server) SyncModelCatalog() {
-	models := s.store.ListSupportedModels()
+	models := uniqueSupportedModels(s.store.ListSupportedModels())
 	entries := make([]registry.CatalogEntry, 0, len(models))
 	for _, m := range models {
 		if m.Active {
 			entries = append(entries, registry.CatalogEntry{
 				ID:         m.ID,
+				SourceID:   m.SourceID,
 				WeightHash: m.WeightHash,
 			})
 		}

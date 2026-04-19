@@ -124,6 +124,33 @@ pub enum ProviderMessage {
         /// Processing time in seconds.
         duration_secs: f64,
     },
+    /// Embedding result from a small-tier provider (compute-bound, low-RAM-friendly).
+    /// Vectors travel inline because they are small (1024–4096 dims × 4 bytes × N inputs
+    /// is well under the 10 MB WebSocket frame limit for typical N ≤ 64).
+    EmbeddingComplete {
+        request_id: String,
+        model: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        data: Vec<EmbeddingVector>,
+        usage: EmbeddingUsage,
+        duration_secs: f64,
+        /// When the request was E2E-encrypted, the provider may also encrypt the
+        /// data array back to the coordinator using the session key. When set,
+        /// `data` should be empty.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_data: Option<EncryptedPayload>,
+    },
+    /// Cross-encoder rerank result.
+    RerankComplete {
+        request_id: String,
+        model: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        results: Vec<RerankResult>,
+        usage: RerankUsage,
+        duration_secs: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_data: Option<EncryptedPayload>,
+    },
     /// Response to an attestation challenge from the coordinator.
     /// Includes a fresh SIP status check — the coordinator verifies this
     /// hasn't changed since registration.
@@ -204,6 +231,24 @@ pub enum CoordinatorMessage {
         /// HTTP URL where the provider should POST generated image bytes.
         #[serde(default)]
         upload_url: String,
+        #[serde(default)]
+        body: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_body: Option<EncryptedPayload>,
+    },
+    /// Embedding request — disaggregated compute job for small-tier providers.
+    /// Body matches OpenAI /v1/embeddings (model, input, encoding_format, dimensions).
+    EmbeddingRequest {
+        request_id: String,
+        #[serde(default)]
+        body: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_body: Option<EncryptedPayload>,
+    },
+    /// Rerank request — disaggregated compute job for small-tier providers.
+    /// Body matches Cohere /v1/rerank (model, query, documents, top_n, return_documents).
+    RerankRequest {
+        request_id: String,
         #[serde(default)]
         body: serde_json::Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -385,6 +430,67 @@ pub struct ImageGenerationUsage {
     pub height: u32,
     pub steps: u32,
     pub model: String,
+}
+
+// ---------------------------------------------------------------------------
+// Disaggregated compute: embeddings + reranking
+// ---------------------------------------------------------------------------
+
+/// Body of an embedding request from the coordinator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingRequestBody {
+    pub model: String,
+    /// `input` may be a string or an array of strings (or token-id arrays).
+    /// We keep it as a generic Value so the local backend gets it verbatim.
+    pub input: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dimensions: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+}
+
+/// One (input → vector) entry in an embedding result.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EmbeddingVector {
+    pub index: u32,
+    pub embedding: Vec<f32>,
+}
+
+/// Usage info for billing embedding requests.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct EmbeddingUsage {
+    pub prompt_tokens: u64,
+    pub total_tokens: u64,
+}
+
+/// Body of a rerank request from the coordinator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RerankRequestBody {
+    pub model: String,
+    pub query: String,
+    pub documents: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_n: Option<u32>,
+    #[serde(default)]
+    pub return_documents: bool,
+}
+
+/// One (document, score) pair in a rerank result, sorted descending by score.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RerankResult {
+    pub index: u32,
+    pub relevance_score: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document: Option<String>,
+}
+
+/// Usage info for billing rerank requests.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct RerankUsage {
+    pub prompt_tokens: u64,
+    pub total_tokens: u64,
 }
 
 #[cfg(test)]
@@ -1421,6 +1527,153 @@ mod tests {
         assert!(json.contains("\"component\":\"python\""));
         let deserialized: CoordinatorMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, deserialized);
+    }
+
+    #[test]
+    fn test_embedding_request_from_go_json_encrypted() {
+        // Mirror what the Go coordinator emits when E2E is enabled.
+        let raw = r#"{"type":"embedding_request","request_id":"emb-1","encrypted_body":{"ephemeral_public_key":"a2V5","ciphertext":"Y2lwaGVy"}}"#;
+        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
+        match msg {
+            CoordinatorMessage::EmbeddingRequest {
+                request_id,
+                encrypted_body,
+                ..
+            } => {
+                assert_eq!(request_id, "emb-1");
+                let enc = encrypted_body.unwrap();
+                assert_eq!(enc.ephemeral_public_key, "a2V5");
+                assert_eq!(enc.ciphertext, "Y2lwaGVy");
+            }
+            _ => panic!("expected EmbeddingRequest"),
+        }
+    }
+
+    #[test]
+    fn test_embedding_request_body_array_input() {
+        let body_json = r#"{"model":"bge-m3","input":["hello","world"],"encoding_format":"float","dimensions":768}"#;
+        let body: EmbeddingRequestBody = serde_json::from_str(body_json).unwrap();
+        assert_eq!(body.model, "bge-m3");
+        let arr: Vec<String> = serde_json::from_value(body.input.clone()).unwrap();
+        assert_eq!(arr, vec!["hello", "world"]);
+        assert_eq!(body.encoding_format.as_deref(), Some("float"));
+        assert_eq!(body.dimensions, Some(768));
+    }
+
+    #[test]
+    fn test_embedding_complete_roundtrip() {
+        let msg = ProviderMessage::EmbeddingComplete {
+            request_id: "emb-1".to_string(),
+            model: "bge-m3".to_string(),
+            data: vec![EmbeddingVector {
+                index: 0,
+                embedding: vec![0.1, 0.2, 0.3],
+            }],
+            usage: EmbeddingUsage {
+                prompt_tokens: 10,
+                total_tokens: 10,
+            },
+            duration_secs: 0.05,
+            encrypted_data: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"embedding_complete\""));
+        let decoded: ProviderMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ProviderMessage::EmbeddingComplete {
+                model, data, usage, ..
+            } => {
+                assert_eq!(model, "bge-m3");
+                assert_eq!(data.len(), 1);
+                assert_eq!(usage.prompt_tokens, 10);
+            }
+            _ => panic!("variant mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_embedding_complete_omits_data_when_encrypted() {
+        let msg = ProviderMessage::EmbeddingComplete {
+            request_id: "emb-2".to_string(),
+            model: "bge-m3".to_string(),
+            data: vec![],
+            usage: EmbeddingUsage {
+                prompt_tokens: 5,
+                total_tokens: 5,
+            },
+            duration_secs: 0.01,
+            encrypted_data: Some(EncryptedPayload {
+                ephemeral_public_key: "abc".to_string(),
+                ciphertext: "def".to_string(),
+            }),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            !json.contains("\"data\""),
+            "data should be omitted when empty: {json}"
+        );
+        assert!(json.contains("encrypted_data"));
+    }
+
+    #[test]
+    fn test_rerank_request_roundtrip() {
+        let body = serde_json::json!({
+            "model": "bge-rrk",
+            "query": "what is X",
+            "documents": ["a", "b"],
+            "top_n": 1
+        });
+        let msg = CoordinatorMessage::RerankRequest {
+            request_id: "rr-1".to_string(),
+            body,
+            encrypted_body: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"rerank_request\""));
+        let decoded: CoordinatorMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            CoordinatorMessage::RerankRequest { body, .. } => {
+                assert_eq!(body["query"], "what is X");
+                assert_eq!(body["top_n"], 1);
+            }
+            _ => panic!("variant mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_rerank_complete_roundtrip() {
+        let msg = ProviderMessage::RerankComplete {
+            request_id: "rr-1".to_string(),
+            model: "bge-reranker".to_string(),
+            results: vec![
+                RerankResult {
+                    index: 1,
+                    relevance_score: 0.97,
+                    document: None,
+                },
+                RerankResult {
+                    index: 0,
+                    relevance_score: 0.42,
+                    document: Some("doc text".to_string()),
+                },
+            ],
+            usage: RerankUsage {
+                prompt_tokens: 50,
+                total_tokens: 50,
+            },
+            duration_secs: 0.02,
+            encrypted_data: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: ProviderMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ProviderMessage::RerankComplete { results, .. } => {
+                assert_eq!(results.len(), 2);
+                assert_eq!(results[0].relevance_score, 0.97);
+                assert_eq!(results[1].document.as_deref(), Some("doc text"));
+            }
+            _ => panic!("variant mismatch"),
+        }
     }
 
     #[test]

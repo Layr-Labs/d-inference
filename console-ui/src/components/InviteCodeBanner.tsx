@@ -68,7 +68,9 @@ export function InviteCodeBanner() {
             onClick={() => {
               const nextExpanded = !expanded;
               if (nextExpanded) {
-                trackEvent("invite_banner_expanded");
+                trackEvent("invite_banner_expanded", {
+                  source: "header",
+                });
               }
               setExpanded(nextExpanded);
             }}

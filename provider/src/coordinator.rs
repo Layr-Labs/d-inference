@@ -25,8 +25,8 @@ use crate::backend::ExponentialBackoff;
 use crate::hardware::HardwareInfo;
 use crate::models::ModelInfo;
 use crate::protocol::{
-    CoordinatorMessage, ImageGenerationRequestBody, ProviderMessage, ProviderStats, ProviderStatus,
-    TranscriptionRequestBody,
+    CoordinatorMessage, EmbeddingRequestBody, ImageGenerationRequestBody, ProviderMessage,
+    ProviderStats, ProviderStatus, RerankRequestBody, TranscriptionRequestBody,
 };
 use crate::security::RuntimeHashes;
 
@@ -63,6 +63,19 @@ pub enum CoordinatorEvent {
         request_id: String,
         body: ImageGenerationRequestBody,
         upload_url: String,
+    },
+    EmbeddingRequest {
+        request_id: String,
+        body: EmbeddingRequestBody,
+        /// Ephemeral X25519 public key the coordinator used for the request.
+        /// When present, the provider should encrypt the response back with
+        /// the session key derived from this + provider's private key.
+        session_pub_key: Option<String>,
+    },
+    RerankRequest {
+        request_id: String,
+        body: RerankRequestBody,
+        session_pub_key: Option<String>,
     },
     Cancel {
         request_id: String,
@@ -467,6 +480,60 @@ impl CoordinatorClient {
                                         }
                                         Err(e) => {
                                             tracing::error!("Failed to parse image generation body: {e}");
+                                        }
+                                    }
+                                }
+                                Ok(CoordinatorMessage::EmbeddingRequest { request_id, body, encrypted_body }) => {
+                                    tracing::info!("Received embedding request: {request_id}");
+                                    let session_pub = encrypted_body.as_ref().map(|e| e.ephemeral_public_key.clone());
+                                    let decrypted_body = if let Some(enc) = encrypted_body {
+                                        match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
+                                            Ok(b) => b,
+                                            Err(e) => {
+                                                tracing::error!("Failed to decrypt embedding request: {e}");
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        body
+                                    };
+                                    match serde_json::from_value::<EmbeddingRequestBody>(decrypted_body) {
+                                        Ok(parsed_body) => {
+                                            let _ = event_tx.send(CoordinatorEvent::EmbeddingRequest {
+                                                request_id,
+                                                body: parsed_body,
+                                                session_pub_key: session_pub,
+                                            }).await;
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to parse embedding body: {e}");
+                                        }
+                                    }
+                                }
+                                Ok(CoordinatorMessage::RerankRequest { request_id, body, encrypted_body }) => {
+                                    tracing::info!("Received rerank request: {request_id}");
+                                    let session_pub = encrypted_body.as_ref().map(|e| e.ephemeral_public_key.clone());
+                                    let decrypted_body = if let Some(enc) = encrypted_body {
+                                        match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
+                                            Ok(b) => b,
+                                            Err(e) => {
+                                                tracing::error!("Failed to decrypt rerank request: {e}");
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        body
+                                    };
+                                    match serde_json::from_value::<RerankRequestBody>(decrypted_body) {
+                                        Ok(parsed_body) => {
+                                            let _ = event_tx.send(CoordinatorEvent::RerankRequest {
+                                                request_id,
+                                                body: parsed_body,
+                                                session_pub_key: session_pub,
+                                            }).await;
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to parse rerank body: {e}");
                                         }
                                     }
                                 }

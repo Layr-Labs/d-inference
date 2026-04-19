@@ -20,7 +20,7 @@ use security_framework_sys::{
         kSecAttrAccessControl, kSecAttrAccessGroup, kSecAttrIsPermanent,
         kSecAttrKeySizeInBits, kSecAttrKeyType, kSecAttrKeyTypeECSECPrimeRandom,
         kSecAttrLabel, kSecAttrTokenID, kSecAttrTokenIDSecureEnclave,
-        kSecPrivateKeyAttrs, kSecPublicKeyAttrs,
+        kSecPrivateKeyAttrs, kSecPublicKeyAttrs, kSecUseDataProtectionKeychain,
     },
     key::SecKeyCreateRandomKey,
 };
@@ -78,6 +78,10 @@ fn find_secure_enclave_key() -> Result<Option<SecKey>> {
         .key_class(KeyClass::private())
         .label(E2E_KEY_LABEL)
         .access_group(&keychain_access_group())
+        // SE keys live in the data protection keychain; the file-based
+        // keychain can't hold them. Without this, the search silently
+        // looks in the wrong place and misses the stored key.
+        .ignore_legacy_keychains()
         .load_refs(true)
         .limit(1);
 
@@ -157,6 +161,14 @@ fn create_secure_enclave_key() -> Result<SecKey> {
         (
             unsafe { CFString::wrap_under_get_rule(kSecAttrTokenID) },
             unsafe { CFString::wrap_under_get_rule(kSecAttrTokenIDSecureEnclave) }.into_CFType(),
+        ),
+        // REQUIRED on macOS: SE keys live exclusively in the data protection
+        // keychain. Without this flag, SecKeyCreateRandomKey tries the legacy
+        // file-based keychain, SE-backed key storage fails with
+        // AKSError=-536870174 (errSecMissingEntitlement under the hood).
+        (
+            unsafe { CFString::wrap_under_get_rule(kSecUseDataProtectionKeychain) },
+            CFBoolean::true_value().into_CFType(),
         ),
         (
             unsafe { CFString::wrap_under_get_rule(kSecPrivateKeyAttrs) },

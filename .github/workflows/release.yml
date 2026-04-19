@@ -232,6 +232,29 @@ jobs:
             /tmp/eigeninference-bundle/bin/ffmpeg
           codesign --verify --verbose /tmp/eigeninference-bundle/bin/ffmpeg
 
+          # Re-sign every Mach-O in the bundled Python tree with our Developer ID.
+          # python-build-standalone ships these ad-hoc (TeamIdentifier=not set) —
+          # which fails under hardened runtime because dyld refuses to load a
+          # dylib whose team doesn't match the process team. Sign them with our
+          # team ID so darkbloom (hardened, Eigen Labs team) can load them.
+          # Retry-on-flake matches the Python runtime step's pattern.
+          sign_bundle_python() {
+            find /tmp/eigeninference-bundle/python -type f | while read -r file; do
+              if file "$file" | grep -q "Mach-O"; then
+                codesign --force --sign "$DEVELOPER_ID" \
+                  --keychain "$KEYCHAIN_PATH" \
+                  --options runtime \
+                  --timestamp \
+                  "$file" || return 1
+              fi
+            done
+          }
+          if ! sign_bundle_python; then
+            echo "bundle-Python codesign batch failed — retrying in 30s"
+            sleep 30
+            sign_bundle_python
+          fi
+
           # Code sign with Developer ID (hardened runtime + entitlements)
           codesign --force --sign "$DEVELOPER_ID" \
             --keychain "$KEYCHAIN_PATH" \

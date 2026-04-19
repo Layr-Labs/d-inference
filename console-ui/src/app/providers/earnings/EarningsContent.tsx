@@ -118,12 +118,15 @@ export default function EarningsContent() {
     if (!walletAddress) return;
     const availableMicro = data?.available_balance_micro_usd || 0;
     if (availableMicro < 1_000_000) return;
+    const amountUsd = Number(
+      data?.available_balance_usd || (availableMicro / 1_000_000).toFixed(6)
+    );
 
     setClaiming(true);
     setClaimResult(null);
     trackEvent("provider_claim_started", {
       surface: "provider_earnings",
-      amount_micro_usd: availableMicro,
+      amount_usd: amountUsd,
     });
     try {
       const coordinatorUrl =
@@ -132,8 +135,6 @@ export default function EarningsContent() {
         "https://api.darkbloom.dev";
       const headers = await getAuthHeaders();
 
-      const amountUsd = data?.available_balance_usd || (availableMicro / 1_000_000).toFixed(6);
-
       const res = await fetch(`${coordinatorUrl}/v1/billing/withdraw/solana`, {
         method: "POST",
         headers: {
@@ -141,7 +142,7 @@ export default function EarningsContent() {
           ...headers,
         },
         body: JSON.stringify({
-          amount_usd: amountUsd,
+          amount_usd: amountUsd.toFixed(6),
           wallet_address: walletAddress,
         }),
       });
@@ -155,11 +156,11 @@ export default function EarningsContent() {
       const result = await res.json();
       trackEvent("provider_claim_succeeded", {
         surface: "provider_earnings",
-        amount_micro_usd: availableMicro,
+        amount_usd: amountUsd,
       });
       setClaimResult({
         ok: true,
-        msg: `$${amountUsd} USDC claimed to your wallet. Tx: ${(result.tx_signature || "").slice(0, 16)}...`,
+        msg: `$${amountUsd.toFixed(6)} USDC claimed to your wallet. Tx: ${(result.tx_signature || "").slice(0, 16)}...`,
       });
       fetchEarnings();
     } catch (e) {

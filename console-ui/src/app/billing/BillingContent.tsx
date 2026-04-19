@@ -21,6 +21,7 @@ import {
   type UsageEntry,
   type WalletInfo,
 } from "@/lib/api";
+import { trackEvent } from "@/lib/google-analytics";
 import {
   Clock,
   X,
@@ -73,6 +74,9 @@ function CopyButton({ text }: { text: string }) {
     <button
       onClick={() => {
         navigator.clipboard.writeText(text);
+        trackEvent("wallet_address_copied", {
+          surface: "billing_modal",
+        });
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       }}
@@ -130,11 +134,17 @@ export default function BillingContent() {
     const embeddedWallet = wallets.find((w) => w.address === walletAddress);
     if (!embeddedWallet) {
       addToast("No wallet found. Sign in again.");
+      trackEvent("billing_buy_credits_failed", {
+        reason: "wallet_missing",
+      });
       return;
     }
     const coordAddr = walletInfo?.coordinator_address || "Cy3tQ1XeixVjaQyPCdkt3Hh9PYMPKfvtYvdFNgyFB2VD";
 
     setActionLoading(true);
+    trackEvent("billing_buy_credits_submitted", {
+      amount_usd: Number(buyAmount),
+    });
     try {
       const connection = new Connection(SOLANA_RPC);
       const fromPubkey = new PublicKey(embeddedWallet.address);
@@ -163,17 +173,24 @@ export default function BillingContent() {
       const result = await signAndSendTransaction({
         transaction: serialized,
         wallet: embeddedWallet,
+        chain: "solana:mainnet",
         options: { sponsor: true },
       });
 
       // Submit the on-chain tx signature to the coordinator for credit
-      await submitDepositTx(result.signature);
+      await submitDepositTx(Buffer.from(result.signature).toString("base64"));
 
       setBuyOpen(false);
       addToast(`$${buyAmount} credits added`, "success");
+      trackEvent("billing_buy_credits_succeeded", {
+        amount_usd: Number(buyAmount),
+      });
       loadData();
     } catch (e) {
       addToast(`${(e as Error).message}`);
+      trackEvent("billing_buy_credits_failed", {
+        reason: "transaction_error",
+      });
     }
     setActionLoading(false);
   };
@@ -183,13 +200,23 @@ export default function BillingContent() {
     if (!code) return;
     setInviteLoading(true);
     setInviteSuccess("");
+    trackEvent("invite_redeem_submitted", {
+      surface: "billing_page",
+    });
     try {
       const result = await redeemInviteCode(code);
       setInviteSuccess(`$${result.credited_usd} credited to your account`);
+      trackEvent("invite_redeem_succeeded", {
+        surface: "billing_page",
+        credited_usd: result.credited_usd,
+      });
       setInviteCode("");
       loadData();
     } catch (e) {
       addToast(`${(e as Error).message}`);
+      trackEvent("invite_redeem_failed", {
+        surface: "billing_page",
+      });
     }
     setInviteLoading(false);
   };

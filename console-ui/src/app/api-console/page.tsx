@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { TopBar } from "@/components/TopBar";
 import { CodeExample } from "@/components/CodeExample";
+import { trackEvent } from "@/lib/google-analytics";
 import {
   Key,
   Copy,
@@ -208,7 +209,17 @@ function EndpointRow({
   return (
     <div className="border-b border-border-dim/50 last:border-0">
       <button
-        onClick={() => setExpanded(!expanded)}
+        onClick={() => {
+          const nextExpanded = !expanded;
+          setExpanded(nextExpanded);
+          if (nextExpanded) {
+            trackEvent("api_endpoint_expanded", {
+              endpoint_path: path,
+              http_method: method,
+              requires_auth: auth,
+            });
+          }
+        }}
         className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-bg-hover transition-colors"
       >
         <Icon size={16} className="text-text-tertiary shrink-0" />
@@ -283,12 +294,17 @@ export default function ApiConsolePage() {
   const copyKey = useCallback(() => {
     if (!apiKey) return;
     navigator.clipboard.writeText(apiKey);
+    trackEvent("api_key_copied");
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }, [apiKey]);
 
   const generateKey = useCallback(async () => {
+    const action = apiKey ? "regenerate" : "generate";
     setGenerating(true);
+    trackEvent("api_key_generate_attempt", {
+      action,
+    });
     try {
       const res = await fetch("/api/auth/keys", {
         method: "POST",
@@ -298,13 +314,24 @@ export default function ApiConsolePage() {
         const { api_key } = await res.json();
         localStorage.setItem(API_KEY_STORAGE, api_key);
         setApiKey(api_key);
+        trackEvent("api_key_generate_success", {
+          action,
+        });
+      } else {
+        trackEvent("api_key_generate_failure", {
+          action,
+          status_code: res.status,
+        });
       }
     } catch {
-      // failed
+      trackEvent("api_key_generate_failure", {
+        action,
+        status_code: 0,
+      });
     } finally {
       setGenerating(false);
     }
-  }, []);
+  }, [apiKey]);
 
   const k = apiKey || "<YOUR_API_KEY>";
   const u = coordinatorUrl;

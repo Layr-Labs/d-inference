@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { Send, Square, ChevronDown, LogIn } from "lucide-react";
 import { useStore } from "@/lib/store";
+import { trackEvent } from "@/lib/google-analytics";
 
 interface ChatInputProps {
   onSend: (content: string) => void;
@@ -63,7 +64,12 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
       <div className="bg-bg-primary/80 backdrop-blur-sm">
         <div className="max-w-4xl mx-auto px-3 sm:px-6 py-3 sm:py-4">
           <button
-            onClick={onLogin}
+            onClick={() => {
+              trackEvent("login_cta_clicked", {
+                location: "chat_input",
+              });
+              onLogin?.();
+            }}
             className="w-full flex items-center justify-center gap-2 bg-bg-tertiary rounded-2xl border border-border-dim
                        py-4 text-text-tertiary hover:text-text-secondary hover:border-border-subtle cursor-pointer transition-all"
           >
@@ -118,6 +124,10 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                           onClick={() => {
                             setSelectedModel(m.id);
                             setModelOpen(false);
+                            trackEvent("chat_model_selected", {
+                              model: m.id,
+                              quantization: m.quantization || "unknown",
+                            });
                           }}
                           className={`w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-bg-hover transition-colors ${
                             selectedModel === m.id

@@ -12,6 +12,7 @@ import { PreSendTrustBanner } from "@/components/PreSendTrustBanner";
 import { Mail } from "lucide-react";
 import { InviteCodeBanner } from "@/components/InviteCodeBanner";
 import type { Message } from "@/lib/store";
+import { trackEvent } from "@/lib/google-analytics";
 
 function generateId() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -82,7 +83,13 @@ export default function ChatPage() {
 
   const handleSend = useCallback(
     async (content: string) => {
+      const trimmedContent = content.trim();
+      if (!trimmedContent) {
+        return;
+      }
+
       let chatId = activeChatId;
+      const isNewChat = !chatId;
       if (!chatId) {
         chatId = createChat();
       }
@@ -90,17 +97,11 @@ export default function ChatPage() {
       const chat = useStore.getState().chats.find((c) => c.id === chatId);
       if (chat && chat.messages.length === 0) {
         const title =
-          content.length > 40 ? content.slice(0, 40) + "..." : content;
+          trimmedContent.length > 40
+            ? trimmedContent.slice(0, 40) + "..."
+            : trimmedContent;
         updateChatTitle(chatId, title);
       }
-
-      const userMsg: Message = {
-        id: generateId(),
-        role: "user",
-        content,
-        timestamp: Date.now(),
-      };
-      addMessage(chatId, userMsg);
 
       const assistantId = generateId();
       const assistantMsg: Message = {
@@ -119,11 +120,30 @@ export default function ChatPage() {
       const currentChat = useStore
         .getState()
         .chats.find((c) => c.id === chatId);
+      const priorMessageCount = currentChat?.messages.length ?? 0;
+      const userMsg: Message = {
+        id: generateId(),
+        role: "user",
+        content: trimmedContent,
+        timestamp: Date.now(),
+      };
+      addMessage(chatId, userMsg);
+
+      trackEvent("chat_submit", {
+        model: selectedModel,
+        is_new_chat: isNewChat,
+        message_length_bucket: Math.min(
+          Math.floor(trimmedContent.length / 100) * 100,
+          1000,
+        ),
+        prior_message_count: priorMessageCount,
+      });
+
       const userMessages = currentChat
         ? currentChat.messages
             .filter((m) => m.id !== assistantId)
             .map((m) => ({ role: m.role, content: m.content }))
-        : [{ role: "user" as const, content }];
+        : [{ role: "user" as const, content: trimmedContent }];
       const allMessages = [
         { role: "system" as const, content: SYSTEM_PROMPT },
         ...userMessages,
@@ -148,6 +168,12 @@ export default function ChatPage() {
               });
             },
             onDone: (trust, metrics) => {
+              trackEvent("chat_complete", {
+                model: selectedModel,
+                trust_level: trust?.trustLevel,
+                secure_enclave: trust?.secureEnclave,
+                token_count: metrics.tokenCount,
+              });
               updateMessage(chatId!, assistantId, {
                 streaming: false,
                 trust,
@@ -158,6 +184,10 @@ export default function ChatPage() {
               setIsStreaming(false);
             },
             onError: (error) => {
+              trackEvent("chat_error", {
+                model: selectedModel,
+                error_type: "stream_callback",
+              });
               updateMessage(chatId!, assistantId, {
                 content: `Error: ${error}`,
                 streaming: false,
@@ -171,6 +201,10 @@ export default function ChatPage() {
         );
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
+          trackEvent("chat_error", {
+            model: selectedModel,
+            error_type: "request_failure",
+          });
           const msg = (err as Error).message;
           updateMessage(chatId!, assistantId, {
             content: `Connection error: ${msg}`,
@@ -196,9 +230,12 @@ export default function ChatPage() {
   );
 
   const handleStop = useCallback(() => {
+    trackEvent("chat_stop", {
+      model: selectedModel,
+    });
     abortRef.current?.abort();
     setIsStreaming(false);
-  }, []);
+  }, [selectedModel]);
 
   const handleRetry = useCallback(
     (errorMsgId: string) => {
@@ -209,6 +246,10 @@ export default function ChatPage() {
       if (errorIdx < 1) return;
       const userMsg = messages[errorIdx - 1];
       if (userMsg.role !== "user") return;
+
+      trackEvent("chat_retry", {
+        model: selectedModel,
+      });
 
       // Reset the error message to streaming state
       updateMessage(activeChat.id, errorMsgId, {
@@ -240,6 +281,12 @@ export default function ChatPage() {
             tps: metrics.tps, ttft: metrics.ttft, tokenCount: metrics.tokenCount,
           }),
           onDone: (trust, metrics) => {
+              trackEvent("chat_complete", {
+                model: selectedModel,
+                trust_level: trust?.trustLevel,
+                secure_enclave: trust?.secureEnclave,
+                token_count: metrics.tokenCount,
+              });
             updateMessage(activeChat.id, errorMsgId, {
               streaming: false, trust,
               tps: metrics.tps, ttft: metrics.ttft, tokenCount: metrics.tokenCount,
@@ -247,6 +294,10 @@ export default function ChatPage() {
             setIsStreaming(false);
           },
           onError: (error) => {
+            trackEvent("chat_error", {
+              model: selectedModel,
+              error_type: "retry_callback",
+            });
             updateMessage(activeChat.id, errorMsgId, {
               content: `Error: ${error}`, streaming: false, error: true,
             });
@@ -257,6 +308,10 @@ export default function ChatPage() {
         abort.signal
       ).catch((err) => {
         if ((err as Error).name !== "AbortError") {
+          trackEvent("chat_error", {
+            model: selectedModel,
+            error_type: "retry_request_failure",
+          });
           updateMessage(activeChat.id, errorMsgId, {
             content: `Connection error: ${(err as Error).message}`,
             streaming: false, error: true,
@@ -285,7 +340,12 @@ export default function ChatPage() {
             </p>
 
             <button
-              onClick={login}
+              onClick={() => {
+                trackEvent("login_clicked", {
+                  source: "chat_page_guest_hero",
+                });
+                login();
+              }}
               disabled={!ready}
               className="inline-flex items-center justify-center gap-2 px-8 py-3 rounded-lg
                          bg-coral text-white font-bold text-sm
@@ -320,7 +380,12 @@ export default function ChatPage() {
               {SUGGESTED_PROMPTS.map(({ label, prompt }) => (
                 <button
                   key={label}
-                  onClick={() => handleSend(prompt)}
+                  onClick={() => {
+                    trackEvent("suggested_prompt_click", {
+                      prompt_label: label,
+                    });
+                    handleSend(prompt);
+                  }}
                   className="text-left px-4 py-3 rounded-lg bg-bg-secondary/60
                              text-sm text-text-secondary hover:text-text-primary
                              hover:bg-bg-secondary transition-colors"

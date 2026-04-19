@@ -120,6 +120,38 @@ export function trackRouteChange(pathname: string) {
   });
 }
 
+type GoogleAnalyticsEventValue = string | number | boolean | undefined;
+
+type GoogleAnalyticsEventParams = Record<string, GoogleAnalyticsEventValue>;
+
+function sanitizeEventParams(params: GoogleAnalyticsEventParams = {}) {
+  const sanitized: GoogleAnalyticsEventParams = {};
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) {
+      continue;
+    }
+    sanitized[key] = value;
+  }
+
+  return sanitized;
+}
+
+export function trackEvent(
+  eventName: string,
+  params: GoogleAnalyticsEventParams = {},
+) {
+  const analytics = getGtag();
+  if (!analytics || !eventName) {
+    return;
+  }
+
+  analytics.gtag("event", eventName, {
+    ...sanitizeEventParams(params),
+    send_to: analytics.measurementId,
+  });
+}
+
 function trackPageView(params: {
   page_location: string;
   page_title?: string;

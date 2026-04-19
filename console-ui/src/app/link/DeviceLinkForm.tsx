@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from "react";
 import { useAuthContext } from "@/components/providers/PrivyClientProvider";
+import { trackEvent } from "@/lib/google-analytics";
 
 const COORDINATOR_URL =
   process.env.NEXT_PUBLIC_COORDINATOR_URL ||
@@ -20,12 +21,19 @@ export function DeviceLinkForm() {
       e.preventDefault();
       if (!code.trim()) return;
 
+      trackEvent("device_link_submit", {
+        flow: "device_link_form",
+      });
       setStatus("submitting");
       setErrorMsg("");
 
       try {
         const token = await getAccessToken();
         if (!token) {
+          trackEvent("device_link_error", {
+            flow: "device_link_form",
+            reason: "missing_auth_token",
+          });
           setErrorMsg("Failed to get auth token. Please log in again.");
           setStatus("error");
           return;
@@ -43,6 +51,10 @@ export function DeviceLinkForm() {
         const data = await res.json();
 
         if (!res.ok) {
+          trackEvent("device_link_error", {
+            flow: "device_link_form",
+            reason: "approval_failed",
+          });
           setErrorMsg(
             data?.error?.message || data?.message || "Failed to link device"
           );
@@ -50,8 +62,15 @@ export function DeviceLinkForm() {
           return;
         }
 
+        trackEvent("device_link_success", {
+          flow: "device_link_form",
+        });
         setStatus("success");
       } catch {
+        trackEvent("device_link_error", {
+          flow: "device_link_form",
+          reason: "network_error",
+        });
         setErrorMsg("Network error. Please check your connection.");
         setStatus("error");
       }
@@ -118,7 +137,12 @@ export function DeviceLinkForm() {
           Sign in to your Darkbloom account to link your device.
         </p>
         <button
-          onClick={login}
+          onClick={() => {
+            trackEvent("login_cta_clicked", {
+              source: "device_link_form",
+            });
+            login();
+          }}
           className="w-full px-6 py-3 bg-coral text-white rounded-xl font-bold border border-border-dim
                      hover:opacity-90 transition-all"
         >

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import { trackEvent } from "@/lib/google-analytics";
 import { useSignAndSendTransaction, useWallets } from "@privy-io/react-auth/solana";
 import {
   createAssociatedTokenAccountInstruction,
@@ -68,7 +69,7 @@ export default function EarningsContent() {
   const [withdrawing, setWithdrawing] = useState(false);
   const [withdrawResult, setWithdrawResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
-  const getAuthHeaders = useCallback(async () => {
+  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
     const accessToken = await getAccessToken().catch(() => null);
     if (accessToken) {
       return { Authorization: `Bearer ${accessToken}` };
@@ -120,6 +121,10 @@ export default function EarningsContent() {
 
     setClaiming(true);
     setClaimResult(null);
+    trackEvent("provider_claim_started", {
+      surface: "provider_earnings",
+      amount_micro_usd: availableMicro,
+    });
     try {
       const coordinatorUrl =
         localStorage.getItem("darkbloom_coordinator_url") ||
@@ -148,12 +153,19 @@ export default function EarningsContent() {
       }
 
       const result = await res.json();
+      trackEvent("provider_claim_succeeded", {
+        surface: "provider_earnings",
+        amount_micro_usd: availableMicro,
+      });
       setClaimResult({
         ok: true,
         msg: `$${amountUsd} USDC claimed to your wallet. Tx: ${(result.tx_signature || "").slice(0, 16)}...`,
       });
       fetchEarnings();
     } catch (e) {
+      trackEvent("provider_claim_failed", {
+        surface: "provider_earnings",
+      });
       setClaimResult({ ok: false, msg: (e as Error).message });
     } finally {
       setClaiming(false);
@@ -174,6 +186,10 @@ export default function EarningsContent() {
 
     setWithdrawing(true);
     setWithdrawResult(null);
+    trackEvent("provider_withdraw_started", {
+      surface: "provider_earnings",
+      amount_usd: amount.toFixed(2),
+    });
     try {
       const connection = new Connection(SOLANA_RPC);
       const fromPubkey = new PublicKey(embeddedWallet.address);
@@ -202,9 +218,14 @@ export default function EarningsContent() {
       const result = await signAndSendTransaction({
         transaction: serialized,
         wallet: embeddedWallet,
+        chain: "solana:mainnet",
         options: { sponsor: true },
       });
 
+      trackEvent("provider_withdraw_succeeded", {
+        surface: "provider_earnings",
+        amount_usd: amount.toFixed(2),
+      });
       setWithdrawResult({
         ok: true,
         msg: `$${withdrawAmount} USDC sent. Tx: ${(result.signature || "").slice(0, 16)}...`,
@@ -212,6 +233,9 @@ export default function EarningsContent() {
       setWithdrawAmount("");
       setWithdrawAddr("");
     } catch (e) {
+      trackEvent("provider_withdraw_failed", {
+        surface: "provider_earnings",
+      });
       setWithdrawResult({ ok: false, msg: (e as Error).message });
     } finally {
       setWithdrawing(false);
@@ -227,7 +251,12 @@ export default function EarningsContent() {
             Sign in to view your provider earnings.
           </p>
           <button
-            onClick={login}
+            onClick={() => {
+              trackEvent("login_cta_clicked", {
+                surface: "provider_earnings_empty_state",
+              });
+              login();
+            }}
             className="px-4 py-2 rounded-lg bg-coral text-white text-sm font-medium hover:opacity-90 transition-all"
           >
             Sign In

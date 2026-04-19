@@ -79,6 +79,19 @@ var rerankPricing = map[string]int64{
 const defaultEmbeddingPricePerMillion int64 = 5_000 // $0.005 per 1M tokens
 const defaultRerankPricePerMillion int64 = 10_000   // $0.010 per 1M tokens
 
+// compressorPricing is the per-1M-input-token price (micro-USD) for the
+// smart-prefill compressor models. Cheap because the compute is a single
+// forward pass on a 0.5–1B draft and the consumer's payoff is a 2-5x
+// reduction in their *target-model* prefill cost. Pricing it any higher
+// would discourage adoption of the very feature that frees the big-tier
+// fleet for decode work — and we make money on the resulting throughput.
+var compressorPricing = map[string]int64{
+	"mlx-community/Qwen3-0.6B": 4_000, // $0.004 per 1M tokens
+	"mlx-community/Qwen3-1.7B": 6_000, // $0.006 per 1M tokens
+}
+
+const defaultCompressorPricePerMillion int64 = 5_000 // $0.005 per 1M tokens
+
 // MinimumCharge returns the minimum charge per inference request in micro-USD.
 func MinimumCharge() int64 {
 	return minimumChargeMicroUSD
@@ -249,6 +262,35 @@ func DefaultEmbeddingPrices() map[string]int64 {
 func DefaultRerankPrices() map[string]int64 {
 	result := make(map[string]int64, len(rerankPricing))
 	for model, price := range rerankPricing {
+		result[model] = price
+	}
+	return result
+}
+
+// CompressorPricePerMillion returns the price in micro-USD per 1M input
+// tokens for the smart-prefill compressor.
+func CompressorPricePerMillion(model string) int64 {
+	if p, ok := compressorPricing[model]; ok {
+		return p
+	}
+	return defaultCompressorPricePerMillion
+}
+
+// CalculateCompressorCost returns the cost in micro-USD for a smart-prefill
+// compression job billed on the original (uncompressed) prompt tokens.
+func CalculateCompressorCost(model string, originalTokens int) int64 {
+	rate := CompressorPricePerMillion(model)
+	cost := int64(originalTokens) * rate / 1_000_000
+	if cost < minimumChargeMicroUSD {
+		cost = minimumChargeMicroUSD
+	}
+	return cost
+}
+
+// DefaultCompressorPrices returns per-1M-token pricing for compressor models.
+func DefaultCompressorPrices() map[string]int64 {
+	result := make(map[string]int64, len(compressorPricing))
+	for model, price := range compressorPricing {
 		result[model] = price
 	}
 	return result

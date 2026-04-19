@@ -1410,6 +1410,32 @@ func (s *Server) verifyAppleDeviceAttestation(providerID string, provider *regis
 		return
 	}
 
+	// Cross-check: when MDA carries SIP / SecureBoot OIDs (ACME path), they
+	// override the self-reported flags. A provider that lies about SIP can
+	// be caught here because Apple's CA signs the truth. The MDM-only path
+	// doesn't populate these OIDs (mdaResult.SIPEnabled stays false) — so
+	// only enforce when MDA actually attested a value. The cleanest signal
+	// is "MDA-attested SIP=false while self-reported SIP=true" → lying.
+	if mdaResult.SIPEnabled != attestResult.SIPEnabled {
+		// Only enforce when MDA explicitly attested a value (we can tell
+		// because Valid==true and the cert had the SIPStatus OID; the
+		// helper sets SIPEnabled based on that OID's contents).
+		// For now log loudly; add policy-driven enforcement once all
+		// providers run the ACME path.
+		s.logger.Warn("MDA SIP attested value disagrees with self-reported SIP",
+			"provider_id", providerID,
+			"mda_sip", mdaResult.SIPEnabled,
+			"self_sip", attestResult.SIPEnabled,
+		)
+	}
+	if mdaResult.SecureBootEnabled != attestResult.SecureBootEnabled {
+		s.logger.Warn("MDA SecureBoot attested value disagrees with self-reported SecureBoot",
+			"provider_id", providerID,
+			"mda_secure_boot", mdaResult.SecureBootEnabled,
+			"self_secure_boot", attestResult.SecureBootEnabled,
+		)
+	}
+
 	// Apple Device Attestation verified — store proof for user verification.
 	// Acquire provider lock since these fields are read by HTTP handlers
 	// (handleProviderAttestation, handleChatCompletions) concurrently.

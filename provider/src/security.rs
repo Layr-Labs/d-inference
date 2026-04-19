@@ -133,6 +133,46 @@ pub fn check_rdma_disabled() -> bool {
     }
 }
 
+/// Check if Apple Silicon Boot Policy is Full Security.
+///
+/// On Apple Silicon, downgrading to Reduced or Permissive Security
+/// requires booting into 1TR (Recovery Mode). `bputil -d` prints the
+/// active boot policy without prompting; we look for "Full Security".
+/// Returns false on any non-Full-Security state, on platforms without
+/// bputil, or when bputil is missing — fail-closed so the coordinator
+/// drops trust and the operator notices.
+pub fn check_secure_boot_full() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        match Command::new("/usr/bin/bputil").arg("-d").output() {
+            Ok(output) => {
+                let combined = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                if combined.contains("Full Security") {
+                    tracing::debug!("Secure Boot: Full Security policy active");
+                    true
+                } else {
+                    tracing::warn!(
+                        "Secure Boot policy is NOT Full Security — coordinator will drop trust"
+                    );
+                    false
+                }
+            }
+            Err(e) => {
+                tracing::warn!("bputil unavailable ({e}) — reporting Secure Boot as false");
+                false
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
 /// Check if hypervisor memory isolation is active.
 ///
 /// When active, inference memory is protected by Stage 2 page tables

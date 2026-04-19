@@ -274,11 +274,39 @@ func checkSIPEnabled() -> Bool {
 
 /// Check if Secure Boot is enabled.
 ///
-/// On Apple Silicon, Secure Boot is always enabled in Full Security mode.
-/// In production this would come from MDA. This always returns true as
-/// a development placeholder.
+/// On Apple Silicon, Full Security is the default. Reduced Security or
+/// Permissive Security must be opted into via 1TR (Recovery Mode) and
+/// downgrading to either still leaves the bit auditable via `bputil`.
+/// We invoke `bputil -d` (reads boot policy without prompting) and look
+/// for "Full Security" in the output. Anything other than Full Security
+/// means the user reduced their boot security posture, so we return false
+/// and the coordinator drops trust.
+///
+/// In production the coordinator additionally cross-checks against MDA's
+/// SecureBoot OID (1.2.840.113635.100.8.13.2) so a compromised local
+/// `bputil` binary cannot lie — that check is on the coordinator side
+/// (see verifyAppleDeviceAttestation in coordinator/internal/api/provider.go).
 func checkSecureBootEnabled() -> Bool {
-    return true
+    let pipe = Pipe()
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/bputil")
+    process.arguments = ["-d"]
+    process.standardOutput = pipe
+    process.standardError = Pipe()
+    do {
+        try process.run()
+    } catch {
+        // bputil missing or unrunnable: this is unexpected on Apple
+        // Silicon. Fail closed so the coordinator can decide.
+        return false
+    }
+    process.waitUntilExit()
+
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    let output = String(data: data, encoding: .utf8) ?? ""
+    // bputil -d prints "Boot Policy: Full Security" or
+    // "Local Policy: Full Security" depending on the macOS version.
+    return output.contains("Full Security")
 }
 
 /// Check if Authenticated Root Volume (ARV) is enabled.

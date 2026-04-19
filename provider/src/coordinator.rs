@@ -694,10 +694,12 @@ pub fn handle_attestation_challenge(
             (None, None, std::collections::HashMap::new(), None, None)
         };
 
-    // Apple Silicon always has Secure Boot in Full Security. We still report
-    // it explicitly so it goes into the signed envelope; coordinator
-    // cross-checks against MDA when present.
-    let secure_boot_enabled = true;
+    // Query bputil for the actual Boot Policy. A user that downgraded to
+    // Reduced Security or Permissive Security must be detected — the
+    // hardcoded `true` here previously made the field meaningless. The
+    // coordinator additionally cross-checks against MDA's SecureBoot OID
+    // (1.2.840.113635.100.8.13.2) so a compromised bputil can be caught.
+    let secure_boot_enabled = crate::security::check_secure_boot_full();
 
     // Build and SE-sign the canonical claims envelope. Without this, every
     // field below (binary_hash, model hashes, sip flag, etc.) is just

@@ -7,6 +7,18 @@ name: Release Provider Bundle
 # The `environment:` on the job selects which GitHub Environment's secrets
 # and vars get injected, so prod and dev use disjoint R2 buckets, release
 # keys, and coordinator URLs.
+#
+# Phase-1 parallelism (vs. the monolithic pre-refactor workflow):
+#   - `coordinator-tests` runs on ubuntu-latest in parallel with the macOS
+#     build. That shaves ~1 min off the critical path AND frees up the
+#     macos-26-xlarge runner (which is expensive).
+#   - Rust `target/` + cargo registry cached on Cargo.lock. Cold Rust builds
+#     ~5 min; warm ~1 min.
+#   - Python runtime build (5+ min pip install) runs concurrently with Apple
+#     notarization (3-8 min, Apple-bound idle wait). Largest single win.
+#
+# Phase-2 (not yet done): split Python runtime + macOS app into their own
+# macOS jobs with artifact passing so they truly parallelize across runners.
 
 on:
   push:
@@ -45,9 +57,25 @@ jobs:
             echo "environment=prod" >> $GITHUB_OUTPUT
           fi
 
+  # Go tests run on ubuntu (much cheaper than macos-26-xlarge and ~10x faster
+  # to spin up). In parallel with the macOS build — if they fail the whole
+  # workflow fails.
+  coordinator-tests:
+    name: Test coordinator
+    needs: resolve-env
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: coordinator/go.mod
+          cache-dependency-path: coordinator/go.sum
+      - name: go test ./...
+        run: cd coordinator && go test -race ./...
+
   build-and-release:
     name: Build, Sign, Upload, Register
-    needs: resolve-env
+    needs: [resolve-env, coordinator-tests]
     environment: ${{ needs.resolve-env.outputs.environment }}
     runs-on: macos-26-xlarge  # Apple Silicon, 16 cores
     steps:
@@ -102,6 +130,20 @@ jobs:
           rm -f /tmp/build-python.tar.gz
           /tmp/eigeninference-build-python/bin/python3.12 --version
 
+      # Cache Rust compilation outputs. Keyed on Cargo.lock so a dep bump
+      # invalidates. Saves ~4 min on warm builds (5 min cold → 1 min warm).
+      - name: Cache cargo registry + target
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/index
+            ~/.cargo/git/db
+            provider/target
+          key: cargo-v1-${{ runner.os }}-${{ hashFiles('provider/Cargo.lock') }}
+          restore-keys: |
+            cargo-v1-${{ runner.os }}-
+
       - name: Build provider (Rust)
         env:
           PYO3_PYTHON: /tmp/eigeninference-build-python/bin/python3.12
@@ -140,13 +182,6 @@ jobs:
           DYLD_LIBRARY_PATH: /tmp/eigeninference-build-python/lib
           RUSTFLAGS: -L native=/tmp/eigeninference-build-python/lib
         run: cd provider && cargo test -- --skip proxy::tests --skip server::tests
-
-      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
-        with:
-          go-version-file: coordinator/go.mod
-
-      - name: Test coordinator
-        run: cd coordinator && go test -race ./...
 
       # --- Sign & Bundle ---
 
@@ -190,18 +225,12 @@ jobs:
           file "$FFMPEG_BIN" | grep -q "Mach-O" || { echo "ERROR: ffmpeg is not a Mach-O binary"; exit 1; }
 
           # Code sign ffmpeg with our Developer ID for distribution
-          # Standard practice: we are the distributor, not claiming authorship
           codesign --force --sign "$DEVELOPER_ID" \
             --keychain "$KEYCHAIN_PATH" \
             --options runtime \
             --timestamp \
             /tmp/eigeninference-bundle/bin/ffmpeg
           codesign --verify --verbose /tmp/eigeninference-bundle/bin/ffmpeg
-
-          # Image generation support disabled — re-enable when ready
-          # cp /tmp/gRPCServerCLI /tmp/eigeninference-bundle/
-          # mkdir -p /tmp/eigeninference-bundle/image-bridge
-          # cp -r image-bridge/eigeninference_image_bridge /tmp/eigeninference-bundle/image-bridge/eigeninference_image_bridge
 
           # Code sign with Developer ID (hardened runtime + entitlements)
           codesign --force --sign "$DEVELOPER_ID" \
@@ -216,91 +245,44 @@ jobs:
             --options runtime \
             /tmp/eigeninference-bundle/bin/eigeninference-enclave
 
-          # Image generation support disabled — re-enable when ready
-          # codesign --force --sign "$DEVELOPER_ID" \
-          #   --keychain "$KEYCHAIN_PATH" \
-          #   --entitlements scripts/entitlements.plist \
-          #   --options runtime \
-          #   /tmp/eigeninference-bundle/gRPCServerCLI
-
           # Verify all signatures
           codesign --verify --verbose /tmp/eigeninference-bundle/bin/darkbloom
           codesign --verify --verbose /tmp/eigeninference-bundle/bin/eigeninference-enclave
           codesign --verify --verbose /tmp/eigeninference-bundle/python/bin/python3.12
           codesign --verify --verbose /tmp/eigeninference-bundle/python/lib/libpython3.12.dylib
-          # codesign --verify --verbose /tmp/eigeninference-bundle/gRPCServerCLI
 
           cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
           echo "Bundle created: $(du -h /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -f1)"
 
-      # --- Notarize ---
+      # --- Parallel: notarize the bundle AND build the Python runtime ---
+      # Apple notarization is a 3-8 min synchronous wait on the remote service.
+      # Python runtime build is 5+ min of local work that doesn't touch the
+      # signed bundle. Running them in parallel cuts ~5 min off the critical path.
+      # Both need the keychain + PBS Python already set up above.
 
-      - name: Notarize binaries
+      - name: Notarize bundle + build Python runtime (parallel)
+        id: runtime
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: "SLDQ2GJ6TL"
         run: |
-          # Create a zip for notarization (notarytool needs zip/dmg/pkg)
-          ditto -c -k --keepParent /tmp/eigeninference-bundle /tmp/eigeninference-notarize.zip
+          set -e
 
-          xcrun notarytool submit /tmp/eigeninference-notarize.zip \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 10m
+          # ---- Task A: notarize the provider bundle (background) ----
+          notarize_bundle() {
+            ditto -c -k --keepParent /tmp/eigeninference-bundle /tmp/eigeninference-notarize.zip
+            xcrun notarytool submit /tmp/eigeninference-notarize.zip \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait --timeout 10m
+          }
+          notarize_bundle > /tmp/notarize.log 2>&1 &
+          NOTARIZE_PID=$!
+          echo "Started bundle notarization (pid $NOTARIZE_PID)"
 
-          # Staple the individual binaries
-          xcrun stapler staple /tmp/eigeninference-bundle/bin/darkbloom || true
-          xcrun stapler staple /tmp/eigeninference-bundle/bin/eigeninference-enclave || true
-          # xcrun stapler staple /tmp/eigeninference-bundle/gRPCServerCLI || true  # image support disabled
-          xcrun stapler staple /tmp/eigeninference-bundle/bin/ffmpeg || true
-
-          # Recreate tarball with stapled binaries
-          cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
-
-      # --- Compute hashes (AFTER signing — the signed binary is what providers run) ---
-
-      - name: Compute hashes
-        id: hash
-        run: |
-          BINARY_HASH=$(shasum -a 256 /tmp/eigeninference-bundle/bin/darkbloom | cut -d' ' -f1)
-          BUNDLE_HASH=$(shasum -a 256 /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
-          echo "binary_hash=$BINARY_HASH" >> "$GITHUB_OUTPUT"
-          echo "bundle_hash=$BUNDLE_HASH" >> "$GITHUB_OUTPUT"
-          echo "Binary hash (signed): $BINARY_HASH"
-          echo "Bundle hash: $BUNDLE_HASH"
-
-          # Image generation support disabled — re-enable when ready
-          # GRPC_HASH=$(shasum -a 256 /tmp/eigeninference-bundle/gRPCServerCLI | cut -d' ' -f1)
-          # echo "grpc_binary_hash=$GRPC_HASH" >> "$GITHUB_OUTPUT"
-          echo "grpc_binary_hash=" >> "$GITHUB_OUTPUT"
-          echo "image_bridge_hash=" >> "$GITHUB_OUTPUT"
-
-          # Hash ffmpeg (signed)
-          FFMPEG_HASH=$(shasum -a 256 /tmp/eigeninference-bundle/bin/ffmpeg | cut -d' ' -f1)
-          echo "ffmpeg_hash=$FFMPEG_HASH" >> "$GITHUB_OUTPUT"
-          echo "ffmpeg hash (signed): $FFMPEG_HASH"
-
-      # --- Compute runtime integrity hashes ---
-      # Build a temp Python venv with our fork to compute reference hashes.
-      # The venv is NOT shipped — providers self-heal at startup.
-      # We only need the hashes for the coordinator's manifest.
-
-      - name: Build and hash canonical Python runtime
-        id: runtime
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: ${{ vars.R2_BUCKET }}
-          R2_CDN: ${{ vars.R2_CDN }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-
-          # Download portable Python from python-build-standalone (Astral).
-          # These binaries are self-contained — no dylib dependencies on system frameworks.
-          # Works on ANY macOS ARM64 machine regardless of what Python is installed.
+          # ---- Task B: build canonical Python runtime (foreground) ----
           echo "Downloading portable Python ${PBS_PYTHON_VERSION}..."
           curl -fsSL "https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/cpython-${PBS_PYTHON_VERSION}+${PBS_TAG}-aarch64-apple-darwin-install_only.tar.gz" \
             -o /tmp/pbs-python.tar.gz
@@ -308,61 +290,53 @@ jobs:
           mv /tmp/python /tmp/eigeninference-python
           rm -f /tmp/pbs-python.tar.gz
 
-          # Download the fork source and save it — this exact zip is uploaded
-          # to R2 so providers can pip-install the same artifact during self-heal.
           curl -fsSL -o /tmp/vllm-mlx-source.zip \
             'https://github.com/Gajesh2007/vllm-mlx/archive/refs/heads/main.zip'
 
-          # Upgrade pip and install packages
           /tmp/eigeninference-python/bin/python3.12 -m pip install --upgrade pip --quiet
-          # Install vllm-mlx and all deps in one call so pip resolves constraints together.
-          # mlx-lm>=0.31.2 is critical — older versions lack GenerationBatch API.
           /tmp/eigeninference-python/bin/python3.12 -m pip install --quiet --no-cache-dir \
             'mlx-lm>=0.31.2' \
             /tmp/vllm-mlx-source.zip \
             grpcio flatbuffers soundfile mlx-audio tokenizers
-          # Force-upgrade mlx-lm in case a transitive dep pinned an older version
           /tmp/eigeninference-python/bin/python3.12 -m pip install --quiet --no-cache-dir --upgrade 'mlx-lm>=0.31.2'
 
-          # Verify packages work and vllm-mlx can actually import (catches version mismatches)
           /tmp/eigeninference-python/bin/python3.12 -c "import vllm_mlx; print(f'vllm-mlx {vllm_mlx.__version__}')"
           /tmp/eigeninference-python/bin/python3.12 -c "import mlx_lm; print(f'mlx-lm {mlx_lm.__version__}')"
           /tmp/eigeninference-python/bin/python3.12 -c "from vllm_mlx.server import app; print('vllm-mlx server imports OK')"
 
-          # Strip unnecessary packages to keep it small (keep pip — providers need it)
           cd /tmp/eigeninference-python/lib/python*/site-packages
           rm -rf torch* gradio* opencv* cv2* pandas* pyarrow* \
                  sympy* networkx* mcp* miniaudio* pydub* datasets*
-          # Purge ALL .pyc and __pycache__ first, then precompile deterministically.
-          # This ensures: (1) no stale .pyc from PBS or pip installs, (2) all .pyc
-          # are compiled by the same Python version, (3) providers hash identical files
-          # because they receive the pre-compiled .pyc in the tarball.
           find /tmp/eigeninference-python -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
           find /tmp/eigeninference-python -name "*.pyc" -delete 2>/dev/null || true
-          # Precompile all .py files — .pyc is now part of the verified package
           /tmp/eigeninference-python/bin/python3.12 -m compileall -q /tmp/eigeninference-python/lib/python3.12/site-packages/ 2>/dev/null || true
-          # Remove EXTERNALLY-MANAGED marker so pip works without --break-system-packages
           rm -f /tmp/eigeninference-python/lib/python*/EXTERNALLY-MANAGED
-          # Sign libpython and extension modules so the hardened provider can load them.
-          find /tmp/eigeninference-python -type f | while read -r file; do
-            if file "$file" | grep -q "Mach-O"; then
-              codesign --force --sign "$DEVELOPER_ID" \
-                --keychain "$KEYCHAIN_PATH" \
-                --options runtime \
-                "$file"
-            fi
-          done
+
+          # Sign libpython and extension modules (retry once on transient
+          # Apple timestamp failures — this is the exact failure mode that
+          # killed the first dev release).
+          sign_runtime_binaries() {
+            find /tmp/eigeninference-python -type f | while read -r file; do
+              if file "$file" | grep -q "Mach-O"; then
+                codesign --force --sign "$DEVELOPER_ID" \
+                  --keychain "$KEYCHAIN_PATH" \
+                  --options runtime \
+                  --timestamp \
+                  "$file" || return 1
+              fi
+            done
+          }
+          if ! sign_runtime_binaries; then
+            echo "codesign batch failed (likely Apple timestamp server blip) — retrying in 30s"
+            sleep 30
+            sign_runtime_binaries
+          fi
           cd -
 
-          # Hash the Python binary (this is what providers must match)
-          # Hash python3.12 specifically — must match what compute_runtime_hashes() hashes on providers
           PYTHON_BIN="/tmp/eigeninference-python/bin/python3.12"
           PYTHON_HASH=$(shasum -a 256 "$PYTHON_BIN" | cut -d' ' -f1)
           echo "Python hash: $PYTHON_HASH"
 
-          # Hash EVERY file in site-packages (must match Rust hash_files_sorted algorithm).
-          # This covers .py source, .so compiled extensions (mlx GPU backend, tokenizers),
-          # .dylib libraries, config files — everything. Any tampered file is detected.
           SITE_PACKAGES_DIR=$(/tmp/eigeninference-python/bin/python3.12 -c "import site; print(site.getsitepackages()[0])")
           echo "Hashing all files in: $SITE_PACKAGES_DIR"
           RUNTIME_HASH=$(/tmp/eigeninference-python/bin/python3 -c "
@@ -388,38 +362,73 @@ jobs:
           " "$SITE_PACKAGES_DIR")
           echo "Runtime hash (all site-packages): $RUNTIME_HASH"
 
-          # Tar the full Python runtime for R2 upload
-          echo "Packaging Python runtime..."
           cd /tmp && tar czf eigeninference-python-macos-arm64.tar.gz -C eigeninference-python .
-          PYTHON_TARBALL_SIZE=$(du -h eigeninference-python-macos-arm64.tar.gz | cut -f1)
-          echo "Python runtime: $PYTHON_TARBALL_SIZE"
-
-          # Tar just site-packages separately — providers download this for self-heal.
-          # This is the canonical set of ALL Python packages with verified integrity.
-          echo "Packaging site-packages..."
           cd /tmp && tar czf eigeninference-site-packages.tar.gz -C "$SITE_PACKAGES_DIR" .
-          SITE_PKG_SIZE=$(du -h eigeninference-site-packages.tar.gz | cut -f1)
-          echo "Site-packages tarball: $SITE_PKG_SIZE"
 
-          # Upload Python runtime to R2 (providers download this)
-          aws s3 cp /tmp/eigeninference-python-macos-arm64.tar.gz \
-            "s3://${R2_BUCKET}/releases/v${VERSION}/eigeninference-python-macos-arm64.tar.gz" \
-            --endpoint-url "$R2_ENDPOINT"
-          echo "Python runtime uploaded to R2"
+          echo "python_hash=$PYTHON_HASH" >> "$GITHUB_OUTPUT"
+          echo "runtime_hash=$RUNTIME_HASH" >> "$GITHUB_OUTPUT"
 
-          # Upload site-packages tarball — providers use this for self-heal
-          aws s3 cp /tmp/eigeninference-site-packages.tar.gz \
-            "s3://${R2_BUCKET}/releases/v${VERSION}/eigeninference-site-packages.tar.gz" \
-            --endpoint-url "$R2_ENDPOINT"
-          echo "Site-packages uploaded to R2"
+          # ---- Wait for Task A (notarization) and bail on failure ----
+          echo "Waiting for bundle notarization (pid $NOTARIZE_PID)..."
+          if ! wait "$NOTARIZE_PID"; then
+            echo "!! bundle notarization failed — log tail:"
+            tail -80 /tmp/notarize.log
+            exit 1
+          fi
+          echo "Bundle notarization complete. Log tail:"
+          tail -20 /tmp/notarize.log
 
-          # Upload the vllm-mlx source zip as fallback for older providers.
-          aws s3 cp /tmp/vllm-mlx-source.zip \
-            "s3://${R2_BUCKET}/releases/v${VERSION}/vllm-mlx-source.zip" \
-            --endpoint-url "$R2_ENDPOINT"
-          echo "vllm-mlx source zip uploaded to R2"
+          # Staple the individual binaries (now that notarization ticket exists)
+          xcrun stapler staple /tmp/eigeninference-bundle/bin/darkbloom || true
+          xcrun stapler staple /tmp/eigeninference-bundle/bin/eigeninference-enclave || true
+          xcrun stapler staple /tmp/eigeninference-bundle/bin/ffmpeg || true
 
-          # Compute template hashes from R2 CDN (per-environment public bucket URL)
+          # Recreate tarball with stapled binaries
+          cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
+
+      # --- Compute post-signing hashes (bundle contents are final now) ---
+
+      - name: Compute hashes
+        id: hash
+        run: |
+          BINARY_HASH=$(shasum -a 256 /tmp/eigeninference-bundle/bin/darkbloom | cut -d' ' -f1)
+          BUNDLE_HASH=$(shasum -a 256 /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
+          FFMPEG_HASH=$(shasum -a 256 /tmp/eigeninference-bundle/bin/ffmpeg | cut -d' ' -f1)
+          echo "binary_hash=$BINARY_HASH" >> "$GITHUB_OUTPUT"
+          echo "bundle_hash=$BUNDLE_HASH" >> "$GITHUB_OUTPUT"
+          echo "ffmpeg_hash=$FFMPEG_HASH" >> "$GITHUB_OUTPUT"
+          echo "grpc_binary_hash=" >> "$GITHUB_OUTPUT"
+          echo "image_bridge_hash=" >> "$GITHUB_OUTPUT"
+          echo "Binary hash (signed): $BINARY_HASH"
+          echo "Bundle hash: $BUNDLE_HASH"
+          echo "ffmpeg hash (signed): $FFMPEG_HASH"
+
+      # --- Upload everything to R2 in parallel ---
+
+      - name: Install AWS CLI
+        run: brew install awscli 2>/dev/null || true
+
+      - name: Upload artifacts to R2
+        id: upload
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_CDN: ${{ vars.R2_CDN }}
+        run: |
+          set -e
+          VERSION="${GITHUB_REF_NAME#v}"
+          PREFIX="s3://${R2_BUCKET}/releases/v${VERSION}"
+          # Parallel uploads — independent keys, no ordering requirement.
+          aws s3 cp /tmp/eigeninference-bundle-macos-arm64.tar.gz    "${PREFIX}/eigeninference-bundle-macos-arm64.tar.gz"    --endpoint-url "$R2_ENDPOINT" --only-show-errors &
+          aws s3 cp /tmp/eigeninference-python-macos-arm64.tar.gz    "${PREFIX}/eigeninference-python-macos-arm64.tar.gz"    --endpoint-url "$R2_ENDPOINT" --only-show-errors &
+          aws s3 cp /tmp/eigeninference-site-packages.tar.gz         "${PREFIX}/eigeninference-site-packages.tar.gz"         --endpoint-url "$R2_ENDPOINT" --only-show-errors &
+          aws s3 cp /tmp/vllm-mlx-source.zip                         "${PREFIX}/vllm-mlx-source.zip"                         --endpoint-url "$R2_ENDPOINT" --only-show-errors &
+          wait
+          echo "All R2 uploads complete"
+
+          # Template hashes from the env's public R2 CDN
           R2_CDN="${R2_CDN:-https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev}"
           TEMPLATE_HASHES=""
           for name in qwen3.5 trinity gemma4 minimax; do
@@ -430,33 +439,15 @@ jobs:
               echo "Template $name: ${HASH:0:16}..."
             fi
           done
-
-          echo "python_hash=$PYTHON_HASH" >> "$GITHUB_OUTPUT"
-          echo "runtime_hash=$RUNTIME_HASH" >> "$GITHUB_OUTPUT"
           echo "template_hashes=$TEMPLATE_HASHES" >> "$GITHUB_OUTPUT"
 
-      # --- Upload to R2 ---
-
-      - name: Install AWS CLI
-        run: |
-          brew install awscli 2>/dev/null || true
-
-      - name: Upload bundle to R2
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: ${{ vars.R2_BUCKET }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          aws s3 cp /tmp/eigeninference-bundle-macos-arm64.tar.gz \
-            "s3://${R2_BUCKET}/releases/v${VERSION}/eigeninference-bundle-macos-arm64.tar.gz" \
-            --endpoint-url "$R2_ENDPOINT"
-          echo "Uploaded to R2: releases/v${VERSION}/eigeninference-bundle-macos-arm64.tar.gz"
-
-      # --- Build macOS App (DMG) ---
+      # --- Build macOS App (DMG) — still sequential after notarized bundle ---
 
       - name: Build macOS app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: "SLDQ2GJ6TL"
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           cd app/EigenInference
@@ -464,7 +455,6 @@ jobs:
           APP_BIN=$(swift build -c release --show-bin-path)/EigenInference
           cd "$GITHUB_WORKSPACE"
 
-          # Create app bundle
           APP_DIR="/tmp/EigenInference.app"
           CONTENTS="$APP_DIR/Contents"
           MACOS="$CONTENTS/MacOS"
@@ -473,7 +463,6 @@ jobs:
           rm -rf "$APP_DIR"
           mkdir -p "$MACOS" "$RESOURCES" "$PYTHON_ROOT"
 
-          # Info.plist
           cat > "$CONTENTS/Info.plist" << PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -494,21 +483,28 @@ jobs:
           </plist>
           PLIST
 
-          # Copy binaries (same signed binaries as CLI bundle)
           cp "$APP_BIN" "$MACOS/EigenInference"
           cp /tmp/eigeninference-bundle/bin/darkbloom "$MACOS/darkbloom"
           cp /tmp/eigeninference-bundle/bin/eigeninference-enclave "$MACOS/eigeninference-enclave" 2>/dev/null || true
           cp provider/stt_server.py "$RESOURCES/stt_server.py"
           cp -a /tmp/eigeninference-python/. "$PYTHON_ROOT/"
 
-          find "$PYTHON_ROOT" -type f | while read -r file; do
-            if file "$file" | grep -q "Mach-O"; then
-              codesign --force --options runtime \
-                --sign "$DEVELOPER_ID" "$file"
-            fi
-          done
+          # Sign every Mach-O in the Python tree — retry once on Apple
+          # timestamp flakes.
+          sign_app_python() {
+            find "$PYTHON_ROOT" -type f | while read -r file; do
+              if file "$file" | grep -q "Mach-O"; then
+                codesign --force --options runtime \
+                  --sign "$DEVELOPER_ID" --timestamp "$file" || return 1
+              fi
+            done
+          }
+          if ! sign_app_python; then
+            echo "app-Python codesign batch failed — retrying in 30s"
+            sleep 30
+            sign_app_python
+          fi
 
-          # Sign all binaries with Hardened Runtime
           for bin in "$MACOS"/*; do
             codesign --force --options runtime \
               --entitlements scripts/entitlements.plist \
@@ -518,7 +514,6 @@ jobs:
             --entitlements scripts/entitlements.plist \
             --sign "$DEVELOPER_ID" "$APP_DIR"
 
-          # Create DMG
           DMG_TMP="/tmp/dmg-staging"
           rm -rf "$DMG_TMP"
           mkdir -p "$DMG_TMP"
@@ -528,7 +523,6 @@ jobs:
             -ov -format UDZO "/tmp/Darkbloom.dmg" >/dev/null
           rm -rf "$DMG_TMP"
 
-          # Notarize DMG
           xcrun notarytool submit "/tmp/Darkbloom.dmg" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_PASSWORD" \
@@ -538,10 +532,6 @@ jobs:
 
           echo "DMG_SIZE=$(du -h /tmp/Darkbloom.dmg | cut -f1)" >> $GITHUB_ENV
           echo "DMG built: $(du -h /tmp/Darkbloom.dmg | cut -f1)"
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: "SLDQ2GJ6TL"
 
       - name: Upload DMG to R2
         env:
@@ -551,14 +541,9 @@ jobs:
           R2_BUCKET: ${{ vars.R2_BUCKET }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          # Versioned
-          aws s3 cp /tmp/Darkbloom.dmg \
-            "s3://${R2_BUCKET}/releases/v${VERSION}/Darkbloom.dmg" \
-            --endpoint-url "$R2_ENDPOINT"
-          # Latest (stable URL for website download button)
-          aws s3 cp /tmp/Darkbloom.dmg \
-            "s3://${R2_BUCKET}/releases/latest/Darkbloom.dmg" \
-            --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp /tmp/Darkbloom.dmg "s3://${R2_BUCKET}/releases/v${VERSION}/Darkbloom.dmg"      --endpoint-url "$R2_ENDPOINT" --only-show-errors &
+          aws s3 cp /tmp/Darkbloom.dmg "s3://${R2_BUCKET}/releases/latest/Darkbloom.dmg"           --endpoint-url "$R2_ENDPOINT" --only-show-errors &
+          wait
           echo "DMG uploaded to R2: releases/v${VERSION}/Darkbloom.dmg + releases/latest/Darkbloom.dmg"
 
       # --- Register with coordinator ---
@@ -572,13 +557,11 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           BUNDLE_URL="${R2_PUBLIC_URL}/releases/v${VERSION}/eigeninference-bundle-macos-arm64.tar.gz"
 
-          # Extract annotated tag message for changelog.
           TAG_MSG=$(git tag -l --format='%(contents:subject)%0a%(contents:body)' "$GITHUB_REF_NAME" 2>/dev/null || echo "")
           if [ -z "$TAG_MSG" ] || [ "$TAG_MSG" = $'\n' ]; then
             TAG_MSG="Release v${VERSION}"
           fi
 
-          # Use python3 to build JSON safely (handles escaping).
           python3 -c "
           import json, subprocess, sys
           payload = {
@@ -588,7 +571,7 @@ jobs:
               'bundle_hash': '${{ steps.hash.outputs.bundle_hash }}',
               'python_hash': '${{ steps.runtime.outputs.python_hash }}',
               'runtime_hash': '${{ steps.runtime.outputs.runtime_hash }}',
-              'template_hashes': '${{ steps.runtime.outputs.template_hashes }}',
+              'template_hashes': '${{ steps.upload.outputs.template_hashes }}',
               'grpc_binary_hash': '${{ steps.hash.outputs.grpc_binary_hash }}',
               'image_bridge_hash': '${{ steps.hash.outputs.image_bridge_hash }}',
               'ffmpeg_hash': '${{ steps.hash.outputs.ffmpeg_hash }}',
@@ -619,7 +602,7 @@ jobs:
         with:
           files: |
             /tmp/eigeninference-bundle-macos-arm64.tar.gz
-            /tmp/EigenInference.dmg
+            /tmp/Darkbloom.dmg
           generate_release_notes: true
           body: |
             ## Provider v${{ github.ref_name }}
@@ -627,7 +610,6 @@ jobs:
             **Binary hash (signed):** `${{ steps.hash.outputs.binary_hash }}`
             **Bundle hash:** `${{ steps.hash.outputs.bundle_hash }}`
             **Runtime hash (vllm-mlx):** `${{ steps.runtime.outputs.runtime_hash }}`
-            **gRPCServerCLI hash:** `${{ steps.hash.outputs.grpc_binary_hash }}`
             **ffmpeg hash (signed):** `${{ steps.hash.outputs.ffmpeg_hash }}`
             **Signed by:** Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)
             **Notarized:** Yes

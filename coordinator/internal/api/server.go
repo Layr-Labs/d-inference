@@ -213,8 +213,11 @@ func (s *Server) SyncModelCatalog() {
 	for _, m := range models {
 		if m.Active {
 			entries = append(entries, registry.CatalogEntry{
-				ID:         m.ID,
-				WeightHash: m.WeightHash,
+				ID:                m.ID,
+				WeightHash:        m.WeightHash,
+				InternalOnly:      m.InternalOnly,
+				ContributorFor:    m.ContributorFor,
+				SpeculationFamily: m.SpeculationFamily,
 			})
 		}
 	}

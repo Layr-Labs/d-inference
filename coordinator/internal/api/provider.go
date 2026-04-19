@@ -662,6 +662,24 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	pr.SESignature = msg.SESignature
 	pr.ResponseHash = msg.ResponseHash
 
+	if pr.InternalOnly {
+		// Coordinator-generated internal control traffic (for example,
+		// speculative draft / verification sub-requests) should not affect
+		// provider reputation, consumer billing, or payout accounting.
+		pr.CompleteCh <- msg.Usage
+		close(pr.ChunkCh)
+		close(pr.CompleteCh)
+		s.registry.SetProviderIdle(providerID)
+		s.logger.Debug("internal inference complete",
+			"request_id", msg.RequestID,
+			"provider_id", providerID,
+			"model", pr.Model,
+			"prompt_tokens", msg.Usage.PromptTokens,
+			"completion_tokens", msg.Usage.CompletionTokens,
+		)
+		return
+	}
+
 	// Record job success and usage BEFORE closing ChunkCh. Closing
 	// ChunkCh unblocks the consumer response handler, and callers may
 	// check usage immediately after the HTTP response completes.
@@ -670,11 +688,15 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 
 	// Calculate cost — check provider's custom price, then platform DB price,
 	// then hardcoded defaults.
-	providerWalletForPricing := ""
+	providerPricingKey := ""
 	if p := s.registry.GetProvider(providerID); p != nil {
-		providerWalletForPricing = p.WalletAddress
+		if p.AccountID != "" {
+			providerPricingKey = p.AccountID
+		} else {
+			providerPricingKey = p.WalletAddress
+		}
 	}
-	customIn, customOut, hasCustom := s.store.GetModelPrice(providerWalletForPricing, pr.Model)
+	customIn, customOut, hasCustom := s.store.GetModelPrice(providerPricingKey, pr.Model)
 	if !hasCustom {
 		customIn, customOut, hasCustom = s.store.GetModelPrice("platform", pr.Model)
 	}
@@ -813,15 +835,20 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		return
 	}
 
-	pr.ErrorCh <- *msg
-	close(pr.ChunkCh)
-	close(pr.CompleteCh)
-	close(pr.ErrorCh)
-	if pr.TranscriptionCh != nil {
-		close(pr.TranscriptionCh)
+	if pr.ErrorCh != nil {
+		pr.ErrorCh <- *msg
 	}
-	if pr.ImageGenerationCh != nil {
-		close(pr.ImageGenerationCh)
+
+	if pr.InternalOnly {
+		s.registry.SetProviderIdle(providerID)
+		s.logger.Debug("internal inference error",
+			"request_id", msg.RequestID,
+			"provider_id", providerID,
+			"model", pr.Model,
+			"error", msg.Error,
+			"status_code", msg.StatusCode,
+		)
+		return
 	}
 
 	// Record job failure for reputation tracking.

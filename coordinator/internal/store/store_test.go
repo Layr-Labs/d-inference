@@ -195,15 +195,18 @@ func TestSupportedModels(t *testing.T) {
 		Active:       true,
 	}
 	m2 := &SupportedModel{
-		ID:           "mlx-community/Qwen3.5-9B-MLX-4bit",
-		S3Name:       "Qwen3.5-9B-MLX-4bit",
-		DisplayName:  "Qwen3.5 9B",
-		ModelType:    "text",
-		SizeGB:       6.0,
-		Architecture: "9B dense",
-		Description:  "Balanced",
-		MinRAMGB:     16,
-		Active:       true,
+		ID:                "mlx-community/Qwen3.5-9B-MLX-4bit",
+		S3Name:            "Qwen3.5-9B-MLX-4bit",
+		DisplayName:       "Qwen3.5 9B",
+		ModelType:         "text",
+		SizeGB:            6.0,
+		Architecture:      "9B dense",
+		Description:       "Balanced",
+		MinRAMGB:          16,
+		Active:            true,
+		InternalOnly:      true,
+		ContributorFor:    "qwen3.5-27b-claude-opus-8bit",
+		SpeculationFamily: "qwen-chatml",
 	}
 
 	if err := s.SetSupportedModel(m1); err != nil {
@@ -253,6 +256,25 @@ func TestSupportedModels(t *testing.T) {
 				t.Error("model should be inactive after update")
 			}
 		}
+	}
+
+	var foundContributor bool
+	for _, m := range models {
+		if m.ID == m2.ID {
+			foundContributor = true
+			if !m.InternalOnly {
+				t.Error("expected internal_only model metadata to round-trip")
+			}
+			if m.ContributorFor != "qwen3.5-27b-claude-opus-8bit" {
+				t.Errorf("contributor_for = %q", m.ContributorFor)
+			}
+			if m.SpeculationFamily != "qwen-chatml" {
+				t.Errorf("speculation_family = %q", m.SpeculationFamily)
+			}
+		}
+	}
+	if !foundContributor {
+		t.Fatalf("contributor model %q missing from store listing", m2.ID)
 	}
 
 	// Delete model

@@ -53,6 +53,14 @@ pub struct InferenceResult {
     pub completion_tokens: u64,
 }
 
+/// A raw completions-style response produced by the in-process engine.
+#[derive(Debug)]
+pub struct CompletionJsonResult {
+    pub response_json: serde_json::Value,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
 /// A streaming token from the inference engine.
 #[derive(Debug)]
 pub struct StreamToken {
@@ -328,6 +336,36 @@ impl InProcessEngine {
         })
     }
 
+    /// Run a raw completions-style request, preserving prompt/echo/logprobs.
+    pub fn generate_completion_json(
+        &self,
+        model_name: &str,
+        prompt: &str,
+        max_tokens: u64,
+        temperature: f64,
+        echo: bool,
+        logprobs: u64,
+    ) -> Result<CompletionJsonResult> {
+        if !self.loaded {
+            anyhow::bail!("Model not loaded — call load() first");
+        }
+
+        Python::with_gil(|py| match self.engine_type {
+            EngineType::VllmMlx => self.generate_completion_json_vllm_mlx(
+                py,
+                model_name,
+                prompt,
+                max_tokens,
+                temperature,
+                echo,
+                logprobs,
+            ),
+            EngineType::MlxLm => anyhow::bail!(
+                "mlx-lm backend does not support raw completions logprobs/echo"
+            ),
+        })
+    }
+
     fn generate_vllm_mlx(
         &self,
         py: Python<'_>,
@@ -372,6 +410,148 @@ impl InProcessEngine {
 
         Ok(InferenceResult {
             text,
+            prompt_tokens,
+            completion_tokens,
+        })
+    }
+
+    fn generate_completion_json_vllm_mlx(
+        &self,
+        py: Python<'_>,
+        model_name: &str,
+        prompt: &str,
+        max_tokens: u64,
+        temperature: f64,
+        echo: bool,
+        logprobs: u64,
+    ) -> Result<CompletionJsonResult> {
+        let locals = PyDict::new(py);
+        locals.set_item("engine_key", &self.cache_key)?;
+        locals.set_item("model_name", model_name)?;
+        locals.set_item("prompt", prompt)?;
+        locals.set_item("max_tokens", max_tokens)?;
+        locals.set_item(
+            "engine_max_tokens",
+            if echo && max_tokens == 0 { 1 } else { max_tokens },
+        )?;
+        locals.set_item("temperature", temperature)?;
+        locals.set_item("echo", echo)?;
+        locals.set_item("logprobs_k", logprobs)?;
+
+        let code = CString::new(
+            "import builtins\n\
+             import json\n\
+             from vllm import SamplingParams\n\
+             engine = builtins._eigeninference_vllm_engines[engine_key]\n\
+             tokenizer = engine.get_tokenizer()\n\
+             num_logprobs = int(logprobs_k)\n\
+             params = SamplingParams(\n\
+                 max_tokens=int(engine_max_tokens),\n\
+                 temperature=float(temperature),\n\
+                 logprobs=(num_logprobs if num_logprobs > 0 else None),\n\
+                 prompt_logprobs=(num_logprobs if bool(echo) and num_logprobs > 0 else None),\n\
+             )\n\
+             outputs = engine.generate([prompt], params, use_tqdm=False)\n\
+             if not outputs or not outputs[0].outputs:\n\
+                 raise RuntimeError('no completion outputs')\n\
+             request_output = outputs[0]\n\
+             completion = request_output.outputs[0]\n\
+             prompt_ids = list(request_output.prompt_token_ids or [])\n\
+             prompt_logprobs = list(request_output.prompt_logprobs) if request_output.prompt_logprobs is not None else []\n\
+             completion_ids = list(completion.token_ids or [])\n\
+             completion_logprobs = list(completion.logprobs) if completion.logprobs is not None else []\n\
+             trim_completion_tokens = 0 if bool(echo) and int(max_tokens) == 0 else len(completion_ids)\n\
+             completion_text = completion.text if trim_completion_tokens == len(completion_ids) else ''\n\
+             def decode_token(token_id, position):\n\
+                 if position is not None and token_id in position:\n\
+                     decoded = getattr(position[token_id], 'decoded_token', None)\n\
+                     if decoded is not None:\n\
+                         return decoded\n\
+                 return tokenizer.decode([token_id])\n\
+             def serialize_position(token_id, position):\n\
+                 token = decode_token(token_id, position)\n\
+                 chosen_logprob = None\n\
+                 top_logprobs = None\n\
+                 if position is not None:\n\
+                     top_logprobs = {}\n\
+                     for cand_id, cand_lp in position.items():\n\
+                         decoded = getattr(cand_lp, 'decoded_token', None)\n\
+                         if decoded is None:\n\
+                             decoded = tokenizer.decode([cand_id])\n\
+                         top_logprobs[decoded] = cand_lp.logprob\n\
+                         if cand_id == token_id:\n\
+                             chosen_logprob = cand_lp.logprob\n\
+                 return token, chosen_logprob, top_logprobs\n\
+             tokens = []\n\
+             token_logprobs = []\n\
+             top_logprobs = []\n\
+             text_offset = []\n\
+             offset = 0\n\
+             if bool(echo):\n\
+                 for idx, token_id in enumerate(prompt_ids):\n\
+                     position = prompt_logprobs[idx] if idx < len(prompt_logprobs) else None\n\
+                     token, chosen, top = serialize_position(token_id, position)\n\
+                     tokens.append(token)\n\
+                     token_logprobs.append(chosen)\n\
+                     top_logprobs.append(top)\n\
+                     text_offset.append(offset)\n\
+                     offset += len(token.encode('utf-8'))\n\
+             for idx, token_id in enumerate(completion_ids[:trim_completion_tokens]):\n\
+                 position = completion_logprobs[idx] if idx < len(completion_logprobs) else None\n\
+                 token, chosen, top = serialize_position(token_id, position)\n\
+                 tokens.append(token)\n\
+                 token_logprobs.append(chosen)\n\
+                 top_logprobs.append(top)\n\
+                 text_offset.append(offset)\n\
+                 offset += len(token.encode('utf-8'))\n\
+             finish_reason = completion.finish_reason or 'stop'\n\
+             if bool(echo) and int(max_tokens) == 0:\n\
+                 finish_reason = 'stop'\n\
+             response = {\n\
+                 'id': f'cmpl-{engine_key[:12]}',\n\
+                 'object': 'text_completion',\n\
+                 'model': model_name,\n\
+                 'choices': [{\n\
+                     'index': 0,\n\
+                     'text': (prompt + completion_text) if bool(echo) else completion_text,\n\
+                     'finish_reason': finish_reason,\n\
+                     'logprobs': {\n\
+                         'tokens': tokens,\n\
+                         'token_logprobs': token_logprobs,\n\
+                         'top_logprobs': top_logprobs,\n\
+                         'text_offset': text_offset,\n\
+                     } if num_logprobs > 0 else None,\n\
+                 }],\n\
+                 'usage': {\n\
+                     'prompt_tokens': len(prompt_ids),\n\
+                     'completion_tokens': trim_completion_tokens,\n\
+                     'total_tokens': len(prompt_ids) + trim_completion_tokens,\n\
+                 },\n\
+             }\n\
+             _result_json = json.dumps(response)\n",
+        )
+        .unwrap();
+        py.run(code.as_c_str(), None, Some(&locals))
+            .context("vllm-mlx raw completion failed")?;
+
+        let raw_json: String = locals
+            .get_item("_result_json")?
+            .ok_or_else(|| anyhow::anyhow!("no completion json"))?
+            .extract()?;
+        let response_json: serde_json::Value =
+            serde_json::from_str(&raw_json).context("failed to parse completion json")?;
+        let prompt_tokens = response_json
+            .get("usage")
+            .and_then(|u| u.get("prompt_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let completion_tokens = response_json
+            .get("usage")
+            .and_then(|u| u.get("completion_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        Ok(CompletionJsonResult {
+            response_json,
             prompt_tokens,
             completion_tokens,
         })
@@ -552,6 +732,31 @@ impl SharedEngine {
         tokio::task::spawn_blocking(move || {
             let e = engine.blocking_lock();
             e.generate(&messages, max_tokens, temperature)
+        })
+        .await?
+    }
+
+    /// Run a raw completions-style request preserving prompt/echo/logprobs.
+    pub async fn generate_completion_json(
+        &self,
+        model_name: String,
+        prompt: String,
+        max_tokens: u64,
+        temperature: f64,
+        echo: bool,
+        logprobs: u64,
+    ) -> Result<CompletionJsonResult> {
+        let engine = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let e = engine.blocking_lock();
+            e.generate_completion_json(
+                model_name.as_str(),
+                prompt.as_str(),
+                max_tokens,
+                temperature,
+                echo,
+                logprobs,
+            )
         })
         .await?
     }

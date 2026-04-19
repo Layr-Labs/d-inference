@@ -367,16 +367,19 @@ type User struct {
 // output worth paying for — small chat models (< 7B) are not useful, but small
 // specialized models (transcription, embeddings) can be best-in-class.
 type SupportedModel struct {
-	ID           string  `json:"id"`           // HuggingFace path (e.g. "mlx-community/Qwen3.5-9B-MLX-4bit")
-	S3Name       string  `json:"s3_name"`      // CDN key for download (e.g. "Qwen3.5-9B-MLX-4bit")
-	DisplayName  string  `json:"display_name"` // Human-readable (e.g. "Qwen3.5 9B")
-	ModelType    string  `json:"model_type"`   // "text", "transcription", "embedding", "tts", "image"
-	SizeGB       float64 `json:"size_gb"`      // Disk/memory size in GB
-	Architecture string  `json:"architecture"` // e.g. "9B dense", "2B conformer"
-	Description  string  `json:"description"`  // e.g. "Balanced", "Best-in-class STT"
-	MinRAMGB     int     `json:"min_ram_gb"`   // Minimum system RAM for auto-selection
-	Active       bool    `json:"active"`       // Whether available for use
-	WeightHash   string  `json:"weight_hash"`  // Expected SHA-256 fingerprint of model weight files
+	ID                string  `json:"id"`                           // HuggingFace path (e.g. "mlx-community/Qwen3.5-9B-MLX-4bit")
+	S3Name            string  `json:"s3_name"`                      // CDN key for download (e.g. "Qwen3.5-9B-MLX-4bit")
+	DisplayName       string  `json:"display_name"`                 // Human-readable (e.g. "Qwen3.5 9B")
+	ModelType         string  `json:"model_type"`                   // "text", "transcription", "embedding", "tts", "image"
+	SizeGB            float64 `json:"size_gb"`                      // Disk/memory size in GB
+	Architecture      string  `json:"architecture"`                 // e.g. "9B dense", "2B conformer"
+	Description       string  `json:"description"`                  // e.g. "Balanced", "Best-in-class STT"
+	MinRAMGB          int     `json:"min_ram_gb"`                   // Minimum system RAM for auto-selection
+	Active            bool    `json:"active"`                       // Whether available for use
+	InternalOnly      bool    `json:"internal_only,omitempty"`      // Hidden from consumer-facing /v1/models and direct routing
+	ContributorFor    string  `json:"contributor_for,omitempty"`    // Exact public target model this internal contributor accelerates (empty = family-wide)
+	SpeculationFamily string  `json:"speculation_family,omitempty"` // Exact prompt/token compatibility family (e.g. "qwen-chatml")
+	WeightHash        string  `json:"weight_hash"`                  // Expected SHA-256 fingerprint of model weight files
 }
 
 // Release represents a versioned provider binary release.

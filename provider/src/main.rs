@@ -92,6 +92,8 @@ struct CatalogModel {
     architecture: String,
     description: String,
     min_ram_gb: i32,
+    #[serde(default)]
+    internal_only: bool,
 }
 
 fn default_model_type() -> String {
@@ -132,6 +134,17 @@ fn fallback_catalog() -> Vec<CatalogModel> {
             min_ram_gb: 24,
         },
         CatalogModel {
+            id: "mlx-community/Qwen3.5-4B-4bit".into(),
+            s3_name: "Qwen3.5-4B-4bit".into(),
+            display_name: "Qwen3.5 4B Contributor".into(),
+            model_type: "text".into(),
+            size_gb: 4.0,
+            architecture: "4B dense".into(),
+            description: "Internal contributor model for Qwen speculative decoding".into(),
+            min_ram_gb: 16,
+            internal_only: true,
+        },
+        CatalogModel {
             id: "qwen3.5-27b-claude-opus-8bit".into(),
             s3_name: "qwen35-27b-claude-opus-8bit".into(),
             display_name: "Qwen3.5 27B Claude Opus".into(),
@@ -140,6 +153,7 @@ fn fallback_catalog() -> Vec<CatalogModel> {
             architecture: "27B dense, Claude Opus distilled".into(),
             description: "Frontier quality reasoning".into(),
             min_ram_gb: 36,
+            internal_only: false,
         },
         CatalogModel {
             id: "mlx-community/Trinity-Mini-8bit".into(),
@@ -150,6 +164,7 @@ fn fallback_catalog() -> Vec<CatalogModel> {
             architecture: "27B Adaptive MoE".into(),
             description: "Fast agentic inference".into(),
             min_ram_gb: 48,
+            internal_only: false,
         },
         CatalogModel {
             id: "mlx-community/gemma-4-26b-a4b-it-8bit".into(),
@@ -160,6 +175,7 @@ fn fallback_catalog() -> Vec<CatalogModel> {
             architecture: "26B MoE, 4B active".into(),
             description: "Fast multimodal MoE".into(),
             min_ram_gb: 36,
+            internal_only: false,
         },
         CatalogModel {
             id: "mlx-community/Qwen3.5-122B-A10B-8bit".into(),
@@ -170,6 +186,7 @@ fn fallback_catalog() -> Vec<CatalogModel> {
             architecture: "122B MoE, 10B active".into(),
             description: "Best quality".into(),
             min_ram_gb: 128,
+            internal_only: false,
         },
         CatalogModel {
             id: "mlx-community/MiniMax-M2.5-8bit".into(),
@@ -180,6 +197,7 @@ fn fallback_catalog() -> Vec<CatalogModel> {
             architecture: "239B MoE, 11B active".into(),
             description: "SOTA coding, 100 tok/s".into(),
             min_ram_gb: 256,
+            internal_only: false,
         },
     ]
 }
@@ -1919,12 +1937,8 @@ async fn cmd_install(
         if let Some(m) = find_model("qwen3.5-27b-claude-opus") {
             defaults.push(m);
         }
-    } else if ram >= 24 {
-        if let Some(m) = find_model("flux_2_klein_9b") {
-            defaults.push(m);
-        }
     } else if ram >= 16 {
-        if let Some(m) = find_model("flux_2_klein_4b") {
+        if let Some(m) = find_model("Qwen3.5-4B-4bit") {
             defaults.push(m);
         }
     } else {
@@ -4425,8 +4439,6 @@ async fn handle_inprocess_request(
         return;
     }
 
-    // Extract parameters from OpenAI-format body
-    let messages = extract_inprocess_messages(&body);
     let max_tokens = body
         .get("max_tokens")
         .and_then(|v| v.as_u64())
@@ -4440,7 +4452,48 @@ async fn handle_inprocess_request(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let result = if is_streaming {
+    let endpoint = body
+        .get("endpoint")
+        .and_then(|v| v.as_str())
+        .unwrap_or("/v1/chat/completions");
+    let raw_completion_request = !is_streaming
+        && endpoint == "/v1/completions"
+        && (body.get("prompt").is_some() || body.get("echo").is_some() || body.get("logprobs").is_some());
+
+    // Extract parameters from OpenAI-format body
+    let messages = extract_inprocess_messages(&body);
+
+    let result = if raw_completion_request {
+        let prompt = body
+            .get("prompt")
+            .map(extract_inprocess_input_text)
+            .unwrap_or_default();
+        let echo = body.get("echo").and_then(|v| v.as_bool()).unwrap_or(false);
+        let logprobs = body
+            .get("logprobs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        match engine
+            .generate_completion_json(&prompt, max_tokens, temperature, echo, logprobs)
+            .await
+        {
+            Ok(completion) => {
+                let raw_json = serde_json::to_string(&completion.response_json).unwrap_or_default();
+                let _ = outbound_tx
+                    .send(protocol::ProviderMessage::InferenceResponseChunk {
+                        request_id: request_id.clone(),
+                        data: format!("data: {}", raw_json),
+                    })
+                    .await;
+                Ok(inference::InferenceResult {
+                    text: String::new(),
+                    prompt_tokens: completion.prompt_tokens,
+                    completion_tokens: completion.completion_tokens,
+                })
+            }
+            Err(e) => Err(e),
+        }
+    } else if is_streaming {
         match engine
             .stream_generate(messages.clone(), max_tokens, temperature)
             .await
@@ -4487,7 +4540,7 @@ async fn handle_inprocess_request(
 
     match result {
         Ok(inference_result) => {
-            if !is_streaming {
+            if !is_streaming && !raw_completion_request {
                 let response_json = build_inprocess_response_json(
                     &body,
                     &inference_result.text,

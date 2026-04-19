@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"math"
 	"math/rand"
+	"sort"
 	"sync"
 	"time"
 
@@ -58,6 +59,10 @@ type PendingRequest struct {
 	ProviderID  string
 	Model       string
 	ConsumerKey string
+	// InternalOnly marks coordinator-generated control traffic such as
+	// speculative draft/verify requests. These requests should not affect
+	// billing, payouts, or provider reputation.
+	InternalOnly bool
 	// EstimatedPromptTokens is a coordinator-side heuristic used only for
 	// routing and queue admission. It does not need tokenizer-perfect accuracy.
 	EstimatedPromptTokens int
@@ -313,11 +318,16 @@ func (r *Registry) LoadStoredProviders() map[string]*store.ProviderRecord {
 		rec := records[i]
 		// Index by serial number for matching reconnecting providers
 		if rec.SerialNumber != "" {
-			lookup[rec.SerialNumber] = &rec
+			if _, exists := lookup[rec.SerialNumber]; !exists {
+				lookup[rec.SerialNumber] = &rec
+			}
 		}
 		// Also index by SE public key
 		if rec.SEPublicKey != "" {
-			lookup["sekey:"+rec.SEPublicKey] = &rec
+			key := "sekey:" + rec.SEPublicKey
+			if _, exists := lookup[key]; !exists {
+				lookup[key] = &rec
+			}
 		}
 	}
 
@@ -335,18 +345,6 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	// Restore trust level (will be re-verified via fresh attestation)
-	p.TrustLevel = TrustLevel(rec.TrustLevel)
-	p.Attested = rec.Attested
-	p.MDAVerified = rec.MDAVerified
-	p.ACMEVerified = rec.ACMEVerified
-
-	// Restore challenge state
-	if rec.LastChallengeVerified != nil {
-		p.LastChallengeVerified = *rec.LastChallengeVerified
-	}
-	p.FailedChallenges = rec.FailedChallenges
 
 	// Restore account linkage
 	if rec.AccountID != "" && p.AccountID == "" {
@@ -501,8 +499,11 @@ func TruncHash(h string) string {
 
 // CatalogEntry holds metadata about an active model in the catalog.
 type CatalogEntry struct {
-	ID         string
-	WeightHash string // expected SHA-256 weight fingerprint (empty = not enforced)
+	ID                string
+	WeightHash        string // expected SHA-256 weight fingerprint (empty = not enforced)
+	InternalOnly      bool
+	ContributorFor    string
+	SpeculationFamily string
 }
 
 // SetModelCatalog updates the set of active models. Only models in this
@@ -532,6 +533,75 @@ func (r *Registry) IsModelInCatalog(model string) bool {
 	}
 	_, ok := r.modelCatalog[model]
 	return ok
+}
+
+// CatalogEntry returns the catalog metadata for a model, if configured.
+func (r *Registry) CatalogEntry(model string) (CatalogEntry, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.modelCatalog) == 0 {
+		return CatalogEntry{}, false
+	}
+	entry, ok := r.modelCatalog[model]
+	return entry, ok
+}
+
+// PublicCatalogEntry returns the catalog metadata for a consumer-routable model.
+// Internal-only contributor models are hidden from direct consumer access.
+func (r *Registry) PublicCatalogEntry(model string) (CatalogEntry, bool) {
+	entry, ok := r.CatalogEntry(model)
+	if !ok {
+		r.mu.RLock()
+		noCatalog := len(r.modelCatalog) == 0
+		r.mu.RUnlock()
+		if noCatalog {
+			return CatalogEntry{ID: model}, true
+		}
+		return CatalogEntry{}, false
+	}
+	if entry.InternalOnly {
+		return CatalogEntry{}, false
+	}
+	return entry, true
+}
+
+// ContributorModelsForTarget returns internal contributor models that are
+// configured to accelerate the given public target model.
+func (r *Registry) ContributorModelsForTarget(target string) []CatalogEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.modelCatalog) == 0 {
+		return nil
+	}
+	targetEntry, ok := r.modelCatalog[target]
+	if !ok {
+		return nil
+	}
+	entries := make([]CatalogEntry, 0, 4)
+	for _, entry := range r.modelCatalog {
+		if !entry.InternalOnly {
+			continue
+		}
+		if entry.ContributorFor == target {
+			entries = append(entries, entry)
+			continue
+		}
+		if entry.ContributorFor == "" &&
+			entry.SpeculationFamily != "" &&
+			entry.SpeculationFamily == targetEntry.SpeculationFamily {
+			entries = append(entries, entry)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].ContributorFor == target && entries[j].ContributorFor != target {
+			return true
+		}
+		if entries[j].ContributorFor == target && entries[i].ContributorFor != target {
+			return false
+		}
+		return entries[i].ID < entries[j].ID
+	})
+	return entries
 }
 
 // CatalogWeightHash returns the expected weight hash for a model, or empty
@@ -760,15 +830,27 @@ func (r *Registry) Disconnect(id string) {
 	// Close all pending request channels so consumers get errors.
 	p.mu.Lock()
 	for reqID, pr := range p.pendingReqs {
-		pr.ErrorCh <- protocol.InferenceErrorMessage{
-			Type:       protocol.TypeInferenceError,
-			RequestID:  reqID,
-			Error:      "provider disconnected",
-			StatusCode: 502,
+		if pr.ErrorCh != nil {
+			pr.ErrorCh <- protocol.InferenceErrorMessage{
+				Type:       protocol.TypeInferenceError,
+				RequestID:  reqID,
+				Error:      "provider disconnected",
+				StatusCode: 502,
+			}
+			close(pr.ErrorCh)
 		}
-		close(pr.ChunkCh)
-		close(pr.CompleteCh)
-		close(pr.ErrorCh)
+		if pr.ChunkCh != nil {
+			close(pr.ChunkCh)
+		}
+		if pr.CompleteCh != nil {
+			close(pr.CompleteCh)
+		}
+		if pr.TranscriptionCh != nil {
+			close(pr.TranscriptionCh)
+		}
+		if pr.ImageGenerationCh != nil {
+			close(pr.ImageGenerationCh)
+		}
 	}
 	p.pendingReqs = make(map[string]*PendingRequest)
 	p.mu.Unlock()
@@ -1032,6 +1114,93 @@ func (r *Registry) FindProvider(model string, excludeIDs ...string) *Provider {
 	return r.FindProviderWithTrust(model, "", excludeIDs...)
 }
 
+// FindInternalProviderWithTrust selects a provider for coordinator-generated
+// internal work, including internal-only contributor models. Unlike
+// FindProviderWithTrust it does not mutate provider status; callers must still
+// reserve capacity explicitly before dispatch.
+func (r *Registry) FindInternalProviderWithTrust(model string, minTrust TrustLevel, excludeIDs ...string) *Provider {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	excludeSet := make(map[string]struct{}, len(excludeIDs))
+	for _, id := range excludeIDs {
+		excludeSet[id] = struct{}{}
+	}
+
+	effectiveMin := r.MinTrustLevel
+	if minTrust != "" && trustRank(minTrust) > trustRank(effectiveMin) {
+		effectiveMin = minTrust
+	}
+
+	challengeMaxAge := 6 * time.Minute
+	now := time.Now()
+
+	if entry, ok := r.modelCatalog[model]; ok && !entry.InternalOnly {
+		return nil
+	}
+
+	var candidates []*Provider
+	for _, p := range r.providers {
+		if _, excluded := excludeSet[p.ID]; excluded {
+			continue
+		}
+
+		p.mu.Lock()
+		status := p.Status
+		trust := p.TrustLevel
+		lastChallenge := p.LastChallengeVerified
+		runtimeVerified := p.RuntimeVerified
+		p.mu.Unlock()
+
+		if status == StatusOffline || status == StatusUntrusted {
+			continue
+		}
+		if trustRank(trust) < trustRank(effectiveMin) {
+			continue
+		}
+		if !runtimeVerified {
+			continue
+		}
+		if lastChallenge.IsZero() || now.Sub(lastChallenge) > challengeMaxAge {
+			continue
+		}
+		if p.PendingCount() >= p.MaxConcurrency() {
+			continue
+		}
+		for _, m := range p.Models {
+			if m.ID == model {
+				candidates = append(candidates, p)
+				break
+			}
+		}
+	}
+
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	bestIdx := 0
+	bestScore := ScoreProvider(candidates[0], model)
+	for i := 1; i < len(candidates); i++ {
+		s := ScoreProvider(candidates[i], model)
+		if s > bestScore {
+			bestScore = s
+			bestIdx = i
+		}
+	}
+
+	var ties []*Provider
+	for _, c := range candidates {
+		if ScoreProvider(c, model) >= bestScore-0.001 {
+			ties = append(ties, c)
+		}
+	}
+	if len(ties) > 1 {
+		return ties[rand.Intn(len(ties))]
+	}
+	return candidates[bestIdx]
+}
+
 // FindProviderWithTrust selects a provider with an optional per-request
 // minimum trust level. If minTrust is empty, the registry's default
 // MinTrustLevel is used. Consumers can request a specific trust level
@@ -1040,6 +1209,10 @@ func (r *Registry) FindProvider(model string, excludeIDs ...string) *Provider {
 func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excludeIDs ...string) *Provider {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if entry, ok := r.modelCatalog[model]; ok && entry.InternalOnly {
+		return nil
+	}
 
 	// Build a set of excluded provider IDs for O(1) lookup.
 	excludeSet := make(map[string]struct{}, len(excludeIDs))

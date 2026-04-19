@@ -352,7 +352,9 @@ async fn handle_streaming_request(
                         }
                     }
 
-                    // Extract content from delta chunks for token counting and signing
+                    // Extract content from streaming chunks for token counting and
+                    // signing. Chat streams use choices[].delta.content while
+                    // completions streams use choices[].text.
                     if let Some(choices) = chunk_json.get("choices").and_then(|v| v.as_array()) {
                         for choice in choices {
                             if let Some(content) = choice
@@ -362,6 +364,10 @@ async fn handle_streaming_request(
                             {
                                 total_completion_tokens += 1;
                                 response_content.push_str(content);
+                            }
+                            if let Some(text) = choice.get("text").and_then(|c| c.as_str()) {
+                                total_completion_tokens += 1;
+                                response_content.push_str(text);
                             }
                             // Also capture reasoning/thinking content
                             if let Some(reasoning) = choice
@@ -376,6 +382,16 @@ async fn handle_streaming_request(
                 }
 
                 // Forward the SSE line to coordinator
+                outbound_tx
+                    .send(ProviderMessage::InferenceResponseChunk {
+                        request_id: request_id.to_string(),
+                        data: line.clone(),
+                    })
+                    .await
+                    .ok();
+            } else {
+                // Preserve non-data SSE lines (for example Anthropic event: ... lines)
+                // so the coordinator can relay raw streaming protocols unchanged.
                 outbound_tx
                     .send(ProviderMessage::InferenceResponseChunk {
                         request_id: request_id.to_string(),

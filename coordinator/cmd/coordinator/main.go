@@ -397,14 +397,15 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// seedModelCatalog ensures all hardcoded models exist in the catalog.
-// On first startup it populates everything; on subsequent starts it adds
-// any new models that were added to the code but not yet in the DB.
+// seedModelCatalog syncs the built-in model catalog into the store.
+// Existing admin toggles like Active and previously registered weight hashes are
+// preserved, but built-in metadata such as contributor/speculation wiring is
+// refreshed so new routing features become active on upgrade.
 func seedModelCatalog(st store.Store, logger *slog.Logger) {
 	existing := st.ListSupportedModels()
-	existingIDs := make(map[string]bool, len(existing))
+	existingByID := make(map[string]store.SupportedModel, len(existing))
 	for _, m := range existing {
-		existingIDs[m.ID] = true
+		existingByID[m.ID] = m
 	}
 
 	models := []store.SupportedModel{
@@ -416,27 +417,29 @@ func seedModelCatalog(st store.Store, logger *slog.Logger) {
 		{ID: "flux_2_klein_9b_q8p.ckpt", S3Name: "flux-klein-9b-q8", DisplayName: "FLUX.2 Klein 9B", ModelType: "image", SizeGB: 17.4, Architecture: "9B diffusion + Qwen 8B encoder", Description: "Higher quality image gen", MinRAMGB: 32, Active: true},
 
 		// --- Text generation (8-bit quantization) ---
-		{ID: "qwen3.5-27b-claude-opus-8bit", S3Name: "qwen35-27b-claude-opus-8bit", DisplayName: "Qwen3.5 27B Claude Opus Distilled", ModelType: "text", SizeGB: 27.0, Architecture: "27B dense, Claude Opus distilled", Description: "Frontier quality reasoning", MinRAMGB: 36, Active: true},
+		{ID: "mlx-community/Qwen3.5-4B-4bit", S3Name: "Qwen3.5-4B-4bit", DisplayName: "Qwen3.5 4B Contributor", ModelType: "text", SizeGB: 4.0, Architecture: "4B dense", Description: "Internal draft model for disaggregated speculation", MinRAMGB: 16, Active: true, InternalOnly: true, SpeculationFamily: "qwen-chatml"},
+		{ID: "qwen3.5-27b-claude-opus-8bit", S3Name: "qwen35-27b-claude-opus-8bit", DisplayName: "Qwen3.5 27B Claude Opus Distilled", ModelType: "text", SizeGB: 27.0, Architecture: "27B dense, Claude Opus distilled", Description: "Frontier quality reasoning", MinRAMGB: 36, Active: true, SpeculationFamily: "qwen-chatml"},
 		{ID: "mlx-community/Trinity-Mini-8bit", S3Name: "Trinity-Mini-8bit", DisplayName: "Trinity Mini", ModelType: "text", SizeGB: 26.0, Architecture: "27B Adaptive MoE", Description: "Fast agentic inference", MinRAMGB: 48, Active: true},
 		{ID: "mlx-community/gemma-4-26b-a4b-it-8bit", S3Name: "gemma-4-26b-a4b-it-8bit", DisplayName: "Gemma 4 26B", ModelType: "text", SizeGB: 28.0, Architecture: "26B MoE, 4B active", Description: "Fast multimodal MoE", MinRAMGB: 36, Active: true},
-		{ID: "mlx-community/Qwen3.5-122B-A10B-8bit", S3Name: "Qwen3.5-122B-A10B-8bit", DisplayName: "Qwen3.5 122B", ModelType: "text", SizeGB: 122.0, Architecture: "122B MoE, 10B active", Description: "Best quality", MinRAMGB: 128, Active: true},
+		{ID: "mlx-community/Qwen3.5-122B-A10B-8bit", S3Name: "Qwen3.5-122B-A10B-8bit", DisplayName: "Qwen3.5 122B", ModelType: "text", SizeGB: 122.0, Architecture: "122B MoE, 10B active", Description: "Best quality", MinRAMGB: 128, Active: true, SpeculationFamily: "qwen-chatml"},
 		{ID: "mlx-community/MiniMax-M2.5-8bit", S3Name: "MiniMax-M2.5-8bit", DisplayName: "MiniMax M2.5", ModelType: "text", SizeGB: 243.0, Architecture: "239B MoE, 11B active", Description: "SOTA coding, 100 tok/s", MinRAMGB: 256, Active: true},
 	}
 
-	added := 0
+	synced := 0
 	for i := range models {
-		if existingIDs[models[i].ID] {
-			continue
+		if existing, ok := existingByID[models[i].ID]; ok {
+			// Preserve admin activation choice and any previously registered
+			// weight hash while refreshing built-in metadata.
+			models[i].Active = existing.Active
+			if models[i].WeightHash == "" {
+				models[i].WeightHash = existing.WeightHash
+			}
 		}
 		if err := st.SetSupportedModel(&models[i]); err != nil {
 			logger.Warn("failed to seed model", "id", models[i].ID, "error", err)
 		} else {
-			added++
+			synced++
 		}
 	}
-	if added > 0 {
-		logger.Info("new models added to catalog", "added", added, "total", len(existing)+added)
-	} else {
-		logger.Info("model catalog loaded", "count", len(existing))
-	}
+	logger.Info("model catalog synced", "synced", synced, "existing_before", len(existing))
 }

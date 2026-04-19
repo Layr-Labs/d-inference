@@ -188,7 +188,7 @@ export default function EarningsContent() {
     setWithdrawResult(null);
     trackEvent("provider_withdraw_started", {
       surface: "provider_earnings",
-      amount_usd: amount.toFixed(2),
+      amount_usd: amount,
     });
     try {
       const connection = new Connection(SOLANA_RPC);
@@ -224,7 +224,7 @@ export default function EarningsContent() {
 
       trackEvent("provider_withdraw_succeeded", {
         surface: "provider_earnings",
-        amount_usd: amount.toFixed(2),
+        amount_usd: amount,
       });
       setWithdrawResult({
         ok: true,

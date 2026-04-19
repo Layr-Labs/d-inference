@@ -4566,7 +4566,6 @@ async fn handle_inprocess_request(
                 request_id, inference_result.completion_tokens, "inprocess"
             );
             let response_hash = security::sha256_hex(sign_data.as_bytes());
-            let se_signature = security::se_sign(response_hash.as_bytes());
 
             let completion_tokens = inference_result.completion_tokens;
             let _ = outbound_tx
@@ -4576,7 +4575,7 @@ async fn handle_inprocess_request(
                         prompt_tokens: inference_result.prompt_tokens,
                         completion_tokens,
                     },
-                    se_signature,
+                    se_signature: None,
                     response_hash: Some(response_hash),
                 })
                 .await;

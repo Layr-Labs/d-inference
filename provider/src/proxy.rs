@@ -187,8 +187,6 @@ async fn handle_non_streaming_request(
     // Sign the raw response with the Secure Enclave key.
     let sign_data = format!("{}:{}:{}", request_id, completion_tokens, &raw_json);
     let response_hash = security::sha256_hex(sign_data.as_bytes());
-    let se_signature = security::se_sign(response_hash.as_bytes());
-
     outbound_tx
         .send(ProviderMessage::InferenceResponseChunk {
             request_id: request_id.to_string(),
@@ -201,7 +199,7 @@ async fn handle_non_streaming_request(
         .send(ProviderMessage::InferenceComplete {
             request_id: request_id.to_string(),
             usage,
-            se_signature,
+            se_signature: None,
             response_hash: Some(response_hash),
         })
         .await
@@ -317,8 +315,6 @@ async fn handle_streaming_request(
                         request_id, total_completion_tokens, response_content
                     );
                     let response_hash = security::sha256_hex(sign_data.as_bytes());
-                    let se_signature = security::se_sign(response_hash.as_bytes());
-
                     outbound_tx
                         .send(ProviderMessage::InferenceComplete {
                             request_id: request_id.to_string(),
@@ -326,7 +322,7 @@ async fn handle_streaming_request(
                                 prompt_tokens,
                                 completion_tokens: total_completion_tokens,
                             },
-                            se_signature,
+                            se_signature: None,
                             response_hash: Some(response_hash),
                         })
                         .await
@@ -394,8 +390,6 @@ async fn handle_streaming_request(
         request_id, total_completion_tokens, response_content
     );
     let response_hash = security::sha256_hex(sign_data.as_bytes());
-    let se_signature = security::se_sign(response_hash.as_bytes());
-
     outbound_tx
         .send(ProviderMessage::InferenceComplete {
             request_id: request_id.to_string(),
@@ -403,7 +397,7 @@ async fn handle_streaming_request(
                 prompt_tokens,
                 completion_tokens: total_completion_tokens,
             },
-            se_signature,
+            se_signature: None,
             response_hash: Some(response_hash),
         })
         .await

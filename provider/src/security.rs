@@ -865,38 +865,6 @@ mod tests {
     }
 }
 
-/// Sign data with the Secure Enclave key via eigeninference-enclave CLI.
-/// Returns the base64-encoded DER ECDSA signature.
-pub fn se_sign(data: &[u8]) -> Option<String> {
-    use std::io::Write;
-
-    let eigeninference_dir = dirs::home_dir()?.join(".darkbloom");
-    let enclave_bin = eigeninference_dir.join("bin/eigeninference-enclave");
-
-    if !enclave_bin.exists() {
-        return None;
-    }
-
-    // Write data to a temp file (eigeninference-enclave reads from stdin)
-    let data_b64 = base64::engine::general_purpose::STANDARD.encode(data);
-
-    let output = Command::new(&enclave_bin)
-        .args(["sign", "--data", &data_b64])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let sig = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if sig.is_empty() {
-        return None;
-    }
-
-    Some(sig)
-}
-
 /// Compute SHA-256 hash of data, return as hex string.
 pub fn sha256_hex(data: &[u8]) -> String {
     sha256_bytes(data)

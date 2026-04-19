@@ -581,13 +581,22 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 				continue
 			}
 			// Verify weight hash if the catalog has an expected hash.
-			if entry.WeightHash != "" && m.WeightHash != "" && m.WeightHash != entry.WeightHash {
-				r.logger.Warn("provider model weight hash mismatch, rejecting model",
-					"provider_id", id, "model", m.ID,
-					"expected", TruncHash(entry.WeightHash),
-					"got", TruncHash(m.WeightHash),
-				)
-				continue
+			if entry.WeightHash != "" {
+				if m.WeightHash == "" {
+					r.logger.Warn("provider omitted required model weight hash, rejecting model",
+						"provider_id", id, "model", m.ID,
+						"expected", TruncHash(entry.WeightHash),
+					)
+					continue
+				}
+				if m.WeightHash != entry.WeightHash {
+					r.logger.Warn("provider model weight hash mismatch, rejecting model",
+						"provider_id", id, "model", m.ID,
+						"expected", TruncHash(entry.WeightHash),
+						"got", TruncHash(m.WeightHash),
+					)
+					continue
+				}
 			}
 			filtered = append(filtered, m)
 		}

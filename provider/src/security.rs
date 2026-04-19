@@ -452,6 +452,9 @@ pub fn compute_runtime_hashes(python_cmd: &str) -> RuntimeHashes {
     // it here and the coordinator compares them.
     let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
     let site_packages_dir = eigeninference_dir.join("python/lib/python3.12/site-packages");
+    if site_packages_dir.exists() {
+        purge_pycache(&site_packages_dir);
+    }
     let runtime_hash = if site_packages_dir.exists() {
         let hash_script = format!(
             r#"

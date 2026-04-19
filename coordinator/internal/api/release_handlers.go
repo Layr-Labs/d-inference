@@ -36,6 +36,10 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "binary_hash is required"))
 		return
 	}
+	if release.BundleHash == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "bundle_hash is required"))
+		return
+	}
 	if release.URL == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "url is required"))
 		return

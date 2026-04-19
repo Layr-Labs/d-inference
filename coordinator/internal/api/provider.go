@@ -503,8 +503,16 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		)
 	}
 
-	// Verify fresh binary hash if reported and known hashes are configured.
-	if resp.BinaryHash != "" && len(s.knownBinaryHashes) > 0 {
+	// Verify fresh binary hash against the known-good release set.
+	if len(s.knownBinaryHashes) > 0 {
+		if resp.BinaryHash == "" {
+			s.logger.Error("provider omitted binary hash while known-good hashes are configured",
+				"provider_id", providerID,
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "binary hash not reported")
+			return
+		}
 		if !s.knownBinaryHashes[resp.BinaryHash] {
 			s.logger.Error("provider binary hash changed — no longer matches known-good list",
 				"provider_id", providerID,
@@ -516,16 +524,24 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		}
 	}
 
-	// Verify active model hash if reported and catalog has expected hash.
-	if resp.ActiveModelHash != "" {
-		// Get the current model from the provider's last heartbeat.
-		provider.Mu().Lock()
-		currentModel := provider.CurrentModel
-		provider.Mu().Unlock()
-
-		if currentModel != "" {
-			expectedHash := s.registry.CatalogWeightHash(currentModel)
-			if expectedHash != "" && resp.ActiveModelHash != expectedHash {
+	// Verify active model hash whenever the current model has a blessed hash.
+	provider.Mu().Lock()
+	currentModel := provider.CurrentModel
+	provider.Mu().Unlock()
+	if currentModel != "" {
+		expectedHash := s.registry.CatalogWeightHash(currentModel)
+		if expectedHash != "" {
+			if resp.ActiveModelHash == "" {
+				s.logger.Error("provider omitted active model hash for catalog-pinned model",
+					"provider_id", providerID,
+					"model", currentModel,
+					"expected", registry.TruncHash(expectedHash),
+				)
+				s.registry.MarkUntrusted(providerID)
+				s.handleChallengeFailure(providerID, "active model weight hash not reported")
+				return
+			}
+			if resp.ActiveModelHash != expectedHash {
 				s.logger.Error("provider active model hash mismatch — possible model swap",
 					"provider_id", providerID,
 					"model", currentModel,
@@ -536,6 +552,31 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				s.handleChallengeFailure(providerID, "active model weight hash mismatch")
 				return
 			}
+		}
+	}
+
+	// Verify every reported per-model hash against the blessed catalog when a
+	// catalog hash exists. Unpinned models are informational only until the
+	// catalog is populated with blessed hashes for them.
+	for modelID, hash := range resp.ModelHashes {
+		expectedHash := s.registry.CatalogWeightHash(modelID)
+		if expectedHash == "" {
+			s.logger.Warn("provider reported hash for model without a blessed catalog hash",
+				"provider_id", providerID,
+				"model", modelID,
+			)
+			continue
+		}
+		if hash == "" || hash != expectedHash {
+			s.logger.Error("provider model hash mismatch",
+				"provider_id", providerID,
+				"model", modelID,
+				"expected", registry.TruncHash(expectedHash),
+				"got", registry.TruncHash(hash),
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "model weight hash mismatch")
+			return
 		}
 	}
 
@@ -1023,7 +1064,16 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 	}
 
 	// Verify binary hash against known-good hashes.
-	if len(s.knownBinaryHashes) > 0 && result.BinaryHash != "" {
+	if len(s.knownBinaryHashes) > 0 {
+		if result.BinaryHash == "" {
+			s.logger.Warn("provider attestation omitted required binary hash",
+				"provider_id", providerID,
+			)
+			result.Valid = false
+			result.Error = "binary hash missing"
+			provider.SetAttestationResult(&result)
+			return
+		}
 		if !s.knownBinaryHashes[result.BinaryHash] {
 			s.logger.Warn("provider binary hash not in known-good list",
 				"provider_id", providerID,

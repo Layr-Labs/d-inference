@@ -1723,6 +1723,25 @@ func TestModelCatalogWeightHashVerification(t *testing.T) {
 	if p2.Models[0].ID != "model-b" {
 		t.Errorf("expected model-b to survive, got %q", p2.Models[0].ID)
 	}
+
+	// Missing hash must also be rejected when the catalog pins the model.
+	msg3 := &protocol.RegisterMessage{
+		Type:     protocol.TypeRegister,
+		Hardware: testRegisterMessage().Hardware,
+		Models: []protocol.ModelInfo{
+			{ID: "model-a", SizeBytes: 1000}, // missing required hash
+			{ID: "model-b", SizeBytes: 2000, WeightHash: "anything"},
+		},
+		Backend: "vllm_mlx",
+	}
+	p3 := reg.Register("p3", nil, msg3)
+
+	if len(p3.Models) != 1 {
+		t.Fatalf("expected 1 model (model-a rejected for missing hash), got %d", len(p3.Models))
+	}
+	if p3.Models[0].ID != "model-b" {
+		t.Errorf("expected model-b to survive missing-hash filtering, got %q", p3.Models[0].ID)
+	}
 }
 
 func TestCatalogWeightHash(t *testing.T) {

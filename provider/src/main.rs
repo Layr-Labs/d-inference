@@ -2609,20 +2609,29 @@ async fn cmd_serve(
         let warm_models: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(selected_models.clone()));
 
-        // Compute weight hashes for all active models (text, STT, image).
-        let initial_model_hash = models::compute_weight_hash(&model);
+        // Compute weight hashes for all actively served text models up front so
+        // registration can prove exactly which blessed weights are loaded.
+        let mut all_model_hashes: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for advertised in &mut advertised_models {
+            if let Some(hash) = models::compute_weight_hash(&advertised.id) {
+                advertised.weight_hash = Some(hash.clone());
+                all_model_hashes.insert(advertised.id.clone(), hash);
+            } else {
+                tracing::warn!(
+                    "Failed to compute weight hash for advertised model: {}",
+                    advertised.id
+                );
+            }
+        }
+        let initial_model_hash = all_model_hashes.get(&model).cloned();
         let current_model_hash: std::sync::Arc<std::sync::Mutex<Option<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(initial_model_hash.clone()));
         rehash_model_hash_opt = Some(current_model_hash.clone());
 
-        // Collect per-model weight hashes for attestation. Start with the text
-        // model; STT and image hashes are added after their backends pass health
-        // checks (computed once at advertisement time, reused here).
-        let mut all_model_hashes: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        if let Some(ref h) = initial_model_hash {
-            all_model_hashes.insert(model.clone(), h.clone());
-        }
+        // Collect per-model weight hashes for attestation. Text-model hashes are
+        // populated above; STT and image hashes are added after their backends
+        // pass health checks.
         if let Some(ref h) = image_weight_hash_computed {
             all_model_hashes.insert(image_model_id.clone(), h.clone());
         }

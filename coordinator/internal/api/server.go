@@ -399,6 +399,10 @@ func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 // verifyRuntimeHashes checks provider-reported runtime hashes against the
 // known-good manifest. Returns (true, nil) if all hashes match or no manifest
 // is configured. Returns (false, mismatches) if any component fails verification.
+//
+// Fail closed: once a manifest advertises a blessed hash set for a component,
+// providers must report a matching hash for that component. Omitting the field
+// is treated as a verification failure, not a bypass.
 func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHashes map[string]string, grpcBinaryHash, imageBridgeHash string) (bool, []protocol.RuntimeMismatch) {
 	if s.knownRuntimeManifest == nil {
 		return true, nil // no manifest configured, pass by default
@@ -407,8 +411,14 @@ func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHas
 	var mismatches []protocol.RuntimeMismatch
 
 	// Check Python runtime hash.
-	if pythonHash != "" && len(s.knownRuntimeManifest.PythonHashes) > 0 {
-		if !s.knownRuntimeManifest.PythonHashes[pythonHash] {
+	if len(s.knownRuntimeManifest.PythonHashes) > 0 {
+		if pythonHash == "" {
+			mismatches = append(mismatches, protocol.RuntimeMismatch{
+				Component: "python",
+				Expected:  "one of known-good hashes",
+				Got:       "missing",
+			})
+		} else if !s.knownRuntimeManifest.PythonHashes[pythonHash] {
 			mismatches = append(mismatches, protocol.RuntimeMismatch{
 				Component: "python",
 				Expected:  "one of known-good hashes",
@@ -418,8 +428,14 @@ func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHas
 	}
 
 	// Check inference runtime hash.
-	if runtimeHash != "" && len(s.knownRuntimeManifest.RuntimeHashes) > 0 {
-		if !s.knownRuntimeManifest.RuntimeHashes[runtimeHash] {
+	if len(s.knownRuntimeManifest.RuntimeHashes) > 0 {
+		if runtimeHash == "" {
+			mismatches = append(mismatches, protocol.RuntimeMismatch{
+				Component: "runtime",
+				Expected:  "one of known-good hashes",
+				Got:       "missing",
+			})
+		} else if !s.knownRuntimeManifest.RuntimeHashes[runtimeHash] {
 			mismatches = append(mismatches, protocol.RuntimeMismatch{
 				Component: "runtime",
 				Expected:  "one of known-good hashes",
@@ -429,10 +445,18 @@ func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHas
 	}
 
 	// Check template hashes.
-	if len(templateHashes) > 0 && len(s.knownRuntimeManifest.TemplateHashes) > 0 {
-		for name, got := range templateHashes {
-			expected, ok := s.knownRuntimeManifest.TemplateHashes[name]
-			if ok && got != expected {
+	if len(s.knownRuntimeManifest.TemplateHashes) > 0 {
+		for name, expected := range s.knownRuntimeManifest.TemplateHashes {
+			got, ok := templateHashes[name]
+			if !ok || got == "" {
+				mismatches = append(mismatches, protocol.RuntimeMismatch{
+					Component: "template:" + name,
+					Expected:  expected,
+					Got:       "missing",
+				})
+				continue
+			}
+			if got != expected {
 				mismatches = append(mismatches, protocol.RuntimeMismatch{
 					Component: "template:" + name,
 					Expected:  expected,
@@ -440,11 +464,26 @@ func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHas
 				})
 			}
 		}
+		for name, got := range templateHashes {
+			if _, ok := s.knownRuntimeManifest.TemplateHashes[name]; !ok {
+				mismatches = append(mismatches, protocol.RuntimeMismatch{
+					Component: "template:" + name,
+					Expected:  "not present in runtime manifest",
+					Got:       got,
+				})
+			}
+		}
 	}
 
-	// Check gRPCServerCLI binary hash (warn only — backward compat with older providers).
-	if grpcBinaryHash != "" && len(s.knownRuntimeManifest.GrpcBinaryHashes) > 0 {
-		if !s.knownRuntimeManifest.GrpcBinaryHashes[grpcBinaryHash] {
+	// Check gRPCServerCLI binary hash.
+	if len(s.knownRuntimeManifest.GrpcBinaryHashes) > 0 {
+		if grpcBinaryHash == "" {
+			mismatches = append(mismatches, protocol.RuntimeMismatch{
+				Component: "grpc_binary",
+				Expected:  "one of known-good hashes",
+				Got:       "missing",
+			})
+		} else if !s.knownRuntimeManifest.GrpcBinaryHashes[grpcBinaryHash] {
 			mismatches = append(mismatches, protocol.RuntimeMismatch{
 				Component: "grpc_binary",
 				Expected:  "one of known-good hashes",
@@ -453,9 +492,15 @@ func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHas
 		}
 	}
 
-	// Check image bridge hash (warn only — backward compat with older providers).
-	if imageBridgeHash != "" && len(s.knownRuntimeManifest.ImageBridgeHashes) > 0 {
-		if !s.knownRuntimeManifest.ImageBridgeHashes[imageBridgeHash] {
+	// Check image bridge hash.
+	if len(s.knownRuntimeManifest.ImageBridgeHashes) > 0 {
+		if imageBridgeHash == "" {
+			mismatches = append(mismatches, protocol.RuntimeMismatch{
+				Component: "image_bridge",
+				Expected:  "one of known-good hashes",
+				Got:       "missing",
+			})
+		} else if !s.knownRuntimeManifest.ImageBridgeHashes[imageBridgeHash] {
 			mismatches = append(mismatches, protocol.RuntimeMismatch{
 				Component: "image_bridge",
 				Expected:  "one of known-good hashes",

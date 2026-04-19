@@ -312,6 +312,70 @@ func createTestAttestationJSON(t *testing.T, encryptionKey string) json.RawMessa
 	return signedJSON
 }
 
+func createTestAttestationJSONWithBinaryHash(t *testing.T, encryptionKey, binaryHash string) json.RawMessage {
+	t.Helper()
+
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	xBytes := privKey.PublicKey.X.Bytes()
+	yBytes := privKey.PublicKey.Y.Bytes()
+	raw := make([]byte, 65)
+	raw[0] = 0x04
+	copy(raw[1+32-len(xBytes):33], xBytes)
+	copy(raw[33+32-len(yBytes):65], yBytes)
+
+	pubKeyB64 := base64.StdEncoding.EncodeToString(raw)
+
+	blobMap := map[string]interface{}{
+		"authenticatedRootEnabled": true,
+		"chipName":                 "Apple M3 Max",
+		"hardwareModel":            "Mac15,8",
+		"osVersion":                "15.3.0",
+		"publicKey":                pubKeyB64,
+		"rdmaDisabled":             true,
+		"secureBootEnabled":        true,
+		"secureEnclaveAvailable":   true,
+		"sipEnabled":               true,
+		"timestamp":                time.Now().UTC().Format(time.RFC3339),
+	}
+	if encryptionKey != "" {
+		blobMap["encryptionPublicKey"] = encryptionKey
+	}
+	if binaryHash != "" {
+		blobMap["binaryHash"] = binaryHash
+	}
+
+	blobJSON, err := json.Marshal(blobMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hash := sha256.Sum256(blobJSON)
+	r, s, err := ecdsa.Sign(rand.Reader, privKey, hash[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sigDER, err := asn1.Marshal(ecdsaSigHelper{R: r, S: s})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	signed := map[string]interface{}{
+		"attestation": json.RawMessage(blobJSON),
+		"signature":   base64.StdEncoding.EncodeToString(sigDER),
+	}
+
+	signedJSON, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return signedJSON
+}
+
 // TestProviderRegistrationWithValidAttestation verifies that a provider
 // with a valid Secure Enclave attestation is marked as attested.
 func TestProviderRegistrationWithValidAttestation(t *testing.T) {
@@ -453,6 +517,102 @@ func TestProviderRegistrationWithoutAttestation(t *testing.T) {
 	models := reg.ListModels()
 	if len(models) != 0 {
 		t.Fatalf("models = %d, want 0 (no attestation, no hardware trust)", len(models))
+	}
+}
+
+func TestProviderRegistrationRejectsAttestationWithoutRequiredBinaryHash(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	srv.SetKnownBinaryHashes([]string{"known-binary-hash"})
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	attestationJSON := createTestAttestationJSON(t, "")
+	regMsg := protocol.RegisterMessage{
+		Type:        protocol.TypeRegister,
+		Hardware:    protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:      []protocol.ModelInfo{{ID: "attested-model", ModelType: "test", Quantization: "4bit"}},
+		Backend:     "test",
+		Attestation: attestationJSON,
+	}
+	regData, _ := json.Marshal(regMsg)
+	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
+		t.Fatalf("write register: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	p := findProviderByModel(reg, "attested-model")
+	if p == nil {
+		t.Fatal("provider not found")
+	}
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	if p.AttestationResult == nil {
+		t.Fatal("expected attestation result to be recorded")
+	}
+	if p.AttestationResult.Valid {
+		t.Fatal("attestation should be invalid when binary hash is required but omitted")
+	}
+	if p.AttestationResult.Error != "binary hash missing" {
+		t.Fatalf("attestation error = %q, want %q", p.AttestationResult.Error, "binary hash missing")
+	}
+}
+
+func TestProviderRegistrationAcceptsAttestationWithKnownBinaryHash(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	srv.SetKnownBinaryHashes([]string{"known-binary-hash"})
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	attestationJSON := createTestAttestationJSONWithBinaryHash(t, "", "known-binary-hash")
+	regMsg := protocol.RegisterMessage{
+		Type:        protocol.TypeRegister,
+		Hardware:    protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:      []protocol.ModelInfo{{ID: "attested-model", ModelType: "test", Quantization: "4bit"}},
+		Backend:     "test",
+		Attestation: attestationJSON,
+	}
+	regData, _ := json.Marshal(regMsg)
+	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
+		t.Fatalf("write register: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	p := findProviderByModel(reg, "attested-model")
+	if p == nil {
+		t.Fatal("provider not found")
+	}
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	if p.AttestationResult == nil || !p.AttestationResult.Valid {
+		t.Fatalf("expected valid attestation result, got %+v", p.AttestationResult)
 	}
 }
 
@@ -620,6 +780,106 @@ func TestChallengeResponseSuccess(t *testing.T) {
 	}
 	if p.Status == registry.StatusUntrusted {
 		t.Error("provider should not be untrusted after successful challenge")
+	}
+}
+
+func TestChallengeResponseRejectsMissingBinaryHashWhenKnownHashesConfigured(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	srv.SetKnownBinaryHashes([]string{"known-binary-hash"})
+
+	provider := reg.Register("provider-1", nil, &protocol.RegisterMessage{
+		Type:     protocol.TypeRegister,
+		Hardware: protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:   []protocol.ModelInfo{{ID: "challenge-model", ModelType: "text"}},
+		Backend:  "test",
+	})
+	provider.Conn = nil
+
+	pc := &pendingChallenge{
+		nonce:      "nonce-123",
+		timestamp:  time.Now().UTC().Format(time.RFC3339),
+		sentAt:     time.Now(),
+		responseCh: make(chan *protocol.AttestationResponseMessage, 1),
+	}
+	rdmaDisabled := true
+	sipEnabled := true
+	secureBootEnabled := true
+	resp := &protocol.AttestationResponseMessage{
+		Type:              protocol.TypeAttestationResponse,
+		Nonce:             pc.nonce,
+		Signature:         "dGVzdA==",
+		PublicKey:         "",
+		RDMADisabled:      &rdmaDisabled,
+		SIPEnabled:        &sipEnabled,
+		SecureBootEnabled: &secureBootEnabled,
+	}
+
+	srv.verifyChallengeResponse("provider-1", provider, pc, resp)
+
+	provider.Mu().Lock()
+	defer provider.Mu().Unlock()
+	if provider.Status != registry.StatusUntrusted {
+		t.Fatalf("provider status = %v, want %v", provider.Status, registry.StatusUntrusted)
+	}
+	if provider.FailedChallenges != 1 {
+		t.Fatalf("failed challenges = %d, want 1", provider.FailedChallenges)
+	}
+}
+
+func TestChallengeResponseRejectsMissingActiveModelHashForPinnedModel(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	reg.SetModelCatalog([]registry.CatalogEntry{
+		{ID: "challenge-model", WeightHash: "catalog-hash"},
+	})
+	srv := NewServer(reg, st, logger)
+
+	provider := reg.Register("provider-1", nil, &protocol.RegisterMessage{
+		Type: protocol.TypeRegister,
+		Hardware: protocol.Hardware{
+			ChipName: "Apple M3 Max", MemoryGB: 64,
+		},
+		Models: []protocol.ModelInfo{{
+			ID: "challenge-model", ModelType: "text", WeightHash: "catalog-hash",
+		}},
+		Backend: "test",
+	})
+	provider.Conn = nil
+	provider.Mu().Lock()
+	provider.CurrentModel = "challenge-model"
+	provider.Mu().Unlock()
+
+	pc := &pendingChallenge{
+		nonce:      "nonce-456",
+		timestamp:  time.Now().UTC().Format(time.RFC3339),
+		sentAt:     time.Now(),
+		responseCh: make(chan *protocol.AttestationResponseMessage, 1),
+	}
+	rdmaDisabled := true
+	sipEnabled := true
+	secureBootEnabled := true
+	resp := &protocol.AttestationResponseMessage{
+		Type:              protocol.TypeAttestationResponse,
+		Nonce:             pc.nonce,
+		Signature:         "dGVzdA==",
+		RDMADisabled:      &rdmaDisabled,
+		SIPEnabled:        &sipEnabled,
+		SecureBootEnabled: &secureBootEnabled,
+	}
+
+	srv.verifyChallengeResponse("provider-1", provider, pc, resp)
+
+	provider.Mu().Lock()
+	defer provider.Mu().Unlock()
+	if provider.Status != registry.StatusUntrusted {
+		t.Fatalf("provider status = %v, want %v", provider.Status, registry.StatusUntrusted)
+	}
+	if provider.FailedChallenges != 1 {
+		t.Fatalf("failed challenges = %d, want 1", provider.FailedChallenges)
 	}
 }
 

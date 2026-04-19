@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
 )
@@ -135,5 +136,78 @@ func TestSyncRuntimeManifestClearsStaleHashesWhenLatestReleaseHasNoRuntimeMetada
 	}
 	if srv.knownRuntimeManifest != nil {
 		t.Fatal("knownRuntimeManifest should be cleared when latest release has no runtime metadata")
+	}
+}
+
+func TestVerifyRuntimeHashesRequiresConfiguredHashes(t *testing.T) {
+	srv, _ := runtimeManifestTestServer(t)
+	srv.SetRuntimeManifest(&RuntimeManifest{
+		PythonHashes: map[string]bool{
+			"python-ok": true,
+		},
+		RuntimeHashes: map[string]bool{
+			"runtime-ok": true,
+		},
+		TemplateHashes: map[string]string{
+			"chatml": "template-ok",
+		},
+		GrpcBinaryHashes: map[string]bool{
+			"grpc-ok": true,
+		},
+		ImageBridgeHashes: map[string]bool{
+			"bridge-ok": true,
+		},
+	})
+
+	ok, mismatches := srv.verifyRuntimeHashes("", "", map[string]string{}, "", "")
+	if ok {
+		t.Fatal("verifyRuntimeHashes should fail when required hashes are omitted")
+	}
+
+	components := make(map[string]bool, len(mismatches))
+	for _, mismatch := range mismatches {
+		components[mismatch.Component] = true
+		if mismatch.Got != "missing" {
+			t.Fatalf("component %s got=%q, want missing", mismatch.Component, mismatch.Got)
+		}
+	}
+
+	for _, component := range []string{
+		"python",
+		"runtime",
+		"template:chatml",
+		"grpc_binary",
+		"image_bridge",
+	} {
+		if !components[component] {
+			t.Fatalf("missing mismatch for component %s", component)
+		}
+	}
+}
+
+func TestVerifyRuntimeHashesRejectsUnexpectedTemplates(t *testing.T) {
+	srv, _ := runtimeManifestTestServer(t)
+	srv.SetRuntimeManifest(&RuntimeManifest{
+		TemplateHashes: map[string]string{
+			"chatml": "template-ok",
+		},
+	})
+
+	ok, mismatches := srv.verifyRuntimeHashes("", "", map[string]string{
+		"chatml": "template-ok",
+		"rogue":  "rogue-hash",
+	}, "", "")
+	if ok {
+		t.Fatal("verifyRuntimeHashes should reject templates absent from the manifest")
+	}
+	if len(mismatches) != 1 {
+		t.Fatalf("mismatches = %d, want 1", len(mismatches))
+	}
+	if mismatches[0] != (protocol.RuntimeMismatch{
+		Component: "template:rogue",
+		Expected:  "not present in runtime manifest",
+		Got:       "rogue-hash",
+	}) {
+		t.Fatalf("unexpected mismatch: %+v", mismatches[0])
 	}
 }

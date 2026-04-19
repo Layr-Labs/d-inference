@@ -111,6 +111,20 @@ if [ -d "$BIN_DIR/image-bridge" ]; then
     mv "$BIN_DIR/image-bridge" "$INSTALL_DIR/image-bridge"
 fi
 
+if [ ! -f "$BIN_DIR/darkbloom" ]; then
+    echo "  ✗ darkbloom binary missing from bundle."
+    exit 1
+fi
+
+ACTUAL_BINARY_HASH=$(shasum -a 256 "$BIN_DIR/darkbloom" | cut -d' ' -f1)
+if [ -n "$BINARY_HASH" ] && [ "$ACTUAL_BINARY_HASH" != "$BINARY_HASH" ]; then
+    echo "  ✗ Binary hash mismatch after extraction."
+    echo "    Expected: $BINARY_HASH"
+    echo "    Got:      $ACTUAL_BINARY_HASH"
+    exit 1
+fi
+echo "  Binary hash verified ✓"
+
 chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/eigeninference-enclave" "$BIN_DIR/gRPCServerCLI" "$BIN_DIR/ffmpeg" "$BIN_DIR/stt_server.py" 2>/dev/null || true
 rm -f /tmp/eigeninference-bundle.tar.gz
 
@@ -127,11 +141,23 @@ else
 fi
 
 # Verify code signature (codesign is part of base macOS, no CLT needed)
+EXPECTED_TEAM_ID="SLDQ2GJ6TL"
 if codesign --verify --verbose "$BIN_DIR/darkbloom" 2>/dev/null; then
-    TEAM=$(codesign -dvv "$BIN_DIR/darkbloom" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)
+    TEAM=$(codesign -dvv "$BIN_DIR/darkbloom" 2>&1 | sed -n 's/.*TeamIdentifier=//p' | tail -n 1)
+    if [ -z "$TEAM" ]; then
+        echo "  ✗ Code signature is missing a TeamIdentifier."
+        exit 1
+    fi
+    if [ "$TEAM" != "$EXPECTED_TEAM_ID" ]; then
+        echo "  ✗ Code signature TeamIdentifier mismatch."
+        echo "    Expected: $EXPECTED_TEAM_ID"
+        echo "    Got:      $TEAM"
+        exit 1
+    fi
     echo "  Code signature verified ✓ (Team: $TEAM)"
 else
-    echo "  ⚠ Code signature could not be verified"
+    echo "  ✗ Code signature could not be verified"
+    exit 1
 fi
 
 # Make available in PATH

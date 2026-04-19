@@ -252,7 +252,7 @@ export default function EarningsContent() {
           </p>
           <button
             onClick={() => {
-              trackEvent("login_click", {
+              trackEvent("login_cta_clicked", {
                 source: "provider_earnings_empty_state",
               });
               login();

@@ -138,7 +138,7 @@ export function DeviceLinkForm() {
         </p>
         <button
           onClick={() => {
-            trackEvent("login_click", {
+            trackEvent("login_cta_clicked", {
               source: "device_link_form",
             });
             login();

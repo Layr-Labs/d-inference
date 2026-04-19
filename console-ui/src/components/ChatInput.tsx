@@ -65,7 +65,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
         <div className="max-w-4xl mx-auto px-3 sm:px-6 py-3 sm:py-4">
           <button
             onClick={() => {
-              trackEvent("login_click", {
+              trackEvent("login_cta_clicked", {
                 source: "chat_input",
               });
               onLogin?.();

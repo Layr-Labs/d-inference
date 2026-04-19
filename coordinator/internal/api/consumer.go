@@ -264,16 +264,20 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// option), we route the prompt through a tiny-tier compressor first
 	// and swap the result into the outgoing chat-completion body. The
 	// big-tier model then runs prefill on a 2-5x shorter prompt at
-	// >90% task quality. The compressor charge is added on top of the
-	// inference charge — net economic impact is positive for the consumer
+	// >90% task quality. Net economic impact is positive for the consumer
 	// because compressor pricing is much cheaper than the prefill cycles
 	// it saves (see docs/smart-prefill.md). Failures fall through silently
 	// so smart_prefill is a best-effort optimization, never an availability
 	// hazard. Disabled for Responses-API inputs in this revision (TODO).
+	//
+	// applySmartPrefill always strips the smart_prefill field from `parsed`
+	// (whether or not it succeeds), so we must re-marshal rawBody whenever
+	// the field was present — otherwise the chat provider's vllm-mlx
+	// backend would reject our extension on the fall-through path.
 	if smartPrefillRequested(parsed) && !isResponsesAPI {
 		stats, applied := s.applySmartPrefill(r, parsed)
+		rawBody, _ = json.Marshal(parsed)
 		if applied {
-			rawBody, _ = json.Marshal(parsed)
 			w.Header().Set("X-SmartPrefill-Original-Tokens", fmt.Sprintf("%d", stats.OriginalTokens))
 			w.Header().Set("X-SmartPrefill-Compressed-Tokens", fmt.Sprintf("%d", stats.CompressedTokens))
 			w.Header().Set("X-SmartPrefill-Compressor", stats.Compressor)

@@ -31,6 +31,7 @@ type smartPrefillSettings struct {
 	CompressorModel    string  `json:"compressor_model,omitempty"`
 	TargetRatio        float64 `json:"target_ratio,omitempty"`
 	MinKeepTokens      int     `json:"min_keep_tokens,omitempty"`
+	MaxKeepTokens      int     `json:"max_keep_tokens,omitempty"`
 	MinPromptTokens    int     `json:"min_prompt_tokens,omitempty"`
 	PreserveBoundaries bool    `json:"preserve_boundaries,omitempty"`
 }
@@ -86,6 +87,9 @@ func parseSmartPrefillSettings(parsed map[string]any) smartPrefillSettings {
 	}
 	if v, ok := intFromRequestValue(obj["min_keep_tokens"]); ok {
 		s.MinKeepTokens = v
+	}
+	if v, ok := intFromRequestValue(obj["max_keep_tokens"]); ok {
+		s.MaxKeepTokens = v
 	}
 	if v, ok := intFromRequestValue(obj["min_prompt_tokens"]); ok {
 		s.MinPromptTokens = v
@@ -148,6 +152,7 @@ func (s *Server) applySmartPrefill(r *http.Request, parsed map[string]any) (smar
 		Prompt:             content,
 		TargetRatio:        ratio,
 		MinKeepTokens:      settings.MinKeepTokens,
+		MaxKeepTokens:      settings.MaxKeepTokens,
 		PreserveBoundaries: settings.PreserveBoundaries,
 	}
 	rawBody, _ := json.Marshal(req)
@@ -167,15 +172,22 @@ func (s *Server) applySmartPrefill(r *http.Request, parsed map[string]any) (smar
 		}
 	}
 
+	// refundCompression credits back the full reservation. Used on every
+	// fall-through path that didn't actually apply the compressed prompt to
+	// the consumer's request — including success-but-empty-result and
+	// success-but-swap-failed. Without this we'd bill the consumer for
+	// compression that they never benefit from. Best-effort: silent on
+	// errors because we're already on a degraded code path.
+	refundCompression := func(reason string) {
+		if reservedMicroUSD > 0 && s.billing != nil {
+			_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "smart_prefill:"+reason)
+		}
+	}
+
 	result, _, errMsg := s.runCompression(r, &req, rawBody, consumerKey,
 		estTokens, reservedMicroUSD, customRate, hasCustom)
 	if result == nil {
-		// Compression failed → refund the reservation and fall through
-		// to normal prefill. Better a slow correct request than no
-		// request at all.
-		if reservedMicroUSD > 0 && s.billing != nil {
-			_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "smart_prefill_fail")
-		}
+		refundCompression("compression_failed")
 		s.logger.Info("smart_prefill failed, falling through to full prefill",
 			"compressor", compressor,
 			"original_tokens", estTokens,
@@ -185,11 +197,17 @@ func (s *Server) applySmartPrefill(r *http.Request, parsed map[string]any) (smar
 	}
 
 	if result.CompressedPrompt == "" {
+		refundCompression("empty_result")
+		s.logger.Warn("smart_prefill compressor returned empty prompt, falling through",
+			"compressor", compressor)
 		return smartPrefillStats{}, false
 	}
 
 	// Swap the compressed prompt back into the message.
 	if !replaceMessageContent(parsed, idx, result.CompressedPrompt) {
+		refundCompression("swap_failed")
+		s.logger.Warn("smart_prefill swap failed (request shape changed?), falling through",
+			"compressor", compressor)
 		return smartPrefillStats{}, false
 	}
 

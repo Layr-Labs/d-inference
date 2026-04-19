@@ -55,6 +55,21 @@ const (
 	TypeEmbeddingComplete = "embedding_complete"
 	TypeRerankRequest     = "rerank_request"
 	TypeRerankComplete    = "rerank_complete"
+
+	// Smart prefill (attention-based prompt compression).
+	//
+	// A small-tier provider runs a draft LLM, captures attention scores
+	// over the prompt, and returns a compressed prompt (the most
+	// important tokens, in order). The big-tier provider then runs its
+	// normal prefill on the much shorter input — typically 2-5x faster
+	// time-to-first-token at >90% task quality.
+	//
+	// Compression itself is a forward pass on a 0.5–1B draft model and
+	// fits comfortably on tiny-tier Macs (8–16 GB), where a quality
+	// decoder LLM cannot run. Cross-family drafts work — see arXiv
+	// 2603.02631 — so a single draft serves the entire big-tier catalog.
+	TypePromptCompressionRequest  = "prompt_compression_request"
+	TypePromptCompressionComplete = "prompt_compression_complete"
 )
 
 // ProviderTier classifies providers by hardware capability so the coordinator
@@ -522,6 +537,70 @@ type RerankCompleteMessage struct {
 }
 
 // ---------------------------------------------------------------------------
+// Smart prefill: attention-based prompt compression
+//
+// The compressor model (a small ~0.5-1B draft LLM) lives on a tiny-tier
+// provider. Given a long prompt it computes per-token importance from
+// the draft's own attention scores and returns the top-K% of tokens in
+// order — the same prompt with low-attention tokens dropped. The
+// big-tier model then runs normal prefill on the shortened prompt with
+// no engine modifications required.
+//
+// Phase 2 (planned): return token *positions* alongside the text so the
+// big-tier provider can run sparse prefill at the original positional
+// schema (cf. SpecPrefill, vllm-mlx#179, ~5x TTFT reduction at 128k).
+// ---------------------------------------------------------------------------
+
+// PromptCompressionRequestBody is the body of a compression request.
+//
+// Prompt is the full text the consumer wants compressed; CompressorModel
+// is the tiny draft model the small-tier provider should use; TargetRatio
+// is the desired output-tokens / input-tokens ratio (0.25 = 4x). MinKeep
+// and MaxKeep bound the result so very short prompts are not over-compressed.
+type PromptCompressionRequestBody struct {
+	CompressorModel    string  `json:"compressor_model"`
+	Prompt             string  `json:"prompt"`
+	TargetRatio        float64 `json:"target_ratio,omitempty"`
+	MinKeepTokens      int     `json:"min_keep_tokens,omitempty"`
+	MaxKeepTokens      int     `json:"max_keep_tokens,omitempty"`
+	PreserveBoundaries bool    `json:"preserve_boundaries,omitempty"`
+}
+
+// PromptCompressionRequestMessage tells a small-tier provider to compress a
+// prompt. Body is E2E-encrypted whenever the provider has a public key,
+// matching the inference / embedding flow.
+type PromptCompressionRequestMessage struct {
+	Type          string                       `json:"type"`
+	RequestID     string                       `json:"request_id"`
+	Body          PromptCompressionRequestBody `json:"body,omitempty"`
+	EncryptedBody *EncryptedPayload            `json:"encrypted_body,omitempty"`
+}
+
+// PromptCompressionUsage carries usage info for billing compression jobs.
+// Only OriginalTokens are billed (compression has no completion phase).
+type PromptCompressionUsage struct {
+	OriginalTokens   int `json:"original_tokens"`
+	CompressedTokens int `json:"compressed_tokens"`
+	TotalTokens      int `json:"total_tokens"` // == OriginalTokens (what we charge for)
+}
+
+// PromptCompressionCompleteMessage carries the compressed prompt back to
+// the coordinator. CompressedPrompt is the new prompt text; the coordinator
+// either returns it directly (POST /v1/compress) or swaps it into the
+// consumer's chat-completion request (smart-prefill middleware).
+type PromptCompressionCompleteMessage struct {
+	Type             string                 `json:"type"`
+	RequestID        string                 `json:"request_id"`
+	CompressorModel  string                 `json:"compressor_model"`
+	CompressedPrompt string                 `json:"compressed_prompt,omitempty"`
+	Usage            PromptCompressionUsage `json:"usage"`
+	DurationSecs     float64                `json:"duration_secs"`
+	// EncryptedData carries the compressed prompt encrypted with the
+	// session key when E2E was used on the request.
+	EncryptedData *EncryptedPayload `json:"encrypted_data,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
 // Envelope: generic unmarshalling for provider messages
 // ---------------------------------------------------------------------------
 
@@ -618,6 +697,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg RerankCompleteMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal rerank_complete: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypePromptCompressionComplete:
+		var msg PromptCompressionCompleteMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal prompt_compression_complete: %w", err)
 		}
 		pm.Payload = &msg
 

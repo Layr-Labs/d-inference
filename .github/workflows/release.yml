@@ -332,7 +332,6 @@ jobs:
                  sympy* networkx* mcp* miniaudio* pydub* datasets*
           find /tmp/eigeninference-python -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
           find /tmp/eigeninference-python -name "*.pyc" -delete 2>/dev/null || true
-          /tmp/eigeninference-python/bin/python3.12 -m compileall -q /tmp/eigeninference-python/lib/python3.12/site-packages/ 2>/dev/null || true
           rm -f /tmp/eigeninference-python/lib/python*/EXTERNALLY-MANAGED
 
           # Sign libpython and extension modules (retry once on transient

@@ -891,7 +891,7 @@ fn fetch_runtime_manifest(
 /// If it doesn't match or can't execute, download the canonical Python runtime from R2,
 /// fall back to python-build-standalone, or Homebrew Python 3.12 as a last resort.
 /// Returns true if Python is working, false if all recovery strategies failed.
-fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
+fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> Option<String> {
     const PBS_PYTHON_URL: &str = "https://github.com/astral-sh/python-build-standalone/releases/download/20260408/cpython-3.12.13+20260408-aarch64-apple-darwin-install_only.tar.gz";
 
     let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
@@ -903,7 +903,7 @@ fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
 
     if expected_python_hashes.is_empty() {
         tracing::debug!("No Python hash in manifest — skipping Python verification");
-        return true;
+        return Some(python_cmd.to_string());
     }
 
     // Hash the current Python binary
@@ -917,7 +917,7 @@ fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
             .output();
         if matches!(test, Ok(ref o) if o.status.success()) {
             tracing::info!("Python binary verified and executable ✓");
-            return true;
+            return Some(python_cmd.to_string());
         }
         tracing::warn!("Python binary hash matches but fails to execute — re-downloading");
     } else {
@@ -982,12 +982,13 @@ fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
                             .unwrap_or_default();
                         if expected_python_hashes.contains(&new_hash) {
                             // Test execution
-                            let test = std::process::Command::new(python_cmd)
+                            let recovered_python = python_dir.join("bin/python3.12");
+                            let test = std::process::Command::new(&recovered_python)
                                 .args(["-c", "print('ok')"])
                                 .output();
                             if matches!(test, Ok(ref o) if o.status.success()) {
                                 tracing::info!("Canonical Python runtime installed and verified ✓");
-                                return true;
+                                return Some(recovered_python.to_string_lossy().to_string());
                             }
                             tracing::warn!("Downloaded Python hash matches but fails to execute");
                         } else {
@@ -1045,7 +1046,7 @@ fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
                 // Remove EXTERNALLY-MANAGED if present
                 let managed = python_dir.join("lib/python3.12/EXTERNALLY-MANAGED");
                 let _ = std::fs::remove_file(managed);
-                return true;
+                return Some(pbs_python.to_string_lossy().to_string());
             }
         }
         tracing::error!("python-build-standalone download failed to produce working Python");
@@ -1071,14 +1072,21 @@ fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
             if venv_ok {
                 let managed = python_dir.join("lib/python3.12/EXTERNALLY-MANAGED");
                 let _ = std::fs::remove_file(managed);
-                tracing::info!("Homebrew Python venv created ✓");
-                return true;
+                let venv_python = python_dir.join("bin/python3.12");
+                let test = std::process::Command::new(&venv_python)
+                    .args(["-c", "print('ok')"])
+                    .output();
+                if matches!(test, Ok(ref o) if o.status.success()) {
+                    tracing::info!("Homebrew Python venv created ✓");
+                    return Some(venv_python.to_string_lossy().to_string());
+                }
+                tracing::error!("Homebrew Python venv was created but is not executable");
             }
         }
     }
 
     tracing::error!("All Python recovery strategies failed");
-    false
+    None
 }
 
 fn runtime_smoke_test(python_cmd: &str) -> std::result::Result<String, String> {
@@ -2488,14 +2496,24 @@ async fn cmd_serve(
         .replace("wss://", "https://")
         .replace("ws://", "http://")
         .replace("/ws/provider", "");
-    if !ensure_python_verified(&python_cmd, &coordinator_http_base) {
+    let python_cmd = if let Some(verified_python) =
+        ensure_python_verified(&python_cmd, &coordinator_http_base)
+    {
+        verified_python
+    } else {
         anyhow::bail!(
             "Python runtime is broken and could not be recovered. \
              Please run: curl -fsSL {} | bash",
             DEFAULT_INSTALL_URL
         );
+    };
+    if !ensure_runtime_updated(&python_cmd, &coordinator_http_base) {
+        anyhow::bail!(
+            "Python site-packages are broken and could not be recovered. \
+             Please run: curl -fsSL {} | bash",
+            DEFAULT_INSTALL_URL
+        );
     }
-    ensure_runtime_updated(&python_cmd, &coordinator_http_base);
 
     // =========================================================================
     // Phase 1: Connect to coordinator IMMEDIATELY with ALL downloaded models.
@@ -3844,12 +3862,20 @@ async fn cmd_serve(
                                     let heal_coordinator = coordinator_http_base.clone();
                                     let heal_flag = self_heal_running.clone();
                                     std::thread::spawn(move || {
-                                        if !ensure_python_verified(&heal_python, &heal_coordinator) {
+                                        let Some(heal_python) =
+                                            ensure_python_verified(&heal_python, &heal_coordinator)
+                                        else {
                                             tracing::error!("Self-heal: Python binary is broken and could not be recovered");
                                             heal_flag.store(false, std::sync::atomic::Ordering::SeqCst);
                                             return;
+                                        };
+                                        if !ensure_runtime_updated(&heal_python, &heal_coordinator) {
+                                            tracing::error!(
+                                                "Self-heal: runtime hashes still do not match the blessed manifest"
+                                            );
+                                            heal_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                                            return;
                                         }
-                                        ensure_runtime_updated(&heal_python, &heal_coordinator);
                                         heal_flag.store(false, std::sync::atomic::Ordering::SeqCst);
                                         tracing::info!("Runtime self-heal complete — next attestation challenge will re-verify");
                                     });
@@ -6732,8 +6758,15 @@ fn verify_installed_update_runtime(
     }
 
     emit_update_status(stdout, "  Verifying Python runtime...");
-    let python_cmd = bundled_python.to_string_lossy().to_string();
-    if !ensure_python_verified(&python_cmd, coordinator_http) {
+    let python_cmd = ensure_python_verified(&bundled_python.to_string_lossy(), coordinator_http)
+        .ok_or_else(|| anyhow::anyhow!("Python runtime could not be verified after update"))?;
+    if !bundled_python.exists() {
+        emit_update_warning(
+            stdout,
+            "  ⚠ Python recovery selected a fallback interpreter outside the bundled path",
+        );
+    }
+    if !std::path::Path::new(&python_cmd).exists() {
         anyhow::bail!("Python runtime could not be verified after update");
     }
     verify_python_core_signature_match(eigeninference_dir)

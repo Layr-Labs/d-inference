@@ -256,13 +256,9 @@ echo "8.5. Computing runtime integrity hashes..."
 PYTHON_HASH=$(shasum -a 256 "$BUNDLE_DIR/python/bin/python3.12" | cut -d' ' -f1)
 echo "   Python hash: ${PYTHON_HASH:0:16}..."
 
-# Hash all .py files in vllm_mlx package (sorted, using same algorithm as Rust hash_files_sorted)
-# Each file is hashed independently, then file hashes are combined in sorted order
-VLLM_MLX_DIR="$BUNDLE_DIR/python/lib/python3.12/site-packages/vllm_mlx"
-if [ -d "$VLLM_MLX_DIR" ]; then
-    # Must match Rust hash_files_sorted(): hash each file to raw 32 bytes,
-    # concatenate in sorted filename order, SHA-256 the concatenation.
-    # Python reproduces the Rust algorithm exactly.
+# Hash all files in site-packages using the same algorithm as CI and the provider runtime verifier.
+SITE_PACKAGES_DIR="$BUNDLE_DIR/python/lib/python3.12/site-packages"
+if [ -d "$SITE_PACKAGES_DIR" ]; then
     RUNTIME_HASH=$("$BUNDLE_DIR/python/bin/python3.12" -c "
 import hashlib, os, sys
 d = sys.argv[1]
@@ -270,7 +266,6 @@ files = sorted(
     os.path.join(r, f)
     for r, _, fs in os.walk(d)
     for f in fs
-    if f.endswith('.py')
 )
 final = hashlib.sha256()
 for path in files:
@@ -281,13 +276,13 @@ for path in files:
             if not chunk:
                 break
             h.update(chunk)
-    final.update(h.digest())  # raw 32 bytes, not hex
+    final.update(h.digest())
 print(final.hexdigest())
-" "$VLLM_MLX_DIR")
-    echo "   Runtime hash (vllm-mlx): ${RUNTIME_HASH:0:16}..."
+" "$SITE_PACKAGES_DIR")
+    echo "   Runtime hash (all site-packages): ${RUNTIME_HASH:0:16}..."
 else
     RUNTIME_HASH=""
-    echo "   ⚠ vllm_mlx not found — runtime hash unavailable"
+    echo "   ⚠ site-packages not found — runtime hash unavailable"
 fi
 
 # Hash templates from R2 CDN

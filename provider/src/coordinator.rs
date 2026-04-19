@@ -102,6 +102,9 @@ pub struct CoordinatorClient {
     current_model_hash: Arc<std::sync::Mutex<Option<String>>>,
     /// Runtime integrity hashes (Python binary, vllm_mlx package, templates).
     runtime_hashes: Option<RuntimeHashes>,
+    /// If set, recompute runtime hashes from this Python interpreter whenever
+    /// we need to report live runtime integrity to the coordinator.
+    runtime_hash_python_cmd: Option<String>,
     /// Per-model weight hashes for all active models (text, STT, image).
     model_hashes: std::collections::HashMap<String, String>,
     /// Live backend capacity data (updated by main loop, read by heartbeat tick).
@@ -135,6 +138,7 @@ impl CoordinatorClient {
             warm_models: Arc::new(std::sync::Mutex::new(Vec::new())),
             current_model_hash: Arc::new(std::sync::Mutex::new(None)),
             runtime_hashes: None,
+            runtime_hash_python_cmd: None,
             model_hashes: std::collections::HashMap::new(),
             backend_capacity: Arc::new(std::sync::Mutex::new(None)),
         }
@@ -203,6 +207,13 @@ impl CoordinatorClient {
         self
     }
 
+    /// Set the Python interpreter used to recompute fresh runtime hashes for
+    /// registration and attestation challenges.
+    pub fn with_runtime_hash_python_cmd(mut self, python_cmd: Option<String>) -> Self {
+        self.runtime_hash_python_cmd = python_cmd;
+        self
+    }
+
     /// Set the shared backend capacity data (updated by main loop, read by heartbeats).
     pub fn with_backend_capacity(
         mut self,
@@ -210,6 +221,13 @@ impl CoordinatorClient {
     ) -> Self {
         self.backend_capacity = cap;
         self
+    }
+
+    fn current_runtime_hashes(&self) -> Option<RuntimeHashes> {
+        if let Some(python_cmd) = self.runtime_hash_python_cmd.as_deref() {
+            return Some(crate::security::compute_runtime_hashes(python_cmd));
+        }
+        self.runtime_hashes.clone()
     }
 
     /// Run the coordinator connection loop with auto-reconnect.
@@ -276,8 +294,9 @@ impl CoordinatorClient {
         let (mut write, mut read) = ws_stream.split();
 
         // Send registration message
+        let runtime_hashes = self.current_runtime_hashes();
         let (python_hash, runtime_hash, template_hashes, grpc_binary_hash, image_bridge_hash) =
-            if let Some(ref rh) = self.runtime_hashes {
+            if let Some(ref rh) = runtime_hashes {
                 (
                     rh.python_hash.clone(),
                     rh.runtime_hash.clone(),
@@ -481,12 +500,13 @@ impl CoordinatorClient {
                                     // Respond to the challenge inline, signing with
                                     // the provider's key.
                                     let model_hash = self.current_model_hash.lock().unwrap().clone();
+                                    let runtime_hashes = self.current_runtime_hashes();
                                     let response = handle_attestation_challenge(
                                         &nonce,
                                         &timestamp,
                                         self.public_key.as_deref(),
                                         model_hash.as_deref(),
-                                        self.runtime_hashes.as_ref(),
+                                        runtime_hashes.as_ref(),
                                         self.model_hashes.clone(),
                                     );
                                     let json = serde_json::to_string(&response)

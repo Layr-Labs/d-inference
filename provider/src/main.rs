@@ -1231,15 +1231,21 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
                                     tracing::info!(
                                         "Runtime updated — all packages verified ({summary}) ✓"
                                     );
-                                } else {
-                                    tracing::warn!(
-                                        "Runtime updated but hash differs from manifest"
-                                    );
+                                    return true;
                                 }
-                            } else {
+                                tracing::error!(
+                                    "Runtime updated but hash differs from manifest"
+                                );
+                                tracing::error!("  Expected one of: {:?}", expected_runtime_hashes);
+                                tracing::error!("  Got: {actual_hash}");
+                            } else if expected_runtime_hashes.is_empty() {
                                 tracing::info!("Runtime updated ✓ ({summary})");
+                                return true;
+                            } else {
+                                tracing::error!(
+                                    "Runtime updated but hash could not be computed against a non-empty manifest"
+                                );
                             }
-                            return true;
                         }
                         Err(err) => {
                             // Rollback
@@ -1343,15 +1349,19 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
                                 tracing::info!(
                                     "Updated vllm-mlx + deps — hash verified ({summary}) ✓"
                                 );
-                            } else {
-                                tracing::error!("Post-install hash MISMATCH!");
-                                tracing::error!("  Expected one of: {:?}", expected_runtime_hashes);
-                                tracing::error!("  Got: {actual_hash}");
+                                return true;
                             }
-                        } else {
+                            tracing::error!("Post-install hash MISMATCH!");
+                            tracing::error!("  Expected one of: {:?}", expected_runtime_hashes);
+                            tracing::error!("  Got: {actual_hash}");
+                        } else if expected_runtime_hashes.is_empty() {
                             tracing::info!("Updated vllm-mlx ✓ ({summary})");
+                            return true;
+                        } else {
+                            tracing::error!(
+                                "Post-install runtime hash missing despite non-empty manifest"
+                            );
                         }
-                        return true;
                     }
                     Err(err) => {
                         tracing::error!("Updated runtime still fails smoke test: {err}");
@@ -2753,6 +2763,7 @@ async fn cmd_serve(
         )
         .with_auth_token(auth_token)
         .with_runtime_hashes(Some(runtime_hashes))
+        .with_runtime_hash_python_cmd(Some(python_cmd.clone()))
         .with_stats(provider_stats.clone())
         .with_inference_active(inference_active.clone())
         .with_current_model(current_model)

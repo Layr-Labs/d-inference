@@ -370,7 +370,7 @@ export default function EarnPage() {
                 </div>
                 <button
                   onClick={() => {
-                    trackEvent("login_click", {
+                    trackEvent("login_cta_clicked", {
                       source: "earn_page_setup_provider_cta",
                     });
                     login();
@@ -404,7 +404,7 @@ export default function EarnPage() {
                 <Link
                   href="/providers/setup"
                   onClick={() => {
-                    trackEvent("provider_setup_cta_click", {
+                    trackEvent("provider_setup_clicked", {
                       source: "earn_page_setup_provider_cta",
                     });
                   }}

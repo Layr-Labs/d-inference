@@ -345,7 +345,7 @@ export default function ProvidersPage() {
             </div>
             <button
               onClick={() => {
-                trackEvent("login_click", {
+                trackEvent("login_cta_clicked", {
                   source: "providers_page",
                 });
                 login();
@@ -411,7 +411,7 @@ export default function ProvidersPage() {
             <Link
               href="/providers/setup"
               onClick={() => {
-                trackEvent("provider_setup_cta_click", {
+                trackEvent("provider_setup_clicked", {
                   source: "providers_page",
                 });
               }}
@@ -451,7 +451,7 @@ export default function ProvidersPage() {
             <Link
               href="/providers/setup"
               onClick={() => {
-                trackEvent("provider_setup_cta_click", {
+                trackEvent("provider_setup_clicked", {
                   source: "providers_empty_state",
                 });
               }}

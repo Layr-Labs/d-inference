@@ -252,8 +252,8 @@ export default function EarningsContent() {
           </p>
           <button
             onClick={() => {
-              trackEvent("login_cta_clicked", {
-                surface: "provider_earnings_empty_state",
+              trackEvent("login_click", {
+                source: "provider_earnings_empty_state",
               });
               login();
             }}

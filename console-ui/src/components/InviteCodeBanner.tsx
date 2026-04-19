@@ -32,7 +32,7 @@ export function InviteCodeBanner() {
     const trimmed = code.trim().toUpperCase();
     if (!trimmed) return;
 
-    trackEvent("invite_redeem_started", {
+    trackEvent("invite_redeem_submitted", {
       surface: "banner",
     });
     setLoading(true);

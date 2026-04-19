@@ -31,7 +31,7 @@ function LoginContent() {
 
         <button
           onClick={() => {
-            trackEvent("login_click", {
+            trackEvent("login_cta_clicked", {
               location: "login_page",
             });
             login();

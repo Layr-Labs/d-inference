@@ -103,10 +103,29 @@ export default function ChatPage() {
         updateChatTitle(chatId, title);
       }
 
+      const userMsg: Message = {
+        id: generateId(),
+        role: "user",
+        content: trimmedContent,
+        timestamp: Date.now(),
+      };
       const currentChat = useStore
         .getState()
         .chats.find((c) => c.id === chatId);
-      const priorMessageCount = currentChat?.messages.length ?? 0;
+      const priorMessages = currentChat?.messages ?? [];
+      const priorMessageCount = priorMessages.length;
+
+      addMessage(chatId, userMsg);
+
+      trackEvent("chat_submit", {
+        model: selectedModel,
+        is_new_chat: isNewChat,
+        message_length_bucket: Math.min(
+          Math.floor(trimmedContent.length / 100) * 100,
+          1000,
+        ),
+        prior_message_count: priorMessageCount,
+      });
 
       const assistantId = generateId();
       const assistantMsg: Message = {
@@ -121,29 +140,11 @@ export default function ChatPage() {
       setIsStreaming(true);
       const abort = new AbortController();
       abortRef.current = abort;
-      const userMsg: Message = {
-        id: generateId(),
-        role: "user",
-        content: trimmedContent,
-        timestamp: Date.now(),
-      };
-      addMessage(chatId, userMsg);
 
-      trackEvent("chat_submit", {
-        model: selectedModel,
-        is_new_chat: isNewChat,
-        message_length_bucket: Math.min(
-          Math.floor(trimmedContent.length / 100) * 100,
-          1000,
-        ),
-        prior_message_count: priorMessageCount,
-      });
-
-      const userMessages = currentChat
-        ? currentChat.messages
-            .filter((m) => m.id !== assistantId)
-            .map((m) => ({ role: m.role, content: m.content }))
-        : [{ role: "user" as const, content: trimmedContent }];
+      const userMessages = [...priorMessages, userMsg].map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
       const allMessages = [
         { role: "system" as const, content: SYSTEM_PROMPT },
         ...userMessages,
@@ -341,7 +342,7 @@ export default function ChatPage() {
 
             <button
               onClick={() => {
-                trackEvent("login_clicked", {
+                trackEvent("login_cta_clicked", {
                   source: "chat_page_guest_hero",
                 });
                 login();

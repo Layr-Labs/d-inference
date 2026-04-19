@@ -1937,10 +1937,6 @@ async fn cmd_install(
         if let Some(m) = find_model("qwen3.5-27b-claude-opus") {
             defaults.push(m);
         }
-    } else if ram >= 24 {
-        if let Some(m) = find_model("flux_2_klein_9b") {
-            defaults.push(m);
-        }
     } else if ram >= 16 {
         if let Some(m) = find_model("Qwen3.5-4B-4bit") {
             defaults.push(m);

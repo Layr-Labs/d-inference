@@ -151,6 +151,21 @@ pub enum ProviderMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         encrypted_data: Option<EncryptedPayload>,
     },
+    /// Smart-prefill prompt compression result. The provider returns the
+    /// compressed prompt text plus original/compressed token counts.
+    /// EncryptedData carries the compressed prompt under the session key
+    /// when the request was E2E-encrypted (in which case CompressedPrompt
+    /// is empty on the wire).
+    PromptCompressionComplete {
+        request_id: String,
+        compressor_model: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        compressed_prompt: String,
+        usage: PromptCompressionUsage,
+        duration_secs: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_data: Option<EncryptedPayload>,
+    },
     /// Response to an attestation challenge from the coordinator.
     /// Includes a fresh SIP status check — the coordinator verifies this
     /// hasn't changed since registration.
@@ -248,6 +263,15 @@ pub enum CoordinatorMessage {
     /// Rerank request — disaggregated compute job for small-tier providers.
     /// Body matches Cohere /v1/rerank (model, query, documents, top_n, return_documents).
     RerankRequest {
+        request_id: String,
+        #[serde(default)]
+        body: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_body: Option<EncryptedPayload>,
+    },
+    /// Smart-prefill prompt compression request. The body parses to a
+    /// PromptCompressionRequestBody (compressor_model, prompt, target_ratio).
+    PromptCompressionRequest {
         request_id: String,
         #[serde(default)]
         body: serde_json::Value,
@@ -490,6 +514,39 @@ pub struct RerankResult {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct RerankUsage {
     pub prompt_tokens: u64,
+    pub total_tokens: u64,
+}
+
+/// Body of a smart-prefill prompt compression request.
+///
+/// `compressor_model` is the small draft LLM the provider should use
+/// (e.g. `mlx-community/Qwen3-0.6B`). `target_ratio` is the desired
+/// output/input token ratio (0.25 = 4x compression). `min_keep_tokens`
+/// and `max_keep_tokens` bound the result so very short prompts aren't
+/// over-compressed and very long ones don't blow past the target model's
+/// context window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptCompressionRequestBody {
+    pub compressor_model: String,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_keep_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_keep_tokens: Option<u32>,
+    #[serde(default)]
+    pub preserve_boundaries: bool,
+}
+
+/// Usage info for billing prompt compression jobs. We bill on
+/// `original_tokens` because that is the work the small Mac actually did
+/// — the compressed_tokens count is informational (it's what the big-tier
+/// provider then runs prefill on).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct PromptCompressionUsage {
+    pub original_tokens: u64,
+    pub compressed_tokens: u64,
     pub total_tokens: u64,
 }
 
@@ -1674,6 +1731,93 @@ mod tests {
             }
             _ => panic!("variant mismatch"),
         }
+    }
+
+    #[test]
+    fn test_compression_request_from_go_json_encrypted() {
+        let raw = r#"{"type":"prompt_compression_request","request_id":"c-1","encrypted_body":{"ephemeral_public_key":"a2V5","ciphertext":"Y2lwaGVy"}}"#;
+        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
+        match msg {
+            CoordinatorMessage::PromptCompressionRequest {
+                request_id,
+                encrypted_body,
+                ..
+            } => {
+                assert_eq!(request_id, "c-1");
+                let enc = encrypted_body.unwrap();
+                assert_eq!(enc.ephemeral_public_key, "a2V5");
+            }
+            _ => panic!("expected PromptCompressionRequest"),
+        }
+    }
+
+    #[test]
+    fn test_compression_request_body_roundtrip() {
+        let body_json = r#"{"compressor_model":"qwen3-0.6b","prompt":"hello world","target_ratio":0.25,"min_keep_tokens":64,"preserve_boundaries":true}"#;
+        let body: PromptCompressionRequestBody = serde_json::from_str(body_json).unwrap();
+        assert_eq!(body.compressor_model, "qwen3-0.6b");
+        assert_eq!(body.prompt, "hello world");
+        assert_eq!(body.target_ratio, Some(0.25));
+        assert_eq!(body.min_keep_tokens, Some(64));
+        assert!(body.preserve_boundaries);
+    }
+
+    #[test]
+    fn test_compression_complete_roundtrip() {
+        let msg = ProviderMessage::PromptCompressionComplete {
+            request_id: "c-1".to_string(),
+            compressor_model: "qwen3-0.6b".to_string(),
+            compressed_prompt: "hi world".to_string(),
+            usage: PromptCompressionUsage {
+                original_tokens: 200,
+                compressed_tokens: 50,
+                total_tokens: 200,
+            },
+            duration_secs: 0.05,
+            encrypted_data: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"prompt_compression_complete\""));
+        let decoded: ProviderMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ProviderMessage::PromptCompressionComplete {
+                compressor_model,
+                compressed_prompt,
+                usage,
+                ..
+            } => {
+                assert_eq!(compressor_model, "qwen3-0.6b");
+                assert_eq!(compressed_prompt, "hi world");
+                assert_eq!(usage.original_tokens, 200);
+                assert_eq!(usage.compressed_tokens, 50);
+            }
+            _ => panic!("variant mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_compression_complete_omits_prompt_when_encrypted() {
+        let msg = ProviderMessage::PromptCompressionComplete {
+            request_id: "c-2".to_string(),
+            compressor_model: "qwen3-0.6b".to_string(),
+            compressed_prompt: String::new(),
+            usage: PromptCompressionUsage {
+                original_tokens: 100,
+                compressed_tokens: 25,
+                total_tokens: 100,
+            },
+            duration_secs: 0.01,
+            encrypted_data: Some(EncryptedPayload {
+                ephemeral_public_key: "abc".to_string(),
+                ciphertext: "def".to_string(),
+            }),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            !json.contains("\"compressed_prompt\""),
+            "compressed_prompt should be omitted when empty: {json}"
+        );
+        assert!(json.contains("encrypted_data"));
     }
 
     #[test]

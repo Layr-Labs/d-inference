@@ -569,6 +569,7 @@ func (s *Server) routes() {
 	// Disaggregated compute — small-tier providers serve these.
 	s.mux.HandleFunc("POST /v1/embeddings", s.requireAuth(s.handleEmbeddings))
 	s.mux.HandleFunc("POST /v1/rerank", s.requireAuth(s.handleRerank))
+	s.mux.HandleFunc("POST /v1/compress", s.requireAuth(s.handleCompress))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
 
 	// Provider image upload — providers POST generated images here (no API key auth,

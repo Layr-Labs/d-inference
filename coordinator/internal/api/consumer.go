@@ -259,6 +259,31 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		rawBody, _ = json.Marshal(parsed)
 	}
 
+	// Smart prefill — opt-in attention-based prompt compression. When the
+	// consumer sets `"smart_prefill": true` (or its equivalent extended
+	// option), we route the prompt through a tiny-tier compressor first
+	// and swap the result into the outgoing chat-completion body. The
+	// big-tier model then runs prefill on a 2-5x shorter prompt at
+	// >90% task quality. Net economic impact is positive for the consumer
+	// because compressor pricing is much cheaper than the prefill cycles
+	// it saves (see docs/smart-prefill.md). Failures fall through silently
+	// so smart_prefill is a best-effort optimization, never an availability
+	// hazard. Disabled for Responses-API inputs in this revision (TODO).
+	//
+	// applySmartPrefill always strips the smart_prefill field from `parsed`
+	// (whether or not it succeeds), so we must re-marshal rawBody whenever
+	// the field was present — otherwise the chat provider's vllm-mlx
+	// backend would reject our extension on the fall-through path.
+	if smartPrefillRequested(parsed) && !isResponsesAPI {
+		stats, applied := s.applySmartPrefill(r, parsed)
+		rawBody, _ = json.Marshal(parsed)
+		if applied {
+			w.Header().Set("X-SmartPrefill-Original-Tokens", fmt.Sprintf("%d", stats.OriginalTokens))
+			w.Header().Set("X-SmartPrefill-Compressed-Tokens", fmt.Sprintf("%d", stats.CompressedTokens))
+			w.Header().Set("X-SmartPrefill-Compressor", stats.Compressor)
+		}
+	}
+
 	// Bound the generation so the pre-flight reservation covers it. If the
 	// consumer didn't set max_tokens, inject defaultMaxOutputTokens into the
 	// outgoing body. Without this bound the provider could return more tokens

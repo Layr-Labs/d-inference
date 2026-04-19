@@ -25,8 +25,9 @@ use crate::backend::ExponentialBackoff;
 use crate::hardware::HardwareInfo;
 use crate::models::ModelInfo;
 use crate::protocol::{
-    CoordinatorMessage, EmbeddingRequestBody, ImageGenerationRequestBody, ProviderMessage,
-    ProviderStats, ProviderStatus, RerankRequestBody, TranscriptionRequestBody,
+    CoordinatorMessage, EmbeddingRequestBody, ImageGenerationRequestBody,
+    PromptCompressionRequestBody, ProviderMessage, ProviderStats, ProviderStatus,
+    RerankRequestBody, TranscriptionRequestBody,
 };
 use crate::security::RuntimeHashes;
 
@@ -75,6 +76,11 @@ pub enum CoordinatorEvent {
     RerankRequest {
         request_id: String,
         body: RerankRequestBody,
+        session_pub_key: Option<String>,
+    },
+    PromptCompressionRequest {
+        request_id: String,
+        body: PromptCompressionRequestBody,
         session_pub_key: Option<String>,
     },
     Cancel {
@@ -534,6 +540,33 @@ impl CoordinatorClient {
                                         }
                                         Err(e) => {
                                             tracing::error!("Failed to parse rerank body: {e}");
+                                        }
+                                    }
+                                }
+                                Ok(CoordinatorMessage::PromptCompressionRequest { request_id, body, encrypted_body }) => {
+                                    tracing::info!("Received prompt compression request: {request_id}");
+                                    let session_pub = encrypted_body.as_ref().map(|e| e.ephemeral_public_key.clone());
+                                    let decrypted_body = if let Some(enc) = encrypted_body {
+                                        match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
+                                            Ok(b) => b,
+                                            Err(e) => {
+                                                tracing::error!("Failed to decrypt compression request: {e}");
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        body
+                                    };
+                                    match serde_json::from_value::<PromptCompressionRequestBody>(decrypted_body) {
+                                        Ok(parsed_body) => {
+                                            let _ = event_tx.send(CoordinatorEvent::PromptCompressionRequest {
+                                                request_id,
+                                                body: parsed_body,
+                                                session_pub_key: session_pub,
+                                            }).await;
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to parse compression body: {e}");
                                         }
                                     }
                                 }

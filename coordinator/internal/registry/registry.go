@@ -84,6 +84,9 @@ type PendingRequest struct {
 	// Rerank result (nil for non-rerank requests)
 	RerankCh chan *protocol.RerankCompleteMessage
 
+	// Smart-prefill compression result (nil for non-compression requests)
+	CompressionCh chan *protocol.PromptCompressionCompleteMessage
+
 	// ReservedMicroUSD is the balance atomically debited at pre-flight.
 	// The post-inference charge adjusts for the difference between the
 	// actual cost and this reservation, preventing billing race conditions.
@@ -594,9 +597,13 @@ func (r *Registry) CatalogModelType(model string) string {
 // routing a given model type. Used by the scheduler to bias routing toward
 // the smallest tier capable of serving the request, freeing larger machines
 // for memory-bandwidth-bound decode work.
+//
+// "compressor" is the smart-prefill draft model used by the prompt
+// compression endpoint; it is a tiny LLM (≤1B params) so it routes to the
+// same tiny/small fleet as embeddings.
 func PreferredTiersForModelType(modelType string) []protocol.ProviderTier {
 	switch modelType {
-	case "embedding", "rerank":
+	case "embedding", "rerank", "compressor":
 		return []protocol.ProviderTier{protocol.ProviderTierTiny, protocol.ProviderTierSmall}
 	default:
 		return nil

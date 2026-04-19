@@ -433,6 +433,16 @@ func seedModelCatalog(st store.Store, logger *slog.Logger) {
 		{ID: "mlx-community/mxbai-embed-large-v1", S3Name: "mxbai-embed-large-v1", DisplayName: "mxbai Large Embeddings", ModelType: "embedding", SizeGB: 0.7, Architecture: "335M BERT-large", Description: "English embeddings, top of MTEB", MinRAMGB: 8, Active: true},
 		{ID: "mlx-community/bge-reranker-v2-m3", S3Name: "bge-reranker-v2-m3", DisplayName: "BGE Reranker v2-m3", ModelType: "rerank", SizeGB: 1.2, Architecture: "568M cross-encoder", Description: "Multilingual cross-encoder reranker", MinRAMGB: 8, Active: true},
 		{ID: "mlx-community/Qwen3-Reranker-0.6B", S3Name: "Qwen3-Reranker-0.6B", DisplayName: "Qwen3 0.6B Reranker", ModelType: "rerank", SizeGB: 0.7, Architecture: "0.6B cross-encoder", Description: "Tiny multilingual reranker", MinRAMGB: 8, Active: true},
+
+		// --- Smart-prefill compressor models (attention-based prompt compression) ---
+		// A small draft LLM hosted on a tiny-tier provider compresses the
+		// consumer's prompt to ~1/4 of its original length using its own
+		// attention scores. The big-tier provider then runs normal prefill on
+		// the shorter prompt — typically 2-3x lower TTFT at >90% task quality.
+		// Cross-family drafts work (arXiv 2603.02631), so a single Qwen3-0.6B
+		// can serve as compressor for every model in the catalog above.
+		{ID: "mlx-community/Qwen3-0.6B", S3Name: "Qwen3-0.6B", DisplayName: "Qwen3 0.6B (Compressor)", ModelType: "compressor", SizeGB: 0.7, Architecture: "0.6B Qwen3 dense", Description: "Smart-prefill draft compressor", MinRAMGB: 8, Active: true},
+		{ID: "mlx-community/Qwen3-1.7B", S3Name: "Qwen3-1.7B", DisplayName: "Qwen3 1.7B (Compressor)", ModelType: "compressor", SizeGB: 1.8, Architecture: "1.7B Qwen3 dense", Description: "Smart-prefill draft compressor (higher quality)", MinRAMGB: 8, Active: true},
 	}
 
 	added := 0

@@ -23,9 +23,9 @@ use crate::coordinator::AtomicProviderStats;
 use crate::crypto::NodeKeyPair;
 use crate::protocol::{
     EmbeddingRequestBody, EmbeddingUsage, EmbeddingVector, EncryptedPayload,
-    ImageGenerationRequestBody, ImageGenerationUsage, ProviderMessage, RerankRequestBody,
-    RerankResult, RerankUsage, TranscriptionRequestBody, TranscriptionSegment, TranscriptionUsage,
-    UsageInfo,
+    ImageGenerationRequestBody, ImageGenerationUsage, PromptCompressionRequestBody,
+    PromptCompressionUsage, ProviderMessage, RerankRequestBody, RerankResult, RerankUsage,
+    TranscriptionRequestBody, TranscriptionSegment, TranscriptionUsage, UsageInfo,
 };
 use crate::security;
 
@@ -1222,6 +1222,178 @@ fn extract_rerank_usage(resp: &serde_json::Value) -> RerankUsage {
         .unwrap_or(prompt_tokens);
     RerankUsage {
         prompt_tokens,
+        total_tokens,
+    }
+}
+
+/// Handle a smart-prefill prompt compression request.
+///
+/// Forwards to a local sidecar at `compressor_backend_url` exposing
+/// `POST /v1/compress` with the same request body schema. The sidecar runs
+/// the small draft LLM (e.g. Qwen3-0.6B), captures attention scores over
+/// the prompt, and returns the compressed prompt.
+///
+/// Same envelope shape as embeddings/rerank — when the coordinator sent
+/// us a session pubkey, we encrypt the compressed prompt back over it
+/// so the coordinator (and only the coordinator's request handler) sees
+/// the plaintext.
+pub async fn handle_compression_request(
+    request_id: String,
+    body: PromptCompressionRequestBody,
+    compressor_backend_url: String,
+    outbound_tx: mpsc::Sender<ProviderMessage>,
+    cancel_token: CancellationToken,
+    stats: Option<Arc<AtomicProviderStats>>,
+    session_pub_key: Option<String>,
+    node_keypair: Option<Arc<NodeKeyPair>>,
+) {
+    let start = std::time::Instant::now();
+    let result = do_compression(
+        &request_id,
+        &body,
+        &compressor_backend_url,
+        &outbound_tx,
+        &cancel_token,
+        start,
+        session_pub_key.as_deref(),
+        node_keypair.as_deref(),
+    )
+    .await;
+
+    if let Err(e) = result {
+        if cancel_token.is_cancelled() {
+            tracing::info!("Compression request {request_id} cancelled");
+        } else {
+            tracing::error!("Compression request {request_id} failed: {e}");
+            let _ = outbound_tx
+                .send(ProviderMessage::InferenceError {
+                    request_id: request_id.clone(),
+                    error: e.to_string(),
+                    status_code: 500,
+                })
+                .await;
+        }
+    } else if let Some(s) = stats {
+        use std::sync::atomic::Ordering;
+        s.requests_served.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+async fn do_compression(
+    request_id: &str,
+    body: &PromptCompressionRequestBody,
+    compressor_backend_url: &str,
+    outbound_tx: &mpsc::Sender<ProviderMessage>,
+    cancel_token: &CancellationToken,
+    start: std::time::Instant,
+    session_pub_key: Option<&str>,
+    node_keypair: Option<&NodeKeyPair>,
+) -> Result<()> {
+    let url = format!("{compressor_backend_url}/v1/compress");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap_or_default();
+
+    let response = tokio::select! {
+        result = client.post(&url).json(body).send() => {
+            result.context("failed to send compression request to backend")?
+        }
+        _ = cancel_token.cancelled() => {
+            anyhow::bail!("request cancelled");
+        }
+    };
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_body = response.text().await.unwrap_or_default();
+        outbound_tx
+            .send(ProviderMessage::InferenceError {
+                request_id: request_id.to_string(),
+                error: error_body,
+                status_code: status.as_u16(),
+            })
+            .await
+            .ok();
+        return Ok(());
+    }
+
+    let response_json: serde_json::Value = tokio::select! {
+        result = response.json() => {
+            result.context("failed to parse compression backend response")?
+        }
+        _ = cancel_token.cancelled() => {
+            anyhow::bail!("request cancelled");
+        }
+    };
+
+    let compressed_prompt = response_json
+        .get("compressed_prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let usage = extract_compression_usage(&response_json);
+
+    // If the request came encrypted, encrypt the compressed prompt back
+    // over the session key so the coordinator never sees plaintext on the
+    // return path either.
+    let encrypted = match (session_pub_key, node_keypair) {
+        (Some(sess_pub_b64), Some(kp)) => {
+            use base64::Engine;
+            let sess_pub_bytes = base64::engine::general_purpose::STANDARD
+                .decode(sess_pub_b64)
+                .ok()
+                .and_then(|b| b.try_into().ok());
+            if let Some(sess_pub) = sess_pub_bytes {
+                let ciphertext = kp.encrypt(&sess_pub, compressed_prompt.as_bytes())?;
+                Some(EncryptedPayload {
+                    ephemeral_public_key: base64::engine::general_purpose::STANDARD
+                        .encode(kp.public_key_bytes()),
+                    ciphertext: base64::engine::general_purpose::STANDARD.encode(&ciphertext),
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    outbound_tx
+        .send(ProviderMessage::PromptCompressionComplete {
+            request_id: request_id.to_string(),
+            compressor_model: body.compressor_model.clone(),
+            compressed_prompt: if encrypted.is_some() {
+                String::new()
+            } else {
+                compressed_prompt
+            },
+            usage,
+            duration_secs: start.elapsed().as_secs_f64(),
+            encrypted_data: encrypted,
+        })
+        .await
+        .ok();
+
+    Ok(())
+}
+
+fn extract_compression_usage(resp: &serde_json::Value) -> PromptCompressionUsage {
+    let usage = resp.get("usage");
+    let original_tokens = usage
+        .and_then(|u| u.get("original_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let compressed_tokens = usage
+        .and_then(|u| u.get("compressed_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let total_tokens = usage
+        .and_then(|u| u.get("total_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(original_tokens);
+    PromptCompressionUsage {
+        original_tokens,
+        compressed_tokens,
         total_tokens,
     }
 }

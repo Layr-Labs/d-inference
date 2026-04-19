@@ -246,6 +246,30 @@ fn fallback_catalog() -> Vec<CatalogModel> {
             description: "Tiny multilingual reranker".into(),
             min_ram_gb: 8,
         },
+        // Smart-prefill compressor models — tiny LLM drafts that score
+        // prompt tokens by attention so the big-tier provider can run
+        // prefill on a shortened prompt. Cross-family drafts work
+        // (arXiv 2603.02631) so a single 0.6B serves the whole catalog.
+        CatalogModel {
+            id: "mlx-community/Qwen3-0.6B".into(),
+            s3_name: "Qwen3-0.6B".into(),
+            display_name: "Qwen3 0.6B (Compressor)".into(),
+            model_type: "compressor".into(),
+            size_gb: 0.7,
+            architecture: "0.6B Qwen3 dense".into(),
+            description: "Smart-prefill draft compressor".into(),
+            min_ram_gb: 8,
+        },
+        CatalogModel {
+            id: "mlx-community/Qwen3-1.7B".into(),
+            s3_name: "Qwen3-1.7B".into(),
+            display_name: "Qwen3 1.7B (Compressor)".into(),
+            model_type: "compressor".into(),
+            size_gb: 1.8,
+            architecture: "1.7B Qwen3 dense".into(),
+            description: "Smart-prefill draft compressor (higher quality)".into(),
+            min_ram_gb: 8,
+        },
     ]
 }
 
@@ -2620,6 +2644,16 @@ async fn cmd_serve(
         .and_then(|s| s.parse().ok())
         .unwrap_or(image_port + 1);
 
+    // Smart-prefill compressor sidecar port. Same launcher contract as
+    // the embedding sidecar — if not running, compression requests fail
+    // with connect-refused and the coordinator routes to another tiny
+    // provider (or, for smart_prefill middleware, falls through to full
+    // prefill).
+    let compressor_port: u16 = std::env::var("EIGENINFERENCE_COMPRESSOR_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(embedding_port + 1);
+
     // Set up coordinator state. The actual connection is spawned AFTER backends
     // are loaded so we don't advertise models before we can serve them.
     let mut coordinator_handle;
@@ -3889,6 +3923,27 @@ async fn cmd_serve(
                                 let handle = tokio::spawn(async move {
                                     proxy::handle_rerank_request(
                                         rid.clone(), body, emb_url, tx, token_clone,
+                                        stats_clone, session_pub_key, kp,
+                                    ).await;
+                                    let _ = done_tx.send((rid, false)).await;
+                                });
+
+                                inflight.insert(request_id, (cancel_token, handle));
+                            }
+                            coordinator::CoordinatorEvent::PromptCompressionRequest { request_id, body, session_pub_key } => {
+                                last_request_time = tokio::time::Instant::now();
+                                let tx = outbound_tx.clone();
+                                let cancel_token = CancellationToken::new();
+                                let token_clone = cancel_token.clone();
+                                let done_tx = done_tx.clone();
+                                let rid = request_id.clone();
+                                let comp_url = format!("http://127.0.0.1:{}", compressor_port);
+                                let stats_clone = Some(provider_stats.clone());
+                                let kp = Some(node_keypair.clone());
+
+                                let handle = tokio::spawn(async move {
+                                    proxy::handle_compression_request(
+                                        rid.clone(), body, comp_url, tx, token_clone,
                                         stats_clone, session_pub_key, kp,
                                     ).await;
                                     let _ = done_tx.send((rid, false)).await;

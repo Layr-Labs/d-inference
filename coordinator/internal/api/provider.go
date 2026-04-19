@@ -288,6 +288,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			rrMsg := msg.Payload.(*protocol.RerankCompleteMessage)
 			s.handleRerankComplete(providerID, provider, rrMsg)
 
+		case protocol.TypePromptCompressionComplete:
+			pcMsg := msg.Payload.(*protocol.PromptCompressionCompleteMessage)
+			s.handlePromptCompressionComplete(providerID, provider, pcMsg)
+
 		case protocol.TypeAttestationResponse:
 			respMsg := msg.Payload.(*protocol.AttestationResponseMessage)
 			s.handleAttestationResponse(providerID, provider, respMsg, tracker)
@@ -836,6 +840,9 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	}
 	if pr.RerankCh != nil {
 		close(pr.RerankCh)
+	}
+	if pr.CompressionCh != nil {
+		close(pr.CompressionCh)
 	}
 
 	// Record job failure for reputation tracking.

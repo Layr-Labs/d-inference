@@ -32,7 +32,8 @@ declare global {
     dataLayer?: unknown[];
     gtag?: (...args: unknown[]) => void;
     __googleAnalyticsInitialized?: boolean;
-    __googleAnalyticsLastPageLocation?: string;
+    __googleAnalyticsCurrentPageLocation?: string;
+    __googleAnalyticsCurrentPageReferrer?: string;
   }
 }
 
@@ -58,6 +59,7 @@ export function grantGoogleAnalyticsConsent() {
   }
 
   window.localStorage.setItem(GA_CONSENT_STORAGE_KEY, "granted");
+  window.dispatchEvent(new Event("darkbloom-ga-consent-changed"));
 }
 
 export function revokeGoogleAnalyticsConsent() {
@@ -66,6 +68,7 @@ export function revokeGoogleAnalyticsConsent() {
   }
 
   window.localStorage.setItem(GA_CONSENT_STORAGE_KEY, "denied");
+  window.dispatchEvent(new Event("darkbloom-ga-consent-changed"));
 }
 
 export function getGoogleAnalyticsConsentStorageKey() {
@@ -147,7 +150,10 @@ function getTrackedCurrentLocation() {
     return undefined;
   }
 
-  return sanitizeTrackedLocation(window.location.href);
+  return (
+    window.__googleAnalyticsCurrentPageLocation ||
+    sanitizeTrackedLocation(window.location.href)
+  );
 }
 
 export function buildTrackedPageLocation(pathname: string) {
@@ -157,7 +163,7 @@ export function buildTrackedPageLocation(pathname: string) {
 
   const pageUrl = new URL(pathname, window.location.origin);
 
-  if (window.__googleAnalyticsLastPageLocation) {
+  if (window.__googleAnalyticsCurrentPageLocation) {
     return pageUrl.toString();
   }
 
@@ -218,9 +224,8 @@ export function trackEvent(
   analytics.gtag("event", eventName, {
     page_location: getTrackedCurrentLocation(),
     page_referrer:
-      (window.__googleAnalyticsLastPageLocation
-        ? sanitizeTrackedLocation(window.__googleAnalyticsLastPageLocation)
-        : undefined) || sanitizeReferrer(document.referrer),
+      window.__googleAnalyticsCurrentPageReferrer ||
+      sanitizeReferrer(document.referrer),
     ...sanitizeEventParams(params),
     send_to: analytics.measurementId,
   });
@@ -236,8 +241,8 @@ function trackPageView(params: {
   }
 
   const pageReferrer =
-    (window.__googleAnalyticsLastPageLocation
-      ? sanitizeTrackedLocation(window.__googleAnalyticsLastPageLocation)
+    (window.__googleAnalyticsCurrentPageLocation
+      ? sanitizeTrackedLocation(window.__googleAnalyticsCurrentPageLocation)
       : undefined) ||
     sanitizeReferrer(document.referrer);
 
@@ -247,5 +252,6 @@ function trackPageView(params: {
     send_to: analytics.measurementId,
   });
 
-  window.__googleAnalyticsLastPageLocation = params.page_location;
+  window.__googleAnalyticsCurrentPageReferrer = params.page_location;
+  window.__googleAnalyticsCurrentPageLocation = params.page_location;
 }

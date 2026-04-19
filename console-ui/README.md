@@ -19,9 +19,8 @@ Client-side variables used by the app:
 - `NEXT_PUBLIC_PRIVY_APP_ID` - Privy application ID
 - `NEXT_PUBLIC_SOLANA_RPC_URL` - Solana RPC endpoint
 - `NEXT_PUBLIC_GA_MEASUREMENT_ID` - optional public Google Analytics 4 measurement ID
-- `NEXT_PUBLIC_GA_ENABLED_BY_DEFAULT` - set to `true` only if you intentionally want analytics enabled without an in-app consent step
 
-Analytics stays disabled unless `NEXT_PUBLIC_GA_MEASUREMENT_ID` is set **and** consent is granted. Consent can be enabled by setting `NEXT_PUBLIC_GA_ENABLED_BY_DEFAULT=true` or by writing `darkbloom_ga_consent=granted` in localStorage before the app initializes.
+Analytics stays disabled unless `NEXT_PUBLIC_GA_MEASUREMENT_ID` is set **and** consent is granted. When a measurement ID is configured, the app shows a small in-app prompt so users can allow or decline analytics. Consent is persisted in `localStorage` under `darkbloom_ga_consent` (`granted` or `denied`).
 
 ### Google Analytics setup
 

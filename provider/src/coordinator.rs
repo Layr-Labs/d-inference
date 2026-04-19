@@ -29,6 +29,8 @@ use crate::protocol::{
     TranscriptionRequestBody,
 };
 use crate::security::RuntimeHashes;
+use crate::signed_claims;
+use std::collections::BTreeMap;
 
 /// Thread-safe counters for provider statistics, shared between the main
 /// event loop (which increments them) and the heartbeat sender (which reads them).
@@ -288,6 +290,38 @@ impl CoordinatorClient {
             } else {
                 (None, None, std::collections::HashMap::new(), None, None)
             };
+
+        // Build the signed claims envelope. Every integrity-bearing field
+        // listed below is canonicalized into deterministic JSON and SE-signed.
+        // The coordinator recomputes the same canonical bytes from what it
+        // received and verifies the signature; any field a caller could lie
+        // about by editing this binary will fail verification.
+        let claims_timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let template_hashes_btree: BTreeMap<String, String> =
+            template_hashes.clone().into_iter().collect();
+        let model_hashes_btree: BTreeMap<String, String> =
+            self.model_hashes.clone().into_iter().collect();
+        let claims = signed_claims::RegisterClaims {
+            timestamp: &claims_timestamp,
+            backend: &self.backend_name,
+            version: env!("CARGO_PKG_VERSION"),
+            public_key: self.public_key.as_deref().unwrap_or(""),
+            wallet_address: self.wallet_address.as_deref().unwrap_or(""),
+            auth_token: self.auth_token.as_deref().unwrap_or(""),
+            python_hash: python_hash.as_deref().unwrap_or(""),
+            runtime_hash: runtime_hash.as_deref().unwrap_or(""),
+            grpc_binary_hash: grpc_binary_hash.as_deref().unwrap_or(""),
+            image_bridge_hash: image_bridge_hash.as_deref().unwrap_or(""),
+            template_hashes: &template_hashes_btree,
+            model_hashes: &model_hashes_btree,
+            // Benchmark fields are not yet sent at registration; reserved for
+            // future use. Always 0 for now so the canonical bytes stay stable.
+            prefill_tps_milli: 0,
+            decode_tps_milli: 0,
+        };
+        let claims_bytes = signed_claims::canonical_register_json(&claims);
+        let claims_signature = crate::security::se_sign(&claims_bytes);
+
         let register = ProviderMessage::Register {
             hardware: self.hardware.clone(),
             models: self.models.clone(),
@@ -304,6 +338,9 @@ impl CoordinatorClient {
             template_hashes,
             grpc_binary_hash,
             image_bridge_hash,
+            model_hashes: self.model_hashes.clone(),
+            claims_timestamp: Some(claims_timestamp),
+            claims_signature,
         };
         let register_json = serde_json::to_string(&register)?;
         write.send(Message::Text(register_json.into())).await?;
@@ -611,9 +648,7 @@ pub fn handle_attestation_challenge(
     let data = format!("{}{}", nonce, timestamp);
 
     // Sign the challenge data (nonce + timestamp) with the Secure Enclave
-    // P-256 key via the eigeninference-enclave CLI tool. The coordinator
-    // verifies this signature using the provider's SE public key from the
-    // attestation blob, proving the same hardware is still responding.
+    // P-256 key. This proves possession of the registered SE key.
     let pk_str = public_key.unwrap_or("");
     let signature = match crate::security::se_sign(data.as_bytes()) {
         Some(sig) => sig,
@@ -627,8 +662,6 @@ pub fn handle_attestation_challenge(
     };
 
     // Fresh security posture check at challenge time.
-    // SIP can't change at runtime (requires reboot), but this proves
-    // the provider hasn't rebooted with SIP disabled and reconnected.
     let sip_enabled = crate::security::check_sip_enabled();
     let rdma_disabled = crate::security::check_rdma_disabled();
     let hypervisor_active = crate::security::check_hypervisor_active();
@@ -661,6 +694,37 @@ pub fn handle_attestation_challenge(
             (None, None, std::collections::HashMap::new(), None, None)
         };
 
+    // Apple Silicon always has Secure Boot in Full Security. We still report
+    // it explicitly so it goes into the signed envelope; coordinator
+    // cross-checks against MDA when present.
+    let secure_boot_enabled = true;
+
+    // Build and SE-sign the canonical claims envelope. Without this, every
+    // field below (binary_hash, model hashes, sip flag, etc.) is just
+    // provider-claimed JSON — a one-line patch could lie about all of them.
+    let template_hashes_btree: BTreeMap<String, String> =
+        template_hashes.clone().into_iter().collect();
+    let model_hashes_btree: BTreeMap<String, String> =
+        model_hashes.clone().into_iter().collect();
+    let claims = signed_claims::ChallengeClaims {
+        nonce,
+        timestamp,
+        binary_hash: binary_hash.as_deref().unwrap_or(""),
+        active_model_hash: current_model_hash.unwrap_or(""),
+        python_hash: python_hash.as_deref().unwrap_or(""),
+        runtime_hash: rt_hash.as_deref().unwrap_or(""),
+        grpc_binary_hash: grpc_binary_hash.as_deref().unwrap_or(""),
+        image_bridge_hash: image_bridge_hash.as_deref().unwrap_or(""),
+        template_hashes: &template_hashes_btree,
+        model_hashes: &model_hashes_btree,
+        sip_enabled,
+        secure_boot_enabled,
+        rdma_disabled,
+        hypervisor_active,
+    };
+    let claims_bytes = signed_claims::canonical_challenge_json(&claims);
+    let claims_signature = crate::security::se_sign(&claims_bytes);
+
     ProviderMessage::AttestationResponse {
         nonce: nonce.to_string(),
         signature,
@@ -668,7 +732,7 @@ pub fn handle_attestation_challenge(
         hypervisor_active: Some(hypervisor_active),
         rdma_disabled: Some(rdma_disabled),
         sip_enabled: Some(sip_enabled),
-        secure_boot_enabled: Some(true), // Apple Silicon always has Secure Boot in Full Security mode
+        secure_boot_enabled: Some(secure_boot_enabled),
         binary_hash,
         active_model_hash: current_model_hash.map(|s| s.to_string()),
         python_hash,
@@ -677,6 +741,8 @@ pub fn handle_attestation_challenge(
         grpc_binary_hash,
         image_bridge_hash,
         model_hashes,
+        claims_timestamp: Some(timestamp.to_string()),
+        claims_signature,
     }
 }
 
@@ -717,6 +783,9 @@ pub fn build_register_message_with_wallet(
         template_hashes: std::collections::HashMap::new(),
         grpc_binary_hash: None,
         image_bridge_hash: None,
+        model_hashes: std::collections::HashMap::new(),
+        claims_timestamp: None,
+        claims_signature: None,
     }
 }
 
@@ -1076,6 +1145,8 @@ mod tests {
                 grpc_binary_hash: _,
                 image_bridge_hash: _,
                 model_hashes: _,
+                claims_timestamp: _,
+                claims_signature: _,
             } => {
                 // Nonce echoed back exactly
                 assert_eq!(nonce, "dGVzdG5vbmNl");

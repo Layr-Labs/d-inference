@@ -264,6 +264,7 @@ func TestStreamingE2E(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Start a goroutine to handle inference on the provider side.
@@ -419,6 +420,7 @@ func TestNonStreamingE2E(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Provider goroutine — handles immediate challenge, then inference.

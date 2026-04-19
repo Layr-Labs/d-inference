@@ -39,6 +39,7 @@ mod secure_enclave_key;
 mod security;
 mod server;
 mod service;
+mod signed_claims;
 mod wallet;
 
 use anyhow::{Context, Result};

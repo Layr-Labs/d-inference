@@ -703,8 +703,8 @@ func TestScoreProviderFunction(t *testing.T) {
 		DecodeTPS:       100.0,
 		TrustLevel:      TrustHardware,
 		Status:          StatusOnline,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
+		RuntimeVerified: true, ClaimsVerified: true,
+		Reputation: NewReputation(),
 	}
 
 	score := ScoreProvider(p, "test-model")
@@ -849,8 +849,8 @@ func TestScoringWithHighMemoryPressure(t *testing.T) {
 		DecodeTPS:       100.0,
 		TrustLevel:      TrustHardware,
 		Status:          StatusOnline,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
+		RuntimeVerified: true, ClaimsVerified: true,
+		Reputation: NewReputation(),
 		SystemMetrics: protocol.SystemMetrics{
 			MemoryPressure: 0.1,
 			CPUUsage:       0.1,
@@ -861,8 +861,8 @@ func TestScoringWithHighMemoryPressure(t *testing.T) {
 		DecodeTPS:       100.0,
 		TrustLevel:      TrustHardware,
 		Status:          StatusOnline,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
+		RuntimeVerified: true, ClaimsVerified: true,
+		Reputation: NewReputation(),
 		SystemMetrics: protocol.SystemMetrics{
 			MemoryPressure: 0.9,
 			CPUUsage:       0.1,
@@ -883,8 +883,8 @@ func TestScoringWithThermalThrottling(t *testing.T) {
 		DecodeTPS:       100.0,
 		TrustLevel:      TrustHardware,
 		Status:          StatusOnline,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
+		RuntimeVerified: true, ClaimsVerified: true,
+		Reputation: NewReputation(),
 		SystemMetrics: protocol.SystemMetrics{
 			MemoryPressure: 0.1,
 			CPUUsage:       0.1,
@@ -1367,8 +1367,8 @@ func TestThermalCriticalBlocksRouting(t *testing.T) {
 		DecodeTPS:       100.0,
 		TrustLevel:      TrustHardware,
 		Status:          StatusOnline,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
+		RuntimeVerified: true, ClaimsVerified: true,
+		Reputation: NewReputation(),
 		SystemMetrics: protocol.SystemMetrics{
 			MemoryPressure: 0.1,
 			CPUUsage:       0.1,
@@ -1811,9 +1811,9 @@ func TestScoreProviderDynamicLoad(t *testing.T) {
 		},
 		DecodeTPS:       100.0,
 		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		pendingReqs:     make(map[string]*PendingRequest),
+		RuntimeVerified: true, ClaimsVerified: true,
+		Reputation:  NewReputation(),
+		pendingReqs: make(map[string]*PendingRequest),
 	}
 	pA.AddPending(&PendingRequest{RequestID: "r1"})
 	pA.AddPending(&PendingRequest{RequestID: "r2"})
@@ -1831,9 +1831,9 @@ func TestScoreProviderDynamicLoad(t *testing.T) {
 		Hardware:        protocol.Hardware{MemoryGB: 128},
 		DecodeTPS:       100.0,
 		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		pendingReqs:     make(map[string]*PendingRequest),
+		RuntimeVerified: true, ClaimsVerified: true,
+		Reputation:  NewReputation(),
+		pendingReqs: make(map[string]*PendingRequest),
 	}
 	pB.AddPending(&PendingRequest{RequestID: "r1"})
 	pB.AddPending(&PendingRequest{RequestID: "r2"})
@@ -1863,9 +1863,9 @@ func TestScoreProviderGPUMemoryFactor(t *testing.T) {
 		},
 		DecodeTPS:       100.0,
 		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		pendingReqs:     make(map[string]*PendingRequest),
+		RuntimeVerified: true, ClaimsVerified: true,
+		Reputation:  NewReputation(),
+		pendingReqs: make(map[string]*PendingRequest),
 	}
 
 	highGPU := &Provider{
@@ -1876,9 +1876,9 @@ func TestScoreProviderGPUMemoryFactor(t *testing.T) {
 		},
 		DecodeTPS:       100.0,
 		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		pendingReqs:     make(map[string]*PendingRequest),
+		RuntimeVerified: true, ClaimsVerified: true,
+		Reputation:  NewReputation(),
+		pendingReqs: make(map[string]*PendingRequest),
 	}
 
 	lowScore := ScoreProvider(lowGPU, model)
@@ -1904,10 +1904,10 @@ func TestScoreProviderColdStartPenalty(t *testing.T) {
 		},
 		DecodeTPS:       100.0,
 		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		WarmModels:      []string{model},
-		pendingReqs:     make(map[string]*PendingRequest),
+		RuntimeVerified: true, ClaimsVerified: true,
+		Reputation:  NewReputation(),
+		WarmModels:  []string{model},
+		pendingReqs: make(map[string]*PendingRequest),
 	}
 
 	coldProvider := &Provider{
@@ -1920,10 +1920,10 @@ func TestScoreProviderColdStartPenalty(t *testing.T) {
 		},
 		DecodeTPS:       100.0,
 		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		WarmModels:      []string{model},
-		pendingReqs:     make(map[string]*PendingRequest),
+		RuntimeVerified: true, ClaimsVerified: true,
+		Reputation:  NewReputation(),
+		WarmModels:  []string{model},
+		pendingReqs: make(map[string]*PendingRequest),
 	}
 
 	hotScore := ScoreProvider(hotProvider, model)
@@ -2119,10 +2119,10 @@ func TestScoreProviderCrashedPenalty(t *testing.T) {
 		},
 		DecodeTPS:       100.0,
 		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		WarmModels:      []string{model},
-		pendingReqs:     make(map[string]*PendingRequest),
+		RuntimeVerified: true, ClaimsVerified: true,
+		Reputation:  NewReputation(),
+		WarmModels:  []string{model},
+		pendingReqs: make(map[string]*PendingRequest),
 	}
 
 	idleProvider := &Provider{
@@ -2135,10 +2135,10 @@ func TestScoreProviderCrashedPenalty(t *testing.T) {
 		},
 		DecodeTPS:       100.0,
 		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		WarmModels:      []string{model},
-		pendingReqs:     make(map[string]*PendingRequest),
+		RuntimeVerified: true, ClaimsVerified: true,
+		Reputation:  NewReputation(),
+		WarmModels:  []string{model},
+		pendingReqs: make(map[string]*PendingRequest),
 	}
 
 	crashedProvider := &Provider{
@@ -2151,10 +2151,10 @@ func TestScoreProviderCrashedPenalty(t *testing.T) {
 		},
 		DecodeTPS:       100.0,
 		TrustLevel:      TrustHardware,
-		RuntimeVerified: true,
-		Reputation:      NewReputation(),
-		WarmModels:      []string{model},
-		pendingReqs:     make(map[string]*PendingRequest),
+		RuntimeVerified: true, ClaimsVerified: true,
+		Reputation:  NewReputation(),
+		WarmModels:  []string{model},
+		pendingReqs: make(map[string]*PendingRequest),
 	}
 
 	hotScore := ScoreProvider(hotProvider, model)

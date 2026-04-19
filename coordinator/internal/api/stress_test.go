@@ -150,6 +150,7 @@ func TestStress_QueueDrainsWhenProviderAppears(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Provider handles messages
@@ -197,6 +198,7 @@ func TestStress_ProviderCrashDuringMultipleInFlightRequests(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Provider handles challenges but delays inference response, then crashes
@@ -290,6 +292,7 @@ func TestStress_ConsumerDisconnectSendsCancelToProvider(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Track what messages the provider receives
@@ -394,6 +397,7 @@ func TestStress_BillingBalanceExhaustion(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	go runProviderLoop(ctx, t, conn, pubKey, "billing-response")
@@ -491,6 +495,7 @@ func TestStress_ProviderReRegistersWithDifferentModels(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	pA := reg.FindProvider("model-A")
@@ -519,6 +524,7 @@ func TestStress_ProviderReRegistersWithDifferentModels(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	time.Sleep(200 * time.Millisecond)
@@ -601,6 +607,7 @@ func TestStress_HeterogeneousProviderScoring(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Find provider 10 times — the fastest (120 TPS M4 Max) should be selected most
@@ -634,7 +641,7 @@ func TestStress_ThermalThrottlingAffectsScoring(t *testing.T) {
 		},
 		Models:          []protocol.ModelInfo{{ID: model, ModelType: "chat"}},
 		DecodeTPS:       100.0,
-		RuntimeVerified: true,
+		RuntimeVerified: true, ClaimsVerified: true,
 		SystemMetrics: protocol.SystemMetrics{
 			MemoryPressure: 0.3,
 			CPUUsage:       0.2,
@@ -651,7 +658,7 @@ func TestStress_ThermalThrottlingAffectsScoring(t *testing.T) {
 		},
 		Models:          []protocol.ModelInfo{{ID: model, ModelType: "chat"}},
 		DecodeTPS:       100.0,
-		RuntimeVerified: true,
+		RuntimeVerified: true, ClaimsVerified: true,
 		SystemMetrics: protocol.SystemMetrics{
 			MemoryPressure: 0.3,
 			CPUUsage:       0.2,
@@ -678,7 +685,7 @@ func TestStress_ThermalThrottlingAffectsScoring(t *testing.T) {
 		Hardware:        p1.Hardware,
 		Models:          p1.Models,
 		DecodeTPS:       100.0,
-		RuntimeVerified: true,
+		RuntimeVerified: true, ClaimsVerified: true,
 		SystemMetrics: protocol.SystemMetrics{
 			ThermalState: "critical",
 		},
@@ -699,7 +706,7 @@ func TestStress_MemoryPressureAffectsScoring(t *testing.T) {
 		ID:              "low-mem",
 		Models:          []protocol.ModelInfo{{ID: model}},
 		DecodeTPS:       100.0,
-		RuntimeVerified: true,
+		RuntimeVerified: true, ClaimsVerified: true,
 		SystemMetrics: protocol.SystemMetrics{
 			MemoryPressure: 0.1,
 			ThermalState:   "nominal",
@@ -711,7 +718,7 @@ func TestStress_MemoryPressureAffectsScoring(t *testing.T) {
 		ID:              "high-mem",
 		Models:          []protocol.ModelInfo{{ID: model}},
 		DecodeTPS:       100.0,
-		RuntimeVerified: true,
+		RuntimeVerified: true, ClaimsVerified: true,
 		SystemMetrics: protocol.SystemMetrics{
 			MemoryPressure: 0.9,
 			ThermalState:   "nominal",
@@ -757,6 +764,7 @@ func TestStress_TranscriptionProtocol(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Provider handles transcription requests
@@ -879,6 +887,7 @@ func TestStress_ProviderBecomesIdleAfterRequest(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	go runProviderLoop(ctx, t, conn, pubKey, "idle-response")

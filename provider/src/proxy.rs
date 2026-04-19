@@ -757,7 +757,12 @@ async fn do_image_generation(
     }
 
     // Upload each image to the coordinator via HTTP POST (not WebSocket).
-    // This avoids the WebSocket message size limit.
+    // This avoids the WebSocket message size limit. Each upload carries an
+    // SE-signed signature over the request_id so the coordinator can bind
+    // the upload to the SE-attested provider that owns this request_id.
+    // Without it, anyone who guessed the UUID could swap in arbitrary
+    // bytes for the consumer's response.
+    let request_id_signature = security::se_sign(request_id.as_bytes()).unwrap_or_default();
     for (i, b64) in b64_images.iter().enumerate() {
         let image_bytes = base64::engine::general_purpose::STANDARD
             .decode(b64)
@@ -767,6 +772,7 @@ async fn do_image_generation(
             .post(upload_url)
             .body(image_bytes)
             .header("content-type", "image/png")
+            .header("x-provider-signature", &request_id_signature)
             .send()
             .await
             .context("failed to upload image to coordinator")?;

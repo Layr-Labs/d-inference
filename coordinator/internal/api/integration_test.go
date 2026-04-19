@@ -414,6 +414,7 @@ func TestIntegration_E2EEncryptionRoundtrip(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Start a goroutine to handle challenges and capture the inference request.
@@ -586,6 +587,7 @@ func TestIntegration_AccountLinkedEarnings(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Verify the provider's AccountID was linked.
@@ -720,6 +722,7 @@ func TestIntegration_RequestQueueDrain(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	providerID := reg.ProviderIDs()[0]

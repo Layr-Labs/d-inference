@@ -153,12 +153,20 @@ func setupTestServer(t *testing.T) (*Server, *registry.Registry, store.Store, *h
 	return srv, reg, st, ts
 }
 
-// makeProviderRoutable sets trust level to hardware and records a challenge
-// success for all currently registered providers so they pass routing checks.
+// makeProviderRoutable sets trust level to hardware, records a challenge
+// success, and marks the SE-signed claims envelope as verified for all
+// currently registered providers so they pass every routing gate.
+//
+// In production, claims_verified is set by verifyRegisterClaims /
+// verifyChallengeClaims after cryptographic verification of the SE-signed
+// envelope. These tests build providers with synthetic attestations and
+// dummy challenge signatures, so we set the flag directly here.
 func makeProviderRoutable(reg *registry.Registry) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 }
 

@@ -503,6 +503,7 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustSelfSigned)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	providerCount := reg.ProviderCount()
@@ -646,6 +647,7 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustSelfSigned)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	if reg.ProviderCount() != numProviders {
@@ -771,6 +773,7 @@ func TestFullStack_TenProviderStress(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustSelfSigned)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	t.Logf("%d providers registered", reg.ProviderCount())
@@ -952,6 +955,7 @@ func runBatchingBenchmark(t *testing.T, numProviders, numRequests int, continuou
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustSelfSigned)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	if reg.ProviderCount() != numProviders {
@@ -1082,6 +1086,7 @@ func TestFullStack_LargeModelInference(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustSelfSigned)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Test 1: Quality test — can the model do basic reasoning?

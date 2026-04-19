@@ -435,65 +435,47 @@ fn collect_files_recursive(
 /// the expected (blessed) runtime code — not a modified version that could
 /// leak prompts or produce tampered output.
 ///
+/// SECURITY: The `runtime_hash` is computed entirely in Rust by walking
+/// `~/.darkbloom/python/lib/python3.12/site-packages` directly. We do NOT
+/// shell out to `python -c "..."` for this — a malicious bundle ships a
+/// Python wrapper script that returns the known-good hash regardless of
+/// input, so asking the python being attested to hash itself is worthless.
+/// The Rust walker uses the same algorithm CI uses (sorted file paths,
+/// SHA-256 of each file's contents, final SHA-256 over the per-file
+/// digests), so the byte-for-byte result is identical.
+///
 /// - `python_hash`: SHA-256 of the Python interpreter binary
-/// - `runtime_hash`: Combined SHA-256 of ALL .py files in site-packages (sorted)
-///   This covers vllm_mlx, mlx_lm, mlx, transformers, and every other dependency.
-///   Any tampering with any Python package will cause a hash mismatch.
+/// - `runtime_hash`: Combined SHA-256 of ALL files in site-packages (sorted)
+///   This covers vllm_mlx, mlx_lm, mlx, transformers, and every other
+///   dependency. Any tampering with any file in any package will cause a
+///   mismatch.
 /// - `template_hashes`: Per-file SHA-256 of each .jinja template
 pub fn compute_runtime_hashes(python_cmd: &str) -> RuntimeHashes {
     // Hash the Python binary itself
     let python_hash = hash_file(std::path::Path::new(python_cmd));
 
-    // Hash EVERY file in site-packages using the SAME Python script that CI uses.
-    // This guarantees identical results — same language, same sort, same algorithm.
-    // The Python script walks site-packages, sorts all file paths, hashes each
-    // file's contents with SHA-256, then combines the per-file digests into a
-    // final SHA-256 hash. CI computes this at build time; the provider recomputes
-    // it here and the coordinator compares them.
+    // Hash EVERY file in site-packages, in Rust, with no Python in the
+    // loop. Purge .pyc / __pycache__ first so a malicious bundle can't
+    // hide a payload in stale bytecode that overrides .py source on
+    // import. CI computes the same hash the same way.
     let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
     let site_packages_dir = eigeninference_dir.join("python/lib/python3.12/site-packages");
     let runtime_hash = if site_packages_dir.exists() {
-        let hash_script = format!(
-            r#"
-import hashlib, os, sys
-d = sys.argv[1]
-files = sorted(os.path.join(r, f) for r, _, fs in os.walk(d) for f in fs)
-final = hashlib.sha256()
-for path in files:
-    h = hashlib.sha256()
-    with open(path, 'rb') as fh:
-        while True:
-            chunk = fh.read(65536)
-            if not chunk:
-                break
-            h.update(chunk)
-    final.update(h.digest())
-print(final.hexdigest())
-"#
-        );
-        let output = std::process::Command::new(python_cmd)
-            .args(["-c", &hash_script, &site_packages_dir.to_string_lossy()])
-            .output();
-        match output {
-            Ok(o) if o.status.success() => {
-                let hash = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if hash.len() == 64 { Some(hash) } else { None }
-            }
-            _ => {
-                // Fallback to Rust hashing if Python is unavailable
-                let mut py_files = Vec::new();
-                collect_files_recursive(&site_packages_dir, "*", &mut py_files);
-                py_files.sort();
-                if py_files.is_empty() {
-                    None
-                } else {
-                    hash_files_sorted(&py_files)
-                }
-            }
+        purge_pycache(&site_packages_dir);
+        let mut all_files = Vec::new();
+        collect_files_recursive(&site_packages_dir, "*", &mut all_files);
+        all_files.sort();
+        if all_files.is_empty() {
+            None
+        } else {
+            hash_files_sorted(&all_files)
         }
     } else {
         None
     };
+    // python_cmd is unused now but kept in the signature for backward
+    // compat with callers; silence the warning.
+    let _ = python_cmd;
 
     // Hash templates in ~/.darkbloom/templates/
     let templates_dir = eigeninference_dir.join("templates");

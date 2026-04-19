@@ -67,6 +67,7 @@ func setupProviderForBilling(t *testing.T, ctx context.Context, ts *httptest.Ser
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	providerIDs := reg.ProviderIDs()
@@ -575,6 +576,7 @@ func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	for _, id := range srv.registry.ProviderIDs() {
 		srv.registry.SetTrustLevel(id, registry.TrustHardware)
 		srv.registry.RecordChallengeSuccess(id)
+		srv.registry.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Step 6: Send an inference request and have the provider respond.
@@ -685,6 +687,7 @@ func TestIntegration_MultiNodeSameAccount(t *testing.T) {
 	for _, id := range srv.registry.ProviderIDs() {
 		srv.registry.SetTrustLevel(id, registry.TrustHardware)
 		srv.registry.RecordChallengeSuccess(id)
+		srv.registry.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Verify we have two providers.

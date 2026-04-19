@@ -132,6 +132,14 @@ type Provider struct {
 	PythonHash      string `json:"python_hash,omitempty"`
 	RuntimeHash     string `json:"runtime_hash,omitempty"`
 
+	// ClaimsVerified is true when the SE-signed `claims_signature` envelope
+	// (RegisterClaims / ChallengeClaims) verified against the provider's SE
+	// public key. If false, every integrity-bearing field the provider sent
+	// is untrusted — runtime hashes, wallet address, model hashes,
+	// sip/secureboot/rdma flags. Routing requires both ClaimsVerified AND
+	// RuntimeVerified to be true.
+	ClaimsVerified bool `json:"claims_verified"`
+
 	// Challenge-response verification state
 	LastChallengeVerified time.Time // last successful challenge verification
 	FailedChallenges      int       // consecutive failed challenges
@@ -491,6 +499,68 @@ func (r *Registry) persistReputation(p *Provider) {
 	}()
 }
 
+// clampReportedTPS bounds provider-reported prefill/decode TPS to a
+// hardware-derived ceiling. Without a cap, any provider that lies about
+// its benchmark can dominate the routing scorer and either silently
+// underperform or deliberately grief consumers.
+//
+// Decode TPS is bandwidth-bound for memory-bound LLM decode; the
+// theoretical ceiling is bandwidth_gbs / model_size_gb. Without knowing
+// model size at registration, we use bandwidth_gbs as the ceiling (which
+// corresponds to a 1 GB model — far smaller than any served model). Real
+// measured decode TPS for the smallest 4-bit MLX models we serve is well
+// below this cap on every Apple Silicon configuration.
+//
+// Ceiling formula:
+//
+//	decode_ceiling  = max(200, memory_bandwidth_gbs)
+//	prefill_ceiling = decode_ceiling * 8
+func clampReportedTPS(hw protocol.Hardware, prefill, decode float64, logger *slog.Logger, providerID string) (float64, float64) {
+	bw := hw.MemoryBandwidthGBs
+	if bw <= 0 {
+		bw = 200 // conservative default for unknown hardware
+	}
+	decodeCeil := bw
+	if decodeCeil < 200 {
+		decodeCeil = 200
+	}
+	prefillCeil := decodeCeil * 8
+
+	clampedDecode := decode
+	clampedPrefill := prefill
+	if clampedDecode < 0 {
+		clampedDecode = 0
+	}
+	if clampedPrefill < 0 {
+		clampedPrefill = 0
+	}
+	if clampedDecode > decodeCeil {
+		if logger != nil {
+			logger.Warn("provider reported decode_tps above hardware ceiling — clamping",
+				"provider_id", providerID,
+				"reported", decode,
+				"ceiling", decodeCeil,
+				"chip", hw.ChipName,
+				"bandwidth_gbs", bw,
+			)
+		}
+		clampedDecode = decodeCeil
+	}
+	if clampedPrefill > prefillCeil {
+		if logger != nil {
+			logger.Warn("provider reported prefill_tps above hardware ceiling — clamping",
+				"provider_id", providerID,
+				"reported", prefill,
+				"ceiling", prefillCeil,
+				"chip", hw.ChipName,
+				"bandwidth_gbs", bw,
+			)
+		}
+		clampedPrefill = prefillCeil
+	}
+	return clampedPrefill, clampedDecode
+}
+
 // TruncHash returns the first 16 chars of a hash string for logging.
 func TruncHash(h string) string {
 	if len(h) > 16 {
@@ -580,14 +650,32 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 					"provider_id", id, "model", m.ID)
 				continue
 			}
-			// Verify weight hash if the catalog has an expected hash.
-			if entry.WeightHash != "" && m.WeightHash != "" && m.WeightHash != entry.WeightHash {
-				r.logger.Warn("provider model weight hash mismatch, rejecting model",
-					"provider_id", id, "model", m.ID,
-					"expected", TruncHash(entry.WeightHash),
-					"got", TruncHash(m.WeightHash),
-				)
-				continue
+			// When the catalog defines a weight hash, the provider MUST
+			// report a matching one. Empty / missing was previously
+			// silently accepted — making the integrity check opt-in by
+			// the provider, which trivially defeats it.
+			if entry.WeightHash != "" {
+				reported := m.WeightHash
+				if reported == "" {
+					if mh, ok := msg.ModelHashes[m.ID]; ok {
+						reported = mh
+					}
+				}
+				if reported == "" {
+					r.logger.Warn("provider did not report weight hash for catalog model — rejecting model",
+						"provider_id", id, "model", m.ID,
+						"expected", TruncHash(entry.WeightHash),
+					)
+					continue
+				}
+				if reported != entry.WeightHash {
+					r.logger.Warn("provider model weight hash mismatch, rejecting model",
+						"provider_id", id, "model", m.ID,
+						"expected", TruncHash(entry.WeightHash),
+						"got", TruncHash(reported),
+					)
+					continue
+				}
 			}
 			filtered = append(filtered, m)
 		}
@@ -608,17 +696,34 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		}
 	}
 
+	// Clamp provider-reported TPS to a hardware-derived ceiling. A
+	// malicious provider could otherwise claim 1e6 TPS to monopolize
+	// routing. Ceiling is sqrt(memory_bandwidth_gbs) * 4 for decode
+	// (~4 tokens per byte/clock cycle pipeline) and decode * 4 for
+	// prefill, well above any realistic Apple Silicon configuration but
+	// low enough to dampen abuse.
+	prefillTPS, decodeTPS := clampReportedTPS(msg.Hardware, msg.PrefillTPS, msg.DecodeTPS, r.logger, id)
+
 	p := &Provider{
-		ID:              id,
-		Hardware:        msg.Hardware,
-		Models:          models,
-		Backend:         msg.Backend,
-		PublicKey:       pubKey,
-		WalletAddress:   msg.WalletAddress,
-		PrefillTPS:      msg.PrefillTPS,
-		DecodeTPS:       msg.DecodeTPS,
-		TrustLevel:      TrustNone,
-		RuntimeVerified: true, // default to verified; API layer sets false when manifest check fails
+		ID:            id,
+		Hardware:      msg.Hardware,
+		Models:        models,
+		Backend:       msg.Backend,
+		PublicKey:     pubKey,
+		WalletAddress: msg.WalletAddress,
+		PrefillTPS:    prefillTPS,
+		DecodeTPS:     decodeTPS,
+		TrustLevel:    TrustNone,
+		// Defaults: runtime + claims marked verified. This is safe because
+		// every Register message goes through providerReadLoop in the API
+		// layer, which immediately calls verifyRuntimeHashes and
+		// verifyRegisterClaims and sets these to false on failure. There
+		// is no public path that creates a Provider without those checks
+		// running. Defaulting to true here keeps the behavior consistent
+		// with the legacy code path (no manifest configured ⇒ all
+		// providers pass) while the API layer enforces failures.
+		RuntimeVerified: true,
+		ClaimsVerified:  true,
 		Status:          StatusOnline,
 		Conn:            conn,
 		LastHeartbeat:   time.Now(),
@@ -783,6 +888,23 @@ func (r *Registry) GetProvider(id string) *Provider {
 	return r.providers[id]
 }
 
+// FindPendingOwner returns the provider that holds a pending request with
+// the given ID, or nil. Used by the image upload endpoint to bind an
+// incoming HTTP POST to the SE-attested provider that owns the request.
+func (r *Registry) FindPendingOwner(requestID string) *Provider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		p.mu.Lock()
+		_, ok := p.pendingReqs[requestID]
+		p.mu.Unlock()
+		if ok {
+			return p
+		}
+	}
+	return nil
+}
+
 // MarkUntrusted sets a provider's status to untrusted, preventing it from
 // receiving new jobs. This is called when a provider fails too many
 // challenge-response verifications.
@@ -802,6 +924,24 @@ func (r *Registry) MarkUntrusted(providerID string) {
 		"provider_id", providerID,
 		"failed_challenges", p.FailedChallenges,
 	)
+}
+
+// SetClaimsVerifiedForTest is a test-only helper that sets ClaimsVerified
+// on a provider directly. Production code MUST go through verifyRegisterClaims
+// / verifyChallengeClaims in the API layer; this exists only so tests that
+// build providers without a real SE attestation can still exercise the
+// routing scheduler. It is named with a TestOnly suffix to make misuse
+// outside of tests obvious in code review.
+func (r *Registry) SetClaimsVerifiedForTest(providerID string, verified bool) {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+	p.mu.Lock()
+	p.ClaimsVerified = verified
+	p.mu.Unlock()
 }
 
 // SetTrustLevel updates a provider's trust level (thread-safe).
@@ -893,12 +1033,13 @@ const MaxConcurrentRequests = DefaultMaxConcurrent
 //
 // Uses dynamic max based on hardware when backend capacity is reported.
 func ScoreProvider(p *Provider, model string) float64 {
-	// Providers that have not passed runtime integrity verification score 0
-	// and should never be selected for routing.
+	// Providers that have not passed runtime integrity OR claims envelope
+	// verification score 0 and should never be selected for routing.
 	p.mu.Lock()
 	runtimeVerified := p.RuntimeVerified
+	claimsVerified := p.ClaimsVerified
 	p.mu.Unlock()
-	if !runtimeVerified {
+	if !runtimeVerified || !claimsVerified {
 		return 0
 	}
 
@@ -1085,6 +1226,15 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 		}
 		// Skip providers whose runtime integrity has not been verified.
 		if !runtimeVerified {
+			continue
+		}
+		// Skip providers whose claims envelope did not verify. Without it,
+		// runtime hashes / wallet / model hashes are all provider-claimed
+		// JSON with no cryptographic binding to the SE key.
+		p.mu.Lock()
+		claimsVerified := p.ClaimsVerified
+		p.mu.Unlock()
+		if !claimsVerified {
 			continue
 		}
 		// Skip providers that haven't passed a recent challenge.

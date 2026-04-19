@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/billing"
 	"github.com/eigeninference/coordinator/internal/mdm"
@@ -816,11 +817,50 @@ func extractBearerToken(r *http.Request) string {
 // This avoids sending large base64 images over the WebSocket (which has size limits).
 // The provider uploads images here after generating them, then sends a small
 // image_generation_complete message over the WebSocket with just usage metadata.
+//
+// Auth: the request must carry an X-Provider-Signature header containing a
+// base64-encoded SE-signed signature over the request_id. The coordinator
+// looks up the provider that owns this request_id, fetches its SE public key
+// from the verified attestation, and verifies. Without this, anyone who
+// guessed the request_id UUID could swap in arbitrary bytes for the
+// consumer's response.
 func (s *Server) handleImageUpload(w http.ResponseWriter, r *http.Request) {
 	requestID := r.URL.Query().Get("request_id")
 	if requestID == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "request_id is required"))
 		return
+	}
+
+	// Find the provider that owns this request_id.
+	provider := s.registry.FindPendingOwner(requestID)
+	if provider == nil {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "no in-flight request matches this request_id"))
+		return
+	}
+
+	// Verify SE signature over the request_id. Signature header must be
+	// base64-encoded DER ECDSA P-256.
+	sig := r.Header.Get("X-Provider-Signature")
+	provider.Mu().Lock()
+	var sePubKey string
+	if provider.AttestationResult != nil {
+		sePubKey = provider.AttestationResult.PublicKey
+	}
+	provider.Mu().Unlock()
+	if sePubKey != "" {
+		if sig == "" {
+			writeJSON(w, http.StatusUnauthorized, errorResponse("unauthorized", "X-Provider-Signature required"))
+			return
+		}
+		if err := attestation.VerifyChallengeSignature(sePubKey, sig, requestID); err != nil {
+			s.logger.Warn("image upload signature verification failed",
+				"request_id", requestID,
+				"provider_id", provider.ID,
+				"error", err,
+			)
+			writeJSON(w, http.StatusUnauthorized, errorResponse("unauthorized", "invalid X-Provider-Signature"))
+			return
+		}
 	}
 
 	// Read image data (limit to 20 MB)

@@ -83,6 +83,7 @@ func setupE2ETest(t *testing.T, model string, handler func(ctx context.Context, 
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	providerDone := make(chan struct{})
@@ -389,6 +390,7 @@ func TestOpenAI_ListModelsFormat(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)

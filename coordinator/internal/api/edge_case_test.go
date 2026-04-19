@@ -551,6 +551,7 @@ func TestEdge_ConcurrentRequestsSameProvider(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Provider serves requests in a loop
@@ -801,6 +802,7 @@ func TestEdge_ProviderDisconnectMidStream(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Provider handles challenge then sends one chunk and disconnects

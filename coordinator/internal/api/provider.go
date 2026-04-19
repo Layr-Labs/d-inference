@@ -51,6 +51,11 @@ const (
 
 	// MaxFailedChallenges is the number of consecutive failures before marking untrusted.
 	MaxFailedChallenges = 3
+
+	// MaxAttestationAge is the maximum age of a registration attestation
+	// blob. A stale attestation captured from a real device could otherwise
+	// be replayed forever; freshness here prevents that.
+	MaxAttestationAge = 24 * time.Hour
 )
 
 // pendingChallenge tracks an outstanding challenge sent to a provider.
@@ -150,6 +155,57 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
 			provider = s.registry.Register(providerID, conn, regMsg)
 			s.verifyProviderAttestation(providerID, provider, regMsg)
+
+			// Verify the SE-signed claims envelope. Without this, every
+			// integrity-bearing field on the Register message
+			// (python_hash, runtime_hash, wallet_address, model_hashes …)
+			// is just provider-claimed JSON — a one-line patch could lie
+			// about all of them. The signed envelope binds them to the
+			// SE key reported in the attestation blob.
+			//
+			// We only gate on the envelope when the provider actually has
+			// an SE key (i.e. submitted an attestation). Open Mode (no
+			// attestation) is already filtered out by MinTrustLevel, so
+			// missing claims there are not a separate failure.
+			//
+			// On verification failure with an SE key, we strip trust and
+			// runtime verification to safe defaults so a stale or forged
+			// envelope can never be routable.
+			provider.Mu().Lock()
+			seKey := ""
+			if provider.AttestationResult != nil {
+				seKey = provider.AttestationResult.PublicKey
+			}
+			provider.Mu().Unlock()
+			if seKey != "" {
+				if err := verifyRegisterClaims(seKey, regMsg); err != nil {
+					provider.Mu().Lock()
+					provider.TrustLevel = registry.TrustNone
+					provider.RuntimeVerified = false
+					provider.ClaimsVerified = false
+					provider.PythonHash = ""
+					provider.RuntimeHash = ""
+					provider.Mu().Unlock()
+					s.logger.Warn("provider claims signature verification failed — excluded from routing",
+						"provider_id", providerID,
+						"error", err.Error(),
+					)
+				} else {
+					provider.Mu().Lock()
+					provider.ClaimsVerified = true
+					provider.Mu().Unlock()
+				}
+			} else {
+				// No SE key (Open Mode). Don't fail-closed on the claims
+				// envelope here — TrustNone already keeps these providers
+				// out of any routing path that requires hardware/self_signed.
+				// This preserves the legacy "Open Mode for testing" surface
+				// while ensuring any provider that *did* attest gets its
+				// claims envelope checked.
+				provider.Mu().Lock()
+				provider.ClaimsVerified = true
+				provider.Mu().Unlock()
+			}
 
 			// Resolve auth token → account linkage.
 			if regMsg.AuthToken != "" {
@@ -437,10 +493,14 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	// If the provider has an attested SE public key, verify the signature.
 	// Providers without attestation (TrustNone / Open Mode) skip crypto
 	// verification — their trust is already "none".
-	if provider.AttestationResult != nil && provider.AttestationResult.PublicKey != "" {
+	sePublicKey := ""
+	if provider.AttestationResult != nil {
+		sePublicKey = provider.AttestationResult.PublicKey
+	}
+	if sePublicKey != "" {
 		challengeData := pc.nonce + pc.timestamp
 		if err := attestation.VerifyChallengeSignature(
-			provider.AttestationResult.PublicKey,
+			sePublicKey,
 			resp.Signature,
 			challengeData,
 		); err != nil {
@@ -451,6 +511,32 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			s.handleChallengeFailure(providerID, "signature verification failed: "+err.Error())
 			return
 		}
+	}
+
+	// Verify the SE-signed claims envelope. Without this, every other field
+	// in the response (binary_hash, model_hashes, sip/secureboot/rdma
+	// flags) is provider-claimed JSON that could be lied about with a
+	// one-line patch. The envelope signature binds those fields to the SE
+	// key and to THIS challenge (nonce + timestamp), so a captured envelope
+	// from another device or another challenge is rejected.
+	//
+	// Skip verification when there's no SE key (TrustNone / Open Mode).
+	if sePublicKey != "" {
+		if err := verifyChallengeClaims(sePublicKey, pc.nonce, pc.timestamp, resp); err != nil {
+			s.logger.Error("provider claims signature verification failed — marking untrusted",
+				"provider_id", providerID,
+				"error", err.Error(),
+			)
+			provider.Mu().Lock()
+			provider.ClaimsVerified = false
+			provider.Mu().Unlock()
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "claims signature verification failed: "+err.Error())
+			return
+		}
+		provider.Mu().Lock()
+		provider.ClaimsVerified = true
+		provider.Mu().Unlock()
 	}
 
 	// Verify fresh SIP status. If the provider reports SIP disabled,
@@ -536,6 +622,29 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				s.handleChallengeFailure(providerID, "active model weight hash mismatch")
 				return
 			}
+		}
+	}
+
+	// Cross-check every entry in resp.ModelHashes against the catalog. The
+	// previous code only verified active_model_hash; the per-model map for
+	// STT, image, and other text models was logged but not enforced. A
+	// provider could happily serve tampered weights for any non-active
+	// model that way.
+	for modelID, reportedHash := range resp.ModelHashes {
+		expected := s.registry.CatalogWeightHash(modelID)
+		if expected == "" {
+			continue
+		}
+		if reportedHash != expected {
+			s.logger.Error("provider model weight hash mismatch — possible model swap",
+				"provider_id", providerID,
+				"model", modelID,
+				"expected", registry.TruncHash(expected),
+				"got", registry.TruncHash(reportedHash),
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "model weight hash mismatch for "+modelID)
+			return
 		}
 	}
 
@@ -661,6 +770,38 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// Store SE signature for the consumer response headers.
 	pr.SESignature = msg.SESignature
 	pr.ResponseHash = msg.ResponseHash
+
+	// Verify the response signature against the provider's SE public key
+	// when both are available. The provider signs sha256(response_hash)
+	// where response_hash is sha256(request_id || completion_tokens ||
+	// response_content). If verification fails, the provider returned
+	// content the SE did not sign — a tampered response. We log loudly and
+	// drop reputation, but keep billing the consumer because they did
+	// receive the response (cancelling the bill creates an oracle: the
+	// consumer can keep replaying responses for free until a signature
+	// happens to verify).
+	if msg.SESignature != "" && msg.ResponseHash != "" {
+		provider.Mu().Lock()
+		var sePubKey string
+		if provider.AttestationResult != nil {
+			sePubKey = provider.AttestationResult.PublicKey
+		}
+		provider.Mu().Unlock()
+		if sePubKey != "" {
+			if err := attestation.VerifyChallengeSignature(sePubKey, msg.SESignature, msg.ResponseHash); err != nil {
+				s.logger.Error("response signature verification failed — provider returned content the SE did not sign",
+					"provider_id", providerID,
+					"request_id", msg.RequestID,
+					"error", err,
+				)
+				// Strip the (invalid) signature so the consumer doesn't see a
+				// "verified" badge for unverified content.
+				pr.SESignature = ""
+				pr.ResponseHash = ""
+				s.registry.RecordJobFailure(providerID)
+			}
+		}
+	}
 
 	// Record job success and usage BEFORE closing ChunkCh. Closing
 	// ChunkCh unblocks the consumer response handler, and callers may
@@ -1003,6 +1144,21 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			"provider_id", providerID,
 			"error", result.Error,
 		)
+		return
+	}
+
+	// Reject stale attestations. An attacker who captured a real device's
+	// signed attestation could otherwise replay it indefinitely. Apple's
+	// own ACME flow uses a similar nonce/freshness window.
+	if !attestation.CheckTimestamp(result, MaxAttestationAge) {
+		s.logger.Warn("provider attestation too old — rejecting",
+			"provider_id", providerID,
+			"timestamp", result.Timestamp,
+			"max_age", MaxAttestationAge,
+		)
+		result.Valid = false
+		result.Error = "attestation timestamp too old"
+		provider.SetAttestationResult(&result)
 		return
 	}
 

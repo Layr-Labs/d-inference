@@ -58,6 +58,7 @@ func TestMultiProvider_TwoProvidersSameModel(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	if reg.ProviderCount() != 2 {
@@ -152,6 +153,7 @@ func TestMultiProvider_DifferentModels(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Find provider for each model
@@ -205,6 +207,7 @@ func TestMultiProvider_ProviderLeavesOtherContinues(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	if reg.ProviderCount() != 2 {
@@ -251,6 +254,7 @@ func TestMultiProvider_ProviderJoinsLate(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	if reg.ProviderCount() != 1 {
@@ -265,6 +269,7 @@ func TestMultiProvider_ProviderJoinsLate(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	time.Sleep(200 * time.Millisecond)
@@ -315,6 +320,7 @@ func TestMultiProvider_CatalogFiltersDuringRegistration(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	time.Sleep(200 * time.Millisecond)
@@ -361,6 +367,7 @@ func TestMultiProvider_ManyProviders(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	if reg.ProviderCount() != numProviders {
@@ -487,6 +494,7 @@ func TestMultiProvider_SingleProviderMultipleModels(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	// Should find provider for each model
@@ -535,8 +543,10 @@ func TestMultiProvider_TrustLevelFiltering(t *testing.T) {
 	// Give different trust levels
 	reg.SetTrustLevel(ids[0], registry.TrustHardware)
 	reg.RecordChallengeSuccess(ids[0])
+	reg.SetClaimsVerifiedForTest(ids[0], true)
 	reg.SetTrustLevel(ids[1], registry.TrustSelfSigned)
 	reg.RecordChallengeSuccess(ids[1])
+	reg.SetClaimsVerifiedForTest(ids[1], true)
 
 	// FindProviderWithTrust for hardware should only return the hardware-trusted one
 	p := reg.FindProviderWithTrust(model, registry.TrustHardware)

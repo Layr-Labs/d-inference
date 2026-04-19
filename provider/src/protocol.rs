@@ -68,6 +68,20 @@ pub enum ProviderMessage {
         /// Combined SHA-256 hash of image bridge Python source files.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         image_bridge_hash: Option<String>,
+        /// Per-model weight hashes (model_id → SHA-256). Mirrored into the
+        /// signed claims envelope so individual `models[].weight_hash`
+        /// values cannot be tampered with.
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        model_hashes: std::collections::HashMap<String, String>,
+        /// Timestamp included in the signed claims envelope (RFC3339).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claims_timestamp: Option<String>,
+        /// SE-signed signature over CanonicalRegisterJSON of every
+        /// integrity-bearing field in this message. Without this, fields
+        /// like runtime_hash / wallet_address / decode_tps were just
+        /// provider-claimed JSON with no cryptographic binding.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claims_signature: Option<String>,
     },
     Heartbeat {
         status: ProviderStatus,
@@ -173,6 +187,17 @@ pub enum ProviderMessage {
         /// Covers all active models (text, STT, image).
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         model_hashes: std::collections::HashMap<String, String>,
+        /// Timestamp included in the signed claims envelope. Mirrors the
+        /// challenge timestamp; coordinator rejects responses where this
+        /// differs from the timestamp it sent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claims_timestamp: Option<String>,
+        /// SE-signed signature over CanonicalChallengeJSON of every field
+        /// above. Without this, only nonce+timestamp were tied to the SE
+        /// key — every other claim could be lied about with a one-line
+        /// patch to this binary.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claims_signature: Option<String>,
     },
 }
 
@@ -436,6 +461,9 @@ mod tests {
             template_hashes: std::collections::HashMap::new(),
             grpc_binary_hash: None,
             image_bridge_hash: None,
+            model_hashes: std::collections::HashMap::new(),
+            claims_timestamp: None,
+            claims_signature: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -481,6 +509,9 @@ mod tests {
             template_hashes: std::collections::HashMap::new(),
             grpc_binary_hash: None,
             image_bridge_hash: None,
+            model_hashes: std::collections::HashMap::new(),
+            claims_timestamp: None,
+            claims_signature: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -519,6 +550,9 @@ mod tests {
             template_hashes: std::collections::HashMap::new(),
             grpc_binary_hash: None,
             image_bridge_hash: None,
+            model_hashes: std::collections::HashMap::new(),
+            claims_timestamp: None,
+            claims_signature: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -727,6 +761,8 @@ mod tests {
             grpc_binary_hash: None,
             image_bridge_hash: None,
             model_hashes: std::collections::HashMap::new(),
+            claims_timestamp: None,
+            claims_signature: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -1204,6 +1240,9 @@ mod tests {
                 template_hashes: std::collections::HashMap::new(),
                 grpc_binary_hash: None,
                 image_bridge_hash: None,
+            model_hashes: std::collections::HashMap::new(),
+            claims_timestamp: None,
+            claims_signature: None,
             },
             // Heartbeat (idle)
             ProviderMessage::Heartbeat {
@@ -1272,6 +1311,8 @@ mod tests {
                 grpc_binary_hash: None,
                 image_bridge_hash: None,
                 model_hashes: std::collections::HashMap::new(),
+                claims_timestamp: None,
+                claims_signature: None,
             },
         ];
 
@@ -1462,6 +1503,9 @@ mod tests {
             template_hashes,
             grpc_binary_hash: None,
             image_bridge_hash: None,
+            model_hashes: std::collections::HashMap::new(),
+            claims_timestamp: None,
+            claims_signature: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();

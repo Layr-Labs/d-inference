@@ -104,6 +104,21 @@ type RegisterMessage struct {
 	TemplateHashes  map[string]string `json:"template_hashes,omitempty"`   // template_name -> SHA-256 hash
 	GrpcBinaryHash  string            `json:"grpc_binary_hash,omitempty"`  // SHA-256 of gRPCServerCLI binary
 	ImageBridgeHash string            `json:"image_bridge_hash,omitempty"` // SHA-256 of image bridge Python source
+
+	// ClaimsTimestamp / ClaimsSignature bind every integrity field above to
+	// the provider's Secure Enclave key. The SE signs CanonicalRegisterJSON
+	// of these values plus the timestamp; coordinator recomputes the bytes
+	// and verifies the signature against the SE public key from Attestation.
+	// Without these, fields like PythonHash / RuntimeHash / WalletAddress
+	// were just provider-claimed JSON with no cryptographic binding.
+	ClaimsTimestamp string `json:"claims_timestamp,omitempty"`
+	ClaimsSignature string `json:"claims_signature,omitempty"`
+
+	// ModelHashes mirrors the per-model weight hashes (model_id → SHA-256).
+	// Already present per-model under Models[].WeightHash, but mirrored here
+	// because the per-model field can be replayed. This map is part of the
+	// signed claims envelope.
+	ModelHashes map[string]string `json:"model_hashes,omitempty"`
 }
 
 // HeartbeatMessage is sent periodically by connected providers.
@@ -271,6 +286,18 @@ type AttestationResponseMessage struct {
 	GrpcBinaryHash  string            `json:"grpc_binary_hash,omitempty"`  // SHA-256 of gRPCServerCLI binary
 	ImageBridgeHash string            `json:"image_bridge_hash,omitempty"` // SHA-256 of image bridge Python source
 	ModelHashes     map[string]string `json:"model_hashes,omitempty"`      // model_id -> SHA-256 weight hash (all active models)
+
+	// Timestamp included in the signed claims envelope. Mirrors the
+	// challenge timestamp; coordinator rejects responses where this differs
+	// from the timestamp it sent in the challenge.
+	ClaimsTimestamp string `json:"claims_timestamp,omitempty"`
+
+	// ClaimsSignature is an SE-signed signature over CanonicalChallengeJSON
+	// of every field above. Without this, the only fields tied to the SE key
+	// are nonce + timestamp; everything else (binary_hash, runtime_hash,
+	// model_hashes, sip/secureboot/rdma flags) was provider-claimed JSON
+	// that could be lied about with a one-line patch.
+	ClaimsSignature string `json:"claims_signature,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

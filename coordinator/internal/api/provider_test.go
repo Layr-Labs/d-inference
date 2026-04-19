@@ -132,6 +132,7 @@ func TestProviderWebSocketMultiple(t *testing.T) {
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	models := reg.ListModels()
@@ -179,6 +180,7 @@ func TestProviderInferenceError(t *testing.T) {
 	if p != nil {
 		reg.SetTrustLevel(p.ID, registry.TrustHardware)
 		reg.RecordChallengeSuccess(p.ID)
+		reg.SetClaimsVerifiedForTest(p.ID, true)
 	}
 
 	// Provider goroutine — handle challenges and always respond with error
@@ -355,6 +357,7 @@ func TestProviderRegistrationWithValidAttestation(t *testing.T) {
 	if p != nil {
 		reg.SetTrustLevel(p.ID, registry.TrustHardware)
 		reg.RecordChallengeSuccess(p.ID)
+		reg.SetClaimsVerifiedForTest(p.ID, true)
 	}
 
 	models := reg.ListModels()
@@ -496,6 +499,7 @@ func TestListModelsWithAttestationInfo(t *testing.T) {
 	if p != nil {
 		reg.SetTrustLevel(p.ID, registry.TrustHardware)
 		reg.RecordChallengeSuccess(p.ID)
+		reg.SetClaimsVerifiedForTest(p.ID, true)
 	}
 
 	// Check /v1/models
@@ -782,6 +786,7 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 	if p != nil {
 		reg.SetTrustLevel(p.ID, registry.TrustHardware)
 		reg.RecordChallengeSuccess(p.ID)
+		reg.SetClaimsVerifiedForTest(p.ID, true)
 	}
 
 	chatBody := `{"model":"trust-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
@@ -845,6 +850,7 @@ func TestTrustLevelInModelsList(t *testing.T) {
 	if p != nil {
 		reg.SetTrustLevel(p.ID, registry.TrustHardware)
 		reg.RecordChallengeSuccess(p.ID)
+		reg.SetClaimsVerifiedForTest(p.ID, true)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)

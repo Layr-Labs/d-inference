@@ -190,6 +190,7 @@ func connectAndPrepareProvider(t *testing.T, ctx context.Context, tsURL string, 
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
+		reg.SetClaimsVerifiedForTest(id, true)
 	}
 
 	return conn

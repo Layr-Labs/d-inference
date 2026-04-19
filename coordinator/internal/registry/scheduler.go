@@ -178,6 +178,9 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 	if !p.RuntimeVerified {
 		return routingSnapshot{}, false
 	}
+	if !p.ClaimsVerified {
+		return routingSnapshot{}, false
+	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
 		return routingSnapshot{}, false
 	}
@@ -364,6 +367,9 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string) bool {
 		return false
 	}
 	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) || !p.RuntimeVerified {
+		return false
+	}
+	if !p.ClaimsVerified {
 		return false
 	}
 	if p.LastChallengeVerified.IsZero() || time.Since(p.LastChallengeVerified) > challengeFreshnessMaxAge {

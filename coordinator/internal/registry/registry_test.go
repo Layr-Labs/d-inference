@@ -2250,3 +2250,305 @@ func TestFindProviderCrashedOnlyStillRoutes(t *testing.T) {
 		t.Error("FindProvider should still route to a crashed-only provider (it can attempt reload)")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Disaggregated computation tests
+// ---------------------------------------------------------------------------
+
+func TestDeriveWorkerCapabilities_LargeMachine(t *testing.T) {
+	hw := protocol.Hardware{
+		MemoryGB:           128,
+		MemoryBandwidthGBs: 546,
+	}
+	caps := deriveWorkerCapabilities(hw)
+
+	if !caps.CanFullInference {
+		t.Error("128GB machine should be capable of full inference")
+	}
+	if !caps.CanPrefill {
+		t.Error("128GB machine should be capable of prefill")
+	}
+	if caps.MaxModelSizeGB != 124 {
+		t.Errorf("expected MaxModelSizeGB=124, got %v", caps.MaxModelSizeGB)
+	}
+}
+
+func TestDeriveWorkerCapabilities_SmallAir(t *testing.T) {
+	hw := protocol.Hardware{
+		MemoryGB:           16,
+		MemoryBandwidthGBs: 100,
+	}
+	caps := deriveWorkerCapabilities(hw)
+
+	if caps.CanFullInference {
+		t.Error("16GB Air with 100 GB/s should NOT do full inference")
+	}
+	if !caps.CanPrefill {
+		t.Error("16GB Air should be capable of prefill")
+	}
+	if caps.MaxModelSizeGB != 12 {
+		t.Errorf("expected MaxModelSizeGB=12, got %v", caps.MaxModelSizeGB)
+	}
+}
+
+func TestDeriveWorkerCapabilities_8GBMachine(t *testing.T) {
+	hw := protocol.Hardware{
+		MemoryGB:           8,
+		MemoryBandwidthGBs: 68,
+	}
+	caps := deriveWorkerCapabilities(hw)
+
+	if caps.CanFullInference {
+		t.Error("8GB machine should NOT do full inference")
+	}
+	if !caps.CanPrefill {
+		t.Error("8GB machine should be capable of prefill")
+	}
+}
+
+func TestDeriveWorkerCapabilities_24GBPro(t *testing.T) {
+	hw := protocol.Hardware{
+		MemoryGB:           24,
+		MemoryBandwidthGBs: 200,
+	}
+	caps := deriveWorkerCapabilities(hw)
+
+	if !caps.CanFullInference {
+		t.Error("24GB Pro should be capable of full inference")
+	}
+	if !caps.CanPrefill {
+		t.Error("24GB Pro should be capable of prefill")
+	}
+}
+
+func TestDeriveWorkerCapabilities_TinyMachine(t *testing.T) {
+	hw := protocol.Hardware{
+		MemoryGB:           4,
+		MemoryBandwidthGBs: 50,
+	}
+	caps := deriveWorkerCapabilities(hw)
+
+	if caps.CanPrefill {
+		t.Error("4GB machine too small for prefill")
+	}
+	if caps.CanFullInference {
+		t.Error("4GB machine too small for full inference")
+	}
+}
+
+func TestRegisterAssignsWorkerCapabilities(t *testing.T) {
+	reg := New(testLogger())
+	reg.MinTrustLevel = TrustNone
+
+	msg := &protocol.RegisterMessage{
+		Type: protocol.TypeRegister,
+		Hardware: protocol.Hardware{
+			MemoryGB:           16,
+			MemoryBandwidthGBs: 100,
+		},
+		Models:  []protocol.ModelInfo{{ID: "test-model"}},
+		Backend: "vllm_mlx",
+	}
+
+	p := reg.Register("small-air", nil, msg)
+	if p.WorkerCapabilities == nil {
+		t.Fatal("WorkerCapabilities should be set after registration")
+	}
+	if p.WorkerCapabilities.CanFullInference {
+		t.Error("16GB Air should not have CanFullInference")
+	}
+	if !p.WorkerCapabilities.CanPrefill {
+		t.Error("16GB Air should have CanPrefill")
+	}
+}
+
+func TestRegisterPreservesExplicitCapabilities(t *testing.T) {
+	reg := New(testLogger())
+	reg.MinTrustLevel = TrustNone
+
+	caps := &protocol.WorkerCapabilities{
+		CanFullInference: true,
+		CanPrefill:       true,
+		MaxModelSizeGB:   100,
+	}
+	msg := &protocol.RegisterMessage{
+		Type: protocol.TypeRegister,
+		Hardware: protocol.Hardware{
+			MemoryGB:           16,
+			MemoryBandwidthGBs: 100,
+		},
+		Models:             []protocol.ModelInfo{{ID: "test-model"}},
+		Backend:            "vllm_mlx",
+		WorkerCapabilities: caps,
+	}
+
+	p := reg.Register("explicit", nil, msg)
+	if !p.WorkerCapabilities.CanFullInference {
+		t.Error("explicit capabilities should be preserved")
+	}
+	if p.WorkerCapabilities.MaxModelSizeGB != 100 {
+		t.Errorf("expected MaxModelSizeGB=100, got %v", p.WorkerCapabilities.MaxModelSizeGB)
+	}
+}
+
+func TestPrefillWorkerCount(t *testing.T) {
+	reg := New(testLogger())
+	reg.MinTrustLevel = TrustNone
+
+	// Register a full-capable provider
+	fullMsg := &protocol.RegisterMessage{
+		Hardware: protocol.Hardware{MemoryGB: 64, MemoryBandwidthGBs: 400},
+		Models:   []protocol.ModelInfo{{ID: "model-a"}},
+		Backend:  "vllm_mlx",
+	}
+	reg.Register("full-1", nil, fullMsg)
+
+	// Register a prefill-only provider
+	airMsg := &protocol.RegisterMessage{
+		Hardware: protocol.Hardware{MemoryGB: 16, MemoryBandwidthGBs: 100},
+		Models:   []protocol.ModelInfo{{ID: "model-a"}},
+		Backend:  "vllm_mlx",
+	}
+	reg.Register("air-1", nil, airMsg)
+
+	if got := reg.PrefillWorkerCount(); got != 2 {
+		t.Errorf("PrefillWorkerCount = %d, want 2 (both can prefill)", got)
+	}
+	if got := reg.PrefillOnlyWorkerCount(); got != 1 {
+		t.Errorf("PrefillOnlyWorkerCount = %d, want 1", got)
+	}
+	if got := reg.FullInferenceWorkerCount(); got != 1 {
+		t.Errorf("FullInferenceWorkerCount = %d, want 1", got)
+	}
+}
+
+func TestReservePrefillWorker_PrefersPrefillOnly(t *testing.T) {
+	reg := New(testLogger())
+	reg.MinTrustLevel = TrustNone
+	model := "test-model"
+
+	// Register full-capable provider
+	fullMsg := &protocol.RegisterMessage{
+		Hardware: protocol.Hardware{MemoryGB: 64, MemoryBandwidthGBs: 400},
+		Models:   []protocol.ModelInfo{{ID: model}},
+		Backend:  "vllm_mlx",
+	}
+	fullP := reg.Register("full-1", nil, fullMsg)
+	fullP.TrustLevel = TrustHardware
+	fullP.LastChallengeVerified = time.Now()
+	fullP.RuntimeVerified = true
+
+	// Register prefill-only provider (small air)
+	airMsg := &protocol.RegisterMessage{
+		Hardware: protocol.Hardware{MemoryGB: 16, MemoryBandwidthGBs: 100},
+		Models:   []protocol.ModelInfo{{ID: model}},
+		Backend:  "vllm_mlx",
+	}
+	airP := reg.Register("air-1", nil, airMsg)
+	airP.TrustLevel = TrustHardware
+	airP.LastChallengeVerified = time.Now()
+	airP.RuntimeVerified = true
+
+	pr := &PendingRequest{
+		RequestID: "prefill-req-1",
+		Model:     model,
+		ChunkCh:   make(chan string, 1),
+		CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh:   make(chan protocol.InferenceErrorMessage, 1),
+	}
+
+	selected := reg.ReservePrefillWorker(model, pr)
+	if selected == nil {
+		t.Fatal("should have selected a prefill worker")
+	}
+	if selected.ID != "air-1" {
+		t.Errorf("should prefer prefill-only worker, got %s", selected.ID)
+	}
+}
+
+func TestReservePrefillWorker_FallsBackToFull(t *testing.T) {
+	reg := New(testLogger())
+	reg.MinTrustLevel = TrustNone
+	model := "test-model"
+
+	// Only register a full-capable provider (no dedicated prefill workers)
+	fullMsg := &protocol.RegisterMessage{
+		Hardware: protocol.Hardware{MemoryGB: 64, MemoryBandwidthGBs: 400},
+		Models:   []protocol.ModelInfo{{ID: model}},
+		Backend:  "vllm_mlx",
+	}
+	fullP := reg.Register("full-1", nil, fullMsg)
+	fullP.TrustLevel = TrustHardware
+	fullP.LastChallengeVerified = time.Now()
+	fullP.RuntimeVerified = true
+
+	pr := &PendingRequest{
+		RequestID: "prefill-req-2",
+		Model:     model,
+		ChunkCh:   make(chan string, 1),
+		CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh:   make(chan protocol.InferenceErrorMessage, 1),
+	}
+
+	selected := reg.ReservePrefillWorker(model, pr)
+	if selected == nil {
+		t.Fatal("should fall back to full-capable provider")
+	}
+	if selected.ID != "full-1" {
+		t.Errorf("expected full-1, got %s", selected.ID)
+	}
+}
+
+func TestReservePrefillWorker_ReturnsNilWhenNoneAvailable(t *testing.T) {
+	reg := New(testLogger())
+	reg.MinTrustLevel = TrustNone
+
+	pr := &PendingRequest{
+		RequestID: "prefill-req-3",
+		Model:     "model-x",
+		ChunkCh:   make(chan string, 1),
+		CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh:   make(chan protocol.InferenceErrorMessage, 1),
+	}
+
+	selected := reg.ReservePrefillWorker("model-x", pr)
+	if selected != nil {
+		t.Error("should return nil when no providers available")
+	}
+}
+
+func TestReservePrefillWorker_ExcludesIDs(t *testing.T) {
+	reg := New(testLogger())
+	reg.MinTrustLevel = TrustNone
+	model := "test-model"
+
+	// Register two prefill-capable providers
+	for _, id := range []string{"air-1", "air-2"} {
+		msg := &protocol.RegisterMessage{
+			Hardware: protocol.Hardware{MemoryGB: 16, MemoryBandwidthGBs: 100},
+			Models:   []protocol.ModelInfo{{ID: model}},
+			Backend:  "vllm_mlx",
+		}
+		p := reg.Register(id, nil, msg)
+		p.TrustLevel = TrustHardware
+		p.LastChallengeVerified = time.Now()
+		p.RuntimeVerified = true
+	}
+
+	pr := &PendingRequest{
+		RequestID: "prefill-req-4",
+		Model:     model,
+		ChunkCh:   make(chan string, 1),
+		CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh:   make(chan protocol.InferenceErrorMessage, 1),
+	}
+
+	// Exclude air-1, should get air-2
+	selected := reg.ReservePrefillWorker(model, pr, "air-1")
+	if selected == nil {
+		t.Fatal("should have selected air-2")
+	}
+	if selected.ID != "air-2" {
+		t.Errorf("expected air-2, got %s", selected.ID)
+	}
+}

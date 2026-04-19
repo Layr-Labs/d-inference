@@ -21,6 +21,18 @@ use crate::hardware::{HardwareInfo, SystemMetrics};
 use crate::models::ModelInfo;
 use serde::{Deserialize, Serialize};
 
+/// Worker capabilities for disaggregated inference. Auto-detected from hardware.
+/// Small machines (≤16GB, base-tier) serve as prefill workers; larger machines
+/// handle full inference (prefill + decode).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkerCapabilities {
+    pub can_full_inference: bool,
+    pub can_prefill: bool,
+    pub max_model_size_gb: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefill_models: Vec<String>,
+}
+
 /// Messages sent from provider to coordinator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -53,6 +65,9 @@ pub enum ProviderMessage {
         /// When present, the coordinator links this provider to the token's account.
         #[serde(skip_serializing_if = "Option::is_none")]
         auth_token: Option<String>,
+        /// Worker capabilities for disaggregated inference.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_capabilities: Option<WorkerCapabilities>,
         /// SHA-256 hash of the Python interpreter binary.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         python_hash: Option<String>,
@@ -122,6 +137,12 @@ pub enum ProviderMessage {
         request_id: String,
         usage: ImageGenerationUsage,
         /// Processing time in seconds.
+        duration_secs: f64,
+    },
+    /// Prefill-only job complete — prompt was processed, tokens counted.
+    PrefillComplete {
+        request_id: String,
+        prompt_tokens: u64,
         duration_secs: f64,
     },
     /// Response to an attestation challenge from the coordinator.
@@ -204,6 +225,15 @@ pub enum CoordinatorMessage {
         /// HTTP URL where the provider should POST generated image bytes.
         #[serde(default)]
         upload_url: String,
+        #[serde(default)]
+        body: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_body: Option<EncryptedPayload>,
+    },
+    /// Prefill-only request — process the prompt and report token count.
+    /// Used for disaggregated inference where small machines handle prefill.
+    PrefillRequest {
+        request_id: String,
         #[serde(default)]
         body: serde_json::Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]

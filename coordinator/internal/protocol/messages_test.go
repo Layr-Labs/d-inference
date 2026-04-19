@@ -781,3 +781,150 @@ func TestProviderMessageUnmarshalHeartbeatWithoutCapacity(t *testing.T) {
 		t.Error("backend_capacity should be nil for old providers")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Disaggregated computation message tests
+// ---------------------------------------------------------------------------
+
+func TestWorkerCapabilitiesSerialization(t *testing.T) {
+	caps := WorkerCapabilities{
+		CanFullInference: true,
+		CanPrefill:       true,
+		MaxModelSizeGB:   60.0,
+		PrefillModels:    []string{"model-a", "model-b"},
+	}
+
+	data, err := json.Marshal(caps)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded WorkerCapabilities
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if decoded.CanFullInference != true {
+		t.Error("CanFullInference should be true")
+	}
+	if decoded.MaxModelSizeGB != 60.0 {
+		t.Errorf("MaxModelSizeGB = %f, want 60.0", decoded.MaxModelSizeGB)
+	}
+	if len(decoded.PrefillModels) != 2 {
+		t.Errorf("PrefillModels length = %d, want 2", len(decoded.PrefillModels))
+	}
+}
+
+func TestRegisterMessageWithWorkerCapabilities(t *testing.T) {
+	msg := RegisterMessage{
+		Type: TypeRegister,
+		Hardware: Hardware{
+			ChipName: "Apple M2",
+			MemoryGB: 16,
+		},
+		Models:  []ModelInfo{{ID: "test-model"}},
+		Backend: "vllm_mlx",
+		WorkerCapabilities: &WorkerCapabilities{
+			CanFullInference: false,
+			CanPrefill:       true,
+			MaxModelSizeGB:   12.0,
+		},
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var pm ProviderMessage
+	if err := json.Unmarshal(data, &pm); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	reg := pm.Payload.(*RegisterMessage)
+	if reg.WorkerCapabilities == nil {
+		t.Fatal("WorkerCapabilities should not be nil")
+	}
+	if reg.WorkerCapabilities.CanFullInference {
+		t.Error("CanFullInference should be false for small machine")
+	}
+	if !reg.WorkerCapabilities.CanPrefill {
+		t.Error("CanPrefill should be true")
+	}
+}
+
+func TestRegisterMessageWithoutWorkerCapabilities(t *testing.T) {
+	msg := RegisterMessage{
+		Type:    TypeRegister,
+		Hardware: Hardware{ChipName: "Apple M4 Max", MemoryGB: 128},
+		Models:  []ModelInfo{{ID: "test-model"}},
+		Backend: "vllm_mlx",
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var pm ProviderMessage
+	if err := json.Unmarshal(data, &pm); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	reg := pm.Payload.(*RegisterMessage)
+	if reg.WorkerCapabilities != nil {
+		t.Error("WorkerCapabilities should be nil when not set")
+	}
+}
+
+func TestPrefillCompleteUnmarshal(t *testing.T) {
+	raw := `{"type":"prefill_complete","request_id":"req-123","prompt_tokens":512,"duration_secs":1.5}`
+
+	var pm ProviderMessage
+	if err := json.Unmarshal([]byte(raw), &pm); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if pm.Type != TypePrefillComplete {
+		t.Errorf("type = %q, want %q", pm.Type, TypePrefillComplete)
+	}
+
+	msg := pm.Payload.(*PrefillCompleteMessage)
+	if msg.RequestID != "req-123" {
+		t.Errorf("RequestID = %q, want %q", msg.RequestID, "req-123")
+	}
+	if msg.PromptTokens != 512 {
+		t.Errorf("PromptTokens = %d, want 512", msg.PromptTokens)
+	}
+	if msg.DurationSecs != 1.5 {
+		t.Errorf("DurationSecs = %f, want 1.5", msg.DurationSecs)
+	}
+}
+
+func TestPrefillRequestMarshal(t *testing.T) {
+	msg := PrefillRequestMessage{
+		Type:      TypePrefillRequest,
+		RequestID: "prefill-001",
+		Body: PrefillRequestBody{
+			Model: "test-model",
+			Messages: []ChatMessage{
+				{Role: "user", Content: "hello world"},
+			},
+		},
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var parsed map[string]any
+	json.Unmarshal(data, &parsed)
+
+	if parsed["type"] != TypePrefillRequest {
+		t.Errorf("type = %v, want %v", parsed["type"], TypePrefillRequest)
+	}
+	if parsed["request_id"] != "prefill-001" {
+		t.Errorf("request_id = %v, want prefill-001", parsed["request_id"])
+	}
+}

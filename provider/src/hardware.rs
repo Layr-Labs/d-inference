@@ -420,6 +420,34 @@ fn lookup_bandwidth(family: ChipFamily, tier: ChipTier, gpu_cores: u32) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
+// Worker capability detection for disaggregated inference
+// ---------------------------------------------------------------------------
+
+/// Derive worker capabilities from hardware info. Small machines (≤16GB,
+/// base-tier with low bandwidth) serve as prefill-only workers. Larger machines
+/// handle full inference and can also accept prefill jobs.
+pub fn derive_worker_capabilities(hw: &HardwareInfo) -> crate::protocol::WorkerCapabilities {
+    let mem_gb = hw.memory_gb;
+    let avail_gb = if mem_gb > 4 { (mem_gb - 4) as f64 } else { 0.0 };
+
+    let can_prefill = mem_gb >= 8;
+
+    let bw = hw.memory_bandwidth_gbs as f64;
+    let can_full = if mem_gb <= 16 && bw < 150.0 {
+        false
+    } else {
+        mem_gb >= 16
+    };
+
+    crate::protocol::WorkerCapabilities {
+        can_full_inference: can_full,
+        can_prefill,
+        max_model_size_gb: avail_gb,
+        prefill_models: Vec::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Backend status polling (vllm-mlx /v1/status endpoint)
 // ---------------------------------------------------------------------------
 

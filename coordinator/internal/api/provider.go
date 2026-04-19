@@ -280,6 +280,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			igMsg := msg.Payload.(*protocol.ImageGenerationCompleteMessage)
 			s.handleImageGenerationComplete(providerID, provider, igMsg)
 
+		case protocol.TypePrefillComplete:
+			pfMsg := msg.Payload.(*protocol.PrefillCompleteMessage)
+			s.handlePrefillComplete(providerID, provider, pfMsg)
+
 		case protocol.TypeAttestationResponse:
 			respMsg := msg.Payload.(*protocol.AttestationResponseMessage)
 			s.handleAttestationResponse(providerID, provider, respMsg, tracker)
@@ -387,6 +391,41 @@ func (s *Server) sendChallenge(ctx context.Context, conn *websocket.Conn, provid
 		tracker.remove(nonce)
 		s.handleChallengeFailure(providerID, "timeout")
 	}
+}
+
+// handlePrefillComplete processes a prefill completion from a prefill worker.
+// The coordinator records the job success and marks the worker idle.
+func (s *Server) handlePrefillComplete(providerID string, provider *registry.Provider, msg *protocol.PrefillCompleteMessage) {
+	if provider == nil {
+		s.logger.Warn("prefill complete from unregistered provider", "provider_id", providerID)
+		return
+	}
+	pr := provider.RemovePending(msg.RequestID)
+	if pr == nil {
+		s.logger.Warn("prefill complete for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
+		return
+	}
+
+	responseTime := time.Duration(msg.DurationSecs * float64(time.Second))
+	s.registry.RecordJobSuccess(providerID, responseTime)
+
+	// Signal the consumer handler that prefill is done so it can
+	// dispatch the decode phase to the full-inference provider.
+	if pr.CompleteCh != nil {
+		select {
+		case pr.CompleteCh <- protocol.UsageInfo{PromptTokens: msg.PromptTokens}:
+		default:
+		}
+	}
+
+	s.registry.SetProviderIdle(providerID)
+
+	s.logger.Info("prefill complete",
+		"request_id", msg.RequestID,
+		"provider_id", providerID,
+		"prompt_tokens", msg.PromptTokens,
+		"duration_secs", msg.DurationSecs,
+	)
 }
 
 // handleAttestationResponse processes an attestation response from a provider.

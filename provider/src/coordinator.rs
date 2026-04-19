@@ -26,7 +26,7 @@ use crate::hardware::HardwareInfo;
 use crate::models::ModelInfo;
 use crate::protocol::{
     CoordinatorMessage, ImageGenerationRequestBody, ProviderMessage, ProviderStats, ProviderStatus,
-    TranscriptionRequestBody,
+    TranscriptionRequestBody, WorkerCapabilities,
 };
 use crate::security::RuntimeHashes;
 
@@ -63,6 +63,10 @@ pub enum CoordinatorEvent {
         request_id: String,
         body: ImageGenerationRequestBody,
         upload_url: String,
+    },
+    PrefillRequest {
+        request_id: String,
+        body: serde_json::Value,
     },
     Cancel {
         request_id: String,
@@ -106,6 +110,8 @@ pub struct CoordinatorClient {
     model_hashes: std::collections::HashMap<String, String>,
     /// Live backend capacity data (updated by main loop, read by heartbeat tick).
     backend_capacity: Arc<std::sync::Mutex<Option<crate::protocol::BackendCapacity>>>,
+    /// Worker capabilities for disaggregated inference (auto-detected from hardware).
+    worker_capabilities: Option<WorkerCapabilities>,
 }
 
 impl CoordinatorClient {
@@ -137,6 +143,7 @@ impl CoordinatorClient {
             runtime_hashes: None,
             model_hashes: std::collections::HashMap::new(),
             backend_capacity: Arc::new(std::sync::Mutex::new(None)),
+            worker_capabilities: None,
         }
     }
 
@@ -200,6 +207,12 @@ impl CoordinatorClient {
     /// Set runtime integrity hashes (Python, vllm_mlx, templates) for registration.
     pub fn with_runtime_hashes(mut self, hashes: Option<RuntimeHashes>) -> Self {
         self.runtime_hashes = hashes;
+        self
+    }
+
+    /// Set worker capabilities for disaggregated inference.
+    pub fn with_worker_capabilities(mut self, caps: Option<WorkerCapabilities>) -> Self {
+        self.worker_capabilities = caps;
         self
     }
 
@@ -299,6 +312,7 @@ impl CoordinatorClient {
             prefill_tps: None,
             decode_tps: None,
             auth_token: self.auth_token.clone(),
+            worker_capabilities: self.worker_capabilities.clone(),
             python_hash,
             runtime_hash,
             template_hashes,
@@ -469,6 +483,27 @@ impl CoordinatorClient {
                                             tracing::error!("Failed to parse image generation body: {e}");
                                         }
                                     }
+                                }
+                                Ok(CoordinatorMessage::PrefillRequest { request_id, body, encrypted_body }) => {
+                                    tracing::info!("Received prefill request: {request_id}");
+
+                                    let decrypted_body = if let Some(enc) = encrypted_body {
+                                        tracing::info!("Decrypting E2E encrypted prefill request");
+                                        match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
+                                            Ok(b) => b,
+                                            Err(e) => {
+                                                tracing::error!("Failed to decrypt prefill request: {e}");
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        body
+                                    };
+
+                                    let _ = event_tx.send(CoordinatorEvent::PrefillRequest {
+                                        request_id,
+                                        body: decrypted_body,
+                                    }).await;
                                 }
                                 Ok(CoordinatorMessage::Cancel { request_id }) => {
                                     tracing::info!("Received cancel for: {request_id}");
@@ -712,6 +747,7 @@ pub fn build_register_message_with_wallet(
         prefill_tps: None,
         decode_tps: None,
         auth_token: None,
+        worker_capabilities: None,
         python_hash: None,
         runtime_hash: None,
         template_hashes: std::collections::HashMap::new(),

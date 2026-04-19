@@ -166,5 +166,10 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"providers":               providers,
 		"models":                  models,
 		"time_series":             timeSeries,
+		"disaggregated_compute": map[string]any{
+			"prefill_workers":        s.registry.PrefillWorkerCount(),
+			"prefill_only_workers":   s.registry.PrefillOnlyWorkerCount(),
+			"full_inference_workers": s.registry.FullInferenceWorkerCount(),
+		},
 	})
 }

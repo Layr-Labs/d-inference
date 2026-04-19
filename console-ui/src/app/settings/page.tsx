@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { TopBar } from "@/components/TopBar";
 import { useToastStore } from "@/hooks/useToast";
 import {
+  getGoogleAnalyticsConsentStorageKey,
   getGoogleAnalyticsConsentStatus,
   grantGoogleAnalyticsConsent,
   revokeGoogleAnalyticsConsent,
@@ -61,8 +62,20 @@ export default function SettingsPage() {
 
   useEffect(() => {
     window.addEventListener("darkbloom-ga-consent-changed", syncAnalyticsConsent);
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === getGoogleAnalyticsConsentStorageKey()) {
+        syncAnalyticsConsent();
+      }
+    };
+    window.addEventListener("storage", handleStorage);
     return () =>
-      window.removeEventListener("darkbloom-ga-consent-changed", syncAnalyticsConsent);
+      {
+        window.removeEventListener(
+          "darkbloom-ga-consent-changed",
+          syncAnalyticsConsent
+        );
+        window.removeEventListener("storage", handleStorage);
+      };
   }, [syncAnalyticsConsent]);
 
   // When the user flips the toggle, eagerly fetch the coordinator pubkey so

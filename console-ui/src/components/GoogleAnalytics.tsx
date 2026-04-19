@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Script from "next/script";
 import { usePathname } from "next/navigation";
 import {
+  applyGoogleAnalyticsConsentState,
   getGoogleAnalyticsConsentStatus,
   getGoogleAnalyticsMeasurementId,
   getGoogleAnalyticsConsentStorageKey,
@@ -30,8 +31,18 @@ export function GoogleAnalytics() {
 
     syncConsentState();
     window.addEventListener("darkbloom-ga-consent-changed", syncConsentState);
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === getGoogleAnalyticsConsentStorageKey()) {
+        applyGoogleAnalyticsConsentState();
+        syncConsentState();
+      }
+    };
+    window.addEventListener("storage", onStorage);
     return () =>
-      window.removeEventListener("darkbloom-ga-consent-changed", syncConsentState);
+      {
+        window.removeEventListener("darkbloom-ga-consent-changed", syncConsentState);
+        window.removeEventListener("storage", onStorage);
+      };
   }, []);
 
   useEffect(() => {

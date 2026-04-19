@@ -75,6 +75,23 @@ export function getGoogleAnalyticsConsentStatus(): GoogleAnalyticsConsentStatus 
   return "unset";
 }
 
+export function applyGoogleAnalyticsConsentState(): GoogleAnalyticsConsentStatus {
+  const status = getGoogleAnalyticsConsentStatus();
+  if (typeof window === "undefined") {
+    return status;
+  }
+
+  setGoogleAnalyticsDisabled(status !== "granted");
+
+  if (status !== "granted") {
+    window.__googleAnalyticsInitialized = false;
+    window.__googleAnalyticsCurrentPageLocation = undefined;
+    window.__googleAnalyticsCurrentPageReferrer = undefined;
+  }
+
+  return status;
+}
+
 export function hasGoogleAnalyticsConsent() {
   return getGoogleAnalyticsConsentStatus() === "granted";
 }
@@ -85,7 +102,7 @@ export function grantGoogleAnalyticsConsent() {
   }
 
   window.localStorage.setItem(GA_CONSENT_STORAGE_KEY, "granted");
-  setGoogleAnalyticsDisabled(false);
+  applyGoogleAnalyticsConsentState();
   window.dispatchEvent(new Event("darkbloom-ga-consent-changed"));
 }
 
@@ -95,10 +112,7 @@ export function revokeGoogleAnalyticsConsent() {
   }
 
   window.localStorage.setItem(GA_CONSENT_STORAGE_KEY, "denied");
-  setGoogleAnalyticsDisabled(true);
-  window.__googleAnalyticsInitialized = false;
-  window.__googleAnalyticsCurrentPageLocation = undefined;
-  window.__googleAnalyticsCurrentPageReferrer = undefined;
+  applyGoogleAnalyticsConsentState();
   window.dispatchEvent(new Event("darkbloom-ga-consent-changed"));
 }
 

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  applyGoogleAnalyticsConsentState,
   buildTrackedPageLocation,
+  getGoogleAnalyticsMeasurementId,
   getGoogleAnalyticsConsentStatus,
   grantGoogleAnalyticsConsent,
   hasGoogleAnalyticsConsent,
@@ -50,6 +52,31 @@ describe("google analytics helpers", () => {
     expect(getGoogleAnalyticsConsentStatus()).toBe("denied");
     expect(hasGoogleAnalyticsConsent()).toBe(false);
     expect(window.__googleAnalyticsInitialized).toBe(false);
+  });
+
+  it("syncs runtime state when consent changes externally", () => {
+    grantGoogleAnalyticsConsent();
+    initializeGoogleAnalytics();
+
+    expect(window.__googleAnalyticsInitialized).toBe(true);
+    expect(
+      (
+        window as typeof window & Record<string, boolean | undefined>
+      )[`ga-disable-${getGoogleAnalyticsMeasurementId()}`]
+    ).toBe(false);
+
+    localStorage.setItem("darkbloom_ga_consent", "denied");
+    applyGoogleAnalyticsConsentState();
+
+    expect(getGoogleAnalyticsConsentStatus()).toBe("denied");
+    expect(window.__googleAnalyticsInitialized).toBe(false);
+    expect(window.__googleAnalyticsCurrentPageLocation).toBeUndefined();
+    expect(window.__googleAnalyticsCurrentPageReferrer).toBeUndefined();
+    expect(
+      (
+        window as typeof window & Record<string, boolean | undefined>
+      )[`ga-disable-${getGoogleAnalyticsMeasurementId()}`]
+    ).toBe(true);
   });
 
   it("keeps only allowed attribution params on the initial page view", () => {

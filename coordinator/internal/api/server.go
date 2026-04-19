@@ -100,6 +100,21 @@ type Server struct {
 	// Used for device auth verification_uri so the browser opens the console, not the coordinator.
 	consoleURL string
 
+	// baseURL is the public URL clients reach this coordinator at
+	// (e.g. "https://api.darkbloom.dev" for prod, "https://api.dev.darkbloom.dev" for dev).
+	// Substituted into the embedded install.sh at serve time so the same binary
+	// can serve both environments. Falls back to "https://" + request.Host when empty.
+	baseURL string
+
+	// r2CDNURL is the public R2 bucket URL that providers pull release artifacts
+	// and model weights from. Prod bucket is distinct from dev bucket, so the
+	// coordinator substitutes it into install.sh at serve time.
+	r2CDNURL string
+
+	// r2SitePackagesCDNURL is the R2 URL for the Python site-packages tarball.
+	// Prod historically uses a second bucket; dev can reuse r2CDNURL.
+	r2SitePackagesCDNURL string
+
 	// imageUploads stores generated images keyed by request_id.
 	// Providers upload images via HTTP POST, then send a small WebSocket
 	// completion message. The consumer handler retrieves images from here.
@@ -204,6 +219,27 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 // SetAdminKey configures the admin API key for admin-only endpoints.
 func (s *Server) SetAdminKey(key string) {
 	s.adminKey = key
+}
+
+// SetBaseURL sets the coordinator's public URL (used to template install.sh).
+// Pass the canonical origin with no trailing slash, e.g. "https://api.darkbloom.dev".
+// If unset, the install.sh handler derives a URL from the request's Host header.
+func (s *Server) SetBaseURL(url string) {
+	s.baseURL = strings.TrimRight(url, "/")
+}
+
+// SetR2CDNURL sets the public R2 bucket URL that install.sh substitutes as
+// the model/template/release download origin. If unset, install.sh keeps the
+// placeholder — providers will fail to pull artifacts, making the misconfig
+// loud instead of silent.
+func (s *Server) SetR2CDNURL(url string) {
+	s.r2CDNURL = strings.TrimRight(url, "/")
+}
+
+// SetR2SitePackagesCDNURL sets the R2 URL for the Python site-packages
+// tarball. Defaults to r2CDNURL when unset.
+func (s *Server) SetR2SitePackagesCDNURL(url string) {
+	s.r2SitePackagesCDNURL = strings.TrimRight(url, "/")
 }
 
 // SetStepCACerts configures the step-ca CA certificates for ACME client cert verification.
@@ -536,13 +572,49 @@ func (s *Server) HandleMDMWebhook(w http.ResponseWriter, r *http.Request) {
 //go:embed install.sh
 var installScript []byte
 
+// installScriptPlaceholder is substituted with the coordinator's public URL at
+// serve time. Keep in sync with coordinator/internal/api/install.sh.
+const installScriptPlaceholder = "__DARKBLOOM_COORD_URL__"
+
+// installScriptR2Placeholder is substituted with the public R2 CDN URL for
+// release artifacts + model weights. Keep in sync with install.sh.
+const installScriptR2Placeholder = "__DARKBLOOM_R2_CDN_URL__"
+
+// installScriptR2SitePackagesPlaceholder is substituted with the R2 URL for
+// the Python site-packages tarball (historically a separate prod bucket).
+const installScriptR2SitePackagesPlaceholder = "__DARKBLOOM_R2_SITE_PACKAGES_CDN_URL__"
+
+// resolveBaseURL returns the configured baseURL, or derives one from the
+// request's Host header when baseURL is unset. TLS-terminating proxies pass
+// through the original scheme via X-Forwarded-Proto; default to https.
+func (s *Server) resolveBaseURL(r *http.Request) string {
+	if s.baseURL != "" {
+		return s.baseURL
+	}
+	scheme := "https"
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	} else if r.TLS == nil {
+		scheme = "http"
+	}
+	return scheme + "://" + r.Host
+}
+
 // routes mounts all HTTP and WebSocket handlers.
 func (s *Server) routes() {
-	// Install script — served directly from embedded binary.
+	// Install script — served from embedded binary with coordinator URL +
+	// R2 CDN URLs substituted per environment.
 	s.mux.HandleFunc("GET /install.sh", func(w http.ResponseWriter, r *http.Request) {
+		rendered := strings.ReplaceAll(string(installScript), installScriptPlaceholder, s.resolveBaseURL(r))
+		rendered = strings.ReplaceAll(rendered, installScriptR2Placeholder, s.r2CDNURL)
+		sitePackagesURL := s.r2SitePackagesCDNURL
+		if sitePackagesURL == "" {
+			sitePackagesURL = s.r2CDNURL
+		}
+		rendered = strings.ReplaceAll(rendered, installScriptR2SitePackagesPlaceholder, sitePackagesURL)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
-		w.Write(installScript)
+		io.WriteString(w, rendered)
 	})
 
 	// Health check — no auth required.

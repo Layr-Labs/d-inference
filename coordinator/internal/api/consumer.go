@@ -161,6 +161,57 @@ func estimateRequestedMaxTokens(parsed map[string]any) int {
 	return 256
 }
 
+// defaultMaxOutputTokens is the ceiling injected into requests that don't set
+// max_tokens. It bounds the worst-case cost of a single inference so the
+// pre-flight balance reservation covers the entire generation; without this
+// cap a consumer could stream output exceeding their reservation and the
+// post-inference charge would fail silently (see GitHub issue #33). Consumers
+// who need longer generations must set max_tokens explicitly and carry the
+// balance to cover it.
+const defaultMaxOutputTokens = 8192
+
+// explicitMaxTokens returns the consumer-specified max output tokens from any
+// of the recognized field names, or 0 if none were set.
+func explicitMaxTokens(parsed map[string]any) int {
+	for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
+		if n, ok := intFromRequestValue(parsed[key]); ok && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// reservationCost is the pre-flight worst-case cost for a text inference
+// request. It mirrors the platform-price branch of handleComplete's billing
+// so the reservation covers any platform-level custom price for the model;
+// without this, a platform override above the built-in default would leave
+// the reservation short and the post-inference clamp would silently
+// undercharge. Provider-specific custom prices are not known until dispatch
+// commits to a provider, so a provider that sets a custom price above the
+// platform rate accepts revenue capped at the reservation.
+func (s *Server) reservationCost(model string, promptTokens, maxTokens int) int64 {
+	customIn, customOut, hasCustom := s.store.GetModelPrice("platform", model)
+	return payments.CalculateCostWithOverrides(model, promptTokens, maxTokens, customIn, customOut, hasCustom)
+}
+
+// ensureMaxTokensBound injects defaultMaxOutputTokens into parsed when the
+// consumer didn't specify any max-tokens field, so the outgoing request to
+// the provider is bounded by the amount we reserve upfront. The injected
+// field name depends on the API flavor: Responses API uses max_output_tokens,
+// everything else uses max_tokens. Returns true when an injection occurred,
+// so the caller can re-marshal the outgoing body if needed.
+func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool) bool {
+	if explicitMaxTokens(parsed) > 0 {
+		return false
+	}
+	if isResponsesAPI {
+		parsed["max_output_tokens"] = defaultMaxOutputTokens
+	} else {
+		parsed["max_tokens"] = defaultMaxOutputTokens
+	}
+	return true
+}
+
 // handleChatCompletions handles POST /v1/chat/completions.
 //
 // This is the main inference endpoint. It validates the request, finds an
@@ -202,10 +253,20 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	isResponsesAPI := input != nil && len(messages) == 0
 	// If this is a Responses API request, tag it so the provider proxies
 	// to /v1/responses instead of /v1/chat/completions.
-	if input != nil && len(messages) == 0 {
+	if isResponsesAPI {
 		parsed["endpoint"] = "/v1/responses"
+		rawBody, _ = json.Marshal(parsed)
+	}
+
+	// Bound the generation so the pre-flight reservation covers it. If the
+	// consumer didn't set max_tokens, inject defaultMaxOutputTokens into the
+	// outgoing body. Without this bound the provider could return more tokens
+	// than we reserved for, and the silent post-inference charge failure would
+	// hand the consumer free inference (GitHub issue #33).
+	if ensureMaxTokensBound(parsed, isResponsesAPI) {
 		rawBody, _ = json.Marshal(parsed)
 	}
 
@@ -213,18 +274,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 
-	// Pre-flight balance reservation — atomically debit the minimum charge
-	// before routing to a provider. This prevents concurrent requests from
-	// all passing a balance > 0 check and then failing to charge after inference.
-	// The reservation is refunded if the request fails, or adjusted to the
-	// actual cost after inference completes.
+	// Pre-flight balance reservation — atomically debit the worst-case cost
+	// (prompt tokens already consumed + max_tokens we just bounded the
+	// generation to) before routing to a provider. The post-inference charge
+	// refunds any unused portion. Reserving only the minimum charge let
+	// consumers receive streamed output far exceeding their actual balance.
 	var reservedMicroUSD int64
 	if s.billing != nil {
 		consumerKey := consumerKeyFromContext(r.Context())
-		reservedMicroUSD = payments.MinimumCharge()
+		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
 		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-				"your balance is too low — add funds at /billing before making requests"))
+				"your balance is too low for this request — add funds at /billing or lower max_tokens"))
 			return
 		}
 	}
@@ -1692,6 +1753,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	// Completions and Anthropic messages both use the max_tokens field (never
+	// max_output_tokens, which is Responses API only). Inject a default if
+	// unset so the pre-flight reservation bounds the generation.
+	ensureMaxTokensBound(parsed, false)
+
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
@@ -1699,14 +1765,35 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Inject the endpoint so the provider knows which local path to forward to.
 	parsed["endpoint"] = endpoint
 
-	requestID := uuid.New().String()
+	// Pre-flight balance reservation — same worst-case-cost reservation as
+	// handleChatCompletions. Before this fix the completions and Anthropic
+	// paths routed without ANY reservation; the silent post-inference charge
+	// meant a consumer could receive full responses with a zero balance.
 	consumerKey := consumerKeyFromContext(r.Context())
+	var reservedMicroUSD int64
+	if s.billing != nil {
+		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
+		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
+			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
+				"your balance is too low for this request — add funds at /billing or lower max_tokens"))
+			return
+		}
+	}
+	// Refund the reservation on any early failure before dispatch.
+	refundReservation := func() {
+		if reservedMicroUSD > 0 {
+			_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "reservation_refund")
+		}
+	}
+
+	requestID := uuid.New().String()
 	pr := &registry.PendingRequest{
 		RequestID:             requestID,
 		Model:                 model,
 		ConsumerKey:           consumerKey,
 		EstimatedPromptTokens: estimatedPromptTokens,
 		RequestedMaxTokens:    requestedMaxTokens,
+		ReservedMicroUSD:      reservedMicroUSD,
 		ChunkCh:               make(chan string, chunkBufferSize),
 		CompleteCh:            make(chan protocol.UsageInfo, 1),
 		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
@@ -1721,6 +1808,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			ResponseCh: make(chan *registry.Provider, 1),
 		}
 		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
+			refundReservation()
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
 				fmt.Sprintf("no provider available for model %q", model)))
 			return
@@ -1728,8 +1816,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {
 			if err == context.Canceled {
+				refundReservation()
 				return
 			}
+			refundReservation()
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
 				fmt.Sprintf("no provider became available for model %q", model)))
 			return
@@ -1740,6 +1830,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	if provider.PublicKey == "" {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
 			"no provider with E2E encryption available"))
 		return
@@ -1748,6 +1839,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
 	if err != nil {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "provider public key invalid"))
 		return
 	}
@@ -1755,6 +1847,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	sessionKeys, err := e2e.GenerateSessionKeys()
 	if err != nil {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to generate session keys"))
 		return
 	}
@@ -1762,6 +1855,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	encrypted, err := e2e.Encrypt(inferenceBody, providerPubKey, sessionKeys)
 	if err != nil {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to encrypt request"))
 		return
 	}
@@ -1781,6 +1875,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
 		return
 	}

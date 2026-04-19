@@ -150,13 +150,10 @@ pub fn legacy_enclave_e2e_key_paths() -> Vec<std::path::PathBuf> {
 }
 
 fn purge_legacy_e2e_files() {
-    for path in [
-        legacy_node_key_paths(),
-        legacy_enclave_e2e_key_paths(),
-    ]
-    .into_iter()
-    .flatten()
-    .filter(|path| path.exists())
+    for path in [legacy_node_key_paths(), legacy_enclave_e2e_key_paths()]
+        .into_iter()
+        .flatten()
+        .filter(|path| path.exists())
     {
         match std::fs::remove_file(&path) {
             Ok(()) => tracing::info!("Removed legacy E2E secret file: {}", path.display()),

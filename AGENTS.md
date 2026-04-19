@@ -188,25 +188,24 @@ Canonical runbook: `docs/coordinator-deploy-runbook.md`
 
 Current release-sensitive pieces:
 
-- Coordinator deploy target in the runbook is AWS EC2 `34.197.17.112` (`api.darkbloom.dev`).
+- Prod coordinator runs on EigenCloud (TEE) as app `d-inference` at `api.darkbloom.dev`. Build target: `coordinator/Dockerfile`. Dev coordinator runs on Google Cloud (see `docs/dev-environment.md`).
 - Provider bundle creation lives in `scripts/build-bundle.sh`.
 - App bundle + DMG creation lives in `scripts/bundle-app.sh`.
 - Installer flow lives in `scripts/install.sh`.
 - Provider update checks use `LatestProviderVersion` in `coordinator/internal/api/server.go`, so bundle uploads and version bumps need to stay coordinated.
 - CI release workflow (`release.yml`) signs binaries with Developer ID Application cert, notarizes with Apple, computes SHA-256 hashes after signing.
 
-Quick coordinator deploy:
+Quick coordinator deploy (prod, EigenCloud):
 
 ```bash
-cd coordinator && \
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o eigeninference-coordinator-linux ./cmd/coordinator && \
-scp -i ~/.ssh/eigeninference-infra eigeninference-coordinator-linux ubuntu@34.197.17.112:/tmp/eigeninference-coordinator && \
-ssh -i ~/.ssh/eigeninference-infra ubuntu@34.197.17.112 \
-  'sudo systemctl stop eigeninference-coordinator && \
-   sudo mv /tmp/eigeninference-coordinator /usr/local/bin/eigeninference-coordinator && \
-   sudo chmod +x /usr/local/bin/eigeninference-coordinator && \
-   sudo systemctl start eigeninference-coordinator'
+# EigenCloud builds from the repo via coordinator/Dockerfile and blue-green deploys.
+git push origin master
+ecloud compute app deploy d-inference
+curl https://api.darkbloom.dev/health
+ecloud compute app logs d-inference
 ```
+
+Dev coordinator deploy (Google Cloud): see `docs/dev-environment.md`.
 
 ## Important Sync Points
 

@@ -171,7 +171,7 @@ EigenInference uses Apple MDM (MicroMDM) to independently verify provider securi
   - `FDE_Enabled`: FileVault disk encryption
   - `IsRecoveryLockEnabled`: Recovery Mode lock status
 - **Push notifications:** APNs for on-demand attestation queries
-- **Infrastructure:** MicroMDM + SCEP + step-ca on AWS
+- **Infrastructure:** MicroMDM + SCEP + step-ca co-located in the coordinator container on EigenCloud (prod). Dev runs on Google Cloud with MDM disabled.
 
 ### Apple Device Attestation (MDA)
 

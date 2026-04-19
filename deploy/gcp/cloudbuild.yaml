@@ -1,0 +1,81 @@
+# Cloud Build config for the d-inference DEV coordinator on Google Cloud.
+#
+# Triggered on push to master (path filter: coordinator/** | deploy/gcp/**).
+# Builds coordinator/Dockerfile (same image EigenCloud prod uses), pushes to
+# Artifact Registry, then pins the VM's container image tag and restarts the
+# systemd unit so it picks up the new image.
+#
+# Why GCE VM instead of Cloud Run: the coordinator runs step-ca (ACME CA) and
+# MicroMDM (BoltDB). Both need reliable local filesystem semantics, which
+# Cloud Run's ephemeral FS + gcsfuse can't provide. The VM has a persistent
+# disk at /mnt/disks/userdata — same path prod uses on EigenCloud.
+#
+# Upgrade time: ~2-4 minutes end-to-end (build + push + SSH restart).
+
+timeout: 1800s
+
+substitutions:
+  _INSTANCE: d-inference-dev
+  _ZONE: us-central1-a
+  _IMAGE: us-central1-docker.pkg.dev/$PROJECT_ID/coordinator/coordinator
+  _HEALTH_URL: https://api.dev.darkbloom.dev/health
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    dir: coordinator
+    args:
+      - build
+      - --tag=${_IMAGE}:$SHORT_SHA
+      - --tag=${_IMAGE}:latest
+      - --file=Dockerfile
+      - .
+
+  - id: push-sha
+    name: gcr.io/cloud-builders/docker
+    args: [push, '${_IMAGE}:$SHORT_SHA']
+
+  - id: push-latest
+    name: gcr.io/cloud-builders/docker
+    args: [push, '${_IMAGE}:latest']
+
+  # Pin the container image on the VM and restart the systemd unit. We SSH
+  # via IAP so no public SSH ingress is required. The unit's ExecStartPre
+  # does `docker pull`, so restarting is all we need to do here.
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        # Write the new image tag to instance metadata so the systemd unit
+        # picks it up. The unit reads IMAGE_TAG at ExecStartPre time.
+        gcloud compute instances add-metadata ${_INSTANCE} \
+          --zone=${_ZONE} \
+          --metadata=DINF_IMAGE_TAG=$SHORT_SHA
+
+        gcloud compute ssh ${_INSTANCE} --zone=${_ZONE} --tunnel-through-iap -- \
+          "sudo systemctl restart d-inference-coordinator"
+
+        echo "Restart requested; polling /health..."
+        for i in $(seq 1 48); do
+          code=$(curl -sk -o /dev/null -w '%{http_code}' "${_HEALTH_URL}" || true)
+          if [ "$code" = "200" ]; then
+            echo "health check passed after $((i*5))s"
+            exit 0
+          fi
+          echo "attempt $i: got $code"
+          sleep 5
+        done
+        echo "health check failed after 4 minutes"
+        exit 1
+
+images:
+  - '${_IMAGE}:$SHORT_SHA'
+  - '${_IMAGE}:latest'

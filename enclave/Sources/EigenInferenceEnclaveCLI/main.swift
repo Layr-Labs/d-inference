@@ -136,6 +136,23 @@ private func parseBoolFlag(_ raw: String?) throws -> Bool? {
     }
 }
 
+private extension Data {
+    init?(hexString: String) {
+        let cleaned = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleaned.count % 2 == 0 else { return nil }
+        var data = Data(capacity: cleaned.count / 2)
+        var index = cleaned.startIndex
+        while index < cleaned.endIndex {
+            let next = cleaned.index(index, offsetBy: 2)
+            let byteString = cleaned[index..<next]
+            guard let byte = UInt8(byteString, radix: 16) else { return nil }
+            data.append(byte)
+            index = next
+        }
+        self = data
+    }
+}
+
 private func sha256File(at path: String) -> String? {
     let url = URL(fileURLWithPath: path)
     guard FileManager.default.fileExists(atPath: url.path),
@@ -244,6 +261,41 @@ private func weightHashForModel(path: String) -> String? {
         finalHasher.update(data: digest)
     }
     return Data(finalHasher.finalize()).map { String(format: "%02x", $0) }.joined()
+}
+
+private func resolveModelPath(modelID: String) -> String? {
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    let cache = home.appendingPathComponent(".cache/huggingface/hub")
+    let candidates = [
+        cache.appendingPathComponent("models--" + modelID.replacingOccurrences(of: "/", with: "--")),
+        cache.appendingPathComponent("models--" + modelID)
+    ]
+
+    for modelDir in candidates where FileManager.default.fileExists(atPath: modelDir.path) {
+        let snapshots = modelDir.appendingPathComponent("snapshots")
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: snapshots,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            continue
+        }
+        let latest = entries
+            .filter { url in
+                var isDir: ObjCBool = false
+                return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+            }
+            .sorted {
+                let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return a > b
+            }
+            .first
+        if let latest {
+            return latest.path
+        }
+    }
+    return nil
 }
 
 private func runtimeHashesFromDarkbloomHome() -> (pythonHash: String?, runtimeHash: String?, templateHashes: [String: String], grpcBinaryHash: String?, imageBridgeHash: String?) {
@@ -366,11 +418,13 @@ func cmdChallengeSign(
     let identity = try loadOrCreateIdentity()
     let runtimeState = runtimeHashesFromDarkbloomHome()
     let binaryHash = binaryPath.flatMap { sha256File(at: $0) }
-    let activeModelHash = activeModelPath.flatMap { weightHashForModel(path: $0) }
+    let resolvedActiveModelPath = activeModelPath ?? activeModelID.flatMap(resolveModelPath(modelID:))
+    let activeModelHash = resolvedActiveModelPath.flatMap { weightHashForModel(path: $0) }
     let modelPaths = try decodeJSONMap(modelPathsJSON)
     var modelHashes: [String: String] = [:]
     for (modelID, modelPath) in modelPaths {
-        if let hash = weightHashForModel(path: modelPath) {
+        let resolvedPath = modelPath.isEmpty ? (resolveModelPath(modelID: modelID) ?? modelPath) : modelPath
+        if let hash = weightHashForModel(path: resolvedPath) {
             modelHashes[modelID] = hash
         }
     }

@@ -113,59 +113,6 @@ public func eigeninference_enclave_data_representation(
     return data.count
 }
 
-/// Sign data with the Secure Enclave private key.
-///
-/// The signing operation happens inside the Secure Enclave hardware.
-/// Returns the DER-encoded ECDSA signature as a base64 null-terminated C string.
-/// Caller must free with `eigeninference_enclave_free_string()`.
-/// Returns NULL on failure (e.g., Secure Enclave unavailable, biometric denied).
-@_cdecl("eigeninference_enclave_sign")
-public func eigeninference_enclave_sign(
-    _ ptr: UnsafeRawPointer,
-    _ dataPtr: UnsafePointer<UInt8>,
-    _ dataLen: Int
-) -> UnsafeMutablePointer<CChar>? {
-    let identity = Unmanaged<SecureEnclaveIdentity>.fromOpaque(ptr)
-        .takeUnretainedValue()
-    let data = Data(bytes: dataPtr, count: dataLen)
-    guard let signature = try? identity.sign(data) else { return nil }
-    return strdup(signature.base64EncodedString())
-}
-
-/// Verify a P-256 ECDSA signature.
-///
-/// This is a standalone verification that does not require a Secure Enclave
-/// identity — it uses any P-256 public key provided as raw bytes (base64).
-///
-/// - Parameters:
-///   - pubKeyBase64: The signer's public key (raw representation, base64).
-///   - dataPtr/dataLen: The signed data.
-///   - sigBase64: The DER-encoded signature (base64).
-///
-/// Returns 1 if the signature is valid, 0 otherwise.
-@_cdecl("eigeninference_enclave_verify")
-public func eigeninference_enclave_verify(
-    _ pubKeyBase64: UnsafePointer<CChar>,
-    _ dataPtr: UnsafePointer<UInt8>,
-    _ dataLen: Int,
-    _ sigBase64: UnsafePointer<CChar>
-) -> Int32 {
-    let pubKeyStr = String(cString: pubKeyBase64)
-    let sigStr = String(cString: sigBase64)
-
-    guard let pubKeyData = Data(base64Encoded: pubKeyStr),
-          let sigData = Data(base64Encoded: sigStr) else {
-        return 0
-    }
-
-    let data = Data(bytes: dataPtr, count: dataLen)
-    return SecureEnclaveIdentity.verify(
-        signature: sigData,
-        for: data,
-        publicKey: pubKeyData
-    ) ? 1 : 0
-}
-
 /// Create a signed attestation blob containing hardware/software state.
 ///
 /// This is a convenience wrapper that calls

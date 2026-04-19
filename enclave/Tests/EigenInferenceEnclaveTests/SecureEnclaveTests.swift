@@ -166,53 +166,6 @@ final class SecureEnclaveTests: XCTestCase {
         eigeninference_enclave_free(ptr)
     }
 
-    func testBridgeSignAndVerify() {
-        guard let ptr = eigeninference_enclave_create() else {
-            XCTFail("Failed to create identity")
-            return
-        }
-        defer { eigeninference_enclave_free(ptr) }
-
-        let message = "test message".data(using: .utf8)!
-
-        // Sign
-        let sigPtr = message.withUnsafeBytes { buf -> UnsafeMutablePointer<CChar>? in
-            eigeninference_enclave_sign(
-                ptr,
-                buf.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                message.count
-            )
-        }
-        guard let sigPtr = sigPtr else {
-            XCTFail("Failed to sign via FFI")
-            return
-        }
-        let sigBase64 = String(cString: sigPtr)
-
-        // Get public key
-        guard let keyPtr = eigeninference_enclave_public_key_base64(ptr) else {
-            eigeninference_enclave_free_string(sigPtr)
-            XCTFail("Failed to get public key via FFI")
-            return
-        }
-        let pubKeyBase64 = String(cString: keyPtr)
-
-        // Verify
-        let valid = message.withUnsafeBytes { buf -> Int32 in
-            eigeninference_enclave_verify(
-                pubKeyBase64,
-                buf.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                message.count,
-                sigBase64
-            )
-        }
-
-        XCTAssertEqual(valid, 1, "FFI signature should verify")
-
-        eigeninference_enclave_free_string(sigPtr)
-        eigeninference_enclave_free_string(keyPtr)
-    }
-
     func testBridgeCreateAttestation() throws {
         guard let ptr = eigeninference_enclave_create() else {
             XCTFail("Failed to create identity")

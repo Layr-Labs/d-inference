@@ -54,32 +54,6 @@ int eigeninference_enclave_data_representation(
 );
 
 /*
- * Sign data with the Secure Enclave private key.
- * Returns the DER-encoded ECDSA signature as a base64 null-terminated string.
- * Caller must free the returned string with eigeninference_enclave_free_string().
- * Returns NULL on failure.
- */
-char* eigeninference_enclave_sign(
-    EigenInferenceEnclaveIdentity identity,
-    const uint8_t* data,
-    int data_len
-);
-
-/*
- * Verify a P-256 ECDSA signature.
- *   pub_key_base64: signer's raw public key (base64)
- *   data/data_len:  the signed data
- *   sig_base64:     DER-encoded signature (base64)
- * Returns 1 if valid, 0 if invalid.
- */
-int32_t eigeninference_enclave_verify(
-    const char* pub_key_base64,
-    const uint8_t* data,
-    int data_len,
-    const char* sig_base64
-);
-
-/*
  * Create a signed attestation blob containing hardware/software state.
  * Returns a pretty-printed JSON null-terminated string.
  * Caller must free the returned string with eigeninference_enclave_free_string().

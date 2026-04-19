@@ -18,11 +18,15 @@ export function InviteCodeBanner() {
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
 
-  const handleDismiss = useCallback(() => {
-    trackEvent("invite_banner_dismissed");
+  const dismissBanner = useCallback(() => {
     setDismissed(true);
     localStorage.setItem(DISMISSED_KEY, "1");
   }, []);
+
+  const handleDismiss = useCallback(() => {
+    trackEvent("invite_banner_dismissed");
+    dismissBanner();
+  }, [dismissBanner]);
 
   const handleRedeem = useCallback(async () => {
     const trimmed = code.trim().toUpperCase();
@@ -42,7 +46,7 @@ export function InviteCodeBanner() {
       setSuccess(`$${result.credited_usd} added to your account`);
       setCode("");
       setTimeout(() => {
-        handleDismiss();
+        dismissBanner();
       }, 3000);
     } catch (e) {
       trackEvent("invite_redeem_failed", {
@@ -51,7 +55,7 @@ export function InviteCodeBanner() {
       setError((e as Error).message);
     }
     setLoading(false);
-  }, [code, handleDismiss]);
+  }, [code, dismissBanner]);
 
   if (dismissed) return null;
 

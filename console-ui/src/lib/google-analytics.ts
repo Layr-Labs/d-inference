@@ -13,6 +13,18 @@ const ATTRIBUTION_QUERY_PARAMS = new Set([
   "wbraid",
 ]);
 
+const UTM_QUERY_PARAMS = new Set([
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_term",
+  "utm_content",
+  "utm_id",
+  "utm_source_platform",
+  "utm_creative_format",
+  "utm_marketing_tactic",
+]);
+
 declare global {
   interface Window {
     dataLayer?: unknown[];
@@ -63,7 +75,7 @@ export function initializeGoogleAnalytics() {
 }
 
 function isAllowedAttributionParam(name: string) {
-  return name.startsWith("utm_") || ATTRIBUTION_QUERY_PARAMS.has(name);
+  return UTM_QUERY_PARAMS.has(name) || ATTRIBUTION_QUERY_PARAMS.has(name);
 }
 
 function sanitizeReferrer(referrer: string) {
@@ -76,6 +88,25 @@ function sanitizeReferrer(referrer: string) {
     referrerUrl.search = "";
     referrerUrl.hash = "";
     return referrerUrl.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function sanitizeTrackedLocation(location: string) {
+  try {
+    const url = new URL(location);
+    const attributionParams = new URLSearchParams();
+
+    for (const [name, value] of url.searchParams) {
+      if (isAllowedAttributionParam(name)) {
+        attributionParams.append(name, value);
+      }
+    }
+
+    url.search = attributionParams.toString();
+    url.hash = "";
+    return url.toString();
   } catch {
     return undefined;
   }
@@ -162,7 +193,9 @@ function trackPageView(params: {
   }
 
   const pageReferrer =
-    window.__googleAnalyticsLastPageLocation ||
+    (window.__googleAnalyticsLastPageLocation
+      ? sanitizeTrackedLocation(window.__googleAnalyticsLastPageLocation)
+      : undefined) ||
     sanitizeReferrer(document.referrer);
 
   analytics.gtag("event", "page_view", {

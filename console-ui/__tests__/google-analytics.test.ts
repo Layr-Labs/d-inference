@@ -40,6 +40,21 @@ describe("google analytics helpers", () => {
     );
   });
 
+  it("drops unapproved utm-style params on the initial page view", () => {
+    const origin = window.location.origin;
+    window.history.replaceState(
+      {},
+      "",
+      "/?utm_source=search&utm_secret=leak&utm_campaign=spring&gclid=abc123",
+    );
+
+    const trackedLocation = buildTrackedPageLocation("/pricing");
+
+    expect(trackedLocation).toBe(
+      `${origin}/pricing?utm_source=search&utm_campaign=spring&gclid=abc123`,
+    );
+  });
+
   it("drops query params after the initial page view", () => {
     const origin = window.location.origin;
     window.__googleAnalyticsLastPageLocation = `${origin}/?utm_source=search&gclid=abc123`;
@@ -68,6 +83,49 @@ describe("google analytics helpers", () => {
         {
           page_location: `${origin}/billing?utm_source=search&gclid=abc123`,
           page_referrer: `${origin}/login`,
+          page_title: "Darkbloom",
+          send_to: "G-TEST123",
+        },
+      ],
+    ]);
+  });
+
+  it("uses the sanitized initial page location as the next page referrer", () => {
+    const origin = window.location.origin;
+    Object.defineProperty(document, "referrer", {
+      configurable: true,
+      value: `${origin}/login?next=%2Fbilling&invite=secret`,
+    });
+    window.history.replaceState(
+      {},
+      "",
+      "/?utm_source=search&utm_secret=leak&utm_campaign=spring&gclid=abc123",
+    );
+    initializeGoogleAnalytics();
+    trackRouteChange("/billing");
+    trackRouteChange("/settings");
+
+    expect(window.dataLayer).toEqual([
+      ["js", expect.any(Date)],
+      ["config", "G-TEST123", { send_page_view: false }],
+      [
+        "event",
+        "page_view",
+        {
+          page_location:
+            `${origin}/billing?utm_source=search&utm_campaign=spring&gclid=abc123`,
+          page_referrer: `${origin}/login`,
+          page_title: "Darkbloom",
+          send_to: "G-TEST123",
+        },
+      ],
+      [
+        "event",
+        "page_view",
+        {
+          page_location: `${origin}/settings`,
+          page_referrer:
+            `${origin}/billing?utm_source=search&utm_campaign=spring&gclid=abc123`,
           page_title: "Darkbloom",
           send_to: "G-TEST123",
         },

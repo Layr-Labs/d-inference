@@ -103,6 +103,11 @@ export default function ChatPage() {
         updateChatTitle(chatId, title);
       }
 
+      const currentChat = useStore
+        .getState()
+        .chats.find((c) => c.id === chatId);
+      const priorMessageCount = currentChat?.messages.length ?? 0;
+
       const assistantId = generateId();
       const assistantMsg: Message = {
         id: assistantId,
@@ -116,11 +121,6 @@ export default function ChatPage() {
       setIsStreaming(true);
       const abort = new AbortController();
       abortRef.current = abort;
-
-      const currentChat = useStore
-        .getState()
-        .chats.find((c) => c.id === chatId);
-      const priorMessageCount = currentChat?.messages.length ?? 0;
       const userMsg: Message = {
         id: generateId(),
         role: "user",

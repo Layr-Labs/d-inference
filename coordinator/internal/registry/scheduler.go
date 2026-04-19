@@ -26,6 +26,14 @@ const (
 	thermalPenaltySeriousMs  = 8_000.0
 	nearTieCostWindowMs      = 750.0
 	challengeFreshnessMaxAge = 6 * time.Minute
+
+	// Tier preference penalty. When a request prefers small-tier providers
+	// (embedding, rerank), assigning it to a standard-tier provider adds
+	// this penalty so big providers are only used when no small provider
+	// is available. The cost is large enough that any feasible small
+	// provider always wins ties, but small enough that a saturated small
+	// fleet doesn't refuse to overflow to bigger machines.
+	tierMismatchPenaltyMs = 50_000.0
 )
 
 type routingSnapshot struct {
@@ -43,6 +51,7 @@ type routingSnapshot struct {
 	systemMetrics      protocol.SystemMetrics
 	gpuMemoryActiveGB  float64
 	totalMemoryGB      float64
+	tier               protocol.ProviderTier
 }
 
 type routingCandidate struct {
@@ -72,7 +81,13 @@ func (r *Registry) ReserveProvider(model string, pr *PendingRequest, excludeIDs 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	selected := r.selectBestCandidateLocked(model, pr, excludeIDs...)
+	modelType := ""
+	if e, ok := r.modelCatalog[model]; ok {
+		modelType = e.ModelType
+	}
+	preferredTiers := PreferredTiersForModelType(modelType)
+
+	selected := r.selectBestCandidateLocked(model, pr, preferredTiers, excludeIDs...)
 	if selected == nil {
 		return nil
 	}
@@ -95,10 +110,14 @@ func (r *Registry) ReserveProvider(model string, pr *PendingRequest, excludeIDs 
 	return p
 }
 
-func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, excludeIDs ...string) *routingCandidate {
+func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, preferredTiers []protocol.ProviderTier, excludeIDs ...string) *routingCandidate {
 	excludeSet := make(map[string]struct{}, len(excludeIDs))
 	for _, id := range excludeIDs {
 		excludeSet[id] = struct{}{}
+	}
+	preferredSet := make(map[protocol.ProviderTier]struct{}, len(preferredTiers))
+	for _, t := range preferredTiers {
+		preferredSet[t] = struct{}{}
 	}
 
 	var best *routingCandidate
@@ -111,7 +130,7 @@ func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, e
 		if !ok {
 			continue
 		}
-		candidate, ok := r.buildCandidate(snap, pr)
+		candidate, ok := r.buildCandidate(snap, pr, preferredSet)
 		if !ok {
 			continue
 		}
@@ -194,6 +213,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 		decodeTPS:     resolvedDecodeTPS(p),
 		prefillTPS:    resolvedPrefillTPS(p),
 		totalMemoryGB: float64(p.Hardware.MemoryGB),
+		tier:          p.Tier,
 	}
 
 	for _, pr := range p.pendingReqs {
@@ -228,7 +248,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 	return snap, true
 }
 
-func (r *Registry) buildCandidate(snap routingSnapshot, pr *PendingRequest) (*routingCandidate, bool) {
+func (r *Registry) buildCandidate(snap routingSnapshot, pr *PendingRequest, preferredTiers map[protocol.ProviderTier]struct{}) (*routingCandidate, bool) {
 	statePenalty, eligible := slotStatePenalty(snap.slotState)
 	if !eligible {
 		return nil, false
@@ -265,6 +285,15 @@ func (r *Registry) buildCandidate(snap routingSnapshot, pr *PendingRequest) (*ro
 	cost += backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, snap.decodeTPS)
 	cost += float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/snap.decodeTPS*1000.0
 	cost += healthPenaltyMs(snap.systemMetrics, snap.gpuMemoryActiveGB, snap.totalMemoryGB)
+
+	// Tier preference: penalize candidates outside the preferred tier set so
+	// disaggregated, compute-bound jobs land on small Macs by default.
+	// Bigger machines remain a fallback when the small-tier fleet is busy.
+	if len(preferredTiers) > 0 {
+		if _, ok := preferredTiers[snap.tier]; !ok {
+			cost += tierMismatchPenaltyMs
+		}
+	}
 
 	return &routingCandidate{
 		provider:       snap.provider,

@@ -65,9 +65,8 @@ fn challenge_sign_with_enclave(
     nonce: &str,
     timestamp: &str,
     active_model_id: Option<&str>,
-    active_model_hash: Option<&str>,
-    runtime_hashes: Option<&RuntimeHashes>,
-    model_hashes: &std::collections::HashMap<String, String>,
+    active_model_path: Option<&str>,
+    model_paths: &std::collections::HashMap<String, String>,
     hypervisor_active: bool,
 ) -> Option<SignedChallengeMeasurement> {
     let eigeninference_dir = dirs::home_dir()?.join(".darkbloom");
@@ -76,42 +75,19 @@ fn challenge_sign_with_enclave(
         return None;
     }
 
-    let binary_hash = crate::security::self_binary_hash();
-    let template_hashes_json = serde_json::to_string(
-        &runtime_hashes
-            .map(|rh| rh.template_hashes.clone())
-            .unwrap_or_default(),
-    )
-    .ok()?;
-    let model_hashes_json = serde_json::to_string(model_hashes).ok()?;
+    let binary_path = std::env::current_exe().ok()?;
+    let model_paths_json = serde_json::to_string(model_paths).ok()?;
 
     let mut cmd = std::process::Command::new(&enclave_bin);
     cmd.args(["challenge-sign", "--nonce", nonce, "--timestamp", timestamp]);
-    if let Some(ref hash) = binary_hash {
-        cmd.args(["--binary-hash", hash]);
-    }
+    cmd.args(["--binary-path", &binary_path.to_string_lossy()]);
     if let Some(model_id) = active_model_id {
         cmd.args(["--active-model-id", model_id]);
     }
-    if let Some(model_hash) = active_model_hash {
-        cmd.args(["--active-model-hash", model_hash]);
+    if let Some(model_path) = active_model_path {
+        cmd.args(["--active-model-path", model_path]);
     }
-    if let Some(rh) = runtime_hashes {
-        if let Some(ref python_hash) = rh.python_hash {
-            cmd.args(["--python-hash", python_hash]);
-        }
-        if let Some(ref runtime_hash) = rh.runtime_hash {
-            cmd.args(["--runtime-hash", runtime_hash]);
-        }
-        if let Some(ref grpc_hash) = rh.grpc_binary_hash {
-            cmd.args(["--grpc-binary-hash", grpc_hash]);
-        }
-        if let Some(ref image_hash) = rh.image_bridge_hash {
-            cmd.args(["--image-bridge-hash", image_hash]);
-        }
-    }
-    cmd.args(["--template-hashes-json", &template_hashes_json]);
-    cmd.args(["--model-hashes-json", &model_hashes_json]);
+    cmd.args(["--model-paths-json", &model_paths_json]);
     cmd.args([
         "--hypervisor-active",
         if hypervisor_active { "true" } else { "false" },
@@ -732,7 +708,6 @@ pub fn handle_attestation_challenge(
         timestamp,
         current_model_id,
         current_model_hash,
-        runtime_hashes,
         &model_hashes,
         hypervisor_active,
     );

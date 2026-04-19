@@ -56,7 +56,6 @@ func printUsage() {
       info            Show Secure Enclave availability and public key
       challenge-sign  Sign fresh challenge measurements
       wallet-address  Derive wallet address from the SE public key
-      wallet-sign     Sign a message with the SE key for payout authentication
 
     Options for 'attest':
       --encryption-key <base64>    Bind an X25519 encryption public key to the attestation
@@ -65,19 +64,11 @@ func printUsage() {
     Options for 'challenge-sign':
       --nonce <base64>                     Challenge nonce from coordinator
       --timestamp <rfc3339>                Challenge timestamp from coordinator
-      --binary-hash <hex>                  Fresh SHA-256 of provider binary
+      --binary-path <path>                 Path to provider binary to hash
       --active-model-id <string>           Currently serving model ID
-      --active-model-hash <hex>            Fresh SHA-256 of currently serving model weights
-      --python-hash <hex>                  Fresh SHA-256 of Python interpreter
-      --runtime-hash <hex>                 Fresh SHA-256 of runtime/site-packages tree
-      --grpc-binary-hash <hex>             Fresh SHA-256 of gRPCServerCLI
-      --image-bridge-hash <hex>            Fresh SHA-256 of image bridge source tree
-      --template-hashes-json <json>        JSON object: template name -> hash
-      --model-hashes-json <json>           JSON object: model id -> hash
+      --active-model-path <path>           Path to currently serving model snapshot
+      --model-paths-json <json>            JSON object: model id -> model snapshot path
       --hypervisor-active <true|false>     Provider-reported hypervisor state (unsigned hint)
-
-    Options for 'wallet-sign':
-      --message <string>           Message to sign (UTF-8)
     """
     fputs(usage + "\n", stderr)
 }
@@ -143,6 +134,146 @@ private func parseBoolFlag(_ raw: String?) throws -> Bool? {
             NSLocalizedDescriptionKey: "boolean flag must be 'true' or 'false'"
         ])
     }
+}
+
+private func sha256File(at path: String) -> String? {
+    let url = URL(fileURLWithPath: path)
+    guard FileManager.default.fileExists(atPath: url.path),
+          let handle = try? FileHandle(forReadingFrom: url) else {
+        return nil
+    }
+    defer { try? handle.close() }
+
+    var hasher = SHA256()
+    while true {
+        let chunk = try? handle.read(upToCount: 65536)
+        guard let chunk else { return nil }
+        if chunk.isEmpty {
+            break
+        }
+        hasher.update(data: chunk)
+    }
+    return Data(hasher.finalize()).map { String(format: "%02x", $0) }.joined()
+}
+
+private func purgePycache(at path: String) {
+    let fm = FileManager.default
+    guard let enumerator = fm.enumerator(
+        at: URL(fileURLWithPath: path),
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+    ) else {
+        return
+    }
+
+    for case let url as URL in enumerator {
+        let name = url.lastPathComponent
+        if name == "__pycache__" {
+            try? fm.removeItem(at: url)
+            enumerator.skipDescendants()
+            continue
+        }
+        if url.pathExtension == "pyc" {
+            try? fm.removeItem(at: url)
+        }
+    }
+}
+
+private func combinedTreeHash(at root: String) -> String? {
+    let fm = FileManager.default
+    guard fm.fileExists(atPath: root),
+          let enumerator = fm.enumerator(
+            at: URL(fileURLWithPath: root),
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+          ) else {
+        return nil
+    }
+
+    var files: [String] = []
+    for case let url as URL in enumerator {
+        let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
+        if values?.isRegularFile == true {
+            files.append(url.path)
+        }
+    }
+    files.sort()
+    if files.isEmpty { return nil }
+
+    var finalHasher = SHA256()
+    for path in files {
+        guard let fileHash = sha256File(at: path) else { return nil }
+        guard let digest = Data(hexString: fileHash) else { return nil }
+        finalHasher.update(data: digest)
+    }
+    return Data(finalHasher.finalize()).map { String(format: "%02x", $0) }.joined()
+}
+
+private func weightHashForModel(path: String) -> String? {
+    let fm = FileManager.default
+    var files: [String] = []
+    guard let enumerator = fm.enumerator(
+        at: URL(fileURLWithPath: path),
+        includingPropertiesForKeys: [.isRegularFileKey],
+        options: [.skipsHiddenFiles]
+    ) else {
+        return nil
+    }
+
+    for case let url as URL in enumerator {
+        let name = url.lastPathComponent
+        let matches =
+            name.hasSuffix(".safetensors") ||
+            name.hasSuffix(".npz") ||
+            name.hasSuffix(".bin") ||
+            name.hasSuffix(".ckpt") ||
+            name == "weights.npz"
+        if !matches { continue }
+        let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
+        if values?.isRegularFile == true {
+            files.append(url.path)
+        }
+    }
+    files.sort()
+    if files.isEmpty { return nil }
+
+    var finalHasher = SHA256()
+    for path in files {
+        guard let fileHash = sha256File(at: path) else { return nil }
+        guard let digest = Data(hexString: fileHash) else { return nil }
+        finalHasher.update(data: digest)
+    }
+    return Data(finalHasher.finalize()).map { String(format: "%02x", $0) }.joined()
+}
+
+private func runtimeHashesFromDarkbloomHome() -> (pythonHash: String?, runtimeHash: String?, templateHashes: [String: String], grpcBinaryHash: String?, imageBridgeHash: String?) {
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    let darkbloom = home.appendingPathComponent(".darkbloom")
+
+    let pythonPath = darkbloom.appendingPathComponent("python/bin/python3.12").path
+    let sitePackages = darkbloom.appendingPathComponent("python/lib/python3.12/site-packages").path
+    let templatesDir = darkbloom.appendingPathComponent("templates").path
+    let grpcPath = darkbloom.appendingPathComponent("bin/gRPCServerCLI").path
+    let imageBridgeDir = darkbloom.appendingPathComponent("image-bridge/eigeninference_image_bridge").path
+
+    let pythonHash = sha256File(at: pythonPath)
+    purgePycache(at: sitePackages)
+    let runtimeHash = combinedTreeHash(at: sitePackages)
+    let grpcBinaryHash = sha256File(at: grpcPath)
+    let imageBridgeHash = combinedTreeHash(at: imageBridgeDir)
+
+    var templateHashes: [String: String] = [:]
+    if let entries = try? FileManager.default.contentsOfDirectory(atPath: templatesDir) {
+        for name in entries where name.hasSuffix(".jinja") {
+            let stem = URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent
+            let fullPath = URL(fileURLWithPath: templatesDir).appendingPathComponent(name).path
+            if let hash = sha256File(at: fullPath) {
+                templateHashes[stem] = hash
+            }
+        }
+    }
+
+    return (pythonHash, runtimeHash, templateHashes, grpcBinaryHash, imageBridgeHash)
 }
 
 func cmdWalletAddress() throws {
@@ -221,15 +352,10 @@ func cmdAttest(encryptionKey: String?, binaryHash: String?) throws {
 func cmdChallengeSign(
     nonce: String,
     timestamp: String,
-    binaryHash: String?,
+    binaryPath: String?,
     activeModelID: String?,
-    activeModelHash: String?,
-    pythonHash: String?,
-    runtimeHash: String?,
-    grpcBinaryHash: String?,
-    imageBridgeHash: String?,
-    templateHashesJSON: String?,
-    modelHashesJSON: String?,
+    activeModelPath: String?,
+    modelPathsJSON: String?,
     hypervisorActive: Bool?
 ) throws {
     guard SecureEnclave.isAvailable else {
@@ -238,24 +364,35 @@ func cmdChallengeSign(
     }
 
     let identity = try loadOrCreateIdentity()
+    let runtimeState = runtimeHashesFromDarkbloomHome()
+    let binaryHash = binaryPath.flatMap { sha256File(at: $0) }
+    let activeModelHash = activeModelPath.flatMap { weightHashForModel(path: $0) }
+    let modelPaths = try decodeJSONMap(modelPathsJSON)
+    var modelHashes: [String: String] = [:]
+    for (modelID, modelPath) in modelPaths {
+        if let hash = weightHashForModel(path: modelPath) {
+            modelHashes[modelID] = hash
+        }
+    }
+
     let payload = ChallengeMeasurementPayload(
         activeModelHash: activeModelHash,
         activeModelID: activeModelID,
         authenticatedRootEnabled: checkAuthenticatedRootEnabled(),
         binaryHash: binaryHash,
-        grpcBinaryHash: grpcBinaryHash,
+        grpcBinaryHash: runtimeState.grpcBinaryHash,
         hypervisorActive: hypervisorActive,
-        imageBridgeHash: imageBridgeHash,
-        modelHashes: try decodeJSONMap(modelHashesJSON),
+        imageBridgeHash: runtimeState.imageBridgeHash,
+        modelHashes: modelHashes,
         nonce: nonce,
-        pythonHash: pythonHash,
+        pythonHash: runtimeState.pythonHash,
         rdmaDisabled: checkRDMADisabled(),
-        runtimeHash: runtimeHash,
+        runtimeHash: runtimeState.runtimeHash,
         secureBootEnabled: checkSecureBootEnabled(),
         signatureVersion: 2,
         sipEnabled: checkSIPEnabled(),
         systemVolumeHash: getSystemVolumeHash(),
-        templateHashes: try decodeJSONMap(templateHashesJSON),
+        templateHashes: runtimeState.templateHashes,
         timestamp: timestamp
     )
 
@@ -325,15 +462,10 @@ do {
     case "challenge-sign":
         var nonce: String? = nil
         var timestamp: String? = nil
-        var binaryHash: String? = nil
+        var binaryPath: String? = nil
         var activeModelID: String? = nil
-        var activeModelHash: String? = nil
-        var pythonHash: String? = nil
-        var runtimeHash: String? = nil
-        var grpcBinaryHash: String? = nil
-        var imageBridgeHash: String? = nil
-        var templateHashesJSON: String? = nil
-        var modelHashesJSON: String? = nil
+        var activeModelPath: String? = nil
+        var modelPathsJSON: String? = nil
         var hypervisorActiveRaw: String? = nil
         var i = 2
         while i < args.count {
@@ -344,31 +476,16 @@ do {
                 timestamp = args[i + 1]
                 i += 2
             } else if args[i] == "--binary-hash" && i + 1 < args.count {
-                binaryHash = args[i + 1]
+                binaryPath = args[i + 1]
                 i += 2
             } else if args[i] == "--active-model-id" && i + 1 < args.count {
                 activeModelID = args[i + 1]
                 i += 2
-            } else if args[i] == "--active-model-hash" && i + 1 < args.count {
-                activeModelHash = args[i + 1]
+            } else if args[i] == "--active-model-path" && i + 1 < args.count {
+                activeModelPath = args[i + 1]
                 i += 2
-            } else if args[i] == "--python-hash" && i + 1 < args.count {
-                pythonHash = args[i + 1]
-                i += 2
-            } else if args[i] == "--runtime-hash" && i + 1 < args.count {
-                runtimeHash = args[i + 1]
-                i += 2
-            } else if args[i] == "--grpc-binary-hash" && i + 1 < args.count {
-                grpcBinaryHash = args[i + 1]
-                i += 2
-            } else if args[i] == "--image-bridge-hash" && i + 1 < args.count {
-                imageBridgeHash = args[i + 1]
-                i += 2
-            } else if args[i] == "--template-hashes-json" && i + 1 < args.count {
-                templateHashesJSON = args[i + 1]
-                i += 2
-            } else if args[i] == "--model-hashes-json" && i + 1 < args.count {
-                modelHashesJSON = args[i + 1]
+            } else if args[i] == "--model-paths-json" && i + 1 < args.count {
+                modelPathsJSON = args[i + 1]
                 i += 2
             } else if args[i] == "--hypervisor-active" && i + 1 < args.count {
                 hypervisorActiveRaw = args[i + 1]
@@ -391,65 +508,15 @@ do {
         try cmdChallengeSign(
             nonce: nonce,
             timestamp: timestamp,
-            binaryHash: binaryHash,
+            binaryPath: binaryPath,
             activeModelID: activeModelID,
-            activeModelHash: activeModelHash,
-            pythonHash: pythonHash,
-            runtimeHash: runtimeHash,
-            grpcBinaryHash: grpcBinaryHash,
-            imageBridgeHash: imageBridgeHash,
-            templateHashesJSON: templateHashesJSON,
-            modelHashesJSON: modelHashesJSON,
+            activeModelPath: activeModelPath,
+            modelPathsJSON: modelPathsJSON,
             hypervisorActive: hypervisorActive
         )
 
     case "info":
         try cmdInfo()
-
-    case "sign":
-        var dataB64: String? = nil
-        var i = 2
-        while i < args.count {
-            if args[i] == "--data" && i + 1 < args.count {
-                dataB64 = args[i + 1]
-                i += 2
-            } else {
-                i += 1
-            }
-        }
-        guard let dataB64 = dataB64 else {
-            fputs("error: --data <base64> required\n", stderr)
-            exit(1)
-        }
-        guard let data = Data(base64Encoded: dataB64) else {
-            fputs("error: invalid base64 data\n", stderr)
-            exit(1)
-        }
-        let signIdentity = try loadOrCreateIdentity()
-        let signature = try signIdentity.sign(data)
-        print(signature.base64EncodedString())
-
-    case "wallet-address":
-        try cmdWalletAddress()
-
-    case "wallet-sign":
-        var message: String? = nil
-        var i = 2
-        while i < args.count {
-            if args[i] == "--message" && i + 1 < args.count {
-                message = args[i + 1]
-                i += 2
-            } else {
-                fputs("error: unknown option \(args[i])\n", stderr)
-                printUsage()
-                exit(1)
-            }
-        }
-        guard let message = message else {
-            fputs("error: --message <string> required\n", stderr)
-            exit(1)
-        }
-        try cmdWalletSign(message: message)
 
     default:
         fputs("error: unknown command '\(command)'\n", stderr)

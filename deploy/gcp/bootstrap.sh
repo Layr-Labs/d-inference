@@ -80,14 +80,23 @@ done
 
 echo "==> Granting Cloud Build SA permission to SSH via IAP + update instance metadata"
 PROJECT_NUM=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
-CB_SA="${PROJECT_NUM}@cloudbuild.gserviceaccount.com"
-for ROLE in roles/iap.tunnelResourceAccessor roles/compute.instanceAdmin.v1 \
-            roles/iam.serviceAccountUser; do
-  gcloud projects add-iam-policy-binding "$PROJECT" \
-    --member="serviceAccount:$CB_SA" \
-    --role="$ROLE" \
-    --condition=None \
-    --quiet >/dev/null
+# New GCP projects (post-late-2024) default Cloud Build to the compute default
+# SA (not the legacy cloudbuild.gserviceaccount.com). Grant roles to both so
+# the script works regardless of project vintage.
+for CB_SA in "${PROJECT_NUM}@cloudbuild.gserviceaccount.com" \
+             "${PROJECT_NUM}-compute@developer.gserviceaccount.com"; do
+  for ROLE in roles/iap.tunnelResourceAccessor \
+              roles/compute.instanceAdmin.v1 \
+              roles/iam.serviceAccountUser \
+              roles/artifactregistry.writer \
+              roles/logging.logWriter \
+              roles/compute.osAdminLogin; do
+    gcloud projects add-iam-policy-binding "$PROJECT" \
+      --member="serviceAccount:$CB_SA" \
+      --role="$ROLE" \
+      --condition=None \
+      --quiet >/dev/null 2>&1 || true
+  done
 done
 
 echo "==> Creating Cloud KMS key ring + CMEK for high-sensitivity secrets"

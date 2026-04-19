@@ -155,6 +155,38 @@ type Store interface {
 	// GetUserByAccountID returns the user for an internal account ID.
 	GetUserByAccountID(accountID string) (*User, error)
 
+	// SetUserStripeAccount upserts the Stripe Connect fields on a user record.
+	// Pass empty strings to clear the destination (e.g. before re-onboarding).
+	SetUserStripeAccount(accountID, stripeAccountID, status, destinationType, destinationLast4 string, instantEligible bool) error
+
+	// GetUserByStripeAccount finds a user by their Stripe connected account ID.
+	// Used by webhook handlers to route account.updated / payout.* events.
+	GetUserByStripeAccount(stripeAccountID string) (*User, error)
+
+	// --- Stripe Withdrawals (bank/card payouts via Stripe Connect) ---
+
+	// CreateStripeWithdrawal stores a new withdrawal record. The caller is
+	// responsible for debiting the ledger atomically before calling this.
+	CreateStripeWithdrawal(withdrawal *StripeWithdrawal) error
+
+	// GetStripeWithdrawal returns a withdrawal by its internal UUID.
+	GetStripeWithdrawal(id string) (*StripeWithdrawal, error)
+
+	// GetStripeWithdrawalByPayoutID looks up a withdrawal by Stripe payout ID
+	// (po_…). Used in payout.paid / payout.failed webhook handlers.
+	GetStripeWithdrawalByPayoutID(payoutID string) (*StripeWithdrawal, error)
+
+	// GetStripeWithdrawalByTransferID looks up a withdrawal by Stripe transfer
+	// ID (tr_…). Used in transfer.failed webhook handlers.
+	GetStripeWithdrawalByTransferID(transferID string) (*StripeWithdrawal, error)
+
+	// UpdateStripeWithdrawal persists status/transfer/payout/fail-reason changes.
+	UpdateStripeWithdrawal(withdrawal *StripeWithdrawal) error
+
+	// ListStripeWithdrawals returns withdrawals for an account, newest first.
+	// Pass limit <= 0 for no limit.
+	ListStripeWithdrawals(accountID string, limit int) ([]StripeWithdrawal, error)
+
 	// --- Device Authorization (RFC 8628-style) ---
 
 	// CreateDeviceCode stores a new device authorization request.
@@ -297,6 +329,7 @@ const (
 	LedgerWithdrawal     LedgerEntryType = "withdrawal"      // on-chain withdrawal
 	LedgerReferralReward LedgerEntryType = "referral_reward" // referrer earns share of platform fee
 	LedgerStripeDeposit  LedgerEntryType = "stripe_deposit"  // Stripe checkout deposit
+	LedgerStripePayout   LedgerEntryType = "stripe_payout"   // user-initiated bank/card withdrawal via Stripe Connect
 	LedgerInviteCredit   LedgerEntryType = "invite_credit"   // invite code redemption
 	LedgerRefund         LedgerEntryType = "refund"          // reservation refund (request failed before inference)
 )
@@ -355,6 +388,39 @@ type User struct {
 	SolanaWalletAddress string    `json:"solana_wallet_address"` // embedded wallet public address
 	SolanaWalletID      string    `json:"solana_wallet_id"`      // Privy's internal wallet ID (for signing API)
 	CreatedAt           time.Time `json:"created_at"`
+
+	// Stripe Connect Express — for bank/card payouts via Stripe.
+	// StripeAccountStatus mirrors the readiness of payouts on the connected
+	// account: "" (not onboarded), "pending" (link created but not finished),
+	// "ready" (payouts_enabled=true), "restricted" (Stripe needs more info),
+	// "rejected" (Stripe permanently disabled the account).
+	StripeAccountID        string `json:"stripe_account_id,omitempty"`
+	StripeAccountStatus    string `json:"stripe_account_status,omitempty"`
+	StripeDestinationType  string `json:"stripe_destination_type,omitempty"` // "bank" | "card" | ""
+	StripeDestinationLast4 string `json:"stripe_destination_last4,omitempty"`
+	StripeInstantEligible  bool   `json:"stripe_instant_eligible,omitempty"` // debit-card destination supports Instant Payouts
+}
+
+// StripeWithdrawal records a user-initiated payout via Stripe Connect Express.
+// The lifecycle is: pending (debit recorded) → transferred (platform→connected
+// account transfer succeeded) → paid (Stripe payout to bank/card succeeded).
+// On failure at any stage we re-credit the user via LedgerRefund and set the
+// status to "failed".
+type StripeWithdrawal struct {
+	ID              string    `json:"id"`                          // internal UUID, used as Stripe idempotency key prefix
+	AccountID       string    `json:"account_id"`                  // internal account that owns the withdrawal
+	StripeAccountID string    `json:"stripe_account_id"`           // Stripe connected account (acct_…)
+	TransferID      string    `json:"transfer_id,omitempty"`       // Stripe transfer (tr_…)
+	PayoutID        string    `json:"payout_id,omitempty"`         // Stripe payout (po_…)
+	AmountMicroUSD  int64     `json:"amount_micro_usd"`            // gross amount debited from ledger
+	FeeMicroUSD     int64     `json:"fee_micro_usd"`               // fee retained by platform
+	NetMicroUSD     int64     `json:"net_micro_usd"`               // amount transferred to user (gross - fee)
+	Method          string    `json:"method"`                      // "standard" | "instant"
+	Status          string    `json:"status"`                      // "pending" | "transferred" | "paid" | "failed"
+	FailureReason   string    `json:"failure_reason,omitempty"`    // populated when Status="failed"
+	Refunded        bool      `json:"refunded,omitempty"`          // true after the failure refund is credited
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // SupportedModel represents a model in the admin-managed catalog.

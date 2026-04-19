@@ -45,6 +45,7 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 		"provider_earnings",
 		"provider_payouts",
 		"providers",
+		"stripe_withdrawals",
 	} {
 		if _, err := s.pool.Exec(ctx, "TRUNCATE "+table+" CASCADE"); err != nil {
 			t.Fatalf("truncate %s: %v", table, err)
@@ -389,5 +390,171 @@ func TestPostgresProviderRecordStatsPersisted(t *testing.T) {
 	}
 	if got.LastSessionTokensGenerated != rec.LastSessionTokensGenerated {
 		t.Errorf("last_session_tokens_generated = %d, want %d", got.LastSessionTokensGenerated, rec.LastSessionTokensGenerated)
+	}
+}
+
+// --- Stripe Connect (postgres-backed) ---
+//
+// The memory store has happy-path coverage; these tests verify the postgres
+// schema migrations + queries match the interface contract. Skipped unless
+// DATABASE_URL is set, so unit-test runs without postgres still pass.
+
+func TestPostgresSetUserStripeAccount(t *testing.T) {
+	s := testPostgresStore(t)
+
+	u := &User{AccountID: "acct-pg-1", PrivyUserID: "did:privy:pg1", Email: "a@b"}
+	if err := s.CreateUser(u); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	if err := s.SetUserStripeAccount("acct-pg-1", "acct_123", "ready", "card", "4242", true); err != nil {
+		t.Fatalf("set stripe account: %v", err)
+	}
+
+	got, err := s.GetUserByAccountID("acct-pg-1")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if got.StripeAccountID != "acct_123" {
+		t.Errorf("StripeAccountID = %q, want acct_123", got.StripeAccountID)
+	}
+	if got.StripeAccountStatus != "ready" {
+		t.Errorf("status = %q", got.StripeAccountStatus)
+	}
+	if got.StripeDestinationType != "card" || got.StripeDestinationLast4 != "4242" {
+		t.Errorf("destination = %q ••%q", got.StripeDestinationType, got.StripeDestinationLast4)
+	}
+	if !got.StripeInstantEligible {
+		t.Error("instant_eligible should be true")
+	}
+
+	// Lookup by stripe account ID.
+	got2, err := s.GetUserByStripeAccount("acct_123")
+	if err != nil {
+		t.Fatalf("get by stripe acct: %v", err)
+	}
+	if got2.AccountID != "acct-pg-1" {
+		t.Errorf("AccountID = %q, want acct-pg-1", got2.AccountID)
+	}
+}
+
+func TestPostgresSetUserStripeAccountUserNotFound(t *testing.T) {
+	s := testPostgresStore(t)
+	err := s.SetUserStripeAccount("nope", "acct_x", "pending", "", "", false)
+	if err == nil {
+		t.Fatal("expected error for missing user")
+	}
+}
+
+func TestPostgresStripeWithdrawalCRUD(t *testing.T) {
+	s := testPostgresStore(t)
+
+	u := &User{AccountID: "acct-pg-wd", PrivyUserID: "did:privy:pgwd"}
+	_ = s.CreateUser(u)
+	_ = s.SetUserStripeAccount("acct-pg-wd", "acct_wd", "ready", "bank", "6789", false)
+
+	wd := &StripeWithdrawal{
+		ID:              "wd-pg-1",
+		AccountID:       "acct-pg-wd",
+		StripeAccountID: "acct_wd",
+		AmountMicroUSD:  5_000_000,
+		FeeMicroUSD:     0,
+		NetMicroUSD:     5_000_000,
+		Method:          "standard",
+		Status:          "pending",
+	}
+	if err := s.CreateStripeWithdrawal(wd); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Round-trip by id.
+	got, err := s.GetStripeWithdrawal("wd-pg-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.AmountMicroUSD != 5_000_000 || got.Status != "pending" || got.Method != "standard" {
+		t.Errorf("got = %+v", got)
+	}
+
+	// Update with transfer + payout IDs and flip to paid.
+	got.TransferID = "tr_pg_1"
+	got.PayoutID = "po_pg_1"
+	got.Status = "paid"
+	if err := s.UpdateStripeWithdrawal(got); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	// Lookups by transfer/payout id.
+	byTr, err := s.GetStripeWithdrawalByTransferID("tr_pg_1")
+	if err != nil {
+		t.Fatalf("get by transfer: %v", err)
+	}
+	if byTr.ID != "wd-pg-1" {
+		t.Errorf("byTr.ID = %q", byTr.ID)
+	}
+	byPo, err := s.GetStripeWithdrawalByPayoutID("po_pg_1")
+	if err != nil {
+		t.Fatalf("get by payout: %v", err)
+	}
+	if byPo.Status != "paid" {
+		t.Errorf("status = %q", byPo.Status)
+	}
+
+	// List for account.
+	list, err := s.ListStripeWithdrawals("acct-pg-wd", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != "wd-pg-1" {
+		t.Errorf("list = %+v", list)
+	}
+}
+
+func TestPostgresStripeWithdrawalRefundFlag(t *testing.T) {
+	s := testPostgresStore(t)
+	u := &User{AccountID: "acct-pg-rf", PrivyUserID: "did:privy:pgrf"}
+	_ = s.CreateUser(u)
+	_ = s.SetUserStripeAccount("acct-pg-rf", "acct_rf", "ready", "bank", "1", false)
+
+	wd := &StripeWithdrawal{
+		ID: "wd-pg-rf", AccountID: "acct-pg-rf", StripeAccountID: "acct_rf",
+		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "standard", Status: "transferred", PayoutID: "po_rf",
+	}
+	if err := s.CreateStripeWithdrawal(wd); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	wd.Status = "failed"
+	wd.Refunded = true
+	wd.FailureReason = "account_closed: bank closed"
+	if err := s.UpdateStripeWithdrawal(wd); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	got, _ := s.GetStripeWithdrawal("wd-pg-rf")
+	if !got.Refunded {
+		t.Error("refunded should be true after update")
+	}
+	if got.FailureReason != "account_closed: bank closed" {
+		t.Errorf("failure_reason = %q", got.FailureReason)
+	}
+}
+
+func TestPostgresStripeWithdrawalDuplicateIDRejected(t *testing.T) {
+	s := testPostgresStore(t)
+	u := &User{AccountID: "acct-pg-dup", PrivyUserID: "did:privy:pgdup"}
+	_ = s.CreateUser(u)
+	_ = s.SetUserStripeAccount("acct-pg-dup", "acct_dup", "ready", "bank", "1", false)
+
+	wd := &StripeWithdrawal{
+		ID: "wd-dup", AccountID: "acct-pg-dup", StripeAccountID: "acct_dup",
+		AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000, Method: "standard", Status: "pending",
+	}
+	if err := s.CreateStripeWithdrawal(wd); err != nil {
+		t.Fatalf("create #1: %v", err)
+	}
+	if err := s.CreateStripeWithdrawal(wd); err == nil {
+		t.Fatal("expected duplicate ID to be rejected")
 	}
 }

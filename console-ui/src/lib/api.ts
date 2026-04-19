@@ -295,6 +295,118 @@ export async function redeemInviteCode(code: string): Promise<InviteRedeemRespon
   return data;
 }
 
+// --- Stripe Payouts (Connect Express) ---
+//
+// All Stripe Payouts endpoints require a Privy session — no API-key access.
+// The proxy routes fall back to the privy-token cookie when no Authorization
+// header is present, so the browser-side fetch needs no extra plumbing.
+
+export interface StripeStatus {
+  configured: boolean;
+  has_account: boolean;
+  stripe_account_id?: string;
+  status: "" | "pending" | "ready" | "restricted" | "rejected";
+  destination_type?: "" | "bank" | "card";
+  destination_last4?: string;
+  instant_eligible?: boolean;
+  min_withdraw_micro_usd?: number;
+  instant_fee_bps?: number;
+  instant_fee_min_usd?: number;
+  currently_due?: string[];
+}
+
+export async function fetchStripeStatus(refresh = false): Promise<StripeStatus> {
+  const url = refresh ? "/api/payments/stripe/status?refresh=1" : "/api/payments/stripe/status";
+  const res = await fetch(url, { headers: proxyHeaders() });
+  if (!res.ok) throw new Error(`Failed to fetch Stripe status: ${res.status}`);
+  return res.json();
+}
+
+export interface StripeOnboardResponse {
+  url: string;
+  stripe_account_id: string;
+  status: string;
+}
+
+export async function startStripeOnboarding(returnURL?: string): Promise<StripeOnboardResponse> {
+  const res = await fetch("/api/payments/stripe/onboard", {
+    method: "POST",
+    headers: proxyHeaders(),
+    body: JSON.stringify({ return_url: returnURL }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || data?.error || `Stripe onboarding failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export interface StripeWithdrawResponse {
+  status: string;
+  withdrawal_id: string;
+  transfer_id?: string;
+  payout_id?: string;
+  amount_usd: string;
+  fee_usd: string;
+  net_usd: string;
+  method: "standard" | "instant";
+  eta?: string;
+  arrival_unix?: number;
+  balance_micro_usd: number;
+}
+
+export async function withdrawStripe(amountUsd: string, method: "standard" | "instant"): Promise<StripeWithdrawResponse> {
+  const res = await fetch("/api/payments/withdraw/stripe", {
+    method: "POST",
+    headers: proxyHeaders(),
+    body: JSON.stringify({ amount_usd: amountUsd, method }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || data?.error || `Withdrawal failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export interface StripeWithdrawal {
+  id: string;
+  account_id: string;
+  stripe_account_id: string;
+  transfer_id?: string;
+  payout_id?: string;
+  amount_micro_usd: number;
+  fee_micro_usd: number;
+  net_micro_usd: number;
+  method: "standard" | "instant";
+  status: "pending" | "transferred" | "paid" | "failed";
+  failure_reason?: string;
+  refunded?: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function fetchStripeWithdrawals(limit = 20): Promise<StripeWithdrawal[]> {
+  const res = await fetch(`/api/payments/stripe/withdrawals?limit=${limit}`, { headers: proxyHeaders() });
+  if (!res.ok) throw new Error(`Failed to fetch withdrawals: ${res.status}`);
+  const data = await res.json();
+  return data.withdrawals || [];
+}
+
+// computeStripeFeeUsd mirrors billing.FeeForMethodMicroUSD on the server so
+// the UI can preview the fee without a round-trip. Keep these formulas in
+// lockstep — see coordinator/internal/billing/stripe_connect.go.
+//
+// All math is done in integer micro-USD (matching the server) to avoid
+// floating-point drift on amounts near the floor boundary; only the final
+// result is converted back to USD for display.
+export function computeStripeFeeUsd(amountUsd: number, method: "standard" | "instant", instantFeeBps = 150, instantFeeMinUsd = 0.5): number {
+  if (method !== "instant" || amountUsd <= 0) return 0;
+  const grossMicro = Math.round(amountUsd * 1_000_000);
+  const minMicro = Math.round(instantFeeMinUsd * 1_000_000);
+  const pctMicro = Math.floor((grossMicro * instantFeeBps) / 10_000);
+  return Math.max(pctMicro, minMicro) / 1_000_000;
+}
+
 export async function healthCheck(): Promise<{ status: string; providers: number }> {
   const res = await fetch("/api/health", { headers: proxyHeaders() });
   if (!res.ok) throw new Error(`Health check failed: ${res.status}`);

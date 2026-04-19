@@ -46,19 +46,6 @@ func TestPreferredTiersForModelType(t *testing.T) {
 	}
 }
 
-func TestAllowedTiersForModelType(t *testing.T) {
-	allowed := AllowedTiersForModelType("embedding")
-	if _, ok := allowed[protocol.ProviderTierTiny]; !ok {
-		t.Errorf("embedding should allow tiny")
-	}
-	if _, ok := allowed[protocol.ProviderTierStandard]; !ok {
-		t.Errorf("embedding should allow standard as fallback")
-	}
-	if AllowedTiersForModelType("text") != nil {
-		t.Errorf("text should have no allow filter")
-	}
-}
-
 // TestEmbeddingRoutingPrefersSmallTier verifies that when the model catalog
 // marks a model as embedding/rerank, the scheduler routes the request to a
 // tiny/small-tier provider over an idle standard-tier provider — even if the

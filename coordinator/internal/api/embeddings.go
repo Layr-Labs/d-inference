@@ -37,11 +37,17 @@ const (
 	// result. Embeddings are short-lived (sub-second to a few seconds for
 	// large batches) — if it takes longer than this the provider is wedged.
 	embeddingTimeout = 60 * time.Second
-)
 
-// embeddingChannelChunkBuffer is reused for the small set of channels we
-// allocate per embedding/rerank request — small because nothing streams.
-const embeddingChannelChunkBuffer = 1
+	// embeddingChannelChunkBuffer is reused for the small set of channels we
+	// allocate per embedding/rerank request — small because nothing streams.
+	embeddingChannelChunkBuffer = 1
+
+	// embeddingMaxAttempts is the number of provider dispatch attempts
+	// before returning an error to the consumer. Mirrors maxDispatchAttempts
+	// on the chat path so a single flaky small-tier provider doesn't kill a
+	// request.
+	embeddingMaxAttempts = 3
+)
 
 // estimateEmbeddingPromptTokens returns an approximate token count for an
 // embedding request body. The `input` field is a JSON value that is either
@@ -50,12 +56,10 @@ func estimateEmbeddingPromptTokens(input json.RawMessage) int {
 	if len(input) == 0 {
 		return 0
 	}
-	// Try string first.
 	var s string
 	if err := json.Unmarshal(input, &s); err == nil {
 		return approxTokens(s)
 	}
-	// Try array of strings.
 	var arr []string
 	if err := json.Unmarshal(input, &arr); err == nil {
 		total := 0
@@ -64,7 +68,7 @@ func estimateEmbeddingPromptTokens(input json.RawMessage) int {
 		}
 		return total
 	}
-	// Try array of token-id arrays (OpenAI accepts these too).
+	// OpenAI also accepts pre-tokenized inputs (arrays of token IDs).
 	var tokenArrays [][]int
 	if err := json.Unmarshal(input, &tokenArrays); err == nil {
 		total := 0
@@ -73,7 +77,6 @@ func estimateEmbeddingPromptTokens(input json.RawMessage) int {
 		}
 		return total
 	}
-	// Fall back to byte length / 4.
 	return len(input) / 4
 }
 
@@ -91,12 +94,12 @@ func approxTokens(s string) int {
 }
 
 // estimateRerankPromptTokens approximates the total tokens scored across all
-// (query, document) pairs.
+// (query, document) pairs. A cross-encoder runs one forward pass per pair,
+// each pair concatenates query + document, so we bill on the sum.
 func estimateRerankPromptTokens(query string, documents []string) int {
 	queryTokens := approxTokens(query)
 	total := 0
 	for _, d := range documents {
-		// Each pair = query + document for a cross-encoder.
 		total += queryTokens + approxTokens(d)
 	}
 	return total
@@ -106,7 +109,7 @@ func estimateRerankPromptTokens(query string, documents []string) int {
 //
 // The request body matches OpenAI's /v1/embeddings:
 //
-//	{ "model": "...", "input": "..." | ["..."], "encoding_format": "float"|"base64", "dimensions": int? }
+//	{ "model": "...", "input": "..." | ["..."], "encoding_format": "float", "dimensions": int? }
 //
 // The coordinator estimates token cost up-front, reserves the worst-case
 // charge against the consumer's balance, routes to a small-tier provider
@@ -131,6 +134,13 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "input is required"))
 		return
 	}
+	// We only emit float arrays today. Refuse base64 explicitly so consumers
+	// know rather than silently getting the wrong shape.
+	if req.EncodingFormat != "" && req.EncodingFormat != "float" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+			"encoding_format must be 'float' (base64 not yet supported)"))
+		return
+	}
 	if !s.registry.IsModelInCatalog(req.Model) {
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", req.Model)))
@@ -139,24 +149,23 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 
 	consumerKey := consumerKeyFromContext(r.Context())
 	estimatedTokens := estimateEmbeddingPromptTokens(req.Input)
-
-	// Pre-flight billing reservation. The post-inference charge refunds the
-	// difference between the actual and reserved amount. For embeddings the
-	// estimate is usually accurate (no generation phase), so the refund is
-	// typically zero, but keeping the reservation pattern means a free
-	// inference is impossible if the provider over-reports usage.
 	customRate, _, hasCustom := s.store.GetModelPrice("platform", req.Model)
-	var reservedMicroUSD int64
-	if hasCustom {
-		reservedMicroUSD = int64(estimatedTokens) * customRate / 1_000_000
-		if reservedMicroUSD < payments.MinimumCharge() {
-			reservedMicroUSD = payments.MinimumCharge()
-		}
-	} else {
-		reservedMicroUSD = payments.CalculateEmbeddingCost(req.Model, estimatedTokens)
-	}
 
+	// Pre-flight reservation. Both the charge AND the reservation amount are
+	// gated on s.billing != nil so a deployment without billing wired up
+	// cannot accidentally credit consumers via the refund path. The chat
+	// handler in consumer.go uses the same pattern (declares reservedMicroUSD
+	// inside the if-billing block); embeddings/rerank now mirror that.
+	var reservedMicroUSD int64
 	if s.billing != nil {
+		if hasCustom {
+			reservedMicroUSD = int64(estimatedTokens) * customRate / 1_000_000
+			if reservedMicroUSD < payments.MinimumCharge() {
+				reservedMicroUSD = payments.MinimumCharge()
+			}
+		} else {
+			reservedMicroUSD = payments.CalculateEmbeddingCost(req.Model, estimatedTokens)
+		}
 		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 				"your balance is too low for this request — add funds at /billing"))
@@ -164,66 +173,149 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// refund only credits when there was a corresponding charge. Without
+	// this guard, error paths in a billing-disabled deployment would mint
+	// free balance.
 	refund := func(amount int64) {
-		if amount > 0 {
+		if amount > 0 && s.billing != nil {
 			_ = s.store.Credit(consumerKey, amount, store.LedgerRefund, "embedding_refund")
 		}
 	}
 
-	requestID := uuid.New().String()
-	pr := &registry.PendingRequest{
-		RequestID:             requestID,
-		Model:                 req.Model,
-		ConsumerKey:           consumerKey,
-		EstimatedPromptTokens: estimatedTokens,
-		RequestedMaxTokens:    1, // embeddings produce no completion tokens; small bias for scheduler
-		ReservedMicroUSD:      reservedMicroUSD,
-		ChunkCh:               make(chan string, embeddingChannelChunkBuffer),
-		CompleteCh:            make(chan protocol.UsageInfo, 1),
-		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
-		EmbeddingCh:           make(chan *protocol.EmbeddingCompleteMessage, 1),
+	// Cross-provider retry — mirrors the chat path so a single flaky small
+	// provider doesn't fail the request. Excluded providers are tried again
+	// on the next inbound embedding request once they recover.
+	excludeProviders := make(map[string]struct{})
+	excludeList := func() []string {
+		ids := make([]string, 0, len(excludeProviders))
+		for id := range excludeProviders {
+			ids = append(ids, id)
+		}
+		return ids
 	}
 
-	provider := s.registry.ReserveProvider(req.Model, pr)
-	if provider == nil {
-		refund(reservedMicroUSD)
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-			fmt.Sprintf("no provider available for embedding model %q", req.Model)))
+	ctx, cancel := context.WithTimeout(r.Context(), embeddingTimeout)
+	defer cancel()
+
+	var (
+		lastErrCode = http.StatusServiceUnavailable
+		lastErr     = "no provider available"
+	)
+
+	for attempt := 0; attempt < embeddingMaxAttempts; attempt++ {
+		requestID := uuid.New().String()
+		pr := &registry.PendingRequest{
+			RequestID:             requestID,
+			Model:                 req.Model,
+			ConsumerKey:           consumerKey,
+			EstimatedPromptTokens: estimatedTokens,
+			RequestedMaxTokens:    1, // embeddings produce no completion tokens
+			ReservedMicroUSD:      reservedMicroUSD,
+			ChunkCh:               make(chan string, embeddingChannelChunkBuffer),
+			CompleteCh:            make(chan protocol.UsageInfo, 1),
+			ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
+			EmbeddingCh:           make(chan *protocol.EmbeddingCompleteMessage, 1),
+		}
+
+		provider := s.registry.ReserveProvider(req.Model, pr, excludeList()...)
+		if provider == nil {
+			break
+		}
+
+		ok, errMsg, errCode, result := s.dispatchEmbedding(ctx, r, req.Model, rawBody, requestID, provider, pr)
+		if !ok {
+			excludeProviders[provider.ID] = struct{}{}
+			lastErr = errMsg
+			if errCode != 0 {
+				lastErrCode = errCode
+			}
+			continue
+		}
+
+		// Success. Compute actual cost from reported usage and refund
+		// the difference. Clamp to the reservation so a misbehaving
+		// provider can never overcharge. When billing is disabled
+		// (reservedMicroUSD == 0) we skip clamp/refund — the cost
+		// computation is still useful to record on the usage entry.
+		actualTokens := int(result.Usage.PromptTokens)
+		if actualTokens <= 0 {
+			actualTokens = estimatedTokens
+		}
+		actualCost := computeEmbeddingCost(req.Model, actualTokens, customRate, hasCustom)
+		if reservedMicroUSD > 0 {
+			if actualCost > reservedMicroUSD {
+				s.logger.Error("embedding provider over-reported usage — clamping to reservation",
+					"provider_id", provider.ID,
+					"request_id", requestID,
+					"actual_cost", actualCost,
+					"reserved", reservedMicroUSD,
+				)
+				actualCost = reservedMicroUSD
+			}
+			if actualCost < reservedMicroUSD {
+				refund(reservedMicroUSD - actualCost)
+			}
+		}
+
+		s.recordDisaggregatedBilling(provider, pr, requestID, req.Model, actualTokens, actualCost, result.DurationSecs)
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"object": "list",
+			"model":  req.Model,
+			"data":   formatEmbeddingData(result.Data),
+			"usage": map[string]any{
+				"prompt_tokens": actualTokens,
+				"total_tokens":  actualTokens,
+			},
+		})
 		return
 	}
 
-	// E2E encryption is mandatory: even short query text can be sensitive
-	// (medical, legal, financial). The coordinator never sees plaintext.
-	if provider.PublicKey == "" {
+	refund(reservedMicroUSD)
+	writeJSON(w, lastErrCode, errorResponse("provider_error",
+		fmt.Sprintf("embedding failed after %d attempt(s): %s", embeddingMaxAttempts, lastErr)))
+}
+
+// dispatchEmbedding dispatches one embedding attempt to a reserved provider
+// and either returns (true, …, result) on success or (false, errMsg, code, nil)
+// on failure. On every exit path it cleans up the pending request and the
+// provider's serving state.
+func (s *Server) dispatchEmbedding(
+	ctx context.Context,
+	r *http.Request,
+	model string,
+	rawBody []byte,
+	requestID string,
+	provider *registry.Provider,
+	pr *registry.PendingRequest,
+) (bool, string, int, *protocol.EmbeddingCompleteMessage) {
+	cleanup := func() {
+		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
-		refund(reservedMicroUSD)
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
-			"no provider with E2E encryption available for this model"))
-		return
+	}
+
+	if provider.PublicKey == "" {
+		cleanup()
+		return false, "no provider with E2E encryption available", 0, nil
 	}
 
 	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
 	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		refund(reservedMicroUSD)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "provider public key invalid"))
-		return
+		cleanup()
+		return false, "provider public key invalid", 0, nil
 	}
 
 	sessionKeys, err := e2e.GenerateSessionKeys()
 	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		refund(reservedMicroUSD)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to generate session keys"))
-		return
+		cleanup()
+		return false, "failed to generate session keys", 0, nil
 	}
+	pr.SessionPrivKey = &sessionKeys.PrivateKey
 
 	encrypted, err := e2e.Encrypt(rawBody, providerPubKey, sessionKeys)
 	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		refund(reservedMicroUSD)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to encrypt request"))
-		return
+		cleanup()
+		return false, "failed to encrypt request", 0, nil
 	}
 
 	wireMsg := map[string]any{
@@ -234,116 +326,66 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 			"ciphertext":           encrypted.Ciphertext,
 		},
 	}
-	pr.SessionPrivKey = &sessionKeys.PrivateKey
-
 	data, _ := json.Marshal(wireMsg)
 	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		refund(reservedMicroUSD)
-		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
-		return
+		cleanup()
+		s.logger.Error("failed to send embedding request",
+			"request_id", requestID, "provider_id", provider.ID, "error", err)
+		return false, "failed to send request to provider", 0, nil
 	}
-
-	defer func() {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-	}()
 
 	s.logger.Info("embedding request dispatched",
 		"request_id", requestID,
-		"model", req.Model,
+		"model", model,
 		"provider_id", provider.ID,
 		"provider_tier", provider.Tier,
-		"estimated_tokens", estimatedTokens,
+		"estimated_tokens", pr.EstimatedPromptTokens,
 	)
-
-	ctx, cancel := context.WithTimeout(r.Context(), embeddingTimeout)
-	defer cancel()
 
 	select {
 	case result := <-pr.EmbeddingCh:
+		// Success path: cleanup is handled inside handleEmbeddingComplete
+		// (RemovePending) and recordDisaggregatedBilling (SetProviderIdle).
+		// We still re-idle here defensively; SetProviderIdle is a no-op
+		// when pending count is non-zero.
+		s.registry.SetProviderIdle(provider.ID)
 		if result == nil {
-			refund(reservedMicroUSD)
-			writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "embedding provider closed channel"))
-			return
+			return false, "embedding provider closed channel", 0, nil
 		}
-		// If the provider returned an encrypted payload, decrypt it now.
-		// (E2E was used on the request → the provider may also encrypt the
-		// response payload back to us using the session key.)
-		dataVectors := result.Data
-		if result.EncryptedData != nil && pr.SessionPrivKey != nil {
+		// Decrypt the response payload if the provider sealed it back to
+		// our session key.
+		if result.EncryptedData != nil {
 			payload := &e2e.EncryptedPayload{
 				EphemeralPublicKey: result.EncryptedData.EphemeralPublicKey,
 				Ciphertext:         result.EncryptedData.Ciphertext,
 			}
-			plaintext, err := e2e.DecryptWithPrivateKey(payload, *pr.SessionPrivKey)
-			if err != nil {
-				refund(reservedMicroUSD)
-				writeJSON(w, http.StatusBadGateway, errorResponse("provider_error",
-					"failed to decrypt embedding response: "+err.Error()))
-				return
+			plaintext, derr := e2e.DecryptWithPrivateKey(payload, sessionKeys.PrivateKey)
+			if derr != nil {
+				// Treat decrypt failure as a provider failure for reputation.
+				s.registry.RecordJobFailure(provider.ID)
+				return false, "failed to decrypt embedding response: " + derr.Error(), http.StatusBadGateway, nil
 			}
-			if err := json.Unmarshal(plaintext, &dataVectors); err != nil {
-				refund(reservedMicroUSD)
-				writeJSON(w, http.StatusBadGateway, errorResponse("provider_error",
-					"invalid encrypted embedding response: "+err.Error()))
-				return
+			var vectors []protocol.EmbeddingVector
+			if uerr := json.Unmarshal(plaintext, &vectors); uerr != nil {
+				s.registry.RecordJobFailure(provider.ID)
+				return false, "invalid encrypted embedding response: " + uerr.Error(), http.StatusBadGateway, nil
 			}
+			result.Data = vectors
 		}
-
-		// Compute the actual cost from reported usage and refund the
-		// difference. Clamp to the reservation so a misbehaving provider
-		// can never overcharge.
-		actualTokens := result.Usage.PromptTokens
-		if actualTokens <= 0 {
-			actualTokens = estimatedTokens
-		}
-		actualCost := payments.CalculateEmbeddingCost(req.Model, actualTokens)
-		if hasCustom {
-			actualCost = int64(actualTokens) * customRate / 1_000_000
-			if actualCost < payments.MinimumCharge() {
-				actualCost = payments.MinimumCharge()
-			}
-		}
-		if actualCost > reservedMicroUSD {
-			s.logger.Error("embedding provider over-reported usage — clamping to reservation",
-				"provider_id", provider.ID,
-				"request_id", requestID,
-				"actual_cost", actualCost,
-				"reserved", reservedMicroUSD,
-			)
-			actualCost = reservedMicroUSD
-		}
-		if actualCost < reservedMicroUSD {
-			refund(reservedMicroUSD - actualCost)
-		}
-
-		s.recordEmbeddingBilling(provider, pr, requestID, req.Model, actualTokens, actualCost)
-
-		// Build OpenAI-compatible response.
-		out := map[string]any{
-			"object": "list",
-			"model":  req.Model,
-			"data":   formatEmbeddingData(dataVectors, req.EncodingFormat),
-			"usage": map[string]any{
-				"prompt_tokens": actualTokens,
-				"total_tokens":  actualTokens,
-			},
-		}
-		writeJSON(w, http.StatusOK, out)
+		return true, "", 0, result
 
 	case errMsg := <-pr.ErrorCh:
-		refund(reservedMicroUSD)
-		statusCode := errMsg.StatusCode
-		if statusCode == 0 {
-			statusCode = http.StatusBadGateway
+		// handleInferenceError already removed pending + closed channels.
+		s.registry.SetProviderIdle(provider.ID)
+		code := errMsg.StatusCode
+		if code == 0 {
+			code = http.StatusBadGateway
 		}
-		writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+		return false, errMsg.Error, code, nil
 
 	case <-ctx.Done():
-		refund(reservedMicroUSD)
-		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "embedding request timed out"))
+		cleanup()
+		return false, "embedding request timed out", http.StatusGatewayTimeout, nil
 	}
 }
 
@@ -384,19 +426,18 @@ func (s *Server) handleRerank(w http.ResponseWriter, r *http.Request) {
 
 	consumerKey := consumerKeyFromContext(r.Context())
 	estimatedTokens := estimateRerankPromptTokens(req.Query, req.Documents)
-
 	customRate, _, hasCustom := s.store.GetModelPrice("platform", req.Model)
-	var reservedMicroUSD int64
-	if hasCustom {
-		reservedMicroUSD = int64(estimatedTokens) * customRate / 1_000_000
-		if reservedMicroUSD < payments.MinimumCharge() {
-			reservedMicroUSD = payments.MinimumCharge()
-		}
-	} else {
-		reservedMicroUSD = payments.CalculateRerankCost(req.Model, estimatedTokens)
-	}
 
+	var reservedMicroUSD int64
 	if s.billing != nil {
+		if hasCustom {
+			reservedMicroUSD = int64(estimatedTokens) * customRate / 1_000_000
+			if reservedMicroUSD < payments.MinimumCharge() {
+				reservedMicroUSD = payments.MinimumCharge()
+			}
+		} else {
+			reservedMicroUSD = payments.CalculateRerankCost(req.Model, estimatedTokens)
+		}
 		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 				"your balance is too low for this request — add funds at /billing"))
@@ -405,159 +446,84 @@ func (s *Server) handleRerank(w http.ResponseWriter, r *http.Request) {
 	}
 
 	refund := func(amount int64) {
-		if amount > 0 {
+		if amount > 0 && s.billing != nil {
 			_ = s.store.Credit(consumerKey, amount, store.LedgerRefund, "rerank_refund")
 		}
 	}
 
-	requestID := uuid.New().String()
-	pr := &registry.PendingRequest{
-		RequestID:             requestID,
-		Model:                 req.Model,
-		ConsumerKey:           consumerKey,
-		EstimatedPromptTokens: estimatedTokens,
-		RequestedMaxTokens:    1,
-		ReservedMicroUSD:      reservedMicroUSD,
-		ChunkCh:               make(chan string, embeddingChannelChunkBuffer),
-		CompleteCh:            make(chan protocol.UsageInfo, 1),
-		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
-		RerankCh:              make(chan *protocol.RerankCompleteMessage, 1),
+	excludeProviders := make(map[string]struct{})
+	excludeList := func() []string {
+		ids := make([]string, 0, len(excludeProviders))
+		for id := range excludeProviders {
+			ids = append(ids, id)
+		}
+		return ids
 	}
-
-	provider := s.registry.ReserveProvider(req.Model, pr)
-	if provider == nil {
-		refund(reservedMicroUSD)
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-			fmt.Sprintf("no provider available for rerank model %q", req.Model)))
-		return
-	}
-
-	if provider.PublicKey == "" {
-		s.registry.SetProviderIdle(provider.ID)
-		refund(reservedMicroUSD)
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
-			"no provider with E2E encryption available for this model"))
-		return
-	}
-
-	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		refund(reservedMicroUSD)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "provider public key invalid"))
-		return
-	}
-
-	sessionKeys, err := e2e.GenerateSessionKeys()
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		refund(reservedMicroUSD)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to generate session keys"))
-		return
-	}
-
-	encrypted, err := e2e.Encrypt(rawBody, providerPubKey, sessionKeys)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		refund(reservedMicroUSD)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to encrypt request"))
-		return
-	}
-
-	wireMsg := map[string]any{
-		"type":       protocol.TypeRerankRequest,
-		"request_id": requestID,
-		"encrypted_body": map[string]string{
-			"ephemeral_public_key": encrypted.EphemeralPublicKey,
-			"ciphertext":           encrypted.Ciphertext,
-		},
-	}
-	pr.SessionPrivKey = &sessionKeys.PrivateKey
-
-	data, _ := json.Marshal(wireMsg)
-	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		refund(reservedMicroUSD)
-		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
-		return
-	}
-
-	defer func() {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-	}()
-
-	s.logger.Info("rerank request dispatched",
-		"request_id", requestID,
-		"model", req.Model,
-		"provider_id", provider.ID,
-		"provider_tier", provider.Tier,
-		"estimated_tokens", estimatedTokens,
-		"document_count", len(req.Documents),
-	)
 
 	ctx, cancel := context.WithTimeout(r.Context(), embeddingTimeout)
 	defer cancel()
 
-	select {
-	case result := <-pr.RerankCh:
-		if result == nil {
-			refund(reservedMicroUSD)
-			writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "rerank provider closed channel"))
-			return
+	var (
+		lastErrCode = http.StatusServiceUnavailable
+		lastErr     = "no provider available"
+	)
+
+	for attempt := 0; attempt < embeddingMaxAttempts; attempt++ {
+		requestID := uuid.New().String()
+		pr := &registry.PendingRequest{
+			RequestID:             requestID,
+			Model:                 req.Model,
+			ConsumerKey:           consumerKey,
+			EstimatedPromptTokens: estimatedTokens,
+			RequestedMaxTokens:    1,
+			ReservedMicroUSD:      reservedMicroUSD,
+			ChunkCh:               make(chan string, embeddingChannelChunkBuffer),
+			CompleteCh:            make(chan protocol.UsageInfo, 1),
+			ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
+			RerankCh:              make(chan *protocol.RerankCompleteMessage, 1),
 		}
-		results := result.Results
-		if result.EncryptedData != nil && pr.SessionPrivKey != nil {
-			payload := &e2e.EncryptedPayload{
-				EphemeralPublicKey: result.EncryptedData.EphemeralPublicKey,
-				Ciphertext:         result.EncryptedData.Ciphertext,
+
+		provider := s.registry.ReserveProvider(req.Model, pr, excludeList()...)
+		if provider == nil {
+			break
+		}
+
+		ok, errMsg, errCode, result := s.dispatchRerank(ctx, r, req.Model, rawBody, requestID, provider, pr)
+		if !ok {
+			excludeProviders[provider.ID] = struct{}{}
+			lastErr = errMsg
+			if errCode != 0 {
+				lastErrCode = errCode
 			}
-			plaintext, err := e2e.DecryptWithPrivateKey(payload, *pr.SessionPrivKey)
-			if err != nil {
-				refund(reservedMicroUSD)
-				writeJSON(w, http.StatusBadGateway, errorResponse("provider_error",
-					"failed to decrypt rerank response: "+err.Error()))
-				return
+			continue
+		}
+
+		actualTokens := int(result.Usage.PromptTokens)
+		if actualTokens <= 0 {
+			actualTokens = estimatedTokens
+		}
+		actualCost := computeRerankCost(req.Model, actualTokens, customRate, hasCustom)
+		if reservedMicroUSD > 0 {
+			if actualCost > reservedMicroUSD {
+				s.logger.Error("rerank provider over-reported usage — clamping to reservation",
+					"provider_id", provider.ID,
+					"request_id", requestID,
+					"actual_cost", actualCost,
+					"reserved", reservedMicroUSD,
+				)
+				actualCost = reservedMicroUSD
 			}
-			if err := json.Unmarshal(plaintext, &results); err != nil {
-				refund(reservedMicroUSD)
-				writeJSON(w, http.StatusBadGateway, errorResponse("provider_error",
-					"invalid encrypted rerank response: "+err.Error()))
-				return
+			if actualCost < reservedMicroUSD {
+				refund(reservedMicroUSD - actualCost)
 			}
 		}
 
-		// Apply top_n trimming on the coordinator if the provider didn't.
+		results := result.Results
 		if req.TopN != nil && *req.TopN > 0 && len(results) > *req.TopN {
 			results = results[:*req.TopN]
 		}
 
-		actualTokens := result.Usage.PromptTokens
-		if actualTokens <= 0 {
-			actualTokens = estimatedTokens
-		}
-		actualCost := payments.CalculateRerankCost(req.Model, actualTokens)
-		if hasCustom {
-			actualCost = int64(actualTokens) * customRate / 1_000_000
-			if actualCost < payments.MinimumCharge() {
-				actualCost = payments.MinimumCharge()
-			}
-		}
-		if actualCost > reservedMicroUSD {
-			s.logger.Error("rerank provider over-reported usage — clamping to reservation",
-				"provider_id", provider.ID,
-				"request_id", requestID,
-				"actual_cost", actualCost,
-				"reserved", reservedMicroUSD,
-			)
-			actualCost = reservedMicroUSD
-		}
-		if actualCost < reservedMicroUSD {
-			refund(reservedMicroUSD - actualCost)
-		}
-
-		s.recordEmbeddingBilling(provider, pr, requestID, req.Model, actualTokens, actualCost)
+		s.recordDisaggregatedBilling(provider, pr, requestID, req.Model, actualTokens, actualCost, result.DurationSecs)
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":      "rerank-" + requestID,
@@ -568,25 +534,153 @@ func (s *Server) handleRerank(w http.ResponseWriter, r *http.Request) {
 				"total_tokens":  actualTokens,
 			},
 		})
+		return
+	}
+
+	refund(reservedMicroUSD)
+	writeJSON(w, lastErrCode, errorResponse("provider_error",
+		fmt.Sprintf("rerank failed after %d attempt(s): %s", embeddingMaxAttempts, lastErr)))
+}
+
+// dispatchRerank dispatches one rerank attempt to a reserved provider.
+// Returns (success, errMsg, errCode, result). On every exit path it cleans
+// up the pending request and the provider's serving state.
+func (s *Server) dispatchRerank(
+	ctx context.Context,
+	r *http.Request,
+	model string,
+	rawBody []byte,
+	requestID string,
+	provider *registry.Provider,
+	pr *registry.PendingRequest,
+) (bool, string, int, *protocol.RerankCompleteMessage) {
+	cleanup := func() {
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+	}
+
+	if provider.PublicKey == "" {
+		cleanup()
+		return false, "no provider with E2E encryption available", 0, nil
+	}
+	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
+	if err != nil {
+		cleanup()
+		return false, "provider public key invalid", 0, nil
+	}
+	sessionKeys, err := e2e.GenerateSessionKeys()
+	if err != nil {
+		cleanup()
+		return false, "failed to generate session keys", 0, nil
+	}
+	pr.SessionPrivKey = &sessionKeys.PrivateKey
+
+	encrypted, err := e2e.Encrypt(rawBody, providerPubKey, sessionKeys)
+	if err != nil {
+		cleanup()
+		return false, "failed to encrypt request", 0, nil
+	}
+
+	wireMsg := map[string]any{
+		"type":       protocol.TypeRerankRequest,
+		"request_id": requestID,
+		"encrypted_body": map[string]string{
+			"ephemeral_public_key": encrypted.EphemeralPublicKey,
+			"ciphertext":           encrypted.Ciphertext,
+		},
+	}
+	data, _ := json.Marshal(wireMsg)
+	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
+		cleanup()
+		s.logger.Error("failed to send rerank request",
+			"request_id", requestID, "provider_id", provider.ID, "error", err)
+		return false, "failed to send request to provider", 0, nil
+	}
+
+	s.logger.Info("rerank request dispatched",
+		"request_id", requestID,
+		"model", model,
+		"provider_id", provider.ID,
+		"provider_tier", provider.Tier,
+		"estimated_tokens", pr.EstimatedPromptTokens,
+	)
+
+	select {
+	case result := <-pr.RerankCh:
+		s.registry.SetProviderIdle(provider.ID)
+		if result == nil {
+			return false, "rerank provider closed channel", 0, nil
+		}
+		if result.EncryptedData != nil {
+			payload := &e2e.EncryptedPayload{
+				EphemeralPublicKey: result.EncryptedData.EphemeralPublicKey,
+				Ciphertext:         result.EncryptedData.Ciphertext,
+			}
+			plaintext, derr := e2e.DecryptWithPrivateKey(payload, sessionKeys.PrivateKey)
+			if derr != nil {
+				s.registry.RecordJobFailure(provider.ID)
+				return false, "failed to decrypt rerank response: " + derr.Error(), http.StatusBadGateway, nil
+			}
+			var rs []protocol.RerankResult
+			if uerr := json.Unmarshal(plaintext, &rs); uerr != nil {
+				s.registry.RecordJobFailure(provider.ID)
+				return false, "invalid encrypted rerank response: " + uerr.Error(), http.StatusBadGateway, nil
+			}
+			result.Results = rs
+		}
+		return true, "", 0, result
 
 	case errMsg := <-pr.ErrorCh:
-		refund(reservedMicroUSD)
-		statusCode := errMsg.StatusCode
-		if statusCode == 0 {
-			statusCode = http.StatusBadGateway
+		s.registry.SetProviderIdle(provider.ID)
+		code := errMsg.StatusCode
+		if code == 0 {
+			code = http.StatusBadGateway
 		}
-		writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+		return false, errMsg.Error, code, nil
 
 	case <-ctx.Done():
-		refund(reservedMicroUSD)
-		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "rerank request timed out"))
+		cleanup()
+		return false, "rerank request timed out", http.StatusGatewayTimeout, nil
 	}
 }
 
-// recordEmbeddingBilling records usage + provider payout for an embedding
+// computeEmbeddingCost is the single source of truth for embedding pricing,
+// honoring platform-level custom rates when present.
+func computeEmbeddingCost(model string, tokens int, customRate int64, hasCustom bool) int64 {
+	if hasCustom {
+		cost := int64(tokens) * customRate / 1_000_000
+		if cost < payments.MinimumCharge() {
+			cost = payments.MinimumCharge()
+		}
+		return cost
+	}
+	return payments.CalculateEmbeddingCost(model, tokens)
+}
+
+func computeRerankCost(model string, tokens int, customRate int64, hasCustom bool) int64 {
+	if hasCustom {
+		cost := int64(tokens) * customRate / 1_000_000
+		if cost < payments.MinimumCharge() {
+			cost = payments.MinimumCharge()
+		}
+		return cost
+	}
+	return payments.CalculateRerankCost(model, tokens)
+}
+
+// recordDisaggregatedBilling records usage + provider payout for an embedding
 // or rerank job. Same shape as the chat-completions billing path so admin
-// dashboards see uniform data.
-func (s *Server) recordEmbeddingBilling(provider *registry.Provider, pr *registry.PendingRequest, requestID, model string, tokens int, totalCost int64) {
+// dashboards see uniform data. durationSecs comes from the provider's
+// reported processing time (used for the reputation system's response-time
+// component).
+func (s *Server) recordDisaggregatedBilling(
+	provider *registry.Provider,
+	pr *registry.PendingRequest,
+	requestID, model string,
+	tokens int,
+	totalCost int64,
+	durationSecs float64,
+) {
 	providerPayout := payments.ProviderPayout(totalCost)
 
 	s.ledger.RecordUsage(pr.ConsumerKey, payments.UsageEntry{
@@ -598,10 +692,15 @@ func (s *Server) recordEmbeddingBilling(provider *registry.Provider, pr *registr
 	})
 	s.store.RecordUsageWithCost(provider.ID, pr.ConsumerKey, model, requestID, tokens, 0, totalCost)
 
-	// Record the job success (for reputation / heartbeat stats).
-	s.registry.RecordJobSuccess(provider.ID, time.Duration(tokens)*time.Microsecond)
+	// Use the provider-reported duration for reputation. Falling back to a
+	// constant when missing keeps a misbehaving (or pre-update) provider
+	// from getting a free 0 ms response time.
+	respTime := time.Duration(durationSecs * float64(time.Second))
+	if respTime <= 0 {
+		respTime = 100 * time.Millisecond
+	}
+	s.registry.RecordJobSuccess(provider.ID, respTime)
 
-	// Provider payout — same path as chat completions.
 	if provider.AccountID != "" {
 		if err := s.store.CreditProviderAccount(&store.ProviderEarning{
 			AccountID:      provider.AccountID,
@@ -640,19 +739,17 @@ func (s *Server) recordEmbeddingBilling(provider *registry.Provider, pr *registr
 	}
 }
 
-// formatEmbeddingData returns the OpenAI-shaped data list. We default to
-// "float" arrays — base64 encoding can be added if/when consumers ask.
-func formatEmbeddingData(vectors []protocol.EmbeddingVector, encodingFormat string) []map[string]any {
+// formatEmbeddingData returns the OpenAI-shaped data list. We always emit
+// float arrays — the handler rejects encoding_format=base64 up front.
+func formatEmbeddingData(vectors []protocol.EmbeddingVector) []map[string]any {
 	out := make([]map[string]any, 0, len(vectors))
 	for _, v := range vectors {
-		entry := map[string]any{
+		out = append(out, map[string]any{
 			"object":    "embedding",
 			"index":     v.Index,
 			"embedding": v.Embedding,
-		}
-		out = append(out, entry)
+		})
 	}
-	_ = encodingFormat
 	return out
 }
 

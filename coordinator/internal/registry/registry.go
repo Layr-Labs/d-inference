@@ -590,30 +590,6 @@ func (r *Registry) CatalogModelType(model string) string {
 	return ""
 }
 
-// AllowedTiersForModelType returns the set of provider tiers allowed to serve
-// jobs for a given model type. Disaggregated, compute-bound jobs (embedding,
-// rerank) route to small/tiny tiers so big-RAM providers stay free for
-// memory-bandwidth-bound decode of large models. Decode-style jobs accept
-// any tier (the catalog and provider memory limits already filter out
-// providers that can't load the weights).
-//
-// The returned set is checked by the scheduler in snapshotProviderLocked.
-// An empty/nil result means "no tier restriction".
-func AllowedTiersForModelType(modelType string) map[protocol.ProviderTier]struct{} {
-	switch modelType {
-	case "embedding", "rerank":
-		// Allow tiny + small. Standard providers can also serve, but only
-		// when no small-tier provider is available (handled by ranking).
-		return map[protocol.ProviderTier]struct{}{
-			protocol.ProviderTierTiny:     {},
-			protocol.ProviderTierSmall:    {},
-			protocol.ProviderTierStandard: {},
-		}
-	default:
-		return nil
-	}
-}
-
 // PreferredTiersForModelType returns the tiers that should be preferred when
 // routing a given model type. Used by the scheduler to bias routing toward
 // the smallest tier capable of serving the request, freeing larger machines

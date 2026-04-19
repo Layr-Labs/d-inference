@@ -4439,8 +4439,6 @@ async fn handle_inprocess_request(
         return;
     }
 
-    // Extract parameters from OpenAI-format body
-    let messages = extract_inprocess_messages(&body);
     let max_tokens = body
         .get("max_tokens")
         .and_then(|v| v.as_u64())
@@ -4454,7 +4452,48 @@ async fn handle_inprocess_request(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let result = if is_streaming {
+    let endpoint = body
+        .get("endpoint")
+        .and_then(|v| v.as_str())
+        .unwrap_or("/v1/chat/completions");
+    let raw_completion_request = !is_streaming
+        && endpoint == "/v1/completions"
+        && (body.get("prompt").is_some() || body.get("echo").is_some() || body.get("logprobs").is_some());
+
+    // Extract parameters from OpenAI-format body
+    let messages = extract_inprocess_messages(&body);
+
+    let result = if raw_completion_request {
+        let prompt = body
+            .get("prompt")
+            .map(extract_inprocess_input_text)
+            .unwrap_or_default();
+        let echo = body.get("echo").and_then(|v| v.as_bool()).unwrap_or(false);
+        let logprobs = body
+            .get("logprobs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        match engine
+            .generate_completion_json(&prompt, max_tokens, temperature, echo, logprobs)
+            .await
+        {
+            Ok(completion) => {
+                let raw_json = serde_json::to_string(&completion.response_json).unwrap_or_default();
+                let _ = outbound_tx
+                    .send(protocol::ProviderMessage::InferenceResponseChunk {
+                        request_id: request_id.clone(),
+                        data: format!("data: {}", raw_json),
+                    })
+                    .await;
+                Ok(inference::InferenceResult {
+                    text: String::new(),
+                    prompt_tokens: completion.prompt_tokens,
+                    completion_tokens: completion.completion_tokens,
+                })
+            }
+            Err(e) => Err(e),
+        }
+    } else if is_streaming {
         match engine
             .stream_generate(messages.clone(), max_tokens, temperature)
             .await
@@ -4501,7 +4540,7 @@ async fn handle_inprocess_request(
 
     match result {
         Ok(inference_result) => {
-            if !is_streaming {
+            if !is_streaming && !raw_completion_request {
                 let response_json = build_inprocess_response_json(
                     &body,
                     &inference_result.text,

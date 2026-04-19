@@ -2589,6 +2589,7 @@ async fn cmd_serve(
     const BACKEND_IDLE_SHUTDOWN: u8 = 1;
     const BACKEND_CRASHED: u8 = 2;
     let backend_running_flag_opt: Option<std::sync::Arc<std::sync::atomic::AtomicU8>>;
+    let mut current_model_opt: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>> = None;
     let mut rehash_model_hash_opt: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>> = None;
     // Deferred coordinator spawn state — held until backends are ready.
     let mut deferred_coordinator: Option<(
@@ -2632,6 +2633,7 @@ async fn cmd_serve(
         // Shared current model name for heartbeat reporting.
         let current_model: std::sync::Arc<std::sync::Mutex<Option<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(Some(model.clone())));
+        current_model_opt = Some(current_model.clone());
 
         // All warm models (for multi-model heartbeat reporting).
         let warm_models: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
@@ -2656,7 +2658,9 @@ async fn cmd_serve(
         let current_model_hash: std::sync::Arc<std::sync::Mutex<Option<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(initial_model_hash.clone()));
         rehash_model_hash_opt = Some(current_model_hash.clone());
-
+        let live_model_hashes: std::sync::Arc<
+            std::sync::Mutex<std::collections::HashMap<String, String>>,
+        > = std::sync::Arc::new(std::sync::Mutex::new(all_model_hashes.clone()));
         // Collect per-model weight hashes for attestation. Text-model hashes are
         // populated above; STT and image hashes are added after their backends
         // pass health checks.
@@ -2787,7 +2791,7 @@ async fn cmd_serve(
         .with_current_model(current_model)
         .with_warm_models(warm_models)
         .with_current_model_hash(current_model_hash)
-        .with_model_hashes(all_model_hashes)
+        .with_model_hashes(live_model_hashes)
         .with_backend_capacity(backend_capacity);
 
         // Store coordinator client for deferred spawn after backends are ready.
@@ -3425,6 +3429,9 @@ async fn cmd_serve(
             .collect();
         // For idle reload: re-hash weights after reloading to detect tampering
         let rehash_handle = rehash_model_hash_opt.clone();
+        let current_model_handle = current_model_opt
+            .clone()
+            .expect("current_model must be set in non-local mode");
         // Collect PIDs for per-process shutdown
         let backend_pids: Vec<(String, Option<u32>)> = backend_slots
             .iter()
@@ -3538,6 +3545,10 @@ async fn cmd_serve(
                                 #[cfg(feature = "python")]
                                 let mut inprocess_engine = None;
                                 if let Some((slot_model_id, slot_model_path, slot_port, slot_pid, slot_healthy, slot_restarting)) = slot_info {
+                                    {
+                                        let mut current = current_model_handle.lock().unwrap();
+                                        *current = Some(slot_model_id.clone());
+                                    }
                                     if is_inprocess {
                                         #[cfg(feature = "python")]
                                         {

@@ -203,7 +203,7 @@ pub struct CoordinatorClient {
     /// we need to report live runtime integrity to the coordinator.
     runtime_hash_python_cmd: Option<String>,
     /// Per-model weight hashes for all active models (text, STT, image).
-    model_hashes: std::collections::HashMap<String, String>,
+    model_hashes: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     /// Live backend capacity data (updated by main loop, read by heartbeat tick).
     backend_capacity: Arc<std::sync::Mutex<Option<crate::protocol::BackendCapacity>>>,
 }
@@ -236,13 +236,16 @@ impl CoordinatorClient {
             current_model_hash: Arc::new(std::sync::Mutex::new(None)),
             runtime_hashes: None,
             runtime_hash_python_cmd: None,
-            model_hashes: std::collections::HashMap::new(),
+            model_hashes: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             backend_capacity: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
     /// Set per-model weight hashes for all active models.
-    pub fn with_model_hashes(mut self, hashes: std::collections::HashMap<String, String>) -> Self {
+    pub fn with_model_hashes(
+        mut self,
+        hashes: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    ) -> Self {
         self.model_hashes = hashes;
         self
     }
@@ -606,7 +609,7 @@ impl CoordinatorClient {
                                         current_model_id.as_deref(),
                                         model_hash.as_deref(),
                                         runtime_hashes.as_ref(),
-                                        self.model_hashes.clone(),
+                                        self.model_hashes.lock().unwrap().clone(),
                                     );
                                     let json = serde_json::to_string(&response)
                                         .unwrap_or_default();

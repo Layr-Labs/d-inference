@@ -234,14 +234,15 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				provider.Mu().Unlock()
 			}
 
-			// If ACME client cert was verified, upgrade to hardware trust.
-			// ACME device-attest-01 proves the provider's SE key is Apple-attested.
+			// ACME verification is useful evidence, but it is not by itself enough
+			// to trust challenge-time measurements. Hardware trust still requires a
+			// valid provider attestation + later MDM/MDA checks that bind the
+			// challenge key to the device identity we route against.
 			if acmeResult != nil && acmeResult.Valid {
 				provider.Mu().Lock()
 				provider.ACMEVerified = true
 				provider.Mu().Unlock()
-				provider.SetAttested(true, registry.TrustHardware)
-				s.logger.Info("ACME client cert verified — hardware trust via Apple SE attestation",
+				s.logger.Info("ACME client cert verified — recorded as hardware evidence, awaiting attested challenge key binding",
 					"provider_id", providerID,
 					"acme_serial", acmeResult.SerialNumber,
 					"acme_issuer", acmeResult.Issuer,
@@ -436,10 +437,28 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 
 	var verifiedPayload *attestation.ChallengeMeasurementPayload
 
-	// If the provider has an attested SE public key, verify the signature.
-	// Providers without attestation (TrustNone / Open Mode) skip crypto
-	// verification — their trust is already "none".
-	if provider.AttestationResult != nil && provider.AttestationResult.PublicKey != "" {
+	hasValidAttestedKey := provider.AttestationResult != nil &&
+		provider.AttestationResult.Valid &&
+		provider.AttestationResult.PublicKey != ""
+
+	// Providers that were actually attested must keep proving the same attested
+	// challenge key. This prevents downgrade paths where a previously attested
+	// provider responds with unsigned or legacy evidence later on. Open-mode test
+	// harnesses may manually bump TrustLevel without ever setting Attested; don't
+	// treat those synthetic cases as attestation downgrade failures here.
+	if provider.Attested && provider.TrustLevel != registry.TrustNone && !hasValidAttestedKey {
+		s.handleChallengeFailure(providerID, "trusted provider missing valid attested challenge key")
+		return
+	}
+
+	// If the provider has a valid attested SE public key, verify the signed v2
+	// challenge measurement. Open-mode providers (TrustNone / no valid
+	// attestation) are allowed to remain connected but cannot route.
+	if hasValidAttestedKey {
+		if resp.SignatureVersion < 2 {
+			s.handleChallengeFailure(providerID, "legacy challenge signature version not allowed for attested providers")
+			return
+		}
 		if resp.SignatureVersion >= 2 {
 			if resp.SignedMeasurement == "" {
 				s.handleChallengeFailure(providerID, "missing signed challenge measurement")
@@ -462,20 +481,6 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				return
 			}
 			verifiedPayload = payload
-		} else {
-			challengeData := pc.nonce + pc.timestamp
-			if err := attestation.VerifyChallengeSignature(
-				provider.AttestationResult.PublicKey,
-				resp.Signature,
-				challengeData,
-			); err != nil {
-				s.logger.Error("challenge signature verification failed",
-					"provider_id", providerID,
-					"error", err,
-				)
-				s.handleChallengeFailure(providerID, "signature verification failed: "+err.Error())
-				return
-			}
 		}
 	}
 
@@ -1167,14 +1172,6 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 	}
 
 	provider.SetAttested(true, registry.TrustSelfSigned)
-
-	// The SE attestation already proves SIP, Secure Boot, and binary hash —
-	// the same checks a challenge re-verifies. Set LastChallengeVerified so
-	// the provider is immediately routable. The 5-minute challenge cycle will
-	// re-verify and add MDM cross-check for defense-in-depth.
-	// Without this, a freshly connected provider waits up to 5 minutes before
-	// it can serve any requests (until first challenge passes).
-	provider.SetLastChallengeVerified(time.Now())
 
 	s.logger.Info("provider attestation verified (self-signed)",
 		"provider_id", providerID,

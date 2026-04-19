@@ -25,6 +25,8 @@ const UTM_QUERY_PARAMS = new Set([
   "utm_marketing_tactic",
 ]);
 
+const GA_CONSENT_STORAGE_KEY = "darkbloom_ga_consent";
+
 declare global {
   interface Window {
     dataLayer?: unknown[];
@@ -39,12 +41,40 @@ export function getGoogleAnalyticsMeasurementId() {
 }
 
 export function isGoogleAnalyticsEnabled() {
-  return Boolean(getGoogleAnalyticsMeasurementId());
+  return Boolean(getGoogleAnalyticsMeasurementId()) && hasGoogleAnalyticsConsent();
+}
+
+export function hasGoogleAnalyticsConsent() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return window.localStorage.getItem(GA_CONSENT_STORAGE_KEY) === "granted";
+}
+
+export function grantGoogleAnalyticsConsent() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(GA_CONSENT_STORAGE_KEY, "granted");
+}
+
+export function revokeGoogleAnalyticsConsent() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(GA_CONSENT_STORAGE_KEY, "denied");
+}
+
+export function getGoogleAnalyticsConsentStorageKey() {
+  return GA_CONSENT_STORAGE_KEY;
 }
 
 function getGtag() {
   const measurementId = getGoogleAnalyticsMeasurementId();
-  if (typeof window === "undefined" || !measurementId) {
+  if (typeof window === "undefined" || !measurementId || !hasGoogleAnalyticsConsent()) {
     return null;
   }
 
@@ -110,6 +140,14 @@ function sanitizeTrackedLocation(location: string) {
   } catch {
     return undefined;
   }
+}
+
+function getTrackedCurrentLocation() {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  return sanitizeTrackedLocation(window.location.href);
 }
 
 export function buildTrackedPageLocation(pathname: string) {
@@ -178,6 +216,11 @@ export function trackEvent(
   }
 
   analytics.gtag("event", eventName, {
+    page_location: getTrackedCurrentLocation(),
+    page_referrer:
+      (window.__googleAnalyticsLastPageLocation
+        ? sanitizeTrackedLocation(window.__googleAnalyticsLastPageLocation)
+        : undefined) || sanitizeReferrer(document.referrer),
     ...sanitizeEventParams(params),
     send_to: analytics.measurementId,
   });

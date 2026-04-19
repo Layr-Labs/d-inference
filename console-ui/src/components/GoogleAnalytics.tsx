@@ -5,7 +5,7 @@ import Script from "next/script";
 import { usePathname } from "next/navigation";
 import {
   getGoogleAnalyticsMeasurementId,
-  isGoogleAnalyticsEnabled,
+  hasGoogleAnalyticsConsent,
   initializeGoogleAnalytics,
   trackRouteChange,
 } from "@/lib/google-analytics";
@@ -18,7 +18,7 @@ export function GoogleAnalytics() {
   }, []);
 
   useEffect(() => {
-    if (!isGoogleAnalyticsEnabled() || !pathname) {
+    if (!hasGoogleAnalyticsConsent() || !pathname) {
       return;
     }
 
@@ -26,7 +26,7 @@ export function GoogleAnalytics() {
   }, [pathname]);
 
   const measurementId = getGoogleAnalyticsMeasurementId();
-  if (!measurementId) {
+  if (!measurementId || !hasGoogleAnalyticsConsent()) {
     return null;
   }
 

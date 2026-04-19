@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildTrackedPageLocation,
+  getGoogleAnalyticsConsentStatus,
   grantGoogleAnalyticsConsent,
   hasGoogleAnalyticsConsent,
   initializeGoogleAnalytics,
@@ -39,12 +40,16 @@ describe("google analytics helpers", () => {
   });
 
   it("requires explicit consent before enabling analytics", () => {
+    expect(getGoogleAnalyticsConsentStatus()).toBe("unset");
     expect(hasGoogleAnalyticsConsent()).toBe(false);
     grantGoogleAnalyticsConsent();
+    expect(getGoogleAnalyticsConsentStatus()).toBe("granted");
     expect(hasGoogleAnalyticsConsent()).toBe(true);
     expect(isGoogleAnalyticsEnabled()).toBe(true);
     revokeGoogleAnalyticsConsent();
+    expect(getGoogleAnalyticsConsentStatus()).toBe("denied");
     expect(hasGoogleAnalyticsConsent()).toBe(false);
+    expect(window.__googleAnalyticsInitialized).toBe(false);
   });
 
   it("keeps only allowed attribution params on the initial page view", () => {
@@ -229,8 +234,7 @@ describe("google analytics helpers", () => {
           model: "mlx-community/gemma-4-26b-a4b-it-8bit",
           page_location:
             `${origin}/billing?utm_source=search&utm_campaign=spring&gclid=abc123`,
-          page_referrer:
-            `${origin}/billing?utm_source=search&utm_campaign=spring&gclid=abc123`,
+          page_referrer: `${origin}/login`,
           send_to: "G-TEST123",
         },
       ],

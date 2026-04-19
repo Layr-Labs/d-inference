@@ -37,6 +37,8 @@ declare global {
   }
 }
 
+type GoogleAnalyticsConsentStatus = "unset" | "granted" | "denied";
+
 export function getGoogleAnalyticsMeasurementId() {
   return process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID?.trim() ?? "";
 }
@@ -45,12 +47,36 @@ export function isGoogleAnalyticsEnabled() {
   return Boolean(getGoogleAnalyticsMeasurementId()) && hasGoogleAnalyticsConsent();
 }
 
-export function hasGoogleAnalyticsConsent() {
+function setGoogleAnalyticsDisabled(disabled: boolean) {
   if (typeof window === "undefined") {
-    return false;
+    return;
   }
 
-  return window.localStorage.getItem(GA_CONSENT_STORAGE_KEY) === "granted";
+  const measurementId = getGoogleAnalyticsMeasurementId();
+  if (!measurementId) {
+    return;
+  }
+
+  (
+    window as typeof window & Record<string, boolean | undefined>
+  )[`ga-disable-${measurementId}`] = disabled;
+}
+
+export function getGoogleAnalyticsConsentStatus(): GoogleAnalyticsConsentStatus {
+  if (typeof window === "undefined") {
+    return "unset";
+  }
+
+  const stored = window.localStorage.getItem(GA_CONSENT_STORAGE_KEY);
+  if (stored === "granted" || stored === "denied") {
+    return stored;
+  }
+
+  return "unset";
+}
+
+export function hasGoogleAnalyticsConsent() {
+  return getGoogleAnalyticsConsentStatus() === "granted";
 }
 
 export function grantGoogleAnalyticsConsent() {
@@ -59,6 +85,7 @@ export function grantGoogleAnalyticsConsent() {
   }
 
   window.localStorage.setItem(GA_CONSENT_STORAGE_KEY, "granted");
+  setGoogleAnalyticsDisabled(false);
   window.dispatchEvent(new Event("darkbloom-ga-consent-changed"));
 }
 
@@ -68,6 +95,10 @@ export function revokeGoogleAnalyticsConsent() {
   }
 
   window.localStorage.setItem(GA_CONSENT_STORAGE_KEY, "denied");
+  setGoogleAnalyticsDisabled(true);
+  window.__googleAnalyticsInitialized = false;
+  window.__googleAnalyticsCurrentPageLocation = undefined;
+  window.__googleAnalyticsCurrentPageReferrer = undefined;
   window.dispatchEvent(new Event("darkbloom-ga-consent-changed"));
 }
 
@@ -100,6 +131,7 @@ export function initializeGoogleAnalytics() {
     return;
   }
 
+  setGoogleAnalyticsDisabled(false);
   analytics.gtag("js", new Date());
   analytics.gtag("config", analytics.measurementId, {
     send_page_view: false,
@@ -252,6 +284,6 @@ function trackPageView(params: {
     send_to: analytics.measurementId,
   });
 
-  window.__googleAnalyticsCurrentPageReferrer = params.page_location;
+  window.__googleAnalyticsCurrentPageReferrer = pageReferrer;
   window.__googleAnalyticsCurrentPageLocation = params.page_location;
 }

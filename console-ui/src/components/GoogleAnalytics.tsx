@@ -4,10 +4,10 @@ import { useEffect, useState } from "react";
 import Script from "next/script";
 import { usePathname } from "next/navigation";
 import {
+  getGoogleAnalyticsConsentStatus,
   getGoogleAnalyticsMeasurementId,
   getGoogleAnalyticsConsentStorageKey,
   grantGoogleAnalyticsConsent,
-  hasGoogleAnalyticsConsent,
   initializeGoogleAnalytics,
   revokeGoogleAnalyticsConsent,
   trackRouteChange,
@@ -17,11 +17,21 @@ export function GoogleAnalytics() {
   const pathname = usePathname();
   const measurementId = getGoogleAnalyticsMeasurementId();
   const [hasConsent, setHasConsent] = useState(false);
-  const [consentResolved, setConsentResolved] = useState(false);
+  const [consentState, setConsentState] = useState<"granted" | "denied" | "unset">(
+    "unset",
+  );
 
   useEffect(() => {
-    setHasConsent(hasGoogleAnalyticsConsent());
-    setConsentResolved(true);
+    const syncConsentState = () => {
+      const nextConsentState = getGoogleAnalyticsConsentStatus();
+      setConsentState(nextConsentState);
+      setHasConsent(nextConsentState === "granted");
+    };
+
+    syncConsentState();
+    window.addEventListener("darkbloom-ga-consent-changed", syncConsentState);
+    return () =>
+      window.removeEventListener("darkbloom-ga-consent-changed", syncConsentState);
   }, []);
 
   useEffect(() => {
@@ -52,7 +62,7 @@ export function GoogleAnalytics() {
           strategy="afterInteractive"
         />
       )}
-      {consentResolved && !hasConsent && (
+      {consentState === "unset" && !hasConsent && (
         <div className="fixed bottom-4 left-4 right-4 z-50 mx-auto max-w-xl rounded-xl border border-border-dim bg-bg-white/95 p-4 shadow-lg backdrop-blur">
           <p className="text-sm text-text-secondary">
             Allow anonymous analytics to help improve Darkbloom&apos;s product experience.

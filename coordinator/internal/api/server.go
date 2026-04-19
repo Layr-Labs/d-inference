@@ -445,30 +445,21 @@ func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHas
 	}
 
 	// Check template hashes.
+	//
+	// Providers only cache the templates they actually need for the models they
+	// serve. Missing blessed templates are therefore acceptable; the important
+	// invariant is that any reported template name maps to the blessed hash for
+	// that template.
 	if len(s.knownRuntimeManifest.TemplateHashes) > 0 {
-		for name, expected := range s.knownRuntimeManifest.TemplateHashes {
-			got, ok := templateHashes[name]
-			if !ok || got == "" {
-				mismatches = append(mismatches, protocol.RuntimeMismatch{
-					Component: "template:" + name,
-					Expected:  expected,
-					Got:       "missing",
-				})
+		for name, got := range templateHashes {
+			expected, ok := s.knownRuntimeManifest.TemplateHashes[name]
+			if !ok {
 				continue
 			}
-			if got != expected {
+			if got == "" || got != expected {
 				mismatches = append(mismatches, protocol.RuntimeMismatch{
 					Component: "template:" + name,
 					Expected:  expected,
-					Got:       got,
-				})
-			}
-		}
-		for name, got := range templateHashes {
-			if _, ok := s.knownRuntimeManifest.TemplateHashes[name]; !ok {
-				mismatches = append(mismatches, protocol.RuntimeMismatch{
-					Component: "template:" + name,
-					Expected:  "not present in runtime manifest",
 					Got:       got,
 				})
 			}

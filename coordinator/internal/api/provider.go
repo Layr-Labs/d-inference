@@ -557,7 +557,10 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 
 	// Verify every reported per-model hash against the blessed catalog when a
 	// catalog hash exists. Unpinned models are informational only until the
-	// catalog is populated with blessed hashes for them.
+	// catalog is populated with blessed hashes for them. The fresh enforcement
+	// signal is ActiveModelHash for the model currently serving traffic; the
+	// broader model_hashes map is supplementary telemetry until we move those
+	// measurements into a challenge-time attested path.
 	for modelID, hash := range resp.ModelHashes {
 		expectedHash := s.registry.CatalogWeightHash(modelID)
 		if expectedHash == "" {

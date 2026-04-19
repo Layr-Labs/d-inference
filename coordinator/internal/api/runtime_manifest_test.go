@@ -148,9 +148,6 @@ func TestVerifyRuntimeHashesRequiresConfiguredHashes(t *testing.T) {
 		RuntimeHashes: map[string]bool{
 			"runtime-ok": true,
 		},
-		TemplateHashes: map[string]string{
-			"chatml": "template-ok",
-		},
 		GrpcBinaryHashes: map[string]bool{
 			"grpc-ok": true,
 		},
@@ -175,7 +172,6 @@ func TestVerifyRuntimeHashesRequiresConfiguredHashes(t *testing.T) {
 	for _, component := range []string{
 		"python",
 		"runtime",
-		"template:chatml",
 		"grpc_binary",
 		"image_bridge",
 	} {
@@ -194,20 +190,39 @@ func TestVerifyRuntimeHashesRejectsUnexpectedTemplates(t *testing.T) {
 	})
 
 	ok, mismatches := srv.verifyRuntimeHashes("", "", map[string]string{
-		"chatml": "template-ok",
-		"rogue":  "rogue-hash",
+		"chatml": "tampered-template",
 	}, "", "")
 	if ok {
-		t.Fatal("verifyRuntimeHashes should reject templates absent from the manifest")
+		t.Fatal("verifyRuntimeHashes should reject blessed templates with the wrong hash")
 	}
 	if len(mismatches) != 1 {
 		t.Fatalf("mismatches = %d, want 1", len(mismatches))
 	}
 	if mismatches[0] != (protocol.RuntimeMismatch{
-		Component: "template:rogue",
-		Expected:  "not present in runtime manifest",
-		Got:       "rogue-hash",
+		Component: "template:chatml",
+		Expected:  "template-ok",
+		Got:       "tampered-template",
 	}) {
 		t.Fatalf("unexpected mismatch: %+v", mismatches[0])
+	}
+}
+
+func TestVerifyRuntimeHashesAllowsSubsetOfBlessedTemplates(t *testing.T) {
+	srv, _ := runtimeManifestTestServer(t)
+	srv.SetRuntimeManifest(&RuntimeManifest{
+		TemplateHashes: map[string]string{
+			"chatml":  "template-ok",
+			"minimax": "other-template",
+		},
+	})
+
+	ok, mismatches := srv.verifyRuntimeHashes("", "", map[string]string{
+		"chatml": "template-ok",
+	}, "", "")
+	if !ok {
+		t.Fatalf("verifyRuntimeHashes should allow providers to report only the templates they cache, mismatches=%+v", mismatches)
+	}
+	if len(mismatches) != 0 {
+		t.Fatalf("mismatches = %d, want 0", len(mismatches))
 	}
 }

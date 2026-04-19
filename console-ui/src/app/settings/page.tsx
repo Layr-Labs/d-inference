@@ -250,9 +250,10 @@ export default function SettingsPage() {
               </h3>
             </div>
             <p className="text-xs text-text-tertiary mb-4">
-              Control whether Darkbloom can load anonymous Google Analytics
-              to measure product usage. Query parameters are sanitized before
-              analytics events are sent.
+              Control whether Darkbloom can load privacy-filtered Google
+              Analytics to measure product usage. Query parameters are
+              sanitized before analytics events are sent, except for the small
+              attribution allowlist used to preserve campaign measurement.
             </p>
             <div className="flex flex-wrap gap-3">
               <button

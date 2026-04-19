@@ -17,10 +17,10 @@ import {
 export function GoogleAnalytics() {
   const pathname = usePathname();
   const measurementId = getGoogleAnalyticsMeasurementId();
-  const [hasConsent, setHasConsent] = useState(false);
   const [consentState, setConsentState] = useState<"granted" | "denied" | "unset">(
-    "unset",
+    () => getGoogleAnalyticsConsentStatus(),
   );
+  const [hasConsent, setHasConsent] = useState(consentState === "granted");
 
   useEffect(() => {
     const syncConsentState = () => {
@@ -76,7 +76,8 @@ export function GoogleAnalytics() {
       {consentState === "unset" && !hasConsent && (
         <div className="fixed bottom-4 left-4 right-4 z-50 mx-auto max-w-xl rounded-xl border border-border-dim bg-bg-white/95 p-4 shadow-lg backdrop-blur">
           <p className="text-sm text-text-secondary">
-            Allow anonymous analytics to help improve Darkbloom&apos;s product experience.
+            Allow privacy-filtered usage analytics to help improve
+            Darkbloom&apos;s product experience.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <button

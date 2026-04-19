@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"math/big"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/coordinator/internal/protocol"
 )
@@ -42,7 +43,7 @@ func signClaims(t *testing.T, canonical []byte) (string, string) {
 }
 
 func TestVerifyRegisterClaimsRejectsTamperedField(t *testing.T) {
-	timestamp := "2026-04-01T00:00:00Z"
+	timestamp := time.Now().UTC().Format(time.RFC3339)
 	regMsg := &protocol.RegisterMessage{
 		Type:            protocol.TypeRegister,
 		Backend:         "vllm_mlx",
@@ -80,6 +81,63 @@ func TestVerifyRegisterClaimsRejectsTamperedField(t *testing.T) {
 	regMsg.WalletAddress = "0xATTACKER"
 	if err := verifyRegisterClaims(pub, regMsg); err == nil {
 		t.Fatal("expected verification to fail after wallet_address tampering, got nil")
+	}
+}
+
+// A claims envelope older than MaxClaimsAge is rejected even if the
+// signature is otherwise valid. This prevents replay of a captured
+// envelope long after the device has been retired or compromised.
+func TestVerifyRegisterClaimsRejectsStaleTimestamp(t *testing.T) {
+	timestamp := time.Now().Add(-72 * time.Hour).UTC().Format(time.RFC3339)
+	regMsg := &protocol.RegisterMessage{
+		Type:            protocol.TypeRegister,
+		Backend:         "vllm_mlx",
+		Version:         "0.4.0",
+		PublicKey:       "abc",
+		ClaimsTimestamp: timestamp,
+		TemplateHashes:  map[string]string{},
+		ModelHashes:     map[string]string{},
+	}
+	canonical := protocol.CanonicalRegisterJSON(protocol.RegisterClaims{
+		Timestamp:      timestamp,
+		Backend:        regMsg.Backend,
+		Version:        regMsg.Version,
+		PublicKey:      regMsg.PublicKey,
+		TemplateHashes: regMsg.TemplateHashes,
+		ModelHashes:    regMsg.ModelHashes,
+	})
+	pub, sig := signClaims(t, canonical)
+	regMsg.ClaimsSignature = sig
+	if err := verifyRegisterClaims(pub, regMsg); err != errClaimsStale {
+		t.Fatalf("expected errClaimsStale, got %v", err)
+	}
+}
+
+// A claims envelope timestamped > 5min in the future is rejected (clock skew
+// safeguard) so a provider can't game the freshness window forward.
+func TestVerifyRegisterClaimsRejectsFutureTimestamp(t *testing.T) {
+	timestamp := time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339)
+	regMsg := &protocol.RegisterMessage{
+		Type:            protocol.TypeRegister,
+		Backend:         "vllm_mlx",
+		Version:         "0.4.0",
+		PublicKey:       "abc",
+		ClaimsTimestamp: timestamp,
+		TemplateHashes:  map[string]string{},
+		ModelHashes:     map[string]string{},
+	}
+	canonical := protocol.CanonicalRegisterJSON(protocol.RegisterClaims{
+		Timestamp:      timestamp,
+		Backend:        regMsg.Backend,
+		Version:        regMsg.Version,
+		PublicKey:      regMsg.PublicKey,
+		TemplateHashes: regMsg.TemplateHashes,
+		ModelHashes:    regMsg.ModelHashes,
+	})
+	pub, sig := signClaims(t, canonical)
+	regMsg.ClaimsSignature = sig
+	if err := verifyRegisterClaims(pub, regMsg); err != errClaimsFutureTimestamp {
+		t.Fatalf("expected errClaimsFutureTimestamp, got %v", err)
 	}
 }
 

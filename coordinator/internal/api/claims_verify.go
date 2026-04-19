@@ -19,9 +19,19 @@ package api
 // integrity field with a one-line patch to its binary.
 
 import (
+	"time"
+
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/protocol"
 )
+
+// MaxClaimsAge is the maximum age of a Register claims_timestamp. A captured
+// envelope older than this is rejected so a stale signature cannot be
+// replayed indefinitely. Aligned with MaxAttestationAge but enforced
+// independently because the claims_timestamp is signed by the provider
+// (the attestation timestamp is set at attestation generation, which can
+// be older than the registration when the SE key was provisioned long ago).
+const MaxClaimsAge = 24 * time.Hour
 
 // verifyRegisterClaims verifies the SE-signed claims envelope on a Register
 // message. Returns nil on success, or a descriptive error.
@@ -38,6 +48,21 @@ func verifyRegisterClaims(sePublicKey string, regMsg *protocol.RegisterMessage) 
 	}
 	if regMsg.ClaimsTimestamp == "" {
 		return errClaimsMissingTimestamp
+	}
+	// Reject a stale claims envelope. Without freshness, a captured
+	// (signature, canonical) pair could be replayed forever — even after
+	// the underlying machine has been retired or compromised.
+	ts, err := time.Parse(time.RFC3339, regMsg.ClaimsTimestamp)
+	if err != nil {
+		return errClaimsBadTimestamp
+	}
+	age := time.Since(ts)
+	if age > MaxClaimsAge {
+		return errClaimsStale
+	}
+	// Also reject envelopes from the future (clock skew tolerance: 5min).
+	if age < -5*time.Minute {
+		return errClaimsFutureTimestamp
 	}
 	c := protocol.RegisterClaims{
 		Timestamp:       regMsg.ClaimsTimestamp,
@@ -122,4 +147,7 @@ const (
 	errClaimsMissingTimestamp  claimsErr = "claims: claims_timestamp missing"
 	errClaimsNonceMismatch     claimsErr = "claims: nonce mismatch"
 	errClaimsTimestampMismatch claimsErr = "claims: claims_timestamp does not match challenge timestamp"
+	errClaimsStale             claimsErr = "claims: claims_timestamp older than MaxClaimsAge"
+	errClaimsFutureTimestamp   claimsErr = "claims: claims_timestamp in the future (>5min skew)"
+	errClaimsBadTimestamp      claimsErr = "claims: claims_timestamp not RFC3339"
 )

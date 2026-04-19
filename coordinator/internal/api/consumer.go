@@ -60,6 +60,11 @@ const (
 	firstChunkTimeout = 10 * time.Second
 )
 
+const (
+	speculationDraftTokenCount      = 8
+	speculationContributorPayoutBps = 2000 // 20% of normal provider payout
+)
+
 // chatCompletionRequest is the incoming OpenAI-compatible request body.
 // The consumer sends plain JSON — no encryption fields are needed because
 // TLS to the Confidential VM is the trust boundary.
@@ -181,6 +186,70 @@ func explicitMaxTokens(parsed map[string]any) int {
 	return 0
 }
 
+func isDeterministicSpeculationEligible(parsed map[string]any) bool {
+	if stream, ok := parsed["stream"].(bool); ok && stream {
+		return false
+	}
+	if _, ok := parsed["input"]; ok {
+		// Responses API has different output framing and tool semantics.
+		return false
+	}
+	if copies, ok := intFromRequestValue(parsed["n"]); ok && copies > 1 {
+		return false
+	}
+	if tools, ok := parsed["tools"]; ok {
+		if arr, ok := tools.([]any); ok && len(arr) > 0 {
+			return false
+		}
+	}
+	if toolChoice, ok := parsed["tool_choice"]; ok && toolChoice != nil {
+		return false
+	}
+	if responseFormat, ok := parsed["response_format"]; ok && responseFormat != nil {
+		return false
+	}
+	temperature, ok := parsed["temperature"].(float64)
+	if !ok || temperature != 0 {
+		return false
+	}
+	if topP, ok := parsed["top_p"].(float64); ok && topP != 1 {
+		return false
+	}
+	if stop, ok := parsed["stop"]; ok && stop != nil {
+		switch x := stop.(type) {
+		case string:
+			if x != "" {
+				return false
+			}
+		case []any:
+			if len(x) > 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	for _, key := range []string{"presence_penalty", "frequency_penalty", "logit_bias"} {
+		if v, ok := parsed[key]; ok && v != nil {
+			return false
+		}
+	}
+	for _, key := range []string{"logprobs", "top_logprobs"} {
+		if v, ok := parsed[key]; ok && v != nil {
+			return false
+		}
+	}
+	if _, ok := parsed["seed"]; ok {
+		// vllm-mlx already supports deterministic temperature=0 without seed.
+		// Seeded requests can stay on the current direct path until verified.
+		return false
+	}
+	if messages, ok := parsed["messages"].([]any); ok && len(messages) > 0 {
+		return true
+	}
+	return false
+}
+
 // reservationCost is the pre-flight worst-case cost for a text inference
 // request. It mirrors the platform-price branch of handleComplete's billing
 // so the reservation covers any platform-level custom price for the model;
@@ -210,6 +279,762 @@ func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool) bool {
 		parsed["max_tokens"] = defaultMaxOutputTokens
 	}
 	return true
+}
+
+type internalDispatchOptions struct {
+	providerID      string
+	model           string
+	rawBody         []byte
+	estimatedPrompt int
+	requestedMax    int
+	firstChunkWait  time.Duration
+	contextTimeout  time.Duration
+	internalOnly    bool
+}
+
+type internalDispatchResult struct {
+	provider   *registry.Provider
+	pending    *registry.PendingRequest
+	requestID  string
+	firstChunk string
+}
+
+type internalCompletionLogprobs struct {
+	Tokens      []string
+	TopLogprobs []map[string]float64
+	TextOffsets []int
+}
+
+type internalCompletionResponse struct {
+	Text         string
+	FinishReason string
+	Logprobs     internalCompletionLogprobs
+	Usage        protocol.UsageInfo
+}
+
+type internalTokenSpan struct {
+	Token       string
+	Offset      int
+	TopLogprobs map[string]float64
+}
+
+type speculativeContributorShare struct {
+	ProviderID     string
+	ProviderKey    string
+	AccountID      string
+	WalletAddress  string
+	AcceptedTokens int
+}
+
+type speculativeChatResult struct {
+	RequestID      string
+	TargetProvider *registry.Provider
+	Message        extractedMessage
+	Usage          protocol.UsageInfo
+	FinishReason   string
+}
+
+func (s *Server) dispatchInternalInference(ctx context.Context, opts internalDispatchOptions) (*internalDispatchResult, error) {
+	if opts.providerID == "" {
+		return nil, fmt.Errorf("provider_id is required")
+	}
+	if opts.model == "" {
+		return nil, fmt.Errorf("model is required")
+	}
+	if len(opts.rawBody) == 0 {
+		return nil, fmt.Errorf("raw body is required")
+	}
+	if opts.firstChunkWait <= 0 {
+		opts.firstChunkWait = firstChunkTimeout
+	}
+	if opts.contextTimeout <= 0 {
+		opts.contextTimeout = inferenceTimeout
+	}
+
+	provider := s.registry.GetProvider(opts.providerID)
+	if provider == nil {
+		return nil, fmt.Errorf("provider %q not found", opts.providerID)
+	}
+	if provider.PublicKey == "" {
+		return nil, fmt.Errorf("provider %q has no E2E public key", opts.providerID)
+	}
+
+	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("provider %q public key invalid: %w", opts.providerID, err)
+	}
+
+	sessionKeys, err := e2e.GenerateSessionKeys()
+	if err != nil {
+		return nil, fmt.Errorf("generate session keys: %w", err)
+	}
+	encrypted, err := e2e.Encrypt(opts.rawBody, providerPubKey, sessionKeys)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt request: %w", err)
+	}
+
+	requestID := uuid.New().String()
+	pr := &registry.PendingRequest{
+		RequestID:             requestID,
+		Model:                 opts.model,
+		ConsumerKey:           "",
+		InternalOnly:          opts.internalOnly,
+		EstimatedPromptTokens: opts.estimatedPrompt,
+		RequestedMaxTokens:    opts.requestedMax,
+		AcceptedCh:            make(chan struct{}, 1),
+		ChunkCh:               make(chan string, chunkBufferSize),
+		CompleteCh:            make(chan protocol.UsageInfo, 1),
+		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
+		SessionPrivKey:        &sessionKeys.PrivateKey,
+	}
+
+	reserved := s.registry.ReserveSpecificInternalProvider(opts.providerID, opts.model, pr)
+	if reserved == nil {
+		return nil, fmt.Errorf("provider %q cannot admit model %q", opts.providerID, opts.model)
+	}
+
+	wireMsg := map[string]any{
+		"type":       protocol.TypeInferenceRequest,
+		"request_id": requestID,
+		"encrypted_body": map[string]string{
+			"ephemeral_public_key": encrypted.EphemeralPublicKey,
+			"ciphertext":           encrypted.Ciphertext,
+		},
+	}
+	data, err := json.Marshal(wireMsg)
+	if err != nil {
+		reserved.RemovePending(requestID)
+		s.registry.SetProviderIdle(reserved.ID)
+		return nil, fmt.Errorf("marshal internal request: %w", err)
+	}
+	if err := reserved.Conn.Write(ctx, websocket.MessageText, data); err != nil {
+		reserved.RemovePending(requestID)
+		s.registry.SetProviderIdle(reserved.ID)
+		return nil, fmt.Errorf("write internal request: %w", err)
+	}
+
+	timer := time.NewTimer(opts.firstChunkWait)
+	defer timer.Stop()
+
+	result := &internalDispatchResult{
+		provider:  reserved,
+		pending:   pr,
+		requestID: requestID,
+	}
+
+	select {
+	case <-pr.AcceptedCh:
+		chunkTimer := time.NewTimer(opts.contextTimeout)
+		defer chunkTimer.Stop()
+		select {
+		case chunk, ok := <-pr.ChunkCh:
+			if ok {
+				result.firstChunk = chunk
+				return result, nil
+			}
+			select {
+			case errMsg, ok := <-pr.ErrorCh:
+				if ok {
+					reserved.RemovePending(requestID)
+					s.registry.SetProviderIdle(reserved.ID)
+					return nil, fmt.Errorf("internal provider error: %s", errMsg.Error)
+				}
+			default:
+			}
+			return result, nil
+		case errMsg, ok := <-pr.ErrorCh:
+			reserved.RemovePending(requestID)
+			s.registry.SetProviderIdle(reserved.ID)
+			if ok {
+				return nil, fmt.Errorf("internal provider error: %s", errMsg.Error)
+			}
+			return nil, fmt.Errorf("internal provider error")
+		case <-chunkTimer.C:
+			cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
+			cancelData, _ := json.Marshal(cancelMsg)
+			_ = reserved.Conn.Write(context.Background(), websocket.MessageText, cancelData)
+			reserved.RemovePending(requestID)
+			s.registry.SetProviderIdle(reserved.ID)
+			return nil, fmt.Errorf("timeout waiting for internal provider chunk")
+		case <-ctx.Done():
+			reserved.RemovePending(requestID)
+			s.registry.SetProviderIdle(reserved.ID)
+			return nil, ctx.Err()
+		}
+	case chunk, ok := <-pr.ChunkCh:
+		if ok {
+			result.firstChunk = chunk
+			return result, nil
+		}
+		select {
+		case errMsg, ok := <-pr.ErrorCh:
+			if ok {
+				reserved.RemovePending(requestID)
+				s.registry.SetProviderIdle(reserved.ID)
+				return nil, fmt.Errorf("internal provider error: %s", errMsg.Error)
+			}
+		default:
+		}
+		return result, nil
+	case errMsg, ok := <-pr.ErrorCh:
+		reserved.RemovePending(requestID)
+		s.registry.SetProviderIdle(reserved.ID)
+		if ok {
+			return nil, fmt.Errorf("internal provider error: %s", errMsg.Error)
+		}
+		return nil, fmt.Errorf("internal provider error")
+	case <-timer.C:
+		cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
+		cancelData, _ := json.Marshal(cancelMsg)
+		_ = reserved.Conn.Write(context.Background(), websocket.MessageText, cancelData)
+		reserved.RemovePending(requestID)
+		s.registry.SetProviderIdle(reserved.ID)
+		return nil, fmt.Errorf("timeout waiting for internal provider response")
+	case <-ctx.Done():
+		reserved.RemovePending(requestID)
+		s.registry.SetProviderIdle(reserved.ID)
+		return nil, ctx.Err()
+	}
+}
+
+func awaitInternalCompletion(ctx context.Context, result *internalDispatchResult) (*internalCompletionResponse, error) {
+	if result == nil || result.pending == nil {
+		return nil, fmt.Errorf("internal result is nil")
+	}
+	if result.firstChunk == "" {
+		return nil, fmt.Errorf("internal provider returned no response chunk")
+	}
+
+	select {
+	case usage, ok := <-result.pending.CompleteCh:
+		if !ok {
+			return nil, fmt.Errorf("internal provider closed completion channel")
+		}
+		return parseInternalCompletionChunk(result.firstChunk, usage)
+	case errMsg, ok := <-result.pending.ErrorCh:
+		if ok {
+			return nil, fmt.Errorf("internal provider error: %s", errMsg.Error)
+		}
+		return nil, fmt.Errorf("internal provider error")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func parseInternalCompletionChunk(chunk string, usage protocol.UsageInfo) (*internalCompletionResponse, error) {
+	raw := strings.TrimSpace(strings.TrimPrefix(chunk, "data: "))
+	if raw == "" {
+		return nil, fmt.Errorf("internal completion chunk is empty")
+	}
+
+	var parsed struct {
+		Choices []struct {
+			Text         string `json:"text"`
+			FinishReason string `json:"finish_reason"`
+			Logprobs     *struct {
+				Tokens      []string             `json:"tokens"`
+				TopLogprobs []map[string]float64 `json:"top_logprobs"`
+				TextOffsets []int                `json:"text_offset"`
+			} `json:"logprobs"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, fmt.Errorf("decode internal completion response: %w", err)
+	}
+	if len(parsed.Choices) == 0 {
+		return nil, fmt.Errorf("internal completion response had no choices")
+	}
+
+	resp := &internalCompletionResponse{
+		Text:         parsed.Choices[0].Text,
+		FinishReason: parsed.Choices[0].FinishReason,
+		Usage:        usage,
+	}
+	if parsed.Choices[0].Logprobs != nil {
+		resp.Logprobs = internalCompletionLogprobs{
+			Tokens:      parsed.Choices[0].Logprobs.Tokens,
+			TopLogprobs: parsed.Choices[0].Logprobs.TopLogprobs,
+			TextOffsets: parsed.Choices[0].Logprobs.TextOffsets,
+		}
+	}
+	return resp, nil
+}
+
+func internalCompletionRequestBody(model, prompt string, maxTokens int, extras map[string]any) []byte {
+	body := map[string]any{
+		"model":           model,
+		"prompt":          prompt,
+		"max_tokens":      maxTokens,
+		"temperature":     0.0,
+		"stream":          false,
+		"logprobs":        1,
+		"endpoint":        "/v1/completions",
+		"_eigen_internal": true,
+	}
+	for k, v := range extras {
+		body[k] = v
+	}
+	raw, _ := json.Marshal(body)
+	return raw
+}
+
+func messageStringContent(content any) (string, bool) {
+	switch x := content.(type) {
+	case string:
+		return x, true
+	default:
+		return "", false
+	}
+}
+
+func formatQwenChatMLPrompt(messages []any) (string, error) {
+	var b strings.Builder
+	for _, raw := range messages {
+		msg, ok := raw.(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("message must be an object")
+		}
+		role, _ := msg["role"].(string)
+		if role == "" {
+			return "", fmt.Errorf("message role is required")
+		}
+		content, ok := messageStringContent(msg["content"])
+		if !ok {
+			return "", fmt.Errorf("message content for role %q must be a string", role)
+		}
+		b.WriteString("<|im_start|>")
+		b.WriteString(role)
+		b.WriteString("\n")
+		b.WriteString(content)
+		b.WriteString("<|im_end|>\n")
+	}
+	b.WriteString("<|im_start|>assistant\n")
+	return b.String(), nil
+}
+
+func spansWithinOffsets(logprobs internalCompletionLogprobs, startOffset, endOffset int) []internalTokenSpan {
+	limit := len(logprobs.Tokens)
+	if len(logprobs.TextOffsets) < limit {
+		limit = len(logprobs.TextOffsets)
+	}
+	if len(logprobs.TopLogprobs) < limit {
+		limit = len(logprobs.TopLogprobs)
+	}
+	spans := make([]internalTokenSpan, 0, limit)
+	for i := 0; i < limit; i++ {
+		offset := logprobs.TextOffsets[i]
+		if offset < startOffset || offset >= endOffset {
+			continue
+		}
+		spans = append(spans, internalTokenSpan{
+			Token:       logprobs.Tokens[i],
+			Offset:      offset,
+			TopLogprobs: logprobs.TopLogprobs[i],
+		})
+	}
+	return spans
+}
+
+func countAcceptedDraftTokens(draftTokens []string, verifySpans []internalTokenSpan) int {
+	limit := len(draftTokens)
+	if len(verifySpans) < limit {
+		limit = len(verifySpans)
+	}
+	accepted := 0
+	for i := 0; i < limit; i++ {
+		if draftTokens[i] != verifySpans[i].Token {
+			break
+		}
+		if len(verifySpans[i].TopLogprobs) == 0 {
+			break
+		}
+		bestToken := ""
+		bestLogprob := 0.0
+		haveBest := false
+		for tok, lp := range verifySpans[i].TopLogprobs {
+			if !haveBest || lp > bestLogprob {
+				bestToken = tok
+				bestLogprob = lp
+				haveBest = true
+			}
+		}
+		if !haveBest || bestToken != verifySpans[i].Token {
+			break
+		}
+		accepted++
+	}
+	return accepted
+}
+
+func providerModelID(p *registry.Provider) string {
+	if p == nil {
+		return ""
+	}
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	if len(p.Models) == 0 {
+		return ""
+	}
+	return p.Models[0].ID
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func (s *Server) pickContributorProvider(targetModel string, excludeProviderIDs ...string) (registry.CatalogEntry, *registry.Provider) {
+	for _, entry := range s.registry.ContributorModelsForTarget(targetModel) {
+		provider := s.registry.FindInternalProviderWithTrust(entry.ID, "", excludeProviderIDs...)
+		if provider == nil {
+			continue
+		}
+		return entry, provider
+	}
+	return registry.CatalogEntry{}, nil
+}
+
+func writeProviderResponseHeaders(w http.ResponseWriter, provider *registry.Provider) {
+	if provider == nil {
+		return
+	}
+	provider.Mu().Lock()
+	pubKey := provider.PublicKey
+	attested := provider.Attested
+	trustLevel := provider.TrustLevel
+	attestResult := provider.AttestationResult
+	mdaVerified := provider.MDAVerified
+	providerID := provider.ID
+	chipName := provider.Hardware.ChipName
+	machineModel := provider.Hardware.MachineModel
+	provider.Mu().Unlock()
+
+	if pubKey != "" {
+		w.Header().Set("X-Provider-Public-Key", pubKey)
+	}
+	if attested {
+		w.Header().Set("X-Provider-Attested", "true")
+	} else {
+		w.Header().Set("X-Provider-Attested", "false")
+	}
+	w.Header().Set("X-Provider-Trust-Level", string(trustLevel))
+	w.Header().Set("X-Provider-ID", providerID)
+	w.Header().Set("X-Provider-Chip", chipName)
+	w.Header().Set("X-Provider-Model", machineModel)
+	if attestResult != nil {
+		w.Header().Set("X-Provider-Serial", attestResult.SerialNumber)
+		if attestResult.SecureEnclaveAvailable {
+			w.Header().Set("X-Provider-Secure-Enclave", "true")
+		} else {
+			w.Header().Set("X-Provider-Secure-Enclave", "false")
+		}
+	}
+	if mdaVerified {
+		w.Header().Set("X-Provider-MDA-Verified", "true")
+	}
+	if attestResult != nil && attestResult.PublicKey != "" {
+		w.Header().Set("X-Attestation-SE-Public-Key", attestResult.PublicKey)
+		w.Header().Set("X-Attestation-Device-Serial", attestResult.SerialNumber)
+	}
+}
+
+func creditProviderShare(storeBackend store.Store, ledger *payments.Ledger, provider *registry.Provider, requestID, model string, amountMicroUSD int64, promptTokens, completionTokens int) error {
+	if provider == nil || amountMicroUSD <= 0 {
+		return nil
+	}
+	provider.Mu().Lock()
+	accountID := provider.AccountID
+	walletAddress := provider.WalletAddress
+	providerKey := provider.PublicKey
+	providerID := provider.ID
+	provider.Mu().Unlock()
+
+	if accountID != "" {
+		return storeBackend.CreditProviderAccount(&store.ProviderEarning{
+			AccountID:        accountID,
+			ProviderID:       providerID,
+			ProviderKey:      providerKey,
+			JobID:            requestID,
+			Model:            model,
+			AmountMicroUSD:   amountMicroUSD,
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			CreatedAt:        time.Now(),
+		})
+	}
+	if walletAddress != "" {
+		return ledger.CreditProvider(walletAddress, amountMicroUSD, model, requestID)
+	}
+	return fmt.Errorf("provider %q has no payout destination", providerID)
+}
+
+func (s *Server) trySpeculativeChatCompletion(ctx context.Context, model string, parsed map[string]any, estimatedPromptTokens, requestedMaxTokens int, consumerKey string, reservedMicroUSD int64) (*speculativeChatResult, bool) {
+	if requestedMaxTokens <= 0 || !isDeterministicSpeculationEligible(parsed) {
+		return nil, false
+	}
+	entry, ok := s.registry.PublicCatalogEntry(model)
+	if !ok || entry.SpeculationFamily != "qwen-chatml" {
+		return nil, false
+	}
+
+	messages, _ := parsed["messages"].([]any)
+	prompt, err := formatQwenChatMLPrompt(messages)
+	if err != nil {
+		return nil, false
+	}
+
+	targetProvider := s.registry.FindProvider(model)
+	if targetProvider == nil {
+		return nil, false
+	}
+	defer s.registry.SetProviderIdle(targetProvider.ID)
+	targetReservationID := uuid.New().String()
+	targetPinned := s.registry.ReserveSpecificInternalProvider(targetProvider.ID, model, &registry.PendingRequest{
+		RequestID:          targetReservationID,
+		Model:              model,
+		ConsumerKey:        consumerKey,
+		InternalOnly:       true,
+		RequestedMaxTokens: requestedMaxTokens,
+		CompleteCh:         make(chan protocol.UsageInfo, 1),
+		ErrorCh:            make(chan protocol.InferenceErrorMessage, 1),
+	})
+	if targetPinned == nil {
+		return nil, false
+	}
+	defer func() {
+		targetProvider.RemovePending(targetReservationID)
+	}()
+
+	var (
+		completionText   strings.Builder
+		completionTokens int
+		promptTokens     int
+		gotPromptUsage   bool
+	)
+	contributorAccepted := make(map[string]int)
+	stopNow := false
+	progressMade := false
+
+	for completionTokens < requestedMaxTokens {
+		contributorEntry, contributorProvider := s.pickContributorProvider(model, targetProvider.ID)
+		if contributorProvider == nil {
+			return nil, false
+		}
+		draftPrompt := prompt + completionText.String()
+		draftMaxTokens := minInt(speculationDraftTokenCount, requestedMaxTokens-completionTokens)
+		draftResp, err := func() (*internalCompletionResponse, error) {
+			defer s.registry.SetProviderIdle(contributorProvider.ID)
+			dispatchResult, err := s.dispatchInternalInference(ctx, internalDispatchOptions{
+				providerID:      contributorProvider.ID,
+				model:           contributorEntry.ID,
+				rawBody:         internalCompletionRequestBody(contributorEntry.ID, draftPrompt, draftMaxTokens, nil),
+				estimatedPrompt: estimatedPromptTokens + completionTokens,
+				requestedMax:    draftMaxTokens,
+				internalOnly:    true,
+			})
+			if err != nil {
+				return nil, err
+			}
+			return awaitInternalCompletion(ctx, dispatchResult)
+		}()
+		if err != nil || len(draftResp.Logprobs.Tokens) == 0 {
+			return nil, false
+		}
+
+		verifyPrompt := draftPrompt + draftResp.Text
+		verifyResp, err := func() (*internalCompletionResponse, error) {
+			dispatchResult, err := s.dispatchInternalInference(ctx, internalDispatchOptions{
+				providerID:      targetProvider.ID,
+				model:           model,
+				rawBody:         internalCompletionRequestBody(model, verifyPrompt, 1, map[string]any{"echo": true}),
+				estimatedPrompt: estimatedPromptTokens + completionTokens + len(draftResp.Logprobs.Tokens),
+				requestedMax:    1,
+				internalOnly:    true,
+			})
+			if err != nil {
+				return nil, err
+			}
+			return awaitInternalCompletion(ctx, dispatchResult)
+		}()
+		if err != nil {
+			return nil, false
+		}
+
+		draftStart := len(draftPrompt)
+		draftEnd := len(verifyPrompt)
+		verifyDraftSpans := spansWithinOffsets(verifyResp.Logprobs, draftStart, draftEnd)
+		if !gotPromptUsage {
+			promptTokens = verifyResp.Usage.PromptTokens - len(verifyDraftSpans)
+			if promptTokens < 0 {
+				promptTokens = estimatedPromptTokens
+			}
+			gotPromptUsage = true
+		}
+
+		accepted := countAcceptedDraftTokens(draftResp.Logprobs.Tokens, verifyDraftSpans)
+		if accepted > 0 {
+			progressMade = true
+			acceptedText := strings.Join(draftResp.Logprobs.Tokens[:accepted], "")
+			completionText.WriteString(acceptedText)
+			completionTokens += accepted
+			contributorAccepted[contributorProvider.ID] += accepted
+		}
+
+		if completionTokens >= requestedMaxTokens {
+			break
+		}
+
+		if accepted == len(draftResp.Logprobs.Tokens) {
+			bonusSpans := spansWithinOffsets(verifyResp.Logprobs, draftEnd, len(verifyPrompt)+1_000_000)
+			if len(bonusSpans) > 0 {
+				progressMade = true
+				completionText.WriteString(bonusSpans[0].Token)
+				completionTokens++
+			}
+			if verifyResp.FinishReason == "stop" && len(bonusSpans) == 0 {
+				stopNow = true
+				break
+			}
+			continue
+		}
+
+		nextResp, err := func() (*internalCompletionResponse, error) {
+			dispatchResult, err := s.dispatchInternalInference(ctx, internalDispatchOptions{
+				providerID:      targetProvider.ID,
+				model:           model,
+				rawBody:         internalCompletionRequestBody(model, prompt+completionText.String(), 1, nil),
+				estimatedPrompt: estimatedPromptTokens + completionTokens,
+				requestedMax:    1,
+				internalOnly:    true,
+			})
+			if err != nil {
+				return nil, err
+			}
+			return awaitInternalCompletion(ctx, dispatchResult)
+		}()
+		if err != nil {
+			return nil, false
+		}
+		if len(nextResp.Logprobs.Tokens) == 0 {
+			if nextResp.FinishReason == "stop" {
+				stopNow = true
+				break
+			}
+			return nil, false
+		}
+		progressMade = true
+		completionText.WriteString(nextResp.Logprobs.Tokens[0])
+		completionTokens++
+		if nextResp.FinishReason == "stop" {
+			stopNow = true
+			break
+		}
+	}
+
+	if !progressMade {
+		return nil, false
+	}
+	if !gotPromptUsage {
+		promptTokens = estimatedPromptTokens
+	}
+
+	usage := protocol.UsageInfo{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+	}
+	requestID := uuid.New().String()
+	targetProvider.Mu().Lock()
+	targetAccountID := targetProvider.AccountID
+	targetWallet := targetProvider.WalletAddress
+	targetProvider.Mu().Unlock()
+	customIn, customOut, hasCustom := s.store.GetModelPrice(targetAccountID, model)
+	if !hasCustom && targetWallet != "" {
+		customIn, customOut, hasCustom = s.store.GetModelPrice(targetWallet, model)
+	}
+	if !hasCustom {
+		customIn, customOut, hasCustom = s.store.GetModelPrice("platform", model)
+	}
+	totalCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customIn, customOut, hasCustom)
+	if reservedMicroUSD > 0 && totalCost > reservedMicroUSD {
+		totalCost = reservedMicroUSD
+	}
+	if reservedMicroUSD > 0 && totalCost < reservedMicroUSD {
+		_ = s.store.Credit(consumerKey, reservedMicroUSD-totalCost, store.LedgerRefund, requestID)
+	} else if reservedMicroUSD == 0 {
+		_ = s.ledger.Charge(consumerKey, totalCost, requestID)
+	}
+
+	s.ledger.RecordUsage(consumerKey, payments.UsageEntry{
+		JobID:            requestID,
+		Model:            model,
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		CostMicroUSD:     totalCost,
+		Timestamp:        time.Now(),
+	})
+	s.store.RecordUsageWithCost(targetProvider.ID, consumerKey, model, requestID, usage.PromptTokens, usage.CompletionTokens, totalCost)
+
+	providerPayout := payments.ProviderPayout(totalCost)
+	contributorBudget := providerPayout * speculationContributorPayoutBps / 10_000
+	totalAccepted := 0
+	for _, accepted := range contributorAccepted {
+		totalAccepted += accepted
+	}
+	allocatedContributor := int64(0)
+	for providerID, accepted := range contributorAccepted {
+		if totalAccepted == 0 || accepted == 0 {
+			continue
+		}
+		share := contributorBudget * int64(accepted) / int64(totalAccepted)
+		if share <= 0 {
+			continue
+		}
+		if err := creditProviderShare(s.store, s.ledger, s.registry.GetProvider(providerID), requestID+":contributor:"+providerID, model, share, 0, accepted); err == nil {
+			allocatedContributor += share
+		}
+	}
+	targetPayout := providerPayout - allocatedContributor
+	if targetPayout < 0 {
+		targetPayout = 0
+	}
+	_ = creditProviderShare(s.store, s.ledger, targetProvider, requestID, model, targetPayout, usage.PromptTokens, usage.CompletionTokens)
+
+	platformFee := payments.PlatformFee(totalCost)
+	if platformFee > 0 {
+		if s.billing != nil && s.billing.Referral() != nil {
+			platformFee = s.billing.Referral().DistributeReferralReward(consumerKey, platformFee, requestID)
+		}
+		_ = s.store.Credit("platform", platformFee, store.LedgerPlatformFee, requestID)
+	}
+
+	responseTime := time.Duration(usage.CompletionTokens) * time.Millisecond * 10
+	s.registry.RecordJobSuccess(targetProvider.ID, responseTime)
+	for providerID, accepted := range contributorAccepted {
+		if accepted > 0 {
+			s.registry.RecordJobSuccess(providerID, responseTime)
+		}
+	}
+
+	if stopNow {
+		_ = stopNow
+	}
+
+	finishReason := "stop"
+	if completionTokens >= requestedMaxTokens && !stopNow {
+		finishReason = "length"
+	}
+
+	return &speculativeChatResult{
+		RequestID:      requestID,
+		TargetProvider: targetProvider,
+		Message: extractedMessage{
+			Content: completionText.String(),
+		},
+		Usage:        usage,
+		FinishReason: finishReason,
+	}, true
 }
 
 // handleChatCompletions handles POST /v1/chat/completions.
@@ -296,11 +1121,24 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Reject requests for models not in the catalog.
-	if !s.registry.IsModelInCatalog(model) {
+	// Reject requests for models not in the public catalog. Internal-only
+	// contributor models are reserved for coordinator-orchestrated work.
+	if _, ok := s.registry.PublicCatalogEntry(model); !ok && !s.registry.IsModelInCatalog(model) {
 		refundReservation()
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model)))
+		return
+	}
+	if entry, ok := s.registry.CatalogEntry(model); ok && entry.InternalOnly {
+		refundReservation()
+		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
+			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model)))
+		return
+	}
+	if specResult, ok := s.trySpeculativeChatCompletion(r.Context(), model, parsed, estimatedPromptTokens, requestedMaxTokens, consumerKeyFromContext(r.Context()), reservedMicroUSD); ok {
+		writeProviderResponseHeaders(w, specResult.TargetProvider)
+		w.Header().Set("X-Request-ID", specResult.RequestID)
+		writeJSON(w, http.StatusOK, buildNonStreamingResponse(specResult.RequestID, model, specResult.Message, specResult.Usage, specResult.FinishReason, "", ""))
 		return
 	}
 
@@ -310,13 +1148,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// first chunk before committing — no HTTP response is written until a
 	// provider starts generating, so retries are invisible to the consumer.
 	var (
-		provider    *registry.Provider
-		pr          *registry.PendingRequest
-		requestID   string
-		firstChunk  string
-		lastErr     string
-		lastErrCode int
-		committed   bool
+		provider         *registry.Provider
+		pr               *registry.PendingRequest
+		requestID        string
+		firstChunk       string
+		lastErr          string
+		lastErrCode      int
+		committed        bool
+		completedSuccess bool
 	)
 
 	consumerKey := consumerKeyFromContext(r.Context())
@@ -386,6 +1225,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		// E2E encryption — must be done per provider (different keys).
 		if provider.PublicKey == "" {
+			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
 			excludeProviders[provider.ID] = struct{}{}
 			lastErr = "no provider with E2E encryption"
@@ -394,6 +1234,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
 		if err != nil {
+			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
 			excludeProviders[provider.ID] = struct{}{}
 			lastErr = "provider public key invalid"
@@ -402,6 +1243,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		sessionKeys, err := e2e.GenerateSessionKeys()
 		if err != nil {
+			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
 			lastErr = "failed to generate session keys"
 			continue
@@ -409,6 +1251,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		encrypted, err := e2e.Encrypt(rawBody, providerPubKey, sessionKeys)
 		if err != nil {
+			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
 			lastErr = "failed to encrypt request"
 			continue
@@ -640,6 +1483,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
+		if pr != nil && pr.ReservedMicroUSD > 0 && !completedSuccess {
+			_ = s.store.Credit(pr.ConsumerKey, pr.ReservedMicroUSD, store.LedgerRefund, requestID)
+		}
 
 		cancelMsg := protocol.CancelMessage{
 			Type:      protocol.TypeCancel,
@@ -654,9 +1500,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	if stream {
-		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
+		completedSuccess = s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
 	} else {
-		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
+		completedSuccess = s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
 	}
 }
 
@@ -685,7 +1531,12 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.registry.IsModelInCatalog(model) {
+	if _, ok := s.registry.PublicCatalogEntry(model); !ok && !s.registry.IsModelInCatalog(model) {
+		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
+			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model)))
+		return
+	}
+	if entry, ok := s.registry.CatalogEntry(model); ok && entry.InternalOnly {
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model)))
 		return
@@ -874,7 +1725,12 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "n must be between 1 and 4"))
 		return
 	}
-	if !s.registry.IsModelInCatalog(req.Model) {
+	if _, ok := s.registry.PublicCatalogEntry(req.Model); !ok && !s.registry.IsModelInCatalog(req.Model) {
+		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
+			fmt.Sprintf("model %q is not available — see /v1/models for supported models", req.Model)))
+		return
+	}
+	if entry, ok := s.registry.CatalogEntry(req.Model); ok && entry.InternalOnly {
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", req.Model)))
 		return
@@ -1042,19 +1898,19 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 // from the provider. Each chunk is forwarded in real time, providing
 // token-by-token streaming to the consumer.
 // handleStreamingResponse is kept for callers that don't have a first chunk.
-func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest) {
-	s.handleStreamingResponseWithFirstChunk(w, r, pr, "")
+func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest) bool {
+	return s.handleStreamingResponseWithFirstChunk(w, r, pr, "")
 }
 
 // handleStreamingResponseWithFirstChunk streams SSE chunks to the consumer.
 // If firstChunk is non-empty, it is written before reading further chunks
 // from the channel. This allows the dispatch loop to "peek" at the first
 // chunk for retry decisions without losing it.
-func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) {
+func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) bool {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "streaming not supported"))
-		return
+		return false
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -1107,7 +1963,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 					fmt.Fprint(w, "data: [DONE]\n\n")
 					flusher.Flush()
 				}
-				return
+				return true
 			}
 			if !sawResponsesAPI {
 				if strings.Contains(chunk, `"response.created"`) || strings.Contains(chunk, `"response.output_text.delta"`) {
@@ -1137,28 +1993,28 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			})
 			fmt.Fprintf(w, "data: %s\n\n", errData)
 			flusher.Flush()
-			return
+			return false
 
 		case <-timer.C:
 			fmt.Fprintf(w, "data: {\"error\":{\"message\":\"request timed out\",\"type\":\"timeout\"}}\n\n")
 			flusher.Flush()
-			return
+			return false
 
 		case <-r.Context().Done():
-			return
+			return false
 		}
 	}
 }
 
 // handleNonStreamingResponse is kept for callers that don't have a first chunk.
-func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest) {
-	s.handleNonStreamingResponseWithFirstChunk(w, r, pr, "")
+func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest) bool {
+	return s.handleNonStreamingResponseWithFirstChunk(w, r, pr, "")
 }
 
 // handleNonStreamingResponseWithFirstChunk collects all chunks from the
 // provider and assembles them into a single OpenAI-compatible JSON response.
 // If firstChunk is non-empty, it is prepended to the collected chunks.
-func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) {
+func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) bool {
 	ctx, cancel := context.WithTimeout(r.Context(), inferenceTimeout)
 	defer cancel()
 
@@ -1172,18 +2028,16 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 		case chunk, ok := <-pr.ChunkCh:
 			if !ok {
 				// The provider forwards the raw backend response as a single
-				// chunk. Detect complete responses (object=chat.completion
-				// or object=response) and pass through directly — this is
-				// format-agnostic and works for chat completions, Responses
-				// API, or any future endpoint without parsing.
+				// chunk for non-streaming requests. Pass that payload through
+				// unchanged instead of trying to reconstruct endpoint-specific
+				// formats (chat/completions/messages) from SSE delta logic.
 				if len(chunks) == 1 {
 					raw := strings.TrimPrefix(chunks[0], "data: ")
 					var obj map[string]any
 					if json.Unmarshal([]byte(raw), &obj) == nil {
 						objType, _ := obj["object"].(string)
-						// Complete responses have object=chat.completion or
-						// object=response. Delta chunks have object=chat.completion.chunk.
-						if objType == "chat.completion" || objType == "response" {
+						msgType, _ := obj["type"].(string)
+						if objType != "" || msgType == "message" {
 							select {
 							case <-pr.CompleteCh:
 							case <-ctx.Done():
@@ -1193,21 +2047,26 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 								obj["response_hash"] = pr.ResponseHash
 							}
 							writeJSON(w, http.StatusOK, obj)
-							return
+							return true
 						}
 					}
 				}
 
-				// Fallback: SSE delta chunks — reconstruct into response.
+				// Fallback: SSE delta chunks — reconstruct into chat-completion response.
 				msg := extractMessage(chunks)
 				select {
-				case usage := <-pr.CompleteCh:
-					resp := buildNonStreamingResponse(pr.RequestID, pr.Model, msg, usage, pr.SESignature, pr.ResponseHash)
+				case usage, ok := <-pr.CompleteCh:
+					if !ok {
+						writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "provider completed without usage info"))
+						return false
+					}
+					resp := buildNonStreamingResponse(pr.RequestID, pr.Model, msg, usage, "", pr.SESignature, pr.ResponseHash)
 					writeJSON(w, http.StatusOK, resp)
+					return true
 				case <-ctx.Done():
 					writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
+					return false
 				}
-				return
 			}
 			chunks = append(chunks, chunk)
 
@@ -1217,11 +2076,11 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				statusCode = http.StatusBadGateway
 			}
 			writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
-			return
+			return false
 
 		case <-ctx.Done():
 			writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "request timed out"))
-			return
+			return false
 		}
 	}
 }
@@ -1414,7 +2273,7 @@ func extractMessage(chunks []string) extractedMessage {
 
 // buildNonStreamingResponse constructs a complete OpenAI-compatible chat
 // completion response from the aggregated message and usage info.
-func buildNonStreamingResponse(requestID, model string, msg extractedMessage, usage protocol.UsageInfo, seSignature, responseHash string) map[string]any {
+func buildNonStreamingResponse(requestID, model string, msg extractedMessage, usage protocol.UsageInfo, finishReason, seSignature, responseHash string) map[string]any {
 	message := map[string]any{
 		"role":    "assistant",
 		"content": msg.Content,
@@ -1423,7 +2282,9 @@ func buildNonStreamingResponse(requestID, model string, msg extractedMessage, us
 		message["reasoning"] = msg.Reasoning
 	}
 
-	finishReason := "stop"
+	if finishReason == "" {
+		finishReason = "stop"
+	}
 	if len(msg.ToolCalls) > 0 {
 		message["tool_calls"] = msg.ToolCalls
 		finishReason = "tool_calls"
@@ -1469,7 +2330,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	catalogModels := s.store.ListSupportedModels()
 	catalogByID := make(map[string]store.SupportedModel, len(catalogModels))
 	for _, cm := range catalogModels {
-		if cm.Active {
+		if cm.Active && !cm.InternalOnly {
 			catalogByID[cm.ID] = cm
 		}
 	}
@@ -1731,7 +2592,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
 		return
 	}
-	if !s.registry.IsModelInCatalog(model) {
+	if _, ok := s.registry.PublicCatalogEntry(model); !ok && !s.registry.IsModelInCatalog(model) {
+		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
+			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model)))
+		return
+	}
+	if entry, ok := s.registry.CatalogEntry(model); ok && entry.InternalOnly {
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model)))
 		return
@@ -1872,10 +2738,26 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		"stream", stream,
 	)
 
+	completedSuccess := false
+	defer func() {
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+		if pr.ReservedMicroUSD > 0 && !completedSuccess {
+			_ = s.store.Credit(pr.ConsumerKey, pr.ReservedMicroUSD, store.LedgerRefund, requestID)
+		}
+
+		cancelMsg := protocol.CancelMessage{
+			Type:      protocol.TypeCancel,
+			RequestID: requestID,
+		}
+		cancelData, _ := json.Marshal(cancelMsg)
+		_ = provider.Conn.Write(context.Background(), websocket.MessageText, cancelData)
+	}()
+
 	if stream {
-		s.handleStreamingResponse(w, r, pr)
+		completedSuccess = s.handleStreamingResponse(w, r, pr)
 	} else {
-		s.handleNonStreamingResponse(w, r, pr)
+		completedSuccess = s.handleNonStreamingResponse(w, r, pr)
 	}
 }
 

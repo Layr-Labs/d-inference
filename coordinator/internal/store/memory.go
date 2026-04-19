@@ -568,10 +568,12 @@ func (s *MemoryStore) ListSupportedModels() []SupportedModel {
 	for _, m := range s.supportedModels {
 		models = append(models, *m)
 	}
-	// Sort by MinRAMGB ascending
+	// Sort by MinRAMGB ascending, then public models before internal helpers.
 	for i := 0; i < len(models); i++ {
 		for j := i + 1; j < len(models); j++ {
-			if models[j].MinRAMGB < models[i].MinRAMGB {
+			if models[j].MinRAMGB < models[i].MinRAMGB ||
+				(models[j].MinRAMGB == models[i].MinRAMGB &&
+					models[i].InternalOnly && !models[j].InternalOnly) {
 				models[i], models[j] = models[j], models[i]
 			}
 		}

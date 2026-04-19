@@ -68,6 +68,9 @@ func (r *Registry) ReserveProvider(model string, pr *PendingRequest, excludeIDs 
 	if pr.RequestedMaxTokens <= 0 {
 		pr.RequestedMaxTokens = defaultRequestedMaxTokens
 	}
+	if entry, ok := r.CatalogEntry(model); ok && entry.InternalOnly {
+		return nil
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -87,6 +90,79 @@ func (r *Registry) ReserveProvider(model string, pr *PendingRequest, excludeIDs 
 		return nil
 	}
 
+	pr.ProviderID = p.ID
+	p.addPendingLocked(pr)
+	if p.Status != StatusUntrusted && p.Status != StatusOffline {
+		p.Status = StatusServing
+	}
+	return p
+}
+
+// ReserveSpecificProvider reserves capacity on a specific provider. This is used
+// when a higher-level orchestration flow needs to keep routing pinned to the
+// same provider across multiple internal sub-requests (for example, verifier-
+// gated speculation against a fixed target model host).
+func (r *Registry) ReserveSpecificProvider(providerID, model string, pr *PendingRequest) *Provider {
+	if pr == nil || pr.RequestID == "" {
+		return nil
+	}
+	if pr.Model == "" {
+		pr.Model = model
+	}
+	if pr.RequestedMaxTokens <= 0 {
+		pr.RequestedMaxTokens = defaultRequestedMaxTokens
+	}
+	if entry, ok := r.CatalogEntry(model); ok && entry.InternalOnly {
+		return nil
+	}
+
+	r.mu.RLock()
+	p := r.providers[providerID]
+	r.mu.RUnlock()
+	if p == nil {
+		return nil
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !r.providerCanAdmitLocked(p, model) {
+		return nil
+	}
+	pr.ProviderID = p.ID
+	p.addPendingLocked(pr)
+	if p.Status != StatusUntrusted && p.Status != StatusOffline {
+		p.Status = StatusServing
+	}
+	return p
+}
+
+// ReserveSpecificInternalProvider reserves capacity on a specific provider for
+// an internal-only model. Unlike ReserveSpecificProvider, this allows routing
+// to catalog entries marked InternalOnly because those are reserved for
+// coordinator-orchestrated control traffic rather than direct consumer access.
+func (r *Registry) ReserveSpecificInternalProvider(providerID, model string, pr *PendingRequest) *Provider {
+	if pr == nil || pr.RequestID == "" {
+		return nil
+	}
+	if pr.Model == "" {
+		pr.Model = model
+	}
+	if pr.RequestedMaxTokens <= 0 {
+		pr.RequestedMaxTokens = defaultRequestedMaxTokens
+	}
+
+	r.mu.RLock()
+	p := r.providers[providerID]
+	r.mu.RUnlock()
+	if p == nil {
+		return nil
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !r.providerCanAdmitInternalLocked(p, model) {
+		return nil
+	}
 	pr.ProviderID = p.ID
 	p.addPendingLocked(pr)
 	if p.Status != StatusUntrusted && p.Status != StatusOffline {
@@ -360,6 +436,10 @@ func providerModelIDs(p *Provider) []string {
 }
 
 func (r *Registry) providerCanAdmitLocked(p *Provider, model string) bool {
+	return r.providerCanAdmitInternalLocked(p, model)
+}
+
+func (r *Registry) providerCanAdmitInternalLocked(p *Provider, model string) bool {
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
 		return false
 	}

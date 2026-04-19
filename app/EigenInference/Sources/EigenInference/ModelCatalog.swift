@@ -33,6 +33,7 @@ enum ModelCatalog {
         Entry(id: "flux_2_klein_9b_q8p.ckpt", name: "FLUX.2 Klein 9B", modelType: "image", sizeGB: 13.0, architecture: "9B diffusion", description: "Higher quality image gen", minRAMGB: 24),
 
         // Text generation
+        Entry(id: "mlx-community/Qwen3.5-4B-4bit", name: "Qwen3.5 4B Contributor", modelType: "text", sizeGB: 4.0, architecture: "4B dense, draft contributor", description: "Internal draft model for disaggregated compute", minRAMGB: 16),
         Entry(id: "qwen3.5-27b-claude-opus-8bit", name: "Qwen3.5 27B Claude Opus", modelType: "text", sizeGB: 27.0, architecture: "27B dense, Claude Opus distilled", description: "Frontier quality reasoning", minRAMGB: 36),
         Entry(id: "mlx-community/Trinity-Mini-8bit", name: "Trinity Mini", modelType: "text", sizeGB: 26.0, architecture: "27B Adaptive MoE", description: "Fast agentic inference", minRAMGB: 48),
         Entry(id: "mlx-community/Qwen3.5-122B-A10B-8bit", name: "Qwen3.5 122B", modelType: "text", sizeGB: 122.0, architecture: "122B MoE, 10B active", description: "Best quality", minRAMGB: 128),
@@ -44,8 +45,7 @@ enum ModelCatalog {
         if ramGB >= 256 { return models.first { $0.id.contains("MiniMax") } }
         if ramGB >= 128 { return models.first { $0.id.contains("Qwen3.5-122B") } }
         if ramGB >= 36  { return models.first { $0.id.contains("qwen3.5-27b-claude-opus") } }
-        if ramGB >= 24  { return models.first { $0.id.contains("flux_2_klein_9b") } }
-        if ramGB >= 16  { return models.first { $0.id.contains("flux_2_klein_4b") } }
+        if ramGB >= 16  { return models.first { $0.id.contains("Qwen3.5-4B-4bit") } }
         return models.first { $0.id.contains("cohere-transcribe") }
     }
 

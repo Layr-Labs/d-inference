@@ -900,6 +900,8 @@ func (s *Server) handleAdminDeleteModel(w http.ResponseWriter, r *http.Request) 
 
 // handleModelCatalog handles GET /v1/models/catalog.
 // Public endpoint — returns active models for providers and the install script.
+// Internal-only contributor models are included here so providers can download
+// and advertise them, but consumer-facing model lists hide them.
 func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	allModels := s.store.ListSupportedModels()
 

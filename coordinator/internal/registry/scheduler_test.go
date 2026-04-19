@@ -267,6 +267,85 @@ func TestReserveProviderUsesModelSpecificSlotState(t *testing.T) {
 	}
 }
 
+func TestReserveProviderSkipsInternalContributorModels(t *testing.T) {
+	reg := New(testLogger())
+	targetModel := "qwen3.5-27b-claude-opus-8bit"
+	contributorModel := "mlx-community/Qwen3.5-4B-4bit"
+
+	reg.SetModelCatalog([]CatalogEntry{
+		{
+			ID:                targetModel,
+			SpeculationFamily: "qwen-chatml",
+		},
+		{
+			ID:                contributorModel,
+			InternalOnly:      true,
+			ContributorFor:    targetModel,
+			SpeculationFamily: "qwen-chatml",
+		},
+	})
+
+	target := makeSchedulerProvider(t, reg, "target", targetModel, 80)
+	contributor := makeSchedulerProvider(t, reg, "contrib", contributorModel, 300)
+
+	req := &PendingRequest{
+		RequestID:          "req-target",
+		Model:              targetModel,
+		RequestedMaxTokens: 128,
+	}
+	selected := reg.ReserveProvider(targetModel, req)
+	if selected == nil {
+		t.Fatal("ReserveProvider returned nil")
+	}
+	if selected.ID != target.ID {
+		t.Fatalf("selected %q, want target provider %q", selected.ID, target.ID)
+	}
+
+	contributor.mu.Lock()
+	contribPending := contributor.pendingCount()
+	contributor.mu.Unlock()
+	if contribPending != 0 {
+		t.Fatalf("contributor provider should remain unused, pending=%d", contribPending)
+	}
+}
+
+func TestReserveSpecificProviderAllowsInternalContributorModels(t *testing.T) {
+	reg := New(testLogger())
+	targetModel := "qwen3.5-27b-claude-opus-8bit"
+	contributorModel := "mlx-community/Qwen3.5-4B-4bit"
+
+	reg.SetModelCatalog([]CatalogEntry{
+		{
+			ID:                targetModel,
+			SpeculationFamily: "qwen-chatml",
+		},
+		{
+			ID:                contributorModel,
+			InternalOnly:      true,
+			ContributorFor:    targetModel,
+			SpeculationFamily: "qwen-chatml",
+		},
+	})
+
+	contributor := makeSchedulerProvider(t, reg, "contrib", contributorModel, 300)
+	req := &PendingRequest{
+		RequestID:          "req-contrib",
+		Model:              contributorModel,
+		RequestedMaxTokens: 32,
+		InternalOnly:       true,
+	}
+	selected := reg.ReserveSpecificInternalProvider(contributor.ID, contributorModel, req)
+	if selected == nil {
+		t.Fatal("ReserveSpecificInternalProvider returned nil for internal contributor")
+	}
+	if selected.ID != contributor.ID {
+		t.Fatalf("selected %q, want contributor provider %q", selected.ID, contributor.ID)
+	}
+	if got := contributor.PendingCount(); got != 1 {
+		t.Fatalf("pending count = %d, want 1", got)
+	}
+}
+
 func TestHeartbeatDrainsQueueAfterSlotRecovery(t *testing.T) {
 	reg := New(testLogger())
 	model := "recovery-model"

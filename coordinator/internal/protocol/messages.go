@@ -37,6 +37,7 @@ const (
 	TypeAttestationResponse     = "attestation_response"
 	TypeTranscriptionComplete   = "transcription_complete"
 	TypeImageGenerationComplete = "image_generation_complete"
+	TypePrefillComplete         = "prefill_complete"
 
 	// Coordinator → Provider
 	TypeInferenceRequest       = "inference_request"
@@ -45,6 +46,7 @@ const (
 	TypeTranscriptionRequest   = "transcription_request"
 	TypeImageGenerationRequest = "image_generation_request"
 	TypeRuntimeStatus          = "runtime_status"
+	TypePrefillRequest         = "prefill_request"
 )
 
 // ---------------------------------------------------------------------------
@@ -81,6 +83,36 @@ type ModelInfo struct {
 }
 
 // ---------------------------------------------------------------------------
+// Worker Capabilities — disaggregated computation
+// ---------------------------------------------------------------------------
+
+// WorkerCapabilities describes what roles a provider can perform. Capabilities
+// are auto-detected from hardware at registration time. Small machines (≤16GB,
+// low bandwidth) can serve as prefill workers for prompt processing without
+// running full decode, giving every machine useful work to do.
+type WorkerCapabilities struct {
+	// CanFullInference is true when the provider can run complete inference
+	// (prefill + decode) for its listed models. All Pro/Max/Ultra chips or
+	// machines with ≥24GB can do this.
+	CanFullInference bool `json:"can_full_inference"`
+
+	// CanPrefill is true when the provider can process prompts and return KV
+	// cache or token logits. Useful for offloading the compute-bound prefill
+	// phase from larger machines. Nearly all Apple Silicon machines can do this.
+	CanPrefill bool `json:"can_prefill"`
+
+	// MaxModelSizeGB is the largest model (in GB) this provider can load, based
+	// on available memory after OS reserve. The coordinator uses this to assign
+	// appropriately-sized models.
+	MaxModelSizeGB float64 `json:"max_model_size_gb"`
+
+	// PrefillModels lists model IDs this provider can prefill for. These are
+	// typically smaller quantized models that fit in the provider's memory.
+	// Empty means the provider can prefill for any model it has downloaded.
+	PrefillModels []string `json:"prefill_models,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
 // Provider → Coordinator messages
 // ---------------------------------------------------------------------------
 
@@ -97,6 +129,9 @@ type RegisterMessage struct {
 	PrefillTPS    float64         `json:"prefill_tps,omitempty"`    // benchmark: prefill tokens per second
 	DecodeTPS     float64         `json:"decode_tps,omitempty"`     // benchmark: decode tokens per second
 	AuthToken     string          `json:"auth_token,omitempty"`     // device-linked provider token (from darkbloom login)
+
+	// Worker capabilities for disaggregated inference.
+	WorkerCapabilities *WorkerCapabilities `json:"worker_capabilities,omitempty"`
 
 	// Runtime integrity hashes — used for runtime verification against known-good manifests.
 	PythonHash      string            `json:"python_hash,omitempty"`       // SHA-256 of Python runtime
@@ -271,6 +306,40 @@ type AttestationResponseMessage struct {
 	GrpcBinaryHash  string            `json:"grpc_binary_hash,omitempty"`  // SHA-256 of gRPCServerCLI binary
 	ImageBridgeHash string            `json:"image_bridge_hash,omitempty"` // SHA-256 of image bridge Python source
 	ModelHashes     map[string]string `json:"model_hashes,omitempty"`      // model_id -> SHA-256 weight hash (all active models)
+}
+
+// ---------------------------------------------------------------------------
+// Disaggregated Inference messages — prefill offloading
+// ---------------------------------------------------------------------------
+
+// PrefillRequestBody describes a prefill-only job. The prefill worker processes
+// the prompt and returns token logits or a KV summary that the decode worker
+// can use to skip the prefill phase.
+type PrefillRequestBody struct {
+	Model       string        `json:"model"`
+	Messages    []ChatMessage `json:"messages"`
+	MaxTokens   *int          `json:"max_tokens,omitempty"`
+	Temperature *float64      `json:"temperature,omitempty"`
+}
+
+// PrefillRequestMessage tells a prefill worker to process a prompt.
+// The coordinator sends this to small machines that can handle the compute-bound
+// prefill phase. Results are relayed to the decode worker for token generation.
+type PrefillRequestMessage struct {
+	Type          string             `json:"type"`
+	RequestID     string             `json:"request_id"`
+	Body          PrefillRequestBody `json:"body,omitempty"`
+	EncryptedBody *EncryptedPayload  `json:"encrypted_body,omitempty"`
+}
+
+// PrefillCompleteMessage is sent by the prefill worker when prompt processing
+// is done. The coordinator can use prompt_tokens for billing and relay metadata
+// to the decode worker.
+type PrefillCompleteMessage struct {
+	Type         string  `json:"type"`
+	RequestID    string  `json:"request_id"`
+	PromptTokens int     `json:"prompt_tokens"`
+	DurationSecs float64 `json:"duration_secs"`
 }
 
 // ---------------------------------------------------------------------------
@@ -469,6 +538,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg ImageGenerationCompleteMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal image_generation_complete: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypePrefillComplete:
+		var msg PrefillCompleteMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal prefill_complete: %w", err)
 		}
 		pm.Payload = &msg
 

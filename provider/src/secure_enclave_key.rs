@@ -17,10 +17,9 @@ use security_framework::{
 use security_framework_sys::{
     base::errSecItemNotFound,
     item::{
-        kSecAttrAccessControl, kSecAttrAccessGroup, kSecAttrIsPermanent,
-        kSecAttrKeySizeInBits, kSecAttrKeyType, kSecAttrKeyTypeECSECPrimeRandom,
-        kSecAttrLabel, kSecAttrTokenID, kSecAttrTokenIDSecureEnclave,
-        kSecPrivateKeyAttrs, kSecPublicKeyAttrs,
+        kSecAttrAccessControl, kSecAttrAccessGroup, kSecAttrIsPermanent, kSecAttrKeySizeInBits,
+        kSecAttrKeyType, kSecAttrKeyTypeECSECPrimeRandom, kSecAttrLabel, kSecAttrTokenID,
+        kSecAttrTokenIDSecureEnclave, kSecPrivateKeyAttrs, kSecPublicKeyAttrs,
     },
     key::SecKeyCreateRandomKey,
 };
@@ -36,9 +35,8 @@ pub(crate) fn load_existing_x25519_secret() -> Result<Option<[u8; 32]>> {
     let private_key = find_secure_enclave_key()?.ok_or_else(|| {
         anyhow!("wrapped text E2E secret exists but the Secure Enclave key is missing")
     })?;
-    let secret = unwrap_secret_with_private_key(&private_key, &sealed).context(
-        "wrapped text E2E secret is unreadable; refusing silent key rotation",
-    )?;
+    let secret = unwrap_secret_with_private_key(&private_key, &sealed)
+        .context("wrapped text E2E secret is unreadable; refusing silent key rotation")?;
     Ok(Some(secret))
 }
 
@@ -191,7 +189,9 @@ fn wrap_secret_with_public_key(private_key: &SecKey, secret: &[u8; 32]) -> Resul
     })?;
     public_key
         .encrypt_data(Algorithm::ECIESEncryptionStandardX963SHA256AESGCM, secret)
-        .map_err(|err| anyhow!("failed to seal X25519 secret with Secure Enclave public key: {err}"))
+        .map_err(|err| {
+            anyhow!("failed to seal X25519 secret with Secure Enclave public key: {err}")
+        })
 }
 
 fn unwrap_secret_with_private_key(private_key: &SecKey, sealed: &[u8]) -> Result<[u8; 32]> {
@@ -248,7 +248,8 @@ fn delete_wrapped_secret_file() -> Result<()> {
 }
 
 fn wrapped_secret_path() -> Result<std::path::PathBuf> {
-    let home = dirs::home_dir().context("could not determine home directory for wrapped E2E key")?;
+    let home =
+        dirs::home_dir().context("could not determine home directory for wrapped E2E key")?;
     Ok(home.join(".darkbloom").join(E2E_WRAPPED_SECRET_FILENAME))
 }
 

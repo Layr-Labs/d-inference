@@ -113,6 +113,9 @@ type Provider struct {
 	PrefillTPS float64 // prefill tokens per second
 	DecodeTPS  float64 // decode tokens per second
 
+	// Disaggregated compute capabilities (auto-detected from hardware)
+	WorkerCapabilities *protocol.WorkerCapabilities
+
 	// Warm model cache tracking
 	WarmModels   []string // models currently loaded in provider's memory
 	CurrentModel string   // model currently being served
@@ -608,27 +611,45 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		}
 	}
 
+	// Derive worker capabilities from hardware if the provider didn't send them.
+	caps := msg.WorkerCapabilities
+	if caps == nil {
+		caps = deriveWorkerCapabilities(msg.Hardware)
+	}
+
 	p := &Provider{
-		ID:              id,
-		Hardware:        msg.Hardware,
-		Models:          models,
-		Backend:         msg.Backend,
-		PublicKey:       pubKey,
-		WalletAddress:   msg.WalletAddress,
-		PrefillTPS:      msg.PrefillTPS,
-		DecodeTPS:       msg.DecodeTPS,
-		TrustLevel:      TrustNone,
-		RuntimeVerified: true, // default to verified; API layer sets false when manifest check fails
-		Status:          StatusOnline,
-		Conn:            conn,
-		LastHeartbeat:   time.Now(),
-		Reputation:      NewReputation(),
-		pendingReqs:     make(map[string]*PendingRequest),
+		ID:                 id,
+		Hardware:           msg.Hardware,
+		Models:             models,
+		Backend:            msg.Backend,
+		PublicKey:          pubKey,
+		WalletAddress:      msg.WalletAddress,
+		PrefillTPS:         msg.PrefillTPS,
+		DecodeTPS:          msg.DecodeTPS,
+		WorkerCapabilities: caps,
+		TrustLevel:         TrustNone,
+		RuntimeVerified:    true, // default to verified; API layer sets false when manifest check fails
+		Status:             StatusOnline,
+		Conn:               conn,
+		LastHeartbeat:      time.Now(),
+		Reputation:         NewReputation(),
+		pendingReqs:        make(map[string]*PendingRequest),
 	}
 
 	r.mu.Lock()
 	r.providers[id] = p
 	r.mu.Unlock()
+
+	capStr := "none"
+	if caps != nil {
+		if caps.CanFullInference && caps.CanPrefill {
+			capStr = "full+prefill"
+		} else if caps.CanFullInference {
+			capStr = "full"
+		} else if caps.CanPrefill {
+			capStr = "prefill-only"
+		}
+	}
 
 	r.logger.Info("provider registered",
 		"provider_id", id,
@@ -638,6 +659,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		"backend", msg.Backend,
 		"prefill_tps", msg.PrefillTPS,
 		"decode_tps", msg.DecodeTPS,
+		"capabilities", capStr,
 	)
 
 	// Persist provider record to store (async).
@@ -1374,4 +1396,207 @@ func (r *Registry) evictStale(timeout time.Duration) {
 		r.logger.Warn("evicting stale provider", "provider_id", id, "timeout", timeout)
 		r.Disconnect(id)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Disaggregated computation — worker capability derivation and routing
+// ---------------------------------------------------------------------------
+
+// deriveWorkerCapabilities computes worker capabilities from hardware info.
+// Small machines (≤16GB, base-tier chips) become prefill-only workers.
+// Larger machines do full inference and can also accept prefill jobs.
+func deriveWorkerCapabilities(hw protocol.Hardware) *protocol.WorkerCapabilities {
+	memGB := hw.MemoryGB
+	availGB := float64(memGB) - 4.0 // OS reserve
+	if availGB < 0 {
+		availGB = 0
+	}
+
+	// All Apple Silicon can prefill (it's just prompt processing).
+	canPrefill := memGB >= 8
+
+	// Full inference requires enough memory for model + KV cache + decode.
+	// ≥24GB can run 7B-class models well; ≥16GB can run smaller quantized models.
+	canFull := memGB >= 16
+
+	// Higher-bandwidth chips are better at decode (memory-bound).
+	// Base-tier M-series (Air-class, 100-120 GB/s) are poor at decode
+	// but acceptable for prefill. For machines with very low bandwidth
+	// and limited memory, prefer prefill-only role.
+	bw := float64(hw.MemoryBandwidthGBs)
+	if memGB <= 16 && bw < 150 {
+		canFull = false
+	}
+
+	return &protocol.WorkerCapabilities{
+		CanFullInference: canFull,
+		CanPrefill:       canPrefill,
+		MaxModelSizeGB:   availGB,
+	}
+}
+
+// ReservePrefillWorker selects a provider capable of prefill work for the given
+// model. Prefers providers that are prefill-only (small machines) to avoid
+// consuming full-inference capacity. Falls back to full-inference providers
+// if no dedicated prefill workers are available.
+func (r *Registry) ReservePrefillWorker(model string, pr *PendingRequest, excludeIDs ...string) *Provider {
+	if pr == nil || pr.RequestID == "" {
+		return nil
+	}
+	if pr.Model == "" {
+		pr.Model = model
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	excludeSet := make(map[string]struct{}, len(excludeIDs))
+	for _, id := range excludeIDs {
+		excludeSet[id] = struct{}{}
+	}
+
+	now := time.Now()
+
+	// Phase 1: prefer prefill-only workers (small machines not used for full inference).
+	var prefillOnly []*Provider
+	var fullCapable []*Provider
+
+	for _, p := range r.providers {
+		if _, excluded := excludeSet[p.ID]; excluded {
+			continue
+		}
+		p.mu.Lock()
+		if p.Status == StatusOffline || p.Status == StatusUntrusted {
+			p.mu.Unlock()
+			continue
+		}
+		if !p.RuntimeVerified {
+			p.mu.Unlock()
+			continue
+		}
+		if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+			p.mu.Unlock()
+			continue
+		}
+		if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
+			p.mu.Unlock()
+			continue
+		}
+		if p.pendingCount() >= p.maxConcurrency() {
+			p.mu.Unlock()
+			continue
+		}
+
+		caps := p.WorkerCapabilities
+		p.mu.Unlock()
+
+		if caps == nil {
+			continue
+		}
+		if !caps.CanPrefill {
+			continue
+		}
+
+		// Check if provider has this model or can prefill for it.
+		canServe := providerServesModelLocked(p, model)
+		if !canServe && len(caps.PrefillModels) > 0 {
+			for _, pm := range caps.PrefillModels {
+				if pm == model {
+					canServe = true
+					break
+				}
+			}
+		}
+		if !canServe {
+			continue
+		}
+
+		if !caps.CanFullInference {
+			prefillOnly = append(prefillOnly, p)
+		} else {
+			fullCapable = append(fullCapable, p)
+		}
+	}
+
+	// Pick from prefill-only workers first, then full-capable.
+	candidates := prefillOnly
+	if len(candidates) == 0 {
+		candidates = fullCapable
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// Among candidates, pick the one with fewest pending requests.
+	best := candidates[0]
+	bestPending := best.PendingCount()
+	for _, c := range candidates[1:] {
+		cp := c.PendingCount()
+		if cp < bestPending {
+			best = c
+			bestPending = cp
+		}
+	}
+
+	best.mu.Lock()
+	defer best.mu.Unlock()
+	pr.ProviderID = best.ID
+	best.addPendingLocked(pr)
+	if best.Status != StatusUntrusted && best.Status != StatusOffline {
+		best.Status = StatusServing
+	}
+	return best
+}
+
+// PrefillWorkerCount returns the number of connected providers that can do prefill work.
+func (r *Registry) PrefillWorkerCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	count := 0
+	for _, p := range r.providers {
+		p.mu.Lock()
+		caps := p.WorkerCapabilities
+		status := p.Status
+		p.mu.Unlock()
+		if caps != nil && caps.CanPrefill && status != StatusOffline && status != StatusUntrusted {
+			count++
+		}
+	}
+	return count
+}
+
+// PrefillOnlyWorkerCount returns the number of connected providers that can
+// ONLY do prefill (not full inference). These are the small machines.
+func (r *Registry) PrefillOnlyWorkerCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	count := 0
+	for _, p := range r.providers {
+		p.mu.Lock()
+		caps := p.WorkerCapabilities
+		status := p.Status
+		p.mu.Unlock()
+		if caps != nil && caps.CanPrefill && !caps.CanFullInference && status != StatusOffline && status != StatusUntrusted {
+			count++
+		}
+	}
+	return count
+}
+
+// FullInferenceWorkerCount returns the number of connected providers that
+// can do full inference (prefill + decode).
+func (r *Registry) FullInferenceWorkerCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	count := 0
+	for _, p := range r.providers {
+		p.mu.Lock()
+		caps := p.WorkerCapabilities
+		status := p.Status
+		p.mu.Unlock()
+		if caps != nil && caps.CanFullInference && status != StatusOffline && status != StatusUntrusted {
+			count++
+		}
+	}
+	return count
 }

@@ -194,10 +194,57 @@ ExecStop=/usr/bin/docker stop -t 30 d-inference-coordinator
 WantedBy=multi-user.target
 EOF
 
-# ---- 6. Caddy config (TLS terminator for api.dev.darkbloom.xyz) ----
+# ---- 6. Caddy config (TLS terminator + path routing for coordinator/step-ca/MicroMDM) ----
+# Mirrors the prod coordinator/Caddyfile routes:
+#   /scep, /mdm/*  -> MicroMDM (127.0.0.1:9002, HTTPS self-signed)
+#   /acme/*        -> step-ca  (127.0.0.1:9000, HTTPS self-signed)
+#   everything else -> coordinator (127.0.0.1:8080, HTTP)
+# Without these routes, Mac enrollment fails with "SCEP server rejected."
 cat > /etc/caddy/Caddyfile <<'CADDYFILE'
 api.dev.darkbloom.xyz {
-  reverse_proxy 127.0.0.1:8080
+  # step-ca ACME proxy (device-attest-01 challenges)
+  handle /acme/* {
+    reverse_proxy https://127.0.0.1:9000 {
+      transport http {
+        tls_insecure_skip_verify
+      }
+      header_up Host {host}
+    }
+  }
+
+  # MicroMDM — SCEP + MDM checkin/connect
+  handle /scep {
+    reverse_proxy https://127.0.0.1:9002 {
+      transport http {
+        tls_insecure_skip_verify
+      }
+    }
+  }
+  handle /mdm/* {
+    reverse_proxy https://127.0.0.1:9002 {
+      transport http {
+        tls_insecure_skip_verify
+      }
+    }
+  }
+
+  # All other traffic -> coordinator (HTTP + WebSocket)
+  reverse_proxy 127.0.0.1:8080 {
+    health_uri /health
+    health_interval 30s
+    health_timeout 5s
+    health_status 200
+  }
+
+  request_body {
+    max_size 25MB
+  }
+
+  log {
+    output stdout
+    format console
+    level INFO
+  }
 }
 CADDYFILE
 

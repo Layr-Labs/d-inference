@@ -326,12 +326,12 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 }
 
 // VerifyChallengeSignature verifies a P-256 ECDSA signature over challenge
-// data (nonce + timestamp) using the provider's Secure Enclave public key.
+// data using the provider's Secure Enclave public key.
 //
 // Parameters:
 //   - sePublicKeyB64: base64-encoded raw P-256 public key (64 or 65 bytes)
 //   - signatureB64: base64-encoded DER-encoded ECDSA signature
-//   - data: the signed data (nonce + timestamp concatenated)
+//   - data: the signed canonical challenge payload
 //
 // Returns nil on success, an error describing the failure otherwise.
 func VerifyChallengeSignature(sePublicKeyB64, signatureB64, data string) error {
@@ -367,4 +367,67 @@ func VerifyChallengeSignature(sePublicKeyB64, signatureB64, data string) error {
 	}
 
 	return nil
+}
+
+// ChallengeMeasurementPayload is the canonical v2 attestation challenge payload
+// signed by the enclave helper. Field names and ordering are chosen to match the
+// Swift Codable/.sortedKeys JSON encoding used by the enclave CLI.
+type ChallengeMeasurementPayload struct {
+	ActiveModelHash         string            `json:"activeModelHash,omitempty"`
+	ActiveModelID           string            `json:"activeModelID,omitempty"`
+	AuthenticatedRootEnabled bool             `json:"authenticatedRootEnabled"`
+	BinaryHash              string            `json:"binaryHash,omitempty"`
+	GrpcBinaryHash          string            `json:"grpcBinaryHash,omitempty"`
+	HypervisorActive        *bool             `json:"hypervisorActive,omitempty"`
+	ImageBridgeHash         string            `json:"imageBridgeHash,omitempty"`
+	ModelHashes             map[string]string `json:"modelHashes"`
+	Nonce                   string            `json:"nonce"`
+	PythonHash              string            `json:"pythonHash,omitempty"`
+	RDMADisabled            bool              `json:"rdmaDisabled"`
+	RuntimeHash             string            `json:"runtimeHash,omitempty"`
+	SecureBootEnabled       bool              `json:"secureBootEnabled"`
+	SignatureVersion        int               `json:"signatureVersion"`
+	SIPEnabled              bool              `json:"sipEnabled"`
+	SystemVolumeHash        string            `json:"systemVolumeHash,omitempty"`
+	TemplateHashes          map[string]string `json:"templateHashes"`
+	Timestamp               string            `json:"timestamp"`
+}
+
+type signedChallengeMeasurement struct {
+	Payload   ChallengeMeasurementPayload `json:"payload"`
+	PublicKey string                     `json:"publicKey"`
+	Signature string                     `json:"signature"`
+}
+
+// MarshalChallengeMeasurementPayload encodes the canonical v2 challenge payload
+// with the same field ordering/signature surface as the Swift enclave helper.
+func MarshalChallengeMeasurementPayload(payload ChallengeMeasurementPayload) (string, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// VerifySignedChallengeMeasurement verifies a v2 signed challenge measurement
+// blob emitted by the enclave helper and returns the decoded payload.
+func VerifySignedChallengeMeasurement(sePublicKeyB64 string, raw string) (*ChallengeMeasurementPayload, error) {
+	var signed signedChallengeMeasurement
+	if err := json.Unmarshal([]byte(raw), &signed); err != nil {
+		return nil, fmt.Errorf("invalid signed challenge measurement JSON: %w", err)
+	}
+	if signed.PublicKey == "" {
+		return nil, fmt.Errorf("signed challenge measurement missing public key")
+	}
+	if sePublicKeyB64 != "" && signed.PublicKey != sePublicKeyB64 {
+		return nil, fmt.Errorf("signed challenge measurement public key mismatch")
+	}
+	payloadJSON, err := MarshalChallengeMeasurementPayload(signed.Payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal challenge payload: %w", err)
+	}
+	if err := VerifyChallengeSignature(signed.PublicKey, signed.Signature, payloadJSON); err != nil {
+		return nil, err
+	}
+	return &signed.Payload, nil
 }

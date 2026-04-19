@@ -434,23 +434,72 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		return
 	}
 
+	var verifiedPayload *attestation.ChallengeMeasurementPayload
+
 	// If the provider has an attested SE public key, verify the signature.
 	// Providers without attestation (TrustNone / Open Mode) skip crypto
 	// verification — their trust is already "none".
 	if provider.AttestationResult != nil && provider.AttestationResult.PublicKey != "" {
-		challengeData := pc.nonce + pc.timestamp
-		if err := attestation.VerifyChallengeSignature(
-			provider.AttestationResult.PublicKey,
-			resp.Signature,
-			challengeData,
-		); err != nil {
-			s.logger.Error("challenge signature verification failed",
-				"provider_id", providerID,
-				"error", err,
+		if resp.SignatureVersion >= 2 {
+			if resp.SignedMeasurement == "" {
+				s.handleChallengeFailure(providerID, "missing signed challenge measurement")
+				return
+			}
+			payload, err := attestation.VerifySignedChallengeMeasurement(
+				provider.AttestationResult.PublicKey,
+				resp.SignedMeasurement,
 			)
-			s.handleChallengeFailure(providerID, "signature verification failed: "+err.Error())
-			return
+			if err != nil {
+				s.logger.Error("signed challenge measurement verification failed",
+					"provider_id", providerID,
+					"error", err,
+				)
+				s.handleChallengeFailure(providerID, "signed challenge verification failed: "+err.Error())
+				return
+			}
+			if payload.Nonce != pc.nonce || payload.Timestamp != pc.timestamp {
+				s.handleChallengeFailure(providerID, "signed challenge payload nonce/timestamp mismatch")
+				return
+			}
+			verifiedPayload = payload
+		} else {
+			challengeData := pc.nonce + pc.timestamp
+			if err := attestation.VerifyChallengeSignature(
+				provider.AttestationResult.PublicKey,
+				resp.Signature,
+				challengeData,
+			); err != nil {
+				s.logger.Error("challenge signature verification failed",
+					"provider_id", providerID,
+					"error", err,
+				)
+				s.handleChallengeFailure(providerID, "signature verification failed: "+err.Error())
+				return
+			}
 		}
+	}
+
+	if verifiedPayload != nil {
+		hvActive := verifiedPayload.HypervisorActive
+		rdmaDisabled := verifiedPayload.RDMADisabled
+		sipEnabled := verifiedPayload.SIPEnabled
+		secureBootEnabled := verifiedPayload.SecureBootEnabled
+		authRootEnabled := verifiedPayload.AuthenticatedRootEnabled
+		resp.HypervisorActive = hvActive
+		resp.RDMADisabled = &rdmaDisabled
+		resp.SIPEnabled = &sipEnabled
+		resp.SecureBootEnabled = &secureBootEnabled
+		resp.AuthenticatedRoot = &authRootEnabled
+		resp.SystemVolumeHash = verifiedPayload.SystemVolumeHash
+		resp.BinaryHash = verifiedPayload.BinaryHash
+		resp.ActiveModelHash = verifiedPayload.ActiveModelHash
+		resp.ActiveModelID = verifiedPayload.ActiveModelID
+		resp.PythonHash = verifiedPayload.PythonHash
+		resp.RuntimeHash = verifiedPayload.RuntimeHash
+		resp.TemplateHashes = verifiedPayload.TemplateHashes
+		resp.GrpcBinaryHash = verifiedPayload.GrpcBinaryHash
+		resp.ImageBridgeHash = verifiedPayload.ImageBridgeHash
+		resp.ModelHashes = verifiedPayload.ModelHashes
 	}
 
 	// Verify fresh SIP status. If the provider reports SIP disabled,
@@ -477,6 +526,32 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		return
 	}
 
+	// Verify fresh Authenticated Root status and sealed system volume hash when
+	// the provider produced signed v2 challenge evidence.
+	if verifiedPayload != nil {
+		if resp.AuthenticatedRoot == nil || !*resp.AuthenticatedRoot {
+			s.logger.Error("provider Authenticated Root disabled in signed challenge evidence — marking untrusted",
+				"provider_id", providerID,
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "Authenticated Root disabled")
+			return
+		}
+		if provider.AttestationResult != nil &&
+			provider.AttestationResult.SystemVolumeHash != "" &&
+			resp.SystemVolumeHash != "" &&
+			resp.SystemVolumeHash != provider.AttestationResult.SystemVolumeHash {
+			s.logger.Error("provider system volume hash changed since attestation",
+				"provider_id", providerID,
+				"expected", provider.AttestationResult.SystemVolumeHash,
+				"got", resp.SystemVolumeHash,
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "system volume hash mismatch")
+			return
+		}
+	}
+
 	// Verify fresh RDMA status. RDMA over Thunderbolt 5 allows another Mac
 	// to directly read inference process memory, bypassing all software
 	// protections (PT_DENY_ATTACH, Hardened Runtime, SIP). This check is
@@ -486,21 +561,16 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		return
 	}
 	if !*resp.RDMADisabled {
-		// RDMA is enabled — only acceptable if hypervisor memory isolation
-		// is active. The hypervisor's Stage 2 page tables make inference
-		// memory invisible to RDMA DMA transfers.
-		hvActive := resp.HypervisorActive != nil && *resp.HypervisorActive
-		if !hvActive {
-			s.logger.Error("provider RDMA enabled without hypervisor — remote memory access possible, marking untrusted",
-				"provider_id", providerID,
-			)
-			s.registry.MarkUntrusted(providerID)
-			s.handleChallengeFailure(providerID, "RDMA enabled without hypervisor memory isolation")
-			return
-		}
-		s.logger.Info("provider RDMA enabled with hypervisor isolation — acceptable",
+		// Hypervisor state is still reported by the provider process rather than
+		// independently measured by the enclave helper, so it is not strong enough
+		// evidence to allow RDMA. Fail closed until hypervisor isolation itself is
+		// attestable.
+		s.logger.Error("provider RDMA enabled — remote memory access possible, marking untrusted",
 			"provider_id", providerID,
 		)
+		s.registry.MarkUntrusted(providerID)
+		s.handleChallengeFailure(providerID, "RDMA enabled")
+		return
 	}
 
 	// Verify fresh binary hash against the known-good release set.
@@ -528,6 +598,9 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	provider.Mu().Lock()
 	currentModel := provider.CurrentModel
 	provider.Mu().Unlock()
+	if resp.ActiveModelID != "" {
+		currentModel = resp.ActiveModelID
+	}
 	if currentModel != "" {
 		expectedHash := s.registry.CatalogWeightHash(currentModel)
 		if expectedHash != "" {

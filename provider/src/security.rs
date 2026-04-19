@@ -165,23 +165,12 @@ pub fn verify_security_posture() -> Result<(), String> {
     }
 
     if !check_rdma_disabled() {
-        // RDMA is enabled — only acceptable if hypervisor is active.
-        // The hypervisor's Stage 2 page tables make inference memory
-        // invisible to RDMA, so RDMA + hypervisor is safe.
-        if check_hypervisor_active() {
-            tracing::info!(
-                "RDMA is enabled but hypervisor memory isolation is active — \
-                 inference memory is hardware-protected"
-            );
-        } else {
-            return Err("RDMA is enabled without hypervisor memory isolation — \
-                 remote memory access possible, refusing to serve.\n\n\
-                 To disable RDMA:\n\
-                 1. Open System Settings → Sharing\n\
-                 2. Disable Remote Direct Memory Access\n\n\
-                 Then retry: darkbloom serve"
-                .to_string());
-        }
+        return Err("RDMA is enabled — remote memory access possible, refusing to serve.\n\n\
+             To disable RDMA:\n\
+             1. Open System Settings → Sharing\n\
+             2. Disable Remote Direct Memory Access\n\n\
+             Then retry: darkbloom serve"
+            .to_string());
     }
 
     // Verify app bundle signature if running from a .app bundle.

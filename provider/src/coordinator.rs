@@ -30,6 +30,103 @@ use crate::protocol::{
 };
 use crate::security::RuntimeHashes;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SignedChallengePayload {
+    active_model_hash: Option<String>,
+    active_model_id: Option<String>,
+    authenticated_root_enabled: bool,
+    binary_hash: Option<String>,
+    grpc_binary_hash: Option<String>,
+    hypervisor_active: Option<bool>,
+    image_bridge_hash: Option<String>,
+    model_hashes: std::collections::HashMap<String, String>,
+    nonce: String,
+    python_hash: Option<String>,
+    rdma_disabled: bool,
+    runtime_hash: Option<String>,
+    secure_boot_enabled: bool,
+    signature_version: i32,
+    sip_enabled: bool,
+    system_volume_hash: Option<String>,
+    template_hashes: std::collections::HashMap<String, String>,
+    timestamp: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SignedChallengeMeasurement {
+    payload: SignedChallengePayload,
+    public_key: String,
+    signature: String,
+}
+
+fn challenge_sign_with_enclave(
+    nonce: &str,
+    timestamp: &str,
+    active_model_id: Option<&str>,
+    active_model_hash: Option<&str>,
+    runtime_hashes: Option<&RuntimeHashes>,
+    model_hashes: &std::collections::HashMap<String, String>,
+    hypervisor_active: bool,
+) -> Option<SignedChallengeMeasurement> {
+    let eigeninference_dir = dirs::home_dir()?.join(".darkbloom");
+    let enclave_bin = eigeninference_dir.join("bin/eigeninference-enclave");
+    if !enclave_bin.exists() {
+        return None;
+    }
+
+    let binary_hash = crate::security::self_binary_hash();
+    let template_hashes_json = serde_json::to_string(
+        &runtime_hashes
+            .map(|rh| rh.template_hashes.clone())
+            .unwrap_or_default(),
+    )
+    .ok()?;
+    let model_hashes_json = serde_json::to_string(model_hashes).ok()?;
+
+    let mut cmd = std::process::Command::new(&enclave_bin);
+    cmd.args(["challenge-sign", "--nonce", nonce, "--timestamp", timestamp]);
+    if let Some(ref hash) = binary_hash {
+        cmd.args(["--binary-hash", hash]);
+    }
+    if let Some(model_id) = active_model_id {
+        cmd.args(["--active-model-id", model_id]);
+    }
+    if let Some(model_hash) = active_model_hash {
+        cmd.args(["--active-model-hash", model_hash]);
+    }
+    if let Some(rh) = runtime_hashes {
+        if let Some(ref python_hash) = rh.python_hash {
+            cmd.args(["--python-hash", python_hash]);
+        }
+        if let Some(ref runtime_hash) = rh.runtime_hash {
+            cmd.args(["--runtime-hash", runtime_hash]);
+        }
+        if let Some(ref grpc_hash) = rh.grpc_binary_hash {
+            cmd.args(["--grpc-binary-hash", grpc_hash]);
+        }
+        if let Some(ref image_hash) = rh.image_bridge_hash {
+            cmd.args(["--image-bridge-hash", image_hash]);
+        }
+    }
+    cmd.args(["--template-hashes-json", &template_hashes_json]);
+    cmd.args(["--model-hashes-json", &model_hashes_json]);
+    cmd.args([
+        "--hypervisor-active",
+        if hypervisor_active { "true" } else { "false" },
+    ]);
+
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!("eigeninference-enclave challenge-sign failed: {stderr}");
+        return None;
+    }
+
+    serde_json::from_slice::<SignedChallengeMeasurement>(&output.stdout).ok()
+}
+
 /// Thread-safe counters for provider statistics, shared between the main
 /// event loop (which increments them) and the heartbeat sender (which reads them).
 pub struct AtomicProviderStats {
@@ -499,12 +596,14 @@ impl CoordinatorClient {
                                     tracing::info!("Received attestation challenge");
                                     // Respond to the challenge inline, signing with
                                     // the provider's key.
+                                    let current_model_id = self.current_model.lock().unwrap().clone();
                                     let model_hash = self.current_model_hash.lock().unwrap().clone();
                                     let runtime_hashes = self.current_runtime_hashes();
                                     let response = handle_attestation_challenge(
                                         &nonce,
                                         &timestamp,
                                         self.public_key.as_deref(),
+                                        current_model_id.as_deref(),
                                         model_hash.as_deref(),
                                         runtime_hashes.as_ref(),
                                         self.model_hashes.clone(),
@@ -609,94 +708,89 @@ fn decrypt_request_body(
     Ok(body)
 }
 
-/// Handle an attestation challenge by signing the nonce+timestamp data
-/// and performing a fresh security posture check.
-///
-/// For now, we produce a "signature" by base64-encoding the SHA-256 hash of the
-/// challenge data concatenated with the public key. This proves possession of
-/// the key identity on the authenticated WebSocket. In a future iteration, the
-/// Secure Enclave P-256 key would be used for a proper cryptographic signature.
-///
-/// The response includes fresh SIP and Secure Boot status, verified at the
-/// time of the challenge. The coordinator checks these and marks the provider
-/// untrusted if they've been disabled since registration.
+/// Handle an attestation challenge by asking the enclave helper to build and
+/// sign a fresh measurement payload. This keeps the signed evidence aligned
+/// with the fields the coordinator actually trusts, instead of signing only
+/// nonce+timestamp and trusting the provider process for the rest.
 pub fn handle_attestation_challenge(
     nonce: &str,
     timestamp: &str,
     public_key: Option<&str>,
+    current_model_id: Option<&str>,
     current_model_hash: Option<&str>,
     runtime_hashes: Option<&RuntimeHashes>,
     model_hashes: std::collections::HashMap<String, String>,
 ) -> ProviderMessage {
-    let data = format!("{}{}", nonce, timestamp);
-
-    // Sign the challenge data (nonce + timestamp) with the Secure Enclave
-    // P-256 key via the eigeninference-enclave CLI tool. The coordinator
-    // verifies this signature using the provider's SE public key from the
-    // attestation blob, proving the same hardware is still responding.
-    let pk_str = public_key.unwrap_or("");
-    let signature = match crate::security::se_sign(data.as_bytes()) {
-        Some(sig) => sig,
-        None => {
-            tracing::warn!(
-                "Secure Enclave signing unavailable — sending empty signature \
-                 (coordinator will reject if attestation was provided)"
-            );
-            String::new()
-        }
-    };
-
-    // Fresh security posture check at challenge time.
-    // SIP can't change at runtime (requires reboot), but this proves
-    // the provider hasn't rebooted with SIP disabled and reconnected.
-    let sip_enabled = crate::security::check_sip_enabled();
-    let rdma_disabled = crate::security::check_rdma_disabled();
+    let pk_str = public_key.unwrap_or("").to_string();
     let hypervisor_active = crate::security::check_hypervisor_active();
 
-    // Fresh binary hash — re-computed each challenge (~1ms for <50MB binary).
-    let binary_hash = crate::security::self_binary_hash();
+    let signed_measurement = challenge_sign_with_enclave(
+        nonce,
+        timestamp,
+        current_model_id,
+        current_model_hash,
+        runtime_hashes,
+        &model_hashes,
+        hypervisor_active,
+    );
 
-    if !sip_enabled {
-        tracing::error!(
-            "SIP is disabled during attestation challenge — coordinator will reject us"
-        );
-    }
-    if !rdma_disabled && !hypervisor_active {
-        tracing::error!(
-            "RDMA is enabled without hypervisor during attestation challenge — \
-             coordinator will reject us"
-        );
-    }
-
-    let (python_hash, rt_hash, template_hashes, grpc_binary_hash, image_bridge_hash) =
-        if let Some(rh) = runtime_hashes {
-            (
-                rh.python_hash.clone(),
-                rh.runtime_hash.clone(),
-                rh.template_hashes.clone(),
-                rh.grpc_binary_hash.clone(),
-                rh.image_bridge_hash.clone(),
-            )
-        } else {
-            (None, None, std::collections::HashMap::new(), None, None)
-        };
-
-    ProviderMessage::AttestationResponse {
-        nonce: nonce.to_string(),
-        signature,
-        public_key: pk_str.to_string(),
-        hypervisor_active: Some(hypervisor_active),
-        rdma_disabled: Some(rdma_disabled),
-        sip_enabled: Some(sip_enabled),
-        secure_boot_enabled: Some(true), // Apple Silicon always has Secure Boot in Full Security mode
-        binary_hash,
-        active_model_hash: current_model_hash.map(|s| s.to_string()),
-        python_hash,
-        runtime_hash: rt_hash,
-        template_hashes,
-        grpc_binary_hash,
-        image_bridge_hash,
-        model_hashes,
+    match signed_measurement {
+        Some(signed) => {
+            let signed_measurement_json = serde_json::to_string(&signed).ok();
+            ProviderMessage::AttestationResponse {
+            nonce: nonce.to_string(),
+            signature: signed.signature,
+            public_key: pk_str,
+            signature_version: Some(signed.payload.signature_version),
+            signed_measurement: signed_measurement_json,
+            hypervisor_active: signed.payload.hypervisor_active,
+            rdma_disabled: Some(signed.payload.rdma_disabled),
+            sip_enabled: Some(signed.payload.sip_enabled),
+            secure_boot_enabled: Some(signed.payload.secure_boot_enabled),
+            authenticated_root_enabled: Some(signed.payload.authenticated_root_enabled),
+            system_volume_hash: signed.payload.system_volume_hash,
+            binary_hash: signed.payload.binary_hash,
+            active_model_hash: signed.payload.active_model_hash,
+            active_model_id: signed.payload.active_model_id,
+            python_hash: signed.payload.python_hash,
+            runtime_hash: signed.payload.runtime_hash,
+            template_hashes: signed.payload.template_hashes,
+            grpc_binary_hash: signed.payload.grpc_binary_hash,
+            image_bridge_hash: signed.payload.image_bridge_hash,
+            model_hashes: signed.payload.model_hashes,
+        }
+        },
+        None => {
+            tracing::warn!(
+                "Secure Enclave challenge signing unavailable — sending empty \
+                 signature and best-effort measurements (coordinator will reject \
+                 attested providers)"
+            );
+            ProviderMessage::AttestationResponse {
+                nonce: nonce.to_string(),
+                signature: String::new(),
+                public_key: pk_str,
+                signature_version: Some(2),
+                signed_measurement: None,
+                hypervisor_active: Some(hypervisor_active),
+                rdma_disabled: Some(crate::security::check_rdma_disabled()),
+                sip_enabled: Some(crate::security::check_sip_enabled()),
+                secure_boot_enabled: None,
+                authenticated_root_enabled: None,
+                system_volume_hash: None,
+                binary_hash: crate::security::self_binary_hash(),
+                active_model_hash: current_model_hash.map(|s| s.to_string()),
+                active_model_id: current_model_id.map(|s| s.to_string()),
+                python_hash: runtime_hashes.and_then(|rh| rh.python_hash.clone()),
+                runtime_hash: runtime_hashes.and_then(|rh| rh.runtime_hash.clone()),
+                template_hashes: runtime_hashes
+                    .map(|rh| rh.template_hashes.clone())
+                    .unwrap_or_default(),
+                grpc_binary_hash: runtime_hashes.and_then(|rh| rh.grpc_binary_hash.clone()),
+                image_bridge_hash: runtime_hashes.and_then(|rh| rh.image_bridge_hash.clone()),
+                model_hashes,
+            }
+        }
     }
 }
 

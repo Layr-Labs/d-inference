@@ -131,6 +131,10 @@ pub enum ProviderMessage {
         nonce: String,
         signature: String,
         public_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature_version: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signed_measurement: Option<String>,
         /// Fresh hypervisor status at time of challenge response.
         /// When true, inference memory is hardware-isolated via Stage 2
         /// page tables — RDMA cannot access it even if enabled.
@@ -148,12 +152,21 @@ pub enum ProviderMessage {
         /// Fresh Secure Boot status at time of challenge response.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secure_boot_enabled: Option<bool>,
+        /// Fresh Authenticated Root Volume status at challenge time.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        authenticated_root_enabled: Option<bool>,
+        /// Fresh sealed system volume snapshot hash at challenge time.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        system_volume_hash: Option<String>,
         /// Fresh SHA-256 hash of the provider binary (re-computed each challenge).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         binary_hash: Option<String>,
         /// SHA-256 weight fingerprint of the currently loaded model (cached at load time).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         active_model_hash: Option<String>,
+        /// Model ID corresponding to active_model_hash.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        active_model_id: Option<String>,
         /// SHA-256 hash of the Python interpreter binary.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         python_hash: Option<String>,

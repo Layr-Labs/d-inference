@@ -250,19 +250,27 @@ type AttestationChallengeMessage struct {
 }
 
 // AttestationResponseMessage is sent by the provider in response to an
-// attestation challenge. The signature covers nonce + timestamp.
-// Includes fresh security posture fields verified at challenge time.
+// attestation challenge.
+//
+// SignatureVersion 2 signs a canonical measurement payload that binds the
+// challenge nonce/timestamp to the fresh integrity and security fields below.
+// Older providers signed only nonce+timestamp.
 type AttestationResponseMessage struct {
 	Type              string `json:"type"`
 	Nonce             string `json:"nonce"`                         // echoed back from the challenge
-	Signature         string `json:"signature"`                     // base64-encoded signature of nonce+timestamp
+	Signature         string `json:"signature"`                     // base64-encoded signature of the challenge evidence payload
+	SignatureVersion  int    `json:"signature_version,omitempty"`   // evidence signature schema version
+	SignedMeasurement string `json:"signed_measurement,omitempty"`  // canonical signed measurement blob (v2+)
 	PublicKey         string `json:"public_key"`                    // base64-encoded public key
 	HypervisorActive  *bool  `json:"hypervisor_active,omitempty"`   // hypervisor memory isolation active (Stage 2 page tables)
 	RDMADisabled      *bool  `json:"rdma_disabled,omitempty"`       // fresh RDMA status (true = safe, false = remote memory access possible)
 	SIPEnabled        *bool  `json:"sip_enabled,omitempty"`         // fresh SIP status at challenge time
 	SecureBootEnabled *bool  `json:"secure_boot_enabled,omitempty"` // fresh Secure Boot status
+	AuthenticatedRoot *bool  `json:"authenticated_root_enabled,omitempty"`
+	SystemVolumeHash  string `json:"system_volume_hash,omitempty"` // fresh sealed system volume hash
 	BinaryHash        string `json:"binary_hash,omitempty"`         // fresh SHA-256 of provider binary
 	ActiveModelHash   string `json:"active_model_hash,omitempty"`   // SHA-256 weight fingerprint of loaded model
+	ActiveModelID     string `json:"active_model_id,omitempty"`     // model ID bound to active_model_hash
 
 	// Runtime integrity hashes — fresh values reported at challenge time.
 	PythonHash      string            `json:"python_hash,omitempty"`       // SHA-256 of Python runtime

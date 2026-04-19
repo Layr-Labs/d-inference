@@ -771,35 +771,41 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	pr.SESignature = msg.SESignature
 	pr.ResponseHash = msg.ResponseHash
 
-	// Verify the response signature against the provider's SE public key
-	// when both are available. The provider signs sha256(response_hash)
-	// where response_hash is sha256(request_id || completion_tokens ||
-	// response_content). If verification fails, the provider returned
-	// content the SE did not sign — a tampered response. We log loudly and
-	// drop reputation, but keep billing the consumer because they did
-	// receive the response (cancelling the bill creates an oracle: the
-	// consumer can keep replaying responses for free until a signature
-	// happens to verify).
-	if msg.SESignature != "" && msg.ResponseHash != "" {
-		provider.Mu().Lock()
-		var sePubKey string
-		if provider.AttestationResult != nil {
-			sePubKey = provider.AttestationResult.PublicKey
-		}
-		provider.Mu().Unlock()
-		if sePubKey != "" {
-			if err := attestation.VerifyChallengeSignature(sePubKey, msg.SESignature, msg.ResponseHash); err != nil {
-				s.logger.Error("response signature verification failed — provider returned content the SE did not sign",
-					"provider_id", providerID,
-					"request_id", msg.RequestID,
-					"error", err,
-				)
-				// Strip the (invalid) signature so the consumer doesn't see a
-				// "verified" badge for unverified content.
-				pr.SESignature = ""
-				pr.ResponseHash = ""
-				s.registry.RecordJobFailure(providerID)
-			}
+	// Verify the response signature against the provider's SE public key.
+	// The provider signs sha256(response_hash) where response_hash is
+	// sha256(request_id || completion_tokens || response_content).
+	//
+	// Three failure modes, all handled the same way (strip the signature,
+	// debit reputation, but keep billing — refusing to bill creates an
+	// oracle where the consumer keeps replaying responses for free until a
+	// signature happens to verify):
+	//   1. Provider has an SE key but sent an empty signature (downgrade)
+	//   2. Signature non-empty but doesn't verify (tampered response)
+	//   3. response_hash non-empty but signature missing (downgrade)
+	provider.Mu().Lock()
+	var sePubKey string
+	if provider.AttestationResult != nil {
+		sePubKey = provider.AttestationResult.PublicKey
+	}
+	provider.Mu().Unlock()
+	if sePubKey != "" {
+		if msg.SESignature == "" || msg.ResponseHash == "" {
+			s.logger.Error("provider has SE key but omitted response signature — downgrade attempt, no verified badge",
+				"provider_id", providerID,
+				"request_id", msg.RequestID,
+			)
+			pr.SESignature = ""
+			pr.ResponseHash = ""
+			s.registry.RecordJobFailure(providerID)
+		} else if err := attestation.VerifyChallengeSignature(sePubKey, msg.SESignature, msg.ResponseHash); err != nil {
+			s.logger.Error("response signature verification failed — provider returned content the SE did not sign",
+				"provider_id", providerID,
+				"request_id", msg.RequestID,
+				"error", err,
+			)
+			pr.SESignature = ""
+			pr.ResponseHash = ""
+			s.registry.RecordJobFailure(providerID)
 		}
 	}
 

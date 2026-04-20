@@ -89,7 +89,7 @@ func registerProvider(t *testing.T, conn *websocket.Conn, models []protocol.Mode
 			MemoryGB:     64,
 		},
 		Models:    models,
-		Backend:   "test",
+		Backend:   "inprocess-mlx",
 		PublicKey: publicKey,
 	}
 	data, _ := json.Marshal(regMsg)
@@ -122,7 +122,7 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 
 		// Connection should still be alive — send a valid register to prove it.
 		registerProvider(t, conn, []protocol.ModelInfo{
-			{ID: "test-model", SizeBytes: 1000, ModelType: "test", Quantization: "4bit"},
+			{ID: "test-model", SizeBytes: 1000, ModelType: "chat", Quantization: "4bit"},
 		}, "")
 
 		if srv.registry.ProviderCount() != 1 {
@@ -145,7 +145,7 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 		// Connection should still be alive.
 		time.Sleep(100 * time.Millisecond)
 		registerProvider(t, conn, []protocol.ModelInfo{
-			{ID: "empty-test", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+			{ID: "empty-test", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 		}, "")
 	})
 
@@ -175,7 +175,7 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 		conn2 := connectProviderWS(t, ts)
 		defer conn2.Close(websocket.StatusNormalClosure, "")
 		registerProvider(t, conn2, []protocol.ModelInfo{
-			{ID: "after-garbage", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+			{ID: "after-garbage", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 		}, "")
 	})
 
@@ -188,7 +188,7 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 
 		// First register so the provider is known.
 		registerProvider(t, conn, []protocol.ModelInfo{
-			{ID: "unknown-type-test", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+			{ID: "unknown-type-test", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 		}, "")
 
 		// Send valid JSON with unknown type — should be logged and ignored.
@@ -442,7 +442,7 @@ func TestSecurity_ChallengeNonceReplay(t *testing.T) {
 
 	// Register with a public key so challenges verify key consistency.
 	registerProvider(t, conn, []protocol.ModelInfo{
-		{ID: "nonce-test-model", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+		{ID: "nonce-test-model", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 	}, "dGVzdC1wdWJsaWMta2V5LWJhc2U2NA==")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -549,7 +549,7 @@ func TestSecurity_ProviderImpersonation(t *testing.T) {
 	connA := connectProviderWS(t, ts)
 	defer connA.Close(websocket.StatusNormalClosure, "")
 	registerProvider(t, connA, []protocol.ModelInfo{
-		{ID: "model-a", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+		{ID: "model-a", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 	}, sharedPubKey)
 
 	if srv.registry.ProviderCount() != 1 {
@@ -560,7 +560,7 @@ func TestSecurity_ProviderImpersonation(t *testing.T) {
 	connB := connectProviderWS(t, ts)
 	defer connB.Close(websocket.StatusNormalClosure, "")
 	registerProvider(t, connB, []protocol.ModelInfo{
-		{ID: "model-b", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+		{ID: "model-b", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 	}, sharedPubKey)
 
 	// Both connections should be tracked as separate providers (different

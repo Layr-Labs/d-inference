@@ -127,10 +127,26 @@ type Provider struct {
 	Reputation Reputation
 
 	// Version and runtime integrity verification
-	Version         string `json:"version,omitempty"` // provider binary version (e.g. "0.2.31")
-	RuntimeVerified bool   `json:"runtime_verified"`  // true if runtime hashes match the known-good manifest
-	PythonHash      string `json:"python_hash,omitempty"`
-	RuntimeHash     string `json:"runtime_hash,omitempty"`
+	Version                 string `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
+	RuntimeVerified         bool   `json:"runtime_verified"`                    // true if runtime hashes match the known-good manifest
+	RuntimeManifestChecked  bool   `json:"runtime_manifest_checked"`            // true only when a manifest was present and hashes were verified (fail-closed for text)
+	EncryptedResponseChunks bool   `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are encrypted to the coordinator
+	PythonHash              string `json:"python_hash,omitempty"`
+	RuntimeHash             string `json:"runtime_hash,omitempty"`
+	TemplateHashes          map[string]string
+	GrpcBinaryHash          string `json:"grpc_binary_hash,omitempty"`
+	ImageBridgeHash         string `json:"image_bridge_hash,omitempty"`
+
+	// Phase 7: Privacy invariant attestation.
+	// Self-reported by the provider at registration. Fields like SIPEnabled
+	// and HypervisorActive are overridden by the coordinator after each
+	// attestation challenge response with coordinator-verified values.
+	PrivacyCapabilities *protocol.PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
+
+	// Coordinator-verified SIP status from the most recent attestation challenge.
+	// Unlike PrivacyCapabilities.SIPEnabled (provider self-report at registration),
+	// this is set by the coordinator after independently checking the challenge response.
+	ChallengeVerifiedSIP bool `json:"challenge_verified_sip"`
 
 	// Challenge-response verification state
 	LastChallengeVerified time.Time // last successful challenge verification
@@ -138,6 +154,36 @@ type Provider struct {
 
 	mu          sync.Mutex
 	pendingReqs map[string]*PendingRequest
+}
+
+func providerSupportsPrivateTextLocked(p *Provider) bool {
+	if p.PublicKey == "" || p.Backend != "inprocess-mlx" || !p.EncryptedResponseChunks {
+		return false
+	}
+	if !p.RuntimeManifestChecked {
+		return false
+	}
+	// Require coordinator-verified SIP (from attestation challenge) rather
+	// than trusting the provider's self-reported SIPEnabled field.
+	if !p.ChallengeVerifiedSIP {
+		return false
+	}
+	caps := p.PrivacyCapabilities
+	if caps == nil {
+		return false
+	}
+	// TextBackendInprocess, TextProxyDisabled, PythonRuntimeLocked,
+	// DangerousModulesBlocked, AntiDebugEnabled, CoreDumpsDisabled, EnvScrubbed
+	// remain provider-attested. They are gated by RuntimeManifestChecked
+	// (coordinator verifies the runtime binary hashes match known-good) and
+	// ChallengeVerifiedSIP (coordinator independently checks SIP status).
+	return caps.TextBackendInprocess &&
+		caps.TextProxyDisabled &&
+		caps.PythonRuntimeLocked &&
+		caps.DangerousModulesBlocked &&
+		caps.AntiDebugEnabled &&
+		caps.CoreDumpsDisabled &&
+		caps.EnvScrubbed
 }
 
 // AddPending registers a pending request on this provider.
@@ -609,21 +655,28 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	}
 
 	p := &Provider{
-		ID:              id,
-		Hardware:        msg.Hardware,
-		Models:          models,
-		Backend:         msg.Backend,
-		PublicKey:       pubKey,
-		WalletAddress:   msg.WalletAddress,
-		PrefillTPS:      msg.PrefillTPS,
-		DecodeTPS:       msg.DecodeTPS,
-		TrustLevel:      TrustNone,
-		RuntimeVerified: true, // default to verified; API layer sets false when manifest check fails
-		Status:          StatusOnline,
-		Conn:            conn,
-		LastHeartbeat:   time.Now(),
-		Reputation:      NewReputation(),
-		pendingReqs:     make(map[string]*PendingRequest),
+		ID:                      id,
+		Hardware:                msg.Hardware,
+		Models:                  models,
+		Backend:                 msg.Backend,
+		PublicKey:               pubKey,
+		EncryptedResponseChunks: msg.EncryptedResponseChunks,
+		WalletAddress:           msg.WalletAddress,
+		PrefillTPS:              msg.PrefillTPS,
+		DecodeTPS:               msg.DecodeTPS,
+		TrustLevel:              TrustNone,
+		RuntimeVerified:         true,  // default to verified; API layer sets false when manifest check fails
+		RuntimeManifestChecked:  true,  // default to true; API layer sets false when no manifest is configured
+		ChallengeVerifiedSIP:    false, // starts false; set true by attestation challenge handler after SIP check
+		PrivacyCapabilities:     msg.PrivacyCapabilities,
+		TemplateHashes:          CloneStringMap(msg.TemplateHashes),
+		GrpcBinaryHash:          msg.GrpcBinaryHash,
+		ImageBridgeHash:         msg.ImageBridgeHash,
+		Status:                  StatusOnline,
+		Conn:                    conn,
+		LastHeartbeat:           time.Now(),
+		Reputation:              NewReputation(),
+		pendingReqs:             make(map[string]*PendingRequest),
 	}
 
 	r.mu.Lock()
@@ -644,6 +697,17 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	r.persistProvider(p)
 
 	return p
+}
+
+func CloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // DisconnectDuplicatesBySerial disconnects all providers that share the same
@@ -832,6 +896,9 @@ func (r *Registry) RecordChallengeSuccess(providerID string) {
 	p.mu.Lock()
 	p.LastChallengeVerified = time.Now()
 	p.FailedChallenges = 0
+	if !p.ChallengeVerifiedSIP {
+		p.ChallengeVerifiedSIP = true
+	}
 	p.Reputation.RecordChallengePass()
 	p.mu.Unlock()
 
@@ -855,6 +922,10 @@ func (r *Registry) RecordChallengeFailure(providerID string) int {
 
 	p.mu.Lock()
 	p.FailedChallenges++
+	// Any failed or missing challenge result invalidates the previous
+	// coordinator-verified security posture until the provider proves it again.
+	p.LastChallengeVerified = time.Time{}
+	p.ChallengeVerifiedSIP = false
 	p.Reputation.RecordChallengeFail()
 	count := p.FailedChallenges
 	p.mu.Unlock()
@@ -1068,30 +1139,26 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 			continue
 		}
 
-		// Snapshot mutable fields under the provider lock.
 		p.mu.Lock()
 		status := p.Status
 		trust := p.TrustLevel
 		lastChallenge := p.LastChallengeVerified
 		runtimeVerified := p.RuntimeVerified
+		privateReady := providerSupportsPrivateTextLocked(p)
 		p.mu.Unlock()
 
-		// Skip offline/untrusted providers
 		if status == StatusOffline || status == StatusUntrusted {
 			continue
 		}
 		if trustRank(trust) < trustRank(effectiveMin) {
 			continue
 		}
-		// Skip providers whose runtime integrity has not been verified.
-		if !runtimeVerified {
+		if !runtimeVerified || !privateReady {
 			continue
 		}
-		// Skip providers that haven't passed a recent challenge.
 		if lastChallenge.IsZero() || now.Sub(lastChallenge) > challengeMaxAge {
 			continue
 		}
-		// Skip providers at max concurrency (dynamic limit based on hardware)
 		if p.PendingCount() >= p.MaxConcurrency() {
 			continue
 		}
@@ -1207,12 +1274,13 @@ func (r *Registry) ListModels() []AggregateModel {
 		trust := p.TrustLevel
 		attested := p.Attested
 		attestResult := p.AttestationResult
+		privateReady := providerSupportsPrivateTextLocked(p)
 		p.mu.Unlock()
 
 		if status == StatusOffline || status == StatusUntrusted {
 			continue
 		}
-		if !r.trustMeetsMinimum(trust) {
+		if !r.trustMeetsMinimum(trust) || !privateReady {
 			continue
 		}
 		for _, m := range p.Models {

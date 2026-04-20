@@ -191,9 +191,11 @@ func (p *simulatedProvider) connect(ctx context.Context, coordinatorURL string) 
 			Quantization: "4bit",
 			SizeBytes:    500_000_000,
 		}},
-		Backend:   "vllm-mlx",
-		PublicKey: p.pubKeyB64,
-		DecodeTPS: 100.0,
+		Backend:                 "inprocess-mlx",
+		PublicKey:               p.pubKeyB64,
+		DecodeTPS:               100.0,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
 	}
 	data, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
@@ -352,15 +354,30 @@ func (p *simulatedProvider) handleInferenceRequest(ctx context.Context, data []b
 			}
 		}
 
-		// Forward chunk to coordinator
-		chunkMsg := protocol.InferenceResponseChunkMessage{
-			Type:      protocol.TypeInferenceResponseChunk,
-			RequestID: msg.RequestID,
-			Data:      "data: " + sseData + "\n\n",
-		}
-		chunkData, _ := json.Marshal(chunkMsg)
-		if err := p.conn.Write(ctx, websocket.MessageText, chunkData); err != nil {
-			return
+		// Encrypt and forward chunk to coordinator
+		if msg.EncryptedBody != nil {
+			coordinatorPub, err := e2e.ParsePublicKey(msg.EncryptedBody.EphemeralPublicKey)
+			if err == nil {
+				session := &e2e.SessionKeys{
+					PublicKey:  p.pubKey,
+					PrivateKey: p.privKey,
+				}
+				payload, err := e2e.Encrypt([]byte("data: "+sseData+"\n\n"), coordinatorPub, session)
+				if err == nil {
+					chunkMsg := protocol.InferenceResponseChunkMessage{
+						Type:      protocol.TypeInferenceResponseChunk,
+						RequestID: msg.RequestID,
+						EncryptedData: &protocol.EncryptedPayload{
+							EphemeralPublicKey: payload.EphemeralPublicKey,
+							Ciphertext:         payload.Ciphertext,
+						},
+					}
+					chunkData, _ := json.Marshal(chunkMsg)
+					if err := p.conn.Write(ctx, websocket.MessageText, chunkData); err != nil {
+						return
+					}
+				}
+			}
 		}
 	}
 

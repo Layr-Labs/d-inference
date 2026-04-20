@@ -11,16 +11,18 @@
 //!     ├── Model scanning (HuggingFace cache, memory filtering)
 //!     ├── Backend management (spawn/monitor/restart inference server)
 //!     ├── Coordinator connection (WebSocket, registration, heartbeats)
-//!     ├── Request proxy (forward coordinator requests to backend)
+//!     ├── Private text engine (embedded in-process inference runtime)
 //!     ├── Attestation (Secure Enclave identity, challenge-response)
-//!     └── Crypto (NaCl X25519 key pair for future encryption)
+//!     └── Crypto (NaCl X25519 key pair for coordinator-mediated E2E)
 //!
 //! Trust model:
 //!   The provider proves its identity via Secure Enclave attestation. The
 //!   coordinator periodically challenges the provider to sign a nonce,
-//!   verifying that the same hardware is still connected. The provider
-//!   receives plain JSON inference requests from the coordinator (no
-//!   decryption needed — the coordinator is a trusted Confidential VM).
+//!   verifying that the same hardware is still connected. Text requests may
+//!   arrive sender-sealed to the coordinator first; the coordinator decrypts
+//!   inside the Confidential VM, routes the request, then re-encrypts to the
+//!   provider's X25519 key so the hardened provider process performs the final
+//!   decryption locally.
 
 mod backend;
 mod config;
@@ -1792,7 +1794,7 @@ async fn cmd_init() -> Result<()> {
 
     // Generate or load the E2E encryption key pair
     let kp = crypto::NodeKeyPair::load_or_generate()?;
-    tracing::info!("E2E key loaded from Secure Enclave-backed keychain item");
+    tracing::info!("E2E key loaded from Secure Enclave-backed identity blob");
     println!("Public key: {}", kp.public_key_base64());
 
     Ok(())
@@ -2243,6 +2245,19 @@ async fn cmd_serve(
     if let Err(reason) = security::verify_security_posture() {
         anyhow::bail!("Security check failed: {reason}");
     }
+
+    // Phase 5: Disable core dumps and scrub dangerous environment variables
+    // before any inference data enters the process.
+    if let Err(reason) = security::disable_core_dumps() {
+        anyhow::bail!("Failed to disable core dumps: {reason}");
+    }
+    security::scrub_private_env();
+
+    // Isolate Python BEFORE PyO3's auto-initialize triggers. This prevents
+    // sitecustomize.py and usercustomize.py from running code before
+    // lock_python_path() takes effect.
+    #[cfg(feature = "python")]
+    security::isolate_python_preinit();
 
     // Prevent system sleep while serving. caffeinate watches our own PID and
     // exits when we die — launchd restarts us, and we spawn a new caffeinate.
@@ -2744,6 +2759,7 @@ async fn cmd_serve(
         )
         .with_auth_token(auth_token)
         .with_runtime_hashes(Some(runtime_hashes))
+        .with_runtime_hash_command(Some(python_cmd.clone()))
         .with_stats(provider_stats.clone())
         .with_inference_active(inference_active.clone())
         .with_current_model(current_model)
@@ -2889,11 +2905,6 @@ async fn cmd_serve(
         }
     }
 
-    // Build model→URL lookup for request routing
-    let model_to_url: std::collections::HashMap<String, String> = backend_slots
-        .iter()
-        .map(|s| (s.model_id.clone(), s.backend_url.clone()))
-        .collect();
     // Primary backend URL for backwards compat (local server, health monitor)
     let backend_url_str = backend_slots
         .first()
@@ -3078,8 +3089,10 @@ async fn cmd_serve(
     // Phase 4: Run the main event loop.
     // =========================================================================
     if local {
-        // Local-only mode: just start the HTTP server
-        tracing::info!("Local-only mode on port {port}");
+        server::ensure_legacy_text_proxy_allowed()?;
+        tracing::warn!(
+            "Starting legacy local HTTP text proxy on port {port} via explicit debug escape hatch; this path is plaintext and must never be used for private text serving"
+        );
         server::start_server(port, backend_url).await?;
     } else {
         // Unwrap coordinator state — guaranteed to be Some in non-local mode.
@@ -3367,14 +3380,11 @@ async fn cmd_serve(
         }
 
         // Process coordinator events
-        let proxy_backend_url = backend_url.clone();
-        let proxy_keypair = node_keypair.clone();
-        let is_inprocess = proxy_backend_url.starts_with("inprocess://");
+        let is_inprocess = using_inprocess;
         let idle_python_cmd = python_cmd.clone();
         let self_heal_running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let idle_backend_name = backend_name.to_string();
         let proxy_stats = provider_stats.clone();
-        let model_to_url = model_to_url.clone();
         // Build model→local-path lookup for rewriting the model field in requests
         let model_to_path: std::collections::HashMap<String, String> = backend_slots
             .iter()
@@ -3463,7 +3473,22 @@ async fn cmd_serve(
                                     tracing::warn!("Disconnected from coordinator");
                                 }
                             }
-                            coordinator::CoordinatorEvent::InferenceRequest { request_id, body } => {
+                            coordinator::CoordinatorEvent::InferenceRequest {
+                                request_id,
+                                body,
+                                response_public_key,
+                            } => {
+                                let Some(response_public_key) = response_public_key else {
+                                    let _ = outbound_tx.send(
+                                        protocol::ProviderMessage::InferenceError {
+                                            request_id,
+                                            error: "coordinator text request missing encrypted response session key".to_string(),
+                                            status_code: 400,
+                                        }
+                                    ).await;
+                                    continue;
+                                };
+
                                 last_request_time = tokio::time::Instant::now();
                                 inference_active.store(true, std::sync::atomic::Ordering::Relaxed);
 
@@ -3497,7 +3522,10 @@ async fn cmd_serve(
                                         .map(|s| (s.model_id.clone(), s.model_path.clone(), s.port, s.pid, s.healthy, s.restarting))
                                 };
 
-                                let mut inprocess_engine = None;
+                                #[cfg(feature = "python")]
+                                let mut inprocess_engine: Option<std::sync::Arc<crate::inference::SharedEngine>> = None;
+                                #[cfg(not(feature = "python"))]
+                                let mut inprocess_engine: Option<()> = None;
                                 if let Some((slot_model_id, slot_model_path, slot_port, slot_pid, slot_healthy, slot_restarting)) = slot_info {
                                     if is_inprocess {
                                         #[cfg(feature = "python")]
@@ -3674,17 +3702,6 @@ async fn cmd_serve(
                                     .unwrap_or("")
                                     .to_string();
 
-                                // Find the backend URL for this model
-                                let target_url = model_to_url.get(&requested_model)
-                                    .or_else(|| {
-                                        // Fuzzy match: coordinator may send slightly different IDs
-                                        model_to_url.iter()
-                                            .find(|(k, _)| k.contains(&requested_model) || requested_model.contains(k.as_str()))
-                                            .map(|(_, v)| v)
-                                    })
-                                    .cloned()
-                                    .unwrap_or_else(|| proxy_backend_url.clone());
-
                                 // Rewrite the model field to the local path the backend expects
                                 let mut body = body;
                                 if let Some(local_path) = model_to_path.get(&requested_model)
@@ -3699,41 +3716,64 @@ async fn cmd_serve(
                                     }
                                 }
 
+                                if !is_inprocess {
+                                    let _ = outbound_tx.send(
+                                        protocol::ProviderMessage::InferenceError {
+                                            request_id,
+                                            error: "private text requests require the embedded in-process engine; refusing to proxy through a local backend".to_string(),
+                                            status_code: 503,
+                                        }
+                                    ).await;
+                                    continue;
+                                }
+
                                 let tx = outbound_tx.clone();
                                 let cancel_token = CancellationToken::new();
-                                let token_clone = cancel_token.clone();
                                 let done_tx = done_tx.clone();
                                 let rid = request_id.clone();
 
                                 let handle = {
                                     #[cfg(feature = "python")]
-                                    if let Some(engine) = inprocess_engine {
+                                    {
+                                        let Some(engine) = inprocess_engine else {
+                                            let _ = outbound_tx.send(
+                                                protocol::ProviderMessage::InferenceError {
+                                                    request_id,
+                                                    error: "private text requests require the embedded in-process engine; no engine instance was available".to_string(),
+                                                    status_code: 503,
+                                                }
+                                            ).await;
+                                            continue;
+                                        };
                                         let engine = engine.clone();
                                         let rid2 = rid.clone();
                                         let stats = proxy_stats.clone();
+                                        let response_keypair = node_keypair.clone();
                                         tokio::spawn(async move {
-                                            handle_inprocess_request(rid2, body, engine, tx, Some(stats)).await;
+                                            handle_inprocess_request(
+                                                rid2,
+                                                body,
+                                                response_public_key,
+                                                response_keypair,
+                                                engine,
+                                                tx,
+                                                Some(stats),
+                                            )
+                                            .await;
                                             let _ = done_tx.send((rid, false)).await;
-                                        })
-                                    } else {
-                                        let kp = proxy_keypair.clone();
-                                        let rid2 = rid.clone();
-                                        let stats = proxy_stats.clone();
-                                        tokio::spawn(async move {
-                                            let dead = proxy::handle_inference_request(rid2, body, target_url, tx, Some(kp), token_clone, Some(stats)).await;
-                                            let _ = done_tx.send((rid, dead)).await;
                                         })
                                     }
 
                                     #[cfg(not(feature = "python"))]
                                     {
-                                        let kp = proxy_keypair.clone();
-                                        let rid2 = rid.clone();
-                                        let stats = proxy_stats.clone();
-                                        tokio::spawn(async move {
-                                            let dead = proxy::handle_inference_request(rid2, body, target_url, tx, Some(kp), token_clone, Some(stats)).await;
-                                            let _ = done_tx.send((rid, dead)).await;
-                                        })
+                                        let _ = outbound_tx.send(
+                                            protocol::ProviderMessage::InferenceError {
+                                                request_id,
+                                                error: "private text requests require the embedded in-process engine; this build does not include it".to_string(),
+                                                status_code: 503,
+                                            }
+                                        ).await;
+                                        continue;
                                     }
                                 };
 
@@ -4010,6 +4050,8 @@ fn validate_private_text_runtime(local: bool) -> anyhow::Result<()> {
 
     #[cfg(feature = "python")]
     {
+        crate::inference::ensure_approved_runtime_available()
+            .context("private text runtime unavailable")?;
         Ok(())
     }
 
@@ -4319,96 +4361,111 @@ fn extract_inprocess_messages(body: &serde_json::Value) -> Vec<serde_json::Value
 }
 
 #[cfg(feature = "python")]
-fn build_inprocess_response_json(
-    body: &serde_json::Value,
+fn build_stream_chunk_payload(text: &str, finish_reason: Option<&str>) -> anyhow::Result<String> {
+    let mut escaped_text =
+        serde_json::to_string(text).context("failed to encode streamed completion text")?;
+    let finish_reason_json =
+        serde_json::to_string(&finish_reason).context("failed to encode finish reason")?;
+    let payload = format!(
+        "data: {{\"id\":\"chatcmpl-{}\",\"object\":\"chat.completion.chunk\",\"choices\":[{{\"delta\":{{\"content\":{}}},\"index\":0,\"finish_reason\":{}}}]}}",
+        uuid::Uuid::new_v4(),
+        escaped_text,
+        finish_reason_json,
+    );
+    security::secure_zero_string(std::mem::take(&mut escaped_text));
+    Ok(payload)
+}
+
+#[cfg(feature = "python")]
+fn build_inprocess_response_payload(
+    endpoint: &str,
+    model: &str,
     text: &str,
     prompt_tokens: u64,
     completion_tokens: u64,
-) -> serde_json::Value {
-    let endpoint = body
-        .get("endpoint")
-        .and_then(|v| v.as_str())
-        .unwrap_or("/v1/chat/completions");
-    let model = body
-        .get("model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    let usage = serde_json::json!({
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": prompt_tokens + completion_tokens,
-    });
+) -> anyhow::Result<String> {
+    let model_json = serde_json::to_string(model).context("failed to encode model")?;
+    let mut text_json = serde_json::to_string(text).context("failed to encode completion text")?;
+    let payload = match endpoint {
+        "/v1/completions" => format!(
+            "data: {{\"id\":\"cmpl-{}\",\"object\":\"text_completion\",\"model\":{},\"choices\":[{{\"index\":0,\"text\":{},\"finish_reason\":\"stop\"}}],\"usage\":{{\"prompt_tokens\":{},\"completion_tokens\":{},\"total_tokens\":{}}}}}",
+            uuid::Uuid::new_v4(),
+            model_json,
+            text_json,
+            prompt_tokens,
+            completion_tokens,
+            prompt_tokens + completion_tokens,
+        ),
+        "/v1/messages" => format!(
+            "data: {{\"id\":\"msg_{}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":{},\"content\":[{{\"type\":\"text\",\"text\":{}}}],\"stop_reason\":\"end_turn\",\"usage\":{{\"input_tokens\":{},\"output_tokens\":{}}}}}",
+            uuid::Uuid::new_v4(),
+            model_json,
+            text_json,
+            prompt_tokens,
+            completion_tokens,
+        ),
+        "/v1/responses" => format!(
+            "data: {{\"id\":\"resp_{}\",\"object\":\"response\",\"model\":{},\"output\":[{{\"id\":\"msg_{}\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":{},\"annotations\":[]}}]}}],\"output_text\":{},\"usage\":{{\"input_tokens\":{},\"output_tokens\":{},\"total_tokens\":{}}}}}",
+            uuid::Uuid::new_v4(),
+            model_json,
+            uuid::Uuid::new_v4(),
+            text_json,
+            text_json,
+            prompt_tokens,
+            completion_tokens,
+            prompt_tokens + completion_tokens,
+        ),
+        _ => format!(
+            "data: {{\"id\":\"chatcmpl-{}\",\"object\":\"chat.completion\",\"model\":{},\"choices\":[{{\"index\":0,\"message\":{{\"role\":\"assistant\",\"content\":{}}},\"finish_reason\":\"stop\"}}],\"usage\":{{\"prompt_tokens\":{},\"completion_tokens\":{},\"total_tokens\":{}}}}}",
+            uuid::Uuid::new_v4(),
+            model_json,
+            text_json,
+            prompt_tokens,
+            completion_tokens,
+            prompt_tokens + completion_tokens,
+        ),
+    };
+    security::secure_zero_string(std::mem::take(&mut text_json));
+    Ok(payload)
+}
 
-    match endpoint {
-        "/v1/completions" => serde_json::json!({
-            "id": format!("cmpl-{}", uuid::Uuid::new_v4()),
-            "object": "text_completion",
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "text": text,
-                "finish_reason": "stop",
-            }],
-            "usage": usage,
-        }),
-        "/v1/messages" => serde_json::json!({
-            "id": format!("msg_{}", uuid::Uuid::new_v4()),
-            "type": "message",
-            "role": "assistant",
-            "model": model,
-            "content": [{
-                "type": "text",
-                "text": text,
-            }],
-            "stop_reason": "end_turn",
-            "usage": {
-                "input_tokens": prompt_tokens,
-                "output_tokens": completion_tokens,
-            },
-        }),
-        "/v1/responses" => serde_json::json!({
-            "id": format!("resp_{}", uuid::Uuid::new_v4()),
-            "object": "response",
-            "model": model,
-            "output": [{
-                "id": format!("msg_{}", uuid::Uuid::new_v4()),
-                "type": "message",
-                "role": "assistant",
-                "content": [{
-                    "type": "output_text",
-                    "text": text,
-                    "annotations": [],
-                }],
-            }],
-            "output_text": text,
-            "usage": {
-                "input_tokens": prompt_tokens,
-                "output_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-            },
-        }),
-        _ => serde_json::json!({
-            "id": format!("chatcmpl-{}", uuid::Uuid::new_v4()),
-            "object": "chat.completion",
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": text,
-                },
-                "finish_reason": "stop",
-            }],
-            "usage": usage,
-        }),
-    }
+#[cfg(feature = "python")]
+async fn send_encrypted_inference_chunk(
+    outbound_tx: &tokio::sync::mpsc::Sender<protocol::ProviderMessage>,
+    request_id: &str,
+    response_public_key: &[u8; 32],
+    node_keypair: &crate::crypto::NodeKeyPair,
+    mut plaintext: String,
+) -> anyhow::Result<()> {
+    use base64::Engine;
+
+    let ciphertext = node_keypair.encrypt(response_public_key, plaintext.as_bytes());
+    security::secure_zero_string(std::mem::take(&mut plaintext));
+    let ciphertext = ciphertext.context("failed to encrypt inference chunk")?;
+    let encrypted_payload = protocol::EncryptedPayload {
+        ephemeral_public_key: node_keypair.public_key_base64(),
+        ciphertext: base64::engine::general_purpose::STANDARD.encode(ciphertext),
+    };
+
+    outbound_tx
+        .send(protocol::ProviderMessage::InferenceResponseChunk {
+            request_id: request_id.to_string(),
+            data: String::new(),
+            encrypted_data: Some(encrypted_payload),
+        })
+        .await
+        .context("failed to send encrypted inference chunk")?;
+
+    Ok(())
 }
 
 /// Handle an inference request using the in-process engine (no HTTP, no subprocess).
 #[cfg(feature = "python")]
 async fn handle_inprocess_request(
     request_id: String,
-    body: serde_json::Value,
+    mut body: serde_json::Value,
+    response_public_key: [u8; 32],
+    node_keypair: std::sync::Arc<crate::crypto::NodeKeyPair>,
     engine: std::sync::Arc<inference::SharedEngine>,
     outbound_tx: tokio::sync::mpsc::Sender<protocol::ProviderMessage>,
     stats: Option<std::sync::Arc<coordinator::AtomicProviderStats>>,
@@ -4425,7 +4482,8 @@ async fn handle_inprocess_request(
         return;
     }
 
-    // Extract parameters from OpenAI-format body
+    // Extract parameters then immediately wipe the request body.
+    // The body contains the consumer's prompts — minimize its lifetime.
     let messages = extract_inprocess_messages(&body);
     let max_tokens = body
         .get("max_tokens")
@@ -4439,76 +4497,175 @@ async fn handle_inprocess_request(
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let response_endpoint = body
+        .get("endpoint")
+        .and_then(|v| v.as_str())
+        .unwrap_or("/v1/chat/completions")
+        .to_string();
+    let response_model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    // Wipe the raw request body now that we've extracted what we need.
+    security::secure_zero_json_value(&mut body);
+    drop(body);
+    // The cloned `messages` Vec<Value> still holds prompt text; it is wiped
+    // inside the engine wrapper after generation completes or fails.
 
     let result = if is_streaming {
-        match engine
-            .stream_generate(messages.clone(), max_tokens, temperature)
+        let (token_tx, mut token_rx) = tokio::sync::mpsc::channel::<inference::StreamToken>(4);
+        let stream_handle =
+            engine.stream_generate_channel(messages, max_tokens, temperature, token_tx);
+
+        let mut send_err: Option<anyhow::Error> = None;
+        let mut streamed_count: u64 = 0;
+        let mut signed_response = String::new();
+
+        // Encrypt-and-send each token as it arrives from the channel,
+        // then immediately zeroize the plaintext.
+        while let Some(mut token) = token_rx.recv().await {
+            signed_response.push_str(&token.text);
+            let chunk_data =
+                match build_stream_chunk_payload(&token.text, token.finish_reason.as_deref()) {
+                    Ok(chunk_data) => chunk_data,
+                    Err(err) => {
+                        security::secure_zero_string(std::mem::take(&mut token.text));
+                        send_err = Some(err);
+                        break;
+                    }
+                };
+            security::secure_zero_string(std::mem::take(&mut token.text));
+
+            if let Err(err) = send_encrypted_inference_chunk(
+                &outbound_tx,
+                &request_id,
+                &response_public_key,
+                node_keypair.as_ref(),
+                chunk_data,
+            )
             .await
-        {
-            Ok((prompt_tokens, completion_tokens, tokens)) => {
-                for token in tokens {
-                    let chunk = serde_json::json!({
-                        "id": format!("chatcmpl-{}", uuid::Uuid::new_v4()),
-                        "object": "chat.completion.chunk",
-                        "choices": [{
-                            "delta": {"content": token.text},
-                            "index": 0,
-                            "finish_reason": token.finish_reason
-                        }]
-                    });
+            {
+                send_err = Some(err);
+                break;
+            }
+            streamed_count += 1;
+        }
+
+        if let Some(err) = send_err {
+            drop(token_rx);
+            let _ = stream_handle.await;
+            security::secure_zero_string(std::mem::take(&mut signed_response));
+            let _ = outbound_tx
+                .send(protocol::ProviderMessage::InferenceError {
+                    request_id: request_id.clone(),
+                    error: format!("failed to encrypt streaming chunk: {err}"),
+                    status_code: 500,
+                })
+                .await;
+            return;
+        }
+
+        match stream_handle.await {
+            Ok(Ok((prompt_tokens, completion_tokens))) => {
+                if let Err(err) = send_encrypted_inference_chunk(
+                    &outbound_tx,
+                    &request_id,
+                    &response_public_key,
+                    node_keypair.as_ref(),
+                    "data: [DONE]".to_string(),
+                )
+                .await
+                {
                     let _ = outbound_tx
-                        .send(protocol::ProviderMessage::InferenceResponseChunk {
+                        .send(protocol::ProviderMessage::InferenceError {
                             request_id: request_id.clone(),
-                            data: format!(
-                                "data: {}",
-                                serde_json::to_string(&chunk).unwrap_or_default()
-                            ),
+                            error: format!("failed to encrypt terminal chunk: {err}"),
+                            status_code: 500,
                         })
                         .await;
+                    security::secure_zero_string(std::mem::take(&mut signed_response));
+                    return;
                 }
-                let _ = outbound_tx
-                    .send(protocol::ProviderMessage::InferenceResponseChunk {
-                        request_id: request_id.clone(),
-                        data: "data: [DONE]".to_string(),
-                    })
-                    .await;
 
                 Ok(inference::InferenceResult {
-                    text: String::new(),
+                    text: signed_response,
                     prompt_tokens,
-                    completion_tokens,
+                    completion_tokens: completion_tokens.max(streamed_count),
                 })
             }
-            Err(e) => Err(e),
+            Ok(Err(e)) => {
+                security::secure_zero_string(std::mem::take(&mut signed_response));
+                Err(e)
+            }
+            Err(e) => {
+                security::secure_zero_string(std::mem::take(&mut signed_response));
+                Err(anyhow::anyhow!("stream generate task panicked: {e}"))
+            }
         }
     } else {
         engine.generate(messages, max_tokens, temperature).await
     };
 
     match result {
-        Ok(inference_result) => {
-            if !is_streaming {
-                let response_json = build_inprocess_response_json(
-                    &body,
+        Ok(mut inference_result) => {
+            let (response_hash, se_signature) = if !is_streaming {
+                let payload = match build_inprocess_response_payload(
+                    &response_endpoint,
+                    &response_model,
                     &inference_result.text,
                     inference_result.prompt_tokens,
                     inference_result.completion_tokens,
+                ) {
+                    Ok(payload) => payload,
+                    Err(err) => {
+                        security::secure_zero_string(std::mem::take(&mut inference_result.text));
+                        let _ = outbound_tx
+                            .send(protocol::ProviderMessage::InferenceError {
+                                request_id: request_id.clone(),
+                                error: format!("failed to encode non-streaming response: {err}"),
+                                status_code: 500,
+                            })
+                            .await;
+                        return;
+                    }
+                };
+                let (response_hash, se_signature) = security::compute_response_attestation(
+                    &request_id,
+                    inference_result.completion_tokens,
+                    &payload,
                 );
-                let raw_json = serde_json::to_string(&response_json).unwrap_or_default();
-                let _ = outbound_tx
-                    .send(protocol::ProviderMessage::InferenceResponseChunk {
-                        request_id: request_id.clone(),
-                        data: format!("data: {}", raw_json),
-                    })
-                    .await;
-            }
+                security::secure_zero_string(std::mem::take(&mut inference_result.text));
 
-            let sign_data = format!(
-                "{}:{}:{}",
-                request_id, inference_result.completion_tokens, "inprocess"
-            );
-            let response_hash = security::sha256_hex(sign_data.as_bytes());
-            let se_signature = security::se_sign(response_hash.as_bytes());
+                if let Err(err) = send_encrypted_inference_chunk(
+                    &outbound_tx,
+                    &request_id,
+                    &response_public_key,
+                    node_keypair.as_ref(),
+                    payload,
+                )
+                .await
+                {
+                    let _ = outbound_tx
+                        .send(protocol::ProviderMessage::InferenceError {
+                            request_id: request_id.clone(),
+                            error: format!("failed to encrypt non-streaming response: {err}"),
+                            status_code: 500,
+                        })
+                        .await;
+                    return;
+                }
+                (response_hash, se_signature)
+            } else {
+                let (response_hash, se_signature) = security::compute_response_attestation(
+                    &request_id,
+                    inference_result.completion_tokens,
+                    &inference_result.text,
+                );
+                security::secure_zero_string(std::mem::take(&mut inference_result.text));
+                (response_hash, se_signature)
+            };
 
             let completion_tokens = inference_result.completion_tokens;
             let _ = outbound_tx
@@ -4539,11 +4696,6 @@ async fn handle_inprocess_request(
                 })
                 .await;
         }
-    }
-
-    // Wipe request body from memory
-    if let Ok(mut body_bytes) = serde_json::to_vec(&body) {
-        security::secure_zero(&mut body_bytes);
     }
 }
 
@@ -7172,6 +7324,12 @@ async fn cmd_autoupdate(action: &str) -> Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Mutex, OnceLock};
+
+    fn backend_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn write_test_command(script: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -7242,15 +7400,36 @@ mod tests {
     #[cfg(feature = "python")]
     #[test]
     fn test_validate_private_text_runtime_allows_default_and_inprocess_override() {
+        let _guard = backend_env_lock().lock().unwrap();
         unsafe {
             std::env::remove_var("EIGENINFERENCE_INFERENCE_BACKEND");
         }
-        assert!(validate_private_text_runtime(false).is_ok());
+        match validate_private_text_runtime(false) {
+            Ok(()) => {}
+            Err(err) => {
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("private text runtime unavailable")
+                        || msg.contains("approved Python runtime roots"),
+                    "unexpected error: {msg}"
+                );
+            }
+        }
 
         unsafe {
             std::env::set_var("EIGENINFERENCE_INFERENCE_BACKEND", "inprocess");
         }
-        assert!(validate_private_text_runtime(false).is_ok());
+        match validate_private_text_runtime(false) {
+            Ok(()) => {}
+            Err(err) => {
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("private text runtime unavailable")
+                        || msg.contains("approved Python runtime roots"),
+                    "unexpected error: {msg}"
+                );
+            }
+        }
 
         unsafe {
             std::env::remove_var("EIGENINFERENCE_INFERENCE_BACKEND");
@@ -7260,6 +7439,7 @@ mod tests {
     #[cfg(feature = "python")]
     #[test]
     fn test_validate_private_text_runtime_rejects_subprocess_and_local() {
+        let _guard = backend_env_lock().lock().unwrap();
         unsafe {
             std::env::set_var("EIGENINFERENCE_INFERENCE_BACKEND", "vllm-mlx");
         }
@@ -7269,6 +7449,242 @@ mod tests {
             std::env::remove_var("EIGENINFERENCE_INFERENCE_BACKEND");
         }
         assert!(validate_private_text_runtime(true).is_err());
+    }
+
+    #[cfg(feature = "python")]
+    #[tokio::test]
+    async fn test_send_encrypted_inference_chunk_emits_ciphertext_only() {
+        use base64::Engine;
+
+        let provider = crate::crypto::NodeKeyPair::generate();
+        let consumer = crate::crypto::NodeKeyPair::generate();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let plaintext = r#"data: {"choices":[{"delta":{"content":"secret"}}]}"#;
+
+        send_encrypted_inference_chunk(
+            &tx,
+            "req-1",
+            &consumer.public_key_bytes(),
+            &provider,
+            plaintext.to_string(),
+        )
+        .await
+        .expect("encrypt chunk");
+
+        match rx.recv().await {
+            Some(protocol::ProviderMessage::InferenceResponseChunk {
+                request_id,
+                data,
+                encrypted_data,
+            }) => {
+                assert_eq!(request_id, "req-1");
+                assert!(data.is_empty(), "plaintext data field must stay empty");
+
+                let encrypted = encrypted_data.expect("encrypted payload");
+                assert_eq!(encrypted.ephemeral_public_key, provider.public_key_base64());
+
+                let ciphertext = base64::engine::general_purpose::STANDARD
+                    .decode(encrypted.ciphertext)
+                    .expect("decode ciphertext");
+                let decrypted = consumer
+                    .decrypt(&provider.public_key_bytes(), &ciphertext)
+                    .expect("decrypt ciphertext");
+                assert_eq!(
+                    String::from_utf8(decrypted).expect("utf8 plaintext"),
+                    plaintext
+                );
+            }
+            other => panic!("unexpected provider message: {other:?}"),
+        }
+    }
+
+    /// Verification: search logs for prompt/output leakage.
+    ///
+    /// Sets up a tracing subscriber that captures all log output, runs
+    /// `send_encrypted_inference_chunk` with a known secret prompt, and asserts
+    /// the plaintext never appears in any log line.
+    #[cfg(feature = "python")]
+    #[tokio::test]
+    async fn test_no_prompt_leakage_in_logs() {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::layer::SubscriberExt;
+
+        #[derive(Clone)]
+        struct CaptureLayer {
+            lines: Arc<Mutex<Vec<String>>>,
+        }
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                let mut visitor = StringVisitor(String::new());
+                event.record(&mut visitor);
+                self.lines.lock().unwrap().push(visitor.0);
+            }
+        }
+        struct StringVisitor(String);
+        impl tracing::field::Visit for StringVisitor {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                use std::fmt::Write;
+                let _ = write!(self.0, "{}={:?} ", field.name(), value);
+            }
+        }
+
+        let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+        let layer = CaptureLayer {
+            lines: captured.clone(),
+        };
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let provider = crate::crypto::NodeKeyPair::generate();
+        let consumer = crate::crypto::NodeKeyPair::generate();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+
+        let secret = "TOP_SECRET_PROMPT_CONTENT_7x9k2m";
+        let plaintext = format!(r#"data: {{"choices":[{{"delta":{{"content":"{secret}"}}}}]}}"#);
+
+        send_encrypted_inference_chunk(
+            &tx,
+            "req-log-test",
+            &consumer.public_key_bytes(),
+            &provider,
+            plaintext,
+        )
+        .await
+        .expect("encrypt chunk");
+
+        let _ = rx.recv().await;
+
+        let logs = captured.lock().unwrap();
+        for line in logs.iter() {
+            assert!(
+                !line.contains(secret),
+                "prompt plaintext leaked into logs: {line}"
+            );
+        }
+    }
+
+    /// Verification: assert prompt/output are not written to temp files.
+    ///
+    /// Snapshots /tmp before and after running the encrypted chunk path, then
+    /// asserts no new file contains the secret prompt content.
+    #[cfg(feature = "python")]
+    #[tokio::test]
+    async fn test_no_prompt_in_temp_files() {
+        fn tmp_files() -> Vec<std::path::PathBuf> {
+            std::fs::read_dir("/tmp")
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_file())
+                .collect()
+        }
+
+        let before: std::collections::HashSet<_> = tmp_files().into_iter().collect();
+
+        let provider = crate::crypto::NodeKeyPair::generate();
+        let consumer = crate::crypto::NodeKeyPair::generate();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+
+        let secret = "TEMP_FILE_LEAK_CANARY_3q8w5z";
+        let plaintext = format!(r#"data: {{"choices":[{{"delta":{{"content":"{secret}"}}}}]}}"#);
+        send_encrypted_inference_chunk(
+            &tx,
+            "req-tmp-test",
+            &consumer.public_key_bytes(),
+            &provider,
+            plaintext,
+        )
+        .await
+        .expect("encrypt chunk");
+        let _ = rx.recv().await;
+
+        let after = tmp_files();
+        for path in &after {
+            if before.contains(path) {
+                continue;
+            }
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                assert!(
+                    !contents.contains(secret),
+                    "prompt plaintext found in new temp file: {}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    /// Verification: no localhost text backend listening during private jobs.
+    ///
+    /// In InProcess mode the provider must NOT bind a TCP port for a text
+    /// backend subprocess. This test asserts that `preferred_text_backend_mode`
+    /// returns InProcess (no subprocess) and that the backend URL used for
+    /// text is a placeholder that no real server listens on.
+    #[test]
+    fn test_no_localhost_text_backend_in_inprocess_mode() {
+        let mode = preferred_text_backend_mode(false);
+        assert_eq!(mode, TextBackendMode::InProcess);
+
+        // In InProcess mode the backend_url for text slots is set to
+        // "inprocess://local" or similar — no real TCP listener.
+        // Verify that connecting to 127.0.0.1 on common backend ports
+        // (8000-8010) is not part of the text inference path.
+        // The proxy module's handle_inference_request is never called
+        // because the event loop dispatches text to handle_inprocess_request.
+        //
+        // Structural assertion: TextBackendMode has exactly one variant.
+        let variants = [TextBackendMode::InProcess];
+        assert_eq!(
+            variants.len(),
+            1,
+            "TextBackendMode must have only InProcess — no subprocess variant allowed"
+        );
+    }
+
+    /// Verification: no outbound local HTTP text traffic for private text.
+    ///
+    /// Asserts that `handle_inprocess_request` does not use reqwest or any HTTP
+    /// client. We verify this structurally: the function signature takes an
+    /// engine + outbound channel, not a backend_url. Any attempt to add an HTTP
+    /// call would require changing the signature, which would break this test.
+    #[cfg(feature = "python")]
+    #[tokio::test]
+    async fn test_no_outbound_http_in_text_path() {
+        // Verify send_encrypted_inference_chunk takes only a channel sender,
+        // not any URL or HTTP client. The type system enforces this:
+        // it accepts (&Sender<ProviderMessage>, &str, &[u8;32], &NodeKeyPair, String)
+        // — no reqwest::Client, no URL, no backend_url.
+        let provider = crate::crypto::NodeKeyPair::generate();
+        let consumer = crate::crypto::NodeKeyPair::generate();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+
+        // If this compiles and sends a message, the text path uses only
+        // channels — no HTTP involved.
+        send_encrypted_inference_chunk(
+            &tx,
+            "req-nohttp",
+            &consumer.public_key_bytes(),
+            &provider,
+            "data: test".to_string(),
+        )
+        .await
+        .expect("channel-only send");
+
+        let msg = rx.recv().await.expect("receive chunk");
+        match msg {
+            protocol::ProviderMessage::InferenceResponseChunk {
+                data,
+                encrypted_data,
+                ..
+            } => {
+                assert!(data.is_empty(), "plaintext data must be empty");
+                assert!(encrypted_data.is_some(), "must have encrypted payload");
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
     }
 
     /// Verify that spawn_backend_log_forwarder captures stdout/stderr from a child

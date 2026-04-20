@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/coordinator/internal/attestation"
+	"github.com/eigeninference/coordinator/internal/e2e"
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
@@ -185,39 +186,45 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					regMsg.GrpcBinaryHash, regMsg.ImageBridgeHash)
 				provider.Mu().Lock()
 				provider.RuntimeVerified = runtimeOK
+				provider.RuntimeManifestChecked = runtimeOK
 				provider.PythonHash = regMsg.PythonHash
 				provider.RuntimeHash = regMsg.RuntimeHash
+				provider.TemplateHashes = registry.CloneStringMap(regMsg.TemplateHashes)
+				provider.GrpcBinaryHash = regMsg.GrpcBinaryHash
+				provider.ImageBridgeHash = regMsg.ImageBridgeHash
 				provider.Mu().Unlock()
 
-				// Send runtime status feedback to provider so it can self-heal.
-				statusMsg := protocol.RuntimeStatusMessage{
-					Type:       protocol.TypeRuntimeStatus,
-					Verified:   runtimeOK,
-					Mismatches: mismatches,
-				}
-				statusData, err := json.Marshal(statusMsg)
-				if err == nil {
-					writeCtx, writeCancel := context.WithTimeout(loopCtx, 5*time.Second)
-					_ = conn.Write(writeCtx, websocket.MessageText, statusData)
-					writeCancel()
-				}
-
-				if runtimeOK {
+				if !runtimeOK {
+					// Send runtime status feedback only on mismatch so the
+					// provider can self-heal. Skip the message when everything
+					// matches — it would only add noise on the WebSocket.
+					statusMsg := protocol.RuntimeStatusMessage{
+						Type:       protocol.TypeRuntimeStatus,
+						Verified:   false,
+						Mismatches: mismatches,
+					}
+					statusData, err := json.Marshal(statusMsg)
+					if err == nil {
+						writeCtx, writeCancel := context.WithTimeout(loopCtx, 5*time.Second)
+						_ = conn.Write(writeCtx, websocket.MessageText, statusData)
+						writeCancel()
+					}
+					s.logger.Warn("provider runtime integrity mismatch — excluded from routing",
+						"provider_id", providerID,
+						"mismatches", len(mismatches),
+					)
+				} else {
 					s.logger.Info("provider runtime integrity verified",
 						"provider_id", providerID,
 						"python_hash", regMsg.PythonHash,
 						"runtime_hash", regMsg.RuntimeHash,
 					)
-				} else {
-					s.logger.Warn("provider runtime integrity mismatch — excluded from routing",
-						"provider_id", providerID,
-						"mismatches", len(mismatches),
-					)
 				}
 			} else {
-				// No manifest configured — all providers pass by default.
+				// No manifest configured — fail-closed for routing.
 				provider.Mu().Lock()
 				provider.RuntimeVerified = true
+				provider.RuntimeManifestChecked = false
 				provider.Mu().Unlock()
 			}
 
@@ -231,23 +238,11 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				)
 				provider.Mu().Lock()
 				provider.RuntimeVerified = false
+				provider.RuntimeManifestChecked = false
 				provider.Mu().Unlock()
 			}
 
-			// If ACME client cert was verified, upgrade to hardware trust.
-			// ACME device-attest-01 proves the provider's SE key is Apple-attested.
-			if acmeResult != nil && acmeResult.Valid {
-				provider.Mu().Lock()
-				provider.ACMEVerified = true
-				provider.Mu().Unlock()
-				provider.SetAttested(true, registry.TrustHardware)
-				s.logger.Info("ACME client cert verified — hardware trust via Apple SE attestation",
-					"provider_id", providerID,
-					"acme_serial", acmeResult.SerialNumber,
-					"acme_issuer", acmeResult.Issuer,
-					"acme_key_alg", acmeResult.PublicKeyAlg,
-				)
-			}
+			s.applyACMETrust(providerID, provider, acmeResult)
 
 			// Start challenge loop after registration
 			go s.challengeLoop(loopCtx, conn, providerID, provider, tracker)
@@ -288,6 +283,93 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			s.logger.Warn("unhandled provider message type", "provider_id", providerID, "type", msg.Type)
 		}
 	}
+}
+
+func (s *Server) applyACMETrust(providerID string, provider *registry.Provider, acmeResult *ACMEVerificationResult) {
+	if acmeResult == nil || !acmeResult.Valid {
+		return
+	}
+
+	provider.Mu().Lock()
+	provider.ACMEVerified = true
+	provider.Mu().Unlock()
+
+	if !providerHasBoundEncryptionAttestation(provider) {
+		s.logger.Warn("ACME client cert verified but X25519 key was not bound by attestation",
+			"provider_id", providerID,
+			"acme_serial", acmeResult.SerialNumber,
+			"acme_issuer", acmeResult.Issuer,
+			"acme_key_alg", acmeResult.PublicKeyAlg,
+		)
+		return
+	}
+	if !providerAttestationMatchesACMEKey(provider, acmeResult) {
+		s.logger.Warn("ACME client cert key does not match the attested Secure Enclave key",
+			"provider_id", providerID,
+			"acme_serial", acmeResult.SerialNumber,
+			"acme_issuer", acmeResult.Issuer,
+			"acme_key_alg", acmeResult.PublicKeyAlg,
+		)
+		return
+	}
+
+	provider.SetAttested(true, registry.TrustHardware)
+	s.logger.Info("ACME client cert verified — hardware trust via Apple SE attestation",
+		"provider_id", providerID,
+		"acme_serial", acmeResult.SerialNumber,
+		"acme_issuer", acmeResult.Issuer,
+		"acme_key_alg", acmeResult.PublicKeyAlg,
+	)
+}
+
+func providerHasBoundEncryptionAttestation(provider *registry.Provider) bool {
+	provider.Mu().Lock()
+	defer provider.Mu().Unlock()
+
+	if provider.PublicKey == "" || provider.AttestationResult == nil || !provider.AttestationResult.Valid {
+		return false
+	}
+
+	return provider.AttestationResult.EncryptionPublicKey != "" &&
+		provider.AttestationResult.EncryptionPublicKey == provider.PublicKey
+}
+
+func providerAttestationMatchesACMEKey(provider *registry.Provider, acmeResult *ACMEVerificationResult) bool {
+	if acmeResult == nil || acmeResult.PublicKey == "" {
+		return false
+	}
+
+	provider.Mu().Lock()
+	if provider.AttestationResult == nil || !provider.AttestationResult.Valid {
+		provider.Mu().Unlock()
+		return false
+	}
+	attestedKeyB64 := provider.AttestationResult.PublicKey
+	provider.Mu().Unlock()
+
+	if attestedKeyB64 == "" {
+		return false
+	}
+
+	attestedRaw, err := base64.StdEncoding.DecodeString(attestedKeyB64)
+	if err != nil {
+		return false
+	}
+	acmeRaw, err := base64.StdEncoding.DecodeString(acmeResult.PublicKey)
+	if err != nil {
+		return false
+	}
+
+	attestedKey, err := attestation.ParseP256PublicKey(attestedRaw)
+	if err != nil {
+		return false
+	}
+	acmeKey, err := attestation.ParseP256PublicKey(acmeRaw)
+	if err != nil {
+		return false
+	}
+
+	return attestedKey.X.Cmp(acmeKey.X) == 0 && attestedKey.Y.Cmp(acmeKey.Y) == 0
 }
 
 // challengeLoop periodically sends attestation challenges to a provider.
@@ -453,12 +535,16 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		}
 	}
 
-	// Verify fresh SIP status. If the provider reports SIP disabled,
-	// they've rebooted since registration and are no longer trustworthy.
-	// SIP cannot be disabled at runtime — a reboot into Recovery Mode is
-	// required. So SIP=false means the provider deliberately weakened
-	// their security posture.
-	if resp.SIPEnabled != nil && !*resp.SIPEnabled {
+	// Verify fresh SIP status. This signal is mandatory for private text:
+	// an omitted value is not evidence of safety, so fail closed.
+	if resp.SIPEnabled == nil {
+		s.handleChallengeFailure(providerID, "SIP status not reported")
+		return
+	}
+	// If the provider reports SIP disabled, they've rebooted since
+	// registration and are no longer trustworthy. SIP cannot be disabled at
+	// runtime — a reboot into Recovery Mode is required.
+	if !*resp.SIPEnabled {
 		s.logger.Error("provider SIP disabled in challenge response — marking untrusted",
 			"provider_id", providerID,
 		)
@@ -546,11 +632,21 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			resp.GrpcBinaryHash, resp.ImageBridgeHash)
 		provider.Mu().Lock()
 		provider.RuntimeVerified = runtimeOK
+		provider.RuntimeManifestChecked = runtimeOK
 		if resp.PythonHash != "" {
 			provider.PythonHash = resp.PythonHash
 		}
 		if resp.RuntimeHash != "" {
 			provider.RuntimeHash = resp.RuntimeHash
+		}
+		if len(resp.TemplateHashes) > 0 {
+			provider.TemplateHashes = registry.CloneStringMap(resp.TemplateHashes)
+		}
+		if resp.GrpcBinaryHash != "" {
+			provider.GrpcBinaryHash = resp.GrpcBinaryHash
+		}
+		if resp.ImageBridgeHash != "" {
+			provider.ImageBridgeHash = resp.ImageBridgeHash
 		}
 		provider.Mu().Unlock()
 
@@ -575,8 +671,41 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 					writeCancel()
 				}
 			}
+			return
 		}
 	}
+
+	provider.Mu().Lock()
+	version := provider.Version
+	provider.Mu().Unlock()
+	if s.minProviderVersion != "" && version != "" && semverLess(version, s.minProviderVersion) {
+		s.logger.Warn("provider version below minimum during challenge revalidation — excluded from routing",
+			"provider_id", providerID,
+			"version", version,
+			"min_version", s.minProviderVersion,
+		)
+		provider.Mu().Lock()
+		provider.RuntimeVerified = false
+		provider.RuntimeManifestChecked = false
+		provider.Mu().Unlock()
+		return
+	}
+
+	// Override self-reported privacy capabilities with coordinator-verified
+	// values from the challenge response. The coordinator independently checks
+	// SIP and hypervisor status during each attestation challenge — these
+	// override the provider's self-report at registration time.
+	provider.Mu().Lock()
+	if provider.PrivacyCapabilities != nil {
+		if resp.SIPEnabled != nil {
+			provider.PrivacyCapabilities.SIPEnabled = *resp.SIPEnabled
+		}
+		if resp.HypervisorActive != nil {
+			provider.PrivacyCapabilities.HypervisorActive = *resp.HypervisorActive
+		}
+	}
+	provider.ChallengeVerifiedSIP = resp.SIPEnabled != nil && *resp.SIPEnabled
+	provider.Mu().Unlock()
 
 	// Challenge passed.
 	s.registry.RecordChallengeSuccess(providerID)
@@ -624,12 +753,69 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		s.logger.Warn("chunk for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
 		return
 	}
+	chunkData, err := decryptTextResponseChunk(provider, pr, msg)
+	if err != nil {
+		s.logger.Warn("rejecting insecure response chunk",
+			"provider_id", providerID,
+			"request_id", msg.RequestID,
+			"error", err,
+		)
+		s.registry.MarkUntrusted(providerID)
+		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+			Type:       protocol.TypeInferenceError,
+			RequestID:  msg.RequestID,
+			Error:      "provider returned invalid encrypted chunk",
+			StatusCode: http.StatusBadGateway,
+		})
+		return
+	}
 	// Non-blocking send — if consumer is gone the chunk is dropped.
 	select {
-	case pr.ChunkCh <- msg.Data:
+	case pr.ChunkCh <- chunkData:
 	default:
 		s.logger.Warn("dropped chunk, consumer channel full", "request_id", msg.RequestID)
 	}
+}
+
+func decryptTextResponseChunk(provider *registry.Provider, pr *registry.PendingRequest, msg *protocol.InferenceResponseChunkMessage) (string, error) {
+	if msg.EncryptedData == nil {
+		return "", errTextChunkViolation("plaintext text chunk")
+	}
+	if msg.Data != "" {
+		return "", errTextChunkViolation("mixed plaintext and encrypted text chunk")
+	}
+	if provider.PublicKey == "" {
+		return "", errTextChunkViolation("provider missing registered public key")
+	}
+	if msg.EncryptedData.EphemeralPublicKey != provider.PublicKey {
+		return "", errTextChunkViolation("chunk sender key mismatch")
+	}
+	if pr.SessionPrivKey == nil {
+		return "", errTextChunkViolation("missing coordinator session key")
+	}
+
+	payload := &e2e.EncryptedPayload{
+		EphemeralPublicKey: msg.EncryptedData.EphemeralPublicKey,
+		Ciphertext:         msg.EncryptedData.Ciphertext,
+	}
+	session := &e2e.SessionKeys{PrivateKey: *pr.SessionPrivKey}
+	plaintext, err := e2e.Decrypt(payload, session)
+	if err != nil {
+		return "", err
+	}
+	return string(plaintext), nil
+}
+
+func errTextChunkViolation(reason string) error {
+	return &textChunkViolationError{reason: reason}
+}
+
+type textChunkViolationError struct {
+	reason string
+}
+
+func (e *textChunkViolationError) Error() string {
+	return e.reason
 }
 
 func (s *Server) handleInferenceAccepted(providerID string, provider *registry.Provider, msg *protocol.InferenceAcceptedMessage) {
@@ -1006,9 +1192,19 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		return
 	}
 
-	// If the attestation includes an encryption public key, verify it matches
-	// the public_key in the Register message (binding E2E key to SE identity).
-	if result.EncryptionPublicKey != "" && regMsg.PublicKey != "" {
+	// Bind the WebSocket X25519 key used for E2E text encryption to the
+	// attested Secure Enclave identity. If a provider wants to serve private
+	// text, the attestation must carry the same encryption public key.
+	if regMsg.PublicKey != "" {
+		if result.EncryptionPublicKey == "" {
+			s.logger.Warn("attestation missing encryption key for registered public key",
+				"provider_id", providerID,
+			)
+			result.Valid = false
+			result.Error = "attestation missing encryption public key"
+			provider.SetAttestationResult(&result)
+			return
+		}
 		if result.EncryptionPublicKey != regMsg.PublicKey {
 			s.logger.Warn("attestation encryption key does not match register public key",
 				"provider_id", providerID,

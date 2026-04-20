@@ -139,12 +139,13 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 	reg.SetStore(st)
 
 	s := &Server{
-		registry:     reg,
-		store:        st,
-		ledger:       payments.NewLedger(st),
-		logger:       logger,
-		mux:          http.NewServeMux(),
-		imageUploads: make(map[string][][]byte),
+		registry:             reg,
+		store:                st,
+		ledger:               payments.NewLedger(st),
+		logger:               logger,
+		mux:                  http.NewServeMux(),
+		imageUploads:         make(map[string][][]byte),
+		knownRuntimeManifest: &RuntimeManifest{},
 	}
 	s.routes()
 
@@ -361,6 +362,48 @@ func (s *Server) SyncRuntimeManifest() {
 	} else {
 		s.knownRuntimeManifest = nil
 	}
+
+	s.revalidateConnectedProvidersAgainstRuntimePolicy()
+}
+
+func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
+	for _, providerID := range s.registry.ProviderIDs() {
+		provider := s.registry.GetProvider(providerID)
+		if provider == nil {
+			continue
+		}
+
+		provider.Mu().Lock()
+		pythonHash := provider.PythonHash
+		runtimeHash := provider.RuntimeHash
+		templateHashes := registry.CloneStringMap(provider.TemplateHashes)
+		grpcBinaryHash := provider.GrpcBinaryHash
+		imageBridgeHash := provider.ImageBridgeHash
+		version := provider.Version
+		switch {
+		case s.knownRuntimeManifest == nil:
+			provider.RuntimeVerified = false
+			provider.RuntimeManifestChecked = false
+		case s.minProviderVersion != "" &&
+			version != "" &&
+			semverLess(version, s.minProviderVersion):
+			provider.RuntimeVerified = false
+			provider.RuntimeManifestChecked = false
+		default:
+			runtimeOK, _ := s.verifyRuntimeHashes(
+				pythonHash,
+				runtimeHash,
+				templateHashes,
+				grpcBinaryHash,
+				imageBridgeHash,
+			)
+			if !runtimeOK {
+				provider.RuntimeVerified = false
+				provider.RuntimeManifestChecked = false
+			}
+		}
+		provider.Mu().Unlock()
+	}
 }
 
 // RuntimeManifest holds the set of accepted hashes for provider runtime components.
@@ -415,42 +458,53 @@ func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 }
 
 // verifyRuntimeHashes checks provider-reported runtime hashes against the
-// known-good manifest. Returns (true, nil) if all hashes match or no manifest
-// is configured. Returns (false, mismatches) if any component fails verification.
+// known-good manifest. When a component has expected hashes in the manifest,
+// the provider MUST report that component and it MUST match one of the known
+// good values. Omitting a required hash is treated as a mismatch.
 func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHashes map[string]string, grpcBinaryHash, imageBridgeHash string) (bool, []protocol.RuntimeMismatch) {
 	if s.knownRuntimeManifest == nil {
-		return true, nil // no manifest configured, pass by default
+		return true, nil
 	}
 
+	manifest := s.knownRuntimeManifest
 	var mismatches []protocol.RuntimeMismatch
 
-	// Check Python runtime hash.
-	if pythonHash != "" && len(s.knownRuntimeManifest.PythonHashes) > 0 {
-		if !s.knownRuntimeManifest.PythonHashes[pythonHash] {
+	requireOneOf := func(component, got string, accepted map[string]bool) {
+		if len(accepted) == 0 {
+			return
+		}
+		if got == "" {
 			mismatches = append(mismatches, protocol.RuntimeMismatch{
-				Component: "python",
+				Component: component,
+				Expected:  "reported hash matching one of known-good values",
+				Got:       "(missing)",
+			})
+			return
+		}
+		if !accepted[got] {
+			mismatches = append(mismatches, protocol.RuntimeMismatch{
+				Component: component,
 				Expected:  "one of known-good hashes",
-				Got:       pythonHash,
+				Got:       got,
 			})
 		}
 	}
 
-	// Check inference runtime hash.
-	if runtimeHash != "" && len(s.knownRuntimeManifest.RuntimeHashes) > 0 {
-		if !s.knownRuntimeManifest.RuntimeHashes[runtimeHash] {
-			mismatches = append(mismatches, protocol.RuntimeMismatch{
-				Component: "runtime",
-				Expected:  "one of known-good hashes",
-				Got:       runtimeHash,
-			})
-		}
-	}
+	requireOneOf("python", pythonHash, manifest.PythonHashes)
+	requireOneOf("runtime", runtimeHash, manifest.RuntimeHashes)
 
-	// Check template hashes.
-	if len(templateHashes) > 0 && len(s.knownRuntimeManifest.TemplateHashes) > 0 {
-		for name, got := range templateHashes {
-			expected, ok := s.knownRuntimeManifest.TemplateHashes[name]
-			if ok && got != expected {
+	if len(manifest.TemplateHashes) > 0 {
+		for name, expected := range manifest.TemplateHashes {
+			got, ok := templateHashes[name]
+			if !ok || got == "" {
+				mismatches = append(mismatches, protocol.RuntimeMismatch{
+					Component: "template:" + name,
+					Expected:  expected,
+					Got:       "(missing)",
+				})
+				continue
+			}
+			if got != expected {
 				mismatches = append(mismatches, protocol.RuntimeMismatch{
 					Component: "template:" + name,
 					Expected:  expected,
@@ -458,29 +512,19 @@ func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHas
 				})
 			}
 		}
-	}
-
-	// Check gRPCServerCLI binary hash (warn only — backward compat with older providers).
-	if grpcBinaryHash != "" && len(s.knownRuntimeManifest.GrpcBinaryHashes) > 0 {
-		if !s.knownRuntimeManifest.GrpcBinaryHashes[grpcBinaryHash] {
-			mismatches = append(mismatches, protocol.RuntimeMismatch{
-				Component: "grpc_binary",
-				Expected:  "one of known-good hashes",
-				Got:       grpcBinaryHash,
-			})
+		for name, got := range templateHashes {
+			if _, ok := manifest.TemplateHashes[name]; !ok {
+				mismatches = append(mismatches, protocol.RuntimeMismatch{
+					Component: "template:" + name,
+					Expected:  "template listed in runtime manifest",
+					Got:       got,
+				})
+			}
 		}
 	}
 
-	// Check image bridge hash (warn only — backward compat with older providers).
-	if imageBridgeHash != "" && len(s.knownRuntimeManifest.ImageBridgeHashes) > 0 {
-		if !s.knownRuntimeManifest.ImageBridgeHashes[imageBridgeHash] {
-			mismatches = append(mismatches, protocol.RuntimeMismatch{
-				Component: "image_bridge",
-				Expected:  "one of known-good hashes",
-				Got:       imageBridgeHash,
-			})
-		}
-	}
+	requireOneOf("grpc_binary", grpcBinaryHash, manifest.GrpcBinaryHashes)
+	requireOneOf("image_bridge", imageBridgeHash, manifest.ImageBridgeHashes)
 
 	return len(mismatches) == 0, mismatches
 }

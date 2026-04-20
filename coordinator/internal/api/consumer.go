@@ -7,13 +7,12 @@ package api
 // layer between consumers and providers.
 //
 // Trust model:
-//   The coordinator runs in a GCP Confidential VM with AMD SEV-SNP, providing
-//   hardware-encrypted memory. Consumer traffic arrives over HTTPS/TLS.
-//   The coordinator can read requests for routing purposes but never logs
-//   prompt content. When forwarding to a provider, the coordinator sends
-//   plain JSON over the WebSocket (the provider is attested via Secure Enclave
-//   challenge-response). Future: the coordinator may encrypt request bodies
-//   with the provider's X25519 public key before forwarding.
+//   The coordinator runs in a Confidential VM, providing hardware-encrypted
+//   memory. Consumers may additionally sender-seal requests to the
+//   coordinator's X25519 key. The coordinator decrypts for routing purposes
+//   but never logs prompt content, then re-encrypts each request to the
+//   selected provider's X25519 public key before forwarding over the
+//   WebSocket. Providers are attested via Secure Enclave challenge-response.
 
 import (
 	"context"
@@ -61,8 +60,8 @@ const (
 )
 
 // chatCompletionRequest is the incoming OpenAI-compatible request body.
-// The consumer sends plain JSON — no encryption fields are needed because
-// TLS to the Confidential VM is the trust boundary.
+// Consumers may send plain JSON or sender-sealed JSON (handled by
+// sealedTransport before this handler runs).
 type chatCompletionRequest struct {
 	Model       string                 `json:"model"`
 	Messages    []protocol.ChatMessage `json:"messages"`
@@ -606,7 +605,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	machineModel := provider.Hardware.MachineModel
 
 	if pubKey != "" {
-		w.Header().Set("X-Provider-Public-Key", pubKey)
+		w.Header().Set("X-Provider-Encrypted", "true")
 	}
 	if attested {
 		w.Header().Set("X-Provider-Attested", "true")

@@ -11,10 +11,11 @@
 //	                        inference_complete, inference_error, attestation_response
 //	Coordinator → Provider: inference_request, cancel, attestation_challenge
 //
-// The inference request body is plain JSON (model, messages, stream). No
-// encryption fields are needed in the wire protocol because the coordinator
-// runs in a Confidential VM and can read requests for routing. The provider
-// is attested via Secure Enclave challenge-response.
+// Inference requests may be carried either as plain JSON in Body or as an
+// X25519/NaCl-box encrypted payload in EncryptedBody. The coordinator can
+// decrypt sender-sealed requests inside its Confidential VM for routing, then
+// re-encrypts to the provider before dispatch. The provider is attested via
+// Secure Enclave challenge-response.
 package protocol
 
 import (
@@ -86,24 +87,39 @@ type ModelInfo struct {
 
 // RegisterMessage is sent when a provider first connects.
 type RegisterMessage struct {
-	Type          string          `json:"type"`
-	Hardware      Hardware        `json:"hardware"`
-	Models        []ModelInfo     `json:"models"`
-	Backend       string          `json:"backend"`
-	Version       string          `json:"version,omitempty"`        // provider binary version (e.g. "0.2.31")
-	PublicKey     string          `json:"public_key,omitempty"`     // base64-encoded X25519 public key for E2E encryption
-	WalletAddress string          `json:"wallet_address,omitempty"` // Ethereum-format hex address for Tempo payouts
-	Attestation   json.RawMessage `json:"attestation,omitempty"`    // signed Secure Enclave attestation blob
-	PrefillTPS    float64         `json:"prefill_tps,omitempty"`    // benchmark: prefill tokens per second
-	DecodeTPS     float64         `json:"decode_tps,omitempty"`     // benchmark: decode tokens per second
-	AuthToken     string          `json:"auth_token,omitempty"`     // device-linked provider token (from darkbloom login)
+	Type                    string          `json:"type"`
+	Hardware                Hardware        `json:"hardware"`
+	Models                  []ModelInfo     `json:"models"`
+	Backend                 string          `json:"backend"`
+	Version                 string          `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
+	PublicKey               string          `json:"public_key,omitempty"`                // base64-encoded X25519 public key for E2E encryption
+	EncryptedResponseChunks bool            `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are returned encrypted to the coordinator
+	WalletAddress           string          `json:"wallet_address,omitempty"`            // Ethereum-format hex address for Tempo payouts
+	Attestation             json.RawMessage `json:"attestation,omitempty"`               // signed Secure Enclave attestation blob
+	PrefillTPS              float64         `json:"prefill_tps,omitempty"`               // benchmark: prefill tokens per second
+	DecodeTPS               float64         `json:"decode_tps,omitempty"`                // benchmark: decode tokens per second
+	AuthToken               string          `json:"auth_token,omitempty"`                // device-linked provider token (from darkbloom login)
 
 	// Runtime integrity hashes — used for runtime verification against known-good manifests.
-	PythonHash      string            `json:"python_hash,omitempty"`       // SHA-256 of Python runtime
-	RuntimeHash     string            `json:"runtime_hash,omitempty"`      // SHA-256 of inference runtime (vllm-mlx)
-	TemplateHashes  map[string]string `json:"template_hashes,omitempty"`   // template_name -> SHA-256 hash
-	GrpcBinaryHash  string            `json:"grpc_binary_hash,omitempty"`  // SHA-256 of gRPCServerCLI binary
-	ImageBridgeHash string            `json:"image_bridge_hash,omitempty"` // SHA-256 of image bridge Python source
+	PythonHash          string               `json:"python_hash,omitempty"`       // SHA-256 of Python runtime
+	RuntimeHash         string               `json:"runtime_hash,omitempty"`      // SHA-256 of inference runtime (vllm-mlx)
+	TemplateHashes      map[string]string    `json:"template_hashes,omitempty"`   // template_name -> SHA-256 hash
+	GrpcBinaryHash      string               `json:"grpc_binary_hash,omitempty"`  // SHA-256 of gRPCServerCLI binary
+	ImageBridgeHash     string               `json:"image_bridge_hash,omitempty"` // SHA-256 of image bridge Python source
+	PrivacyCapabilities *PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
+}
+
+// PrivacyCapabilities describes the provider's privacy invariants at registration time.
+type PrivacyCapabilities struct {
+	TextBackendInprocess    bool `json:"text_backend_inprocess"`
+	TextProxyDisabled       bool `json:"text_proxy_disabled"`
+	PythonRuntimeLocked     bool `json:"python_runtime_locked"`
+	DangerousModulesBlocked bool `json:"dangerous_modules_blocked"`
+	SIPEnabled              bool `json:"sip_enabled"`
+	AntiDebugEnabled        bool `json:"anti_debug_enabled"`
+	CoreDumpsDisabled       bool `json:"core_dumps_disabled"`
+	EnvScrubbed             bool `json:"env_scrubbed"`
+	HypervisorActive        bool `json:"hypervisor_active"`
 }
 
 // HeartbeatMessage is sent periodically by connected providers.

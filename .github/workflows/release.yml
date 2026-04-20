@@ -360,16 +360,20 @@ jobs:
           PYTHON_HASH=$(shasum -a 256 "$PYTHON_BIN" | cut -d' ' -f1)
           echo "Python hash: $PYTHON_HASH"
 
+          PYTHON_LIB_DIR=$(/tmp/eigeninference-python/bin/python3.12 -c "import sysconfig; print(sysconfig.get_path('stdlib'))")
           SITE_PACKAGES_DIR=$(/tmp/eigeninference-python/bin/python3.12 -c "import site; print(site.getsitepackages()[0])")
-          echo "Hashing all files in: $SITE_PACKAGES_DIR"
+          echo "Hashing all allowed runtime files in: $PYTHON_LIB_DIR"
           RUNTIME_HASH=$(/tmp/eigeninference-python/bin/python3 -c "
           import hashlib, os, sys
           d = sys.argv[1]
-          files = sorted(
-              os.path.join(r, f)
-              for r, _, fs in os.walk(d)
-              for f in fs
-          )
+          files = []
+          for r, dirs, fs in os.walk(d):
+              dirs[:] = [name for name in dirs if name != '__pycache__']
+              for f in fs:
+                  if f.endswith('.pyc'):
+                      continue
+                  files.append(os.path.join(r, f))
+          files.sort()
           print(f'Total files: {len(files)}', file=sys.stderr)
           final = hashlib.sha256()
           for path in files:
@@ -382,8 +386,8 @@ jobs:
                       h.update(chunk)
               final.update(h.digest())
           print(final.hexdigest())
-          " "$SITE_PACKAGES_DIR")
-          echo "Runtime hash (all site-packages): $RUNTIME_HASH"
+          " "$PYTHON_LIB_DIR")
+          echo "Runtime hash (full python lib): $RUNTIME_HASH"
 
           cd /tmp && tar czf eigeninference-python-macos-arm64.tar.gz -C eigeninference-python .
           cd /tmp && tar czf eigeninference-site-packages.tar.gz -C "$SITE_PACKAGES_DIR" .

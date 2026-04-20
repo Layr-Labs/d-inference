@@ -28,7 +28,7 @@ import (
 // createTestAttestationJSONWithSerial creates a signed attestation blob with
 // a specific serial number. Based on createTestAttestationJSON in provider_test.go,
 // but adds serialNumber to the blob for deduplication tests.
-func createTestAttestationJSONWithSerial(t *testing.T, serial string) json.RawMessage {
+func createTestAttestationJSONWithSerial(t *testing.T, serial, encryptionKey string) json.RawMessage {
 	t.Helper()
 
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -57,6 +57,10 @@ func createTestAttestationJSONWithSerial(t *testing.T, serial string) json.RawMe
 		"serialNumber":             serial,
 		"sipEnabled":               true,
 		"timestamp":                time.Now().UTC().Format(time.RFC3339),
+	}
+	if encryptionKey != "" {
+		blobMap["encryptionPublicKey"] = encryptionKey
+		registerTestChallengeSigner(encryptionKey, privKey)
 	}
 
 	blobJSON, err := json.Marshal(blobMap)
@@ -103,10 +107,12 @@ func connectProviderWithAttestation(t *testing.T, ctx context.Context, tsURL str
 			ChipName:     "Apple M3 Max",
 			MemoryGB:     64,
 		},
-		Models:      models,
-		Backend:     "test",
-		PublicKey:   publicKey,
-		Attestation: attestation,
+		Models:                  models,
+		Backend:                 "inprocess-mlx",
+		PublicKey:               publicKey,
+		Attestation:             attestation,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
 	}
 	regData, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
@@ -174,7 +180,7 @@ func TestIntegration_RequestCancellationOnConsumerDisconnect(t *testing.T) {
 
 	pubKey := testPublicKeyB64()
 	model := "cancel-test-model"
-	models := []protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}}
+	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
 	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
 	defer conn.Close(websocket.StatusNormalClosure, "")
@@ -197,7 +203,6 @@ func TestIntegration_RequestCancellationOnConsumerDisconnect(t *testing.T) {
 	resultCh := make(chan cancelResult, 1)
 
 	go func() {
-		var inferReqID string
 		// Read messages until we get the inference request.
 		for {
 			_, data, err := conn.Read(ctx)
@@ -220,16 +225,9 @@ func TestIntegration_RequestCancellationOnConsumerDisconnect(t *testing.T) {
 			if env.Type == protocol.TypeInferenceRequest {
 				var inferReq protocol.InferenceRequestMessage
 				json.Unmarshal(data, &inferReq)
-				inferReqID = inferReq.RequestID
 
-				// Send one chunk to confirm streaming started.
-				chunk := protocol.InferenceResponseChunkMessage{
-					Type:      protocol.TypeInferenceResponseChunk,
-					RequestID: inferReqID,
-					Data:      `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"}}]}` + "\n\n",
-				}
-				chunkData, _ := json.Marshal(chunk)
-				conn.Write(ctx, websocket.MessageText, chunkData)
+				writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
+					`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"}}]}`+"\n\n")
 				break
 			}
 		}
@@ -321,7 +319,7 @@ func TestIntegration_RequestCancellationCleanup(t *testing.T) {
 
 	pubKey := testPublicKeyB64()
 	model := "cancel-cleanup-model"
-	models := []protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}}
+	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
 	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
 	defer conn.Close(websocket.StatusNormalClosure, "")
@@ -366,14 +364,8 @@ func TestIntegration_RequestCancellationCleanup(t *testing.T) {
 				var inferReq protocol.InferenceRequestMessage
 				json.Unmarshal(data, &inferReq)
 
-				// Send one chunk.
-				chunk := protocol.InferenceResponseChunkMessage{
-					Type:      protocol.TypeInferenceResponseChunk,
-					RequestID: inferReq.RequestID,
-					Data:      `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"partial"}}]}` + "\n\n",
-				}
-				chunkData, _ := json.Marshal(chunk)
-				conn.Write(ctx, websocket.MessageText, chunkData)
+				writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
+					`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"partial"}}]}`+"\n\n")
 				continue
 			}
 
@@ -445,12 +437,12 @@ func TestIntegration_ProviderDeduplicationBySerial(t *testing.T) {
 
 	serial := "ABC123"
 	model := "dedup-model"
-	models := []protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}}
+	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 	pubKeyA := testPublicKeyB64()
 	pubKeyB := testPublicKeyB64()
 
 	// --- Provider A: connect with serial ABC123 ---
-	attestA := createTestAttestationJSONWithSerial(t, serial)
+	attestA := createTestAttestationJSONWithSerial(t, serial, pubKeyA)
 	connA := connectProviderWithAttestation(t, ctx, ts.URL, models, pubKeyA, attestA)
 
 	// Wait for attestation verification to process (including dedup check).
@@ -478,7 +470,7 @@ func TestIntegration_ProviderDeduplicationBySerial(t *testing.T) {
 	}
 
 	// --- Provider B: connect with the SAME serial ABC123 ---
-	attestB := createTestAttestationJSONWithSerial(t, serial)
+	attestB := createTestAttestationJSONWithSerial(t, serial, pubKeyB)
 	connB := connectProviderWithAttestation(t, ctx, ts.URL, models, pubKeyB, attestB)
 	defer connB.Close(websocket.StatusNormalClosure, "")
 
@@ -540,12 +532,12 @@ func TestIntegration_ProviderDeduplicationPreservesNewest(t *testing.T) {
 
 	serial := "DEDUP-NEWEST-001"
 	model := "dedup-newest-model"
-	models := []protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}}
+	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 	pubKeyA := testPublicKeyB64()
 	pubKeyB := testPublicKeyB64()
 
 	// --- Provider A: connect with serial ---
-	attestA := createTestAttestationJSONWithSerial(t, serial)
+	attestA := createTestAttestationJSONWithSerial(t, serial, pubKeyA)
 	connA := connectProviderWithAttestation(t, ctx, ts.URL, models, pubKeyA, attestA)
 
 	time.Sleep(300 * time.Millisecond)
@@ -558,7 +550,7 @@ func TestIntegration_ProviderDeduplicationPreservesNewest(t *testing.T) {
 	makeProviderRoutable(reg)
 
 	// --- Provider B: connect with same serial, replacing A ---
-	attestB := createTestAttestationJSONWithSerial(t, serial)
+	attestB := createTestAttestationJSONWithSerial(t, serial, pubKeyB)
 	connB := connectProviderWithAttestation(t, ctx, ts.URL, models, pubKeyB, attestB)
 	defer connB.Close(websocket.StatusNormalClosure, "")
 
@@ -625,14 +617,8 @@ func TestIntegration_ProviderDeduplicationPreservesNewest(t *testing.T) {
 				providerBReceivedRequest = true
 				mu.Unlock()
 
-				// Send chunk + complete.
-				chunk := protocol.InferenceResponseChunkMessage{
-					Type:      protocol.TypeInferenceResponseChunk,
-					RequestID: inferReq.RequestID,
-					Data:      `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"from-B"}}]}` + "\n\n",
-				}
-				chunkData, _ := json.Marshal(chunk)
-				connB.Write(ctx, websocket.MessageText, chunkData)
+				writeEncryptedTestChunk(t, ctx, connB, inferReq, pubKeyB,
+					`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"from-B"}}]}`+"\n\n")
 
 				complete := protocol.InferenceCompleteMessage{
 					Type:      protocol.TypeInferenceComplete,

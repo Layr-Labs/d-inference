@@ -4,7 +4,9 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
 )
@@ -135,5 +137,205 @@ func TestSyncRuntimeManifestClearsStaleHashesWhenLatestReleaseHasNoRuntimeMetada
 	}
 	if srv.knownRuntimeManifest != nil {
 		t.Fatal("knownRuntimeManifest should be cleared when latest release has no runtime metadata")
+	}
+}
+
+func TestVerifyRuntimeHashesRejectsMissingRequiredComponents(t *testing.T) {
+	srv, _ := runtimeManifestTestServer(t)
+	srv.SetRuntimeManifest(&RuntimeManifest{
+		PythonHashes:      map[string]bool{"py-good": true},
+		RuntimeHashes:     map[string]bool{"rt-good": true},
+		TemplateHashes:    map[string]string{"qwen": "tmpl-good"},
+		GrpcBinaryHashes:  map[string]bool{"grpc-good": true},
+		ImageBridgeHashes: map[string]bool{"img-good": true},
+	})
+
+	ok, mismatches := srv.verifyRuntimeHashes("", "", nil, "", "")
+	if ok {
+		t.Fatal("verifyRuntimeHashes should fail when required hash fields are missing")
+	}
+	if len(mismatches) != 5 {
+		t.Fatalf("mismatches = %d, want 5", len(mismatches))
+	}
+
+	byComponent := make(map[string]string, len(mismatches))
+	for _, mm := range mismatches {
+		byComponent[mm.Component] = mm.Got
+	}
+	for _, component := range []string{
+		"python",
+		"runtime",
+		"template:qwen",
+		"grpc_binary",
+		"image_bridge",
+	} {
+		if got := byComponent[component]; got != "(missing)" {
+			t.Fatalf("%s mismatch got = %q, want %q", component, got, "(missing)")
+		}
+	}
+}
+
+func TestSyncRuntimeManifestDeroutesLiveProvidersBelowMinVersion(t *testing.T) {
+	srv, st := runtimeManifestTestServer(t)
+
+	provider := srv.registry.Register("provider-1", nil, &protocol.RegisterMessage{
+		Type: protocol.TypeRegister,
+		Hardware: protocol.Hardware{
+			ChipName: "Apple M3 Max",
+			MemoryGB: 64,
+		},
+		Models:                  []protocol.ModelInfo{{ID: "live-version-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 "inprocess-mlx",
+		PublicKey:               "bound-public-key",
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+	})
+	provider.Mu().Lock()
+	provider.TrustLevel = registry.TrustHardware
+	provider.Version = "0.3.8"
+	provider.RuntimeVerified = true
+	provider.RuntimeManifestChecked = true
+	provider.ChallengeVerifiedSIP = true
+	provider.LastChallengeVerified = time.Now()
+	provider.Mu().Unlock()
+
+	if err := st.SetRelease(&store.Release{
+		Version:     "0.3.9",
+		Platform:    "macos-arm64",
+		BinaryHash:  "new-binary",
+		BundleHash:  "new-bundle",
+		PythonHash:  "new-python",
+		RuntimeHash: "new-runtime",
+		URL:         "https://example.com/new.tar.gz",
+		Active:      true,
+	}); err != nil {
+		t.Fatalf("SetRelease(new): %v", err)
+	}
+
+	srv.SyncRuntimeManifest()
+
+	provider = srv.registry.GetProvider("provider-1")
+	provider.Mu().Lock()
+	if provider.RuntimeVerified {
+		provider.Mu().Unlock()
+		t.Fatal("live provider below the minimum version should be derouted immediately")
+	}
+	if provider.RuntimeManifestChecked {
+		provider.Mu().Unlock()
+		t.Fatal("live provider below the minimum version should lose private-text eligibility")
+	}
+	provider.Mu().Unlock()
+	if models := srv.registry.ListModels(); len(models) != 0 {
+		t.Fatalf("models = %d, want 0 after live version cutoff", len(models))
+	}
+}
+
+func TestSyncRuntimeManifestDeroutesLiveProvidersWhenManifestClears(t *testing.T) {
+	srv, st := runtimeManifestTestServer(t)
+
+	provider := srv.registry.Register("provider-1", nil, &protocol.RegisterMessage{
+		Type: protocol.TypeRegister,
+		Hardware: protocol.Hardware{
+			ChipName: "Apple M3 Max",
+			MemoryGB: 64,
+		},
+		Models:                  []protocol.ModelInfo{{ID: "live-manifest-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 "inprocess-mlx",
+		PublicKey:               "bound-public-key",
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+	})
+	provider.Mu().Lock()
+	provider.TrustLevel = registry.TrustHardware
+	provider.Version = "0.3.9"
+	provider.RuntimeVerified = true
+	provider.RuntimeManifestChecked = true
+	provider.ChallengeVerifiedSIP = true
+	provider.LastChallengeVerified = time.Now()
+	provider.Mu().Unlock()
+
+	if err := st.SetRelease(&store.Release{
+		Version:    "0.3.9",
+		Platform:   "macos-arm64",
+		BinaryHash: "new-binary",
+		BundleHash: "new-bundle",
+		URL:        "https://example.com/new.tar.gz",
+		Active:     true,
+	}); err != nil {
+		t.Fatalf("SetRelease(new): %v", err)
+	}
+
+	srv.SyncRuntimeManifest()
+
+	provider = srv.registry.GetProvider("provider-1")
+	provider.Mu().Lock()
+	if provider.RuntimeVerified {
+		provider.Mu().Unlock()
+		t.Fatal("live provider should be derouted when the runtime manifest is withdrawn")
+	}
+	if provider.RuntimeManifestChecked {
+		provider.Mu().Unlock()
+		t.Fatal("live provider should lose private-text eligibility when the runtime manifest is withdrawn")
+	}
+	provider.Mu().Unlock()
+	if models := srv.registry.ListModels(); len(models) != 0 {
+		t.Fatalf("models = %d, want 0 after manifest withdrawal", len(models))
+	}
+}
+
+func TestSyncRuntimeManifestDeroutesLiveProvidersWhenHashesChangeWithoutVersionBump(t *testing.T) {
+	srv, st := runtimeManifestTestServer(t)
+
+	provider := srv.registry.Register("provider-1", nil, &protocol.RegisterMessage{
+		Type: protocol.TypeRegister,
+		Hardware: protocol.Hardware{
+			ChipName: "Apple M3 Max",
+			MemoryGB: 64,
+		},
+		Models:                  []protocol.ModelInfo{{ID: "same-version-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 "inprocess-mlx",
+		PublicKey:               "bound-public-key",
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+	})
+	provider.Mu().Lock()
+	provider.TrustLevel = registry.TrustHardware
+	provider.Version = "0.3.9"
+	provider.RuntimeVerified = true
+	provider.RuntimeManifestChecked = true
+	provider.ChallengeVerifiedSIP = true
+	provider.LastChallengeVerified = time.Now()
+	provider.PythonHash = "old-python"
+	provider.RuntimeHash = "old-runtime"
+	provider.Mu().Unlock()
+
+	if err := st.SetRelease(&store.Release{
+		Version:     "0.3.9",
+		Platform:    "macos-arm64",
+		BinaryHash:  "new-binary",
+		BundleHash:  "new-bundle",
+		PythonHash:  "new-python",
+		RuntimeHash: "new-runtime",
+		URL:         "https://example.com/new.tar.gz",
+		Active:      true,
+	}); err != nil {
+		t.Fatalf("SetRelease(new): %v", err)
+	}
+
+	srv.SyncRuntimeManifest()
+
+	provider = srv.registry.GetProvider("provider-1")
+	provider.Mu().Lock()
+	if provider.RuntimeVerified {
+		provider.Mu().Unlock()
+		t.Fatal("live provider should be derouted when same-version runtime hashes change")
+	}
+	if provider.RuntimeManifestChecked {
+		provider.Mu().Unlock()
+		t.Fatal("live provider should lose private-text eligibility when same-version runtime hashes change")
+	}
+	provider.Mu().Unlock()
+	if models := srv.registry.ListModels(); len(models) != 0 {
+		t.Fatalf("models = %d, want 0 after same-version runtime hash revocation", len(models))
 	}
 }

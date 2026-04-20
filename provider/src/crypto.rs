@@ -3,12 +3,12 @@
 //! Uses NaCl crypto_box (X25519 + XSalsa20-Poly1305) for wire compatibility
 //! with the coordinator.
 //!
-//! The provider's long-term X25519 key is loaded inside the signed provider
-//! process from a non-exportable Secure Enclave P-256 keychain item. The
-//! plaintext X25519 secret only exists in process memory; disk only holds an
-//! ECIES-wrapped blob that requires the Secure Enclave private key to unwrap.
-//! Text mode intentionally refuses any plaintext file-based fallback because
-//! that would break the privacy boundary.
+//! The provider's long-term X25519 key is derived inside the signed provider
+//! process from an opaque Secure Enclave P-256 key-agreement identity blob.
+//! The plaintext X25519 secret only exists in process memory; disk only holds
+//! a device-bound Secure Enclave handle that must be reloaded by the same
+//! Secure Enclave before the secret can be deterministically re-derived.
+//! Text mode intentionally refuses any plaintext file-based fallback.
 
 use anyhow::{Context, Result};
 use crypto_box::{
@@ -40,10 +40,9 @@ impl NodeKeyPair {
 
     /// Load the privacy-preserving text E2E key pair.
     ///
-    /// The root key lives as a non-exportable Secure Enclave keychain item.
-    /// We unwrap the X25519 secret inside this process from the persisted
-    /// Secure Enclave-backed sealed blob and refuse any plaintext disk key
-    /// fallback, because that would let the machine owner recover it.
+    /// The root key lives as an opaque Secure Enclave key-agreement identity
+    /// blob. We deterministically derive the X25519 secret inside this process
+    /// from that identity and refuse any plaintext disk key fallback.
     pub fn load_or_generate() -> Result<Self> {
         #[cfg(target_os = "macos")]
         {
@@ -51,7 +50,7 @@ impl NodeKeyPair {
                 .context("failed to load Secure Enclave-backed E2E key")?;
             let secret = SecretKey::from(secret_bytes);
             let public = secret.public_key().clone();
-            purge_legacy_e2e_files();
+            maybe_purge_legacy_e2e_files();
             Ok(Self { secret, public })
         }
 
@@ -62,7 +61,7 @@ impl NodeKeyPair {
     }
 
     /// Load the existing privacy-preserving text E2E key pair without mutating
-    /// any on-disk or keychain state.
+    /// any on-disk or Secure Enclave state.
     pub fn load_existing() -> Result<Option<Self>> {
         #[cfg(target_os = "macos")]
         {
@@ -150,13 +149,10 @@ pub fn legacy_enclave_e2e_key_paths() -> Vec<std::path::PathBuf> {
 }
 
 fn purge_legacy_e2e_files() {
-    for path in [
-        legacy_node_key_paths(),
-        legacy_enclave_e2e_key_paths(),
-    ]
-    .into_iter()
-    .flatten()
-    .filter(|path| path.exists())
+    for path in [legacy_node_key_paths(), legacy_enclave_e2e_key_paths()]
+        .into_iter()
+        .flatten()
+        .filter(|path| path.exists())
     {
         match std::fs::remove_file(&path) {
             Ok(()) => tracing::info!("Removed legacy E2E secret file: {}", path.display()),
@@ -165,6 +161,18 @@ fn purge_legacy_e2e_files() {
                 path.display()
             ),
         }
+    }
+}
+
+fn maybe_purge_legacy_e2e_files() {
+    match crate::secure_enclave_key::has_persisted_x25519_identity() {
+        Ok(true) => purge_legacy_e2e_files(),
+        Ok(false) => tracing::info!(
+            "Preserving legacy E2E files because no canonical Secure Enclave identity is persisted yet"
+        ),
+        Err(err) => tracing::warn!(
+            "Failed to determine whether canonical Secure Enclave identity is persisted; preserving legacy E2E files: {err}"
+        ),
     }
 }
 
@@ -182,6 +190,12 @@ fn legacy_secret_paths(file_name: &str) -> Vec<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn test_generate_key_pair() {
@@ -259,6 +273,62 @@ mod tests {
         let result = provider.decrypt(&consumer_pk, &[0u8; 10]);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("too short"));
+    }
+
+    #[test]
+    fn test_maybe_purge_legacy_e2e_files_preserves_legacy_when_canonical_identity_missing() {
+        let _guard = env_lock().lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let legacy_path = home.join(".darkbloom/node_key");
+        std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        std::fs::write(&legacy_path, b"legacy").unwrap();
+
+        let old_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", home);
+        }
+
+        maybe_purge_legacy_e2e_files();
+
+        assert!(
+            legacy_path.exists(),
+            "legacy key should survive until the canonical identity exists"
+        );
+
+        match old_home {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+    }
+
+    #[test]
+    fn test_maybe_purge_legacy_e2e_files_removes_legacy_after_canonical_identity_persists() {
+        let _guard = env_lock().lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let legacy_path = home.join(".darkbloom/node_key");
+        let canonical_path = home.join(".darkbloom/e2e_key.data");
+        std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        std::fs::write(&legacy_path, b"legacy").unwrap();
+        std::fs::write(&canonical_path, b"canonical").unwrap();
+
+        let old_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", home);
+        }
+
+        maybe_purge_legacy_e2e_files();
+
+        assert!(
+            !legacy_path.exists(),
+            "legacy key should be removed once the canonical identity exists"
+        );
+
+        match old_home {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
     }
 
     #[test]

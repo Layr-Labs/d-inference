@@ -54,6 +54,7 @@ pub enum CoordinatorEvent {
     InferenceRequest {
         request_id: String,
         body: serde_json::Value,
+        response_public_key: Option<[u8; 32]>,
     },
     TranscriptionRequest {
         request_id: String,
@@ -102,6 +103,8 @@ pub struct CoordinatorClient {
     current_model_hash: Arc<std::sync::Mutex<Option<String>>>,
     /// Runtime integrity hashes (Python binary, vllm_mlx package, templates).
     runtime_hashes: Option<RuntimeHashes>,
+    /// Python interpreter used to recompute runtime hashes on attestation challenges.
+    runtime_hash_command: Option<String>,
     /// Per-model weight hashes for all active models (text, STT, image).
     model_hashes: std::collections::HashMap<String, String>,
     /// Live backend capacity data (updated by main loop, read by heartbeat tick).
@@ -135,6 +138,7 @@ impl CoordinatorClient {
             warm_models: Arc::new(std::sync::Mutex::new(Vec::new())),
             current_model_hash: Arc::new(std::sync::Mutex::new(None)),
             runtime_hashes: None,
+            runtime_hash_command: None,
             model_hashes: std::collections::HashMap::new(),
             backend_capacity: Arc::new(std::sync::Mutex::new(None)),
         }
@@ -200,6 +204,12 @@ impl CoordinatorClient {
     /// Set runtime integrity hashes (Python, vllm_mlx, templates) for registration.
     pub fn with_runtime_hashes(mut self, hashes: Option<RuntimeHashes>) -> Self {
         self.runtime_hashes = hashes;
+        self
+    }
+
+    /// Set the Python interpreter used to recompute runtime hashes at challenge time.
+    pub fn with_runtime_hash_command(mut self, python_cmd: Option<String>) -> Self {
+        self.runtime_hash_command = python_cmd;
         self
     }
 
@@ -288,12 +298,25 @@ impl CoordinatorClient {
             } else {
                 (None, None, std::collections::HashMap::new(), None, None)
             };
+        let privacy_caps = crate::protocol::PrivacyCapabilities {
+            text_backend_inprocess: true,
+            text_proxy_disabled: true,
+            python_runtime_locked: true,
+            dangerous_modules_blocked: true,
+            sip_enabled: crate::security::check_sip_enabled(),
+            anti_debug_enabled: true,
+            core_dumps_disabled: true,
+            env_scrubbed: true,
+            hypervisor_active: crate::security::check_hypervisor_active(),
+        };
+
         let register = ProviderMessage::Register {
             hardware: self.hardware.clone(),
             models: self.models.clone(),
             backend: self.backend_name.clone(),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
             public_key: self.public_key.clone(),
+            encrypted_response_chunks: true,
             wallet_address: self.wallet_address.clone(),
             attestation: self.attestation.clone(),
             prefill_tps: None,
@@ -304,6 +327,7 @@ impl CoordinatorClient {
             template_hashes,
             grpc_binary_hash,
             image_bridge_hash,
+            privacy_capabilities: Some(privacy_caps),
         };
         let register_json = serde_json::to_string(&register)?;
         write.send(Message::Text(register_json.into())).await?;
@@ -387,26 +411,37 @@ impl CoordinatorClient {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
                             match serde_json::from_str::<CoordinatorMessage>(&text) {
-                                Ok(CoordinatorMessage::InferenceRequest { request_id, body, encrypted_body }) => {
+                                Ok(CoordinatorMessage::InferenceRequest { request_id, body: _, encrypted_body }) => {
                                     tracing::info!("Received inference request: {request_id}");
 
-                                    // Decrypt E2E encrypted body if present
-                                    let decrypted_body = if let Some(enc) = encrypted_body {
-                                        tracing::info!("Decrypting E2E encrypted request");
+                                    let Some(enc) = encrypted_body else {
+                                        tracing::error!(
+                                            "Rejecting plaintext inference request: {request_id}"
+                                        );
+                                        let error = ProviderMessage::InferenceError {
+                                            request_id,
+                                            error: "coordinator text request missing encrypted body".to_string(),
+                                            status_code: 400,
+                                        };
+                                        let json = serde_json::to_string(&error).unwrap_or_default();
+                                        let _ = write.send(Message::Text(json.into())).await;
+                                        continue;
+                                    };
+
+                                    tracing::info!("Decrypting E2E encrypted request");
+                                    let (decrypted_body, response_public_key) =
                                         match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
                                             Ok(b) => b,
                                             Err(e) => {
                                                 tracing::error!("Failed to decrypt request: {e}");
                                                 continue;
                                             }
-                                        }
-                                    } else {
-                                        body
-                                    };
+                                        };
 
                                     let _ = event_tx.send(CoordinatorEvent::InferenceRequest {
                                         request_id,
                                         body: decrypted_body,
+                                        response_public_key,
                                     }).await;
                                 }
                                 Ok(CoordinatorMessage::TranscriptionRequest { request_id, body, encrypted_body }) => {
@@ -416,7 +451,7 @@ impl CoordinatorClient {
                                     let decrypted_body = if let Some(enc) = encrypted_body {
                                         tracing::info!("Decrypting E2E encrypted transcription request");
                                         match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
-                                            Ok(b) => b,
+                                            Ok((body, _)) => body,
                                             Err(e) => {
                                                 tracing::error!("Failed to decrypt transcription request: {e}");
                                                 continue;
@@ -446,7 +481,7 @@ impl CoordinatorClient {
                                     let decrypted_body = if let Some(enc) = encrypted_body {
                                         tracing::info!("Decrypting E2E encrypted image generation request");
                                         match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
-                                            Ok(b) => b,
+                                            Ok((body, _)) => body,
                                             Err(e) => {
                                                 tracing::error!("Failed to decrypt image generation request: {e}");
                                                 continue;
@@ -481,12 +516,18 @@ impl CoordinatorClient {
                                     // Respond to the challenge inline, signing with
                                     // the provider's key.
                                     let model_hash = self.current_model_hash.lock().unwrap().clone();
+                                    let fresh_runtime_hashes = self
+                                        .runtime_hash_command
+                                        .as_deref()
+                                        .map(crate::security::compute_runtime_hashes);
                                     let response = handle_attestation_challenge(
                                         &nonce,
                                         &timestamp,
                                         self.public_key.as_deref(),
                                         model_hash.as_deref(),
-                                        self.runtime_hashes.as_ref(),
+                                        fresh_runtime_hashes
+                                            .as_ref()
+                                            .or(self.runtime_hashes.as_ref()),
                                         self.model_hashes.clone(),
                                     );
                                     let json = serde_json::to_string(&response)
@@ -555,10 +596,10 @@ impl CoordinatorClient {
 fn decrypt_request_body(
     encrypted: &crate::protocol::EncryptedPayload,
     keypair: &crate::crypto::NodeKeyPair,
-) -> anyhow::Result<serde_json::Value> {
+) -> anyhow::Result<(serde_json::Value, Option<[u8; 32]>)> {
     use base64::Engine;
+    use zeroize::Zeroize;
 
-    // Decode the ephemeral public key from the coordinator
     let ephemeral_pub_bytes = base64::engine::general_purpose::STANDARD
         .decode(&encrypted.ephemeral_public_key)
         .map_err(|e| anyhow::anyhow!("invalid ephemeral public key: {e}"))?;
@@ -573,20 +614,21 @@ fn decrypt_request_body(
     let mut ephemeral_pub = [0u8; 32];
     ephemeral_pub.copy_from_slice(&ephemeral_pub_bytes);
 
-    // Decode ciphertext (nonce || encrypted data)
     let ciphertext = base64::engine::general_purpose::STANDARD
         .decode(&encrypted.ciphertext)
         .map_err(|e| anyhow::anyhow!("invalid ciphertext: {e}"))?;
 
-    // Decrypt with our private key + coordinator's ephemeral public key
-    let plaintext = keypair.decrypt(&ephemeral_pub, &ciphertext)?;
+    let mut plaintext = keypair.decrypt(&ephemeral_pub, &ciphertext)?;
 
-    // Parse the decrypted JSON
-    let body: serde_json::Value = serde_json::from_slice(&plaintext)
-        .map_err(|e| anyhow::anyhow!("decrypted body is not valid JSON: {e}"))?;
+    // Parse JSON from the decrypted buffer, but zeroize the raw bytes on both
+    // success and failure so malformed payloads do not leave plaintext behind.
+    let parsed = serde_json::from_slice(&plaintext);
+    plaintext.zeroize();
+    let body: serde_json::Value =
+        parsed.map_err(|e| anyhow::anyhow!("decrypted body is not valid JSON: {e}"))?;
 
     tracing::info!("E2E decryption successful — request decrypted inside hardened process");
-    Ok(body)
+    Ok((body, Some(ephemeral_pub)))
 }
 
 /// Handle an attestation challenge by signing the nonce+timestamp data
@@ -707,6 +749,7 @@ pub fn build_register_message_with_wallet(
         backend: backend_name.to_string(),
         version: None,
         public_key,
+        encrypted_response_chunks: true,
         wallet_address,
         attestation,
         prefill_tps: None,
@@ -717,6 +760,7 @@ pub fn build_register_message_with_wallet(
         template_hashes: std::collections::HashMap::new(),
         grpc_binary_hash: None,
         image_bridge_hash: None,
+        privacy_capabilities: None,
     }
 }
 
@@ -1007,29 +1051,26 @@ mod tests {
             .expect("channel closed");
         assert!(matches!(event, CoordinatorEvent::Connected));
 
-        // Wait for InferenceRequest event
-        let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
-            .await
-            .expect("timeout waiting for InferenceRequest")
-            .expect("channel closed");
-        match event {
-            CoordinatorEvent::InferenceRequest { request_id, body } => {
-                assert_eq!(request_id, "test-req-1");
-                assert_eq!(body["model"], "qwen3.5-9b");
+        // Plaintext inference requests should be rejected before they reach the
+        // main loop. The mock server immediately closes after sending cancel, so
+        // either event may arrive first; the key invariant is that no
+        // InferenceRequest reaches the provider event loop.
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+                .await
+                .expect("timeout waiting for follow-up event")
+                .expect("channel closed");
+            match event {
+                CoordinatorEvent::Cancel { request_id } => {
+                    assert_eq!(request_id, "test-req-1");
+                    break;
+                }
+                CoordinatorEvent::Disconnected => break,
+                CoordinatorEvent::InferenceRequest { .. } => {
+                    panic!("plaintext request should not reach the inference loop")
+                }
+                other => panic!("unexpected follow-up event: {:?}", other),
             }
-            other => panic!("Expected InferenceRequest, got {:?}", other),
-        }
-
-        // Wait for Cancel event
-        let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
-            .await
-            .expect("timeout waiting for Cancel")
-            .expect("channel closed");
-        match event {
-            CoordinatorEvent::Cancel { request_id } => {
-                assert_eq!(request_id, "test-req-1");
-            }
-            other => panic!("Expected Cancel, got {:?}", other),
         }
 
         // Shutdown
@@ -1038,10 +1079,13 @@ mod tests {
 
         // Verify server received register message
         let received = server_handle.await.unwrap();
-        assert!(!received.is_empty());
+        assert!(received.len() >= 2, "expected register and error messages");
         let register: serde_json::Value = serde_json::from_str(&received[0]).unwrap();
         assert_eq!(register["type"], "register");
         assert_eq!(register["backend"], "vllm_mlx");
+        let err: serde_json::Value = serde_json::from_str(&received[1]).unwrap();
+        assert_eq!(err["type"], "inference_error");
+        assert_eq!(err["request_id"], "test-req-1");
     }
 
     // -----------------------------------------------------------------------

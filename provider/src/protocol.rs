@@ -21,6 +21,10 @@ use crate::hardware::{HardwareInfo, SystemMetrics};
 use crate::models::ModelInfo;
 use serde::{Deserialize, Serialize};
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Messages sent from provider to coordinator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -35,6 +39,10 @@ pub enum ProviderMessage {
         version: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         public_key: Option<String>,
+        /// True when text response chunks are encrypted back to the coordinator
+        /// using the request's session key.
+        #[serde(default, skip_serializing_if = "is_false")]
+        encrypted_response_chunks: bool,
         /// Ethereum-format hex wallet address for Tempo blockchain payouts (pathUSD).
         #[serde(skip_serializing_if = "Option::is_none")]
         wallet_address: Option<String>,
@@ -68,6 +76,9 @@ pub enum ProviderMessage {
         /// Combined SHA-256 hash of image bridge Python source files.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         image_bridge_hash: Option<String>,
+        /// Privacy capability fields attested at registration.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        privacy_capabilities: Option<PrivacyCapabilities>,
     },
     Heartbeat {
         status: ProviderStatus,
@@ -87,7 +98,10 @@ pub enum ProviderMessage {
     },
     InferenceResponseChunk {
         request_id: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_data: Option<EncryptedPayload>,
     },
     InferenceComplete {
         request_id: String,
@@ -248,6 +262,22 @@ pub struct EncryptedPayload {
     pub ephemeral_public_key: String,
     /// Nonce + encrypted data (base64)
     pub ciphertext: String,
+}
+
+/// Privacy capability fields reported by the provider at registration and
+/// verified by the coordinator before routing private text jobs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PrivacyCapabilities {
+    pub text_backend_inprocess: bool,
+    pub text_proxy_disabled: bool,
+    pub python_runtime_locked: bool,
+    pub dangerous_modules_blocked: bool,
+    pub sip_enabled: bool,
+    pub anti_debug_enabled: bool,
+    pub core_dumps_disabled: bool,
+    pub env_scrubbed: bool,
+    #[serde(default)]
+    pub hypervisor_active: bool,
 }
 
 /// A single runtime component whose hash doesn't match the coordinator's known-good value.
@@ -426,6 +456,7 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: None,
+            encrypted_response_chunks: true,
             wallet_address: None,
             attestation: None,
             prefill_tps: None,
@@ -436,6 +467,7 @@ mod tests {
             template_hashes: std::collections::HashMap::new(),
             grpc_binary_hash: None,
             image_bridge_hash: None,
+            privacy_capabilities: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -471,6 +503,7 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: None,
+            encrypted_response_chunks: true,
             wallet_address: Some("0x1234567890abcdef1234567890abcdef12345678".to_string()),
             attestation: None,
             prefill_tps: None,
@@ -481,6 +514,7 @@ mod tests {
             template_hashes: std::collections::HashMap::new(),
             grpc_binary_hash: None,
             image_bridge_hash: None,
+            privacy_capabilities: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -509,6 +543,7 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: Some("c29tZWtleQ==".to_string()),
+            encrypted_response_chunks: true,
             wallet_address: None,
             attestation: Some(attestation_raw),
             prefill_tps: Some(500.0),
@@ -519,6 +554,7 @@ mod tests {
             template_hashes: std::collections::HashMap::new(),
             grpc_binary_hash: None,
             image_bridge_hash: None,
+            privacy_capabilities: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -587,10 +623,29 @@ mod tests {
         let msg = ProviderMessage::InferenceResponseChunk {
             request_id: "uuid-123".to_string(),
             data: "data: {\"choices\":[]}".to_string(),
+            encrypted_data: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"inference_response_chunk\""));
+        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, deserialized);
+    }
+
+    #[test]
+    fn test_inference_response_chunk_encrypted_roundtrip() {
+        let msg = ProviderMessage::InferenceResponseChunk {
+            request_id: "uuid-enc".to_string(),
+            data: String::new(),
+            encrypted_data: Some(EncryptedPayload {
+                ephemeral_public_key: "provider-public-key".to_string(),
+                ciphertext: "ciphertext".to_string(),
+            }),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"inference_response_chunk\""));
+        assert!(json.contains("\"encrypted_data\""));
         let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, deserialized);
     }
@@ -1194,6 +1249,7 @@ mod tests {
                 backend: "vllm_mlx".to_string(),
                 version: None,
                 public_key: None,
+                encrypted_response_chunks: true,
                 wallet_address: None,
                 attestation: None,
                 prefill_tps: None,
@@ -1204,6 +1260,7 @@ mod tests {
                 template_hashes: std::collections::HashMap::new(),
                 grpc_binary_hash: None,
                 image_bridge_hash: None,
+                privacy_capabilities: None,
             },
             // Heartbeat (idle)
             ProviderMessage::Heartbeat {
@@ -1238,6 +1295,7 @@ mod tests {
             ProviderMessage::InferenceResponseChunk {
                 request_id: "req-1".to_string(),
                 data: "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}".to_string(),
+                encrypted_data: None,
             },
             // InferenceComplete
             ProviderMessage::InferenceComplete {
@@ -1452,6 +1510,7 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: None,
+            encrypted_response_chunks: true,
             wallet_address: None,
             attestation: None,
             prefill_tps: None,
@@ -1462,6 +1521,7 @@ mod tests {
             template_hashes,
             grpc_binary_hash: None,
             image_bridge_hash: None,
+            privacy_capabilities: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();

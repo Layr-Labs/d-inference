@@ -113,6 +113,72 @@ public func eigeninference_enclave_data_representation(
     return data.count
 }
 
+/// Create a new Secure Enclave key-agreement identity. Returns an opaque pointer.
+@_cdecl("eigeninference_enclave_key_agreement_create")
+public func eigeninference_enclave_key_agreement_create() -> UnsafeMutableRawPointer? {
+    guard SecureEnclave.isAvailable else { return nil }
+    guard let identity = try? SecureEnclaveKeyAgreementIdentity() else { return nil }
+    return Unmanaged.passRetained(identity as AnyObject).toOpaque()
+}
+
+/// Load an existing Secure Enclave key-agreement identity from a saved opaque blob.
+@_cdecl("eigeninference_enclave_key_agreement_load")
+public func eigeninference_enclave_key_agreement_load(
+    _ dataPtr: UnsafePointer<UInt8>,
+    _ dataLen: Int
+) -> UnsafeMutableRawPointer? {
+    let data = Data(bytes: dataPtr, count: dataLen)
+    guard let identity = try? SecureEnclaveKeyAgreementIdentity(dataRepresentation: data) else {
+        return nil
+    }
+    return Unmanaged.passRetained(identity as AnyObject).toOpaque()
+}
+
+/// Get the key-agreement public key as base64. Caller must free the string.
+@_cdecl("eigeninference_enclave_key_agreement_public_key_base64")
+public func eigeninference_enclave_key_agreement_public_key_base64(
+    _ ptr: UnsafeRawPointer
+) -> UnsafeMutablePointer<CChar>? {
+    let identity = Unmanaged<SecureEnclaveKeyAgreementIdentity>.fromOpaque(ptr)
+        .takeUnretainedValue()
+    return strdup(identity.publicKeyBase64)
+}
+
+/// Get the opaque data representation for persisting the key-agreement identity.
+@_cdecl("eigeninference_enclave_key_agreement_data_representation")
+public func eigeninference_enclave_key_agreement_data_representation(
+    _ ptr: UnsafeRawPointer,
+    _ buffer: UnsafeMutablePointer<UInt8>?,
+    _ bufferLen: Int
+) -> Int {
+    let identity = Unmanaged<SecureEnclaveKeyAgreementIdentity>.fromOpaque(ptr)
+        .takeUnretainedValue()
+    let data = identity.dataRepresentation
+
+    if let buffer = buffer, bufferLen >= data.count {
+        data.copyBytes(to: buffer, count: data.count)
+    }
+    return data.count
+}
+
+/// Derive the provider's X25519 secret bytes from the Secure Enclave agreement key.
+@_cdecl("eigeninference_enclave_key_agreement_derive_x25519_secret")
+public func eigeninference_enclave_key_agreement_derive_x25519_secret(
+    _ ptr: UnsafeRawPointer,
+    _ buffer: UnsafeMutablePointer<UInt8>?,
+    _ bufferLen: Int
+) -> Int {
+    let identity = Unmanaged<SecureEnclaveKeyAgreementIdentity>.fromOpaque(ptr)
+        .takeUnretainedValue()
+    guard let data = try? identity.deriveX25519Secret() else {
+        return -1
+    }
+    if let buffer = buffer, bufferLen >= data.count {
+        data.copyBytes(to: buffer, count: data.count)
+    }
+    return data.count
+}
+
 /// Sign data with the Secure Enclave private key.
 ///
 /// The signing operation happens inside the Secure Enclave hardware.

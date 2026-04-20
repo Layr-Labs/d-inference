@@ -1,18 +1,13 @@
-//! Request proxy between the coordinator WebSocket and the local inference backend.
+//! Legacy/local request proxy between the coordinator WebSocket and a local
+//! inference backend.
 //!
-//! When the coordinator sends an inference request over WebSocket, this module
-//! forwards it to the local backend (vllm-mlx or mlx-lm) via HTTP, reads the
-//! response (streaming or non-streaming), and sends the results back to the
-//! coordinator as WebSocket messages.
+//! Coordinator-delivered private text requests should stay on the embedded
+//! in-process engine path and must not call into this module. This proxy is
+//! retained for legacy/local HTTP-backed flows and non-private workloads that
+//! still require a local backend boundary.
 //!
-//! The provider receives plain JSON inference requests from the coordinator.
-//! No decryption is needed on the provider side — the coordinator runs in a
-//! GCP Confidential VM and handles the trust boundary. The provider's identity
-//! and integrity are proven via Secure Enclave attestation and periodic
-//! challenge-response verification.
-//!
-//! The provider's NaCl key pair (NodeKeyPair) is kept for future use but is
-//! not used in the current request flow.
+//! The provider may still receive E2E-encrypted requests from the coordinator;
+//! decryption happens before those requests reach this module.
 
 use anyhow::{Context, Result};
 use std::sync::Arc;
@@ -34,8 +29,8 @@ use crate::security;
 /// the coordinator. It determines whether the request is streaming or
 /// non-streaming and delegates accordingly.
 ///
-/// The `node_keypair` parameter is retained for future coordinator-to-provider
-/// encryption but is not used in the current plain JSON flow.
+/// The `node_keypair` parameter is unused here because encrypted coordinator
+/// requests are decrypted before legacy proxy handling is entered.
 /// Returns `true` if the backend appears to be down (connection refused),
 /// signalling that the caller should mark the backend as not running.
 pub async fn handle_inference_request(
@@ -185,14 +180,14 @@ async fn handle_non_streaming_request(
     let raw_json = serde_json::to_string(&response_json).unwrap_or_default();
 
     // Sign the raw response with the Secure Enclave key.
-    let sign_data = format!("{}:{}:{}", request_id, completion_tokens, &raw_json);
-    let response_hash = security::sha256_hex(sign_data.as_bytes());
-    let se_signature = security::se_sign(response_hash.as_bytes());
+    let (response_hash, se_signature) =
+        security::compute_response_attestation(request_id, completion_tokens, &raw_json);
 
     outbound_tx
         .send(ProviderMessage::InferenceResponseChunk {
             request_id: request_id.to_string(),
             data: format!("data: {}", raw_json),
+            encrypted_data: None,
         })
         .await
         .ok();
@@ -312,12 +307,11 @@ async fn handle_streaming_request(
 
                 if data == "[DONE]" {
                     // Stream complete — sign the actual response content
-                    let sign_data = format!(
-                        "{}:{}:{}",
-                        request_id, total_completion_tokens, response_content
+                    let (response_hash, se_signature) = security::compute_response_attestation(
+                        request_id,
+                        total_completion_tokens,
+                        &response_content,
                     );
-                    let response_hash = security::sha256_hex(sign_data.as_bytes());
-                    let se_signature = security::se_sign(response_hash.as_bytes());
 
                     outbound_tx
                         .send(ProviderMessage::InferenceComplete {
@@ -380,6 +374,7 @@ async fn handle_streaming_request(
                     .send(ProviderMessage::InferenceResponseChunk {
                         request_id: request_id.to_string(),
                         data: line.clone(),
+                        encrypted_data: None,
                     })
                     .await
                     .ok();
@@ -389,12 +384,11 @@ async fn handle_streaming_request(
 
     // If we get here without [DONE], send completion with what we have
     // Sign the actual accumulated response content
-    let sign_data = format!(
-        "{}:{}:{}",
-        request_id, total_completion_tokens, response_content
+    let (response_hash, se_signature) = security::compute_response_attestation(
+        request_id,
+        total_completion_tokens,
+        &response_content,
     );
-    let response_hash = security::sha256_hex(sign_data.as_bytes());
-    let se_signature = security::se_sign(response_hash.as_bytes());
 
     outbound_tx
         .send(ProviderMessage::InferenceComplete {
@@ -978,7 +972,9 @@ mod tests {
         // First message: the response content as an SSE chunk
         let chunk_msg = rx.recv().await.unwrap();
         match &chunk_msg {
-            ProviderMessage::InferenceResponseChunk { request_id, data } => {
+            ProviderMessage::InferenceResponseChunk {
+                request_id, data, ..
+            } => {
                 assert_eq!(request_id, "req-1");
                 assert!(
                     data.contains("Hello!"),
@@ -1493,7 +1489,9 @@ mod tests {
         // First: InferenceResponseChunk with the content
         let chunk = rx.recv().await.unwrap();
         match &chunk {
-            ProviderMessage::InferenceResponseChunk { request_id, data } => {
+            ProviderMessage::InferenceResponseChunk {
+                request_id, data, ..
+            } => {
                 assert_eq!(request_id, "req-hash-test");
                 assert!(
                     data.contains("The answer is 42."),

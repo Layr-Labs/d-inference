@@ -99,6 +99,29 @@ final class SecureEnclaveTests: XCTestCase {
         XCTAssertTrue(loaded.verify(signature: sig, for: message))
     }
 
+    func testCreateKeyAgreementIdentity() throws {
+        let identity = try SecureEnclaveKeyAgreementIdentity()
+        XCTAssertFalse(identity.publicKeyBase64.isEmpty)
+        XCTAssertEqual(try identity.deriveX25519Secret().count, 32)
+    }
+
+    func testSaveAndLoadKeyAgreementIdentity() throws {
+        let original = try SecureEnclaveKeyAgreementIdentity()
+        let originalSecret = try original.deriveX25519Secret()
+        let data = original.dataRepresentation
+        XCTAssertFalse(data.isEmpty)
+
+        let loaded = try SecureEnclaveKeyAgreementIdentity(dataRepresentation: data)
+        XCTAssertEqual(original.publicKeyBase64, loaded.publicKeyBase64)
+        XCTAssertEqual(originalSecret, try loaded.deriveX25519Secret())
+    }
+
+    func testDifferentKeyAgreementIdentitiesProduceDifferentSecrets() throws {
+        let first = try SecureEnclaveKeyAgreementIdentity()
+        let second = try SecureEnclaveKeyAgreementIdentity()
+        XCTAssertNotEqual(try first.deriveX25519Secret(), try second.deriveX25519Secret())
+    }
+
     // MARK: - Attestation
 
     func testAttestation() throws {
@@ -273,5 +296,49 @@ final class SecureEnclaveTests: XCTestCase {
         eigeninference_enclave_free(ptr2)
 
         XCTAssertEqual(key1, key2, "Loaded identity should have same public key")
+    }
+
+    func testKeyAgreementBridgeSaveLoadAndDerive() {
+        guard let ptr1 = eigeninference_enclave_key_agreement_create() else {
+            XCTFail("Failed to create key-agreement identity")
+            return
+        }
+
+        let secretSize = eigeninference_enclave_key_agreement_derive_x25519_secret(ptr1, nil, 0)
+        XCTAssertEqual(secretSize, 32)
+
+        var secret1 = [UInt8](repeating: 0, count: secretSize)
+        let written1 = eigeninference_enclave_key_agreement_derive_x25519_secret(
+            ptr1,
+            &secret1,
+            secretSize
+        )
+        XCTAssertEqual(written1, secretSize)
+
+        let blobSize = eigeninference_enclave_key_agreement_data_representation(ptr1, nil, 0)
+        XCTAssertGreaterThan(blobSize, 0)
+        var blob = [UInt8](repeating: 0, count: blobSize)
+        let writtenBlob = eigeninference_enclave_key_agreement_data_representation(
+            ptr1,
+            &blob,
+            blobSize
+        )
+        XCTAssertEqual(writtenBlob, blobSize)
+        eigeninference_enclave_free(ptr1)
+
+        guard let ptr2 = eigeninference_enclave_key_agreement_load(blob, blobSize) else {
+            XCTFail("Failed to reload key-agreement identity")
+            return
+        }
+        defer { eigeninference_enclave_free(ptr2) }
+
+        var secret2 = [UInt8](repeating: 0, count: secretSize)
+        let written2 = eigeninference_enclave_key_agreement_derive_x25519_secret(
+            ptr2,
+            &secret2,
+            secretSize
+        )
+        XCTAssertEqual(written2, secretSize)
+        XCTAssertEqual(secret1, secret2)
     }
 }

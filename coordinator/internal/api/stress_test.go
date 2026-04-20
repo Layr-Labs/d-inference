@@ -219,7 +219,7 @@ func TestStress_ProviderCrashDuringMultipleInFlightRequests(t *testing.T) {
 				// Send one partial chunk then crash
 				var req protocol.InferenceRequestMessage
 				json.Unmarshal(data, &req)
-				sendChunk(ctx, conn, req.RequestID,
+				writeEncryptedTestChunk(t, ctx, conn, req, pubKey,
 					`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial..."},"finish_reason":null}]}`+"\n\n")
 				time.Sleep(100 * time.Millisecond)
 				// Crash!
@@ -318,7 +318,7 @@ func TestStress_ConsumerDisconnectSendsCancelToProvider(t *testing.T) {
 				json.Unmarshal(data, &req)
 
 				// Send first chunk (simulating slow generation)
-				sendChunk(ctx, conn, req.RequestID,
+				writeEncryptedTestChunk(t, ctx, conn, req, pubKey,
 					`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"slow..."},"finish_reason":null}]}`+"\n\n")
 				// Don't block the read loop — keep reading for cancel
 
@@ -587,10 +587,12 @@ func TestStress_HeterogeneousProviderScoring(t *testing.T) {
 				ChipName:     spec.chipName,
 				MemoryGB:     spec.memoryGB,
 			},
-			Models:    []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
-			Backend:   "vllm-mlx",
-			PublicKey: spec.pubKey,
-			DecodeTPS: spec.decodeTPS,
+			Models:                  []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+			Backend:                 "inprocess-mlx",
+			PublicKey:               spec.pubKey,
+			DecodeTPS:               spec.decodeTPS,
+			EncryptedResponseChunks: true,
+			PrivacyCapabilities:     testPrivacyCaps(),
 		}
 		data, _ := json.Marshal(regMsg)
 		conn.Write(ctx, websocket.MessageText, data)

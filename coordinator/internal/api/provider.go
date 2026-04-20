@@ -101,7 +101,7 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Raise the read limit to 10 MB. The default 32 KB is too small for
-	// image generation responses which carry base64-encoded PNGs (~1-3 MB).
+	// large inference responses.
 	conn.SetReadLimit(10 * 1024 * 1024)
 
 	providerID := uuid.New().String()
@@ -182,16 +182,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// Verify runtime integrity against the known-good manifest.
 			if s.knownRuntimeManifest != nil {
 				runtimeOK, mismatches := s.verifyRuntimeHashes(
-					regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes,
-					regMsg.GrpcBinaryHash, regMsg.ImageBridgeHash)
+					regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
 				provider.Mu().Lock()
 				provider.RuntimeVerified = runtimeOK
 				provider.RuntimeManifestChecked = runtimeOK
 				provider.PythonHash = regMsg.PythonHash
 				provider.RuntimeHash = regMsg.RuntimeHash
 				provider.TemplateHashes = registry.CloneStringMap(regMsg.TemplateHashes)
-				provider.GrpcBinaryHash = regMsg.GrpcBinaryHash
-				provider.ImageBridgeHash = regMsg.ImageBridgeHash
 				provider.Mu().Unlock()
 
 				if !runtimeOK {
@@ -266,14 +263,6 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		case protocol.TypeInferenceError:
 			errMsg := msg.Payload.(*protocol.InferenceErrorMessage)
 			s.handleInferenceError(providerID, provider, errMsg)
-
-		case protocol.TypeTranscriptionComplete:
-			tcMsg := msg.Payload.(*protocol.TranscriptionCompleteMessage)
-			s.handleTranscriptionComplete(providerID, provider, tcMsg)
-
-		case protocol.TypeImageGenerationComplete:
-			igMsg := msg.Payload.(*protocol.ImageGenerationCompleteMessage)
-			s.handleImageGenerationComplete(providerID, provider, igMsg)
 
 		case protocol.TypeAttestationResponse:
 			respMsg := msg.Payload.(*protocol.AttestationResponseMessage)
@@ -628,8 +617,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	// Verify runtime integrity hashes from challenge response.
 	if s.knownRuntimeManifest != nil {
 		runtimeOK, mismatches := s.verifyRuntimeHashes(
-			resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes,
-			resp.GrpcBinaryHash, resp.ImageBridgeHash)
+			resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
 		provider.Mu().Lock()
 		provider.RuntimeVerified = runtimeOK
 		provider.RuntimeManifestChecked = runtimeOK
@@ -641,12 +629,6 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		}
 		if len(resp.TemplateHashes) > 0 {
 			provider.TemplateHashes = registry.CloneStringMap(resp.TemplateHashes)
-		}
-		if resp.GrpcBinaryHash != "" {
-			provider.GrpcBinaryHash = resp.GrpcBinaryHash
-		}
-		if resp.ImageBridgeHash != "" {
-			provider.ImageBridgeHash = resp.ImageBridgeHash
 		}
 		provider.Mu().Unlock()
 
@@ -1003,12 +985,6 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	close(pr.ChunkCh)
 	close(pr.CompleteCh)
 	close(pr.ErrorCh)
-	if pr.TranscriptionCh != nil {
-		close(pr.TranscriptionCh)
-	}
-	if pr.ImageGenerationCh != nil {
-		close(pr.ImageGenerationCh)
-	}
 
 	// Record job failure for reputation tracking.
 	s.registry.RecordJobFailure(providerID)
@@ -1021,143 +997,6 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		"provider_id", providerID,
 		"error", msg.Error,
 		"status_code", msg.StatusCode,
-	)
-}
-
-func (s *Server) handleTranscriptionComplete(providerID string, provider *registry.Provider, msg *protocol.TranscriptionCompleteMessage) {
-	if provider == nil {
-		s.logger.Warn("transcription complete from unregistered provider", "provider_id", providerID)
-		return
-	}
-	pr := provider.RemovePending(msg.RequestID)
-	if pr == nil {
-		s.logger.Warn("transcription complete for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
-		return
-	}
-
-	// Send the full transcription result to the waiting handler.
-	if pr.TranscriptionCh != nil {
-		select {
-		case pr.TranscriptionCh <- msg:
-		default:
-			s.logger.Warn("dropped transcription result, consumer channel full", "request_id", msg.RequestID)
-		}
-	}
-
-	// Record job success.
-	s.registry.RecordJobSuccess(providerID, time.Duration(msg.DurationSecs*float64(time.Second)))
-
-	// Mark provider idle.
-	s.registry.SetProviderIdle(providerID)
-
-	s.logger.Info("transcription complete",
-		"request_id", msg.RequestID,
-		"provider_id", providerID,
-		"audio_seconds", msg.Usage.AudioSeconds,
-		"generation_tokens", msg.Usage.GenerationTokens,
-		"duration_secs", msg.DurationSecs,
-		"text_length", len(msg.Text),
-	)
-}
-
-func (s *Server) handleImageGenerationComplete(providerID string, provider *registry.Provider, msg *protocol.ImageGenerationCompleteMessage) {
-	if provider == nil {
-		s.logger.Warn("image generation complete from unregistered provider", "provider_id", providerID)
-		return
-	}
-	pr := provider.RemovePending(msg.RequestID)
-	if pr == nil {
-		s.logger.Warn("image generation complete for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
-		return
-	}
-
-	// Send the result to the waiting consumer handler.
-	if pr.ImageGenerationCh != nil {
-		select {
-		case pr.ImageGenerationCh <- msg:
-		default:
-			s.logger.Warn("dropped image generation result, consumer channel full", "request_id", msg.RequestID)
-		}
-	}
-
-	// Record job success.
-	s.registry.RecordJobSuccess(providerID, time.Duration(msg.DurationSecs*float64(time.Second)))
-
-	// Calculate per-image cost.
-	totalCost := payments.CalculateImageCost(msg.Usage.Model, msg.Usage.Width, msg.Usage.Height, msg.Usage.ImagesGenerated)
-	providerPayout := payments.ProviderPayout(totalCost)
-
-	// Charge consumer (best-effort — image already generated).
-	if err := s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID); err != nil {
-		s.logger.Warn("could not charge consumer for image generation",
-			"consumer_key", pr.ConsumerKey,
-			"cost_micro_usd", totalCost,
-			"error", err,
-		)
-	}
-
-	// Record usage entry — in-memory + persisted.
-	s.ledger.RecordUsage(pr.ConsumerKey, payments.UsageEntry{
-		JobID:        msg.RequestID,
-		Model:        pr.Model,
-		CostMicroUSD: totalCost,
-		Timestamp:    time.Now(),
-	})
-	s.store.RecordUsageWithCost(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, 0, 0, totalCost)
-
-	// Credit the provider.
-	if p := s.registry.GetProvider(providerID); p != nil {
-		if p.AccountID != "" {
-			if err := s.store.CreditProviderAccount(&store.ProviderEarning{
-				AccountID:      p.AccountID,
-				ProviderID:     providerID,
-				ProviderKey:    p.PublicKey,
-				JobID:          msg.RequestID,
-				Model:          pr.Model,
-				AmountMicroUSD: providerPayout,
-				CreatedAt:      time.Now(),
-			}); err != nil {
-				s.logger.Error("failed to credit linked provider account for image generation",
-					"provider_id", providerID,
-					"account_id", p.AccountID,
-					"request_id", msg.RequestID,
-					"error", err,
-				)
-			}
-		} else if p.WalletAddress != "" {
-			if err := s.ledger.CreditProvider(p.WalletAddress, providerPayout, pr.Model, msg.RequestID); err != nil {
-				s.logger.Error("failed to credit provider wallet for image generation",
-					"provider_id", providerID,
-					"wallet_address", p.WalletAddress,
-					"request_id", msg.RequestID,
-					"error", err,
-				)
-			}
-		}
-	}
-
-	// Platform fee with referral distribution.
-	platformFee := payments.PlatformFee(totalCost)
-	if platformFee > 0 {
-		if s.billing != nil && s.billing.Referral() != nil {
-			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
-		}
-		_ = s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID)
-	}
-
-	// Mark provider idle.
-	s.registry.SetProviderIdle(providerID)
-
-	s.logger.Info("image generation complete",
-		"request_id", msg.RequestID,
-		"provider_id", providerID,
-		"images_generated", msg.Usage.ImagesGenerated,
-		"width", msg.Usage.Width,
-		"height", msg.Usage.Height,
-		"steps", msg.Usage.Steps,
-		"duration_secs", msg.DurationSecs,
-		"cost_micro_usd", totalCost,
-		"provider_payout_micro_usd", providerPayout,
 	)
 }
 

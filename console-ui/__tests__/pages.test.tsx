@@ -75,8 +75,6 @@ vi.mock("@/lib/api", async (importOriginal) => {
     fetchModels: vi.fn().mockResolvedValue([]),
     fetchPricing: vi.fn().mockResolvedValue({
       prices: [],
-      transcription_prices: [],
-      image_prices: [],
     }),
     healthCheck: vi.fn().mockResolvedValue({ status: "ok", providers: 0 }),
   };

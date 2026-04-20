@@ -139,17 +139,12 @@ export const useStore = create<AppState>()(
       setSelectedModel: (model) => set({ selectedModel: model }),
       setModels: (models) => {
         const current = get().selectedModel;
-        // Default to first text model (not image/transcription)
-        const textModels = models.filter(
-          (m) => m.model_type !== "image" && m.model_type !== "stt" && m.model_type !== "transcription"
-        );
         // Prefer Gemma 4, then Qwen 27B, then first available
         const preferred = ["gemma-4", "qwen3.5-27b"];
         const defaultModel =
           preferred
-            .map((pref) => textModels.find((m) => m.id.toLowerCase().includes(pref)))
+            .map((pref) => models.find((m) => m.id.toLowerCase().includes(pref)))
             .find(Boolean)?.id ||
-          textModels[0]?.id ||
           models[0]?.id ||
           "";
         set({

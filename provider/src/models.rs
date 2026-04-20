@@ -252,15 +252,6 @@ fn is_mlx_model(snapshot_dir: &Path, model_name: &str) -> bool {
         return snapshot_dir.join("config.json").exists();
     }
 
-    // Check for .ckpt files (image models like FLUX)
-    if let Ok(entries) = std::fs::read_dir(snapshot_dir) {
-        for entry in entries.flatten() {
-            if entry.path().extension().is_some_and(|ext| ext == "ckpt") {
-                return true;
-            }
-        }
-    }
-
     false
 }
 
@@ -404,7 +395,7 @@ fn collect_weight_files(snapshot_dir: &Path) -> (u64, Vec<PathBuf>) {
         if name.ends_with(".safetensors")
             || name.ends_with(".npz")
             || name.ends_with(".bin")
-            || name.ends_with(".ckpt")
+
             || name == "weights.npz"
         {
             if let Ok(meta) = entry.metadata() {

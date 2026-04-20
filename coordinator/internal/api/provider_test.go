@@ -1467,8 +1467,6 @@ func TestHandleChunkDecryptsEncryptedTextChunk(t *testing.T) {
 		CompleteCh:        make(chan protocol.UsageInfo, 1),
 		ErrorCh:           make(chan protocol.InferenceErrorMessage, 1),
 		SessionPrivKey:    &sessionKeys.PrivateKey,
-		TranscriptionCh:   make(chan *protocol.TranscriptionCompleteMessage, 1),
-		ImageGenerationCh: make(chan *protocol.ImageGenerationCompleteMessage, 1),
 	}
 	provider.AddPending(pr)
 
@@ -1528,8 +1526,6 @@ func TestHandleChunkRejectsPlaintextTextChunk(t *testing.T) {
 		CompleteCh:        make(chan protocol.UsageInfo, 1),
 		ErrorCh:           make(chan protocol.InferenceErrorMessage, 1),
 		SessionPrivKey:    &sessionKeys.PrivateKey,
-		TranscriptionCh:   make(chan *protocol.TranscriptionCompleteMessage, 1),
-		ImageGenerationCh: make(chan *protocol.ImageGenerationCompleteMessage, 1),
 	}
 	provider.AddPending(pr)
 
@@ -1601,8 +1597,6 @@ func TestHandleChunkRejectsMixedPlaintextAndEncryptedTextChunk(t *testing.T) {
 		CompleteCh:        make(chan protocol.UsageInfo, 1),
 		ErrorCh:           make(chan protocol.InferenceErrorMessage, 1),
 		SessionPrivKey:    &sessionKeys.PrivateKey,
-		TranscriptionCh:   make(chan *protocol.TranscriptionCompleteMessage, 1),
-		ImageGenerationCh: make(chan *protocol.ImageGenerationCompleteMessage, 1),
 	}
 	provider.AddPending(pr)
 

@@ -35,17 +35,13 @@ const (
 	TypeInferenceResponseChunk  = "inference_response_chunk"
 	TypeInferenceComplete       = "inference_complete"
 	TypeInferenceError          = "inference_error"
-	TypeAttestationResponse     = "attestation_response"
-	TypeTranscriptionComplete   = "transcription_complete"
-	TypeImageGenerationComplete = "image_generation_complete"
+	TypeAttestationResponse = "attestation_response"
 
 	// Coordinator → Provider
-	TypeInferenceRequest       = "inference_request"
-	TypeCancel                 = "cancel"
-	TypeAttestationChallenge   = "attestation_challenge"
-	TypeTranscriptionRequest   = "transcription_request"
-	TypeImageGenerationRequest = "image_generation_request"
-	TypeRuntimeStatus          = "runtime_status"
+	TypeInferenceRequest    = "inference_request"
+	TypeCancel              = "cancel"
+	TypeAttestationChallenge = "attestation_challenge"
+	TypeRuntimeStatus       = "runtime_status"
 )
 
 // ---------------------------------------------------------------------------
@@ -101,11 +97,9 @@ type RegisterMessage struct {
 	AuthToken               string          `json:"auth_token,omitempty"`                // device-linked provider token (from darkbloom login)
 
 	// Runtime integrity hashes — used for runtime verification against known-good manifests.
-	PythonHash          string               `json:"python_hash,omitempty"`       // SHA-256 of Python runtime
-	RuntimeHash         string               `json:"runtime_hash,omitempty"`      // SHA-256 of inference runtime (vllm-mlx)
-	TemplateHashes      map[string]string    `json:"template_hashes,omitempty"`   // template_name -> SHA-256 hash
-	GrpcBinaryHash      string               `json:"grpc_binary_hash,omitempty"`  // SHA-256 of gRPCServerCLI binary
-	ImageBridgeHash     string               `json:"image_bridge_hash,omitempty"` // SHA-256 of image bridge Python source
+	PythonHash          string               `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
+	RuntimeHash         string               `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
+	TemplateHashes      map[string]string    `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
 	PrivacyCapabilities *PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
 }
 
@@ -281,12 +275,10 @@ type AttestationResponseMessage struct {
 	ActiveModelHash   string `json:"active_model_hash,omitempty"`   // SHA-256 weight fingerprint of loaded model
 
 	// Runtime integrity hashes — fresh values reported at challenge time.
-	PythonHash      string            `json:"python_hash,omitempty"`       // SHA-256 of Python runtime
-	RuntimeHash     string            `json:"runtime_hash,omitempty"`      // SHA-256 of inference runtime (vllm-mlx)
-	TemplateHashes  map[string]string `json:"template_hashes,omitempty"`   // template_name -> SHA-256 hash
-	GrpcBinaryHash  string            `json:"grpc_binary_hash,omitempty"`  // SHA-256 of gRPCServerCLI binary
-	ImageBridgeHash string            `json:"image_bridge_hash,omitempty"` // SHA-256 of image bridge Python source
-	ModelHashes     map[string]string `json:"model_hashes,omitempty"`      // model_id -> SHA-256 weight hash (all active models)
+	PythonHash     string            `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
+	RuntimeHash    string            `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
+	TemplateHashes map[string]string `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
+	ModelHashes    map[string]string `json:"model_hashes,omitempty"`    // model_id -> SHA-256 weight hash (all active models)
 }
 
 // ---------------------------------------------------------------------------
@@ -308,98 +300,6 @@ type RuntimeMismatch struct {
 	Component string `json:"component"`
 	Expected  string `json:"expected"`
 	Got       string `json:"got"`
-}
-
-// ---------------------------------------------------------------------------
-// STT (Speech-to-Text) messages
-// ---------------------------------------------------------------------------
-
-// TranscriptionRequestBody is the body sent inside a TranscriptionRequest.
-type TranscriptionRequestBody struct {
-	Model    string  `json:"model"`
-	Audio    string  `json:"audio"`              // base64-encoded audio data
-	Language *string `json:"language,omitempty"` // ISO 639-1 language code (e.g. "en")
-	Format   string  `json:"format,omitempty"`   // audio format hint: "mp3", "wav", etc.
-}
-
-// TranscriptionRequestMessage tells a provider to transcribe audio.
-// When E2E encryption is enabled, Body is empty and EncryptedBody contains
-// the NaCl Box encrypted request (same as InferenceRequestMessage).
-type TranscriptionRequestMessage struct {
-	Type          string                   `json:"type"`
-	RequestID     string                   `json:"request_id"`
-	Body          TranscriptionRequestBody `json:"body,omitempty"`
-	EncryptedBody *EncryptedPayload        `json:"encrypted_body,omitempty"`
-}
-
-// TranscriptionSegment is a timed segment within a transcription.
-type TranscriptionSegment struct {
-	Start float64 `json:"start"`
-	End   float64 `json:"end"`
-	Text  string  `json:"text"`
-}
-
-// TranscriptionUsage carries usage info for billing STT requests.
-type TranscriptionUsage struct {
-	AudioSeconds     float64 `json:"audio_seconds"`
-	GenerationTokens int     `json:"generation_tokens"`
-}
-
-// TranscriptionCompleteMessage signals the provider finished transcribing.
-type TranscriptionCompleteMessage struct {
-	Type         string                 `json:"type"`
-	RequestID    string                 `json:"request_id"`
-	Text         string                 `json:"text"`
-	Segments     []TranscriptionSegment `json:"segments,omitempty"`
-	Language     string                 `json:"language,omitempty"`
-	Usage        TranscriptionUsage     `json:"usage"`
-	DurationSecs float64                `json:"duration_secs"` // processing time
-}
-
-// ---------------------------------------------------------------------------
-// Image Generation messages
-// ---------------------------------------------------------------------------
-
-// ImageGenerationRequestBody is the body sent inside an ImageGenerationRequest.
-type ImageGenerationRequestBody struct {
-	Model          string `json:"model"`
-	Prompt         string `json:"prompt"`
-	NegativePrompt string `json:"negative_prompt,omitempty"`
-	N              int    `json:"n,omitempty"`     // number of images (default 1)
-	Size           string `json:"size,omitempty"`  // e.g. "1024x1024"
-	Steps          *int   `json:"steps,omitempty"` // inference steps
-	Seed           *int64 `json:"seed,omitempty"`
-	ResponseFormat string `json:"response_format,omitempty"` // "b64_json" (default) or "url"
-}
-
-// ImageGenerationRequestMessage tells a provider to generate images.
-// Includes an upload_url where the provider should POST the generated images
-// via HTTP (instead of sending them over the WebSocket, which has size limits).
-type ImageGenerationRequestMessage struct {
-	Type          string                     `json:"type"`
-	RequestID     string                     `json:"request_id"`
-	UploadURL     string                     `json:"upload_url"` // HTTP endpoint for image upload
-	Body          ImageGenerationRequestBody `json:"body,omitempty"`
-	EncryptedBody *EncryptedPayload          `json:"encrypted_body,omitempty"`
-}
-
-// ImageGenerationUsage carries usage info for billing image generation requests.
-type ImageGenerationUsage struct {
-	ImagesGenerated int    `json:"images_generated"`
-	Width           int    `json:"width"`
-	Height          int    `json:"height"`
-	Steps           int    `json:"steps"`
-	Model           string `json:"model"`
-}
-
-// ImageGenerationCompleteMessage signals the provider finished generating images.
-// The actual image data is uploaded separately via HTTP to the upload_url.
-// This message only carries metadata so it stays small on the WebSocket.
-type ImageGenerationCompleteMessage struct {
-	Type         string               `json:"type"`
-	RequestID    string               `json:"request_id"`
-	Usage        ImageGenerationUsage `json:"usage"`
-	DurationSecs float64              `json:"duration_secs"` // processing time
 }
 
 // ---------------------------------------------------------------------------
@@ -471,20 +371,6 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg AttestationResponseMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal attestation_response: %w", err)
-		}
-		pm.Payload = &msg
-
-	case TypeTranscriptionComplete:
-		var msg TranscriptionCompleteMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return fmt.Errorf("protocol: failed to unmarshal transcription_complete: %w", err)
-		}
-		pm.Payload = &msg
-
-	case TypeImageGenerationComplete:
-		var msg ImageGenerationCompleteMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return fmt.Errorf("protocol: failed to unmarshal image_generation_complete: %w", err)
 		}
 		pm.Payload = &msg
 

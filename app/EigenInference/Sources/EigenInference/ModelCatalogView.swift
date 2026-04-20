@@ -4,7 +4,7 @@
 ///   - Fit indicators (green = fits, red = too large for RAM)
 ///   - Download status (Downloaded, Available, Downloading)
 ///   - Download/Remove actions
-///   - Model type badges (text, image, transcription)
+///   - Model type badges (text)
 
 import SwiftUI
 
@@ -163,8 +163,6 @@ struct ModelCatalogView: View {
     private func typeColor(_ type: String) -> Color {
         switch type {
         case "text": return .blueAccent
-        case "image": return .purpleAccent
-        case "transcription": return .gold
         default: return .warmInkFaint
         }
     }

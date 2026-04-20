@@ -587,44 +587,8 @@ func (s *Server) handleGetPricing(w http.ResponseWriter, r *http.Request) {
 		prices = append(prices, p)
 	}
 
-	// Transcription pricing (per audio-minute).
-	type transcriptionPriceEntry struct {
-		Model    string `json:"model"`
-		Price    int64  `json:"price_per_minute"` // micro-USD per audio-minute
-		PriceUSD string `json:"price_usd"`
-		Unit     string `json:"unit"`
-	}
-	var transcriptionPrices []transcriptionPriceEntry
-	for model, price := range payments.DefaultTranscriptionPrices() {
-		transcriptionPrices = append(transcriptionPrices, transcriptionPriceEntry{
-			Model:    model,
-			Price:    price,
-			PriceUSD: fmt.Sprintf("$%.4f", float64(price)/1_000_000),
-			Unit:     "per audio-minute",
-		})
-	}
-
-	// Image pricing (per image at 1024x1024).
-	type imagePriceEntry struct {
-		Model    string `json:"model"`
-		Price    int64  `json:"price_per_image"` // micro-USD per image
-		PriceUSD string `json:"price_usd"`
-		Unit     string `json:"unit"`
-	}
-	var imagePrices []imagePriceEntry
-	for model, price := range payments.DefaultImagePrices() {
-		imagePrices = append(imagePrices, imagePriceEntry{
-			Model:    model,
-			Price:    price,
-			PriceUSD: fmt.Sprintf("$%.4f", float64(price)/1_000_000),
-			Unit:     "per image (1024x1024)",
-		})
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
-		"prices":               prices,
-		"transcription_prices": transcriptionPrices,
-		"image_prices":         imagePrices,
+		"prices": prices,
 	})
 }
 

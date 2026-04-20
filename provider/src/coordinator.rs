@@ -25,8 +25,7 @@ use crate::backend::ExponentialBackoff;
 use crate::hardware::HardwareInfo;
 use crate::models::ModelInfo;
 use crate::protocol::{
-    CoordinatorMessage, ImageGenerationRequestBody, ProviderMessage, ProviderStats, ProviderStatus,
-    TranscriptionRequestBody,
+    CoordinatorMessage, ProviderMessage, ProviderStats, ProviderStatus,
 };
 use crate::security::RuntimeHashes;
 
@@ -55,15 +54,6 @@ pub enum CoordinatorEvent {
         request_id: String,
         body: serde_json::Value,
         response_public_key: Option<[u8; 32]>,
-    },
-    TranscriptionRequest {
-        request_id: String,
-        body: TranscriptionRequestBody,
-    },
-    ImageGenerationRequest {
-        request_id: String,
-        body: ImageGenerationRequestBody,
-        upload_url: String,
     },
     Cancel {
         request_id: String,
@@ -105,7 +95,7 @@ pub struct CoordinatorClient {
     runtime_hashes: Option<RuntimeHashes>,
     /// Python interpreter used to recompute runtime hashes on attestation challenges.
     runtime_hash_command: Option<String>,
-    /// Per-model weight hashes for all active models (text, STT, image).
+    /// Per-model weight hashes for all active models.
     model_hashes: std::collections::HashMap<String, String>,
     /// Live backend capacity data (updated by main loop, read by heartbeat tick).
     backend_capacity: Arc<std::sync::Mutex<Option<crate::protocol::BackendCapacity>>>,
@@ -286,17 +276,15 @@ impl CoordinatorClient {
         let (mut write, mut read) = ws_stream.split();
 
         // Send registration message
-        let (python_hash, runtime_hash, template_hashes, grpc_binary_hash, image_bridge_hash) =
+        let (python_hash, runtime_hash, template_hashes) =
             if let Some(ref rh) = self.runtime_hashes {
                 (
                     rh.python_hash.clone(),
                     rh.runtime_hash.clone(),
                     rh.template_hashes.clone(),
-                    rh.grpc_binary_hash.clone(),
-                    rh.image_bridge_hash.clone(),
                 )
             } else {
-                (None, None, std::collections::HashMap::new(), None, None)
+                (None, None, std::collections::HashMap::new())
             };
         let privacy_caps = crate::protocol::PrivacyCapabilities {
             text_backend_inprocess: true,
@@ -325,8 +313,6 @@ impl CoordinatorClient {
             python_hash,
             runtime_hash,
             template_hashes,
-            grpc_binary_hash,
-            image_bridge_hash,
             privacy_capabilities: Some(privacy_caps),
         };
         let register_json = serde_json::to_string(&register)?;
@@ -443,67 +429,6 @@ impl CoordinatorClient {
                                         body: decrypted_body,
                                         response_public_key,
                                     }).await;
-                                }
-                                Ok(CoordinatorMessage::TranscriptionRequest { request_id, body, encrypted_body }) => {
-                                    tracing::info!("Received transcription request: {request_id}");
-
-                                    // Decrypt E2E encrypted body if present
-                                    let decrypted_body = if let Some(enc) = encrypted_body {
-                                        tracing::info!("Decrypting E2E encrypted transcription request");
-                                        match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
-                                            Ok((body, _)) => body,
-                                            Err(e) => {
-                                                tracing::error!("Failed to decrypt transcription request: {e}");
-                                                continue;
-                                            }
-                                        }
-                                    } else {
-                                        body
-                                    };
-
-                                    // Parse the transcription body
-                                    match serde_json::from_value::<TranscriptionRequestBody>(decrypted_body) {
-                                        Ok(parsed_body) => {
-                                            let _ = event_tx.send(CoordinatorEvent::TranscriptionRequest {
-                                                request_id,
-                                                body: parsed_body,
-                                            }).await;
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Failed to parse transcription body: {e}");
-                                        }
-                                    }
-                                }
-                                Ok(CoordinatorMessage::ImageGenerationRequest { request_id, upload_url, body, encrypted_body }) => {
-                                    tracing::info!("Received image generation request: {request_id}");
-
-                                    // Decrypt E2E encrypted body if present
-                                    let decrypted_body = if let Some(enc) = encrypted_body {
-                                        tracing::info!("Decrypting E2E encrypted image generation request");
-                                        match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
-                                            Ok((body, _)) => body,
-                                            Err(e) => {
-                                                tracing::error!("Failed to decrypt image generation request: {e}");
-                                                continue;
-                                            }
-                                        }
-                                    } else {
-                                        body
-                                    };
-
-                                    // Parse the image generation body
-                                    match serde_json::from_value::<ImageGenerationRequestBody>(decrypted_body) {
-                                        Ok(parsed_body) => {
-                                            let _ = event_tx.send(CoordinatorEvent::ImageGenerationRequest {
-                                                request_id,
-                                                body: parsed_body,
-                                                upload_url,
-                                            }).await;
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Failed to parse image generation body: {e}");
-                                        }
-                                    }
                                 }
                                 Ok(CoordinatorMessage::Cancel { request_id }) => {
                                     tracing::info!("Received cancel for: {request_id}");
@@ -690,17 +615,15 @@ pub fn handle_attestation_challenge(
         );
     }
 
-    let (python_hash, rt_hash, template_hashes, grpc_binary_hash, image_bridge_hash) =
+    let (python_hash, rt_hash, template_hashes) =
         if let Some(rh) = runtime_hashes {
             (
                 rh.python_hash.clone(),
                 rh.runtime_hash.clone(),
                 rh.template_hashes.clone(),
-                rh.grpc_binary_hash.clone(),
-                rh.image_bridge_hash.clone(),
             )
         } else {
-            (None, None, std::collections::HashMap::new(), None, None)
+            (None, None, std::collections::HashMap::new())
         };
 
     ProviderMessage::AttestationResponse {
@@ -716,8 +639,6 @@ pub fn handle_attestation_challenge(
         python_hash,
         runtime_hash: rt_hash,
         template_hashes,
-        grpc_binary_hash,
-        image_bridge_hash,
         model_hashes,
     }
 }
@@ -758,8 +679,6 @@ pub fn build_register_message_with_wallet(
         python_hash: None,
         runtime_hash: None,
         template_hashes: std::collections::HashMap::new(),
-        grpc_binary_hash: None,
-        image_bridge_hash: None,
         privacy_capabilities: None,
     }
 }
@@ -1117,8 +1036,6 @@ mod tests {
                 python_hash: _,
                 runtime_hash: _,
                 template_hashes: _,
-                grpc_binary_hash: _,
-                image_bridge_hash: _,
                 model_hashes: _,
             } => {
                 // Nonce echoed back exactly

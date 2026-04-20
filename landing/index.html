@@ -1094,7 +1094,7 @@
         <div class="card">
           <div class="card-label">For users</div>
           <h3>Inference at half the cost</h3>
-          <p>Idle hardware has near-zero marginal cost. That saving passes through to price. OpenAI-compatible API for chat and speech-to-text. Image generation is temporarily under maintenance. Every request is end-to-end encrypted.</p>
+          <p>Idle hardware has near-zero marginal cost. That saving passes through to price. OpenAI-compatible API for chat completions. Every request is end-to-end encrypted.</p>
           <a href="https://console.darkbloom.dev" target="_blank" class="btn btn-primary" style="margin-top:20px;">Open Console ↗</a>
         </div>
         <div class="card">
@@ -1273,8 +1273,6 @@ response = client.chat.completions.create(
       </div>
       <div class="feat-grid rv">
         <div class="feat-item"><svg class="feat-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg><span><strong>Streaming</strong> — SSE, OpenAI format</span></div>
-        <div class="feat-item" style="opacity:0.6;"><svg class="feat-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><span><strong>Image generation</strong> — under maintenance</span></div>
-        <div class="feat-item"><svg class="feat-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg><span><strong>Speech-to-text</strong> — Cohere Transcribe</span></div>
         <div class="feat-item"><svg class="feat-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg><span><strong>Large MoE</strong> — up to 239B params</span></div>
       </div>
     </div>
@@ -1303,8 +1301,6 @@ response = client.chat.completions.create(
       </div>
       <p class="pnote">Prices per million tokens</p>
       <div class="pmini-grid rv">
-        <div class="pmini" style="opacity:0.55;"><h4>Image Generation</h4><div class="val" style="color:var(--grey-03);">—</div><div class="unit">under maintenance</div><div class="vs" style="text-decoration:none;color:var(--grey-03);">routing paused</div></div>
-        <div class="pmini"><h4>Speech-to-Text</h4><div class="val">$0.001</div><div class="unit">per audio minute</div><div class="vs">AssemblyAI: $0.002</div></div>
         <div class="pmini"><h4>Platform Fee</h4><div class="val" style="color:var(--black);">0%</div><div class="unit">operators keep 100%</div><div class="vs" style="text-decoration:none;color:var(--eigen-blue);">transparent</div></div>
       </div>
     </div>
@@ -1385,7 +1381,6 @@ response = client.chat.completions.create(
         <div class="mitem"><div><div class="mname">Qwen3.5 27B</div><div class="mdesc">Dense, frontier-quality reasoning (Claude Opus distilled)</div></div><span class="mtag mt-text">text</span></div>
         <div class="mitem"><div><div class="mname">Qwen3.5 122B MoE <span class="info-tip" data-tip="Requires a high-RAM node (128GB+). Availability depends on provider hardware.">ⓘ</span></div><div class="mdesc">10B active — best quality per token</div></div><span class="mtag mt-text">text</span></div>
         <div class="mitem"><div><div class="mname">MiniMax M2.5 239B <span class="info-tip" data-tip="Requires a high-RAM node (256GB+). Availability depends on provider hardware.">ⓘ</span></div><div class="mdesc">SOTA coding, 11B active, 100 tok/s on Mac Studio</div></div><span class="mtag mt-text">text</span></div>
-        <div class="mitem"><div><div class="mname">Cohere Transcribe</div><div class="mdesc">2B conformer — best-in-class speech-to-text</div></div><span class="mtag mt-audio">audio</span></div>
       </div>
     </div>
   </section>

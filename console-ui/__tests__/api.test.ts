@@ -259,8 +259,6 @@ describe("fetchPricing", () => {
       prices: [
         { model: "m1", input_price: 100, output_price: 200, input_usd: "0.01", output_usd: "0.02" },
       ],
-      transcription_prices: [],
-      image_prices: [],
     };
     fetchMock.mockResolvedValueOnce(jsonResponse(payload));
 

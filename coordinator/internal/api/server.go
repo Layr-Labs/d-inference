@@ -25,7 +25,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/eigeninference/coordinator/internal/auth"
@@ -115,12 +114,6 @@ type Server struct {
 	// Prod historically uses a second bucket; dev can reuse r2CDNURL.
 	r2SitePackagesCDNURL string
 
-	// imageUploads stores generated images keyed by request_id.
-	// Providers upload images via HTTP POST, then send a small WebSocket
-	// completion message. The consumer handler retrieves images from here.
-	imageUploads   map[string][][]byte // request_id → list of PNG images
-	imageUploadsMu sync.Mutex
-
 	// storedProviders is a lookup table of persisted provider records, indexed
 	// by serial number and SE public key. When a provider reconnects after a
 	// coordinator restart, this table is checked to restore trust/reputation.
@@ -144,7 +137,6 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 		ledger:               payments.NewLedger(st),
 		logger:               logger,
 		mux:                  http.NewServeMux(),
-		imageUploads:         make(map[string][][]byte),
 		knownRuntimeManifest: &RuntimeManifest{},
 	}
 	s.routes()
@@ -309,11 +301,9 @@ func (s *Server) SyncRuntimeManifest() {
 	}
 
 	manifest := &RuntimeManifest{
-		PythonHashes:      make(map[string]bool),
-		RuntimeHashes:     make(map[string]bool),
-		TemplateHashes:    make(map[string]string),
-		GrpcBinaryHashes:  make(map[string]bool),
-		ImageBridgeHashes: make(map[string]bool),
+		PythonHashes:   make(map[string]bool),
+		RuntimeHashes:  make(map[string]bool),
+		TemplateHashes: make(map[string]string),
 	}
 
 	hasAny := false
@@ -339,14 +329,6 @@ func (s *Server) SyncRuntimeManifest() {
 				}
 			}
 		}
-		if r.GrpcBinaryHash != "" {
-			manifest.GrpcBinaryHashes[r.GrpcBinaryHash] = true
-			hasAny = true
-		}
-		if r.ImageBridgeHash != "" {
-			manifest.ImageBridgeHashes[r.ImageBridgeHash] = true
-			hasAny = true
-		}
 	}
 
 	if hasAny {
@@ -356,8 +338,6 @@ func (s *Server) SyncRuntimeManifest() {
 			"python_hashes", len(manifest.PythonHashes),
 			"runtime_hashes", len(manifest.RuntimeHashes),
 			"template_hashes", len(manifest.TemplateHashes),
-			"grpc_binary_hashes", len(manifest.GrpcBinaryHashes),
-			"image_bridge_hashes", len(manifest.ImageBridgeHashes),
 		)
 	} else {
 		s.knownRuntimeManifest = nil
@@ -377,8 +357,6 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		pythonHash := provider.PythonHash
 		runtimeHash := provider.RuntimeHash
 		templateHashes := registry.CloneStringMap(provider.TemplateHashes)
-		grpcBinaryHash := provider.GrpcBinaryHash
-		imageBridgeHash := provider.ImageBridgeHash
 		version := provider.Version
 		switch {
 		case s.knownRuntimeManifest == nil:
@@ -394,8 +372,6 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 				pythonHash,
 				runtimeHash,
 				templateHashes,
-				grpcBinaryHash,
-				imageBridgeHash,
 			)
 			if !runtimeOK {
 				provider.RuntimeVerified = false
@@ -410,11 +386,9 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 // When configured, the coordinator verifies provider-reported hashes against
 // this manifest at registration and during periodic attestation challenges.
 type RuntimeManifest struct {
-	PythonHashes      map[string]bool   `json:"python_hashes"`       // set of accepted Python runtime hashes
-	RuntimeHashes     map[string]bool   `json:"runtime_hashes"`      // set of accepted inference runtime hashes
-	TemplateHashes    map[string]string `json:"template_hashes"`     // template_name -> expected hash
-	GrpcBinaryHashes  map[string]bool   `json:"grpc_binary_hashes"`  // set of accepted gRPCServerCLI hashes
-	ImageBridgeHashes map[string]bool   `json:"image_bridge_hashes"` // set of accepted image bridge hashes
+	PythonHashes   map[string]bool   `json:"python_hashes"`   // set of accepted Python runtime hashes
+	RuntimeHashes  map[string]bool   `json:"runtime_hashes"`  // set of accepted inference runtime hashes
+	TemplateHashes map[string]string `json:"template_hashes"` // template_name -> expected hash
 }
 
 // SetRuntimeManifest configures the known-good runtime manifest for provider
@@ -461,7 +435,7 @@ func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 // known-good manifest. When a component has expected hashes in the manifest,
 // the provider MUST report that component and it MUST match one of the known
 // good values. Omitting a required hash is treated as a mismatch.
-func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHashes map[string]string, grpcBinaryHash, imageBridgeHash string) (bool, []protocol.RuntimeMismatch) {
+func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
 	if s.knownRuntimeManifest == nil {
 		return true, nil
 	}
@@ -523,8 +497,6 @@ func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHas
 		}
 	}
 
-	requireOneOf("grpc_binary", grpcBinaryHash, manifest.GrpcBinaryHashes)
-	requireOneOf("image_bridge", imageBridgeHash, manifest.ImageBridgeHashes)
 
 	return len(mismatches) == 0, mismatches
 }
@@ -539,12 +511,10 @@ func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"configured":          true,
-		"python_hashes":       s.knownRuntimeManifest.PythonHashes,
-		"runtime_hashes":      s.knownRuntimeManifest.RuntimeHashes,
-		"template_hashes":     s.knownRuntimeManifest.TemplateHashes,
-		"grpc_binary_hashes":  s.knownRuntimeManifest.GrpcBinaryHashes,
-		"image_bridge_hashes": s.knownRuntimeManifest.ImageBridgeHashes,
+		"configured":      true,
+		"python_hashes":   s.knownRuntimeManifest.PythonHashes,
+		"runtime_hashes":  s.knownRuntimeManifest.RuntimeHashes,
+		"template_hashes": s.knownRuntimeManifest.TemplateHashes,
 	})
 }
 
@@ -628,18 +598,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/responses", s.requireAuth(s.sealedTransport(s.handleChatCompletions))) // Responses API — same handler, auto-detects input vs messages
 	s.mux.HandleFunc("POST /v1/completions", s.requireAuth(s.sealedTransport(s.handleCompletions)))
 	s.mux.HandleFunc("POST /v1/messages", s.requireAuth(s.sealedTransport(s.handleAnthropicMessages)))
-	s.mux.HandleFunc("POST /v1/audio/transcriptions", s.requireAuth(s.handleTranscriptions)) // multipart, not sealed (binary audio)
-	s.mux.HandleFunc("POST /v1/images/generations", s.requireAuth(s.sealedTransport(s.handleImageGenerations)))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
 
 	// Sender encryption — public key publication for sender→coordinator E2E.
 	// Optional: senders may use this to encrypt request bodies; plaintext path
 	// continues to work unchanged when this header isn't set.
 	s.mux.HandleFunc("GET /v1/encryption-key", s.handleEncryptionKey)
-
-	// Provider image upload — providers POST generated images here (no API key auth,
-	// providers authenticate via request_id which is a secret between coordinator and provider).
-	s.mux.HandleFunc("POST /v1/provider/image-upload", s.handleImageUpload)
 
 	// MDM webhook — MicroMDM sends command responses here.
 	s.mux.HandleFunc("POST /v1/mdm/webhook", s.HandleMDMWebhook)
@@ -882,38 +846,3 @@ func extractBearerToken(r *http.Request) string {
 	return strings.TrimSpace(parts[1])
 }
 
-// handleImageUpload accepts image data uploaded by providers via HTTP POST.
-// This avoids sending large base64 images over the WebSocket (which has size limits).
-// The provider uploads images here after generating them, then sends a small
-// image_generation_complete message over the WebSocket with just usage metadata.
-func (s *Server) handleImageUpload(w http.ResponseWriter, r *http.Request) {
-	requestID := r.URL.Query().Get("request_id")
-	if requestID == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "request_id is required"))
-		return
-	}
-
-	// Read image data (limit to 20 MB)
-	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
-	imageData, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "failed to read image data"))
-		return
-	}
-
-	s.imageUploadsMu.Lock()
-	s.imageUploads[requestID] = append(s.imageUploads[requestID], imageData)
-	s.imageUploadsMu.Unlock()
-
-	s.logger.Debug("image uploaded", "request_id", requestID, "size", len(imageData))
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-// getUploadedImages retrieves and removes stored images for a request.
-func (s *Server) getUploadedImages(requestID string) [][]byte {
-	s.imageUploadsMu.Lock()
-	defer s.imageUploadsMu.Unlock()
-	images := s.imageUploads[requestID]
-	delete(s.imageUploads, requestID)
-	return images
-}

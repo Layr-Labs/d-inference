@@ -69,14 +69,8 @@ type PendingRequest struct {
 	CompleteCh         chan protocol.UsageInfo // closed after usage sent
 	ErrorCh            chan protocol.InferenceErrorMessage
 	SessionPrivKey     *[32]byte // E2E session private key for decrypting responses
-	SESignature        string    // SE signature over response hash
-	ResponseHash       string    // SHA-256 of response data
-
-	// STT transcription result (nil for inference requests)
-	TranscriptionCh chan *protocol.TranscriptionCompleteMessage
-
-	// Image generation result (nil for non-image requests)
-	ImageGenerationCh chan *protocol.ImageGenerationCompleteMessage
+	SESignature  string // SE signature over response hash
+	ResponseHash string // SHA-256 of response data
 
 	// ReservedMicroUSD is the balance atomically debited at pre-flight.
 	// The post-inference charge adjusts for the difference between the
@@ -133,9 +127,7 @@ type Provider struct {
 	EncryptedResponseChunks bool   `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are encrypted to the coordinator
 	PythonHash              string `json:"python_hash,omitempty"`
 	RuntimeHash             string `json:"runtime_hash,omitempty"`
-	TemplateHashes          map[string]string
-	GrpcBinaryHash          string `json:"grpc_binary_hash,omitempty"`
-	ImageBridgeHash         string `json:"image_bridge_hash,omitempty"`
+	TemplateHashes map[string]string
 
 	// Phase 7: Privacy invariant attestation.
 	// Self-reported by the provider at registration. Fields like SIPEnabled
@@ -669,9 +661,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		RuntimeManifestChecked:  true,  // default to true; API layer sets false when no manifest is configured
 		ChallengeVerifiedSIP:    false, // starts false; set true by attestation challenge handler after SIP check
 		PrivacyCapabilities:     msg.PrivacyCapabilities,
-		TemplateHashes:          CloneStringMap(msg.TemplateHashes),
-		GrpcBinaryHash:          msg.GrpcBinaryHash,
-		ImageBridgeHash:         msg.ImageBridgeHash,
+		TemplateHashes: CloneStringMap(msg.TemplateHashes),
 		Status:                  StatusOnline,
 		Conn:                    conn,
 		LastHeartbeat:           time.Now(),

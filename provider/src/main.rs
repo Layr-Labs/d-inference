@@ -104,36 +104,6 @@ fn default_model_type() -> String {
 fn fallback_catalog() -> Vec<CatalogModel> {
     vec![
         CatalogModel {
-            id: "CohereLabs/cohere-transcribe-03-2026".into(),
-            s3_name: "cohere-transcribe-03-2026".into(),
-            display_name: "Cohere Transcribe".into(),
-            model_type: "transcription".into(),
-            size_gb: 4.2,
-            architecture: "2B conformer".into(),
-            description: "Best-in-class STT".into(),
-            min_ram_gb: 8,
-        },
-        CatalogModel {
-            id: "flux_2_klein_4b_q8p.ckpt".into(),
-            s3_name: "flux-klein-4b-q8".into(),
-            display_name: "FLUX.2 Klein 4B".into(),
-            model_type: "image".into(),
-            size_gb: 8.2, // 3.8 GB model + 4.2 GB text encoder + 0.2 GB VAE
-            architecture: "4B diffusion + Qwen 4B encoder".into(),
-            description: "Fast image gen".into(),
-            min_ram_gb: 16,
-        },
-        CatalogModel {
-            id: "flux_2_klein_9b_q8p.ckpt".into(),
-            s3_name: "flux-klein-9b-q8".into(),
-            display_name: "FLUX.2 Klein 9B".into(),
-            model_type: "image".into(),
-            size_gb: 17.4, // 8.8 GB model + 8.4 GB text encoder + 0.2 GB VAE
-            architecture: "9B diffusion + Qwen 8B encoder".into(),
-            description: "Higher quality image gen".into(),
-            min_ram_gb: 24,
-        },
-        CatalogModel {
             id: "qwen3.5-27b-claude-opus-8bit".into(),
             s3_name: "qwen35-27b-claude-opus-8bit".into(),
             display_name: "Qwen3.5 27B Claude Opus".into(),
@@ -399,16 +369,9 @@ fn curl_download(url: &str, dest: &std::path::Path) -> bool {
 
 /// Download a model from the CDN (R2) into the given cache directory.
 ///
-/// Handles text models (safetensors) and image models (.ckpt) from R2.
+/// Handles text models (safetensors) from R2.
 fn download_model_from_cdn(s3_name: &str, cache_dir: &std::path::Path, display_name: &str) -> bool {
     let base = format!("{}/{}", DEFAULT_R2_CDN_URL, s3_name);
-
-    // Check if this is an image model (.ckpt files, no config.json)
-    let is_image_model = s3_name.contains("flux") || s3_name.contains("klein");
-
-    if is_image_model {
-        return download_ckpt_model_from_cdn(&base, cache_dir, display_name);
-    }
 
     // 1. Download config.json to verify the model exists on CDN
     let config_ok = std::process::Command::new("curl")
@@ -525,139 +488,7 @@ fn download_model_from_cdn(s3_name: &str, cache_dir: &std::path::Path, display_n
     all_ok
 }
 
-/// Download a complete image model pipeline from CDN.
-///
-/// FLUX models require 3 files: diffusion model + text encoder + VAE.
-/// Also writes models.json and configs.json metadata for gRPCServerCLI.
-/// All files are stored in the same R2 directory as the main model.
-fn download_ckpt_model_from_cdn(
-    base_url: &str,
-    cache_dir: &std::path::Path,
-    display_name: &str,
-) -> bool {
-    // Define the full pipeline for each known image model
-    struct ImagePipeline {
-        model_file: &'static str,
-        text_encoder: &'static str,
-        vae: &'static str,
-        version: &'static str,
-        name: &'static str,
-    }
 
-    let pipeline = if cache_dir.to_string_lossy().contains("flux_2_klein_9b_q8p") {
-        Some(ImagePipeline {
-            model_file: "flux_2_klein_9b_q8p.ckpt",
-            text_encoder: "qwen_3_8b_q8p.ckpt",
-            vae: "flux_2_vae_f16.ckpt",
-            version: "flux2_9b",
-            name: "FLUX.2 [klein] 9B",
-        })
-    } else if cache_dir.to_string_lossy().contains("flux_2_klein_4b_q8p") {
-        Some(ImagePipeline {
-            model_file: "flux_2_klein_4b_q8p.ckpt",
-            text_encoder: "qwen_3_4b_q8p.ckpt",
-            vae: "flux_2_vae_f16.ckpt",
-            version: "flux2_4b",
-            name: "FLUX.2 [klein] 4B",
-        })
-    } else {
-        None
-    };
-
-    let Some(pipeline) = pipeline else {
-        println!("  ⚠ Unknown image model");
-        return false;
-    };
-
-    let files = [
-        (pipeline.vae, "VAE"),
-        (pipeline.model_file, "Diffusion model"),
-        (pipeline.text_encoder, "Text encoder"),
-    ];
-
-    let total = files.len();
-    println!("  Downloading {} ({} files)...", display_name, total);
-
-    for (i, (file, desc)) in files.iter().enumerate() {
-        let dest = cache_dir.join(file);
-        if dest.exists() {
-            // Check if already complete via HEAD
-            let expected = std::process::Command::new("curl")
-                .args(["-fsSI", &format!("{}/{}", base_url, file)])
-                .output()
-                .ok()
-                .and_then(|o| {
-                    String::from_utf8_lossy(&o.stdout)
-                        .lines()
-                        .find(|l| l.to_lowercase().starts_with("content-length:"))
-                        .and_then(|l| l.split(':').nth(1)?.trim().parse::<u64>().ok())
-                });
-            if let Some(expected) = expected {
-                if let Ok(meta) = std::fs::metadata(&dest) {
-                    if meta.len() >= expected {
-                        println!("  [{}/{}] {} — already downloaded ✓", i + 1, total, desc);
-                        continue;
-                    }
-                }
-            }
-        }
-
-        let label = format!("{} [{}/{}] {}", display_name, i + 1, total, desc);
-        let url = format!("{}/{}", base_url, file);
-        if !download_file_with_progress(&url, &dest, &label) {
-            println!("  ⚠ Failed to download {}", file);
-            return false;
-        }
-    }
-
-    // Write models.json metadata for gRPCServerCLI
-    let models_json = format!(
-        r#"[{{
-  "name": "{}",
-  "version": "{}",
-  "autoencoder": "{}",
-  "prefix": "",
-  "modifier": "kontext",
-  "default_scale": 16,
-  "hires_fix_scale": 32,
-  "file": "{}",
-  "upcast_attention": false,
-  "text_encoder": "{}",
-  "high_precision_autoencoder": false,
-  "objective": {{"u": {{"condition_scale": 1000}}}},
-  "padded_text_encoding_length": 512
-}}]"#,
-        pipeline.name, pipeline.version, pipeline.vae, pipeline.model_file, pipeline.text_encoder
-    );
-    let _ = std::fs::write(cache_dir.join("models.json"), &models_json);
-
-    // Write configs.json with default generation parameters
-    let configs_json = format!(
-        r#"[{{
-  "name": "{}",
-  "version": "{}",
-  "configuration": {{
-    "model": "{}",
-    "width": 1024,
-    "height": 1024,
-    "steps": 4,
-    "guidanceScale": 1.0,
-    "strength": 1.0,
-    "sampler": 16,
-    "batchSize": 1,
-    "batchCount": 1,
-    "shift": 3.0,
-    "speedUpWithGuidanceEmbed": true,
-    "seedMode": 2
-  }}
-}}]"#,
-        pipeline.name, pipeline.version, pipeline.model_file
-    );
-    let _ = std::fs::write(cache_dir.join("configs.json"), &configs_json);
-
-    println!("  ✓ {} pipeline complete", display_name);
-    true
-}
 
 /// Ensure a model's tokenizer_config.json contains a chat_template.
 ///
@@ -1480,14 +1311,6 @@ enum Command {
         #[arg(long)]
         all_models: bool,
 
-        /// Image model to serve — currently disabled
-        #[arg(long, hide = true)]
-        image_model: Option<String>,
-
-        /// Path to the image model directory — currently disabled
-        #[arg(long, hide = true)]
-        image_model_path: Option<String>,
-
         /// Minutes of inactivity before backend shuts down to free GPU memory (0 = never)
         #[arg(long)]
         idle_timeout: Option<u64>,
@@ -1565,14 +1388,6 @@ enum Command {
         /// Model to serve
         #[arg(long)]
         model: Option<String>,
-
-        /// Image model to serve — currently disabled
-        #[arg(long, hide = true)]
-        image_model: Option<String>,
-
-        /// Path to the image model directory — currently disabled
-        #[arg(long, hide = true)]
-        image_model_path: Option<String>,
 
         /// Minutes of inactivity before backend shuts down to free GPU memory (0 = never)
         #[arg(long)]
@@ -1663,13 +1478,9 @@ async fn main() -> Result<()> {
             model,
             backend_port,
             all_models,
-            image_model,
-            image_model_path,
             idle_timeout,
             no_auto_update,
         } => {
-            // Image generation disabled — ignore image_model/image_model_path args
-            let _ = (&image_model, &image_model_path);
             cmd_serve(
                 local,
                 coordinator,
@@ -1695,13 +1506,9 @@ async fn main() -> Result<()> {
         Command::Start {
             coordinator,
             model,
-            image_model,
-            image_model_path,
             idle_timeout,
         } => {
-            // Image generation disabled — pass None for image args
-            let _ = (&image_model, &image_model_path);
-            cmd_start(coordinator, model, None, None, idle_timeout).await
+            cmd_start(coordinator, model, idle_timeout).await
         }
         Command::Stop => cmd_stop().await,
         Command::Logs { lines, watch } => cmd_logs(lines, watch).await,
@@ -1921,19 +1728,8 @@ async fn cmd_install(
         if let Some(m) = find_model("qwen3.5-27b-claude-opus") {
             defaults.push(m);
         }
-    } else if ram >= 24 {
-        if let Some(m) = find_model("flux_2_klein_9b") {
-            defaults.push(m);
-        }
-    } else if ram >= 16 {
-        if let Some(m) = find_model("flux_2_klein_4b") {
-            defaults.push(m);
-        }
-    } else {
-        if let Some(m) = find_model("cohere-transcribe") {
-            defaults.push(m);
-        }
     }
+    // Machines with <36 GB RAM have no default model — no text models fit.
 
     // Optionals: every catalog model that fits in RAM but isn't already a default
     let default_ids: Vec<&str> = defaults.iter().map(|m| m.id.as_str()).collect();
@@ -2116,7 +1912,7 @@ async fn cmd_install(
     println!("  Model: {}", model);
     println!();
 
-    service::install_and_start(&coordinator_url, &[model.clone()], None, None, None, None)?;
+    service::install_and_start(&coordinator_url, &[model.clone()], None)?;
 
     let log_path = dirs::home_dir()
         .unwrap_or_default()
@@ -2334,26 +2130,15 @@ async fn cmd_serve(
     let text_backend_name = backend_name_for_mode(text_backend_mode);
     tracing::info!("Text backend mode: {}", text_backend_name);
 
-    // Determine text models to serve (vmlm-mlx backends).
-    // Filter out image (.ckpt) and transcription models — they have their own backends.
+    // Determine text models to serve (vllm-mlx backends).
     let available_models = models::scan_models(&hw);
-    let is_non_text = |id: &str| {
-        id.ends_with(".ckpt")
-            || id.to_lowercase().contains("transcribe")
-            || id.to_lowercase().contains("cohere-transcribe")
-            || id.to_lowercase().contains("whisper")
-    };
     let selected_models: Vec<String> = if !model_overrides.is_empty() {
         model_overrides
-            .into_iter()
-            .filter(|m| !is_non_text(m))
-            .collect()
     } else if let Some(m) = cfg.backend.model.clone() {
-        if is_non_text(&m) { vec![] } else { vec![m] }
+        vec![m]
     } else {
         // No --model specified — don't auto-pick. The picker in cmd_start
-        // explicitly chooses which models to serve. If only image models were
-        // selected, this stays empty and only the image bridge runs.
+        // explicitly chooses which models to serve.
         vec![]
     };
 
@@ -2529,36 +2314,6 @@ async fn cmd_serve(
         advertised_models.len()
     );
 
-    // STT model setup — auto-detect from huggingface cache if not explicitly set.
-    // Allocate STT/image ports after all text model ports
-    let stt_port = be_port + backend_slots.len() as u16;
-    let stt_model_id = std::env::var("EIGENINFERENCE_STT_MODEL_ID")
-        .unwrap_or_else(|_| "CohereLabs/cohere-transcribe-03-2026".to_string());
-    let stt_model_path = {
-        let explicit = std::env::var("EIGENINFERENCE_STT_MODEL").unwrap_or_default();
-        if !explicit.is_empty() {
-            explicit
-        } else {
-            // Auto-detect: check if the default STT model exists in huggingface cache
-            match models::resolve_local_path(&stt_model_id) {
-                Some(p) => {
-                    let path = p.to_string_lossy().to_string();
-                    tracing::info!("Auto-detected STT model in cache: {path}");
-                    path
-                }
-                None => String::new(),
-            }
-        }
-    };
-
-    // Image generation disabled — ignore image env vars entirely.
-    // Keep variables defined as empty so downstream code compiles without changes.
-    let image_port = stt_port + 1;
-    let image_model = String::new();
-    let image_model_id = String::new();
-    let image_model_path = String::new();
-    let image_weight_hash_computed: Option<String> = None;
-
     // Set up coordinator state. The actual connection is spawned AFTER backends
     // are loaded so we don't advertise models before we can serve them.
     let mut coordinator_handle;
@@ -2624,22 +2379,17 @@ async fn cmd_serve(
         let warm_models: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(selected_models.clone()));
 
-        // Compute weight hashes for all active models (text, STT, image).
+        // Compute weight hashes for all active models.
         let initial_model_hash = models::compute_weight_hash(&model);
         let current_model_hash: std::sync::Arc<std::sync::Mutex<Option<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(initial_model_hash.clone()));
         rehash_model_hash_opt = Some(current_model_hash.clone());
 
-        // Collect per-model weight hashes for attestation. Start with the text
-        // model; STT and image hashes are added after their backends pass health
-        // checks (computed once at advertisement time, reused here).
+        // Collect per-model weight hashes for attestation.
         let mut all_model_hashes: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         if let Some(ref h) = initial_model_hash {
             all_model_hashes.insert(model.clone(), h.clone());
-        }
-        if let Some(ref h) = image_weight_hash_computed {
-            all_model_hashes.insert(image_model_id.clone(), h.clone());
         }
 
         // Shared backend capacity data (updated by polling task, read by heartbeats).
@@ -2662,80 +2412,6 @@ async fn cmd_serve(
             runtime_hashes.runtime_hash.as_deref().unwrap_or("none"),
             runtime_hashes.template_hashes.len()
         );
-
-        // Start STT backend before coordinator registration so we only
-        // advertise the model if the backend is actually healthy.
-        if !stt_model_path.is_empty() {
-            tracing::info!("Starting STT backend on port {stt_port} for model: {stt_model_path}");
-            if let Some(script) = find_stt_server_script() {
-                let stt_result = tokio::process::Command::new(&python_cmd)
-                    .args([
-                        &script,
-                        "--model",
-                        &stt_model_path,
-                        "--port",
-                        &stt_port.to_string(),
-                        "--host",
-                        "127.0.0.1",
-                        "--max-batch-size",
-                        "16",
-                        "--max-wait-ms",
-                        "100",
-                    ])
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .spawn();
-                match stt_result {
-                    Ok(mut child) => {
-                        let stt_pid = child.id().unwrap_or(0);
-                        if let Some(stdout) = child.stdout.take() {
-                            spawn_backend_log_forwarder(stdout, "stt", false);
-                        }
-                        if let Some(stderr) = child.stderr.take() {
-                            spawn_backend_log_forwarder(stderr, "stt", true);
-                        }
-                        tracing::info!("STT server started (PID: {stt_pid}) on port {stt_port}");
-                        let stt_url = format!("http://127.0.0.1:{stt_port}");
-                        let mut stt_healthy = false;
-                        for i in 0..30 {
-                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                            if backend::check_health(&stt_url).await {
-                                tracing::info!("STT backend ready after {}s", (i + 1) * 2);
-                                stt_healthy = true;
-                                break;
-                            }
-                        }
-                        if stt_healthy {
-                            let stt_weight_hash = models::compute_weight_hash(&stt_model_id);
-                            if let Some(ref h) = stt_weight_hash {
-                                all_model_hashes.insert(stt_model_id.clone(), h.clone());
-                            }
-                            advertised_models.push(models::ModelInfo {
-                                id: stt_model_id.clone(),
-                                model_type: Some("stt".to_string()),
-                                parameters: None,
-                                quantization: None,
-                                size_bytes: 0,
-                                estimated_memory_gb: 4.0,
-                                weight_hash: stt_weight_hash,
-                            });
-                            tracing::info!(
-                                "STT backend healthy — advertising model: {stt_model_id}"
-                            );
-                        } else {
-                            tracing::warn!(
-                                "STT backend failed health check — model will NOT be advertised"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to start STT backend: {e}");
-                    }
-                }
-            } else {
-                tracing::warn!("stt_server.py not found — STT will not be available");
-            }
-        }
 
         tracing::info!(
             "Model weight hashes for attestation: {} model(s)",
@@ -2937,98 +2613,6 @@ async fn cmd_serve(
                 .collect(),
         ));
 
-    // STT backend was started before coordinator registration (see coordinator setup above).
-
-    // Start image generation bridge on be_port + 2 if configured.
-    // EIGENINFERENCE_IMAGE_MODEL: model ID for the image bridge (e.g. "flux-klein-4b").
-    // EIGENINFERENCE_IMAGE_MODEL_PATH: model directory for gRPCServerCLI (optional).
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
-    let grpc_binary = eigeninference_dir.join("bin/gRPCServerCLI");
-    let _image_available = if !image_model.is_empty() && !grpc_binary.exists() {
-        tracing::error!(
-            "gRPCServerCLI not found at {} — image generation unavailable. \
-             Re-run install or update to get the image pipeline.",
-            grpc_binary.display()
-        );
-        false
-    } else if !image_model.is_empty() {
-        tracing::info!("Starting image bridge on port {image_port} for model: {image_model}");
-
-        let mut bridge_cmd = std::process::Command::new(&python_cmd);
-
-        // Set PYTHONPATH so the image bridge package is importable.
-        // Look for it next to the binary, in ~/.darkbloom, or in the source tree.
-        let bridge_paths: Vec<String> = [
-            std::env::current_exe().ok().and_then(|p| {
-                p.parent()
-                    .map(|d| d.join("image-bridge").to_string_lossy().to_string())
-            }),
-            dirs::home_dir().map(|d| {
-                d.join(".darkbloom/image-bridge")
-                    .to_string_lossy()
-                    .to_string()
-            }),
-        ]
-        .iter()
-        .filter_map(|p| p.clone())
-        .collect();
-
-        if let Ok(existing) = std::env::var("PYTHONPATH") {
-            let mut all = bridge_paths;
-            all.push(existing);
-            bridge_cmd.env("PYTHONPATH", all.join(":"));
-        } else if !bridge_paths.is_empty() {
-            bridge_cmd.env("PYTHONPATH", bridge_paths.join(":"));
-        }
-
-        bridge_cmd.args([
-            "-m",
-            "eigeninference_image_bridge",
-            "--port",
-            &image_port.to_string(),
-            "--model",
-            &image_model,
-            "--system-memory-gb",
-            &hw.memory_gb.to_string(),
-        ]);
-        if !image_model_path.is_empty() {
-            bridge_cmd.args(["--model-path", &image_model_path]);
-        }
-        if grpc_binary.exists() {
-            bridge_cmd.args(["--grpc-binary", &grpc_binary.to_string_lossy()]);
-        }
-        bridge_cmd
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-
-        match bridge_cmd.spawn() {
-            Ok(_child) => {
-                let mut ready = false;
-                for _ in 0..180 {
-                    if std::net::TcpStream::connect(format!("127.0.0.1:{image_port}")).is_ok() {
-                        ready = true;
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
-                if ready {
-                    tracing::info!("Image bridge ready on port {image_port}");
-                    true
-                } else {
-                    tracing::error!("Image bridge failed to start within 180s");
-                    false
-                }
-            }
-            Err(e) => {
-                tracing::error!("Failed to spawn image bridge: {e}");
-                false
-            }
-        }
-    } else {
-        // Image generation disabled — suppress log message
-        false
-    };
-
     // Security hardening: prevent debugger attachment AFTER all subprocesses
     // are spawned. PT_DENY_ATTACH poisons mach_task_self_ in the process
     // memory, which causes child Python processes to crash with SIGBUS.
@@ -3206,8 +2790,7 @@ async fn cmd_serve(
         }
 
         // Spawn per-slot backend health monitor — detects crashes and auto-restarts
-        // each backend independently. Only monitors text backends (vllm-mlx slots);
-        // image-only providers don't have text backends to health-check.
+        // each backend independently.
         if !using_inprocess {
             let has_text_backends = !backend_slots.is_empty();
             let health_shared_slots = shared_slots.clone();
@@ -3776,45 +3359,6 @@ async fn cmd_serve(
                                         continue;
                                     }
                                 };
-
-                                inflight.insert(request_id, (cancel_token, handle));
-                            }
-                            coordinator::CoordinatorEvent::TranscriptionRequest { request_id, body } => {
-                                last_request_time = tokio::time::Instant::now();
-                                inference_active.store(true, std::sync::atomic::Ordering::Relaxed);
-
-                                let tx = outbound_tx.clone();
-                                let cancel_token = CancellationToken::new();
-                                let token_clone = cancel_token.clone();
-                                let done_tx = done_tx.clone();
-                                let rid = request_id.clone();
-                                let stt_url = format!("http://127.0.0.1:{stt_port}");
-
-                                let handle = tokio::spawn(async move {
-                                    proxy::handle_transcription_request(
-                                        rid.clone(), body, stt_url, tx, token_clone,
-                                    ).await;
-                                    let _ = done_tx.send((rid, false)).await;
-                                });
-
-                                inflight.insert(request_id, (cancel_token, handle));
-                            }
-                            coordinator::CoordinatorEvent::ImageGenerationRequest { request_id, body, upload_url } => {
-                                last_request_time = tokio::time::Instant::now();
-
-                                let tx = outbound_tx.clone();
-                                let cancel_token = CancellationToken::new();
-                                let token_clone = cancel_token.clone();
-                                let done_tx = done_tx.clone();
-                                let rid = request_id.clone();
-                                let image_url = format!("http://127.0.0.1:{}", image_port);
-
-                                let handle = tokio::spawn(async move {
-                                    proxy::handle_image_generation_request(
-                                        rid.clone(), body, image_url, upload_url, tx, token_clone,
-                                    ).await;
-                                    let _ = done_tx.send((rid, false)).await;
-                                });
 
                                 inflight.insert(request_id, (cancel_token, handle));
                             }
@@ -4709,40 +4253,6 @@ async fn handle_inprocess_request(
 /// regenerated. This avoids providers registering with unverifiable attestations.
 ///
 /// Returns None if the CLI tool is not available or fails (graceful degradation).
-/// Find the stt_server.py script in standard locations.
-fn find_stt_server_script() -> Option<String> {
-    let candidates = [
-        // Next to the binary
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("stt_server.py")))
-            .unwrap_or_default(),
-        // Bundled inside the macOS app Resources directory
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| {
-                p.parent().and_then(|d| {
-                    d.parent()
-                        .map(|c| c.join("Resources").join("stt_server.py"))
-                })
-            })
-            .unwrap_or_default(),
-        // In the provider source directory (development)
-        std::path::PathBuf::from("stt_server.py"),
-        // In ~/.darkbloom
-        dirs::home_dir()
-            .unwrap_or_default()
-            .join(".darkbloom/stt_server.py"),
-    ];
-
-    for path in &candidates {
-        if path.exists() {
-            return Some(path.to_string_lossy().to_string());
-        }
-    }
-    None
-}
-
 fn generate_attestation(
     encryption_key_base64: &str,
     binary_hash: Option<&str>,
@@ -5617,19 +5127,11 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
                     println!("  Downloading {}...", cm.display_name);
 
                     let s3_name = &cm.s3_name;
-                    let is_image = cm.model_type == "image";
-                    let cache_dir = if is_image {
-                        dirs::home_dir()
-                            .unwrap_or_default()
-                            .join(".darkbloom/models")
-                            .join(s3_name)
-                    } else {
-                        dirs::home_dir()
-                            .unwrap_or_default()
-                            .join(".cache/huggingface/hub")
-                            .join(format!("models--{}", cm.id.replace('/', "--")))
-                            .join("snapshots/main")
-                    };
+                    let cache_dir = dirs::home_dir()
+                        .unwrap_or_default()
+                        .join(".cache/huggingface/hub")
+                        .join(format!("models--{}", cm.id.replace('/', "--")))
+                        .join("snapshots/main");
                     let _ = std::fs::create_dir_all(&cache_dir);
 
                     // Try pre-packaged tarball from CDN first
@@ -6200,8 +5702,6 @@ fn run_model_picker(entries: &[PickerEntry], memory_gb: f64) -> Result<Vec<usize
 async fn cmd_start(
     coordinator_url: String,
     model_override: Option<String>,
-    image_model: Option<String>,
-    image_model_path: Option<String>,
     idle_timeout: Option<u64>,
 ) -> Result<()> {
     // Stop any existing provider first
@@ -6224,9 +5724,9 @@ async fn cmd_start(
         downloaded.iter().map(|m| m.id.clone()).collect();
 
     // Interactive model selection if no --model specified
-    let (selected_models, picked_image, picked_stt): (Vec<String>, Option<String>, Option<String>) =
+    let selected_models: Vec<String> =
         if let Some(m) = model_override {
-            (vec![m], None, None)
+            vec![m]
         } else {
             // Build picker items from catalog: all models that fit in RAM.
             struct PickerItem {
@@ -6246,11 +5746,7 @@ async fn cmd_start(
                 for c in &catalog {
                     if let Some(on_disk) = downloaded.iter().find(|m| m.id == c.id) {
                         // Only HEAD-check models we have locally (to verify completeness)
-                        let url = if c.id.ends_with(".ckpt") {
-                            format!("{}/{}/{}", cdn_base, c.s3_name, c.id)
-                        } else {
-                            format!("{}/{}/model.safetensors", cdn_base, c.s3_name)
-                        };
+                        let url = format!("{}/{}/model.safetensors", cdn_base, c.s3_name);
                         if let Ok(resp) = client
                             .head(&url)
                             .timeout(std::time::Duration::from_secs(5))
@@ -6268,71 +5764,27 @@ async fn cmd_start(
 
             let mut items: Vec<PickerItem> = catalog
                 .iter()
-                // Image generation disabled — hide image models from picker
-                .filter(|c| c.model_type != "image")
+                // Only show text models in the picker
+                .filter(|c| c.model_type == "text")
                 .filter(|c| (c.min_ram_gb as f64) <= hw.memory_gb as f64)
                 .map(|c| {
                     // Check if model is downloaded AND complete.
-                    // For image models (.ckpt), also verify companion files exist
-                    // (text encoder + VAE) since the pipeline needs all 3.
                     let on_disk = downloaded.iter().find(|m| m.id == c.id);
                     let is_downloaded = on_disk.is_some_and(|m| {
-                        let main_ok = if let Some(&expected) = cdn_sizes.get(&c.id) {
+                        if let Some(&expected) = cdn_sizes.get(&c.id) {
                             m.size_bytes >= expected
                         } else {
                             m.size_bytes > 500_000_000
-                        };
-                        if !main_ok {
-                            return false;
                         }
-                        // For image models, parse models.json and verify all referenced files exist
-                        if c.model_type == "image" {
-                            let model_dir = models::resolve_local_path(&c.id);
-                            if let Some(dir) = model_dir.as_ref().and_then(|p| p.parent()) {
-                                let meta_path = dir.join("models.json");
-                                if !meta_path.exists() {
-                                    return false;
-                                }
-                                // Parse models.json and check every referenced file exists
-                                let complete = std::fs::read_to_string(&meta_path)
-                                    .ok()
-                                    .and_then(|s| {
-                                        serde_json::from_str::<Vec<serde_json::Value>>(&s).ok()
-                                    })
-                                    .map(|entries| {
-                                        entries.iter().all(|entry| {
-                                            let files = [
-                                                entry.get("file").and_then(|v| v.as_str()),
-                                                entry.get("autoencoder").and_then(|v| v.as_str()),
-                                                entry.get("text_encoder").and_then(|v| v.as_str()),
-                                            ];
-                                            files.iter().all(|f| {
-                                                f.map(|name| dir.join(name).exists())
-                                                    .unwrap_or(true)
-                                            })
-                                        })
-                                    })
-                                    .unwrap_or(false);
-                                return complete;
-                            }
-                            return false;
-                        }
-                        true
                     });
                     let size = if is_downloaded {
                         on_disk.map(|m| m.estimated_memory_gb).unwrap_or(c.size_gb)
                     } else {
                         c.size_gb
                     };
-                    // Show model type tag for non-text models
-                    let display = if c.model_type != "text" {
-                        format!("{} [{}]", c.display_name, c.model_type)
-                    } else {
-                        c.display_name.clone()
-                    };
                     PickerItem {
                         id: c.id.clone(),
-                        display,
+                        display: c.display_name.clone(),
                         size_gb: size,
                         downloaded: is_downloaded,
                         s3_name: c.s3_name.clone(),
@@ -6385,36 +5837,14 @@ async fn cmd_start(
                 }
             }
 
-            // Split selected models by type:
-            //   text → --model (vmlm-mlx backends)
-            //   image → --image-model (image bridge)
-            //   transcription → EIGENINFERENCE_STT_MODEL env var (stt_server.py)
-            let mut text_models = Vec::new();
-            let mut picked_image_model: Option<String> = None;
-            let mut picked_stt_model: Option<String> = None;
-            for &idx in &selected_indices {
-                let item = &items[idx];
-                match item.model_type.as_str() {
-                    "image" => picked_image_model = Some(item.id.clone()),
-                    "transcription" | "stt" => picked_stt_model = Some(item.id.clone()),
-                    _ => text_models.push(item.id.clone()),
-                }
-            }
-            (text_models, picked_image_model, picked_stt_model)
+            let text_models: Vec<String> = selected_indices
+                .iter()
+                .map(|&idx| items[idx].id.clone())
+                .collect();
+            text_models
         };
 
-    // Merge CLI --image-model with picker selection
-    let final_image_model = picked_image.or(image_model);
-
-    // Resolve image model path: CLI flag overrides, otherwise resolve from model ID.
-    // gRPCServerCLI needs the directory containing the .ckpt files.
-    let final_image_model_path = image_model_path.or_else(|| {
-        final_image_model
-            .as_ref()
-            .and_then(|id| models::resolve_local_path(id).map(|p| p.to_string_lossy().to_string()))
-    });
-
-    if selected_models.is_empty() && final_image_model.is_none() {
+    if selected_models.is_empty() {
         anyhow::bail!("No models selected");
     }
 
@@ -6426,23 +5856,15 @@ async fn cmd_start(
     service::install_and_start(
         &coordinator_url,
         &selected_models,
-        final_image_model.as_deref(),
-        final_image_model_path.as_deref(),
-        picked_stt.as_deref(),
         idle_timeout,
     )?;
 
     println!("Provider installed as system service");
-    if !selected_models.is_empty() {
-        println!(
-            "  Models:  {} ({})",
-            selected_models.len(),
-            selected_models.join(", ")
-        );
-    }
-    if let Some(ref im) = final_image_model {
-        println!("  Image:   {}", im);
-    }
+    println!(
+        "  Models:  {} ({})",
+        selected_models.len(),
+        selected_models.join(", ")
+    );
     println!("  Logs:    {}", log_path.display());
     println!("  Service: io.darkbloom.provider (launchd)");
     println!();

@@ -10,7 +10,7 @@ set -euo pipefail
 #   1. Fetches the latest signed release from the coordinator
 #   2. Downloads the provider bundle (binary + enclave helper)
 #   3. Verifies the bundle hash
-#   4. Sets up Python runtime + ffmpeg
+#   4. Sets up Python runtime
 #   5. Sets up Secure Enclave identity
 #   6. Downloads the best model for your hardware
 #   7. Summary with next steps
@@ -103,28 +103,8 @@ tar xzf /tmp/eigeninference-bundle.tar.gz -C "$INSTALL_DIR"
 # Migrate older flat bundle layouts into the current install structure.
 [ -f "$INSTALL_DIR/darkbloom" ] && mv -f "$INSTALL_DIR/darkbloom" "$BIN_DIR/darkbloom"
 [ -f "$INSTALL_DIR/eigeninference-enclave" ] && mv -f "$INSTALL_DIR/eigeninference-enclave" "$BIN_DIR/eigeninference-enclave"
-[ -f "$INSTALL_DIR/gRPCServerCLI" ] && mv -f "$INSTALL_DIR/gRPCServerCLI" "$BIN_DIR/gRPCServerCLI"
-[ -f "$INSTALL_DIR/ffmpeg" ] && mv -f "$INSTALL_DIR/ffmpeg" "$BIN_DIR/ffmpeg"
-[ -f "$INSTALL_DIR/stt_server.py" ] && mv -f "$INSTALL_DIR/stt_server.py" "$BIN_DIR/stt_server.py"
-if [ -d "$BIN_DIR/image-bridge" ]; then
-    rm -rf "$INSTALL_DIR/image-bridge"
-    mv "$BIN_DIR/image-bridge" "$INSTALL_DIR/image-bridge"
-fi
-
-chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/eigeninference-enclave" "$BIN_DIR/gRPCServerCLI" "$BIN_DIR/ffmpeg" "$BIN_DIR/stt_server.py" 2>/dev/null || true
+chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/eigeninference-enclave" 2>/dev/null || true
 rm -f /tmp/eigeninference-bundle.tar.gz
-
-# Verify image pipeline components
-if [ -f "$BIN_DIR/gRPCServerCLI" ]; then
-    echo "  gRPCServerCLI ✓"
-else
-    echo "  ⚠ gRPCServerCLI not found — image generation unavailable"
-fi
-if [ -d "$INSTALL_DIR/image-bridge/eigeninference_image_bridge" ]; then
-    echo "  Image bridge ✓"
-else
-    echo "  ⚠ Image bridge not found — image generation unavailable"
-fi
 
 # Verify code signature (codesign is part of base macOS, no CLT needed)
 if codesign --verify --verbose "$BIN_DIR/darkbloom" 2>/dev/null; then
@@ -179,16 +159,13 @@ for OLD_DIR in "$HOME/.dginf" "$HOME/.eigeninference"; do
         if [ -d "$OLD_DIR/python" ] && [ ! -d "$INSTALL_DIR/python" ]; then
             ln -sf "$OLD_DIR/python" "$INSTALL_DIR/python"
         fi
-        if [ -f "$OLD_DIR/ffmpeg" ] && [ ! -f "$INSTALL_DIR/ffmpeg" ]; then
-            ln -sf "$OLD_DIR/ffmpeg" "$INSTALL_DIR/ffmpeg"
-        fi
         # Symlink old path so stragglers still work
         ln -sfn "$INSTALL_DIR" "$OLD_DIR" 2>/dev/null || true
         echo "  Migration complete ✓"
     fi
 done
 
-# ─── Step 3: Python runtime + ffmpeg ─────────────────────────
+# ─── Step 3: Python runtime ──────────────────────────────────
 echo ""
 echo "→ [3/7] Verifying inference runtime..."
 
@@ -261,23 +238,6 @@ if [ -f "$PYTHON_BIN" ]; then
     fi
 fi
 
-# Ensure ffmpeg is available (bundled since v0.3.4, fallback download for older installs)
-if [ -x "$BIN_DIR/ffmpeg" ]; then
-    echo "  ffmpeg ✓ (bundled)"
-elif command -v ffmpeg &>/dev/null; then
-    echo "  ffmpeg ✓ (system)"
-elif [ -x "$INSTALL_DIR/ffmpeg" ]; then
-    echo "  ffmpeg ✓"
-else
-    echo "  Downloading ffmpeg..."
-    if curl -fsSL "$COORD_URL/dl/ffmpeg-macos-arm64" -o "$BIN_DIR/ffmpeg" 2>/dev/null; then
-        chmod +x "$BIN_DIR/ffmpeg"
-        echo "  ffmpeg ✓"
-    else
-        echo "  ffmpeg ⚠ (optional — needed only for speech-to-text)"
-    fi
-fi
-
 # ─── Step 4: Secure Enclave identity ─────────────────────────
 echo ""
 echo "→ [4/7] Setting up Secure Enclave identity..."
@@ -346,8 +306,6 @@ MODEL=""
 S3_NAME=""
 MODEL_NAME=""
 MODEL_SIZE=""
-IMAGE_MODEL=""
-
 # Fetch model catalog from coordinator
 CATALOG_JSON=$(curl -fsSL "$COORD_URL/v1/models/catalog" 2>/dev/null || echo "")
 

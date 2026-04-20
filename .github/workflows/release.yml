@@ -164,15 +164,6 @@ jobs:
           cd enclave
           swift build -c release
 
-      # Image generation support disabled — re-enable when ready
-      # - name: Build gRPCServerCLI (Draw Things)
-      #   run: |
-      #     git clone --depth 1 https://github.com/drawthingsai/draw-things-community.git /tmp/draw-things-community
-      #     cd /tmp/draw-things-community
-      #     swift build -c release --product gRPCServerCLI
-      #     cp .build/arm64-apple-macosx/release/gRPCServerCLI /tmp/gRPCServerCLI
-      #     echo "gRPCServerCLI built: $(du -h /tmp/gRPCServerCLI | cut -f1)"
-
       # --- Test ---
 
       - name: Test provider
@@ -193,23 +184,12 @@ jobs:
           cp provider/target/release/darkbloom /tmp/eigeninference-bundle/bin/
           cp enclave/.build/release/eigeninference-enclave /tmp/eigeninference-bundle/bin/
 
-          # Copy stt_server.py
-          cp provider/stt_server.py /tmp/eigeninference-bundle/bin/
-
           # Bundle the signed Python core that hardened darkbloom links against.
           # Keep site-packages separate so broken installs can refresh libpython and
           # stdlib native extensions without inflating every CLI bundle.
           cp -R /tmp/eigeninference-build-python/bin /tmp/eigeninference-bundle/python/
           cp -R /tmp/eigeninference-build-python/lib /tmp/eigeninference-bundle/python/
           rm -rf /tmp/eigeninference-bundle/python/lib/python3.12/site-packages
-
-          # Bundle ffmpeg (installed via Homebrew which verifies bottle checksums)
-          FFMPEG_BIN="$(brew --prefix ffmpeg 2>/dev/null)/bin/ffmpeg"
-          if [ ! -f "$FFMPEG_BIN" ]; then
-            brew install --quiet ffmpeg
-            FFMPEG_BIN="$(brew --prefix ffmpeg)/bin/ffmpeg"
-          fi
-          cp "$FFMPEG_BIN" /tmp/eigeninference-bundle/bin/ffmpeg
 
           PYTHON_LOAD_PATH=$(otool -L /tmp/eigeninference-bundle/bin/darkbloom | awk '/libpython3\.12\.dylib/ {print $1; exit}')
           if [ -z "$PYTHON_LOAD_PATH" ]; then
@@ -220,17 +200,6 @@ jobs:
             "$PYTHON_LOAD_PATH" \
             "@executable_path/../python/lib/libpython3.12.dylib" \
             /tmp/eigeninference-bundle/bin/darkbloom
-
-          # Verify it's a real binary before signing
-          file "$FFMPEG_BIN" | grep -q "Mach-O" || { echo "ERROR: ffmpeg is not a Mach-O binary"; exit 1; }
-
-          # Code sign ffmpeg with our Developer ID for distribution
-          codesign --force --sign "$DEVELOPER_ID" \
-            --keychain "$KEYCHAIN_PATH" \
-            --options runtime \
-            --timestamp \
-            /tmp/eigeninference-bundle/bin/ffmpeg
-          codesign --verify --verbose /tmp/eigeninference-bundle/bin/ffmpeg
 
           # Re-sign every Mach-O in the bundled Python tree with our Developer ID.
           # python-build-standalone ships these ad-hoc (TeamIdentifier=not set) —
@@ -320,7 +289,7 @@ jobs:
           /tmp/eigeninference-python/bin/python3.12 -m pip install --quiet --no-cache-dir \
             'mlx-lm>=0.31.2' \
             /tmp/vllm-mlx-source.zip \
-            grpcio flatbuffers soundfile mlx-audio tokenizers
+            tokenizers
           /tmp/eigeninference-python/bin/python3.12 -m pip install --quiet --no-cache-dir --upgrade 'mlx-lm>=0.31.2'
 
           /tmp/eigeninference-python/bin/python3.12 -c "import vllm_mlx; print(f'vllm-mlx {vllm_mlx.__version__}')"
@@ -408,7 +377,6 @@ jobs:
           # Staple the individual binaries (now that notarization ticket exists)
           xcrun stapler staple /tmp/eigeninference-bundle/bin/darkbloom || true
           xcrun stapler staple /tmp/eigeninference-bundle/bin/eigeninference-enclave || true
-          xcrun stapler staple /tmp/eigeninference-bundle/bin/ffmpeg || true
 
           # Recreate tarball with stapled binaries
           cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
@@ -420,15 +388,10 @@ jobs:
         run: |
           BINARY_HASH=$(shasum -a 256 /tmp/eigeninference-bundle/bin/darkbloom | cut -d' ' -f1)
           BUNDLE_HASH=$(shasum -a 256 /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
-          FFMPEG_HASH=$(shasum -a 256 /tmp/eigeninference-bundle/bin/ffmpeg | cut -d' ' -f1)
           echo "binary_hash=$BINARY_HASH" >> "$GITHUB_OUTPUT"
           echo "bundle_hash=$BUNDLE_HASH" >> "$GITHUB_OUTPUT"
-          echo "ffmpeg_hash=$FFMPEG_HASH" >> "$GITHUB_OUTPUT"
-          echo "grpc_binary_hash=" >> "$GITHUB_OUTPUT"
-          echo "image_bridge_hash=" >> "$GITHUB_OUTPUT"
           echo "Binary hash (signed): $BINARY_HASH"
           echo "Bundle hash: $BUNDLE_HASH"
-          echo "ffmpeg hash (signed): $FFMPEG_HASH"
 
       # --- Upload everything to R2 in parallel ---
 
@@ -513,7 +476,6 @@ jobs:
           cp "$APP_BIN" "$MACOS/EigenInference"
           cp /tmp/eigeninference-bundle/bin/darkbloom "$MACOS/darkbloom"
           cp /tmp/eigeninference-bundle/bin/eigeninference-enclave "$MACOS/eigeninference-enclave" 2>/dev/null || true
-          cp provider/stt_server.py "$RESOURCES/stt_server.py"
           cp -a /tmp/eigeninference-python/. "$PYTHON_ROOT/"
 
           # Sign every Mach-O in the Python tree — retry once on Apple
@@ -599,9 +561,6 @@ jobs:
               'python_hash': '${{ steps.runtime.outputs.python_hash }}',
               'runtime_hash': '${{ steps.runtime.outputs.runtime_hash }}',
               'template_hashes': '${{ steps.upload.outputs.template_hashes }}',
-              'grpc_binary_hash': '${{ steps.hash.outputs.grpc_binary_hash }}',
-              'image_bridge_hash': '${{ steps.hash.outputs.image_bridge_hash }}',
-              'ffmpeg_hash': '${{ steps.hash.outputs.ffmpeg_hash }}',
               'url': '${BUNDLE_URL}',
               'changelog': '''${TAG_MSG}'''.strip()
           }
@@ -637,7 +596,6 @@ jobs:
             **Binary hash (signed):** `${{ steps.hash.outputs.binary_hash }}`
             **Bundle hash:** `${{ steps.hash.outputs.bundle_hash }}`
             **Runtime hash (vllm-mlx):** `${{ steps.runtime.outputs.runtime_hash }}`
-            **ffmpeg hash (signed):** `${{ steps.hash.outputs.ffmpeg_hash }}`
             **Signed by:** Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)
             **Notarized:** Yes
 

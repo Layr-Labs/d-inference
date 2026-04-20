@@ -96,45 +96,6 @@ export interface StreamCallbacks {
   onError: (error: string) => void;
 }
 
-export interface TranscriptionResult {
-  text: string;
-  language?: string;
-  duration?: number;
-  segments?: { start: number; end: number; text: string }[];
-}
-
-export async function transcribeAudio(
-  file: File | Blob,
-  model: string,
-  language?: string
-): Promise<TranscriptionResult> {
-  const { apiKey, baseUrl } = getConfig();
-
-  const form = new FormData();
-  const filename = file instanceof File
-    ? file.name
-    : file.type?.includes("webm") ? "recording.webm" : "recording.wav";
-  form.append("file", file, filename);
-  form.append("model", model);
-  if (language) form.append("language", language);
-
-  const res = await fetch("/api/transcribe", {
-    method: "POST",
-    headers: {
-      "x-coordinator-url": baseUrl,
-      ...(apiKey ? { "x-api-key": apiKey } : {}),
-    },
-    body: form,
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Transcription failed (${res.status}): ${text}`);
-  }
-
-  return res.json();
-}
-
 export async function fetchModels(): Promise<Model[]> {
   const res = await fetch("/api/models", { headers: proxyHeaders() });
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
@@ -163,24 +124,8 @@ export interface PriceEntry {
   output_usd: string;
 }
 
-export interface TranscriptionPriceEntry {
-  model: string;
-  price_per_minute: number;
-  price_usd: string;
-  unit: string;
-}
-
-export interface ImagePriceEntry {
-  model: string;
-  price_per_image: number;
-  price_usd: string;
-  unit: string;
-}
-
 export interface PricingResponse {
   prices: PriceEntry[];
-  transcription_prices: TranscriptionPriceEntry[];
-  image_prices: ImagePriceEntry[];
 }
 
 export async function fetchPricing(): Promise<PricingResponse> {
@@ -250,40 +195,6 @@ export async function submitDepositTx(txSignature: string, referralCode?: string
     const data = await res.json().catch(() => ({}));
     throw new Error(data?.error?.message || data?.error || `Deposit verification failed (${res.status})`);
   }
-}
-
-export interface ImageGenerationRequest {
-  model: string;
-  prompt: string;
-  negative_prompt?: string;
-  n?: number;
-  size?: string;
-  steps?: number;
-  seed?: number;
-}
-
-export interface GeneratedImage {
-  b64_json: string;
-}
-
-export interface ImageGenerationResponse {
-  created: number;
-  data: GeneratedImage[];
-}
-
-export async function generateImage(
-  params: ImageGenerationRequest
-): Promise<ImageGenerationResponse> {
-  const res = await fetch("/api/images", {
-    method: "POST",
-    headers: proxyHeaders(),
-    body: JSON.stringify(params),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Image generation failed (${res.status}): ${text}`);
-  }
-  return res.json();
 }
 
 export interface InviteRedeemResponse {

@@ -24,33 +24,29 @@ func TestSyncRuntimeManifestUsesLatestReleaseOnly(t *testing.T) {
 	srv, st := runtimeManifestTestServer(t)
 
 	if err := st.SetRelease(&store.Release{
-		Version:         "0.3.8",
-		Platform:        "macos-arm64",
-		BinaryHash:      "old-binary",
-		BundleHash:      "old-bundle",
-		PythonHash:      "old-python",
-		RuntimeHash:     "old-runtime",
-		TemplateHashes:  "qwen3.5=old-template",
-		GrpcBinaryHash:  "old-grpc",
-		ImageBridgeHash: "old-image-bridge",
-		URL:             "https://example.com/old.tar.gz",
-		Active:          true,
+		Version:        "0.3.8",
+		Platform:       "macos-arm64",
+		BinaryHash:     "old-binary",
+		BundleHash:     "old-bundle",
+		PythonHash:     "old-python",
+		RuntimeHash:    "old-runtime",
+		TemplateHashes: "qwen3.5=old-template",
+		URL:            "https://example.com/old.tar.gz",
+		Active:         true,
 	}); err != nil {
 		t.Fatalf("SetRelease(old): %v", err)
 	}
 
 	if err := st.SetRelease(&store.Release{
-		Version:         "0.3.9",
-		Platform:        "macos-arm64",
-		BinaryHash:      "new-binary",
-		BundleHash:      "new-bundle",
-		PythonHash:      "new-python",
-		RuntimeHash:     "new-runtime",
-		TemplateHashes:  "qwen3.5=new-template,minimax=new-minimax-template",
-		GrpcBinaryHash:  "new-grpc",
-		ImageBridgeHash: "new-image-bridge",
-		URL:             "https://example.com/new.tar.gz",
-		Active:          true,
+		Version:        "0.3.9",
+		Platform:       "macos-arm64",
+		BinaryHash:     "new-binary",
+		BundleHash:     "new-bundle",
+		PythonHash:     "new-python",
+		RuntimeHash:    "new-runtime",
+		TemplateHashes: "qwen3.5=new-template,minimax=new-minimax-template",
+		URL:            "https://example.com/new.tar.gz",
+		Active:         true,
 	}); err != nil {
 		t.Fatalf("SetRelease(new): %v", err)
 	}
@@ -82,18 +78,6 @@ func TestSyncRuntimeManifestUsesLatestReleaseOnly(t *testing.T) {
 	}
 	if got := manifest.TemplateHashes["minimax"]; got != "new-minimax-template" {
 		t.Fatalf("minimax template hash = %q, want %q", got, "new-minimax-template")
-	}
-	if !manifest.GrpcBinaryHashes["new-grpc"] {
-		t.Fatal("latest gRPC hash missing from runtime manifest")
-	}
-	if manifest.GrpcBinaryHashes["old-grpc"] {
-		t.Fatal("stale gRPC hash should not remain in runtime manifest")
-	}
-	if !manifest.ImageBridgeHashes["new-image-bridge"] {
-		t.Fatal("latest image bridge hash missing from runtime manifest")
-	}
-	if manifest.ImageBridgeHashes["old-image-bridge"] {
-		t.Fatal("stale image bridge hash should not remain in runtime manifest")
 	}
 }
 
@@ -143,19 +127,17 @@ func TestSyncRuntimeManifestClearsStaleHashesWhenLatestReleaseHasNoRuntimeMetada
 func TestVerifyRuntimeHashesRejectsMissingRequiredComponents(t *testing.T) {
 	srv, _ := runtimeManifestTestServer(t)
 	srv.SetRuntimeManifest(&RuntimeManifest{
-		PythonHashes:      map[string]bool{"py-good": true},
-		RuntimeHashes:     map[string]bool{"rt-good": true},
-		TemplateHashes:    map[string]string{"qwen": "tmpl-good"},
-		GrpcBinaryHashes:  map[string]bool{"grpc-good": true},
-		ImageBridgeHashes: map[string]bool{"img-good": true},
+		PythonHashes:   map[string]bool{"py-good": true},
+		RuntimeHashes:  map[string]bool{"rt-good": true},
+		TemplateHashes: map[string]string{"qwen": "tmpl-good"},
 	})
 
-	ok, mismatches := srv.verifyRuntimeHashes("", "", nil, "", "")
+	ok, mismatches := srv.verifyRuntimeHashes("", "", nil)
 	if ok {
 		t.Fatal("verifyRuntimeHashes should fail when required hash fields are missing")
 	}
-	if len(mismatches) != 5 {
-		t.Fatalf("mismatches = %d, want 5", len(mismatches))
+	if len(mismatches) != 3 {
+		t.Fatalf("mismatches = %d, want 3", len(mismatches))
 	}
 
 	byComponent := make(map[string]string, len(mismatches))
@@ -166,8 +148,6 @@ func TestVerifyRuntimeHashesRejectsMissingRequiredComponents(t *testing.T) {
 		"python",
 		"runtime",
 		"template:qwen",
-		"grpc_binary",
-		"image_bridge",
 	} {
 		if got := byComponent[component]; got != "(missing)" {
 			t.Fatalf("%s mismatch got = %q, want %q", component, got, "(missing)")

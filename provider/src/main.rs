@@ -3497,7 +3497,8 @@ async fn cmd_serve(
                                         .map(|s| (s.model_id.clone(), s.model_path.clone(), s.port, s.pid, s.healthy, s.restarting))
                                 };
 
-                                let mut inprocess_engine = None;
+                                #[cfg(feature = "python")]
+                                let mut inprocess_engine: Option<std::sync::Arc<inference::SharedEngine>> = None;
                                 if let Some((slot_model_id, slot_model_path, slot_port, slot_pid, slot_healthy, slot_restarting)) = slot_info {
                                     if is_inprocess {
                                         #[cfg(feature = "python")]

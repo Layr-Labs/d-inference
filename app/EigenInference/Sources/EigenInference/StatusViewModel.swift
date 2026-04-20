@@ -556,7 +556,7 @@ final class StatusViewModel: ObservableObject {
     func syncScheduleToConfig() {
         guard let configDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .deletingLastPathComponent()
-            .appendingPathComponent(".config/eigeninference") else { return }
+            .appendingPathComponent(".config/darkbloom") else { return }
 
         let configPath = configDir.appendingPathComponent("provider.toml")
 

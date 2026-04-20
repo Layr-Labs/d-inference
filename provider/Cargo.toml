@@ -30,15 +30,6 @@ reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
 
 # WebSocket client
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
-
-# macOS Keychain / Security.framework
-[target.'cfg(target_os = "macos")'.dependencies]
-# OSX_10_15 feature enables the data protection keychain constants
-# (kSecUseDataProtectionKeychain etc.) — required for Secure Enclave key
-# storage on macOS Developer ID signed apps. Our min macOS target is 14+.
-security-framework = { version = "3", features = ["OSX_10_15"] }
-security-framework-sys = { version = "2", features = ["OSX_10_15"] }
-core-foundation = "0.10"
 futures-util = "0.3"
 
 # HTTP server (local mode)
@@ -77,6 +68,15 @@ sha2 = "0.10"
 # happens in our hardened process. No subprocess, no IPC, no sniffable channel.
 # Behind a feature flag so `cargo test` doesn't need Python linked.
 pyo3 = { version = "0.24", features = ["auto-initialize"], optional = true }
+
+# macOS Keychain / Security.framework
+[target.'cfg(target_os = "macos")'.dependencies]
+# OSX_10_15 feature enables the data protection keychain constants
+# (kSecUseDataProtectionKeychain etc.) — required for Secure Enclave key
+# storage on macOS Developer ID signed apps. Our min macOS target is 14+.
+security-framework = { version = "3", features = ["OSX_10_15"] }
+security-framework-sys = { version = "2", features = ["OSX_10_15"] }
+core-foundation = "0.10"
 
 [features]
 default = ["python"]

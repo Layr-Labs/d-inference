@@ -388,87 +388,32 @@ impl CoordinatorClient {
                         Some(Ok(Message::Text(text))) => {
                             match serde_json::from_str::<CoordinatorMessage>(&text) {
                                 Ok(CoordinatorMessage::InferenceRequest { request_id, body, encrypted_body }) => {
-                                    tracing::info!("Received inference request: {request_id}");
-
-                                    // Decrypt E2E encrypted body if present
-                                    let decrypted_body = if let Some(enc) = encrypted_body {
-                                        tracing::info!("Decrypting E2E encrypted request");
-                                        match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
-                                            Ok(b) => b,
-                                            Err(e) => {
-                                                tracing::error!("Failed to decrypt request: {e}");
-                                                continue;
-                                            }
-                                        }
-                                    } else {
-                                        body
-                                    };
-
-                                    let _ = event_tx.send(CoordinatorEvent::InferenceRequest {
+                                    handle_inference_request_message(
                                         request_id,
-                                        body: decrypted_body,
-                                    }).await;
+                                        body,
+                                        encrypted_body,
+                                        event_tx,
+                                        self.node_keypair.as_ref(),
+                                    ).await;
                                 }
                                 Ok(CoordinatorMessage::TranscriptionRequest { request_id, body, encrypted_body }) => {
-                                    tracing::info!("Received transcription request: {request_id}");
-
-                                    // Decrypt E2E encrypted body if present
-                                    let decrypted_body = if let Some(enc) = encrypted_body {
-                                        tracing::info!("Decrypting E2E encrypted transcription request");
-                                        match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
-                                            Ok(b) => b,
-                                            Err(e) => {
-                                                tracing::error!("Failed to decrypt transcription request: {e}");
-                                                continue;
-                                            }
-                                        }
-                                    } else {
-                                        body
-                                    };
-
-                                    // Parse the transcription body
-                                    match serde_json::from_value::<TranscriptionRequestBody>(decrypted_body) {
-                                        Ok(parsed_body) => {
-                                            let _ = event_tx.send(CoordinatorEvent::TranscriptionRequest {
-                                                request_id,
-                                                body: parsed_body,
-                                            }).await;
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Failed to parse transcription body: {e}");
-                                        }
-                                    }
+                                    handle_transcription_request_message(
+                                        request_id,
+                                        body,
+                                        encrypted_body,
+                                        event_tx,
+                                        self.node_keypair.as_ref(),
+                                    ).await;
                                 }
                                 Ok(CoordinatorMessage::ImageGenerationRequest { request_id, upload_url, body, encrypted_body }) => {
-                                    tracing::info!("Received image generation request: {request_id}");
-
-                                    // Decrypt E2E encrypted body if present
-                                    let decrypted_body = if let Some(enc) = encrypted_body {
-                                        tracing::info!("Decrypting E2E encrypted image generation request");
-                                        match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
-                                            Ok(b) => b,
-                                            Err(e) => {
-                                                tracing::error!("Failed to decrypt image generation request: {e}");
-                                                continue;
-                                            }
-                                        }
-                                    } else {
-                                        body
-                                    };
-
-                                    // Parse the image generation body
-                                    match serde_json::from_value::<ImageGenerationRequestBody>(decrypted_body) {
-                                        Ok(parsed_body) => {
-                                            let _ = event_tx.send(CoordinatorEvent::ImageGenerationRequest {
-                                                request_id,
-                                                body: parsed_body,
-                                                upload_url,
-                                            }).await;
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Failed to parse image generation body: {e}");
-                                        }
-                                    }
+                                    handle_image_generation_request_message(
+                                        request_id,
+                                        upload_url,
+                                        body,
+                                        encrypted_body,
+                                        event_tx,
+                                        self.node_keypair.as_ref(),
+                                    ).await;
                                 }
                                 Ok(CoordinatorMessage::Cancel { request_id }) => {
                                     tracing::info!("Received cancel for: {request_id}");
@@ -552,6 +497,112 @@ impl CoordinatorClient {
 /// The coordinator encrypted the request with the provider's public key.
 /// Only this hardened process has the private key to decrypt it.
 /// MITM on the network sees only encrypted blobs.
+async fn handle_inference_request_message(
+    request_id: String,
+    body: serde_json::Value,
+    encrypted_body: Option<crate::protocol::EncryptedPayload>,
+    event_tx: &mpsc::Sender<CoordinatorEvent>,
+    node_keypair: &crate::crypto::NodeKeyPair,
+) {
+    tracing::info!("Received inference request: {request_id}");
+
+    let decrypted_body = if let Some(enc) = encrypted_body {
+        tracing::info!("Decrypting E2E encrypted request");
+        match decrypt_request_body(&enc, node_keypair) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("Failed to decrypt request: {e}");
+                return;
+            }
+        }
+    } else {
+        body
+    };
+
+    let _ = event_tx
+        .send(CoordinatorEvent::InferenceRequest {
+            request_id,
+            body: decrypted_body,
+        })
+        .await;
+}
+
+async fn handle_transcription_request_message(
+    request_id: String,
+    body: serde_json::Value,
+    encrypted_body: Option<crate::protocol::EncryptedPayload>,
+    event_tx: &mpsc::Sender<CoordinatorEvent>,
+    node_keypair: &crate::crypto::NodeKeyPair,
+) {
+    tracing::info!("Received transcription request: {request_id}");
+
+    let decrypted_body = if let Some(enc) = encrypted_body {
+        tracing::info!("Decrypting E2E encrypted transcription request");
+        match decrypt_request_body(&enc, node_keypair) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("Failed to decrypt transcription request: {e}");
+                return;
+            }
+        }
+    } else {
+        body
+    };
+
+    match serde_json::from_value::<TranscriptionRequestBody>(decrypted_body) {
+        Ok(parsed_body) => {
+            let _ = event_tx
+                .send(CoordinatorEvent::TranscriptionRequest {
+                    request_id,
+                    body: parsed_body,
+                })
+                .await;
+        }
+        Err(e) => {
+            tracing::error!("Failed to parse transcription body: {e}");
+        }
+    }
+}
+
+async fn handle_image_generation_request_message(
+    request_id: String,
+    upload_url: String,
+    body: serde_json::Value,
+    encrypted_body: Option<crate::protocol::EncryptedPayload>,
+    event_tx: &mpsc::Sender<CoordinatorEvent>,
+    node_keypair: &crate::crypto::NodeKeyPair,
+) {
+    tracing::info!("Received image generation request: {request_id}");
+
+    let decrypted_body = if let Some(enc) = encrypted_body {
+        tracing::info!("Decrypting E2E encrypted image generation request");
+        match decrypt_request_body(&enc, node_keypair) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("Failed to decrypt image generation request: {e}");
+                return;
+            }
+        }
+    } else {
+        body
+    };
+
+    match serde_json::from_value::<ImageGenerationRequestBody>(decrypted_body) {
+        Ok(parsed_body) => {
+            let _ = event_tx
+                .send(CoordinatorEvent::ImageGenerationRequest {
+                    request_id,
+                    body: parsed_body,
+                    upload_url,
+                })
+                .await;
+        }
+        Err(e) => {
+            tracing::error!("Failed to parse image generation body: {e}");
+        }
+    }
+}
+
 fn decrypt_request_body(
     encrypted: &crate::protocol::EncryptedPayload,
     keypair: &crate::crypto::NodeKeyPair,
@@ -1042,6 +1093,112 @@ mod tests {
         let register: serde_json::Value = serde_json::from_str(&received[0]).unwrap();
         assert_eq!(register["type"], "register");
         assert_eq!(register["backend"], "vllm_mlx");
+    }
+
+    #[tokio::test]
+    async fn test_privacy_poc_plaintext_inference_request_without_encrypted_body_reaches_event_loop()
+     {
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let request = serde_json::json!({
+            "type": "inference_request",
+            "request_id": "plain-fallback-req",
+            "body": {
+                "model": "qwen3.5-9b",
+                "messages": [{"role": "user", "content": "plaintext fallback still works"}],
+                "stream": false
+            }
+        });
+
+        handle_inference_request_message(
+            "plain-fallback-req".to_string(),
+            request["body"].clone(),
+            None,
+            &event_tx,
+            &crate::crypto::NodeKeyPair::generate(),
+        )
+        .await;
+
+        let event = event_rx.recv().await.expect("channel closed");
+        match event {
+            CoordinatorEvent::InferenceRequest { request_id, body } => {
+                assert_eq!(request_id, "plain-fallback-req");
+                assert_eq!(body["model"], "qwen3.5-9b");
+                assert_eq!(
+                    body["messages"][0]["content"],
+                    "plaintext fallback still works"
+                );
+            }
+            other => panic!("Expected plaintext InferenceRequest, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_privacy_poc_plaintext_transcription_request_without_encrypted_body_reaches_event_loop()
+     {
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+
+        handle_transcription_request_message(
+            "plain-stt-req".to_string(),
+            serde_json::json!({
+                "model": "cohere-transcribe",
+                "audio": "dGVzdA==",
+                "language": "en",
+                "format": "wav"
+            }),
+            None,
+            &event_tx,
+            &crate::crypto::NodeKeyPair::generate(),
+        )
+        .await;
+
+        let event = event_rx.recv().await.expect("channel closed");
+        match event {
+            CoordinatorEvent::TranscriptionRequest { request_id, body } => {
+                assert_eq!(request_id, "plain-stt-req");
+                assert_eq!(body.model, "cohere-transcribe");
+                assert_eq!(body.audio, "dGVzdA==");
+                assert_eq!(body.language.as_deref(), Some("en"));
+                assert_eq!(body.format, "wav");
+            }
+            other => panic!("Expected plaintext TranscriptionRequest, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_privacy_poc_plaintext_image_request_without_encrypted_body_reaches_event_loop() {
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+
+        handle_image_generation_request_message(
+            "plain-img-req".to_string(),
+            "https://example.com/upload".to_string(),
+            serde_json::json!({
+                "model": "flux-klein-4b",
+                "prompt": "shadowy cat on a rooftop",
+                "n": 1,
+                "size": "512x512"
+            }),
+            None,
+            &event_tx,
+            &crate::crypto::NodeKeyPair::generate(),
+        )
+        .await;
+
+        let event = event_rx.recv().await.expect("channel closed");
+        match event {
+            CoordinatorEvent::ImageGenerationRequest {
+                request_id,
+                body,
+                upload_url,
+            } => {
+                assert_eq!(request_id, "plain-img-req");
+                assert_eq!(upload_url, "https://example.com/upload");
+                assert_eq!(body.model, "flux-klein-4b");
+                assert_eq!(body.prompt, "shadowy cat on a rooftop");
+                assert_eq!(body.n, 1);
+                assert_eq!(body.size.as_deref(), Some("512x512"));
+            }
+            other => panic!("Expected plaintext ImageGenerationRequest, got {:?}", other),
+        }
     }
 
     // -----------------------------------------------------------------------

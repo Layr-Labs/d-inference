@@ -2310,4 +2310,44 @@ mod tests {
 
         assert!(!dead, "HTTP 502 should not report backend as dead");
     }
+
+    #[tokio::test]
+    async fn test_privacy_poc_transcription_failure_leaves_named_tmp_file_behind() {
+        use base64::Engine;
+
+        let request_id = "tmp-proof-req";
+        let tmp_path = format!("/tmp/eigeninference-stt-{request_id}.wav");
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+
+        let body = TranscriptionRequestBody {
+            model: "cohere-transcribe".to_string(),
+            audio: base64::engine::general_purpose::STANDARD.encode(b"fake wav bytes"),
+            language: Some("en".to_string()),
+            format: "wav".to_string(),
+        };
+
+        let (tx, mut rx) = mpsc::channel(8);
+        handle_transcription_request(
+            request_id.to_string(),
+            body,
+            "http://127.0.0.1:9".to_string(),
+            tx,
+            CancellationToken::new(),
+        )
+        .await;
+
+        let msg = rx.recv().await.expect("transcription channel closed");
+        assert!(
+            matches!(msg, ProviderMessage::InferenceError { .. }),
+            "expected transcription error, got {:?}",
+            msg
+        );
+
+        assert!(
+            tokio::fs::metadata(&tmp_path).await.is_ok(),
+            "transcription temp file should still exist after a backend send failure"
+        );
+
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+    }
 }

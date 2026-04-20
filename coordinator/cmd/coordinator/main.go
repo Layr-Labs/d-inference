@@ -421,6 +421,18 @@ func seedModelCatalog(st store.Store, logger *slog.Logger) {
 		{ID: "mlx-community/gemma-4-26b-a4b-it-8bit", S3Name: "gemma-4-26b-a4b-it-8bit", DisplayName: "Gemma 4 26B", ModelType: "text", SizeGB: 28.0, Architecture: "26B MoE, 4B active", Description: "Fast multimodal MoE", MinRAMGB: 36, Active: true},
 		{ID: "mlx-community/Qwen3.5-122B-A10B-8bit", S3Name: "Qwen3.5-122B-A10B-8bit", DisplayName: "Qwen3.5 122B", ModelType: "text", SizeGB: 122.0, Architecture: "122B MoE, 10B active", Description: "Best quality", MinRAMGB: 128, Active: true},
 		{ID: "mlx-community/MiniMax-M2.5-8bit", S3Name: "MiniMax-M2.5-8bit", DisplayName: "MiniMax M2.5", ModelType: "text", SizeGB: 243.0, Architecture: "239B MoE, 11B active", Description: "SOTA coding, 100 tok/s", MinRAMGB: 256, Active: true},
+
+		// --- Disaggregated compute: embeddings + reranking on small Macs ---
+		// These models give low-RAM Mac providers (Air, base Mini) revenue.
+		// They are routed preferentially to tiny/small tier providers so big
+		// Macs stay free for memory-bandwidth-bound LLM decode. See
+		// coordinator/internal/registry/registry.go: PreferredTiersForModelType.
+		{ID: "mlx-community/bge-m3", S3Name: "bge-m3", DisplayName: "BGE-M3 Embeddings", ModelType: "embedding", SizeGB: 1.2, Architecture: "568M multilingual encoder", Description: "Multilingual dense + sparse embeddings", MinRAMGB: 8, Active: true},
+		{ID: "mlx-community/Qwen3-Embedding-0.6B", S3Name: "Qwen3-Embedding-0.6B", DisplayName: "Qwen3 0.6B Embeddings", ModelType: "embedding", SizeGB: 0.7, Architecture: "0.6B Qwen3 encoder", Description: "Tiny multilingual embeddings", MinRAMGB: 8, Active: true},
+		{ID: "mlx-community/Qwen3-Embedding-4B", S3Name: "Qwen3-Embedding-4B", DisplayName: "Qwen3 4B Embeddings", ModelType: "embedding", SizeGB: 4.5, Architecture: "4B Qwen3 encoder", Description: "High-quality multilingual embeddings", MinRAMGB: 16, Active: true},
+		{ID: "mlx-community/mxbai-embed-large-v1", S3Name: "mxbai-embed-large-v1", DisplayName: "mxbai Large Embeddings", ModelType: "embedding", SizeGB: 0.7, Architecture: "335M BERT-large", Description: "English embeddings, top of MTEB", MinRAMGB: 8, Active: true},
+		{ID: "mlx-community/bge-reranker-v2-m3", S3Name: "bge-reranker-v2-m3", DisplayName: "BGE Reranker v2-m3", ModelType: "rerank", SizeGB: 1.2, Architecture: "568M cross-encoder", Description: "Multilingual cross-encoder reranker", MinRAMGB: 8, Active: true},
+		{ID: "mlx-community/Qwen3-Reranker-0.6B", S3Name: "Qwen3-Reranker-0.6B", DisplayName: "Qwen3 0.6B Reranker", ModelType: "rerank", SizeGB: 0.7, Architecture: "0.6B cross-encoder", Description: "Tiny multilingual reranker", MinRAMGB: 8, Active: true},
 	}
 
 	added := 0

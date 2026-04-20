@@ -280,6 +280,14 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			igMsg := msg.Payload.(*protocol.ImageGenerationCompleteMessage)
 			s.handleImageGenerationComplete(providerID, provider, igMsg)
 
+		case protocol.TypeEmbeddingComplete:
+			embMsg := msg.Payload.(*protocol.EmbeddingCompleteMessage)
+			s.handleEmbeddingComplete(providerID, provider, embMsg)
+
+		case protocol.TypeRerankComplete:
+			rrMsg := msg.Payload.(*protocol.RerankCompleteMessage)
+			s.handleRerankComplete(providerID, provider, rrMsg)
+
 		case protocol.TypeAttestationResponse:
 			respMsg := msg.Payload.(*protocol.AttestationResponseMessage)
 			s.handleAttestationResponse(providerID, provider, respMsg, tracker)
@@ -822,6 +830,12 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	}
 	if pr.ImageGenerationCh != nil {
 		close(pr.ImageGenerationCh)
+	}
+	if pr.EmbeddingCh != nil {
+		close(pr.EmbeddingCh)
+	}
+	if pr.RerankCh != nil {
+		close(pr.RerankCh)
 	}
 
 	// Record job failure for reputation tracking.

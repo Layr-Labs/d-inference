@@ -45,6 +45,37 @@ const (
 	TypeTranscriptionRequest   = "transcription_request"
 	TypeImageGenerationRequest = "image_generation_request"
 	TypeRuntimeStatus          = "runtime_status"
+
+	// Disaggregated compute (provider ↔ coordinator)
+	//
+	// Embedding/rerank requests are short-lived, compute-bound, and have
+	// small response bodies. They route to small-tier providers (≤24 GB
+	// Macs) so the big-tier fleet stays free for long-context decode.
+	TypeEmbeddingRequest  = "embedding_request"
+	TypeEmbeddingComplete = "embedding_complete"
+	TypeRerankRequest     = "rerank_request"
+	TypeRerankComplete    = "rerank_complete"
+)
+
+// ProviderTier classifies providers by hardware capability so the coordinator
+// can route compute-bound, small-payload jobs to lower-RAM Macs and reserve
+// big-RAM providers for memory-bandwidth-bound decode of large models.
+//
+// The tier is derived from advertised memory (set in the registry on
+// registration) and is not reported by the provider directly — preventing
+// providers from misrepresenting capability. See registry.ClassifyTier.
+type ProviderTier string
+
+const (
+	// ProviderTierTiny — ≤16 GB. Useful for embeddings, reranking, and
+	// future compute-bound disaggregated workloads (e.g. speculative
+	// decoding draft tokens). Cannot host quality decoder LLMs.
+	ProviderTierTiny ProviderTier = "tiny"
+	// ProviderTierSmall — 18–24 GB. Embeddings, rerank, and small chat
+	// models (≤7B). Useful as a draft model for speculative decoding.
+	ProviderTierSmall ProviderTier = "small"
+	// ProviderTierStandard — ≥32 GB. Full text/image/STT decode workloads.
+	ProviderTierStandard ProviderTier = "standard"
 )
 
 // ---------------------------------------------------------------------------
@@ -387,6 +418,110 @@ type ImageGenerationCompleteMessage struct {
 }
 
 // ---------------------------------------------------------------------------
+// Disaggregated compute: embeddings & reranking
+//
+// These workloads are compute-bound (one forward pass per input), have small
+// payloads (text in, vector out), and run on models that fit in ≤2 GB. They
+// are the natural target for low-RAM Mac providers that cannot host decoder
+// LLMs but still have plenty of GPU compute.
+// ---------------------------------------------------------------------------
+
+// EmbeddingRequestBody is the OpenAI-compatible embedding request body
+// forwarded inside an EmbeddingRequest. Input may be a single string or
+// an array of strings.
+type EmbeddingRequestBody struct {
+	Model          string          `json:"model"`
+	Input          json.RawMessage `json:"input"`                     // string or []string
+	EncodingFormat string          `json:"encoding_format,omitempty"` // "float" (default) or "base64"
+	Dimensions     *int            `json:"dimensions,omitempty"`      // optional truncation (Matryoshka)
+	User           string          `json:"user,omitempty"`
+}
+
+// EmbeddingRequestMessage tells a small-tier provider to embed input text(s).
+// Just like InferenceRequestMessage, the body is E2E-encrypted when the
+// provider has a public key (the prompt is sensitive data even for embeddings).
+type EmbeddingRequestMessage struct {
+	Type          string               `json:"type"`
+	RequestID     string               `json:"request_id"`
+	Body          EmbeddingRequestBody `json:"body,omitempty"`
+	EncryptedBody *EncryptedPayload    `json:"encrypted_body,omitempty"`
+}
+
+// EmbeddingVector is one input → one vector. Index matches the input order.
+type EmbeddingVector struct {
+	Index     int       `json:"index"`
+	Embedding []float64 `json:"embedding"`
+}
+
+// EmbeddingUsage carries usage info for billing embedding requests.
+// CompletionTokens is always 0 for embeddings — only prompt tokens are billed.
+type EmbeddingUsage struct {
+	PromptTokens int `json:"prompt_tokens"`
+	TotalTokens  int `json:"total_tokens"`
+}
+
+// EmbeddingCompleteMessage carries the embedding result back to the
+// coordinator. Vectors travel inline because they are small (1024–4096
+// dims × 4 bytes × N inputs is well under the 10 MB WebSocket frame limit
+// for typical N ≤ 64).
+type EmbeddingCompleteMessage struct {
+	Type         string            `json:"type"`
+	RequestID    string            `json:"request_id"`
+	Model        string            `json:"model"`
+	Data         []EmbeddingVector `json:"data"`
+	Usage        EmbeddingUsage    `json:"usage"`
+	DurationSecs float64           `json:"duration_secs"`
+	// EncryptedData carries the JSON-encoded `data` field encrypted with the
+	// session key when E2E was used on the request. When set, Data should be
+	// empty. The coordinator decrypts and forwards to the consumer.
+	EncryptedData *EncryptedPayload `json:"encrypted_data,omitempty"`
+}
+
+// RerankRequestBody is the rerank request body forwarded inside a
+// RerankRequest. The format mirrors Cohere's /v1/rerank API which is the
+// de-facto standard for cross-encoder rerankers.
+type RerankRequestBody struct {
+	Model           string   `json:"model"`
+	Query           string   `json:"query"`
+	Documents       []string `json:"documents"`
+	TopN            *int     `json:"top_n,omitempty"`            // return only top N (default: all)
+	ReturnDocuments bool     `json:"return_documents,omitempty"` // echo doc text back (default: false)
+}
+
+// RerankRequestMessage tells a small-tier provider to score query↔documents.
+type RerankRequestMessage struct {
+	Type          string            `json:"type"`
+	RequestID     string            `json:"request_id"`
+	Body          RerankRequestBody `json:"body,omitempty"`
+	EncryptedBody *EncryptedPayload `json:"encrypted_body,omitempty"`
+}
+
+// RerankResult is one (document, score) pair sorted descending by score.
+type RerankResult struct {
+	Index          int     `json:"index"`              // index into the original documents array
+	RelevanceScore float64 `json:"relevance_score"`    // higher = more relevant
+	Document       string  `json:"document,omitempty"` // populated only if return_documents=true
+}
+
+// RerankUsage tracks tokens scored. Each (query, document) pair counts as
+// prompt tokens; rerankers do not generate completion tokens.
+type RerankUsage struct {
+	PromptTokens int `json:"prompt_tokens"`
+	TotalTokens  int `json:"total_tokens"`
+}
+
+// RerankCompleteMessage carries scored results back to the coordinator.
+type RerankCompleteMessage struct {
+	Type          string            `json:"type"`
+	RequestID     string            `json:"request_id"`
+	Model         string            `json:"model"`
+	Results       []RerankResult    `json:"results"`
+	Usage         RerankUsage       `json:"usage"`
+	DurationSecs  float64           `json:"duration_secs"`
+	EncryptedData *EncryptedPayload `json:"encrypted_data,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
 // Envelope: generic unmarshalling for provider messages
 // ---------------------------------------------------------------------------
 
@@ -469,6 +604,20 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg ImageGenerationCompleteMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal image_generation_complete: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeEmbeddingComplete:
+		var msg EmbeddingCompleteMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal embedding_complete: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeRerankComplete:
+		var msg RerankCompleteMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal rerank_complete: %w", err)
 		}
 		pm.Payload = &msg
 

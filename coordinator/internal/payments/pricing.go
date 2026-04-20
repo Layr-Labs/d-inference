@@ -59,6 +59,26 @@ var imagePricing = map[string]int64{
 	"flux_2_klein_9b_q8p.ckpt": 2_500, // $0.0025 per image (50% of fal.ai $0.005)
 }
 
+// embeddingPricing stores per-1M-token prices in micro-USD for embedding
+// models served by small-tier providers. Half the rate of the cheapest
+// hosted competitor (Together $0.008/1M, OpenAI $0.020/1M, Cohere $0.10/1M).
+var embeddingPricing = map[string]int64{
+	"mlx-community/bge-m3":               4_000, // $0.004 per 1M tokens (50% of Together)
+	"mlx-community/mxbai-embed-large-v1": 5_000, // $0.005 per 1M tokens
+	"mlx-community/Qwen3-Embedding-0.6B": 3_000, // $0.003 per 1M tokens
+	"mlx-community/Qwen3-Embedding-4B":   8_000, // $0.008 per 1M tokens
+}
+
+// rerankPricing stores per-1M-token prices in micro-USD for cross-encoder
+// rerankers. Pair tokens (query + each document) are summed.
+var rerankPricing = map[string]int64{
+	"mlx-community/bge-reranker-v2-m3":  10_000, // $0.010 per 1M tokens
+	"mlx-community/Qwen3-Reranker-0.6B": 8_000,  // $0.008 per 1M tokens
+}
+
+const defaultEmbeddingPricePerMillion int64 = 5_000 // $0.005 per 1M tokens
+const defaultRerankPricePerMillion int64 = 10_000   // $0.010 per 1M tokens
+
 // MinimumCharge returns the minimum charge per inference request in micro-USD.
 func MinimumCharge() int64 {
 	return minimumChargeMicroUSD
@@ -172,6 +192,66 @@ func CalculateImageCost(model string, width, height, count int) int64 {
 		totalCost = minimumChargeMicroUSD
 	}
 	return totalCost
+}
+
+// EmbeddingPricePerMillion returns the price in micro-USD per 1M input
+// tokens for an embedding model. Embeddings have no completion tokens.
+func EmbeddingPricePerMillion(model string) int64 {
+	if p, ok := embeddingPricing[model]; ok {
+		return p
+	}
+	return defaultEmbeddingPricePerMillion
+}
+
+// RerankPricePerMillion returns the price in micro-USD per 1M input
+// tokens for a cross-encoder reranker.
+func RerankPricePerMillion(model string) int64 {
+	if p, ok := rerankPricing[model]; ok {
+		return p
+	}
+	return defaultRerankPricePerMillion
+}
+
+// CalculateEmbeddingCost returns the total cost in micro-USD for an embedding
+// request. Only input (prompt) tokens are billed since embeddings have no
+// generation phase.
+func CalculateEmbeddingCost(model string, promptTokens int) int64 {
+	rate := EmbeddingPricePerMillion(model)
+	cost := int64(promptTokens) * rate / 1_000_000
+	if cost < minimumChargeMicroUSD {
+		cost = minimumChargeMicroUSD
+	}
+	return cost
+}
+
+// CalculateRerankCost returns the total cost in micro-USD for a rerank
+// request. promptTokens is the sum of (query + document) token counts
+// across all (query, document) pairs scored.
+func CalculateRerankCost(model string, promptTokens int) int64 {
+	rate := RerankPricePerMillion(model)
+	cost := int64(promptTokens) * rate / 1_000_000
+	if cost < minimumChargeMicroUSD {
+		cost = minimumChargeMicroUSD
+	}
+	return cost
+}
+
+// DefaultEmbeddingPrices returns per-1M-token pricing for embedding models.
+func DefaultEmbeddingPrices() map[string]int64 {
+	result := make(map[string]int64, len(embeddingPricing))
+	for model, price := range embeddingPricing {
+		result[model] = price
+	}
+	return result
+}
+
+// DefaultRerankPrices returns per-1M-token pricing for rerank models.
+func DefaultRerankPrices() map[string]int64 {
+	result := make(map[string]int64, len(rerankPricing))
+	for model, price := range rerankPricing {
+		result[model] = price
+	}
+	return result
 }
 
 // PlatformFee returns Darkbloom's routing fee (5%).

@@ -78,6 +78,12 @@ type PendingRequest struct {
 	// Image generation result (nil for non-image requests)
 	ImageGenerationCh chan *protocol.ImageGenerationCompleteMessage
 
+	// Embedding result (nil for non-embedding requests)
+	EmbeddingCh chan *protocol.EmbeddingCompleteMessage
+
+	// Rerank result (nil for non-rerank requests)
+	RerankCh chan *protocol.RerankCompleteMessage
+
 	// ReservedMicroUSD is the balance atomically debited at pre-flight.
 	// The post-inference charge adjusts for the difference between the
 	// actual cost and this reservation, preventing billing race conditions.
@@ -116,6 +122,12 @@ type Provider struct {
 	// Warm model cache tracking
 	WarmModels   []string // models currently loaded in provider's memory
 	CurrentModel string   // model currently being served
+
+	// Tier classifies the provider by hardware capability (tiny/small/standard).
+	// Set on Register from advertised memory; used to route compute-bound
+	// disaggregated workloads (embeddings, rerank) to small-tier providers
+	// while reserving big-RAM providers for memory-bandwidth-bound decode.
+	Tier protocol.ProviderTier
 
 	// Live system metrics from heartbeats
 	SystemMetrics protocol.SystemMetrics
@@ -503,6 +515,27 @@ func TruncHash(h string) string {
 type CatalogEntry struct {
 	ID         string
 	WeightHash string // expected SHA-256 weight fingerprint (empty = not enforced)
+	// ModelType selects the tier policy:
+	//   - "embedding", "rerank": route to small-tier providers (≤24 GB)
+	//   - "text", "image", "transcription": existing routing (any tier that loads it)
+	ModelType string
+}
+
+// ClassifyTier maps advertised system memory (GB) to a provider tier.
+//
+// Mac Air / Mini at 8–16 GB → tiny: embeddings, reranking, future
+// compute-bound disaggregated jobs. Cannot host quality decoder LLMs.
+// 18–24 GB → small: small chat (≤7B), embeddings, draft for spec-decode.
+// 32 GB+ → standard: full text/image/STT decode workloads.
+func ClassifyTier(memoryGB int) protocol.ProviderTier {
+	switch {
+	case memoryGB <= 16:
+		return protocol.ProviderTierTiny
+	case memoryGB <= 24:
+		return protocol.ProviderTierSmall
+	default:
+		return protocol.ProviderTierStandard
+	}
 }
 
 // SetModelCatalog updates the set of active models. Only models in this
@@ -543,6 +576,31 @@ func (r *Registry) CatalogWeightHash(model string) string {
 		return e.WeightHash
 	}
 	return ""
+}
+
+// CatalogModelType returns the model_type for a catalog model, or empty
+// string when no catalog is set or the model is unknown. The empty string
+// means "treat as text/decode" for backward compatibility.
+func (r *Registry) CatalogModelType(model string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if e, ok := r.modelCatalog[model]; ok {
+		return e.ModelType
+	}
+	return ""
+}
+
+// PreferredTiersForModelType returns the tiers that should be preferred when
+// routing a given model type. Used by the scheduler to bias routing toward
+// the smallest tier capable of serving the request, freeing larger machines
+// for memory-bandwidth-bound decode work.
+func PreferredTiersForModelType(modelType string) []protocol.ProviderTier {
+	switch modelType {
+	case "embedding", "rerank":
+		return []protocol.ProviderTier{protocol.ProviderTierTiny, protocol.ProviderTierSmall}
+	default:
+		return nil
+	}
 }
 
 // trustMeetsMinimum returns true if the given trust level meets the minimum.
@@ -617,6 +675,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		WalletAddress:   msg.WalletAddress,
 		PrefillTPS:      msg.PrefillTPS,
 		DecodeTPS:       msg.DecodeTPS,
+		Tier:            ClassifyTier(msg.Hardware.MemoryGB),
 		TrustLevel:      TrustNone,
 		RuntimeVerified: true, // default to verified; API layer sets false when manifest check fails
 		Status:          StatusOnline,

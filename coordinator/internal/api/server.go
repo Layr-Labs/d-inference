@@ -215,6 +215,7 @@ func (s *Server) SyncModelCatalog() {
 			entries = append(entries, registry.CatalogEntry{
 				ID:         m.ID,
 				WeightHash: m.WeightHash,
+				ModelType:  m.ModelType,
 			})
 		}
 	}
@@ -565,6 +566,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/messages", s.requireAuth(s.handleAnthropicMessages))
 	s.mux.HandleFunc("POST /v1/audio/transcriptions", s.requireAuth(s.handleTranscriptions))
 	s.mux.HandleFunc("POST /v1/images/generations", s.requireAuth(s.handleImageGenerations))
+	// Disaggregated compute — small-tier providers serve these.
+	s.mux.HandleFunc("POST /v1/embeddings", s.requireAuth(s.handleEmbeddings))
+	s.mux.HandleFunc("POST /v1/rerank", s.requireAuth(s.handleRerank))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
 
 	// Provider image upload — providers POST generated images here (no API key auth,

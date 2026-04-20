@@ -22,8 +22,10 @@ use tokio_util::sync::CancellationToken;
 use crate::coordinator::AtomicProviderStats;
 use crate::crypto::NodeKeyPair;
 use crate::protocol::{
-    ImageGenerationRequestBody, ImageGenerationUsage, ProviderMessage, TranscriptionRequestBody,
-    TranscriptionSegment, TranscriptionUsage, UsageInfo,
+    EmbeddingRequestBody, EmbeddingUsage, EmbeddingVector, EncryptedPayload,
+    ImageGenerationRequestBody, ImageGenerationUsage, ProviderMessage, RerankRequestBody,
+    RerankResult, RerankUsage, TranscriptionRequestBody, TranscriptionSegment, TranscriptionUsage,
+    UsageInfo,
 };
 use crate::security;
 
@@ -845,6 +847,382 @@ fn extract_usage(response: &serde_json::Value) -> UsageInfo {
     UsageInfo {
         prompt_tokens,
         completion_tokens,
+    }
+}
+
+/// Handle an embedding request by forwarding to the local embedding backend.
+///
+/// The embedding backend is a small HTTP service (`mlx_embeddings` or similar)
+/// running on `embedding_backend_url` that exposes an OpenAI-compatible
+/// `/v1/embeddings` endpoint. This is the disaggregated-compute workload
+/// designed for low-RAM Macs (Air, 16 GB Mini): models are 100 MB – 2 GB,
+/// the request is one forward pass per input (compute-bound, no decode),
+/// and the response is small (vectors).
+pub async fn handle_embedding_request(
+    request_id: String,
+    body: EmbeddingRequestBody,
+    embedding_backend_url: String,
+    outbound_tx: mpsc::Sender<ProviderMessage>,
+    cancel_token: CancellationToken,
+    stats: Option<Arc<AtomicProviderStats>>,
+    session_pub_key: Option<String>,
+    node_keypair: Option<Arc<NodeKeyPair>>,
+) {
+    let start = std::time::Instant::now();
+
+    let result = do_embedding(
+        &request_id,
+        &body,
+        &embedding_backend_url,
+        &outbound_tx,
+        &cancel_token,
+        start,
+        session_pub_key.as_deref(),
+        node_keypair.as_deref(),
+    )
+    .await;
+
+    if let Err(e) = result {
+        if cancel_token.is_cancelled() {
+            tracing::info!("Embedding request {request_id} cancelled");
+        } else {
+            tracing::error!("Embedding request {request_id} failed: {e}");
+            let _ = outbound_tx
+                .send(ProviderMessage::InferenceError {
+                    request_id: request_id.clone(),
+                    error: e.to_string(),
+                    status_code: 500,
+                })
+                .await;
+        }
+    } else if let Some(s) = stats {
+        use std::sync::atomic::Ordering;
+        s.requests_served.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+async fn do_embedding(
+    request_id: &str,
+    body: &EmbeddingRequestBody,
+    embedding_backend_url: &str,
+    outbound_tx: &mpsc::Sender<ProviderMessage>,
+    cancel_token: &CancellationToken,
+    start: std::time::Instant,
+    session_pub_key: Option<&str>,
+    node_keypair: Option<&NodeKeyPair>,
+) -> Result<()> {
+    let url = format!("{embedding_backend_url}/v1/embeddings");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap_or_default();
+
+    let response = tokio::select! {
+        result = client.post(&url).json(body).send() => {
+            result.context("failed to send embedding request to backend")?
+        }
+        _ = cancel_token.cancelled() => {
+            anyhow::bail!("request cancelled");
+        }
+    };
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_body = response.text().await.unwrap_or_default();
+        outbound_tx
+            .send(ProviderMessage::InferenceError {
+                request_id: request_id.to_string(),
+                error: error_body,
+                status_code: status.as_u16(),
+            })
+            .await
+            .ok();
+        return Ok(());
+    }
+
+    let response_json: serde_json::Value = tokio::select! {
+        result = response.json() => {
+            result.context("failed to parse embedding backend response")?
+        }
+        _ = cancel_token.cancelled() => {
+            anyhow::bail!("request cancelled");
+        }
+    };
+
+    // Parse OpenAI-shaped response into our EmbeddingVector list.
+    let vectors = parse_embedding_response(&response_json);
+    let usage = extract_embedding_usage(&response_json);
+
+    // Optionally encrypt the vector array back to the coordinator using the
+    // session public key the coordinator sent on the request. This keeps the
+    // coordinator-vs-provider trust boundary symmetric with chat completions.
+    let encrypted = match (session_pub_key, node_keypair) {
+        (Some(sess_pub_b64), Some(kp)) => {
+            use base64::Engine;
+            let sess_pub_bytes = base64::engine::general_purpose::STANDARD
+                .decode(sess_pub_b64)
+                .ok()
+                .and_then(|b| b.try_into().ok());
+            if let Some(sess_pub) = sess_pub_bytes {
+                let payload_bytes = serde_json::to_vec(&vectors)?;
+                let ciphertext = kp.encrypt(&sess_pub, &payload_bytes)?;
+                Some(EncryptedPayload {
+                    ephemeral_public_key: base64::engine::general_purpose::STANDARD
+                        .encode(kp.public_key_bytes()),
+                    ciphertext: base64::engine::general_purpose::STANDARD.encode(&ciphertext),
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    outbound_tx
+        .send(ProviderMessage::EmbeddingComplete {
+            request_id: request_id.to_string(),
+            model: body.model.clone(),
+            data: if encrypted.is_some() {
+                Vec::new()
+            } else {
+                vectors
+            },
+            usage,
+            duration_secs: start.elapsed().as_secs_f64(),
+            encrypted_data: encrypted,
+        })
+        .await
+        .ok();
+
+    Ok(())
+}
+
+fn parse_embedding_response(resp: &serde_json::Value) -> Vec<EmbeddingVector> {
+    let Some(data) = resp.get("data").and_then(|d| d.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(data.len());
+    for (i, item) in data.iter().enumerate() {
+        let index = item
+            .get("index")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .unwrap_or(i as u32);
+        let embedding = item
+            .get("embedding")
+            .and_then(|e| e.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_f64().map(|f| f as f32))
+                    .collect::<Vec<f32>>()
+            })
+            .unwrap_or_default();
+        out.push(EmbeddingVector { index, embedding });
+    }
+    out
+}
+
+fn extract_embedding_usage(resp: &serde_json::Value) -> EmbeddingUsage {
+    let usage = resp.get("usage");
+    let prompt_tokens = usage
+        .and_then(|u| u.get("prompt_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let total_tokens = usage
+        .and_then(|u| u.get("total_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(prompt_tokens);
+    EmbeddingUsage {
+        prompt_tokens,
+        total_tokens,
+    }
+}
+
+/// Handle a rerank request by forwarding to the local rerank backend.
+///
+/// The rerank backend exposes Cohere-shaped `/v1/rerank` (query + documents
+/// → relevance scores). Cross-encoder rerankers are 300 MB – 1 GB models,
+/// compute-bound (one forward pass per pair), and run beautifully on
+/// low-RAM Apple Silicon.
+pub async fn handle_rerank_request(
+    request_id: String,
+    body: RerankRequestBody,
+    embedding_backend_url: String,
+    outbound_tx: mpsc::Sender<ProviderMessage>,
+    cancel_token: CancellationToken,
+    stats: Option<Arc<AtomicProviderStats>>,
+    session_pub_key: Option<String>,
+    node_keypair: Option<Arc<NodeKeyPair>>,
+) {
+    let start = std::time::Instant::now();
+    let result = do_rerank(
+        &request_id,
+        &body,
+        &embedding_backend_url,
+        &outbound_tx,
+        &cancel_token,
+        start,
+        session_pub_key.as_deref(),
+        node_keypair.as_deref(),
+    )
+    .await;
+
+    if let Err(e) = result {
+        if cancel_token.is_cancelled() {
+            tracing::info!("Rerank request {request_id} cancelled");
+        } else {
+            tracing::error!("Rerank request {request_id} failed: {e}");
+            let _ = outbound_tx
+                .send(ProviderMessage::InferenceError {
+                    request_id: request_id.clone(),
+                    error: e.to_string(),
+                    status_code: 500,
+                })
+                .await;
+        }
+    } else if let Some(s) = stats {
+        use std::sync::atomic::Ordering;
+        s.requests_served.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+async fn do_rerank(
+    request_id: &str,
+    body: &RerankRequestBody,
+    embedding_backend_url: &str,
+    outbound_tx: &mpsc::Sender<ProviderMessage>,
+    cancel_token: &CancellationToken,
+    start: std::time::Instant,
+    session_pub_key: Option<&str>,
+    node_keypair: Option<&NodeKeyPair>,
+) -> Result<()> {
+    let url = format!("{embedding_backend_url}/v1/rerank");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap_or_default();
+
+    let response = tokio::select! {
+        result = client.post(&url).json(body).send() => {
+            result.context("failed to send rerank request to backend")?
+        }
+        _ = cancel_token.cancelled() => {
+            anyhow::bail!("request cancelled");
+        }
+    };
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_body = response.text().await.unwrap_or_default();
+        outbound_tx
+            .send(ProviderMessage::InferenceError {
+                request_id: request_id.to_string(),
+                error: error_body,
+                status_code: status.as_u16(),
+            })
+            .await
+            .ok();
+        return Ok(());
+    }
+
+    let response_json: serde_json::Value = tokio::select! {
+        result = response.json() => {
+            result.context("failed to parse rerank backend response")?
+        }
+        _ = cancel_token.cancelled() => {
+            anyhow::bail!("request cancelled");
+        }
+    };
+
+    let results = parse_rerank_response(&response_json);
+    let usage = extract_rerank_usage(&response_json);
+
+    let encrypted = match (session_pub_key, node_keypair) {
+        (Some(sess_pub_b64), Some(kp)) => {
+            use base64::Engine;
+            let sess_pub_bytes = base64::engine::general_purpose::STANDARD
+                .decode(sess_pub_b64)
+                .ok()
+                .and_then(|b| b.try_into().ok());
+            if let Some(sess_pub) = sess_pub_bytes {
+                let payload_bytes = serde_json::to_vec(&results)?;
+                let ciphertext = kp.encrypt(&sess_pub, &payload_bytes)?;
+                Some(EncryptedPayload {
+                    ephemeral_public_key: base64::engine::general_purpose::STANDARD
+                        .encode(kp.public_key_bytes()),
+                    ciphertext: base64::engine::general_purpose::STANDARD.encode(&ciphertext),
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    outbound_tx
+        .send(ProviderMessage::RerankComplete {
+            request_id: request_id.to_string(),
+            model: body.model.clone(),
+            results: if encrypted.is_some() {
+                Vec::new()
+            } else {
+                results
+            },
+            usage,
+            duration_secs: start.elapsed().as_secs_f64(),
+            encrypted_data: encrypted,
+        })
+        .await
+        .ok();
+
+    Ok(())
+}
+
+fn parse_rerank_response(resp: &serde_json::Value) -> Vec<RerankResult> {
+    let Some(results) = resp.get("results").and_then(|r| r.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(results.len());
+    for item in results {
+        let index = item
+            .get("index")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .unwrap_or(0);
+        let relevance_score = item
+            .get("relevance_score")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let document = item
+            .get("document")
+            .and_then(|d| {
+                d.get("text")
+                    .and_then(|t| t.as_str())
+                    .or_else(|| d.as_str())
+            })
+            .map(|s| s.to_string());
+        out.push(RerankResult {
+            index,
+            relevance_score,
+            document,
+        });
+    }
+    out
+}
+
+fn extract_rerank_usage(resp: &serde_json::Value) -> RerankUsage {
+    let usage = resp.get("usage");
+    let prompt_tokens = usage
+        .and_then(|u| u.get("prompt_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let total_tokens = usage
+        .and_then(|u| u.get("total_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(prompt_tokens);
+    RerankUsage {
+        prompt_tokens,
+        total_tokens,
     }
 }
 

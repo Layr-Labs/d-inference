@@ -181,6 +181,71 @@ fn fallback_catalog() -> Vec<CatalogModel> {
             description: "SOTA coding, 100 tok/s".into(),
             min_ram_gb: 256,
         },
+        // Disaggregated compute: small embedding/rerank models that fit on
+        // 8–16 GB Macs. These let low-RAM providers (Air, base Mini) earn
+        // revenue serving compute-bound jobs while big-RAM providers stay
+        // free for memory-bandwidth-bound LLM decode. See
+        // coordinator/internal/registry.PreferredTiersForModelType.
+        CatalogModel {
+            id: "mlx-community/bge-m3".into(),
+            s3_name: "bge-m3".into(),
+            display_name: "BGE-M3 Embeddings".into(),
+            model_type: "embedding".into(),
+            size_gb: 1.2,
+            architecture: "568M multilingual encoder".into(),
+            description: "Multilingual dense + sparse embeddings".into(),
+            min_ram_gb: 8,
+        },
+        CatalogModel {
+            id: "mlx-community/Qwen3-Embedding-0.6B".into(),
+            s3_name: "Qwen3-Embedding-0.6B".into(),
+            display_name: "Qwen3 0.6B Embeddings".into(),
+            model_type: "embedding".into(),
+            size_gb: 0.7,
+            architecture: "0.6B Qwen3 encoder".into(),
+            description: "Tiny multilingual embeddings".into(),
+            min_ram_gb: 8,
+        },
+        CatalogModel {
+            id: "mlx-community/Qwen3-Embedding-4B".into(),
+            s3_name: "Qwen3-Embedding-4B".into(),
+            display_name: "Qwen3 4B Embeddings".into(),
+            model_type: "embedding".into(),
+            size_gb: 4.5,
+            architecture: "4B Qwen3 encoder".into(),
+            description: "High-quality multilingual embeddings".into(),
+            min_ram_gb: 16,
+        },
+        CatalogModel {
+            id: "mlx-community/mxbai-embed-large-v1".into(),
+            s3_name: "mxbai-embed-large-v1".into(),
+            display_name: "mxbai Large Embeddings".into(),
+            model_type: "embedding".into(),
+            size_gb: 0.7,
+            architecture: "335M BERT-large".into(),
+            description: "English embeddings, top of MTEB".into(),
+            min_ram_gb: 8,
+        },
+        CatalogModel {
+            id: "mlx-community/bge-reranker-v2-m3".into(),
+            s3_name: "bge-reranker-v2-m3".into(),
+            display_name: "BGE Reranker v2-m3".into(),
+            model_type: "rerank".into(),
+            size_gb: 1.2,
+            architecture: "568M cross-encoder".into(),
+            description: "Multilingual cross-encoder reranker".into(),
+            min_ram_gb: 8,
+        },
+        CatalogModel {
+            id: "mlx-community/Qwen3-Reranker-0.6B".into(),
+            s3_name: "Qwen3-Reranker-0.6B".into(),
+            display_name: "Qwen3 0.6B Reranker".into(),
+            model_type: "rerank".into(),
+            size_gb: 0.7,
+            architecture: "0.6B cross-encoder".into(),
+            description: "Tiny multilingual reranker".into(),
+            min_ram_gb: 8,
+        },
     ]
 }
 
@@ -2544,6 +2609,17 @@ async fn cmd_serve(
     let image_model_path = String::new();
     let image_weight_hash_computed: Option<String> = None;
 
+    // Embedding/rerank backend port. The optional embedding sidecar (Python
+    // `mlx_embeddings`-style server) is started by EigenInference's launcher
+    // when the provider tier ≤ small; if it's not running, embedding requests
+    // will fail with a connect error and the coordinator will route to
+    // another small-tier provider. The port is reserved deterministically
+    // so the launcher and the proxy agree without needing extra IPC.
+    let embedding_port: u16 = std::env::var("EIGENINFERENCE_EMBEDDING_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(image_port + 1);
+
     // Set up coordinator state. The actual connection is spawned AFTER backends
     // are loaded so we don't advertise models before we can serve them.
     let mut coordinator_handle;
@@ -3772,6 +3848,48 @@ async fn cmd_serve(
                                 let handle = tokio::spawn(async move {
                                     proxy::handle_image_generation_request(
                                         rid.clone(), body, image_url, upload_url, tx, token_clone,
+                                    ).await;
+                                    let _ = done_tx.send((rid, false)).await;
+                                });
+
+                                inflight.insert(request_id, (cancel_token, handle));
+                            }
+                            coordinator::CoordinatorEvent::EmbeddingRequest { request_id, body, session_pub_key } => {
+                                last_request_time = tokio::time::Instant::now();
+                                let tx = outbound_tx.clone();
+                                let cancel_token = CancellationToken::new();
+                                let token_clone = cancel_token.clone();
+                                let done_tx = done_tx.clone();
+                                let rid = request_id.clone();
+                                let emb_url = format!("http://127.0.0.1:{}", embedding_port);
+                                let stats_clone = Some(provider_stats.clone());
+                                let kp = Some(node_keypair.clone());
+
+                                let handle = tokio::spawn(async move {
+                                    proxy::handle_embedding_request(
+                                        rid.clone(), body, emb_url, tx, token_clone,
+                                        stats_clone, session_pub_key, kp,
+                                    ).await;
+                                    let _ = done_tx.send((rid, false)).await;
+                                });
+
+                                inflight.insert(request_id, (cancel_token, handle));
+                            }
+                            coordinator::CoordinatorEvent::RerankRequest { request_id, body, session_pub_key } => {
+                                last_request_time = tokio::time::Instant::now();
+                                let tx = outbound_tx.clone();
+                                let cancel_token = CancellationToken::new();
+                                let token_clone = cancel_token.clone();
+                                let done_tx = done_tx.clone();
+                                let rid = request_id.clone();
+                                let emb_url = format!("http://127.0.0.1:{}", embedding_port);
+                                let stats_clone = Some(provider_stats.clone());
+                                let kp = Some(node_keypair.clone());
+
+                                let handle = tokio::spawn(async move {
+                                    proxy::handle_rerank_request(
+                                        rid.clone(), body, emb_url, tx, token_clone,
+                                        stats_clone, session_pub_key, kp,
                                     ).await;
                                     let _ = done_tx.send((rid, false)).await;
                                 });

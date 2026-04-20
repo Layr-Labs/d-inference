@@ -10,13 +10,27 @@
     <key>com.apple.security.network.server</key>
     <true/>
     <!--
-      Keychain access for E2E key storage.
-      Team prefix is hardcoded because codesign (our release flow) does NOT
-      expand $(AppIdentifierPrefix) — that's an Xcode-only build variable.
-      A literal unexpanded macro gets baked into the entitlements blob and
-      keychain writes fail with errSecMissingEntitlement (-34018).
-      Format per Apple docs: "TEAMID.identifier".
+      Data protection keychain access for SE-backed E2E key storage.
+      On macOS, Developer ID signed CLI binaries need all three of these
+      entitlements to query/store items in the data protection keychain:
+
+        - application-identifier              = TeamID.BundleID
+        - com.apple.developer.team-identifier = TeamID
+        - keychain-access-groups              = [TeamID.BundleID, ...]
+
+      Normally Xcode injects the first two via a provisioning profile; for
+      direct codesign flows (our CI), they have to be hardcoded here. Without
+      them, SecItemCopyMatching returns errSecMissingEntitlement (-34018)
+      "A required entitlement isn't present" even with keychain-access-groups
+      set correctly.
+
+      Hardcoded to SLDQ2GJ6TL (Eigen Labs) — codesign does NOT expand the
+      Xcode build variable $(AppIdentifierPrefix).
     -->
+    <key>application-identifier</key>
+    <string>SLDQ2GJ6TL.io.darkbloom.provider</string>
+    <key>com.apple.developer.team-identifier</key>
+    <string>SLDQ2GJ6TL</string>
     <key>com.apple.security.keychain-access-groups</key>
     <array>
         <string>SLDQ2GJ6TL.io.darkbloom.provider</string>

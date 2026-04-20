@@ -1,7 +1,7 @@
-From 19cfeb96514fa710df14067ee8906147c5d466fb Mon Sep 17 00:00:00 2001
+From ca1a228e3ff300f758545da094753efa07b15bbc Mon Sep 17 00:00:00 2001
 From: aryabhuptani <arjunbhuptani@gmail.com>
 Date: Mon, 20 Apr 2026 01:17:34 +0100
-Subject: [PATCH] Add privacy audit handoff packet and proof tests
+Subject: [PATCH 1/5] Add privacy audit handoff packet and proof tests
 
 ---
  .../POC_APPENDIX_AND_TEST_INDEX.md            | 116 +++++
@@ -9,11 +9,11 @@ Subject: [PATCH] Add privacy audit handoff packet and proof tests
  audits/2026-04-20-privacy-review/README.md    |  36 ++
  coordinator/internal/api/privacy_poc_test.go  | 424 ++++++++++++++++++
  .../internal/registry/privacy_poc_test.go     | 122 +++++
- provider/Cargo.toml                           |  12 +-
+ provider/Cargo.toml                           |  18 +-
  provider/src/coordinator.rs                   | 309 +++++++++----
  provider/src/main.rs                          |   3 +-
  provider/src/proxy.rs                         |  40 ++
- 9 files changed, 1200 insertions(+), 83 deletions(-)
+ 9 files changed, 1203 insertions(+), 86 deletions(-)
  create mode 100644 audits/2026-04-20-privacy-review/POC_APPENDIX_AND_TEST_INDEX.md
  create mode 100644 audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md
  create mode 100644 audits/2026-04-20-privacy-review/README.md
@@ -970,30 +970,36 @@ index 00000000..d8110301
 +	}
 +}
 diff --git a/provider/Cargo.toml b/provider/Cargo.toml
-index accd3c2c..ca78ecd9 100644
+index dea11e54..bd61a43b 100644
 --- a/provider/Cargo.toml
 +++ b/provider/Cargo.toml
-@@ -30,12 +30,6 @@ reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
+@@ -30,15 +30,6 @@ reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
  
  # WebSocket client
  tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 -
 -# macOS Keychain / Security.framework
 -[target.'cfg(target_os = "macos")'.dependencies]
--security-framework = "3"
--security-framework-sys = "2"
+-# OSX_10_15 feature enables the data protection keychain constants
+-# (kSecUseDataProtectionKeychain etc.) — required for Secure Enclave key
+-# storage on macOS Developer ID signed apps. Our min macOS target is 14+.
+-security-framework = { version = "3", features = ["OSX_10_15"] }
+-security-framework-sys = { version = "2", features = ["OSX_10_15"] }
 -core-foundation = "0.10"
  futures-util = "0.3"
  
  # HTTP server (local mode)
-@@ -75,6 +69,12 @@ sha2 = "0.10"
+@@ -78,6 +69,15 @@ sha2 = "0.10"
  # Behind a feature flag so `cargo test` doesn't need Python linked.
  pyo3 = { version = "0.24", features = ["auto-initialize"], optional = true }
  
 +# macOS Keychain / Security.framework
 +[target.'cfg(target_os = "macos")'.dependencies]
-+security-framework = "3"
-+security-framework-sys = "2"
++# OSX_10_15 feature enables the data protection keychain constants
++# (kSecUseDataProtectionKeychain etc.) — required for Secure Enclave key
++# storage on macOS Developer ID signed apps. Our min macOS target is 14+.
++security-framework = { version = "3", features = ["OSX_10_15"] }
++security-framework-sys = { version = "2", features = ["OSX_10_15"] }
 +core-foundation = "0.10"
 +
  [features]
@@ -1339,10 +1345,10 @@ index 00e9da87..1bc584c9 100644
      // Challenge response generation — verifying security fields
      // -----------------------------------------------------------------------
 diff --git a/provider/src/main.rs b/provider/src/main.rs
-index da203657..474da14e 100644
+index 6c160a4c..b0f18a97 100644
 --- a/provider/src/main.rs
 +++ b/provider/src/main.rs
-@@ -3465,7 +3465,8 @@ async fn cmd_serve(
+@@ -3497,7 +3497,8 @@ async fn cmd_serve(
                                          .map(|s| (s.model_id.clone(), s.model_path.clone(), s.port, s.pid, s.healthy, s.restarting))
                                  };
  
@@ -1401,6 +1407,1648 @@ index 537ad7f4..f27339a9 100644
 +        let _ = tokio::fs::remove_file(&tmp_path).await;
 +    }
  }
+-- 
+2.47.3
+
+
+From 0c82bdd87a69917f09e73c5562cbdd04a2b2792c Mon Sep 17 00:00:00 2001
+From: aryabhuptani <arjunbhuptani@gmail.com>
+Date: Mon, 20 Apr 2026 01:18:13 +0100
+Subject: [PATCH 2/5] Add exported patch to privacy handoff packet
+
+---
+ audits/2026-04-20-privacy-review/README.md    |    6 +-
+ .../handoff-code.patch                        | 1406 +++++++++++++++++
+ 2 files changed, 1411 insertions(+), 1 deletion(-)
+ create mode 100644 audits/2026-04-20-privacy-review/handoff-code.patch
+
+diff --git a/audits/2026-04-20-privacy-review/README.md b/audits/2026-04-20-privacy-review/README.md
+index a4d22381..77e2844c 100644
+--- a/audits/2026-04-20-privacy-review/README.md
++++ b/audits/2026-04-20-privacy-review/README.md
+@@ -12,7 +12,11 @@ Contents:
+    - Index of the proof-backed tests and what each one demonstrates.
+    - Includes file paths, test names, and rerun commands.
+ 
+-3. Code in this repo worktree / branch
++3. `handoff-code.patch`
++   - `git format-patch` export of the committed handoff change.
++   - Can be reviewed directly or applied with `git am`.
++
++4. Code in this repo worktree / branch
+    - Local branch: `arya/privacy-audit-handoff-2026-04-20`
+    - Main proof files:
+      - `coordinator/internal/api/privacy_poc_test.go`
+diff --git a/audits/2026-04-20-privacy-review/handoff-code.patch b/audits/2026-04-20-privacy-review/handoff-code.patch
+new file mode 100644
+index 00000000..d5cd7b08
+--- /dev/null
++++ b/audits/2026-04-20-privacy-review/handoff-code.patch
+@@ -0,0 +1,1406 @@
++From 19cfeb96514fa710df14067ee8906147c5d466fb Mon Sep 17 00:00:00 2001
++From: aryabhuptani <arjunbhuptani@gmail.com>
++Date: Mon, 20 Apr 2026 01:17:34 +0100
++Subject: [PATCH] Add privacy audit handoff packet and proof tests
++
++---
++ .../POC_APPENDIX_AND_TEST_INDEX.md            | 116 +++++
++ .../PRIVACY_AUDIT_REPORT.md                   | 221 +++++++++
++ audits/2026-04-20-privacy-review/README.md    |  36 ++
++ coordinator/internal/api/privacy_poc_test.go  | 424 ++++++++++++++++++
++ .../internal/registry/privacy_poc_test.go     | 122 +++++
++ provider/Cargo.toml                           |  12 +-
++ provider/src/coordinator.rs                   | 309 +++++++++----
++ provider/src/main.rs                          |   3 +-
++ provider/src/proxy.rs                         |  40 ++
++ 9 files changed, 1200 insertions(+), 83 deletions(-)
++ create mode 100644 audits/2026-04-20-privacy-review/POC_APPENDIX_AND_TEST_INDEX.md
++ create mode 100644 audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md
++ create mode 100644 audits/2026-04-20-privacy-review/README.md
++ create mode 100644 coordinator/internal/api/privacy_poc_test.go
++ create mode 100644 coordinator/internal/registry/privacy_poc_test.go
++
++diff --git a/audits/2026-04-20-privacy-review/POC_APPENDIX_AND_TEST_INDEX.md b/audits/2026-04-20-privacy-review/POC_APPENDIX_AND_TEST_INDEX.md
++new file mode 100644
++index 00000000..3a008926
++--- /dev/null
+++++ b/audits/2026-04-20-privacy-review/POC_APPENDIX_AND_TEST_INDEX.md
++@@ -0,0 +1,116 @@
+++# POC Appendix And Regression-Test Index
+++
+++Date: 2026-04-20
+++
+++This appendix indexes the proof-backed findings produced during the Dark Bloom privacy review.
+++
+++## Code Paths
+++
+++Coordinator-side proof files:
+++
+++- `coordinator/internal/api/privacy_poc_test.go`
+++- `coordinator/internal/registry/privacy_poc_test.go`
+++
+++Provider-side proof locations:
+++
+++- `provider/src/coordinator.rs`
+++- `provider/src/proxy.rs`
+++
+++Supporting portability fixes required by the provider-side proof work:
+++
+++- `provider/Cargo.toml`
+++- `provider/src/main.rs`
+++
+++## Test Inventory
+++
+++### Coordinator API proofs
+++
+++File: `coordinator/internal/api/privacy_poc_test.go`
+++
+++1. `TestPrivacyPOC_ProviderErrorPlaintextLeaksToClientAndLogs`
+++   - proves provider plaintext error content can reach both client responses and coordinator logs in the chat path
+++
+++2. `TestPrivacyPOC_TranscriptionProviderErrorPlaintextLeaksToClient`
+++   - proves provider plaintext error content can reach transcription clients
+++
+++3. `TestPrivacyPOC_ImageProviderErrorPlaintextLeaksToClient`
+++   - proves provider plaintext error content can reach image-generation clients
+++
+++4. `TestPrivacyPOC_ValidSelfSignedAttestationMakesProviderImmediatelyRoutableAtSelfSignedFloor`
+++   - proves a valid self-signed provider becomes immediately routable when the minimum trust floor is lowered to `self_signed`
+++
+++5. `TestPrivacyPOC_StoredHardwareTrustRestoresThroughRealRegistrationPath`
+++   - proves stored hardware-trust state can be restored through the real registration path and make the provider immediately hardware-routable
+++
+++6. `TestPrivacyPOC_HandleChunkCopiesPlaintextIntoCoordinatorChannel`
+++   - proves plaintext response chunks are copied into coordinator-side channels before downstream delivery
+++
+++### Coordinator registry proofs
+++
+++File: `coordinator/internal/registry/privacy_poc_test.go`
+++
+++7. `TestPrivacyPOC_OpenModeProviderBecomesRoutableWhenTrustFloorLowered`
+++   - proves Open Mode providers become routable if the global trust floor is lowered to `none`
+++
+++8. `TestPrivacyPOC_RestoreProviderStateCanRegrantHardwareTrustImmediately`
+++   - proves restored provider state can immediately regrant hardware trust before fresh re-verification completes
+++
+++9. `TestPrivacyPOC_RegisterDefaultsRuntimeVerifiedBeforeManifestChecks`
+++   - proves registration starts with `RuntimeVerified=true` before any manifest gate is applied
+++
+++### Provider-side proofs
+++
+++File: `provider/src/coordinator.rs`
+++
+++10. `test_privacy_poc_plaintext_inference_request_without_encrypted_body_reaches_event_loop`
+++    - proves plaintext inference request fallback is still accepted
+++
+++11. `test_privacy_poc_plaintext_transcription_request_without_encrypted_body_reaches_event_loop`
+++    - proves plaintext transcription request fallback is still accepted
+++
+++12. `test_privacy_poc_plaintext_image_request_without_encrypted_body_reaches_event_loop`
+++    - proves plaintext image-generation request fallback is still accepted
+++
+++File: `provider/src/proxy.rs`
+++
+++13. `test_privacy_poc_transcription_failure_leaves_named_tmp_file_behind`
+++    - proves a failed transcription request can strand a named `/tmp/eigeninference-stt-<request_id>.wav` artifact
+++
+++## Rerun Commands
+++
+++Coordinator-side:
+++
+++```bash
+++cd coordinator
+++go test ./internal/api -run TestPrivacyPOC_ -v
+++go test ./internal/registry -run TestPrivacyPOC_ -v
+++```
+++
+++Provider-side:
+++
+++```bash
+++cd provider
+++cargo test --no-default-features privacy_poc -- --nocapture
+++```
+++
+++## Current Rerun Status
+++
+++As of 2026-04-20:
+++
+++- Coordinator-side Go proofs reran successfully in the local review environment.
+++- Provider-side Rust proofs were previously verified locally during the review, but the latest rerun on 2026-04-20 was blocked by Linux OpenSSL / `pkg-config` environment drift rather than by an observed assertion failure.
+++
+++That means:
+++
+++- the provider-side proof code should still be treated as concrete review material
+++- but if the receiving team wants a fresh rerun in this exact environment, they should first restore native OpenSSL discovery for Cargo or run the provider proof target in their normal dev environment
+++
+++## Suggested Regression Candidates
+++
+++These are the strongest candidates to keep long-term once the intended privacy behavior is agreed:
+++
+++1. plaintext error reflection should not reach client or coordinator logs
+++2. plaintext response chunks should not sit in coordinator-visible channels if coordinator blindness is intended
+++3. plaintext request fallback should be rejected if encrypted-only transport is intended
+++4. weaker trust states should not become routable merely through lowered floor + restored/default state unless explicitly intended
+++5. failure paths should not leave named temp artifacts containing sensitive staging data
++diff --git a/audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md b/audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md
++new file mode 100644
++index 00000000..3591225f
++--- /dev/null
+++++ b/audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md
++@@ -0,0 +1,221 @@
+++# Dark Bloom Privacy Audit Report
+++
+++Date: 2026-04-20
+++
+++Repo reviewed:
+++- Upstream: `git@github.com:Layr-Labs/d-inference.git`
+++- Base commit: `1f13c4074fc563db380200d34e58c22b3a635907`
+++
+++## Scope
+++
+++This review compared Dark Bloom's privacy/security model as presented in its theory and white-paper-adjacent materials against the current codebase. The work then moved from semantic review into proof-backed validation for the most concrete suspected privacy failures.
+++
+++This report is intentionally split between:
+++
+++1. theory / model observations
+++2. theory-to-implementation drift
+++3. verified practical findings backed by tests
+++
+++It is not a comprehensive cryptographic review of every component, and it is not a statement that every theoretical concern is exploitable today.
+++
+++## Methodology
+++
+++The review used three passes:
+++
+++1. Theory and white-paper review
+++   - read the published privacy/security story
+++   - identified implicit assumptions and unstated trust boundaries
+++
+++2. Code-level semantic audit
+++   - reviewed the coordinator, provider, attestation, routing, and protected-memory-adjacent paths
+++   - traced where privacy claims were hard-enforced, optional, softened by config, or not fully wired
+++
+++3. Proof-backed validation
+++   - converted the highest-confidence hypotheses into concrete tests inside the repo
+++   - reran the coordinator-side tests in a current local environment
+++   - provider-side proof tests were previously verified locally; current rerun on 2026-04-20 was blocked by Linux OpenSSL / `pkg-config` environment drift rather than by test failure
+++
+++## Overall Conclusion
+++
+++Dark Bloom appears to be a serious privacy-improving system, not vapor. The design is directionally coherent and several parts of the architecture show real care. The main issue is not that the privacy story is fabricated; it is that the strongest version of the story is ahead of the current implementation.
+++
+++The current system reads more like:
+++
+++`privacy improved under a strict operating model`
+++
+++than:
+++
+++`plaintext only exists inside the provider by construction`
+++
+++The biggest recurring pattern is implementation drift:
+++
+++- some claims are stronger than live enforcement
+++- some guarantees depend on strict operator configuration rather than protocol inevitability
+++- some protected-memory or coordinator-trust claims are cleaner in theory than in active data paths
+++
+++## Theory-Level Observations
+++
+++These are not "bugs" in the narrow sense, but they matter because they shape how strong Dark Bloom's privacy claims can honestly be.
+++
+++### 1. The coordinator remains a meaningful privacy-bearing component
+++
+++The privacy model is strongest when the coordinator acts as a narrow router with limited content visibility. In practice, the coordinator still has enough visibility into responses, errors, routing state, and provider trust state that it should be treated as part of the privacy boundary, not as a nearly-transparent relay.
+++
+++### 2. The privacy story depends heavily on deployment posture
+++
+++Several important properties depend on configuration and operating mode:
+++
+++- minimum trust floor
+++- whether weaker provider onboarding paths are allowed
+++- whether runtime verification evidence is present and enforced
+++- whether stored provider state is restored and trusted immediately
+++
+++That means part of the privacy model is operational, not purely cryptographic or protocol-level.
+++
+++### 3. The protected-memory story needs narrower wording
+++
+++The architectural narrative around hardened execution and protected memory is stronger than what the code currently demonstrates in all runtime paths. Ordinary process memory, buffering layers, serialization, and temp-file staging still matter. The model should distinguish between:
+++
+++- the intended "sensitive path"
+++- the actual set of memory and disk surfaces the implementation uses today
+++
+++### 4. "Request encryption exists" is not the same as "plaintext fallback is impossible"
+++
+++The current implementation supports encrypted request paths, but the protocol shape still permits plaintext-compatible request bodies in live provider handling. That difference matters. The stronger claim is not yet warranted.
+++
+++## Theory-To-Implementation Drift
+++
+++### 1. Response confidentiality lags request confidentiality
+++
+++Request-side confidentiality on the main path is materially better than older plaintext assumptions imply. Response-side handling is weaker. The coordinator still processes plaintext response chunks and plaintext error material in ways that are inconsistent with the strongest "provider-only plaintext" story.
+++
+++### 2. Trust tiers and verification states are softer than the clean narrative suggests
+++
+++The implementation allows several weaker or partially-restored trust states to become routable under softened configuration or restored state. The gap here is not only conceptual; it shows up in code and in proof-backed tests.
+++
+++### 3. Runtime verification defaults and restoration behavior are permissive
+++
+++Newly registered providers can begin from a more trusted/verified posture than the strongest narrative would suggest, and restored state can regrant stronger trust before fresh evidence completes. This is not the same thing as a catastrophic trust bypass, but it is a meaningful softening of the claimed trust boundary.
+++
+++### 4. Some "protected" handling still leaves ordinary artifacts
+++
+++The transcription path proves at least one clear case where the active implementation leaves a named `/tmp` artifact after failure. That is a practical gap between the cleanest privacy model and live code behavior.
+++
+++## Verified Practical Findings
+++
+++The findings below are backed by concrete tests in this repo. See the appendix for exact file paths, test names, and rerun commands.
+++
+++### A. Plaintext provider errors leak back through coordinator-facing APIs
+++
+++Verified across:
+++
+++- chat completions
+++- transcription
+++- image generation
+++
+++What this means:
+++
+++- provider-supplied plaintext error strings can reach client responses
+++- in the chat path, the same plaintext also reaches coordinator logs
+++
+++Why it matters:
+++
+++- error paths are part of the privacy boundary
+++- "normal path is private" is not enough if failure handling reflects sensitive content or prompt-adjacent data
+++
+++### B. Plaintext response chunks are copied into coordinator-side request channels
+++
+++The coordinator's chunk handling currently copies plaintext response data into coordinator-side channels before client delivery.
+++
+++Why it matters:
+++
+++- this directly contradicts the strongest reading of a coordinator-blind response path
+++- even if streaming is transient, the coordinator remains able to observe plaintext response material
+++
+++### C. Plaintext request fallback is still accepted on the provider side
+++
+++Verified for:
+++
+++- inference requests
+++- transcription requests
+++- image-generation requests
+++
+++What this means:
+++
+++- the provider still accepts request bodies without `encrypted_body`
+++- encryption is not currently enforced as an exclusive input contract
+++
+++Why it matters:
+++
+++- this preserves downgrade or regression room
+++- it weakens any claim that plaintext request delivery is impossible in the live system
+++
+++### D. Weaker provider trust states can become routable under softened policy
+++
+++Verified cases include:
+++
+++- Open Mode provider routability when the global trust floor is lowered to `none`
+++- valid self-signed provider routability when the floor is lowered to `self_signed`
+++- immediate hardware-trust restoration from stored state
+++- immediate stronger routability after restored provider state is applied through the real registration path
+++- default `RuntimeVerified=true` registration posture before manifest checks
+++
+++Why it matters:
+++
+++- the effective privacy/trust boundary is partly controlled by soft configuration and state restoration behavior
+++- some provider states become usable earlier or more easily than the strongest trust narrative suggests
+++
+++### E. The transcription path can leave a named `/tmp` artifact after failure
+++
+++Verified finding:
+++
+++- a failed transcription request can leave `/tmp/eigeninference-stt-<request_id>.wav` behind
+++
+++Why it matters:
+++
+++- this is a concrete protected-path escape to disk-backed temporary storage
+++- it shows that failure paths deserve the same privacy scrutiny as normal inference handling
+++
+++## Suggested Remediation Order
+++
+++### Priority 0
+++
+++Remove coordinator-side plaintext exposure in:
+++
+++- response chunk handling
+++- provider error propagation
+++- coordinator logging of provider plaintext error material
+++
+++### Priority 1
+++
+++Make encrypted request delivery mandatory by contract, not merely preferred by mainline handler behavior.
+++
+++### Priority 2
+++
+++Tighten provider trust/routability transitions:
+++
+++- review default `RuntimeVerified` posture
+++- review restored-state trust restoration
+++- review self-signed and Open Mode routability under lowered trust floors
+++
+++### Priority 3
+++
+++Audit and remove practical protected-path escapes:
+++
+++- temp-file staging
+++- ordinary-memory copies where feasible
+++- failure-path cleanup gaps
+++
+++### Priority 4
+++
+++Narrow claims and documentation where implementation is not yet at the strongest advertised form.
+++
+++## Closing Note
+++
+++This report does not claim that Dark Bloom "has no privacy value." The opposite is true: the design has real value and several real privacy-preserving ideas. The problem is that the strongest interpretation of the privacy story is not yet what the current code enforces.
+++
+++The practical consequence is simple:
+++
+++- some of the current issues are fixable engineering gaps
+++- some are trust-model wording gaps
+++- several now have concrete tests that can be turned into regression coverage once the intended behavior is decided
++diff --git a/audits/2026-04-20-privacy-review/README.md b/audits/2026-04-20-privacy-review/README.md
++new file mode 100644
++index 00000000..a4d22381
++--- /dev/null
+++++ b/audits/2026-04-20-privacy-review/README.md
++@@ -0,0 +1,36 @@
+++# Dark Bloom Privacy Review Handoff
+++
+++This packet is meant to be handed back to the Dark Bloom team as a compact engineering-facing review bundle, not as a marketing memo.
+++
+++Contents:
+++
+++1. `PRIVACY_AUDIT_REPORT.md`
+++   - Main audit report.
+++   - Covers scope, methodology, theory-level observations, implementation drift, verified practical findings, and remediation order.
+++
+++2. `POC_APPENDIX_AND_TEST_INDEX.md`
+++   - Index of the proof-backed tests and what each one demonstrates.
+++   - Includes file paths, test names, and rerun commands.
+++
+++3. Code in this repo worktree / branch
+++   - Local branch: `arya/privacy-audit-handoff-2026-04-20`
+++   - Main proof files:
+++     - `coordinator/internal/api/privacy_poc_test.go`
+++     - `coordinator/internal/registry/privacy_poc_test.go`
+++     - `provider/src/coordinator.rs`
+++     - `provider/src/proxy.rs`
+++   - Small supporting fixes required to keep the provider-side proof work portable:
+++     - `provider/Cargo.toml`
+++     - `provider/src/main.rs`
+++
+++Review baseline:
+++
+++- Upstream repo: `git@github.com:Layr-Labs/d-inference.git`
+++- Base commit reviewed: `1f13c4074fc563db380200d34e58c22b3a635907`
+++- Base commit subject: `Mark image generation as under maintenance on console UI and landing page.`
+++
+++Fork / push status:
+++
+++- The work is assembled locally on the branch above.
+++- This box does not currently have GitHub API auth set up to create Arya's fork automatically, and `gh` is not installed.
+++- If `aryabhuptani/d-inference` is created or a fork already exists with writable SSH access, this branch can be pushed there directly and handed over as code.
++diff --git a/coordinator/internal/api/privacy_poc_test.go b/coordinator/internal/api/privacy_poc_test.go
++new file mode 100644
++index 00000000..99aae484
++--- /dev/null
+++++ b/coordinator/internal/api/privacy_poc_test.go
++@@ -0,0 +1,424 @@
+++package api
+++
+++import (
+++	"bytes"
+++	"context"
+++	"encoding/json"
+++	"io"
+++	"log/slog"
+++	"mime/multipart"
+++	"net/http"
+++	"net/http/httptest"
+++	"strings"
+++	"testing"
+++	"time"
+++
+++	"github.com/eigeninference/coordinator/internal/protocol"
+++	"github.com/eigeninference/coordinator/internal/registry"
+++	"github.com/eigeninference/coordinator/internal/store"
+++	"nhooyr.io/websocket"
+++)
+++
+++// privacyPOCTestServer creates a server with an in-memory log sink so the test
+++// can prove whether provider-supplied plaintext reaches coordinator logs.
+++func privacyPOCTestServer(t *testing.T) (*Server, *store.MemoryStore, *bytes.Buffer) {
+++	t.Helper()
+++	var logs bytes.Buffer
+++	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+++	st := store.NewMemory("test-key")
+++	reg := registry.New(logger)
+++	srv := NewServer(reg, st, logger)
+++	return srv, st, &logs
+++}
+++
+++func registerPrivacyPOCProvider(t *testing.T, srv *Server, ctx context.Context, ts *httptest.Server, modelID, modelType string) *websocket.Conn {
+++	t.Helper()
+++
+++	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+++	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+++	if err != nil {
+++		t.Fatalf("websocket dial: %v", err)
+++	}
+++
+++	regMsg := protocol.RegisterMessage{
+++		Type:      protocol.TypeRegister,
+++		Hardware:  protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
+++		Models:    []protocol.ModelInfo{{ID: modelID, ModelType: modelType, Quantization: "4bit"}},
+++		Backend:   "test",
+++		PublicKey: "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
+++	}
+++	regData, _ := json.Marshal(regMsg)
+++	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
+++		t.Fatalf("write register: %v", err)
+++	}
+++	time.Sleep(100 * time.Millisecond)
+++
+++	p := findProviderByModel(srv.registry, modelID)
+++	if p == nil {
+++		t.Fatal("provider not registered")
+++	}
+++	srv.registry.SetTrustLevel(p.ID, registry.TrustHardware)
+++	srv.registry.RecordChallengeSuccess(p.ID)
+++
+++	return conn
+++}
+++
+++func TestPrivacyPOC_ProviderErrorPlaintextLeaksToClientAndLogs(t *testing.T) {
+++	srv, _, logs := privacyPOCTestServer(t)
+++	ts := httptest.NewServer(srv.Handler())
+++	defer ts.Close()
+++
+++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+++	defer cancel()
+++
+++	conn := registerPrivacyPOCProvider(t, srv, ctx, ts, "privacy-poc-model", "test")
+++	defer conn.Close(websocket.StatusNormalClosure, "")
+++
+++	secret := "backend leaked prompt: ssn=123-45-6789"
+++
+++	go func() {
+++		for {
+++			_, data, err := conn.Read(ctx)
+++			if err != nil {
+++				return
+++			}
+++			var raw map[string]any
+++			if err := json.Unmarshal(data, &raw); err != nil {
+++				continue
+++			}
+++			switch raw["type"] {
+++			case protocol.TypeAttestationChallenge:
+++				resp := protocol.AttestationResponseMessage{
+++					Type:      protocol.TypeAttestationResponse,
+++					Nonce:     raw["nonce"].(string),
+++					PublicKey: "dummy",
+++					Signature: "dummy",
+++				}
+++				respData, _ := json.Marshal(resp)
+++				_ = conn.Write(ctx, websocket.MessageText, respData)
+++			case protocol.TypeInferenceRequest:
+++				reqID, _ := raw["request_id"].(string)
+++				errMsg := protocol.InferenceErrorMessage{
+++					Type:       protocol.TypeInferenceError,
+++					RequestID:  reqID,
+++					Error:      secret,
+++					StatusCode: http.StatusBadGateway,
+++				}
+++				errData, _ := json.Marshal(errMsg)
+++				_ = conn.Write(ctx, websocket.MessageText, errData)
+++			}
+++		}
+++	}()
+++
+++	req, err := newAuthRequest(t, ctx, ts.URL+"/v1/chat/completions", `{"model":"privacy-poc-model","messages":[{"role":"user","content":"hi"}],"stream":false}`, "test-key")
+++	if err != nil {
+++		t.Fatalf("new request: %v", err)
+++	}
+++
+++	resp, err := ts.Client().Do(req)
+++	if err != nil {
+++		t.Fatalf("http request: %v", err)
+++	}
+++	defer resp.Body.Close()
+++
+++	body, _ := io.ReadAll(resp.Body)
+++	if resp.StatusCode != http.StatusBadGateway {
+++		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
+++	}
+++	if !strings.Contains(string(body), secret) {
+++		t.Fatalf("consumer body did not include provider plaintext error: %s", string(body))
+++	}
+++	if !strings.Contains(logs.String(), secret) {
+++		t.Fatalf("coordinator logs did not include provider plaintext error: %s", logs.String())
+++	}
+++}
+++
+++func TestPrivacyPOC_TranscriptionProviderErrorPlaintextLeaksToClient(t *testing.T) {
+++	srv, _, _ := privacyPOCTestServer(t)
+++	ts := httptest.NewServer(srv.Handler())
+++	defer ts.Close()
+++
+++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+++	defer cancel()
+++
+++	conn := registerPrivacyPOCProvider(t, srv, ctx, ts, "privacy-poc-stt-model", "transcription")
+++	defer conn.Close(websocket.StatusNormalClosure, "")
+++
+++	secret := "transcription backend leaked prompt-adjacent text"
+++
+++	go func() {
+++		for {
+++			_, data, err := conn.Read(ctx)
+++			if err != nil {
+++				return
+++			}
+++			var raw map[string]any
+++			if err := json.Unmarshal(data, &raw); err != nil {
+++				continue
+++			}
+++			switch raw["type"] {
+++			case protocol.TypeAttestationChallenge:
+++				resp := protocol.AttestationResponseMessage{
+++					Type:      protocol.TypeAttestationResponse,
+++					Nonce:     raw["nonce"].(string),
+++					PublicKey: "dummy",
+++					Signature: "dummy",
+++				}
+++				respData, _ := json.Marshal(resp)
+++				_ = conn.Write(ctx, websocket.MessageText, respData)
+++			case protocol.TypeTranscriptionRequest:
+++				reqID, _ := raw["request_id"].(string)
+++				errMsg := protocol.InferenceErrorMessage{
+++					Type:       protocol.TypeInferenceError,
+++					RequestID:  reqID,
+++					Error:      secret,
+++					StatusCode: http.StatusBadGateway,
+++				}
+++				errData, _ := json.Marshal(errMsg)
+++				_ = conn.Write(ctx, websocket.MessageText, errData)
+++			}
+++		}
+++	}()
+++
+++	var body bytes.Buffer
+++	writer := multipart.NewWriter(&body)
+++	if err := writer.WriteField("model", "privacy-poc-stt-model"); err != nil {
+++		t.Fatalf("write model field: %v", err)
+++	}
+++	part, err := writer.CreateFormFile("file", "clip.wav")
+++	if err != nil {
+++		t.Fatalf("create form file: %v", err)
+++	}
+++	if _, err := part.Write([]byte("fake wav bytes")); err != nil {
+++		t.Fatalf("write form file: %v", err)
+++	}
+++	if err := writer.Close(); err != nil {
+++		t.Fatalf("close multipart writer: %v", err)
+++	}
+++
+++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/audio/transcriptions", &body)
+++	if err != nil {
+++		t.Fatalf("new request: %v", err)
+++	}
+++	req.Header.Set("Authorization", "Bearer test-key")
+++	req.Header.Set("Content-Type", writer.FormDataContentType())
+++
+++	resp, err := ts.Client().Do(req)
+++	if err != nil {
+++		t.Fatalf("http request: %v", err)
+++	}
+++	defer resp.Body.Close()
+++
+++	respBody, _ := io.ReadAll(resp.Body)
+++	if resp.StatusCode != http.StatusBadGateway {
+++		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
+++	}
+++	if !strings.Contains(string(respBody), secret) {
+++		t.Fatalf("transcription response did not include provider plaintext error: %s", string(respBody))
+++	}
+++}
+++
+++func TestPrivacyPOC_ImageProviderErrorPlaintextLeaksToClient(t *testing.T) {
+++	srv, _, _ := privacyPOCTestServer(t)
+++	ts := httptest.NewServer(srv.Handler())
+++	defer ts.Close()
+++
+++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+++	defer cancel()
+++
+++	conn := registerPrivacyPOCProvider(t, srv, ctx, ts, "privacy-poc-image-model", "image")
+++	defer conn.Close(websocket.StatusNormalClosure, "")
+++
+++	secret := "image backend leaked sensitive generation details"
+++
+++	go func() {
+++		for {
+++			_, data, err := conn.Read(ctx)
+++			if err != nil {
+++				return
+++			}
+++			var raw map[string]any
+++			if err := json.Unmarshal(data, &raw); err != nil {
+++				continue
+++			}
+++			switch raw["type"] {
+++			case protocol.TypeAttestationChallenge:
+++				resp := protocol.AttestationResponseMessage{
+++					Type:      protocol.TypeAttestationResponse,
+++					Nonce:     raw["nonce"].(string),
+++					PublicKey: "dummy",
+++					Signature: "dummy",
+++				}
+++				respData, _ := json.Marshal(resp)
+++				_ = conn.Write(ctx, websocket.MessageText, respData)
+++			case protocol.TypeImageGenerationRequest:
+++				reqID, _ := raw["request_id"].(string)
+++				errMsg := protocol.InferenceErrorMessage{
+++					Type:       protocol.TypeInferenceError,
+++					RequestID:  reqID,
+++					Error:      secret,
+++					StatusCode: http.StatusBadGateway,
+++				}
+++				errData, _ := json.Marshal(errMsg)
+++				_ = conn.Write(ctx, websocket.MessageText, errData)
+++			}
+++		}
+++	}()
+++
+++	req, err := newAuthRequest(t, ctx, ts.URL+"/v1/images/generations", `{"model":"privacy-poc-image-model","prompt":"draw a cat","n":1,"size":"512x512"}`, "test-key")
+++	if err != nil {
+++		t.Fatalf("new request: %v", err)
+++	}
+++
+++	resp, err := ts.Client().Do(req)
+++	if err != nil {
+++		t.Fatalf("http request: %v", err)
+++	}
+++	defer resp.Body.Close()
+++
+++	respBody, _ := io.ReadAll(resp.Body)
+++	if resp.StatusCode != http.StatusBadGateway {
+++		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
+++	}
+++	if !strings.Contains(string(respBody), secret) {
+++		t.Fatalf("image response did not include provider plaintext error: %s", string(respBody))
+++	}
+++}
+++
+++func TestPrivacyPOC_ValidSelfSignedAttestationMakesProviderImmediatelyRoutableAtSelfSignedFloor(t *testing.T) {
+++	srv, _, _ := privacyPOCTestServer(t)
+++	srv.registry.MinTrustLevel = registry.TrustSelfSigned
+++	ts := httptest.NewServer(srv.Handler())
+++	defer ts.Close()
+++
+++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+++	defer cancel()
+++
+++	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+++	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+++	if err != nil {
+++		t.Fatalf("websocket dial: %v", err)
+++	}
+++	defer conn.Close(websocket.StatusNormalClosure, "")
+++
+++	attestationJSON := createTestAttestationJSON(t, "")
+++	regMsg := protocol.RegisterMessage{
+++		Type:        protocol.TypeRegister,
+++		Hardware:    protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+++		Models:      []protocol.ModelInfo{{ID: "selfsigned-floor-model", ModelType: "test", Quantization: "4bit"}},
+++		Backend:     "test",
+++		Attestation: attestationJSON,
+++	}
+++	regData, _ := json.Marshal(regMsg)
+++	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
+++		t.Fatalf("write register: %v", err)
+++	}
+++	time.Sleep(200 * time.Millisecond)
+++
+++	p := findProviderByModel(srv.registry, "selfsigned-floor-model")
+++	if p == nil {
+++		t.Fatal("provider not registered")
+++	}
+++	if got := srv.registry.FindProvider("selfsigned-floor-model"); got == nil {
+++		t.Fatal("expected self-signed provider to be immediately routable after valid attestation")
+++	}
+++}
+++
+++func TestPrivacyPOC_StoredHardwareTrustRestoresThroughRealRegistrationPath(t *testing.T) {
+++	srv, _, _ := privacyPOCTestServer(t)
+++	srv.registry.MinTrustLevel = registry.TrustHardware
+++
+++	attestationJSON := createTestAttestationJSON(t, "")
+++	var signed struct {
+++		Attestation json.RawMessage `json:"attestation"`
+++	}
+++	if err := json.Unmarshal(attestationJSON, &signed); err != nil {
+++		t.Fatalf("unmarshal signed attestation: %v", err)
+++	}
+++	var blob struct {
+++		PublicKey string `json:"publicKey"`
+++	}
+++	if err := json.Unmarshal(signed.Attestation, &blob); err != nil {
+++		t.Fatalf("unmarshal attestation blob: %v", err)
+++	}
+++
+++	now := time.Now()
+++	srv.storedProviders = map[string]*store.ProviderRecord{
+++		"sekey:" + blob.PublicKey: {
+++			ID:                    "stored-provider-record",
+++			TrustLevel:            string(registry.TrustHardware),
+++			Attested:              true,
+++			MDAVerified:           true,
+++			ACMEVerified:          true,
+++			RuntimeVerified:       true,
+++			LastChallengeVerified: &now,
+++		},
+++	}
+++
+++	ts := httptest.NewServer(srv.Handler())
+++	defer ts.Close()
+++
+++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+++	defer cancel()
+++
+++	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+++	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+++	if err != nil {
+++		t.Fatalf("websocket dial: %v", err)
+++	}
+++	defer conn.Close(websocket.StatusNormalClosure, "")
+++
+++	regMsg := protocol.RegisterMessage{
+++		Type:        protocol.TypeRegister,
+++		Hardware:    protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+++		Models:      []protocol.ModelInfo{{ID: "restored-hardware-model", ModelType: "test", Quantization: "4bit"}},
+++		Backend:     "test",
+++		Attestation: attestationJSON,
+++	}
+++	regData, _ := json.Marshal(regMsg)
+++	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
+++		t.Fatalf("write register: %v", err)
+++	}
+++	time.Sleep(200 * time.Millisecond)
+++
+++	if got := srv.registry.FindProvider("restored-hardware-model"); got == nil {
+++		t.Fatal("expected stored hardware-trust provider to be routable immediately after registration restore")
+++	}
+++}
+++
+++func TestPrivacyPOC_HandleChunkCopiesPlaintextIntoCoordinatorChannel(t *testing.T) {
+++	srv, _, _ := privacyPOCTestServer(t)
+++
+++	regMsg := protocol.RegisterMessage{
+++		Type:     protocol.TypeRegister,
+++		Hardware: protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
+++		Models:   []protocol.ModelInfo{{ID: "chunk-model", ModelType: "test", Quantization: "4bit"}},
+++		Backend:  "test",
+++	}
+++	p := srv.registry.Register("provider-1", nil, &regMsg)
+++
+++	pr := &registry.PendingRequest{
+++		RequestID:  "req-chunk-1",
+++		Model:      "chunk-model",
+++		ChunkCh:    make(chan string, 1),
+++		CompleteCh: make(chan protocol.UsageInfo, 1),
+++		ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
+++	}
+++	p.AddPending(pr)
+++
+++	plaintextChunk := "data: {\"choices\":[{\"delta\":{\"content\":\"secret assistant output\"}}]}\n\n"
+++	srv.handleChunk(p.ID, p, &protocol.InferenceResponseChunkMessage{
+++		Type:      protocol.TypeInferenceResponseChunk,
+++		RequestID: pr.RequestID,
+++		Data:      plaintextChunk,
+++	})
+++
+++	select {
+++	case got := <-pr.ChunkCh:
+++		if got != plaintextChunk {
+++			t.Fatalf("chunk = %q, want %q", got, plaintextChunk)
+++		}
+++	case <-time.After(2 * time.Second):
+++		t.Fatal("timed out waiting for plaintext chunk on coordinator channel")
+++	}
+++}
++diff --git a/coordinator/internal/registry/privacy_poc_test.go b/coordinator/internal/registry/privacy_poc_test.go
++new file mode 100644
++index 00000000..d8110301
++--- /dev/null
+++++ b/coordinator/internal/registry/privacy_poc_test.go
++@@ -0,0 +1,122 @@
+++package registry
+++
+++import (
+++	"testing"
+++	"time"
+++
+++	"github.com/eigeninference/coordinator/internal/protocol"
+++	"github.com/eigeninference/coordinator/internal/store"
+++)
+++
+++// This documents the current downgrade boundary: if the operator lowers the
+++// global trust floor to none and the provider has fresh challenge/runtime
+++// state, a provider without attestation becomes routable.
+++func TestPrivacyPOC_OpenModeProviderBecomesRoutableWhenTrustFloorLowered(t *testing.T) {
+++	reg := New(testLogger())
+++	reg.MinTrustLevel = TrustNone
+++
+++	msg := &protocol.RegisterMessage{
+++		Type:     protocol.TypeRegister,
+++		Hardware: testRegisterMessage().Hardware,
+++		Models: []protocol.ModelInfo{
+++			{ID: "open-mode-model", SizeBytes: 1000, ModelType: "qwen3", Quantization: "4bit"},
+++		},
+++		Backend: "vllm_mlx",
+++	}
+++
+++	p := reg.Register("open-mode-provider", nil, msg)
+++	p.mu.Lock()
+++	p.TrustLevel = TrustNone
+++	p.RuntimeVerified = true
+++	p.LastChallengeVerified = time.Now()
+++	p.mu.Unlock()
+++
+++	found := reg.FindProvider("open-mode-model")
+++	if found == nil {
+++		t.Fatal("expected open-mode provider to become routable when global trust floor is lowered")
+++	}
+++	if found.ID != p.ID {
+++		t.Fatalf("routed provider = %q, want %q", found.ID, p.ID)
+++	}
+++}
+++
+++// This documents a more subtle trust-restoration boundary: a freshly connected
+++// provider can regain stored hardware trust and fresh challenge state from the
+++// persistence layer before any new MDM/ACME re-verification completes.
+++func TestPrivacyPOC_RestoreProviderStateCanRegrantHardwareTrustImmediately(t *testing.T) {
+++	reg := New(testLogger())
+++	reg.MinTrustLevel = TrustHardware
+++
+++	msg := &protocol.RegisterMessage{
+++		Type:     protocol.TypeRegister,
+++		Hardware: testRegisterMessage().Hardware,
+++		Models: []protocol.ModelInfo{
+++			{ID: "restored-hw-model", SizeBytes: 1000, ModelType: "qwen3", Quantization: "4bit"},
+++		},
+++		Backend: "vllm_mlx",
+++	}
+++
+++	p := reg.Register("restored-provider", nil, msg)
+++
+++	// Simulate the freshly verified self-signed path before persisted state is restored.
+++	p.mu.Lock()
+++	p.TrustLevel = TrustSelfSigned
+++	p.RuntimeVerified = true
+++	p.LastChallengeVerified = time.Now()
+++	p.mu.Unlock()
+++
+++	lastVerified := time.Now()
+++	reg.RestoreProviderState(p, &store.ProviderRecord{
+++		ID:                    "stored-provider-record",
+++		TrustLevel:            string(TrustHardware),
+++		Attested:              true,
+++		MDAVerified:           true,
+++		ACMEVerified:          true,
+++		RuntimeVerified:       true,
+++		LastChallengeVerified: &lastVerified,
+++	})
+++
+++	found := reg.FindProviderWithTrust("restored-hw-model", TrustHardware)
+++	if found == nil {
+++		t.Fatal("expected restored provider to become hardware-routable immediately after state restore")
+++	}
+++	if found.ID != p.ID {
+++		t.Fatalf("routed provider = %q, want %q", found.ID, p.ID)
+++	}
+++}
+++
+++// This documents another soft-default boundary: provider registration starts
+++// with RuntimeVerified=true, so in deployments without a manifest gate the only
+++// remaining barriers are trust floor and challenge freshness.
+++func TestPrivacyPOC_RegisterDefaultsRuntimeVerifiedBeforeManifestChecks(t *testing.T) {
+++	reg := New(testLogger())
+++	reg.MinTrustLevel = TrustNone
+++
+++	msg := &protocol.RegisterMessage{
+++		Type:     protocol.TypeRegister,
+++		Hardware: testRegisterMessage().Hardware,
+++		Models: []protocol.ModelInfo{
+++			{ID: "default-runtime-model", SizeBytes: 1000, ModelType: "qwen3", Quantization: "4bit"},
+++		},
+++		Backend: "vllm_mlx",
+++	}
+++
+++	p := reg.Register("default-runtime-provider", nil, msg)
+++	p.mu.Lock()
+++	runtimeVerified := p.RuntimeVerified
+++	p.TrustLevel = TrustNone
+++	p.LastChallengeVerified = time.Now()
+++	p.mu.Unlock()
+++
+++	if !runtimeVerified {
+++		t.Fatal("expected newly registered provider to default to RuntimeVerified=true")
+++	}
+++
+++	found := reg.FindProvider("default-runtime-model")
+++	if found == nil {
+++		t.Fatal("expected default-runtime provider to become routable with lowered trust floor and fresh challenge")
+++	}
+++	if found.ID != p.ID {
+++		t.Fatalf("routed provider = %q, want %q", found.ID, p.ID)
+++	}
+++}
++diff --git a/provider/Cargo.toml b/provider/Cargo.toml
++index accd3c2c..ca78ecd9 100644
++--- a/provider/Cargo.toml
+++++ b/provider/Cargo.toml
++@@ -30,12 +30,6 @@ reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
++ 
++ # WebSocket client
++ tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
++-
++-# macOS Keychain / Security.framework
++-[target.'cfg(target_os = "macos")'.dependencies]
++-security-framework = "3"
++-security-framework-sys = "2"
++-core-foundation = "0.10"
++ futures-util = "0.3"
++ 
++ # HTTP server (local mode)
++@@ -75,6 +69,12 @@ sha2 = "0.10"
++ # Behind a feature flag so `cargo test` doesn't need Python linked.
++ pyo3 = { version = "0.24", features = ["auto-initialize"], optional = true }
++ 
+++# macOS Keychain / Security.framework
+++[target.'cfg(target_os = "macos")'.dependencies]
+++security-framework = "3"
+++security-framework-sys = "2"
+++core-foundation = "0.10"
+++
++ [features]
++ default = ["python"]
++ python = ["pyo3"]
++diff --git a/provider/src/coordinator.rs b/provider/src/coordinator.rs
++index 00e9da87..1bc584c9 100644
++--- a/provider/src/coordinator.rs
+++++ b/provider/src/coordinator.rs
++@@ -388,87 +388,32 @@ impl CoordinatorClient {
++                         Some(Ok(Message::Text(text))) => {
++                             match serde_json::from_str::<CoordinatorMessage>(&text) {
++                                 Ok(CoordinatorMessage::InferenceRequest { request_id, body, encrypted_body }) => {
++-                                    tracing::info!("Received inference request: {request_id}");
++-
++-                                    // Decrypt E2E encrypted body if present
++-                                    let decrypted_body = if let Some(enc) = encrypted_body {
++-                                        tracing::info!("Decrypting E2E encrypted request");
++-                                        match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
++-                                            Ok(b) => b,
++-                                            Err(e) => {
++-                                                tracing::error!("Failed to decrypt request: {e}");
++-                                                continue;
++-                                            }
++-                                        }
++-                                    } else {
++-                                        body
++-                                    };
++-
++-                                    let _ = event_tx.send(CoordinatorEvent::InferenceRequest {
+++                                    handle_inference_request_message(
++                                         request_id,
++-                                        body: decrypted_body,
++-                                    }).await;
+++                                        body,
+++                                        encrypted_body,
+++                                        event_tx,
+++                                        self.node_keypair.as_ref(),
+++                                    ).await;
++                                 }
++                                 Ok(CoordinatorMessage::TranscriptionRequest { request_id, body, encrypted_body }) => {
++-                                    tracing::info!("Received transcription request: {request_id}");
++-
++-                                    // Decrypt E2E encrypted body if present
++-                                    let decrypted_body = if let Some(enc) = encrypted_body {
++-                                        tracing::info!("Decrypting E2E encrypted transcription request");
++-                                        match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
++-                                            Ok(b) => b,
++-                                            Err(e) => {
++-                                                tracing::error!("Failed to decrypt transcription request: {e}");
++-                                                continue;
++-                                            }
++-                                        }
++-                                    } else {
++-                                        body
++-                                    };
++-
++-                                    // Parse the transcription body
++-                                    match serde_json::from_value::<TranscriptionRequestBody>(decrypted_body) {
++-                                        Ok(parsed_body) => {
++-                                            let _ = event_tx.send(CoordinatorEvent::TranscriptionRequest {
++-                                                request_id,
++-                                                body: parsed_body,
++-                                            }).await;
++-                                        }
++-                                        Err(e) => {
++-                                            tracing::error!("Failed to parse transcription body: {e}");
++-                                        }
++-                                    }
+++                                    handle_transcription_request_message(
+++                                        request_id,
+++                                        body,
+++                                        encrypted_body,
+++                                        event_tx,
+++                                        self.node_keypair.as_ref(),
+++                                    ).await;
++                                 }
++                                 Ok(CoordinatorMessage::ImageGenerationRequest { request_id, upload_url, body, encrypted_body }) => {
++-                                    tracing::info!("Received image generation request: {request_id}");
++-
++-                                    // Decrypt E2E encrypted body if present
++-                                    let decrypted_body = if let Some(enc) = encrypted_body {
++-                                        tracing::info!("Decrypting E2E encrypted image generation request");
++-                                        match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
++-                                            Ok(b) => b,
++-                                            Err(e) => {
++-                                                tracing::error!("Failed to decrypt image generation request: {e}");
++-                                                continue;
++-                                            }
++-                                        }
++-                                    } else {
++-                                        body
++-                                    };
++-
++-                                    // Parse the image generation body
++-                                    match serde_json::from_value::<ImageGenerationRequestBody>(decrypted_body) {
++-                                        Ok(parsed_body) => {
++-                                            let _ = event_tx.send(CoordinatorEvent::ImageGenerationRequest {
++-                                                request_id,
++-                                                body: parsed_body,
++-                                                upload_url,
++-                                            }).await;
++-                                        }
++-                                        Err(e) => {
++-                                            tracing::error!("Failed to parse image generation body: {e}");
++-                                        }
++-                                    }
+++                                    handle_image_generation_request_message(
+++                                        request_id,
+++                                        upload_url,
+++                                        body,
+++                                        encrypted_body,
+++                                        event_tx,
+++                                        self.node_keypair.as_ref(),
+++                                    ).await;
++                                 }
++                                 Ok(CoordinatorMessage::Cancel { request_id }) => {
++                                     tracing::info!("Received cancel for: {request_id}");
++@@ -552,6 +497,112 @@ impl CoordinatorClient {
++ /// The coordinator encrypted the request with the provider's public key.
++ /// Only this hardened process has the private key to decrypt it.
++ /// MITM on the network sees only encrypted blobs.
+++async fn handle_inference_request_message(
+++    request_id: String,
+++    body: serde_json::Value,
+++    encrypted_body: Option<crate::protocol::EncryptedPayload>,
+++    event_tx: &mpsc::Sender<CoordinatorEvent>,
+++    node_keypair: &crate::crypto::NodeKeyPair,
+++) {
+++    tracing::info!("Received inference request: {request_id}");
+++
+++    let decrypted_body = if let Some(enc) = encrypted_body {
+++        tracing::info!("Decrypting E2E encrypted request");
+++        match decrypt_request_body(&enc, node_keypair) {
+++            Ok(b) => b,
+++            Err(e) => {
+++                tracing::error!("Failed to decrypt request: {e}");
+++                return;
+++            }
+++        }
+++    } else {
+++        body
+++    };
+++
+++    let _ = event_tx
+++        .send(CoordinatorEvent::InferenceRequest {
+++            request_id,
+++            body: decrypted_body,
+++        })
+++        .await;
+++}
+++
+++async fn handle_transcription_request_message(
+++    request_id: String,
+++    body: serde_json::Value,
+++    encrypted_body: Option<crate::protocol::EncryptedPayload>,
+++    event_tx: &mpsc::Sender<CoordinatorEvent>,
+++    node_keypair: &crate::crypto::NodeKeyPair,
+++) {
+++    tracing::info!("Received transcription request: {request_id}");
+++
+++    let decrypted_body = if let Some(enc) = encrypted_body {
+++        tracing::info!("Decrypting E2E encrypted transcription request");
+++        match decrypt_request_body(&enc, node_keypair) {
+++            Ok(b) => b,
+++            Err(e) => {
+++                tracing::error!("Failed to decrypt transcription request: {e}");
+++                return;
+++            }
+++        }
+++    } else {
+++        body
+++    };
+++
+++    match serde_json::from_value::<TranscriptionRequestBody>(decrypted_body) {
+++        Ok(parsed_body) => {
+++            let _ = event_tx
+++                .send(CoordinatorEvent::TranscriptionRequest {
+++                    request_id,
+++                    body: parsed_body,
+++                })
+++                .await;
+++        }
+++        Err(e) => {
+++            tracing::error!("Failed to parse transcription body: {e}");
+++        }
+++    }
+++}
+++
+++async fn handle_image_generation_request_message(
+++    request_id: String,
+++    upload_url: String,
+++    body: serde_json::Value,
+++    encrypted_body: Option<crate::protocol::EncryptedPayload>,
+++    event_tx: &mpsc::Sender<CoordinatorEvent>,
+++    node_keypair: &crate::crypto::NodeKeyPair,
+++) {
+++    tracing::info!("Received image generation request: {request_id}");
+++
+++    let decrypted_body = if let Some(enc) = encrypted_body {
+++        tracing::info!("Decrypting E2E encrypted image generation request");
+++        match decrypt_request_body(&enc, node_keypair) {
+++            Ok(b) => b,
+++            Err(e) => {
+++                tracing::error!("Failed to decrypt image generation request: {e}");
+++                return;
+++            }
+++        }
+++    } else {
+++        body
+++    };
+++
+++    match serde_json::from_value::<ImageGenerationRequestBody>(decrypted_body) {
+++        Ok(parsed_body) => {
+++            let _ = event_tx
+++                .send(CoordinatorEvent::ImageGenerationRequest {
+++                    request_id,
+++                    body: parsed_body,
+++                    upload_url,
+++                })
+++                .await;
+++        }
+++        Err(e) => {
+++            tracing::error!("Failed to parse image generation body: {e}");
+++        }
+++    }
+++}
+++
++ fn decrypt_request_body(
++     encrypted: &crate::protocol::EncryptedPayload,
++     keypair: &crate::crypto::NodeKeyPair,
++@@ -1044,6 +1095,112 @@ mod tests {
++         assert_eq!(register["backend"], "vllm_mlx");
++     }
++ 
+++    #[tokio::test]
+++    async fn test_privacy_poc_plaintext_inference_request_without_encrypted_body_reaches_event_loop()
+++     {
+++        let (event_tx, mut event_rx) = mpsc::channel(32);
+++        let request = serde_json::json!({
+++            "type": "inference_request",
+++            "request_id": "plain-fallback-req",
+++            "body": {
+++                "model": "qwen3.5-9b",
+++                "messages": [{"role": "user", "content": "plaintext fallback still works"}],
+++                "stream": false
+++            }
+++        });
+++
+++        handle_inference_request_message(
+++            "plain-fallback-req".to_string(),
+++            request["body"].clone(),
+++            None,
+++            &event_tx,
+++            &crate::crypto::NodeKeyPair::generate(),
+++        )
+++        .await;
+++
+++        let event = event_rx.recv().await.expect("channel closed");
+++        match event {
+++            CoordinatorEvent::InferenceRequest { request_id, body } => {
+++                assert_eq!(request_id, "plain-fallback-req");
+++                assert_eq!(body["model"], "qwen3.5-9b");
+++                assert_eq!(
+++                    body["messages"][0]["content"],
+++                    "plaintext fallback still works"
+++                );
+++            }
+++            other => panic!("Expected plaintext InferenceRequest, got {:?}", other),
+++        }
+++    }
+++
+++    #[tokio::test]
+++    async fn test_privacy_poc_plaintext_transcription_request_without_encrypted_body_reaches_event_loop()
+++     {
+++        let (event_tx, mut event_rx) = mpsc::channel(32);
+++
+++        handle_transcription_request_message(
+++            "plain-stt-req".to_string(),
+++            serde_json::json!({
+++                "model": "cohere-transcribe",
+++                "audio": "dGVzdA==",
+++                "language": "en",
+++                "format": "wav"
+++            }),
+++            None,
+++            &event_tx,
+++            &crate::crypto::NodeKeyPair::generate(),
+++        )
+++        .await;
+++
+++        let event = event_rx.recv().await.expect("channel closed");
+++        match event {
+++            CoordinatorEvent::TranscriptionRequest { request_id, body } => {
+++                assert_eq!(request_id, "plain-stt-req");
+++                assert_eq!(body.model, "cohere-transcribe");
+++                assert_eq!(body.audio, "dGVzdA==");
+++                assert_eq!(body.language.as_deref(), Some("en"));
+++                assert_eq!(body.format, "wav");
+++            }
+++            other => panic!("Expected plaintext TranscriptionRequest, got {:?}", other),
+++        }
+++    }
+++
+++    #[tokio::test]
+++    async fn test_privacy_poc_plaintext_image_request_without_encrypted_body_reaches_event_loop() {
+++        let (event_tx, mut event_rx) = mpsc::channel(32);
+++
+++        handle_image_generation_request_message(
+++            "plain-img-req".to_string(),
+++            "https://example.com/upload".to_string(),
+++            serde_json::json!({
+++                "model": "flux-klein-4b",
+++                "prompt": "shadowy cat on a rooftop",
+++                "n": 1,
+++                "size": "512x512"
+++            }),
+++            None,
+++            &event_tx,
+++            &crate::crypto::NodeKeyPair::generate(),
+++        )
+++        .await;
+++
+++        let event = event_rx.recv().await.expect("channel closed");
+++        match event {
+++            CoordinatorEvent::ImageGenerationRequest {
+++                request_id,
+++                body,
+++                upload_url,
+++            } => {
+++                assert_eq!(request_id, "plain-img-req");
+++                assert_eq!(upload_url, "https://example.com/upload");
+++                assert_eq!(body.model, "flux-klein-4b");
+++                assert_eq!(body.prompt, "shadowy cat on a rooftop");
+++                assert_eq!(body.n, 1);
+++                assert_eq!(body.size.as_deref(), Some("512x512"));
+++            }
+++            other => panic!("Expected plaintext ImageGenerationRequest, got {:?}", other),
+++        }
+++    }
+++
++     // -----------------------------------------------------------------------
++     // Challenge response generation — verifying security fields
++     // -----------------------------------------------------------------------
++diff --git a/provider/src/main.rs b/provider/src/main.rs
++index da203657..474da14e 100644
++--- a/provider/src/main.rs
+++++ b/provider/src/main.rs
++@@ -3465,7 +3465,8 @@ async fn cmd_serve(
++                                         .map(|s| (s.model_id.clone(), s.model_path.clone(), s.port, s.pid, s.healthy, s.restarting))
++                                 };
++ 
++-                                let mut inprocess_engine = None;
+++                                #[cfg(feature = "python")]
+++                                let mut inprocess_engine: Option<std::sync::Arc<inference::SharedEngine>> = None;
++                                 if let Some((slot_model_id, slot_model_path, slot_port, slot_pid, slot_healthy, slot_restarting)) = slot_info {
++                                     if is_inprocess {
++                                         #[cfg(feature = "python")]
++diff --git a/provider/src/proxy.rs b/provider/src/proxy.rs
++index 537ad7f4..f27339a9 100644
++--- a/provider/src/proxy.rs
+++++ b/provider/src/proxy.rs
++@@ -2310,4 +2310,44 @@ mod tests {
++ 
++         assert!(!dead, "HTTP 502 should not report backend as dead");
++     }
+++
+++    #[tokio::test]
+++    async fn test_privacy_poc_transcription_failure_leaves_named_tmp_file_behind() {
+++        use base64::Engine;
+++
+++        let request_id = "tmp-proof-req";
+++        let tmp_path = format!("/tmp/eigeninference-stt-{request_id}.wav");
+++        let _ = tokio::fs::remove_file(&tmp_path).await;
+++
+++        let body = TranscriptionRequestBody {
+++            model: "cohere-transcribe".to_string(),
+++            audio: base64::engine::general_purpose::STANDARD.encode(b"fake wav bytes"),
+++            language: Some("en".to_string()),
+++            format: "wav".to_string(),
+++        };
+++
+++        let (tx, mut rx) = mpsc::channel(8);
+++        handle_transcription_request(
+++            request_id.to_string(),
+++            body,
+++            "http://127.0.0.1:9".to_string(),
+++            tx,
+++            CancellationToken::new(),
+++        )
+++        .await;
+++
+++        let msg = rx.recv().await.expect("transcription channel closed");
+++        assert!(
+++            matches!(msg, ProviderMessage::InferenceError { .. }),
+++            "expected transcription error, got {:?}",
+++            msg
+++        );
+++
+++        assert!(
+++            tokio::fs::metadata(&tmp_path).await.is_ok(),
+++            "transcription temp file should still exist after a backend send failure"
+++        );
+++
+++        let _ = tokio::fs::remove_file(&tmp_path).await;
+++    }
++ }
++-- 
++2.47.3
++
+-- 
+2.47.3
+
+
+From 374db80eef1765781f93b5b27bc44c9a9cd0c887 Mon Sep 17 00:00:00 2001
+From: aryabhuptani <arjunbhuptani@gmail.com>
+Date: Mon, 20 Apr 2026 10:31:27 +0100
+Subject: [PATCH 3/5] Update privacy handoff packet with validated reruns
+
+---
+ .../POC_APPENDIX_AND_TEST_INDEX.md                          | 6 +++---
+ audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md    | 2 +-
+ audits/2026-04-20-privacy-review/README.md                  | 2 +-
+ 3 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/audits/2026-04-20-privacy-review/POC_APPENDIX_AND_TEST_INDEX.md b/audits/2026-04-20-privacy-review/POC_APPENDIX_AND_TEST_INDEX.md
+index 3a008926..1085814a 100644
+--- a/audits/2026-04-20-privacy-review/POC_APPENDIX_AND_TEST_INDEX.md
++++ b/audits/2026-04-20-privacy-review/POC_APPENDIX_AND_TEST_INDEX.md
+@@ -98,12 +98,12 @@ cargo test --no-default-features privacy_poc -- --nocapture
+ As of 2026-04-20:
+ 
+ - Coordinator-side Go proofs reran successfully in the local review environment.
+-- Provider-side Rust proofs were previously verified locally during the review, but the latest rerun on 2026-04-20 was blocked by Linux OpenSSL / `pkg-config` environment drift rather than by an observed assertion failure.
++- Provider-side Rust proofs also reran successfully in the local review environment after restoring a real local `pkgconf` binary and pointing Cargo at the local OpenSSL metadata via `PKG_CONFIG_PATH=/home/arya/.local/openssl-3.0.20/lib64/pkgconfig`.
+ 
+ That means:
+ 
+-- the provider-side proof code should still be treated as concrete review material
+-- but if the receiving team wants a fresh rerun in this exact environment, they should first restore native OpenSSL discovery for Cargo or run the provider proof target in their normal dev environment
++- the proof set is currently rerunnable on this review machine
++- the receiving team can run the commands above in their own normal dev environment without needing any custom harness beyond ordinary Go/Rust toolchains and OpenSSL discovery on Linux
+ 
+ ## Suggested Regression Candidates
+ 
+diff --git a/audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md b/audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md
+index 3591225f..300860d3 100644
+--- a/audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md
++++ b/audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md
+@@ -33,7 +33,7 @@ The review used three passes:
+ 3. Proof-backed validation
+    - converted the highest-confidence hypotheses into concrete tests inside the repo
+    - reran the coordinator-side tests in a current local environment
+-   - provider-side proof tests were previously verified locally; current rerun on 2026-04-20 was blocked by Linux OpenSSL / `pkg-config` environment drift rather than by test failure
++   - reran the provider-side proof tests in a current local environment after repairing local `pkgconf` / OpenSSL discovery
+ 
+ ## Overall Conclusion
+ 
+diff --git a/audits/2026-04-20-privacy-review/README.md b/audits/2026-04-20-privacy-review/README.md
+index 77e2844c..44f663db 100644
+--- a/audits/2026-04-20-privacy-review/README.md
++++ b/audits/2026-04-20-privacy-review/README.md
+@@ -36,5 +36,5 @@ Review baseline:
+ Fork / push status:
+ 
+ - The work is assembled locally on the branch above.
+-- This box does not currently have GitHub API auth set up to create Arya's fork automatically, and `gh` is not installed.
++- `gh` is now installed locally on this box, but it is not authenticated to GitHub yet.
+ - If `aryabhuptani/d-inference` is created or a fork already exists with writable SSH access, this branch can be pushed there directly and handed over as code.
+-- 
+2.47.3
+
+
+From 0f4db76cf0f84405c09ab3ad90db7cdc21baec76 Mon Sep 17 00:00:00 2001
+From: aryabhuptani <arjunbhuptani@gmail.com>
+Date: Mon, 20 Apr 2026 16:10:46 +0100
+Subject: [PATCH 4/5] Update handoff packet for rebased upstream base
+
+---
+ audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md | 2 +-
+ audits/2026-04-20-privacy-review/README.md               | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md b/audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md
+index 300860d3..a84abacf 100644
+--- a/audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md
++++ b/audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md
+@@ -4,7 +4,7 @@ Date: 2026-04-20
+ 
+ Repo reviewed:
+ - Upstream: `git@github.com:Layr-Labs/d-inference.git`
+-- Base commit: `1f13c4074fc563db380200d34e58c22b3a635907`
++- Base commit: `86078f892074e85594daa1ca8f30739221cfd9e8`
+ 
+ ## Scope
+ 
+diff --git a/audits/2026-04-20-privacy-review/README.md b/audits/2026-04-20-privacy-review/README.md
+index 44f663db..c51ffb4c 100644
+--- a/audits/2026-04-20-privacy-review/README.md
++++ b/audits/2026-04-20-privacy-review/README.md
+@@ -30,8 +30,8 @@ Contents:
+ Review baseline:
+ 
+ - Upstream repo: `git@github.com:Layr-Labs/d-inference.git`
+-- Base commit reviewed: `1f13c4074fc563db380200d34e58c22b3a635907`
+-- Base commit subject: `Mark image generation as under maintenance on console UI and landing page.`
++- Base commit reviewed: `86078f892074e85594daa1ca8f30739221cfd9e8`
++- Base commit subject: `Revert "Add application-identifier + team-identifier entitlements for data protection keychain."`
+ 
+ Fork / push status:
+ 
+-- 
+2.47.3
+
+
+From d4c23b8ca0171bd780b4368e3bdfd2ee3900c961 Mon Sep 17 00:00:00 2001
+From: aryabhuptani <arjunbhuptani@gmail.com>
+Date: Mon, 20 Apr 2026 16:22:52 +0100
+Subject: [PATCH 5/5] Polish Darkbloom handoff wording
+
+---
+ .../POC_APPENDIX_AND_TEST_INDEX.md                     |  2 +-
+ .../2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md  | 10 +++++-----
+ audits/2026-04-20-privacy-review/README.md             | 10 ++--------
+ 3 files changed, 8 insertions(+), 14 deletions(-)
+
+diff --git a/audits/2026-04-20-privacy-review/POC_APPENDIX_AND_TEST_INDEX.md b/audits/2026-04-20-privacy-review/POC_APPENDIX_AND_TEST_INDEX.md
+index 1085814a..cc338d80 100644
+--- a/audits/2026-04-20-privacy-review/POC_APPENDIX_AND_TEST_INDEX.md
++++ b/audits/2026-04-20-privacy-review/POC_APPENDIX_AND_TEST_INDEX.md
+@@ -2,7 +2,7 @@
+ 
+ Date: 2026-04-20
+ 
+-This appendix indexes the proof-backed findings produced during the Dark Bloom privacy review.
++This appendix indexes the proof-backed findings produced during the Darkbloom privacy review.
+ 
+ ## Code Paths
+ 
+diff --git a/audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md b/audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md
+index a84abacf..5562ed30 100644
+--- a/audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md
++++ b/audits/2026-04-20-privacy-review/PRIVACY_AUDIT_REPORT.md
+@@ -1,4 +1,4 @@
+-# Dark Bloom Privacy Audit Report
++# Darkbloom Privacy Audit Report
+ 
+ Date: 2026-04-20
+ 
+@@ -8,7 +8,7 @@ Repo reviewed:
+ 
+ ## Scope
+ 
+-This review compared Dark Bloom's privacy/security model as presented in its theory and white-paper-adjacent materials against the current codebase. The work then moved from semantic review into proof-backed validation for the most concrete suspected privacy failures.
++This review compared Darkbloom's privacy/security model as presented in its theory and white-paper-adjacent materials against the current codebase. The work then moved from semantic review into proof-backed validation for the most concrete suspected privacy failures.
+ 
+ This report is intentionally split between:
+ 
+@@ -37,7 +37,7 @@ The review used three passes:
+ 
+ ## Overall Conclusion
+ 
+-Dark Bloom appears to be a serious privacy-improving system, not vapor. The design is directionally coherent and several parts of the architecture show real care. The main issue is not that the privacy story is fabricated; it is that the strongest version of the story is ahead of the current implementation.
++Darkbloom appears to be a serious privacy-improving system, not vapor. The design is directionally coherent and several parts of the architecture show real care. The main issue is not that the privacy story is fabricated; it is that the strongest version of the story is ahead of the current implementation.
+ 
+ The current system reads more like:
+ 
+@@ -55,7 +55,7 @@ The biggest recurring pattern is implementation drift:
+ 
+ ## Theory-Level Observations
+ 
+-These are not "bugs" in the narrow sense, but they matter because they shape how strong Dark Bloom's privacy claims can honestly be.
++These are not "bugs" in the narrow sense, but they matter because they shape how strong Darkbloom's privacy claims can honestly be.
+ 
+ ### 1. The coordinator remains a meaningful privacy-bearing component
+ 
+@@ -212,7 +212,7 @@ Narrow claims and documentation where implementation is not yet at the strongest
+ 
+ ## Closing Note
+ 
+-This report does not claim that Dark Bloom "has no privacy value." The opposite is true: the design has real value and several real privacy-preserving ideas. The problem is that the strongest interpretation of the privacy story is not yet what the current code enforces.
++This report does not claim that Darkbloom "has no privacy value." The opposite is true: the design has real value and several real privacy-preserving ideas. The problem is that the strongest interpretation of the privacy story is not yet what the current code enforces.
+ 
+ The practical consequence is simple:
+ 
+diff --git a/audits/2026-04-20-privacy-review/README.md b/audits/2026-04-20-privacy-review/README.md
+index c51ffb4c..750bffe1 100644
+--- a/audits/2026-04-20-privacy-review/README.md
++++ b/audits/2026-04-20-privacy-review/README.md
+@@ -1,6 +1,6 @@
+-# Dark Bloom Privacy Review Handoff
++# Darkbloom Privacy Review Handoff
+ 
+-This packet is meant to be handed back to the Dark Bloom team as a compact engineering-facing review bundle, not as a marketing memo.
++This packet is meant to be handed back to the Darkbloom team as a compact engineering-facing review bundle, not as a marketing memo.
+ 
+ Contents:
+ 
+@@ -32,9 +32,3 @@ Review baseline:
+ - Upstream repo: `git@github.com:Layr-Labs/d-inference.git`
+ - Base commit reviewed: `86078f892074e85594daa1ca8f30739221cfd9e8`
+ - Base commit subject: `Revert "Add application-identifier + team-identifier entitlements for data protection keychain."`
+-
+-Fork / push status:
+-
+-- The work is assembled locally on the branch above.
+-- `gh` is now installed locally on this box, but it is not authenticated to GitHub yet.
+-- If `aryabhuptani/d-inference` is created or a fork already exists with writable SSH access, this branch can be pushed there directly and handed over as code.
 -- 
 2.47.3
 

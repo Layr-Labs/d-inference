@@ -31,6 +31,7 @@ const (
 type routingSnapshot struct {
 	provider           *Provider
 	model              string
+	accountID          string
 	slotState          string
 	totalPending       int
 	pendingForModel    int
@@ -95,14 +96,78 @@ func (r *Registry) ReserveProvider(model string, pr *PendingRequest, excludeIDs 
 	return p
 }
 
+// ReserveOwnedProvider reserves capacity on a provider owned by the given
+// account. Self-hosted requests only qualify when the exact model is actively
+// running on that provider; cold or crashed backends are not eligible because
+// "provider self-use is free while running" must never spill over to a paid
+// marketplace route or a cold-started backend that is merely configured.
+func (r *Registry) ReserveOwnedProvider(accountID, model string, pr *PendingRequest, excludeIDs ...string) *Provider {
+	if pr == nil {
+		return nil
+	}
+	if pr.RequestID == "" {
+		return nil
+	}
+	if pr.Model == "" {
+		pr.Model = model
+	}
+	if pr.RequestedMaxTokens <= 0 {
+		pr.RequestedMaxTokens = defaultRequestedMaxTokens
+	}
+	if accountID == "" {
+		return nil
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	selected := r.selectOwnedCandidateLocked(accountID, model, pr, excludeIDs...)
+	if selected == nil {
+		return nil
+	}
+
+	p := selected.provider
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !r.providerCanSelfHostLocked(p, accountID, model) {
+		return nil
+	}
+
+	pr.ProviderID = p.ID
+	p.addPendingLocked(pr)
+	if p.Status != StatusUntrusted && p.Status != StatusOffline {
+		p.Status = StatusServing
+	}
+	return p
+}
+
+// HasOwnedRunningProvider reports whether the account currently has a routable
+// provider with the requested model already running.
+func (r *Registry) HasOwnedRunningProvider(accountID, model string) bool {
+	if accountID == "" {
+		return false
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now()
+	for _, p := range r.providers {
+		if r.providerHasSelfHostedRouteLocked(p, accountID, model, now) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, excludeIDs ...string) *routingCandidate {
 	excludeSet := make(map[string]struct{}, len(excludeIDs))
 	for _, id := range excludeIDs {
 		excludeSet[id] = struct{}{}
 	}
 
-	var best *routingCandidate
-	var nearTies []*routingCandidate
+	var candidates []*routingCandidate
 	for _, p := range r.providers {
 		if _, excluded := excludeSet[p.ID]; excluded {
 			continue
@@ -115,8 +180,49 @@ func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, e
 		if !ok {
 			continue
 		}
+		candidates = append(candidates, candidate)
+	}
 
-		if best == nil || candidate.costMs < best.costMs {
+	return pickBestCandidate(candidates)
+}
+
+func (r *Registry) selectOwnedCandidateLocked(accountID, model string, pr *PendingRequest, excludeIDs ...string) *routingCandidate {
+	excludeSet := make(map[string]struct{}, len(excludeIDs))
+	for _, id := range excludeIDs {
+		excludeSet[id] = struct{}{}
+	}
+
+	var candidates []*routingCandidate
+	for _, p := range r.providers {
+		if _, excluded := excludeSet[p.ID]; excluded {
+			continue
+		}
+		snap, ok := r.snapshotProviderLocked(p, model)
+		if !ok {
+			continue
+		}
+		if snap.accountID != accountID || snap.slotState != "running" {
+			continue
+		}
+		candidate, ok := r.buildCandidate(snap, pr)
+		if !ok {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+
+	return pickBestCandidate(candidates)
+}
+
+func pickBestCandidate(candidates []*routingCandidate) *routingCandidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	best := candidates[0]
+	nearTies := []*routingCandidate{best}
+	for _, candidate := range candidates[1:] {
+		if candidate.costMs < best.costMs {
 			best = candidate
 			nearTies = []*routingCandidate{candidate}
 			continue
@@ -126,9 +232,6 @@ func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, e
 		}
 	}
 
-	if best == nil {
-		return nil
-	}
 	if len(nearTies) == 1 {
 		return best
 	}
@@ -188,6 +291,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 	snap := routingSnapshot{
 		provider:      p,
 		model:         model,
+		accountID:     p.AccountID,
 		slotState:     "unknown",
 		totalPending:  p.pendingCount(),
 		systemMetrics: p.SystemMetrics,
@@ -388,6 +492,59 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string) bool {
 		}
 	}
 	return true
+}
+
+func (r *Registry) providerCanSelfHostLocked(p *Provider, accountID, model string) bool {
+	if accountID == "" || p.AccountID != accountID {
+		return false
+	}
+	if p.PublicKey == "" {
+		return false
+	}
+	if !r.providerCanAdmitLocked(p, model) {
+		return false
+	}
+	if p.BackendCapacity == nil {
+		return false
+	}
+	for _, slot := range p.BackendCapacity.Slots {
+		if slot.Model != model {
+			continue
+		}
+		return slot.State == "running"
+	}
+	return false
+}
+
+func (r *Registry) providerHasSelfHostedRouteLocked(p *Provider, accountID, model string, now time.Time) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if accountID == "" || p.AccountID != accountID {
+		return false
+	}
+	if p.PublicKey == "" {
+		return false
+	}
+	if p.Status == StatusOffline || p.Status == StatusUntrusted {
+		return false
+	}
+	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) || !p.RuntimeVerified {
+		return false
+	}
+	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+		return false
+	}
+	if !providerServesModelLocked(p, model) || p.BackendCapacity == nil {
+		return false
+	}
+	for _, slot := range p.BackendCapacity.Slots {
+		if slot.Model != model {
+			continue
+		}
+		return slot.State == "running"
+	}
+	return false
 }
 
 func (r *Registry) drainQueuedRequestsForModels(models []string) {

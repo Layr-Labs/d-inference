@@ -320,3 +320,76 @@ func TestHeartbeatDrainsQueueAfterSlotRecovery(t *testing.T) {
 		t.Fatal("timed out waiting for recovered slot assignment")
 	}
 }
+
+func TestReserveOwnedProviderRequiresMatchingAccountAndRunningSlot(t *testing.T) {
+	reg := New(testLogger())
+	model := "owned-model"
+	p := makeSchedulerProvider(t, reg, "owned", model, 100)
+
+	p.mu.Lock()
+	p.AccountID = "acct-owner"
+	p.PublicKey = "ZmFrZS1vd25lZC1wdWJsaWMta2V5LXRlc3Q="
+	p.mu.Unlock()
+
+	req := &PendingRequest{RequestID: "req-owned", Model: model, RequestedMaxTokens: 128}
+	selected := reg.ReserveOwnedProvider("acct-owner", model, req)
+	if selected == nil {
+		t.Fatal("ReserveOwnedProvider returned nil for matching running provider")
+	}
+	if selected.ID != p.ID {
+		t.Fatalf("selected %q, want %q", selected.ID, p.ID)
+	}
+
+	selected.RemovePending(req.RequestID)
+	reg.SetProviderIdle(selected.ID)
+
+	if got := reg.ReserveOwnedProvider("acct-other", model, &PendingRequest{
+		RequestID:          "req-other-account",
+		Model:              model,
+		RequestedMaxTokens: 128,
+	}); got != nil {
+		t.Fatalf("expected nil for non-owner account, got %q", got.ID)
+	}
+
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].State = "idle_shutdown"
+	p.mu.Unlock()
+
+	if got := reg.ReserveOwnedProvider("acct-owner", model, &PendingRequest{
+		RequestID:          "req-cold",
+		Model:              model,
+		RequestedMaxTokens: 128,
+	}); got != nil {
+		t.Fatalf("expected nil for non-running owned slot, got %q", got.ID)
+	}
+}
+
+func TestHasOwnedRunningProviderIgnoresCapacityButRequiresRunningSlot(t *testing.T) {
+	reg := New(testLogger())
+	model := "owned-running"
+	p := makeSchedulerProvider(t, reg, "owned", model, 90)
+
+	p.mu.Lock()
+	p.AccountID = "acct-owner"
+	p.PublicKey = "ZmFrZS1vd25lZC1wdWJsaWMta2V5LXRlc3Q="
+	for i := 0; i < p.maxConcurrency(); i++ {
+		p.addPendingLocked(&PendingRequest{
+			RequestID:          "pending-" + string(rune('a'+i)),
+			Model:              model,
+			RequestedMaxTokens: 64,
+		})
+	}
+	p.mu.Unlock()
+
+	if !reg.HasOwnedRunningProvider("acct-owner", model) {
+		t.Fatal("expected owned running provider to be detected even at capacity")
+	}
+
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].State = "crashed"
+	p.mu.Unlock()
+
+	if reg.HasOwnedRunningProvider("acct-owner", model) {
+		t.Fatal("expected crashed owned slot to be ignored")
+	}
+}

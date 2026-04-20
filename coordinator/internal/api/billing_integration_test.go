@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -212,6 +213,304 @@ func TestIntegration_ConsumerBillingCharge(t *testing.T) {
 	}
 }
 
+func TestIntegration_SelfHostedRunningModelIsFree(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	accountID := "acct-self-hosted-free"
+	rawToken := "self-hosted-free-token"
+	tokenHash := sha256HexStr(rawToken)
+	if err := st.CreateProviderToken(&store.ProviderToken{
+		TokenHash: tokenHash,
+		AccountID: accountID,
+		Label:     "self-hosted-free",
+		Active:    true,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("create provider token: %v", err)
+	}
+
+	apiKey, err := st.CreateKeyForAccount(accountID)
+	if err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+	if err := st.Credit(accountID, 5_000_000, store.LedgerDeposit, "self-hosted-seed"); err != nil {
+		t.Fatalf("seed account balance: %v", err)
+	}
+	initialBalance := ledger.Balance(accountID)
+
+	pubKey := testPublicKeyB64()
+	model := "self-hosted-free-model"
+	conn := connectProviderWithToken(t, ctx, ts.URL,
+		[]protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}},
+		pubKey, rawToken, "0xSelfHostedFreeWallet")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	time.Sleep(300 * time.Millisecond)
+	for _, id := range srv.registry.ProviderIDs() {
+		srv.registry.SetTrustLevel(id, registry.TrustHardware)
+		srv.registry.RecordChallengeSuccess(id)
+	}
+
+	p := findProviderByModel(srv.registry, model)
+	if p == nil {
+		t.Fatal("provider not found")
+	}
+	if p.AccountID != accountID {
+		t.Fatalf("provider account_id = %q, want %q", p.AccountID, accountID)
+	}
+	p.Mu().Lock()
+	p.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{
+			{Model: model, State: "running"},
+		},
+	}
+	p.CurrentModel = model
+	p.WarmModels = []string{model}
+	p.Mu().Unlock()
+	if !srv.registry.HasOwnedRunningProvider(accountID, model) {
+		t.Fatal("expected owned running provider to be detectable")
+	}
+
+	usage := protocol.UsageInfo{PromptTokens: 120, CompletionTokens: 60}
+	providerDone := serveOneInference(ctx, t, conn, pubKey, usage)
+
+	status := sendInferenceRequest(t, ctx, ts.URL, model, apiKey)
+	if status != http.StatusOK {
+		t.Fatalf("inference status = %d, want 200", status)
+	}
+
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	if got := ledger.Balance(accountID); got != initialBalance {
+		t.Fatalf("account balance = %d, want %d (self-hosted request should be free)", got, initialBalance)
+	}
+
+	usageEntries := ledger.Usage(accountID)
+	if len(usageEntries) != 1 {
+		t.Fatalf("usage entries = %d, want 1", len(usageEntries))
+	}
+	if usageEntries[0].CostMicroUSD != 0 {
+		t.Fatalf("usage cost = %d, want 0", usageEntries[0].CostMicroUSD)
+	}
+
+	earnings, err := st.GetAccountEarnings(accountID, 10)
+	if err != nil {
+		t.Fatalf("get account earnings: %v", err)
+	}
+	if len(earnings) != 0 {
+		t.Fatalf("account earnings = %d, want 0 for self-hosted request", len(earnings))
+	}
+
+	if got := st.GetBalance("platform"); got != 0 {
+		t.Fatalf("platform balance = %d, want 0 for self-hosted request", got)
+	}
+}
+
+func TestIntegration_SelfHostedRunningModelQueuesBehindOwnerAndStaysFree(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	accountID := "acct-self-hosted-queued"
+	rawToken := "self-hosted-queued-token"
+	tokenHash := sha256HexStr(rawToken)
+	if err := st.CreateProviderToken(&store.ProviderToken{
+		TokenHash: tokenHash,
+		AccountID: accountID,
+		Label:     "self-hosted-queued",
+		Active:    true,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("create provider token: %v", err)
+	}
+
+	apiKey, err := st.CreateKeyForAccount(accountID)
+	if err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+	if err := st.Credit(accountID, 5_000_000, store.LedgerDeposit, "self-hosted-queued-seed"); err != nil {
+		t.Fatalf("seed account balance: %v", err)
+	}
+	initialBalance := ledger.Balance(accountID)
+
+	pubKey := testPublicKeyB64()
+	model := "self-hosted-queued-model"
+	conn := connectProviderWithToken(t, ctx, ts.URL,
+		[]protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}},
+		pubKey, rawToken, "0xSelfHostedQueuedWallet")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	time.Sleep(300 * time.Millisecond)
+	var providerID string
+	for _, id := range srv.registry.ProviderIDs() {
+		providerID = id
+		srv.registry.SetTrustLevel(id, registry.TrustHardware)
+		srv.registry.RecordChallengeSuccess(id)
+	}
+	if providerID == "" {
+		t.Fatal("provider not registered")
+	}
+
+	p := srv.registry.GetProvider(providerID)
+	if p == nil {
+		t.Fatal("provider not found")
+	}
+	if p.AccountID != accountID {
+		t.Fatalf("provider account_id = %q, want %q", p.AccountID, accountID)
+	}
+	p.Mu().Lock()
+	p.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 16,
+		Slots: []protocol.BackendSlotCapacity{
+			{Model: model, State: "running"},
+		},
+	}
+	p.CurrentModel = model
+	p.WarmModels = []string{model}
+	p.Status = registry.StatusServing
+	p.Mu().Unlock()
+	if !srv.registry.HasOwnedRunningProvider(accountID, model) {
+		t.Fatal("expected owned running provider to be detectable")
+	}
+	for i := 0; i < registry.DefaultMaxConcurrent; i++ {
+		p.AddPending(&registry.PendingRequest{
+			RequestID:          fmt.Sprintf("busy-%d", i),
+			Model:              model,
+			ConsumerKey:        accountID,
+			RequestedMaxTokens: 128,
+		})
+	}
+
+	httpDone := make(chan int, 1)
+	go func() {
+		httpDone <- sendInferenceRequest(t, ctx, ts.URL, model, apiKey)
+	}()
+
+	// Give the request time to block behind the owner's busy backend. The
+	// self-hosted wait path no longer uses the shared registry queue because
+	// that caused head-of-line blocking for unrelated marketplace traffic.
+	time.Sleep(250 * time.Millisecond)
+
+	usage := protocol.UsageInfo{PromptTokens: 90, CompletionTokens: 30}
+	providerDone := serveOneInference(ctx, t, conn, pubKey, usage)
+
+	p.RemovePending("busy-0")
+	for i := 1; i < registry.DefaultMaxConcurrent; i++ {
+		p.RemovePending(fmt.Sprintf("busy-%d", i))
+	}
+	srv.registry.SetProviderIdle(providerID)
+
+	select {
+	case status := <-httpDone:
+		if status != http.StatusOK {
+			t.Fatalf("inference status = %d, want 200", status)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for queued self-hosted request to complete")
+	}
+
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	if got := ledger.Balance(accountID); got != initialBalance {
+		t.Fatalf("account balance = %d, want %d for queued self-hosted request", got, initialBalance)
+	}
+
+	usageEntries := ledger.Usage(accountID)
+	if len(usageEntries) != 1 {
+		t.Fatalf("usage entries = %d, want 1", len(usageEntries))
+	}
+	if usageEntries[0].CostMicroUSD != 0 {
+		t.Fatalf("usage cost = %d, want 0 for queued self-hosted request", usageEntries[0].CostMicroUSD)
+	}
+}
+
+func TestIntegration_SelfHostedFallsBackToPaidWhenModelNotRunning(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	accountID := "acct-self-hosted-fallback"
+	rawToken := "self-hosted-fallback-token"
+	tokenHash := sha256HexStr(rawToken)
+	if err := st.CreateProviderToken(&store.ProviderToken{
+		TokenHash: tokenHash,
+		AccountID: accountID,
+		Label:     "self-hosted-fallback",
+		Active:    true,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("create provider token: %v", err)
+	}
+
+	apiKey, err := st.CreateKeyForAccount(accountID)
+	if err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+	if err := st.Credit(accountID, 5_000_000, store.LedgerDeposit, "self-hosted-fallback-seed"); err != nil {
+		t.Fatalf("seed account balance: %v", err)
+	}
+	initialBalance := ledger.Balance(accountID)
+
+	ownedConn := connectProviderWithToken(t, ctx, ts.URL,
+		[]protocol.ModelInfo{{ID: "other-model", ModelType: "test", Quantization: "4bit"}},
+		testPublicKeyB64(), rawToken, "0xOwnedOtherWallet")
+	defer ownedConn.Close(websocket.StatusNormalClosure, "")
+
+	servingPubKey := testPublicKeyB64()
+	model := "self-hosted-fallback-model"
+	servingConn := connectProvider(t, ctx, ts.URL,
+		[]protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}},
+		servingPubKey)
+	defer servingConn.Close(websocket.StatusNormalClosure, "")
+
+	time.Sleep(300 * time.Millisecond)
+	for _, id := range srv.registry.ProviderIDs() {
+		srv.registry.SetTrustLevel(id, registry.TrustHardware)
+		srv.registry.RecordChallengeSuccess(id)
+	}
+
+	usage := protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 40}
+	providerDone := serveOneInference(ctx, t, servingConn, servingPubKey, usage)
+
+	status := sendInferenceRequest(t, ctx, ts.URL, model, apiKey)
+	if status != http.StatusOK {
+		t.Fatalf("inference status = %d, want 200", status)
+	}
+
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	expectedCost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
+	if got := ledger.Balance(accountID); got != initialBalance-expectedCost {
+		t.Fatalf("account balance = %d, want %d after paid fallback request", got, initialBalance-expectedCost)
+	}
+
+	usageEntries := ledger.Usage(accountID)
+	if len(usageEntries) != 1 {
+		t.Fatalf("usage entries = %d, want 1", len(usageEntries))
+	}
+	if usageEntries[0].CostMicroUSD != expectedCost {
+		t.Fatalf("usage cost = %d, want %d after paid fallback", usageEntries[0].CostMicroUSD, expectedCost)
+	}
+}
+
 // TestIntegration_ConsumerInsufficientBalance verifies that consumers with zero
 // balance are rejected with 402 before routing to a provider.
 func TestIntegration_ConsumerInsufficientBalance(t *testing.T) {
@@ -362,6 +661,99 @@ func TestIntegration_ReservationRefundedOnCompletion(t *testing.T) {
 	if got := ledger.Balance(consumerID); got != initialBalance-expectedCost {
 		t.Errorf("balance = %d, want %d (initial %d minus cost %d); reservation refund failed",
 			got, initialBalance-expectedCost, initialBalance, expectedCost)
+	}
+}
+
+func TestIntegration_SelfHostedInferenceIsFree(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	accountID := "acct-self-hosted-free"
+	rawToken := "self-hosted-free-token"
+	if err := st.CreateProviderToken(&store.ProviderToken{
+		TokenHash: sha256HexStr(rawToken),
+		AccountID: accountID,
+		Label:     "self-hosted-free",
+		Active:    true,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("create provider token: %v", err)
+	}
+	apiKey, err := st.CreateKeyForAccount(accountID)
+	if err != nil {
+		t.Fatalf("create key for account: %v", err)
+	}
+	if err := st.Credit(accountID, 2_000_000, store.LedgerDeposit, "self-hosted-seed"); err != nil {
+		t.Fatalf("seed balance: %v", err)
+	}
+
+	model := "self-hosted-free-model"
+	pubKey := testPublicKeyB64()
+	conn := connectProviderWithToken(t, ctx, ts.URL,
+		[]protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}},
+		pubKey, rawToken, "0xSelfHostedWallet")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	time.Sleep(300 * time.Millisecond)
+
+	for _, id := range srv.registry.ProviderIDs() {
+		srv.registry.SetTrustLevel(id, registry.TrustHardware)
+		srv.registry.RecordChallengeSuccess(id)
+		if p := srv.registry.GetProvider(id); p != nil {
+			p.Mu().Lock()
+			p.BackendCapacity = &protocol.BackendCapacity{
+				TotalMemoryGB: 64,
+				Slots: []protocol.BackendSlotCapacity{{
+					Model:              model,
+					State:              "running",
+					NumRunning:         0,
+					NumWaiting:         0,
+					ActiveTokens:       0,
+					MaxTokensPotential: 0,
+				}},
+			}
+			p.Mu().Unlock()
+		}
+	}
+
+	initialBalance := ledger.Balance(accountID)
+	usage := protocol.UsageInfo{PromptTokens: 120, CompletionTokens: 60}
+	providerDone := serveOneInference(ctx, t, conn, pubKey, usage)
+
+	status := sendInferenceRequest(t, ctx, ts.URL, model, apiKey)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	if got := ledger.Balance(accountID); got != initialBalance {
+		t.Fatalf("self-hosted balance changed: got %d want %d", got, initialBalance)
+	}
+
+	usageEntries := ledger.Usage(accountID)
+	if len(usageEntries) != 1 {
+		t.Fatalf("usage entries = %d, want 1", len(usageEntries))
+	}
+	if usageEntries[0].CostMicroUSD != 0 {
+		t.Errorf("usage cost = %d, want 0", usageEntries[0].CostMicroUSD)
+	}
+
+	earnings, err := st.GetAccountEarnings(accountID, 10)
+	if err != nil {
+		t.Fatalf("get account earnings: %v", err)
+	}
+	if len(earnings) != 0 {
+		t.Fatalf("self-hosted request should not credit provider earnings, got %d rows", len(earnings))
+	}
+
+	if platform := st.GetBalance("platform"); platform != 0 {
+		t.Fatalf("platform balance = %d, want 0", platform)
 	}
 }
 

@@ -60,6 +60,12 @@ const (
 	firstChunkTimeout = 10 * time.Second
 )
 
+type providerDispatch struct {
+	provider   *registry.Provider
+	request    *registry.PendingRequest
+	selfHosted bool
+}
+
 // chatCompletionRequest is the incoming OpenAI-compatible request body.
 // The consumer sends plain JSON — no encryption fields are needed because
 // TLS to the Confidential VM is the trust boundary.
@@ -212,6 +218,587 @@ func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool) bool {
 	return true
 }
 
+func (s *Server) dispatchSelfHostedTextRequest(ctx context.Context, accountID, model string, estimatedPromptTokens, requestedMaxTokens int) (*providerDispatch, error) {
+	requestID := uuid.New().String()
+	pr := &registry.PendingRequest{
+		RequestID:             requestID,
+		Model:                 model,
+		ConsumerKey:           accountID,
+		SelfHosted:            true,
+		EstimatedPromptTokens: estimatedPromptTokens,
+		RequestedMaxTokens:    requestedMaxTokens,
+		AcceptedCh:            make(chan struct{}, 1),
+		ChunkCh:               make(chan string, chunkBufferSize),
+		CompleteCh:            make(chan protocol.UsageInfo, 1),
+		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
+	}
+
+	provider := s.registry.ReserveOwnedProvider(accountID, model, pr)
+	if provider != nil {
+		pr.SelfHosted = true
+		return &providerDispatch{provider: provider, request: pr, selfHosted: true}, nil
+	}
+
+	if !s.registry.HasOwnedRunningProvider(accountID, model) {
+		return nil, fmt.Errorf("no self-hosted provider became available for model %q", model)
+	}
+
+	deadline := time.NewTimer(120 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(200 * time.Millisecond)
+	defer poll.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline.C:
+			return nil, fmt.Errorf("no self-hosted provider became available for model %q", model)
+		case <-poll.C:
+			provider = s.registry.ReserveOwnedProvider(accountID, model, pr)
+			if provider != nil {
+				pr.SelfHosted = true
+				return &providerDispatch{provider: provider, request: pr, selfHosted: true}, nil
+			}
+			if !s.registry.HasOwnedRunningProvider(accountID, model) {
+				return nil, fmt.Errorf("no self-hosted provider became available for model %q", model)
+			}
+		}
+	}
+}
+
+func (s *Server) dispatchMarketplaceTextRequest(ctx context.Context, accountID, model string, estimatedPromptTokens, requestedMaxTokens int) (*providerDispatch, error) {
+	requestID := uuid.New().String()
+	pr := &registry.PendingRequest{
+		RequestID:             requestID,
+		Model:                 model,
+		ConsumerKey:           accountID,
+		EstimatedPromptTokens: estimatedPromptTokens,
+		RequestedMaxTokens:    requestedMaxTokens,
+		AcceptedCh:            make(chan struct{}, 1),
+		ChunkCh:               make(chan string, chunkBufferSize),
+		CompleteCh:            make(chan protocol.UsageInfo, 1),
+		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
+	}
+
+	provider := s.registry.ReserveProvider(model, pr)
+	if provider == nil {
+		queuedReq := &registry.QueuedRequest{
+			RequestID:  requestID,
+			Model:      model,
+			Pending:    pr,
+			ResponseCh: make(chan *registry.Provider, 1),
+		}
+		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
+			return nil, fmt.Errorf("no provider available for model %q", model)
+		}
+		var err error
+		provider, err = s.registry.Queue().WaitForProviderContext(ctx, queuedReq)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return &providerDispatch{provider: provider, request: pr, selfHosted: false}, nil
+}
+
+func (s *Server) dispatchTextRequest(ctx context.Context, accountID, model string, estimatedPromptTokens, requestedMaxTokens int, preferSelfHosted bool) (*providerDispatch, error) {
+	if preferSelfHosted {
+		return s.dispatchSelfHostedTextRequest(ctx, accountID, model, estimatedPromptTokens, requestedMaxTokens)
+	}
+	return s.dispatchMarketplaceTextRequest(ctx, accountID, model, estimatedPromptTokens, requestedMaxTokens)
+}
+
+type textRoutingPlan struct {
+	dispatch          *providerDispatch
+	refundReservation func()
+	reserveBalance    func() error
+}
+
+func (s *Server) prepareTextRoutingPlan(ctx context.Context, consumerKey, model string, estimatedPromptTokens, requestedMaxTokens int) (*textRoutingPlan, errorResponseEnvelope) {
+	var reservedMicroUSD int64
+	preferSelfHosted := s.registry.HasOwnedRunningProvider(consumerKey, model)
+	reserveBalance := func() error {
+		if s.billing == nil || reservedMicroUSD > 0 {
+			return nil
+		}
+		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
+		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
+			reservedMicroUSD = 0
+			return err
+		}
+		return nil
+	}
+	if !preferSelfHosted {
+		if err := reserveBalance(); err != nil {
+			return nil, errorResponseEnvelope{
+				status: http.StatusPaymentRequired,
+				body: errorResponse("insufficient_funds",
+					"your balance is too low for this request — add funds at /billing or lower max_tokens"),
+			}
+		}
+	}
+
+	refundReservation := func() {
+		if reservedMicroUSD > 0 {
+			_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "reservation_refund")
+		}
+	}
+
+	dispatch, err := s.dispatchTextRequest(ctx, consumerKey, model, estimatedPromptTokens, requestedMaxTokens, preferSelfHosted)
+	if err != nil && preferSelfHosted && err != context.Canceled {
+		preferSelfHosted = false
+		if err := reserveBalance(); err != nil {
+			return nil, errorResponseEnvelope{
+				status: http.StatusPaymentRequired,
+				body: errorResponse("insufficient_funds",
+					"your balance is too low for this request — add funds at /billing or lower max_tokens"),
+			}
+		}
+		dispatch, err = s.dispatchMarketplaceTextRequest(ctx, consumerKey, model, estimatedPromptTokens, requestedMaxTokens)
+	}
+	if err != nil {
+		refundReservation()
+		if err == context.Canceled {
+			return nil, errorResponseEnvelope{status: 0}
+		}
+		return nil, errorResponseEnvelope{
+			status: http.StatusServiceUnavailable,
+			body:   errorResponse("model_not_available", err.Error()),
+		}
+	}
+
+	dispatch.request.ReservedMicroUSD = reservedMicroUSD
+	return &textRoutingPlan{
+		dispatch:          dispatch,
+		refundReservation: refundReservation,
+		reserveBalance:    reserveBalance,
+	}, errorResponseEnvelope{}
+}
+
+type errorResponseEnvelope struct {
+	status int
+	body   map[string]any
+}
+
+func (s *Server) executeTextDispatch(
+	w http.ResponseWriter,
+	r *http.Request,
+	rawBody []byte,
+	model string,
+	stream bool,
+	estimatedPromptTokens int,
+	requestedMaxTokens int,
+	dispatch *providerDispatch,
+	reserveBalance func() error,
+	refundReservation func(),
+) bool {
+	// Dispatch to a provider with automatic retry. If the first provider
+	// fails (backend crashed, timeout, etc.), retry on the same or another
+	// provider before returning an error to the consumer. We wait for the
+	// first chunk before committing — no HTTP response is written until a
+	// provider starts generating, so retries are invisible to the consumer.
+	var (
+		provider     *registry.Provider
+		lastProvider *registry.Provider
+		pr           *registry.PendingRequest
+		requestID    string
+		firstChunk   string
+		lastErr      string
+		lastErrCode  int
+		committed    bool
+	)
+
+	consumerKey := consumerKeyFromContext(r.Context())
+	selfHosted := dispatch.selfHosted
+	allowMarketplaceRetry := !dispatch.selfHosted
+
+	// Track providers that failed during retry so we don't dispatch to them again.
+	excludeProviders := make(map[string]struct{})
+	excludeList := func() []string {
+		ids := make([]string, 0, len(excludeProviders))
+		for id := range excludeProviders {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+
+	requestID = dispatch.request.RequestID
+	pr = dispatch.request
+	provider = dispatch.provider
+	lastProvider = provider
+
+	for attempt := 0; attempt < maxDispatchAttempts; attempt++ {
+		if attempt > 0 {
+			if selfHosted && !allowMarketplaceRetry {
+				pr = newTextPendingRequest(requestID, consumerKey, model, estimatedPromptTokens, requestedMaxTokens, true)
+				pr.ReservedMicroUSD = dispatch.request.ReservedMicroUSD
+				provider = s.registry.ReserveOwnedProvider(consumerKey, model, pr, excludeList()...)
+			} else if selfHosted {
+				selfHosted = false
+				if err := reserveBalance(); err != nil {
+					refundReservation()
+					writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
+						"your balance is too low for this request — add funds at /billing or lower max_tokens"))
+					return true
+				}
+				fallbackDispatch, err := s.dispatchMarketplaceTextRequest(r.Context(), consumerKey, model, estimatedPromptTokens, requestedMaxTokens)
+				if err == nil {
+					provider = fallbackDispatch.provider
+					pr = fallbackDispatch.request
+					pr.ReservedMicroUSD = dispatch.request.ReservedMicroUSD
+				} else {
+					provider = nil
+				}
+			} else {
+				fallbackDispatch, err := s.dispatchMarketplaceTextRequest(r.Context(), consumerKey, model, estimatedPromptTokens, requestedMaxTokens)
+				if err == nil {
+					provider = fallbackDispatch.provider
+					pr = fallbackDispatch.request
+					pr.ReservedMicroUSD = dispatch.request.ReservedMicroUSD
+				} else {
+					provider = nil
+				}
+			}
+			if provider == nil {
+				break
+			}
+			lastProvider = provider
+		}
+
+		// E2E encryption — must be done per provider (different keys).
+		if provider.PublicKey == "" {
+			s.registry.SetProviderIdle(provider.ID)
+			excludeProviders[provider.ID] = struct{}{}
+			lastErr = "no provider with E2E encryption"
+			continue
+		}
+
+		providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
+		if err != nil {
+			s.registry.SetProviderIdle(provider.ID)
+			excludeProviders[provider.ID] = struct{}{}
+			lastErr = "provider public key invalid"
+			continue
+		}
+
+		sessionKeys, err := e2e.GenerateSessionKeys()
+		if err != nil {
+			s.registry.SetProviderIdle(provider.ID)
+			lastErr = "failed to generate session keys"
+			continue
+		}
+
+		encrypted, err := e2e.Encrypt(rawBody, providerPubKey, sessionKeys)
+		if err != nil {
+			s.registry.SetProviderIdle(provider.ID)
+			lastErr = "failed to encrypt request"
+			continue
+		}
+
+		wireMsg := map[string]any{
+			"type":       protocol.TypeInferenceRequest,
+			"request_id": requestID,
+			"encrypted_body": map[string]string{
+				"ephemeral_public_key": encrypted.EphemeralPublicKey,
+				"ciphertext":           encrypted.Ciphertext,
+			},
+		}
+
+		pr.SessionPrivKey = &sessionKeys.PrivateKey
+
+		data, err := json.Marshal(wireMsg)
+		if err != nil {
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			lastErr = "failed to marshal request"
+			continue
+		}
+		if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			excludeProviders[provider.ID] = struct{}{}
+			s.logger.Error("failed to send inference request", "request_id", requestID, "error", err)
+			lastErr = "failed to send request to provider"
+			allowMarketplaceRetry = true
+			continue
+		}
+
+		s.logger.Info("inference request dispatched",
+			"request_id", requestID,
+			"model", model,
+			"provider_id", provider.ID,
+			"stream", stream,
+			"attempt", attempt+1,
+			"self_hosted", selfHosted,
+		)
+
+		// Wait for an accepted signal, first chunk, or error before committing.
+		// No HTTP response has been written yet, so retries are invisible.
+		timer := time.NewTimer(firstChunkTimeout)
+		accepted := false
+		select {
+		case <-pr.AcceptedCh:
+			timer.Stop()
+			accepted = true
+		case chunk, ok := <-pr.ChunkCh:
+			timer.Stop()
+			if ok {
+				firstChunk = chunk
+				committed = true
+			} else {
+				// Channel closed — check if an error caused it.
+				// handleInferenceError sends to ErrorCh then closes ChunkCh,
+				// so both can be ready simultaneously.
+				select {
+				case errMsg := <-pr.ErrorCh:
+					excludeProviders[provider.ID] = struct{}{}
+					provider.RemovePending(requestID)
+					s.registry.SetProviderIdle(provider.ID)
+					lastErr = errMsg.Error
+					lastErrCode = errMsg.StatusCode
+					provider = nil
+					if !accepted {
+						allowMarketplaceRetry = true
+						continue
+					}
+					continue
+				default:
+					// No error — genuine empty response.
+					committed = true
+				}
+			}
+		case errMsg := <-pr.ErrorCh:
+			timer.Stop()
+			excludeProviders[provider.ID] = struct{}{}
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			lastErr = errMsg.Error
+			lastErrCode = errMsg.StatusCode
+			s.logger.Warn("provider failed, retrying",
+				"request_id", requestID,
+				"provider_id", provider.ID,
+				"attempt", attempt+1,
+				"error", errMsg.Error,
+				"self_hosted", selfHosted,
+			)
+			if !selfHosted {
+				statusCode := errMsg.StatusCode
+				if statusCode == 0 {
+					statusCode = http.StatusBadGateway
+				}
+				writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+				return true
+			}
+			provider = nil
+			if !accepted {
+				allowMarketplaceRetry = true
+				continue
+			}
+			statusCode := errMsg.StatusCode
+			if statusCode == 0 {
+				statusCode = http.StatusBadGateway
+			}
+			writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+			return true
+		case <-timer.C:
+			excludeProviders[provider.ID] = struct{}{}
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
+			cancelData, _ := json.Marshal(cancelMsg)
+			_ = provider.Conn.Write(context.Background(), websocket.MessageText, cancelData)
+			lastErr = "timeout waiting for first response"
+			lastErrCode = http.StatusGatewayTimeout
+			s.logger.Warn("provider timeout, retrying",
+				"request_id", requestID,
+				"provider_id", provider.ID,
+				"attempt", attempt+1,
+				"self_hosted", selfHosted,
+			)
+			provider = nil
+			if !accepted {
+				allowMarketplaceRetry = true
+			}
+			continue
+		case <-r.Context().Done():
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			refundReservation()
+			return true
+		}
+
+		// Provider accepted or sent first chunk — commit to this provider.
+		// If only accepted (no chunk yet), wait for the first chunk with
+		// the full inference timeout since the backend may be reloading.
+		if accepted && !committed {
+			chunkTimer := time.NewTimer(inferenceTimeout)
+			select {
+			case chunk, ok := <-pr.ChunkCh:
+				chunkTimer.Stop()
+				if ok {
+					firstChunk = chunk
+					committed = true
+				} else {
+					// Closed — check for error (same race as above).
+					select {
+					case errMsg := <-pr.ErrorCh:
+						excludeProviders[provider.ID] = struct{}{}
+						provider.RemovePending(requestID)
+						s.registry.SetProviderIdle(provider.ID)
+						lastErr = errMsg.Error
+						lastErrCode = errMsg.StatusCode
+						provider = nil
+						if selfHosted {
+							allowMarketplaceRetry = true
+						}
+						continue
+					default:
+						committed = true
+					}
+				}
+			case errMsg := <-pr.ErrorCh:
+				chunkTimer.Stop()
+				excludeProviders[provider.ID] = struct{}{}
+				provider.RemovePending(requestID)
+				s.registry.SetProviderIdle(provider.ID)
+				if selfHosted {
+					lastErr = errMsg.Error
+					lastErrCode = errMsg.StatusCode
+					provider = nil
+					allowMarketplaceRetry = true
+					continue
+				}
+				statusCode := errMsg.StatusCode
+				if statusCode == 0 {
+					statusCode = http.StatusBadGateway
+				}
+				writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+				return true
+			case <-chunkTimer.C:
+				provider.RemovePending(requestID)
+				s.registry.SetProviderIdle(provider.ID)
+				cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
+				cancelData, _ := json.Marshal(cancelMsg)
+				_ = provider.Conn.Write(context.Background(), websocket.MessageText, cancelData)
+				if selfHosted {
+					lastErr = "provider accepted but timed out"
+					lastErrCode = http.StatusGatewayTimeout
+					provider = nil
+					allowMarketplaceRetry = true
+					continue
+				}
+				writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider accepted but timed out"))
+				return true
+			case <-r.Context().Done():
+				provider.RemovePending(requestID)
+				s.registry.SetProviderIdle(provider.ID)
+				refundReservation()
+				return true
+			}
+		}
+
+		break
+	}
+
+	if !committed {
+		refundReservation()
+		statusCode := lastErrCode
+		if statusCode == 0 {
+			statusCode = http.StatusServiceUnavailable
+		}
+		writeJSON(w, statusCode, errorResponse("provider_error",
+			fmt.Sprintf("inference failed after %d attempt(s): %s", maxDispatchAttempts, lastErr)))
+		return true
+	}
+
+	// Write provider attestation headers now that we're committed.
+	provider.Mu().Lock()
+	pubKey := provider.PublicKey
+	attested := provider.Attested
+	trustLevel := provider.TrustLevel
+	attestResult := provider.AttestationResult
+	mdaVerified := provider.MDAVerified
+	provider.Mu().Unlock()
+
+	providerID := provider.ID
+	chipName := provider.Hardware.ChipName
+	machineModel := provider.Hardware.MachineModel
+
+	if pubKey != "" {
+		w.Header().Set("X-Provider-Public-Key", pubKey)
+	}
+	if attested {
+		w.Header().Set("X-Provider-Attested", "true")
+	} else {
+		w.Header().Set("X-Provider-Attested", "false")
+	}
+	w.Header().Set("X-Provider-Trust-Level", string(trustLevel))
+	w.Header().Set("X-Provider-ID", providerID)
+	w.Header().Set("X-Provider-Chip", chipName)
+	w.Header().Set("X-Provider-Model", machineModel)
+	if attestResult != nil {
+		w.Header().Set("X-Provider-Serial", attestResult.SerialNumber)
+		if attestResult.SecureEnclaveAvailable {
+			w.Header().Set("X-Provider-Secure-Enclave", "true")
+		} else {
+			w.Header().Set("X-Provider-Secure-Enclave", "false")
+		}
+	}
+	if mdaVerified {
+		w.Header().Set("X-Provider-MDA-Verified", "true")
+	}
+	// SE public key for attestation receipt verification.
+	// Consumers can use this to verify SE signatures on response hashes.
+	if attestResult != nil && attestResult.PublicKey != "" {
+		w.Header().Set("X-Attestation-SE-Public-Key", attestResult.PublicKey)
+		w.Header().Set("X-Attestation-Device-Serial", attestResult.SerialNumber)
+	}
+
+	// When this function returns (consumer disconnect, timeout, or completion),
+	// send a cancel to the provider so it stops generating tokens.
+	defer func() {
+		if lastProvider == nil {
+			return
+		}
+		lastProvider.RemovePending(requestID)
+		s.registry.SetProviderIdle(lastProvider.ID)
+
+		cancelMsg := protocol.CancelMessage{
+			Type:      protocol.TypeCancel,
+			RequestID: requestID,
+		}
+		cancelData, _ := json.Marshal(cancelMsg)
+		if err := lastProvider.Conn.Write(context.Background(), websocket.MessageText, cancelData); err != nil {
+			s.logger.Debug("failed to send cancel (provider may have disconnected)", "request_id", requestID, "error", err)
+		} else {
+			s.logger.Info("sent cancel to provider", "request_id", requestID)
+		}
+	}()
+
+	if stream {
+		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
+	} else {
+		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
+	}
+	return true
+}
+
+func newTextPendingRequest(requestID, accountID, model string, estimatedPromptTokens, requestedMaxTokens int, selfHosted bool) *registry.PendingRequest {
+	return &registry.PendingRequest{
+		RequestID:             requestID,
+		Model:                 model,
+		ConsumerKey:           accountID,
+		SelfHosted:            selfHosted,
+		EstimatedPromptTokens: estimatedPromptTokens,
+		RequestedMaxTokens:    requestedMaxTokens,
+		AcceptedCh:            make(chan struct{}, 1),
+		ChunkCh:               make(chan string, chunkBufferSize),
+		CompleteCh:            make(chan protocol.UsageInfo, 1),
+		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
+	}
+}
+
 // handleChatCompletions handles POST /v1/chat/completions.
 //
 // This is the main inference endpoint. It validates the request, finds an
@@ -272,391 +859,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 
-	// Pre-flight balance reservation — atomically debit the worst-case cost
-	// (prompt tokens already consumed + max_tokens we just bounded the
-	// generation to) before routing to a provider. The post-inference charge
-	// refunds any unused portion. Reserving only the minimum charge let
-	// consumers receive streamed output far exceeding their actual balance.
-	var reservedMicroUSD int64
-	if s.billing != nil {
-		consumerKey := consumerKeyFromContext(r.Context())
-		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
-		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
-			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-				"your balance is too low for this request — add funds at /billing or lower max_tokens"))
-			return
-		}
-	}
-
-	// Refund reservation on early errors (before inference starts).
-	refundReservation := func() {
-		if reservedMicroUSD > 0 {
-			consumerKey := consumerKeyFromContext(r.Context())
-			_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "reservation_refund")
-		}
-	}
-
 	// Reject requests for models not in the catalog.
 	if !s.registry.IsModelInCatalog(model) {
-		refundReservation()
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model)))
 		return
 	}
 
-	// Dispatch to a provider with automatic retry. If the first provider
-	// fails (backend crashed, timeout, etc.), retry on the same or another
-	// provider before returning an error to the consumer. We wait for the
-	// first chunk before committing — no HTTP response is written until a
-	// provider starts generating, so retries are invisible to the consumer.
-	var (
-		provider    *registry.Provider
-		pr          *registry.PendingRequest
-		requestID   string
-		firstChunk  string
-		lastErr     string
-		lastErrCode int
-		committed   bool
-	)
-
 	consumerKey := consumerKeyFromContext(r.Context())
-
-	// Track providers that failed during retry so we don't dispatch to them again.
-	excludeProviders := make(map[string]struct{})
-	excludeList := func() []string {
-		ids := make([]string, 0, len(excludeProviders))
-		for id := range excludeProviders {
-			ids = append(ids, id)
-		}
-		return ids
-	}
-
-	for attempt := 0; attempt < maxDispatchAttempts; attempt++ {
-		requestID = uuid.New().String()
-		pr = &registry.PendingRequest{
-			RequestID:             requestID,
-			Model:                 model,
-			ConsumerKey:           consumerKey,
-			EstimatedPromptTokens: estimatedPromptTokens,
-			RequestedMaxTokens:    requestedMaxTokens,
-			AcceptedCh:            make(chan struct{}, 1),
-			ChunkCh:               make(chan string, chunkBufferSize),
-			CompleteCh:            make(chan protocol.UsageInfo, 1),
-			ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
-		}
-
-		provider = s.registry.ReserveProvider(model, pr, excludeList()...)
-		if provider == nil {
-			// On retry attempts, don't queue — if the only available
-			// providers already failed, waiting 120s for one of them
-			// to come back won't help. Break and return the last error.
-			if attempt > 0 {
-				break
-			}
-			// No idle provider — try queueing.
-			queuedReq := &registry.QueuedRequest{
-				RequestID:  requestID,
-				Model:      model,
-				Pending:    pr,
-				ResponseCh: make(chan *registry.Provider, 1),
-			}
-			if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
-				refundReservation()
-				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider available for model %q and queue is full", model)))
-				return
-			}
-
-			s.logger.Info("request queued, waiting for provider",
-				"model", model,
-				"attempt", attempt+1,
-			)
-
-			var err error
-			provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
-			if err != nil {
-				if err == context.Canceled {
-					refundReservation()
-					return
-				}
-				refundReservation()
-				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider became available for model %q (queue timeout)", model)))
-				return
-			}
-		}
-
-		// E2E encryption — must be done per provider (different keys).
-		if provider.PublicKey == "" {
-			s.registry.SetProviderIdle(provider.ID)
-			excludeProviders[provider.ID] = struct{}{}
-			lastErr = "no provider with E2E encryption"
-			continue
-		}
-
-		providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
-		if err != nil {
-			s.registry.SetProviderIdle(provider.ID)
-			excludeProviders[provider.ID] = struct{}{}
-			lastErr = "provider public key invalid"
-			continue
-		}
-
-		sessionKeys, err := e2e.GenerateSessionKeys()
-		if err != nil {
-			s.registry.SetProviderIdle(provider.ID)
-			lastErr = "failed to generate session keys"
-			continue
-		}
-
-		encrypted, err := e2e.Encrypt(rawBody, providerPubKey, sessionKeys)
-		if err != nil {
-			s.registry.SetProviderIdle(provider.ID)
-			lastErr = "failed to encrypt request"
-			continue
-		}
-
-		wireMsg := map[string]any{
-			"type":       protocol.TypeInferenceRequest,
-			"request_id": requestID,
-			"encrypted_body": map[string]string{
-				"ephemeral_public_key": encrypted.EphemeralPublicKey,
-				"ciphertext":           encrypted.Ciphertext,
-			},
-		}
-
-		pr.SessionPrivKey = &sessionKeys.PrivateKey
-		pr.ReservedMicroUSD = reservedMicroUSD
-
-		data, err := json.Marshal(wireMsg)
-		if err != nil {
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			lastErr = "failed to marshal request"
-			continue
-		}
-		if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			excludeProviders[provider.ID] = struct{}{}
-			s.logger.Error("failed to send inference request", "request_id", requestID, "error", err)
-			lastErr = "failed to send request to provider"
-			continue
-		}
-
-		s.logger.Info("inference request dispatched",
-			"request_id", requestID,
-			"model", model,
-			"provider_id", provider.ID,
-			"stream", stream,
-			"attempt", attempt+1,
-		)
-
-		// Wait for an accepted signal, first chunk, or error before committing.
-		// No HTTP response has been written yet, so retries are invisible.
-		timer := time.NewTimer(firstChunkTimeout)
-		accepted := false
-		select {
-		case <-pr.AcceptedCh:
-			timer.Stop()
-			accepted = true
-		case chunk, ok := <-pr.ChunkCh:
-			timer.Stop()
-			if ok {
-				firstChunk = chunk
-				committed = true
-			} else {
-				// Channel closed — check if an error caused it.
-				// handleInferenceError sends to ErrorCh then closes ChunkCh,
-				// so both can be ready simultaneously.
-				select {
-				case errMsg := <-pr.ErrorCh:
-					excludeProviders[provider.ID] = struct{}{}
-					provider.RemovePending(requestID)
-					s.registry.SetProviderIdle(provider.ID)
-					lastErr = errMsg.Error
-					lastErrCode = errMsg.StatusCode
-					provider = nil
-					pr = nil
-					continue
-				default:
-					// No error — genuine empty response.
-					committed = true
-				}
-			}
-		case errMsg := <-pr.ErrorCh:
-			timer.Stop()
-			excludeProviders[provider.ID] = struct{}{}
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			lastErr = errMsg.Error
-			lastErrCode = errMsg.StatusCode
-			s.logger.Warn("provider failed, retrying",
-				"request_id", requestID,
-				"provider_id", provider.ID,
-				"attempt", attempt+1,
-				"error", errMsg.Error,
-			)
-			provider = nil
-			pr = nil
-			continue
-		case <-timer.C:
-			excludeProviders[provider.ID] = struct{}{}
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
-			cancelData, _ := json.Marshal(cancelMsg)
-			_ = provider.Conn.Write(context.Background(), websocket.MessageText, cancelData)
-			lastErr = "timeout waiting for first response"
-			lastErrCode = http.StatusGatewayTimeout
-			s.logger.Warn("provider timeout, retrying",
-				"request_id", requestID,
-				"provider_id", provider.ID,
-				"attempt", attempt+1,
-			)
-			provider = nil
-			pr = nil
-			continue
-		case <-r.Context().Done():
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			refundReservation()
-			return
-		}
-
-		// Provider accepted or sent first chunk — commit to this provider.
-		// If only accepted (no chunk yet), wait for the first chunk with
-		// the full inference timeout since the backend may be reloading.
-		if accepted && !committed {
-			chunkTimer := time.NewTimer(inferenceTimeout)
-			select {
-			case chunk, ok := <-pr.ChunkCh:
-				chunkTimer.Stop()
-				if ok {
-					firstChunk = chunk
-					committed = true
-				} else {
-					// Closed — check for error (same race as above).
-					select {
-					case errMsg := <-pr.ErrorCh:
-						provider.RemovePending(requestID)
-						s.registry.SetProviderIdle(provider.ID)
-						refundReservation()
-						statusCode := errMsg.StatusCode
-						if statusCode == 0 {
-							statusCode = http.StatusBadGateway
-						}
-						writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
-						return
-					default:
-						committed = true
-					}
-				}
-			case errMsg := <-pr.ErrorCh:
-				chunkTimer.Stop()
-				provider.RemovePending(requestID)
-				s.registry.SetProviderIdle(provider.ID)
-				refundReservation()
-				statusCode := errMsg.StatusCode
-				if statusCode == 0 {
-					statusCode = http.StatusBadGateway
-				}
-				writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
-				return
-			case <-chunkTimer.C:
-				provider.RemovePending(requestID)
-				s.registry.SetProviderIdle(provider.ID)
-				cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
-				cancelData, _ := json.Marshal(cancelMsg)
-				_ = provider.Conn.Write(context.Background(), websocket.MessageText, cancelData)
-				refundReservation()
-				writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider accepted but timed out"))
-				return
-			case <-r.Context().Done():
-				provider.RemovePending(requestID)
-				s.registry.SetProviderIdle(provider.ID)
-				refundReservation()
-				return
-			}
-		}
-
-		break
-	}
-
-	if !committed {
-		refundReservation()
-		statusCode := lastErrCode
-		if statusCode == 0 {
-			statusCode = http.StatusServiceUnavailable
-		}
-		writeJSON(w, statusCode, errorResponse("provider_error",
-			fmt.Sprintf("inference failed after %d attempt(s): %s", maxDispatchAttempts, lastErr)))
+	plan, errResp := s.prepareTextRoutingPlan(r.Context(), consumerKey, model, estimatedPromptTokens, requestedMaxTokens)
+	if errResp.status != 0 {
+		writeJSON(w, errResp.status, errResp.body)
 		return
 	}
 
-	// Write provider attestation headers now that we're committed.
-	provider.Mu().Lock()
-	pubKey := provider.PublicKey
-	attested := provider.Attested
-	trustLevel := provider.TrustLevel
-	attestResult := provider.AttestationResult
-	mdaVerified := provider.MDAVerified
-	provider.Mu().Unlock()
-
-	providerID := provider.ID
-	chipName := provider.Hardware.ChipName
-	machineModel := provider.Hardware.MachineModel
-
-	if pubKey != "" {
-		w.Header().Set("X-Provider-Public-Key", pubKey)
-	}
-	if attested {
-		w.Header().Set("X-Provider-Attested", "true")
-	} else {
-		w.Header().Set("X-Provider-Attested", "false")
-	}
-	w.Header().Set("X-Provider-Trust-Level", string(trustLevel))
-	w.Header().Set("X-Provider-ID", providerID)
-	w.Header().Set("X-Provider-Chip", chipName)
-	w.Header().Set("X-Provider-Model", machineModel)
-	if attestResult != nil {
-		w.Header().Set("X-Provider-Serial", attestResult.SerialNumber)
-		if attestResult.SecureEnclaveAvailable {
-			w.Header().Set("X-Provider-Secure-Enclave", "true")
-		} else {
-			w.Header().Set("X-Provider-Secure-Enclave", "false")
-		}
-	}
-	if mdaVerified {
-		w.Header().Set("X-Provider-MDA-Verified", "true")
-	}
-	// SE public key for attestation receipt verification.
-	// Consumers can use this to verify SE signatures on response hashes.
-	if attestResult != nil && attestResult.PublicKey != "" {
-		w.Header().Set("X-Attestation-SE-Public-Key", attestResult.PublicKey)
-		w.Header().Set("X-Attestation-Device-Serial", attestResult.SerialNumber)
-	}
-
-	// When this function returns (consumer disconnect, timeout, or completion),
-	// send a cancel to the provider so it stops generating tokens.
-	defer func() {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-
-		cancelMsg := protocol.CancelMessage{
-			Type:      protocol.TypeCancel,
-			RequestID: requestID,
-		}
-		cancelData, _ := json.Marshal(cancelMsg)
-		if err := provider.Conn.Write(context.Background(), websocket.MessageText, cancelData); err != nil {
-			s.logger.Debug("failed to send cancel (provider may have disconnected)", "request_id", requestID, "error", err)
-		} else {
-			s.logger.Info("sent cancel to provider", "request_id", requestID)
-		}
-	}()
-
-	if stream {
-		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
-	} else {
-		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
+	if s.executeTextDispatch(w, r, rawBody, model, stream, estimatedPromptTokens, requestedMaxTokens, plan.dispatch, plan.reserveBalance, plan.refundReservation) {
+		return
 	}
 }
 
@@ -1748,134 +1966,17 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	// Inject the endpoint so the provider knows which local path to forward to.
 	parsed["endpoint"] = endpoint
+	rawBody, _ = json.Marshal(parsed)
 
-	// Pre-flight balance reservation — same worst-case-cost reservation as
-	// handleChatCompletions. Before this fix the completions and Anthropic
-	// paths routed without ANY reservation; the silent post-inference charge
-	// meant a consumer could receive full responses with a zero balance.
 	consumerKey := consumerKeyFromContext(r.Context())
-	var reservedMicroUSD int64
-	if s.billing != nil {
-		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
-		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
-			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-				"your balance is too low for this request — add funds at /billing or lower max_tokens"))
-			return
-		}
-	}
-	// Refund the reservation on any early failure before dispatch.
-	refundReservation := func() {
-		if reservedMicroUSD > 0 {
-			_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "reservation_refund")
-		}
-	}
-
-	requestID := uuid.New().String()
-	pr := &registry.PendingRequest{
-		RequestID:             requestID,
-		Model:                 model,
-		ConsumerKey:           consumerKey,
-		EstimatedPromptTokens: estimatedPromptTokens,
-		RequestedMaxTokens:    requestedMaxTokens,
-		ReservedMicroUSD:      reservedMicroUSD,
-		ChunkCh:               make(chan string, chunkBufferSize),
-		CompleteCh:            make(chan protocol.UsageInfo, 1),
-		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
-	}
-
-	provider := s.registry.ReserveProvider(model, pr)
-	if provider == nil {
-		queuedReq := &registry.QueuedRequest{
-			RequestID:  requestID,
-			Model:      model,
-			Pending:    pr,
-			ResponseCh: make(chan *registry.Provider, 1),
-		}
-		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
-			refundReservation()
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-				fmt.Sprintf("no provider available for model %q", model)))
-			return
-		}
-		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
-		if err != nil {
-			if err == context.Canceled {
-				refundReservation()
-				return
-			}
-			refundReservation()
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-				fmt.Sprintf("no provider became available for model %q", model)))
-			return
-		}
-	}
-
-	inferenceBody, _ := json.Marshal(parsed)
-
-	if provider.PublicKey == "" {
-		s.registry.SetProviderIdle(provider.ID)
-		refundReservation()
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
-			"no provider with E2E encryption available"))
+	plan, errResp := s.prepareTextRoutingPlan(r.Context(), consumerKey, model, estimatedPromptTokens, requestedMaxTokens)
+	if errResp.status != 0 {
+		writeJSON(w, errResp.status, errResp.body)
 		return
 	}
 
-	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		refundReservation()
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "provider public key invalid"))
+	if s.executeTextDispatch(w, r, rawBody, model, stream, estimatedPromptTokens, requestedMaxTokens, plan.dispatch, plan.reserveBalance, plan.refundReservation) {
 		return
-	}
-
-	sessionKeys, err := e2e.GenerateSessionKeys()
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		refundReservation()
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to generate session keys"))
-		return
-	}
-
-	encrypted, err := e2e.Encrypt(inferenceBody, providerPubKey, sessionKeys)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		refundReservation()
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to encrypt request"))
-		return
-	}
-
-	wireMsg := map[string]any{
-		"type":       protocol.TypeInferenceRequest,
-		"request_id": requestID,
-		"encrypted_body": map[string]string{
-			"ephemeral_public_key": encrypted.EphemeralPublicKey,
-			"ciphertext":           encrypted.Ciphertext,
-		},
-	}
-
-	pr.SessionPrivKey = &sessionKeys.PrivateKey
-
-	data, _ := json.Marshal(wireMsg)
-	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		refundReservation()
-		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
-		return
-	}
-
-	s.logger.Info("inference request dispatched",
-		"request_id", requestID,
-		"model", model,
-		"provider_id", provider.ID,
-		"endpoint", endpoint,
-		"stream", stream,
-	)
-
-	if stream {
-		s.handleStreamingResponse(w, r, pr)
-	} else {
-		s.handleNonStreamingResponse(w, r, pr)
 	}
 }
 

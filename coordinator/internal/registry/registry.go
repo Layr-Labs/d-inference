@@ -58,6 +58,9 @@ type PendingRequest struct {
 	ProviderID  string
 	Model       string
 	ConsumerKey string
+	// SelfHosted marks requests pinned to a provider owned by the same account
+	// as the consumer. These requests bypass marketplace billing and payouts.
+	SelfHosted bool
 	// EstimatedPromptTokens is a coordinator-side heuristic used only for
 	// routing and queue admission. It does not need tokenizer-perfect accuracy.
 	EstimatedPromptTokens int

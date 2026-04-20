@@ -36,5 +36,5 @@ Review baseline:
 Fork / push status:
 
 - The work is assembled locally on the branch above.
-- This box does not currently have GitHub API auth set up to create Arya's fork automatically, and `gh` is not installed.
+- `gh` is now installed locally on this box, but it is not authenticated to GitHub yet.
 - If `aryabhuptani/d-inference` is created or a fork already exists with writable SSH access, this branch can be pushed there directly and handed over as code.

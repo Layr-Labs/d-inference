@@ -33,7 +33,7 @@ The review used three passes:
 3. Proof-backed validation
    - converted the highest-confidence hypotheses into concrete tests inside the repo
    - reran the coordinator-side tests in a current local environment
-   - provider-side proof tests were previously verified locally; current rerun on 2026-04-20 was blocked by Linux OpenSSL / `pkg-config` environment drift rather than by test failure
+   - reran the provider-side proof tests in a current local environment after repairing local `pkgconf` / OpenSSL discovery
 
 ## Overall Conclusion
 

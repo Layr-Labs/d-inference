@@ -98,12 +98,12 @@ cargo test --no-default-features privacy_poc -- --nocapture
 As of 2026-04-20:
 
 - Coordinator-side Go proofs reran successfully in the local review environment.
-- Provider-side Rust proofs were previously verified locally during the review, but the latest rerun on 2026-04-20 was blocked by Linux OpenSSL / `pkg-config` environment drift rather than by an observed assertion failure.
+- Provider-side Rust proofs also reran successfully in the local review environment after restoring a real local `pkgconf` binary and pointing Cargo at the local OpenSSL metadata via `PKG_CONFIG_PATH=/home/arya/.local/openssl-3.0.20/lib64/pkgconfig`.
 
 That means:
 
-- the provider-side proof code should still be treated as concrete review material
-- but if the receiving team wants a fresh rerun in this exact environment, they should first restore native OpenSSL discovery for Cargo or run the provider proof target in their normal dev environment
+- the proof set is currently rerunnable on this review machine
+- the receiving team can run the commands above in their own normal dev environment without needing any custom harness beyond ordinary Go/Rust toolchains and OpenSSL discovery on Linux
 
 ## Suggested Regression Candidates
 

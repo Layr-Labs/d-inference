@@ -145,7 +145,7 @@ describe("deposit", () => {
 
   it("throws on failure", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({}, 400));
-    await expect(deposit(0)).rejects.toThrow("Deposit failed: 400");
+    await expect(deposit(0)).rejects.toThrow("Deposit failed (400)");
   });
 });
 
@@ -171,7 +171,7 @@ describe("withdraw", () => {
 
   it("throws on failure", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({}, 502));
-    await expect(withdraw(5, "0xfoo")).rejects.toThrow("Withdrawal failed: 502");
+    await expect(withdraw(5, "0xfoo")).rejects.toThrow("Withdrawal failed (502)");
   });
 });
 

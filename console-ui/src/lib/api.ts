@@ -224,7 +224,7 @@ export async function deposit(amountUsd: number): Promise<void> {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data?.error?.message || data?.error || `Purchase failed (${res.status})`);
+    throw new Error(data?.error?.message || data?.error || `Deposit failed (${res.status})`);
   }
 }
 

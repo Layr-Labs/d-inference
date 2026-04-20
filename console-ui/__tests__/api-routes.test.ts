@@ -106,7 +106,7 @@ describe("GET /api/payments/balance", () => {
 // =========================================================================
 
 describe("POST /api/payments/deposit", () => {
-  it("forwards body and auth to coordinator /v1/payments/deposit", async () => {
+  it("forwards body and auth to coordinator /v1/billing/deposit", async () => {
     upstreamFetch.mockResolvedValueOnce(upstreamOk({ ok: true }));
 
     const { POST } = await import("@/app/api/payments/deposit/route");
@@ -123,7 +123,7 @@ describe("POST /api/payments/deposit", () => {
 
     expect(res.status).toBe(200);
     const [upstreamUrl, upstreamOpts] = upstreamFetch.mock.calls[0];
-    expect(upstreamUrl).toBe("https://coord.test/v1/payments/deposit");
+    expect(upstreamUrl).toBe("https://coord.test/v1/billing/deposit");
     expect(upstreamOpts.method).toBe("POST");
     expect(upstreamOpts.headers["Content-Type"]).toBe("application/json");
     expect(upstreamOpts.headers.Authorization).toBe("Bearer key-dep");

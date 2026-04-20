@@ -12,11 +12,7 @@ Contents:
    - Index of the proof-backed tests and what each one demonstrates.
    - Includes file paths, test names, and rerun commands.
 
-3. `handoff-code.patch`
-   - `git format-patch` export of the committed handoff change.
-   - Can be reviewed directly or applied with `git am`.
-
-4. Code in this repo worktree / branch
+3. Code in this repo worktree / branch
    - Local branch: `arya/privacy-audit-handoff-2026-04-20`
    - Main proof files:
      - `coordinator/internal/api/privacy_poc_test.go`

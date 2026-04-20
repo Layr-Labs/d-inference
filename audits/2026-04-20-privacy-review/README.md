@@ -1,6 +1,6 @@
-# Dark Bloom Privacy Review Handoff
+# Darkbloom Privacy Review Handoff
 
-This packet is meant to be handed back to the Dark Bloom team as a compact engineering-facing review bundle, not as a marketing memo.
+This packet is meant to be handed back to the Darkbloom team as a compact engineering-facing review bundle, not as a marketing memo.
 
 Contents:
 
@@ -32,9 +32,3 @@ Review baseline:
 - Upstream repo: `git@github.com:Layr-Labs/d-inference.git`
 - Base commit reviewed: `86078f892074e85594daa1ca8f30739221cfd9e8`
 - Base commit subject: `Revert "Add application-identifier + team-identifier entitlements for data protection keychain."`
-
-Fork / push status:
-
-- The work is assembled locally on the branch above.
-- `gh` is now installed locally on this box, but it is not authenticated to GitHub yet.
-- If `aryabhuptani/d-inference` is created or a fork already exists with writable SSH access, this branch can be pushed there directly and handed over as code.

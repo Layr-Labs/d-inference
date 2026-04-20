@@ -1,4 +1,4 @@
-# Dark Bloom Privacy Audit Report
+# Darkbloom Privacy Audit Report
 
 Date: 2026-04-20
 
@@ -8,7 +8,7 @@ Repo reviewed:
 
 ## Scope
 
-This review compared Dark Bloom's privacy/security model as presented in its theory and white-paper-adjacent materials against the current codebase. The work then moved from semantic review into proof-backed validation for the most concrete suspected privacy failures.
+This review compared Darkbloom's privacy/security model as presented in its theory and white-paper-adjacent materials against the current codebase. The work then moved from semantic review into proof-backed validation for the most concrete suspected privacy failures.
 
 This report is intentionally split between:
 
@@ -37,7 +37,7 @@ The review used three passes:
 
 ## Overall Conclusion
 
-Dark Bloom appears to be a serious privacy-improving system, not vapor. The design is directionally coherent and several parts of the architecture show real care. The main issue is not that the privacy story is fabricated; it is that the strongest version of the story is ahead of the current implementation.
+Darkbloom appears to be a serious privacy-improving system, not vapor. The design is directionally coherent and several parts of the architecture show real care. The main issue is not that the privacy story is fabricated; it is that the strongest version of the story is ahead of the current implementation.
 
 The current system reads more like:
 
@@ -55,7 +55,7 @@ The biggest recurring pattern is implementation drift:
 
 ## Theory-Level Observations
 
-These are not "bugs" in the narrow sense, but they matter because they shape how strong Dark Bloom's privacy claims can honestly be.
+These are not "bugs" in the narrow sense, but they matter because they shape how strong Darkbloom's privacy claims can honestly be.
 
 ### 1. The coordinator remains a meaningful privacy-bearing component
 
@@ -212,7 +212,7 @@ Narrow claims and documentation where implementation is not yet at the strongest
 
 ## Closing Note
 
-This report does not claim that Dark Bloom "has no privacy value." The opposite is true: the design has real value and several real privacy-preserving ideas. The problem is that the strongest interpretation of the privacy story is not yet what the current code enforces.
+This report does not claim that Darkbloom "has no privacy value." The opposite is true: the design has real value and several real privacy-preserving ideas. The problem is that the strongest interpretation of the privacy story is not yet what the current code enforces.
 
 The practical consequence is simple:
 

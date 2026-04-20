@@ -2,7 +2,7 @@
 
 Date: 2026-04-20
 
-This appendix indexes the proof-backed findings produced during the Dark Bloom privacy review.
+This appendix indexes the proof-backed findings produced during the Darkbloom privacy review.
 
 ## Code Paths
 

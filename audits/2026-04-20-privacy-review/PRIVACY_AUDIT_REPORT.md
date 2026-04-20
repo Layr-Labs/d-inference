@@ -4,7 +4,7 @@ Date: 2026-04-20
 
 Repo reviewed:
 - Upstream: `git@github.com:Layr-Labs/d-inference.git`
-- Base commit: `1f13c4074fc563db380200d34e58c22b3a635907`
+- Base commit: `86078f892074e85594daa1ca8f30739221cfd9e8`
 
 ## Scope
 

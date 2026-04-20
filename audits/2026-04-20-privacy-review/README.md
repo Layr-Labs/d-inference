@@ -30,8 +30,8 @@ Contents:
 Review baseline:
 
 - Upstream repo: `git@github.com:Layr-Labs/d-inference.git`
-- Base commit reviewed: `1f13c4074fc563db380200d34e58c22b3a635907`
-- Base commit subject: `Mark image generation as under maintenance on console UI and landing page.`
+- Base commit reviewed: `86078f892074e85594daa1ca8f30739221cfd9e8`
+- Base commit subject: `Revert "Add application-identifier + team-identifier entitlements for data protection keychain."`
 
 Fork / push status:
 

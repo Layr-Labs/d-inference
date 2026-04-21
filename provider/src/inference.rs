@@ -478,6 +478,10 @@ try:
     from vllm_mlx.api.utils import clean_output_text
     from vllm_mlx.api.models import ToolCall, FunctionCall
     _cleaned_text, _tool_calls = parse_tool_calls(_output.text, _req)
+    if not _tool_calls and '{{"' in _output.text:
+        import re as _re
+        _fixed = _re.sub(r'\{\{(")', r'{\1', _output.text)
+        _cleaned_text, _tool_calls = parse_tool_calls(_fixed, _req)
     _final_content = clean_output_text(_cleaned_text) if _cleaned_text else None
     if _response_format and not _tool_calls:
         from vllm_mlx.api.tool_calling import parse_json_output

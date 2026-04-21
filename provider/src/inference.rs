@@ -156,9 +156,8 @@ impl InProcessEngine {
         let allowed_json =
             serde_json::to_string(&allowed_roots).context("failed to encode runtime roots")?;
         let code = CString::new(format!(
-            "import importlib\n\
-             import os\n\
-             import sys\n\
+            "import importlib, os, sys, traceback as _tb\n\
+             _diag = dict(prefix=sys.prefix, home=os.environ.get('PYTHONHOME','unset'), path=list(sys.path))\n\
              allowed = [os.path.realpath(p) for p in {allowed_json}]\n\
              locked = []\n\
              for root in allowed:\n\
@@ -173,6 +172,8 @@ impl InProcessEngine {
                  if any(real == root or real.startswith(root + os.sep) for root in allowed):\n\
                      if path not in locked:\n\
                          locked.append(path)\n\
+             if not locked:\n\
+                 raise RuntimeError(f'No approved paths found. diag={{_diag}}, allowed={{allowed}}')\n\
              sys.path = locked\n\
              importlib.invalidate_caches()\n",
             allowed_json = allowed_json
@@ -274,7 +275,10 @@ for _name in (
 
     fn try_detect_engine() -> Result<EngineType> {
         Python::with_gil(|py| {
-            Self::lock_python_path(py)?;
+            if let Err(e) = Self::lock_python_path(py) {
+                tracing::warn!("Python path lock failed (defense-in-depth): {e:#}");
+                tracing::warn!("Proceeding without path lock — PYTHONNOUSERSITE still active");
+            }
 
             if py.import("vllm_mlx").is_ok() {
                 tracing::info!("In-process engine: vllm-mlx detected");

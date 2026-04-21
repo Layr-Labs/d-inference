@@ -567,22 +567,26 @@ jobs:
       # --- GitHub Release ---
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          files: |
-            /tmp/eigeninference-bundle-macos-arm64.tar.gz
-            /tmp/Darkbloom.dmg
-          generate_release_notes: true
-          body: |
-            ## Provider v${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > /tmp/release-notes.md <<'NOTES'
+          ## Provider v${{ github.ref_name }}
 
-            **Binary hash (signed):** `${{ env.BINARY_HASH }}`
-            **Bundle hash:** `${{ env.BUNDLE_HASH }}`
-            **Runtime hash (vllm-mlx):** `${{ env.RUNTIME_HASH }}`
-            **Signed by:** Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)
-            **Notarized:** Yes
+          **Binary hash (signed):** `${{ env.BINARY_HASH }}`
+          **Bundle hash:** `${{ env.BUNDLE_HASH }}`
+          **Runtime hash (vllm-mlx):** `${{ env.RUNTIME_HASH }}`
+          **Signed by:** Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)
+          **Notarized:** Yes
 
-            ### Install
-            ```bash
-            curl -fsSL ${{ secrets.COORDINATOR_URL }}/install.sh | bash
-            ```
+          ### Install
+          ```bash
+          curl -fsSL ${{ secrets.COORDINATOR_URL }}/install.sh | bash
+          ```
+          NOTES
+          gh release create "${{ github.ref_name }}" \
+            /tmp/eigeninference-bundle-macos-arm64.tar.gz \
+            /tmp/Darkbloom.dmg \
+            --title "${{ github.ref_name }}" \
+            --notes-file /tmp/release-notes.md \
+            --generate-notes

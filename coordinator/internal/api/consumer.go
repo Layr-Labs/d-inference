@@ -982,6 +982,10 @@ func extractMessage(chunks []string) extractedMessage {
 					} `json:"function,omitempty"`
 				} `json:"tool_calls,omitempty"`
 			} `json:"delta"`
+			Message struct {
+				Content   string `json:"content"`
+				Reasoning string `json:"reasoning"`
+			} `json:"message"`
 			FinishReason *string `json:"finish_reason"`
 		}
 		if err := json.Unmarshal(choicesRaw, &choices); err != nil {
@@ -989,8 +993,16 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 
 		for _, c := range choices {
-			contentBuilder.WriteString(c.Delta.Content)
-			reasoningBuilder.WriteString(c.Delta.Reasoning)
+			if c.Delta.Content != "" {
+				contentBuilder.WriteString(c.Delta.Content)
+			} else if c.Message.Content != "" {
+				contentBuilder.WriteString(c.Message.Content)
+			}
+			if c.Delta.Reasoning != "" {
+				reasoningBuilder.WriteString(c.Delta.Reasoning)
+			} else if c.Message.Reasoning != "" {
+				reasoningBuilder.WriteString(c.Message.Reasoning)
+			}
 			for _, tc := range c.Delta.ToolCalls {
 				existing, ok := toolCallMap[tc.Index]
 				if !ok {

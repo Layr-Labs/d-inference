@@ -5,7 +5,7 @@ Decentralized inference network for Apple Silicon Macs. Providers offer GPU comp
 ## Project Structure
 
 ```
-coordinator/          Go — central matchmaking server (runs on AWS)
+coordinator/          Go — central matchmaking server (runs on EigenCloud in prod)
 ├── cmd/coordinator/  entrypoint
 ├── cmd/verify-attestation/  attestation blob verification utility
 ├── internal/
@@ -116,7 +116,7 @@ The `.external/` directory contains our fork of [vllm-mlx](https://github.com/Ga
 ```bash
 cd coordinator
 go test ./...
-# Cross-compile for AWS (Linux amd64):
+# Cross-compile for the EigenCloud container (Linux amd64):
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o eigeninference-coordinator-linux ./cmd/coordinator
 ```
 
@@ -187,49 +187,52 @@ Full deploy runbook: **[docs/coordinator-deploy-runbook.md](docs/coordinator-dep
 
 Covers coordinator deploy, provider CLI bundling, macOS app distribution, and install.sh updates.
 
-### Coordinator (quick deploy)
-```bash
-cd coordinator && \
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o eigeninference-coordinator-linux ./cmd/coordinator && \
-scp -i ~/.ssh/eigeninference-infra eigeninference-coordinator-linux ubuntu@34.197.17.112:/tmp/eigeninference-coordinator && \
-ssh -i ~/.ssh/eigeninference-infra ubuntu@34.197.17.112 \
-  'sudo systemctl stop eigeninference-coordinator && \
-   sudo mv /tmp/eigeninference-coordinator /usr/local/bin/eigeninference-coordinator && \
-   sudo chmod +x /usr/local/bin/eigeninference-coordinator && \
-   sudo systemctl start eigeninference-coordinator'
-```
+### Coordinator (prod, EigenCloud)
 
-### Provider bundle (quick upload)
-```bash
-# After building provider + enclave:
-scp -i ~/.ssh/eigeninference-infra /tmp/eigeninference-bundle/eigeninference-bundle-macos-arm64.tar.gz \
-  ubuntu@34.197.17.112:/var/www/html/dl/
-```
+> **AI agents must NOT deploy to EigenCloud.** Prod deploys (`ecloud compute app deploy …`, any mutation of the `d-inference` EigenCloud app, any write to EigenCloud KMS or prod secrets) are a human-only action. If asked to ship to prod, stop and hand off — prepare the PR, the tag, or the exact commands, but do not execute them. This applies even when the user says "deploy"; confirm they mean *they* will run it, not you. Read-only commands like `ecloud compute app logs d-inference` or `curl https://api.darkbloom.dev/health` are fine.
 
-## SSH
+The prod coordinator runs on EigenCloud (TEE). Build target is `coordinator/Dockerfile`; EigenCloud builds from the repo and injects Caddy + TLS. Deploy is blue-green with persistent disk transfer (`/mnt/disks/userdata`).
 
-Use persistent SSH control sockets to avoid rate limits when running multiple commands against the same host:
+Human-only deploy flow (for reference — do not run this as the agent):
 
 ```bash
-# First connection opens the socket (add to first SSH/SCP call):
-ssh -o ControlMaster=auto -o ControlPath=/tmp/ssh-%r@%h -o ControlPersist=600 -i ~/.ssh/eigeninference-infra ubuntu@34.197.17.112 "..."
+# 1. Push your changes (agent may do this if explicitly asked)
+git push origin master
 
-# Subsequent calls reuse it automatically (same ControlPath):
-ssh -o ControlPath=/tmp/ssh-%r@%h ubuntu@34.197.17.112 "..."
-scp -o ControlPath=/tmp/ssh-%r@%h file ubuntu@34.197.17.112:/path
+# 2. Trigger EigenCloud deploy — HUMAN ONLY
+ecloud compute app deploy d-inference
+
+# 3. Verify (agent may do this)
+curl https://api.darkbloom.dev/health
+ecloud compute app logs d-inference
 ```
 
-Always use control sockets when running multiple SSH/SCP commands to the same host in a session.
+Deploy time: ~5-7 minutes. Env vars/secrets are managed via EigenCloud KMS — see `docs/coordinator-deploy-runbook.md` for the full list.
+
+### Coordinator (dev, Google Cloud)
+
+The dev coordinator runs on GCP (project `sepolia-ai`) — separate domain (`api.dev.darkbloom.xyz`), separate R2 bucket (`d-inf-app-dev`), **same** trust level as prod (`MIN_TRUST=hardware`, full MDM + step-ca stack). Mainnet Solana with a dev-only BIP39 mnemonic. **Never** used for prod traffic. Full wiring in [docs/dev-environment.md](docs/dev-environment.md).
+
+Shape: GCE Ubuntu VM + Docker + systemd (coordinator + step-ca + MicroMDM need persistent disk state), Cloud SQL Postgres via cloud-sql-proxy, **Vercel**-hosted console UI, Cloud Build auto-deploys on master push. ~2–4 min coordinator upgrades.
+
+### Provider bundle
+
+CI (`.github/workflows/release.yml`) builds, signs, notarizes, and uploads bundles to Cloudflare R2 (`s3://d-inf-app/releases/v{VERSION}/`), then registers the release with the coordinator via `POST /v1/releases`. Providers fetch via `install.sh` served by the coordinator. There is no SSH-to-a-VM step.
 
 ## Infrastructure
 
-| Component | Location | Details |
-|-----------|----------|---------|
-| Coordinator | AWS EC2 `eigeninference-mdm` | t3.small, `34.197.17.112` (Elastic IP), systemd service |
-| Domain | `inference-test.openinnovation.dev` | nginx → localhost:8080, Let's Encrypt TLS |
-| SSH | `ssh -i ~/.ssh/eigeninference-infra ubuntu@34.197.17.112` | Key name: `eigeninference-infra` |
-| AWS Profile | `admin` | Account 084828557146 |
-| Provider install | `curl -fsSL https://inference-test.openinnovation.dev/install.sh \| bash` | Downloads tarball from `/dl/` |
+| Component | Prod | Dev |
+|-----------|------|-----|
+| Coordinator host | EigenCloud app `d-inference` | GCE VM `d-inference-dev` (us-central1-a, Ubuntu + Docker + systemd) |
+| Console UI | EigenCloud app | Vercel (separate dev project, `NEXT_PUBLIC_COORDINATOR_URL=https://api.dev.darkbloom.xyz`) |
+| Domain | `api.darkbloom.dev` | `api.dev.darkbloom.xyz` |
+| TLS | Caddy + EigenCloud-injected certs | Caddy in-container (step-ca or Let's Encrypt ACME, VM :443) |
+| Database | AWS RDS PostgreSQL (managed) | Cloud SQL Postgres 16 `d-inference-dev-db` via cloud-sql-proxy sidecar |
+| Persistent storage | `/mnt/disks/userdata` (EigenCloud blue-green) | GCE persistent disk `d-inference-dev-data`, 30 GB, mounted at `/mnt/disks/userdata` |
+| Logs | `ecloud compute app logs d-inference` | `gcloud logging read ...` (VM + Cloud SQL in Cloud Logging) |
+| Release bucket | R2 `d-inf-app` | R2 `d-inf-app-dev` |
+| Trust level | `hardware` (MDM enrollment required) | `hardware` (same — full MDM + step-ca stack) |
+| Provider install | `curl -fsSL https://api.darkbloom.dev/install.sh \| bash` | `curl -fsSL https://api.dev.darkbloom.xyz/install.sh \| bash` |
 
 ## Key Design Decisions
 
@@ -277,6 +280,19 @@ Always think from first principles. When fixing a bug or designing a feature:
 - Image generation changes span three places: coordinator consumer/provider handlers, provider proxying, and `image-bridge/`.
 - Device linking changes span coordinator device auth endpoints and provider `login`/`logout` commands.
 - The repo contains mixed payment language: current code implements Privy + Solana + Stripe, but some provider comments still reference Tempo/pathUSD.
+
+## Testing New Features
+
+Every new feature or non-trivial change must ship with tests. Don't rely on "the reviewer will catch it" or "I'll test it manually once" — write tests that a future change can run.
+
+- **Prefer live-isolated tests over mocks.** Spin up a real instance of the dependency in the test process or a throwaway local container (test Postgres via `pgx` + a temp database, a real in-process HTTP server via `httptest.NewServer`, a real in-memory store). Do NOT mock the thing you're actually trying to exercise — mocks hide real bugs (wrong SQL, stale schema, protocol drift). The lesson from past incidents: mocked tests passed while the prod migration failed.
+- **Never point tests at production.** No live coordinator, no prod DB, no real wallets, no real Privy tenants. Each test harness builds its own isolated coordinator, its own in-memory or ephemeral store, its own seed data. If a test needs credentials, they're fake fixtures, not the real ones.
+- **Cover both impls when a feature spans backends.** If a `store.Store` method gets a memory impl AND a postgres impl, both need coverage (memory in the default test suite; postgres behind a build tag or a local-only integration test that uses a throwaway DB).
+- **Test the real HTTP path when possible.** For new endpoints, exercise them through `httptest.NewServer(srv.Handler())` (or the equivalent) — not by calling the handler function directly. That catches routing mistakes, middleware gaps, and path-parameter bugs.
+- **Frontend features need frontend tests.** When adding a page or form, add at minimum a vitest for the component's validation + state. For UI that can't be easily unit-tested, boot the dev server and walk through the flow in a browser before declaring done — and say so in the handoff.
+- **Regression: every bug fix gets a test that fails without the fix.** Otherwise the bug can come back silently.
+
+The goal is "next engineer can change this and CI tells them if they broke it," not "it worked on my machine today."
 
 ## Quality Gate
 

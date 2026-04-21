@@ -60,25 +60,17 @@ func runProviderLoop(ctx context.Context, t *testing.T, conn *websocket.Conn, pu
 			}
 
 		case protocol.TypeInferenceRequest:
-			reqID, _ := raw["request_id"].(string)
+			var inferReq protocol.InferenceRequestMessage
+			json.Unmarshal(data, &inferReq)
 
-			// Send two chunks to simulate streaming.
 			for _, word := range []string{responseContent, " done"} {
-				chunk := protocol.InferenceResponseChunkMessage{
-					Type:      protocol.TypeInferenceResponseChunk,
-					RequestID: reqID,
-					Data:      `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"` + word + `"}}]}` + "\n\n",
-				}
-				chunkData, _ := json.Marshal(chunk)
-				if wErr := conn.Write(ctx, websocket.MessageText, chunkData); wErr != nil {
-					return served
-				}
+				sseData := `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"` + word + `"}}]}` + "\n\n"
+				writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey, sseData)
 			}
 
-			// Send complete with usage.
 			complete := protocol.InferenceCompleteMessage{
 				Type:      protocol.TypeInferenceComplete,
-				RequestID: reqID,
+				RequestID: inferReq.RequestID,
 				Usage:     protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 5},
 			}
 			completeData, _ := json.Marshal(complete)
@@ -174,10 +166,12 @@ func connectAndPrepareProvider(t *testing.T, ctx context.Context, tsURL string, 
 			ChipName:     "Apple M3 Max",
 			MemoryGB:     64,
 		},
-		Models:    models,
-		Backend:   "test",
-		PublicKey: pubKey,
-		DecodeTPS: decodeTPS,
+		Models:                  models,
+		Backend:                 "inprocess-mlx",
+		PublicKey:               pubKey,
+		EncryptedResponseChunks: true,
+		DecodeTPS:               decodeTPS,
+		PrivacyCapabilities:     testPrivacyCaps(),
 	}
 	regData, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {

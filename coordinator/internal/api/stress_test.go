@@ -4,8 +4,7 @@ package api
 //
 // Covers: queue overflow, provider disconnect under active load, request
 // cancellation with slow providers, billing race conditions, provider
-// re-registration with different models, heterogeneous provider scoring,
-// and transcription protocol.
+// re-registration with different models, and heterogeneous provider scoring.
 
 import (
 	"context"
@@ -219,7 +218,7 @@ func TestStress_ProviderCrashDuringMultipleInFlightRequests(t *testing.T) {
 				// Send one partial chunk then crash
 				var req protocol.InferenceRequestMessage
 				json.Unmarshal(data, &req)
-				sendChunk(ctx, conn, req.RequestID,
+				writeEncryptedTestChunk(t, ctx, conn, req, pubKey,
 					`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial..."},"finish_reason":null}]}`+"\n\n")
 				time.Sleep(100 * time.Millisecond)
 				// Crash!
@@ -318,7 +317,7 @@ func TestStress_ConsumerDisconnectSendsCancelToProvider(t *testing.T) {
 				json.Unmarshal(data, &req)
 
 				// Send first chunk (simulating slow generation)
-				sendChunk(ctx, conn, req.RequestID,
+				writeEncryptedTestChunk(t, ctx, conn, req, pubKey,
 					`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"slow..."},"finish_reason":null}]}`+"\n\n")
 				// Don't block the read loop — keep reading for cancel
 
@@ -587,10 +586,12 @@ func TestStress_HeterogeneousProviderScoring(t *testing.T) {
 				ChipName:     spec.chipName,
 				MemoryGB:     spec.memoryGB,
 			},
-			Models:    []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
-			Backend:   "vllm-mlx",
-			PublicKey: spec.pubKey,
-			DecodeTPS: spec.decodeTPS,
+			Models:                  []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+			Backend:                 "inprocess-mlx",
+			PublicKey:               spec.pubKey,
+			DecodeTPS:               spec.decodeTPS,
+			EncryptedResponseChunks: true,
+			PrivacyCapabilities:     testPrivacyCaps(),
 		}
 		data, _ := json.Marshal(regMsg)
 		conn.Write(ctx, websocket.MessageText, data)
@@ -727,128 +728,6 @@ func TestStress_MemoryPressureAffectsScoring(t *testing.T) {
 
 	if scoreHigh >= scoreLow {
 		t.Errorf("high memory pressure (%.2f) should score lower than low (%.2f)", scoreHigh, scoreLow)
-	}
-}
-
-// =========================================================================
-// Transcription protocol test (mock provider, no real STT)
-// =========================================================================
-
-func TestStress_TranscriptionProtocol(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 500 * time.Millisecond
-
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	sttModel := "CohereLabs/cohere-transcribe-03-2026"
-	pubKey := testPublicKeyB64()
-	models := []protocol.ModelInfo{{ID: sttModel, ModelType: "transcription", Quantization: ""}}
-
-	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	for _, id := range reg.ProviderIDs() {
-		reg.SetTrustLevel(id, registry.TrustHardware)
-		reg.RecordChallengeSuccess(id)
-	}
-
-	// Provider handles transcription requests
-	go func() {
-		for {
-			_, data, err := conn.Read(ctx)
-			if err != nil {
-				return
-			}
-			var env struct {
-				Type string `json:"type"`
-			}
-			json.Unmarshal(data, &env)
-
-			switch env.Type {
-			case protocol.TypeAttestationChallenge:
-				resp := makeValidChallengeResponse(data, pubKey)
-				conn.Write(ctx, websocket.MessageText, resp)
-
-			case protocol.TypeTranscriptionRequest:
-				var req struct {
-					RequestID string `json:"request_id"`
-				}
-				json.Unmarshal(data, &req)
-
-				// Send mock transcription result
-				result := protocol.TranscriptionCompleteMessage{
-					Type:      protocol.TypeTranscriptionComplete,
-					RequestID: req.RequestID,
-					Text:      "Hello world, this is a test transcription.",
-					Segments: []protocol.TranscriptionSegment{
-						{Start: 0.0, End: 2.5, Text: "Hello world,"},
-						{Start: 2.5, End: 5.0, Text: " this is a test transcription."},
-					},
-					Usage: protocol.TranscriptionUsage{
-						AudioSeconds: 5.0,
-					},
-				}
-				resultData, _ := json.Marshal(result)
-				conn.Write(ctx, websocket.MessageText, resultData)
-			}
-		}
-	}()
-
-	time.Sleep(500 * time.Millisecond)
-
-	// Send a transcription request (multipart with a tiny WAV file)
-	// The actual audio content doesn't matter — the mock provider returns canned text
-	boundary := "----TestBoundary"
-	bodyParts := []string{
-		"--" + boundary,
-		`Content-Disposition: form-data; name="model"`,
-		"",
-		sttModel,
-		"--" + boundary,
-		`Content-Disposition: form-data; name="file"; filename="test.wav"`,
-		`Content-Type: audio/wav`,
-		"",
-		"RIFF....WAVEfmt fake-audio-data",
-		"--" + boundary + "--",
-	}
-	body := strings.Join(bodyParts, "\r\n")
-
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/audio/transcriptions",
-		strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer test-key")
-	req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("transcription request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != 200 {
-		t.Logf("transcription response: status=%d body=%s", resp.StatusCode, string(respBody))
-		// May fail if multipart parsing is strict — log but don't fail hard
-		t.Log("transcription protocol test: PARTIAL (multipart parsing may be strict)")
-		return
-	}
-
-	var result struct {
-		Text string `json:"text"`
-	}
-	json.Unmarshal(respBody, &result)
-	if result.Text == "" {
-		t.Error("transcription response missing text")
-	} else {
-		t.Logf("transcription result: %q", result.Text)
-		t.Log("transcription protocol: PASS")
 	}
 }
 

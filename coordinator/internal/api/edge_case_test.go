@@ -189,8 +189,8 @@ func TestEdge_VeryLongModelName(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdge_UnicodeMessages(t *testing.T) {
-	ts, cleanup, providerDone := setupE2ETest(t, "unicode-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage) {
-		sendChunk(ctx, conn, inferReq.RequestID,
+	ts, cleanup, providerDone := setupE2ETest(t, "unicode-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"你好世界 🌍"},"finish_reason":"stop"}]}`+"\n\n")
 		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 3})
 	})
@@ -218,8 +218,8 @@ func TestEdge_UnicodeMessages(t *testing.T) {
 }
 
 func TestEdge_HTMLInjectionInMessages(t *testing.T) {
-	ts, cleanup, providerDone := setupE2ETest(t, "html-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage) {
-		sendChunk(ctx, conn, inferReq.RequestID,
+	ts, cleanup, providerDone := setupE2ETest(t, "html-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"safe response"},"finish_reason":"stop"}]}`+"\n\n")
 		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 2})
 	})
@@ -454,13 +454,13 @@ func TestEdge_CatalogChangeDuringActiveProvider(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdge_ProviderSendsEmptyChunks(t *testing.T) {
-	ts, cleanup, providerDone := setupE2ETest(t, "empty-chunk-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage) {
+	ts, cleanup, providerDone := setupE2ETest(t, "empty-chunk-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
 		// Send chunks with empty content
-		sendChunk(ctx, conn, inferReq.RequestID,
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`+"\n\n")
-		sendChunk(ctx, conn, inferReq.RequestID,
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":""},"finish_reason":null}]}`+"\n\n")
-		sendChunk(ctx, conn, inferReq.RequestID,
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"actual content"},"finish_reason":"stop"}]}`+"\n\n")
 		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 1})
 	})
@@ -492,8 +492,8 @@ func TestEdge_ProviderSendsVeryLargeChunk(t *testing.T) {
 	// Simulate a provider sending a very large content chunk (100KB).
 	largeContent := strings.Repeat("x", 100*1024)
 
-	ts, cleanup, providerDone := setupE2ETest(t, "large-chunk-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage) {
-		sendChunk(ctx, conn, inferReq.RequestID,
+	ts, cleanup, providerDone := setupE2ETest(t, "large-chunk-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			fmt.Sprintf(`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":%q},"finish_reason":"stop"}]}`, largeContent)+"\n\n")
 		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 25000})
 	})
@@ -824,7 +824,7 @@ func TestEdge_ProviderDisconnectMidStream(t *testing.T) {
 				json.Unmarshal(data, &req)
 
 				// Send one chunk then disconnect abruptly
-				sendChunk(ctx, conn, req.RequestID,
+				sendChunk(t, ctx, conn, req, pubKey,
 					`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`+"\n\n")
 				time.Sleep(50 * time.Millisecond)
 				conn.Close(websocket.StatusAbnormalClosure, "simulated crash")
@@ -861,9 +861,9 @@ func TestEdge_ProviderDisconnectMidStream(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdge_NonStreamingResponse(t *testing.T) {
-	ts, cleanup, providerDone := setupE2ETest(t, "nonstream-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage) {
+	ts, cleanup, providerDone := setupE2ETest(t, "nonstream-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
 		// Provider sends a non-streaming response (single chunk with full content + complete)
-		sendChunk(ctx, conn, inferReq.RequestID,
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"chatcmpl-ns","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"The answer is 42."},"finish_reason":"stop"}]}`+"\n\n")
 		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 6})
 	})

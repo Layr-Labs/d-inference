@@ -7,23 +7,19 @@ package api
 // layer between consumers and providers.
 //
 // Trust model:
-//   The coordinator runs in a GCP Confidential VM with AMD SEV-SNP, providing
-//   hardware-encrypted memory. Consumer traffic arrives over HTTPS/TLS.
-//   The coordinator can read requests for routing purposes but never logs
-//   prompt content. When forwarding to a provider, the coordinator sends
-//   plain JSON over the WebSocket (the provider is attested via Secure Enclave
-//   challenge-response). Future: the coordinator may encrypt request bodies
-//   with the provider's X25519 public key before forwarding.
+//   The coordinator runs in a Confidential VM, providing hardware-encrypted
+//   memory. Consumers may additionally sender-seal requests to the
+//   coordinator's X25519 key. The coordinator decrypts for routing purposes
+//   but never logs prompt content, then re-encrypts each request to the
+//   selected provider's X25519 public key before forwarding over the
+//   WebSocket. Providers are attested via Secure Enclave challenge-response.
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -61,8 +57,8 @@ const (
 )
 
 // chatCompletionRequest is the incoming OpenAI-compatible request body.
-// The consumer sends plain JSON — no encryption fields are needed because
-// TLS to the Confidential VM is the trust boundary.
+// Consumers may send plain JSON or sender-sealed JSON (handled by
+// sealedTransport before this handler runs).
 type chatCompletionRequest struct {
 	Model       string                 `json:"model"`
 	Messages    []protocol.ChatMessage `json:"messages"`
@@ -161,6 +157,57 @@ func estimateRequestedMaxTokens(parsed map[string]any) int {
 	return 256
 }
 
+// defaultMaxOutputTokens is the ceiling injected into requests that don't set
+// max_tokens. It bounds the worst-case cost of a single inference so the
+// pre-flight balance reservation covers the entire generation; without this
+// cap a consumer could stream output exceeding their reservation and the
+// post-inference charge would fail silently (see GitHub issue #33). Consumers
+// who need longer generations must set max_tokens explicitly and carry the
+// balance to cover it.
+const defaultMaxOutputTokens = 8192
+
+// explicitMaxTokens returns the consumer-specified max output tokens from any
+// of the recognized field names, or 0 if none were set.
+func explicitMaxTokens(parsed map[string]any) int {
+	for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
+		if n, ok := intFromRequestValue(parsed[key]); ok && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// reservationCost is the pre-flight worst-case cost for a text inference
+// request. It mirrors the platform-price branch of handleComplete's billing
+// so the reservation covers any platform-level custom price for the model;
+// without this, a platform override above the built-in default would leave
+// the reservation short and the post-inference clamp would silently
+// undercharge. Provider-specific custom prices are not known until dispatch
+// commits to a provider, so a provider that sets a custom price above the
+// platform rate accepts revenue capped at the reservation.
+func (s *Server) reservationCost(model string, promptTokens, maxTokens int) int64 {
+	customIn, customOut, hasCustom := s.store.GetModelPrice("platform", model)
+	return payments.CalculateCostWithOverrides(model, promptTokens, maxTokens, customIn, customOut, hasCustom)
+}
+
+// ensureMaxTokensBound injects defaultMaxOutputTokens into parsed when the
+// consumer didn't specify any max-tokens field, so the outgoing request to
+// the provider is bounded by the amount we reserve upfront. The injected
+// field name depends on the API flavor: Responses API uses max_output_tokens,
+// everything else uses max_tokens. Returns true when an injection occurred,
+// so the caller can re-marshal the outgoing body if needed.
+func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool) bool {
+	if explicitMaxTokens(parsed) > 0 {
+		return false
+	}
+	if isResponsesAPI {
+		parsed["max_output_tokens"] = defaultMaxOutputTokens
+	} else {
+		parsed["max_tokens"] = defaultMaxOutputTokens
+	}
+	return true
+}
+
 // handleChatCompletions handles POST /v1/chat/completions.
 //
 // This is the main inference endpoint. It validates the request, finds an
@@ -200,10 +247,20 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	isResponsesAPI := input != nil && len(messages) == 0
 	// If this is a Responses API request, tag it so the provider proxies
 	// to /v1/responses instead of /v1/chat/completions.
-	if input != nil && len(messages) == 0 {
+	if isResponsesAPI {
 		parsed["endpoint"] = "/v1/responses"
+		rawBody, _ = json.Marshal(parsed)
+	}
+
+	// Bound the generation so the pre-flight reservation covers it. If the
+	// consumer didn't set max_tokens, inject defaultMaxOutputTokens into the
+	// outgoing body. Without this bound the provider could return more tokens
+	// than we reserved for, and the silent post-inference charge failure would
+	// hand the consumer free inference (GitHub issue #33).
+	if ensureMaxTokensBound(parsed, isResponsesAPI) {
 		rawBody, _ = json.Marshal(parsed)
 	}
 
@@ -211,18 +268,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 
-	// Pre-flight balance reservation — atomically debit the minimum charge
-	// before routing to a provider. This prevents concurrent requests from
-	// all passing a balance > 0 check and then failing to charge after inference.
-	// The reservation is refunded if the request fails, or adjusted to the
-	// actual cost after inference completes.
+	// Pre-flight balance reservation — atomically debit the worst-case cost
+	// (prompt tokens already consumed + max_tokens we just bounded the
+	// generation to) before routing to a provider. The post-inference charge
+	// refunds any unused portion. Reserving only the minimum charge let
+	// consumers receive streamed output far exceeding their actual balance.
 	var reservedMicroUSD int64
 	if s.billing != nil {
 		consumerKey := consumerKeyFromContext(r.Context())
-		reservedMicroUSD = payments.MinimumCharge()
+		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
 		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-				"your balance is too low — add funds at /billing before making requests"))
+				"your balance is too low for this request — add funds at /billing or lower max_tokens"))
 			return
 		}
 	}
@@ -545,7 +602,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	machineModel := provider.Hardware.MachineModel
 
 	if pubKey != "" {
-		w.Header().Set("X-Provider-Public-Key", pubKey)
+		w.Header().Set("X-Provider-Encrypted", "true")
 	}
 	if attested {
 		w.Header().Set("X-Provider-Attested", "true")
@@ -596,384 +653,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
 	} else {
 		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
-	}
-}
-
-// handleTranscriptions handles POST /v1/audio/transcriptions.
-//
-// This is the OpenAI-compatible audio transcription endpoint. It accepts
-// multipart/form-data with an audio file and routes it to an STT-capable
-// provider.
-func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
-	// Parse multipart form (max 25MB audio)
-	if err := r.ParseMultipartForm(25 << 20); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid multipart form: "+err.Error()))
-		return
-	}
-
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "file field is required"))
-		return
-	}
-	defer file.Close()
-
-	model := r.FormValue("model")
-	if model == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
-		return
-	}
-
-	if !s.registry.IsModelInCatalog(model) {
-		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
-			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model)))
-		return
-	}
-
-	language := r.FormValue("language")
-
-	// Read the audio file into memory
-	audioBytes, err := io.ReadAll(file)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "failed to read audio file"))
-		return
-	}
-
-	// Determine audio format from filename extension
-	ext := strings.TrimPrefix(filepath.Ext(header.Filename), ".")
-	if ext == "" {
-		ext = "wav"
-	}
-
-	requestID := uuid.New().String()
-	consumerKey := consumerKeyFromContext(r.Context())
-	pr := &registry.PendingRequest{
-		RequestID:       requestID,
-		Model:           model,
-		ConsumerKey:     consumerKey,
-		ChunkCh:         make(chan string, 1),
-		CompleteCh:      make(chan protocol.UsageInfo, 1),
-		ErrorCh:         make(chan protocol.InferenceErrorMessage, 1),
-		TranscriptionCh: make(chan *protocol.TranscriptionCompleteMessage, 1),
-	}
-
-	// Find and reserve a provider that serves the requested STT model.
-	provider := s.registry.ReserveProvider(model, pr)
-	if provider == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-			fmt.Sprintf("no hardware-attested provider available for STT model %q", model)))
-		return
-	}
-
-	transcriptionBody := protocol.TranscriptionRequestBody{
-		Model:  model,
-		Audio:  base64.StdEncoding.EncodeToString(audioBytes),
-		Format: ext,
-	}
-	if language != "" {
-		transcriptionBody.Language = &language
-	}
-
-	bodyJSON, _ := json.Marshal(transcriptionBody)
-
-	// E2E encryption is mandatory for audio data. Providers without a public
-	// key cannot receive transcription requests.
-	if provider.PublicKey == "" {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
-			"no provider with E2E encryption available for this model — audio data requires encryption"))
-		return
-	}
-
-	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"provider public key invalid"))
-		return
-	}
-
-	sessionKeys, err := e2e.GenerateSessionKeys()
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"failed to generate session keys"))
-		return
-	}
-
-	encrypted, err := e2e.Encrypt(bodyJSON, providerPubKey, sessionKeys)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"failed to encrypt transcription request"))
-		return
-	}
-
-	wireMsg := map[string]any{
-		"type":       protocol.TypeTranscriptionRequest,
-		"request_id": requestID,
-		"encrypted_body": map[string]string{
-			"ephemeral_public_key": encrypted.EphemeralPublicKey,
-			"ciphertext":           encrypted.Ciphertext,
-		},
-	}
-
-	s.logger.Debug("transcription request encrypted for provider",
-		"request_id", requestID,
-		"provider_id", provider.ID,
-	)
-	if sessionKeys != nil {
-		pr.SessionPrivKey = &sessionKeys.PrivateKey
-	}
-
-	// Send the request to the provider.
-	data, err := json.Marshal(wireMsg)
-	if err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal request"))
-		return
-	}
-	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		s.logger.Error("failed to send transcription request", "request_id", requestID, "error", err)
-		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
-		return
-	}
-
-	s.logger.Info("transcription request dispatched",
-		"request_id", requestID,
-		"model", model,
-		"provider_id", provider.ID,
-		"audio_size", len(audioBytes),
-		"format", ext,
-	)
-
-	// Cleanup on return.
-	defer func() {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-	}()
-
-	// Wait for the transcription result.
-	ctx, cancel := context.WithTimeout(r.Context(), inferenceTimeout)
-	defer cancel()
-
-	select {
-	case result := <-pr.TranscriptionCh:
-		// Build OpenAI-compatible transcription response.
-		resp := map[string]any{
-			"text": result.Text,
-		}
-		if len(result.Segments) > 0 {
-			resp["segments"] = result.Segments
-		}
-		if result.Language != "" {
-			resp["language"] = result.Language
-		}
-		resp["duration"] = result.Usage.AudioSeconds
-		writeJSON(w, http.StatusOK, resp)
-
-	case errMsg := <-pr.ErrorCh:
-		statusCode := errMsg.StatusCode
-		if statusCode == 0 {
-			statusCode = http.StatusBadGateway
-		}
-		writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
-
-	case <-ctx.Done():
-		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "transcription request timed out"))
-	}
-}
-
-// handleImageGenerations handles POST /v1/images/generations.
-//
-// This is the OpenAI-compatible image generation endpoint. It accepts a JSON
-// body with model, prompt, size, etc. and routes it to an image-capable provider.
-func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) {
-	var req protocol.ImageGenerationRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
-		return
-	}
-
-	if req.Model == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
-		return
-	}
-	if req.Prompt == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "prompt is required"))
-		return
-	}
-	if req.N == 0 {
-		req.N = 1
-	}
-	if req.N < 0 || req.N > 4 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "n must be between 1 and 4"))
-		return
-	}
-	if !s.registry.IsModelInCatalog(req.Model) {
-		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
-			fmt.Sprintf("model %q is not available — see /v1/models for supported models", req.Model)))
-		return
-	}
-	if req.Steps != nil && *req.Steps <= 0 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "steps must be positive"))
-		return
-	}
-	if req.Size == "" {
-		req.Size = "1024x1024"
-	}
-
-	// Validate image dimensions — cap at 2048x2048 to keep responses under transport limits.
-	sizeParts := strings.SplitN(req.Size, "x", 2)
-	if len(sizeParts) != 2 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "size must be WxH (e.g. 1024x1024)"))
-		return
-	}
-	imgW, _ := strconv.Atoi(sizeParts[0])
-	imgH, _ := strconv.Atoi(sizeParts[1])
-	if imgW <= 0 || imgH <= 0 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "size dimensions must be positive"))
-		return
-	}
-	if imgW > 2048 || imgH > 2048 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "maximum image dimension is 2048x2048"))
-		return
-	}
-
-	requestID := uuid.New().String()
-	consumerKey := consumerKeyFromContext(r.Context())
-	pr := &registry.PendingRequest{
-		RequestID:         requestID,
-		Model:             req.Model,
-		ConsumerKey:       consumerKey,
-		ChunkCh:           make(chan string, 1),
-		CompleteCh:        make(chan protocol.UsageInfo, 1),
-		ErrorCh:           make(chan protocol.InferenceErrorMessage, 1),
-		ImageGenerationCh: make(chan *protocol.ImageGenerationCompleteMessage, 1),
-	}
-
-	// Find and reserve a hardware-attested provider that serves the requested image model.
-	provider := s.registry.ReserveProvider(req.Model, pr)
-	if provider == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-			fmt.Sprintf("no hardware-attested provider available for image model %q", req.Model)))
-		return
-	}
-
-	bodyJSON, _ := json.Marshal(req)
-
-	// E2E encryption — prompts are sensitive.
-	if provider.PublicKey == "" {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
-			"no provider with E2E encryption available for this model"))
-		return
-	}
-
-	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"provider public key invalid"))
-		return
-	}
-
-	sessionKeys, err := e2e.GenerateSessionKeys()
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"failed to generate session keys"))
-		return
-	}
-
-	encrypted, err := e2e.Encrypt(bodyJSON, providerPubKey, sessionKeys)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"failed to encrypt image generation request"))
-		return
-	}
-
-	// Build the upload URL for the provider to POST generated images to.
-	// Always use HTTPS — the coordinator runs behind nginx which terminates TLS,
-	// so r.TLS is always nil, but the public URL must be HTTPS to avoid
-	// HTTP→HTTPS 301 redirects that convert POST to GET (405 error).
-	uploadURL := fmt.Sprintf("https://%s/v1/provider/image-upload?request_id=%s", r.Host, requestID)
-
-	wireMsg := map[string]any{
-		"type":       protocol.TypeImageGenerationRequest,
-		"request_id": requestID,
-		"upload_url": uploadURL,
-		"encrypted_body": map[string]string{
-			"ephemeral_public_key": encrypted.EphemeralPublicKey,
-			"ciphertext":           encrypted.Ciphertext,
-		},
-	}
-	if sessionKeys != nil {
-		pr.SessionPrivKey = &sessionKeys.PrivateKey
-	}
-
-	// Send the request to the provider.
-	data, err := json.Marshal(wireMsg)
-	if err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal request"))
-		return
-	}
-	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		s.logger.Error("failed to send image generation request", "request_id", requestID, "error", err)
-		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
-		return
-	}
-
-	s.logger.Info("image generation request dispatched",
-		"request_id", requestID,
-		"model", req.Model,
-		"provider_id", provider.ID,
-		"size", req.Size,
-		"n", req.N,
-	)
-
-	// Cleanup on return.
-	defer func() {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-	}()
-
-	// Wait for the image generation result.
-	ctx, cancel := context.WithTimeout(r.Context(), inferenceTimeout)
-	defer cancel()
-
-	select {
-	case <-pr.ImageGenerationCh:
-		// Retrieve images uploaded by the provider via HTTP.
-		uploadedImages := s.getUploadedImages(requestID)
-		imageData := make([]map[string]string, len(uploadedImages))
-		for i, imgBytes := range uploadedImages {
-			imageData[i] = map[string]string{
-				"b64_json": base64.StdEncoding.EncodeToString(imgBytes),
-			}
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"created": time.Now().Unix(),
-			"data":    imageData,
-		})
-
-	case errMsg := <-pr.ErrorCh:
-		statusCode := errMsg.StatusCode
-		if statusCode == 0 {
-			statusCode = http.StatusBadGateway
-		}
-		writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
-
-	case <-ctx.Done():
-		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "image generation request timed out"))
 	}
 }
 
@@ -1473,6 +1152,38 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleRevokeKey handles DELETE /v1/auth/keys — revokes an API key.
+// The caller must own the key (same account). Requires Privy auth so a
+// compromised API key cannot revoke legitimate keys.
+func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
+		return
+	}
+
+	var body struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", "provide {\"key\": \"eigeninference-...\"}"))
+		return
+	}
+
+	owner := s.store.GetKeyAccount(body.Key)
+	if owner != user.AccountID {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "you can only revoke your own keys"))
+		return
+	}
+
+	if !s.store.RevokeKey(body.Key) {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "key not found or already revoked"))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked"})
+}
+
 // handleHealth handles GET /health.
 // Returns the coordinator's status and the number of connected providers.
 // This endpoint does not require authentication.
@@ -1676,6 +1387,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	// Completions and Anthropic messages both use the max_tokens field (never
+	// max_output_tokens, which is Responses API only). Inject a default if
+	// unset so the pre-flight reservation bounds the generation.
+	ensureMaxTokensBound(parsed, false)
+
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
@@ -1683,14 +1399,35 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Inject the endpoint so the provider knows which local path to forward to.
 	parsed["endpoint"] = endpoint
 
-	requestID := uuid.New().String()
+	// Pre-flight balance reservation — same worst-case-cost reservation as
+	// handleChatCompletions. Before this fix the completions and Anthropic
+	// paths routed without ANY reservation; the silent post-inference charge
+	// meant a consumer could receive full responses with a zero balance.
 	consumerKey := consumerKeyFromContext(r.Context())
+	var reservedMicroUSD int64
+	if s.billing != nil {
+		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
+		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
+			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
+				"your balance is too low for this request — add funds at /billing or lower max_tokens"))
+			return
+		}
+	}
+	// Refund the reservation on any early failure before dispatch.
+	refundReservation := func() {
+		if reservedMicroUSD > 0 {
+			_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "reservation_refund")
+		}
+	}
+
+	requestID := uuid.New().String()
 	pr := &registry.PendingRequest{
 		RequestID:             requestID,
 		Model:                 model,
 		ConsumerKey:           consumerKey,
 		EstimatedPromptTokens: estimatedPromptTokens,
 		RequestedMaxTokens:    requestedMaxTokens,
+		ReservedMicroUSD:      reservedMicroUSD,
 		ChunkCh:               make(chan string, chunkBufferSize),
 		CompleteCh:            make(chan protocol.UsageInfo, 1),
 		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
@@ -1705,6 +1442,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			ResponseCh: make(chan *registry.Provider, 1),
 		}
 		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
+			refundReservation()
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
 				fmt.Sprintf("no provider available for model %q", model)))
 			return
@@ -1712,8 +1450,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {
 			if err == context.Canceled {
+				refundReservation()
 				return
 			}
+			refundReservation()
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
 				fmt.Sprintf("no provider became available for model %q", model)))
 			return
@@ -1724,6 +1464,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	if provider.PublicKey == "" {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
 			"no provider with E2E encryption available"))
 		return
@@ -1732,6 +1473,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
 	if err != nil {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "provider public key invalid"))
 		return
 	}
@@ -1739,6 +1481,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	sessionKeys, err := e2e.GenerateSessionKeys()
 	if err != nil {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to generate session keys"))
 		return
 	}
@@ -1746,6 +1489,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	encrypted, err := e2e.Encrypt(inferenceBody, providerPubKey, sessionKeys)
 	if err != nil {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to encrypt request"))
 		return
 	}
@@ -1765,6 +1509,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
 		return
 	}

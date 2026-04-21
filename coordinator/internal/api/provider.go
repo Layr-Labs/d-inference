@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/coordinator/internal/attestation"
+	"github.com/eigeninference/coordinator/internal/e2e"
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
@@ -100,7 +101,7 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Raise the read limit to 10 MB. The default 32 KB is too small for
-	// image generation responses which carry base64-encoded PNGs (~1-3 MB).
+	// large inference responses.
 	conn.SetReadLimit(10 * 1024 * 1024)
 
 	providerID := uuid.New().String()
@@ -181,43 +182,46 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// Verify runtime integrity against the known-good manifest.
 			if s.knownRuntimeManifest != nil {
 				runtimeOK, mismatches := s.verifyRuntimeHashes(
-					regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes,
-					regMsg.GrpcBinaryHash, regMsg.ImageBridgeHash)
+					regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
 				provider.Mu().Lock()
 				provider.RuntimeVerified = runtimeOK
+				provider.RuntimeManifestChecked = runtimeOK
 				provider.PythonHash = regMsg.PythonHash
 				provider.RuntimeHash = regMsg.RuntimeHash
+				provider.TemplateHashes = registry.CloneStringMap(regMsg.TemplateHashes)
 				provider.Mu().Unlock()
 
-				// Send runtime status feedback to provider so it can self-heal.
-				statusMsg := protocol.RuntimeStatusMessage{
-					Type:       protocol.TypeRuntimeStatus,
-					Verified:   runtimeOK,
-					Mismatches: mismatches,
-				}
-				statusData, err := json.Marshal(statusMsg)
-				if err == nil {
-					writeCtx, writeCancel := context.WithTimeout(loopCtx, 5*time.Second)
-					_ = conn.Write(writeCtx, websocket.MessageText, statusData)
-					writeCancel()
-				}
-
-				if runtimeOK {
+				if !runtimeOK {
+					// Send runtime status feedback only on mismatch so the
+					// provider can self-heal. Skip the message when everything
+					// matches — it would only add noise on the WebSocket.
+					statusMsg := protocol.RuntimeStatusMessage{
+						Type:       protocol.TypeRuntimeStatus,
+						Verified:   false,
+						Mismatches: mismatches,
+					}
+					statusData, err := json.Marshal(statusMsg)
+					if err == nil {
+						writeCtx, writeCancel := context.WithTimeout(loopCtx, 5*time.Second)
+						_ = conn.Write(writeCtx, websocket.MessageText, statusData)
+						writeCancel()
+					}
+					s.logger.Warn("provider runtime integrity mismatch — excluded from routing",
+						"provider_id", providerID,
+						"mismatches", len(mismatches),
+					)
+				} else {
 					s.logger.Info("provider runtime integrity verified",
 						"provider_id", providerID,
 						"python_hash", regMsg.PythonHash,
 						"runtime_hash", regMsg.RuntimeHash,
 					)
-				} else {
-					s.logger.Warn("provider runtime integrity mismatch — excluded from routing",
-						"provider_id", providerID,
-						"mismatches", len(mismatches),
-					)
 				}
 			} else {
-				// No manifest configured — all providers pass by default.
+				// No manifest configured — fail-closed for routing.
 				provider.Mu().Lock()
 				provider.RuntimeVerified = true
+				provider.RuntimeManifestChecked = false
 				provider.Mu().Unlock()
 			}
 
@@ -231,23 +235,11 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				)
 				provider.Mu().Lock()
 				provider.RuntimeVerified = false
+				provider.RuntimeManifestChecked = false
 				provider.Mu().Unlock()
 			}
 
-			// If ACME client cert was verified, upgrade to hardware trust.
-			// ACME device-attest-01 proves the provider's SE key is Apple-attested.
-			if acmeResult != nil && acmeResult.Valid {
-				provider.Mu().Lock()
-				provider.ACMEVerified = true
-				provider.Mu().Unlock()
-				provider.SetAttested(true, registry.TrustHardware)
-				s.logger.Info("ACME client cert verified — hardware trust via Apple SE attestation",
-					"provider_id", providerID,
-					"acme_serial", acmeResult.SerialNumber,
-					"acme_issuer", acmeResult.Issuer,
-					"acme_key_alg", acmeResult.PublicKeyAlg,
-				)
-			}
+			s.applyACMETrust(providerID, provider, acmeResult)
 
 			// Start challenge loop after registration
 			go s.challengeLoop(loopCtx, conn, providerID, provider, tracker)
@@ -272,14 +264,6 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			errMsg := msg.Payload.(*protocol.InferenceErrorMessage)
 			s.handleInferenceError(providerID, provider, errMsg)
 
-		case protocol.TypeTranscriptionComplete:
-			tcMsg := msg.Payload.(*protocol.TranscriptionCompleteMessage)
-			s.handleTranscriptionComplete(providerID, provider, tcMsg)
-
-		case protocol.TypeImageGenerationComplete:
-			igMsg := msg.Payload.(*protocol.ImageGenerationCompleteMessage)
-			s.handleImageGenerationComplete(providerID, provider, igMsg)
-
 		case protocol.TypeAttestationResponse:
 			respMsg := msg.Payload.(*protocol.AttestationResponseMessage)
 			s.handleAttestationResponse(providerID, provider, respMsg, tracker)
@@ -288,6 +272,93 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			s.logger.Warn("unhandled provider message type", "provider_id", providerID, "type", msg.Type)
 		}
 	}
+}
+
+func (s *Server) applyACMETrust(providerID string, provider *registry.Provider, acmeResult *ACMEVerificationResult) {
+	if acmeResult == nil || !acmeResult.Valid {
+		return
+	}
+
+	provider.Mu().Lock()
+	provider.ACMEVerified = true
+	provider.Mu().Unlock()
+
+	if !providerHasBoundEncryptionAttestation(provider) {
+		s.logger.Warn("ACME client cert verified but X25519 key was not bound by attestation",
+			"provider_id", providerID,
+			"acme_serial", acmeResult.SerialNumber,
+			"acme_issuer", acmeResult.Issuer,
+			"acme_key_alg", acmeResult.PublicKeyAlg,
+		)
+		return
+	}
+	if !providerAttestationMatchesACMEKey(provider, acmeResult) {
+		s.logger.Warn("ACME client cert key does not match the attested Secure Enclave key",
+			"provider_id", providerID,
+			"acme_serial", acmeResult.SerialNumber,
+			"acme_issuer", acmeResult.Issuer,
+			"acme_key_alg", acmeResult.PublicKeyAlg,
+		)
+		return
+	}
+
+	provider.SetAttested(true, registry.TrustHardware)
+	s.logger.Info("ACME client cert verified — hardware trust via Apple SE attestation",
+		"provider_id", providerID,
+		"acme_serial", acmeResult.SerialNumber,
+		"acme_issuer", acmeResult.Issuer,
+		"acme_key_alg", acmeResult.PublicKeyAlg,
+	)
+}
+
+func providerHasBoundEncryptionAttestation(provider *registry.Provider) bool {
+	provider.Mu().Lock()
+	defer provider.Mu().Unlock()
+
+	if provider.PublicKey == "" || provider.AttestationResult == nil || !provider.AttestationResult.Valid {
+		return false
+	}
+
+	return provider.AttestationResult.EncryptionPublicKey != "" &&
+		provider.AttestationResult.EncryptionPublicKey == provider.PublicKey
+}
+
+func providerAttestationMatchesACMEKey(provider *registry.Provider, acmeResult *ACMEVerificationResult) bool {
+	if acmeResult == nil || acmeResult.PublicKey == "" {
+		return false
+	}
+
+	provider.Mu().Lock()
+	if provider.AttestationResult == nil || !provider.AttestationResult.Valid {
+		provider.Mu().Unlock()
+		return false
+	}
+	attestedKeyB64 := provider.AttestationResult.PublicKey
+	provider.Mu().Unlock()
+
+	if attestedKeyB64 == "" {
+		return false
+	}
+
+	attestedRaw, err := base64.StdEncoding.DecodeString(attestedKeyB64)
+	if err != nil {
+		return false
+	}
+	acmeRaw, err := base64.StdEncoding.DecodeString(acmeResult.PublicKey)
+	if err != nil {
+		return false
+	}
+
+	attestedKey, err := attestation.ParseP256PublicKey(attestedRaw)
+	if err != nil {
+		return false
+	}
+	acmeKey, err := attestation.ParseP256PublicKey(acmeRaw)
+	if err != nil {
+		return false
+	}
+
+	return attestedKey.X.Cmp(acmeKey.X) == 0 && attestedKey.Y.Cmp(acmeKey.Y) == 0
 }
 
 // challengeLoop periodically sends attestation challenges to a provider.
@@ -453,12 +524,16 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		}
 	}
 
-	// Verify fresh SIP status. If the provider reports SIP disabled,
-	// they've rebooted since registration and are no longer trustworthy.
-	// SIP cannot be disabled at runtime — a reboot into Recovery Mode is
-	// required. So SIP=false means the provider deliberately weakened
-	// their security posture.
-	if resp.SIPEnabled != nil && !*resp.SIPEnabled {
+	// Verify fresh SIP status. This signal is mandatory for private text:
+	// an omitted value is not evidence of safety, so fail closed.
+	if resp.SIPEnabled == nil {
+		s.handleChallengeFailure(providerID, "SIP status not reported")
+		return
+	}
+	// If the provider reports SIP disabled, they've rebooted since
+	// registration and are no longer trustworthy. SIP cannot be disabled at
+	// runtime — a reboot into Recovery Mode is required.
+	if !*resp.SIPEnabled {
 		s.logger.Error("provider SIP disabled in challenge response — marking untrusted",
 			"provider_id", providerID,
 		)
@@ -542,15 +617,18 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	// Verify runtime integrity hashes from challenge response.
 	if s.knownRuntimeManifest != nil {
 		runtimeOK, mismatches := s.verifyRuntimeHashes(
-			resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes,
-			resp.GrpcBinaryHash, resp.ImageBridgeHash)
+			resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
 		provider.Mu().Lock()
 		provider.RuntimeVerified = runtimeOK
+		provider.RuntimeManifestChecked = runtimeOK
 		if resp.PythonHash != "" {
 			provider.PythonHash = resp.PythonHash
 		}
 		if resp.RuntimeHash != "" {
 			provider.RuntimeHash = resp.RuntimeHash
+		}
+		if len(resp.TemplateHashes) > 0 {
+			provider.TemplateHashes = registry.CloneStringMap(resp.TemplateHashes)
 		}
 		provider.Mu().Unlock()
 
@@ -575,8 +653,41 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 					writeCancel()
 				}
 			}
+			return
 		}
 	}
+
+	provider.Mu().Lock()
+	version := provider.Version
+	provider.Mu().Unlock()
+	if s.minProviderVersion != "" && version != "" && semverLess(version, s.minProviderVersion) {
+		s.logger.Warn("provider version below minimum during challenge revalidation — excluded from routing",
+			"provider_id", providerID,
+			"version", version,
+			"min_version", s.minProviderVersion,
+		)
+		provider.Mu().Lock()
+		provider.RuntimeVerified = false
+		provider.RuntimeManifestChecked = false
+		provider.Mu().Unlock()
+		return
+	}
+
+	// Override self-reported privacy capabilities with coordinator-verified
+	// values from the challenge response. The coordinator independently checks
+	// SIP and hypervisor status during each attestation challenge — these
+	// override the provider's self-report at registration time.
+	provider.Mu().Lock()
+	if provider.PrivacyCapabilities != nil {
+		if resp.SIPEnabled != nil {
+			provider.PrivacyCapabilities.SIPEnabled = *resp.SIPEnabled
+		}
+		if resp.HypervisorActive != nil {
+			provider.PrivacyCapabilities.HypervisorActive = *resp.HypervisorActive
+		}
+	}
+	provider.ChallengeVerifiedSIP = resp.SIPEnabled != nil && *resp.SIPEnabled
+	provider.Mu().Unlock()
 
 	// Challenge passed.
 	s.registry.RecordChallengeSuccess(providerID)
@@ -624,12 +735,69 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		s.logger.Warn("chunk for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
 		return
 	}
+	chunkData, err := decryptTextResponseChunk(provider, pr, msg)
+	if err != nil {
+		s.logger.Warn("rejecting insecure response chunk",
+			"provider_id", providerID,
+			"request_id", msg.RequestID,
+			"error", err,
+		)
+		s.registry.MarkUntrusted(providerID)
+		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+			Type:       protocol.TypeInferenceError,
+			RequestID:  msg.RequestID,
+			Error:      "provider returned invalid encrypted chunk",
+			StatusCode: http.StatusBadGateway,
+		})
+		return
+	}
 	// Non-blocking send — if consumer is gone the chunk is dropped.
 	select {
-	case pr.ChunkCh <- msg.Data:
+	case pr.ChunkCh <- chunkData:
 	default:
 		s.logger.Warn("dropped chunk, consumer channel full", "request_id", msg.RequestID)
 	}
+}
+
+func decryptTextResponseChunk(provider *registry.Provider, pr *registry.PendingRequest, msg *protocol.InferenceResponseChunkMessage) (string, error) {
+	if msg.EncryptedData == nil {
+		return "", errTextChunkViolation("plaintext text chunk")
+	}
+	if msg.Data != "" {
+		return "", errTextChunkViolation("mixed plaintext and encrypted text chunk")
+	}
+	if provider.PublicKey == "" {
+		return "", errTextChunkViolation("provider missing registered public key")
+	}
+	if msg.EncryptedData.EphemeralPublicKey != provider.PublicKey {
+		return "", errTextChunkViolation("chunk sender key mismatch")
+	}
+	if pr.SessionPrivKey == nil {
+		return "", errTextChunkViolation("missing coordinator session key")
+	}
+
+	payload := &e2e.EncryptedPayload{
+		EphemeralPublicKey: msg.EncryptedData.EphemeralPublicKey,
+		Ciphertext:         msg.EncryptedData.Ciphertext,
+	}
+	session := &e2e.SessionKeys{PrivateKey: *pr.SessionPrivKey}
+	plaintext, err := e2e.Decrypt(payload, session)
+	if err != nil {
+		return "", err
+	}
+	return string(plaintext), nil
+}
+
+func errTextChunkViolation(reason string) error {
+	return &textChunkViolationError{reason: reason}
+}
+
+type textChunkViolationError struct {
+	reason string
+}
+
+func (e *textChunkViolationError) Error() string {
+	return e.reason
 }
 
 func (s *Server) handleInferenceAccepted(providerID string, provider *registry.Provider, msg *protocol.InferenceAcceptedMessage) {
@@ -679,27 +847,37 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		customIn, customOut, hasCustom = s.store.GetModelPrice("platform", pr.Model)
 	}
 	totalCost := payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
+
+	// Clamp reported cost at the pre-flight reservation. The reservation
+	// uses platform-default and platform-override pricing; a provider that
+	// sets a custom price above the platform rate accepts revenue capped at
+	// the reservation (this is documented by reservationCost). The clamp
+	// also neutralizes over-reporting: with max_tokens injected into the
+	// outgoing request a cooperating provider can never legitimately bill
+	// more than the reservation, so excess means miscounting or fraud.
+	// Logged at Error so misbehavior shows in the operator dashboards.
+	if pr.ReservedMicroUSD > 0 && totalCost > pr.ReservedMicroUSD {
+		s.logger.Error("provider reported cost above reservation — clamping",
+			"provider_id", providerID,
+			"request_id", msg.RequestID,
+			"reported_cost_micro_usd", totalCost,
+			"reserved_micro_usd", pr.ReservedMicroUSD,
+			"prompt_tokens", msg.Usage.PromptTokens,
+			"completion_tokens", msg.Usage.CompletionTokens,
+		)
+		totalCost = pr.ReservedMicroUSD
+	}
 	providerPayout := payments.ProviderPayout(totalCost)
 
-	// Adjust billing: the minimum charge was reserved at pre-flight.
-	// Now charge the difference (actual - reserved) or refund (reserved - actual).
+	// Adjust billing against the pre-flight reservation. After the clamp above
+	// totalCost <= reserved, so the only path here is a refund of the unused
+	// portion. The old "charge extra" path is retained for the unreserved
+	// code path below (billing disabled / legacy requests).
 	if pr.ReservedMicroUSD > 0 {
-		if totalCost > pr.ReservedMicroUSD {
-			// Charge the additional amount beyond the reservation.
-			extra := totalCost - pr.ReservedMicroUSD
-			if err := s.ledger.Charge(pr.ConsumerKey, extra, msg.RequestID); err != nil {
-				s.logger.Warn("could not charge additional cost beyond reservation",
-					"consumer_key", pr.ConsumerKey,
-					"extra_micro_usd", extra,
-					"error", err,
-				)
-			}
-		} else if totalCost < pr.ReservedMicroUSD {
-			// Refund the difference.
+		if totalCost < pr.ReservedMicroUSD {
 			refund := pr.ReservedMicroUSD - totalCost
 			_ = s.store.Credit(pr.ConsumerKey, refund, store.LedgerRefund, msg.RequestID)
 		}
-		// If totalCost == reserved, nothing to do — already charged correctly.
 	} else {
 		// No reservation (billing not configured). Charge best-effort.
 		if err := s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID); err != nil {
@@ -807,12 +985,6 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	close(pr.ChunkCh)
 	close(pr.CompleteCh)
 	close(pr.ErrorCh)
-	if pr.TranscriptionCh != nil {
-		close(pr.TranscriptionCh)
-	}
-	if pr.ImageGenerationCh != nil {
-		close(pr.ImageGenerationCh)
-	}
 
 	// Record job failure for reputation tracking.
 	s.registry.RecordJobFailure(providerID)
@@ -825,143 +997,6 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		"provider_id", providerID,
 		"error", msg.Error,
 		"status_code", msg.StatusCode,
-	)
-}
-
-func (s *Server) handleTranscriptionComplete(providerID string, provider *registry.Provider, msg *protocol.TranscriptionCompleteMessage) {
-	if provider == nil {
-		s.logger.Warn("transcription complete from unregistered provider", "provider_id", providerID)
-		return
-	}
-	pr := provider.RemovePending(msg.RequestID)
-	if pr == nil {
-		s.logger.Warn("transcription complete for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
-		return
-	}
-
-	// Send the full transcription result to the waiting handler.
-	if pr.TranscriptionCh != nil {
-		select {
-		case pr.TranscriptionCh <- msg:
-		default:
-			s.logger.Warn("dropped transcription result, consumer channel full", "request_id", msg.RequestID)
-		}
-	}
-
-	// Record job success.
-	s.registry.RecordJobSuccess(providerID, time.Duration(msg.DurationSecs*float64(time.Second)))
-
-	// Mark provider idle.
-	s.registry.SetProviderIdle(providerID)
-
-	s.logger.Info("transcription complete",
-		"request_id", msg.RequestID,
-		"provider_id", providerID,
-		"audio_seconds", msg.Usage.AudioSeconds,
-		"generation_tokens", msg.Usage.GenerationTokens,
-		"duration_secs", msg.DurationSecs,
-		"text_length", len(msg.Text),
-	)
-}
-
-func (s *Server) handleImageGenerationComplete(providerID string, provider *registry.Provider, msg *protocol.ImageGenerationCompleteMessage) {
-	if provider == nil {
-		s.logger.Warn("image generation complete from unregistered provider", "provider_id", providerID)
-		return
-	}
-	pr := provider.RemovePending(msg.RequestID)
-	if pr == nil {
-		s.logger.Warn("image generation complete for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
-		return
-	}
-
-	// Send the result to the waiting consumer handler.
-	if pr.ImageGenerationCh != nil {
-		select {
-		case pr.ImageGenerationCh <- msg:
-		default:
-			s.logger.Warn("dropped image generation result, consumer channel full", "request_id", msg.RequestID)
-		}
-	}
-
-	// Record job success.
-	s.registry.RecordJobSuccess(providerID, time.Duration(msg.DurationSecs*float64(time.Second)))
-
-	// Calculate per-image cost.
-	totalCost := payments.CalculateImageCost(msg.Usage.Model, msg.Usage.Width, msg.Usage.Height, msg.Usage.ImagesGenerated)
-	providerPayout := payments.ProviderPayout(totalCost)
-
-	// Charge consumer (best-effort — image already generated).
-	if err := s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID); err != nil {
-		s.logger.Warn("could not charge consumer for image generation",
-			"consumer_key", pr.ConsumerKey,
-			"cost_micro_usd", totalCost,
-			"error", err,
-		)
-	}
-
-	// Record usage entry — in-memory + persisted.
-	s.ledger.RecordUsage(pr.ConsumerKey, payments.UsageEntry{
-		JobID:        msg.RequestID,
-		Model:        pr.Model,
-		CostMicroUSD: totalCost,
-		Timestamp:    time.Now(),
-	})
-	s.store.RecordUsageWithCost(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, 0, 0, totalCost)
-
-	// Credit the provider.
-	if p := s.registry.GetProvider(providerID); p != nil {
-		if p.AccountID != "" {
-			if err := s.store.CreditProviderAccount(&store.ProviderEarning{
-				AccountID:      p.AccountID,
-				ProviderID:     providerID,
-				ProviderKey:    p.PublicKey,
-				JobID:          msg.RequestID,
-				Model:          pr.Model,
-				AmountMicroUSD: providerPayout,
-				CreatedAt:      time.Now(),
-			}); err != nil {
-				s.logger.Error("failed to credit linked provider account for image generation",
-					"provider_id", providerID,
-					"account_id", p.AccountID,
-					"request_id", msg.RequestID,
-					"error", err,
-				)
-			}
-		} else if p.WalletAddress != "" {
-			if err := s.ledger.CreditProvider(p.WalletAddress, providerPayout, pr.Model, msg.RequestID); err != nil {
-				s.logger.Error("failed to credit provider wallet for image generation",
-					"provider_id", providerID,
-					"wallet_address", p.WalletAddress,
-					"request_id", msg.RequestID,
-					"error", err,
-				)
-			}
-		}
-	}
-
-	// Platform fee with referral distribution.
-	platformFee := payments.PlatformFee(totalCost)
-	if platformFee > 0 {
-		if s.billing != nil && s.billing.Referral() != nil {
-			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
-		}
-		_ = s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID)
-	}
-
-	// Mark provider idle.
-	s.registry.SetProviderIdle(providerID)
-
-	s.logger.Info("image generation complete",
-		"request_id", msg.RequestID,
-		"provider_id", providerID,
-		"images_generated", msg.Usage.ImagesGenerated,
-		"width", msg.Usage.Width,
-		"height", msg.Usage.Height,
-		"steps", msg.Usage.Steps,
-		"duration_secs", msg.DurationSecs,
-		"cost_micro_usd", totalCost,
-		"provider_payout_micro_usd", providerPayout,
 	)
 }
 
@@ -996,9 +1031,19 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		return
 	}
 
-	// If the attestation includes an encryption public key, verify it matches
-	// the public_key in the Register message (binding E2E key to SE identity).
-	if result.EncryptionPublicKey != "" && regMsg.PublicKey != "" {
+	// Bind the WebSocket X25519 key used for E2E text encryption to the
+	// attested Secure Enclave identity. If a provider wants to serve private
+	// text, the attestation must carry the same encryption public key.
+	if regMsg.PublicKey != "" {
+		if result.EncryptionPublicKey == "" {
+			s.logger.Warn("attestation missing encryption key for registered public key",
+				"provider_id", providerID,
+			)
+			result.Valid = false
+			result.Error = "attestation missing encryption public key"
+			provider.SetAttestationResult(&result)
+			return
+		}
 		if result.EncryptionPublicKey != regMsg.PublicKey {
 			s.logger.Warn("attestation encryption key does not match register public key",
 				"provider_id", providerID,

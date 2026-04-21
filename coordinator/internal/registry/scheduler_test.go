@@ -16,6 +16,8 @@ func makeSchedulerProvider(t *testing.T, reg *Registry, id, model string, decode
 	p.mu.Lock()
 	p.TrustLevel = TrustHardware
 	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.ChallengeVerifiedSIP = true
 	p.LastChallengeVerified = time.Now()
 	p.SystemMetrics = protocol.SystemMetrics{
 		MemoryPressure: 0.1,
@@ -242,6 +244,8 @@ func TestReserveProviderUsesModelSpecificSlotState(t *testing.T) {
 	p.mu.Lock()
 	p.TrustLevel = TrustHardware
 	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.ChallengeVerifiedSIP = true
 	p.LastChallengeVerified = time.Now()
 	p.SystemMetrics = protocol.SystemMetrics{
 		MemoryPressure: 0.1,

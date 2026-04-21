@@ -10,14 +10,17 @@ set -euo pipefail
 #   1. Fetches the latest signed release from the coordinator
 #   2. Downloads the provider bundle (binary + enclave helper)
 #   3. Verifies the bundle hash
-#   4. Sets up Python runtime + ffmpeg
+#   4. Sets up Python runtime
 #   5. Sets up Secure Enclave identity
 #   6. Downloads the best model for your hardware
 #   7. Summary with next steps
 #
 # Zero prerequisites — just macOS + Apple Silicon.
 
-COORD_URL="https://api.darkbloom.dev"
+# Direct-fetch copy: no serve-time templating applied. Override with
+#   curl ... | COORD_URL=https://api.dev.darkbloom.xyz bash
+# Or fetch the coordinator-served copy at $COORD_URL/install.sh for templating.
+COORD_URL="${COORD_URL:-https://api.darkbloom.dev}"
 INSTALL_DIR="$HOME/.darkbloom"
 BIN_DIR="$INSTALL_DIR/bin"
 PYTHON_BIN="$INSTALL_DIR/python/bin/python3.12"
@@ -99,28 +102,9 @@ tar xzf /tmp/eigeninference-bundle.tar.gz -C "$INSTALL_DIR"
 # Migrate older flat bundle layouts into the current install structure.
 [ -f "$INSTALL_DIR/darkbloom" ] && mv -f "$INSTALL_DIR/darkbloom" "$BIN_DIR/darkbloom"
 [ -f "$INSTALL_DIR/eigeninference-enclave" ] && mv -f "$INSTALL_DIR/eigeninference-enclave" "$BIN_DIR/eigeninference-enclave"
-[ -f "$INSTALL_DIR/gRPCServerCLI" ] && mv -f "$INSTALL_DIR/gRPCServerCLI" "$BIN_DIR/gRPCServerCLI"
-[ -f "$INSTALL_DIR/ffmpeg" ] && mv -f "$INSTALL_DIR/ffmpeg" "$BIN_DIR/ffmpeg"
-[ -f "$INSTALL_DIR/stt_server.py" ] && mv -f "$INSTALL_DIR/stt_server.py" "$BIN_DIR/stt_server.py"
-if [ -d "$BIN_DIR/image-bridge" ]; then
-    rm -rf "$INSTALL_DIR/image-bridge"
-    mv "$BIN_DIR/image-bridge" "$INSTALL_DIR/image-bridge"
-fi
 
-chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/eigeninference-enclave" "$BIN_DIR/gRPCServerCLI" "$BIN_DIR/ffmpeg" "$BIN_DIR/stt_server.py" 2>/dev/null || true
+chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/eigeninference-enclave" 2>/dev/null || true
 rm -f /tmp/eigeninference-bundle.tar.gz
-
-# Verify image pipeline components
-if [ -f "$BIN_DIR/gRPCServerCLI" ]; then
-    echo "  gRPCServerCLI ✓"
-else
-    echo "  ⚠ gRPCServerCLI not found — image generation unavailable"
-fi
-if [ -d "$INSTALL_DIR/image-bridge/eigeninference_image_bridge" ]; then
-    echo "  Image bridge ✓"
-else
-    echo "  ⚠ Image bridge not found — image generation unavailable"
-fi
 
 # Verify code signature (codesign is part of base macOS, no CLT needed)
 if codesign --verify --verbose "$BIN_DIR/darkbloom" 2>/dev/null; then
@@ -175,16 +159,13 @@ for OLD_DIR in "$HOME/.dginf" "$HOME/.eigeninference"; do
         if [ -d "$OLD_DIR/python" ] && [ ! -d "$INSTALL_DIR/python" ]; then
             ln -sf "$OLD_DIR/python" "$INSTALL_DIR/python"
         fi
-        if [ -f "$OLD_DIR/ffmpeg" ] && [ ! -f "$INSTALL_DIR/ffmpeg" ]; then
-            ln -sf "$OLD_DIR/ffmpeg" "$INSTALL_DIR/ffmpeg"
-        fi
         # Symlink old path so stragglers still work
         ln -sfn "$INSTALL_DIR" "$OLD_DIR" 2>/dev/null || true
         echo "  Migration complete ✓"
     fi
 done
 
-# ─── Step 3: Python runtime + ffmpeg ─────────────────────────
+# ─── Step 3: Python runtime ──────────────────────────────────
 echo ""
 echo "→ [3/7] Verifying inference runtime..."
 
@@ -227,7 +208,9 @@ if [ -f "$PYTHON_BIN" ] && ! "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
             echo "  Portable Python installed ✓"
             # Install packages from R2 site-packages tarball (same verified artifacts as CI)
             SITE_DIR="$INSTALL_DIR/python/lib/python3.12/site-packages"
-            R2_CDN="https://pub-3d1cb668259340eeb2276e1d375c846d.r2.dev"
+            # Prefer the coordinator-served install.sh (templated) — this copy is
+            # a direct-fetch fallback and stays pinned to the prod CDN defaults.
+            R2_CDN="${R2_CDN:-https://pub-3d1cb668259340eeb2276e1d375c846d.r2.dev}"
             if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/eigeninference-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
                 rm -rf "$SITE_DIR"
                 mkdir -p "$SITE_DIR"
@@ -258,23 +241,6 @@ if [ -f "$PYTHON_BIN" ]; then
         PYTHONHOME="$INSTALL_DIR/python" "$PYTHON_BIN" -c \
             "import mlx_lm, vllm_mlx; from vllm_mlx.server import app; print(f'  vllm-mlx {vllm_mlx.__version__} / mlx-lm {mlx_lm.__version__} ✓')" 2>/dev/null \
             || echo "  ⚠ vllm-mlx server import failed"
-    fi
-fi
-
-# Ensure ffmpeg is available (bundled since v0.3.4, fallback download for older installs)
-if [ -x "$BIN_DIR/ffmpeg" ]; then
-    echo "  ffmpeg ✓ (bundled)"
-elif command -v ffmpeg &>/dev/null; then
-    echo "  ffmpeg ✓ (system)"
-elif [ -x "$INSTALL_DIR/ffmpeg" ]; then
-    echo "  ffmpeg ✓"
-else
-    echo "  Downloading ffmpeg..."
-    if curl -fsSL "$COORD_URL/dl/ffmpeg-macos-arm64" -o "$BIN_DIR/ffmpeg" 2>/dev/null; then
-        chmod +x "$BIN_DIR/ffmpeg"
-        echo "  ffmpeg ✓"
-    else
-        echo "  ffmpeg ⚠ (optional — needed only for speech-to-text)"
     fi
 fi
 
@@ -346,7 +312,6 @@ MODEL=""
 S3_NAME=""
 MODEL_NAME=""
 MODEL_SIZE=""
-IMAGE_MODEL=""
 
 # Fetch model catalog from coordinator
 CATALOG_JSON=$(curl -fsSL "$COORD_URL/v1/models/catalog" 2>/dev/null || echo "")
@@ -419,7 +384,7 @@ if [ -n "$MODEL" ]; then
             echo "  $MODEL_NAME downloaded ✓"
         else
             echo "  Tarball not available, downloading from R2..."
-            R2_BASE="https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev/$S3_NAME"
+            R2_BASE="${R2_CDN_URL:-https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev}/$S3_NAME"
             for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json model.safetensors.index.json; do
                 curl -fsSL "$R2_BASE/$f" -o "$CACHE_DIR/$f" 2>/dev/null || true
             done

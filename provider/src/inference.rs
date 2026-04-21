@@ -102,6 +102,22 @@ fn python_runtime_roots(exe: &Path, home_dir: Option<&Path>) -> Vec<PathBuf> {
     roots
 }
 
+fn approved_python_runtime_roots(exe: &Path, home_dir: Option<&Path>) -> Result<Vec<PathBuf>> {
+    let roots = python_runtime_roots(exe, home_dir);
+    if roots.is_empty() {
+        anyhow::bail!(
+            "no approved Python runtime roots found; private text serving requires a bundled runtime or ~/.darkbloom/python"
+        );
+    }
+    Ok(roots)
+}
+
+pub fn ensure_approved_runtime_available() -> Result<()> {
+    let exe = std::env::current_exe().context("cannot find executable path")?;
+    let _ = approved_python_runtime_roots(&exe, dirs::home_dir().as_deref())?;
+    Ok(())
+}
+
 impl InProcessEngine {
     /// Create a new in-process engine for the given model.
     /// Does not load the model yet — call `load()` first.
@@ -132,66 +148,136 @@ impl InProcessEngine {
     fn lock_python_path(py: Python<'_>) -> Result<()> {
         let exe = std::env::current_exe().context("cannot find executable path")?;
 
-        let allowed_roots = python_runtime_roots(&exe, dirs::home_dir().as_deref());
-        if !allowed_roots.is_empty() {
-            let allowed_roots: Vec<String> = allowed_roots
-                .iter()
-                .map(|p| p.to_string_lossy().to_string())
-                .collect();
-            let allowed_json =
-                serde_json::to_string(&allowed_roots).context("failed to encode runtime roots")?;
-            let code = CString::new(format!(
-                "import importlib\n\
-                 import os\n\
-                 import sys\n\
-                 allowed = [os.path.realpath(p) for p in {allowed_json}]\n\
-                 locked = []\n\
-                 for root in allowed:\n\
-                     lib = os.path.join(root, 'lib', 'python3.12')\n\
-                     site = os.path.join(lib, 'site-packages')\n\
-                     dyn = os.path.join(lib, 'lib-dynload')\n\
-                     for candidate in (site, dyn, lib):\n\
-                         if os.path.exists(candidate) and candidate not in locked:\n\
-                             locked.append(candidate)\n\
-                 for path in sys.path:\n\
-                     real = os.path.realpath(path or '.')\n\
-                     if any(real == root or real.startswith(root + os.sep) for root in allowed):\n\
-                         if path not in locked:\n\
-                             locked.append(path)\n\
-                 sys.path = locked\n\
-                 importlib.invalidate_caches()\n",
-                allowed_json = allowed_json
-            ))
-            .unwrap();
-            py.run(code.as_c_str(), None, None)
-                .context("failed to lock Python import path")?;
-            tracing::info!("Python path locked to runtime roots: {:?}", allowed_roots);
-        } else {
-            // Development fallback only.
-            tracing::warn!(
-                "No approved Python runtime roots found — using system Python packages. \
-                 This is acceptable for development but NOT for production."
-            );
-        }
+        let allowed_roots = approved_python_runtime_roots(&exe, dirs::home_dir().as_deref())?;
+        let allowed_roots: Vec<String> = allowed_roots
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        let allowed_json =
+            serde_json::to_string(&allowed_roots).context("failed to encode runtime roots")?;
+        let code = CString::new(format!(
+            r#"
+import importlib, os, sys
+allowed = [os.path.realpath(p) for p in {allowed_json}]
+locked = []
+for root in allowed:
+    lib = os.path.join(root, 'lib', 'python3.12')
+    site = os.path.join(lib, 'site-packages')
+    dyn = os.path.join(lib, 'lib-dynload')
+    for candidate in (site, dyn, lib):
+        if os.path.exists(candidate) and candidate not in locked:
+            locked.append(candidate)
+for path in sys.path:
+    real = os.path.realpath(path or '.')
+    if any(real == root or real.startswith(root + os.sep) for root in allowed):
+        if path not in locked:
+            locked.append(path)
+if not locked:
+    raise RuntimeError(f'No approved paths found. prefix={{sys.prefix}}, PYTHONHOME={{os.environ.get("PYTHONHOME","unset")}}, sys.path={{sys.path}}, allowed={{allowed}}')
+sys.path = locked
+importlib.invalidate_caches()
+"#,
+            allowed_json = allowed_json
+        ))
+        .unwrap();
+        py.run(code.as_c_str(), None, None)
+            .context("failed to lock Python import path")?;
+        tracing::info!("Python path locked to runtime roots: {:?}", allowed_roots);
+        Ok(())
+    }
 
+    /// Block Python modules that provide escape hatches out of our hardened
+    /// single-process boundary. These are replaced with stubs that raise
+    /// ImportError, preventing provider-controlled code from opening sockets,
+    /// spawning subprocesses, calling native C functions, or forking workers.
+    ///
+    /// Defense-in-depth: the primary defense is the locked sys.path. This
+    /// blocks the remaining standard-library backdoors.
+    fn block_dangerous_modules(py: Python<'_>) -> Result<()> {
+        let code = CString::new(
+            r#"import builtins, sys
+
+_BLOCKED = frozenset([
+    'socket', 'subprocess', 'ctypes', 'multiprocessing',
+    'faulthandler', '_socket', '_multiprocessing',
+])
+
+_original_import = getattr(
+    builtins, '_eigeninference_original_import', builtins.__import__
+)
+builtins._eigeninference_original_import = _original_import
+
+def _blocked_os_call(*args, **kwargs):
+    raise PermissionError('os process control is blocked in private text mode')
+
+def _blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+    top = name.split('.')[0]
+    if top in _BLOCKED:
+        raise ImportError(
+            f"module {name!r} is blocked in private text mode"
+        )
+    return builtins._eigeninference_original_import(
+        name, globals, locals, fromlist, level
+    )
+
+for name in list(sys.modules):
+    if name.split('.')[0] in _BLOCKED:
+        del sys.modules[name]
+
+builtins.__import__ = _blocked_import
+
+import os as _blocked_os
+for _name in (
+    'system', 'fork', 'forkpty', 'popen',
+    'execv', 'execve', 'execl', 'execlp', 'execle', 'execlpe',
+    'execvp', 'execvpe',
+    'spawnl', 'spawnle', 'spawnlp', 'spawnlpe',
+    'spawnv', 'spawnve', 'spawnvp', 'spawnvpe',
+    'posix_spawn', 'posix_spawnp',
+):
+    if hasattr(_blocked_os, _name):
+        setattr(_blocked_os, _name, _blocked_os_call)
+"#,
+        )
+        .unwrap();
+        py.run(code.as_c_str(), None, None)
+            .context("failed to install dangerous-module blocker")?;
+        tracing::info!(
+            "Dangerous Python modules blocked: socket, subprocess, ctypes, multiprocessing, faulthandler"
+        );
         Ok(())
     }
 
     /// Detect which Python inference engine is available.
-    /// First locks the Python import path to bundled packages (if in app bundle).
+    /// Retries on failure to handle site-packages being replaced concurrently
+    /// (e.g. runtime self-heal running from a previous process).
     pub fn detect_engine() -> Result<EngineType> {
-        Python::with_gil(|py| {
-            // Lock Python to only load from our bundle (production)
-            // or warn about using system packages (development)
-            Self::lock_python_path(py)?;
+        let max_attempts = 3;
+        let mut last_err = None;
+        for attempt in 1..=max_attempts {
+            match Self::try_detect_engine() {
+                Ok(engine) => return Ok(engine),
+                Err(e) => {
+                    if attempt < max_attempts {
+                        tracing::warn!(
+                            "Engine detection attempt {attempt}/{max_attempts} failed: {e} — retrying in 5s"
+                        );
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap())
+    }
 
-            // Try vllm-mlx first (preferred — supports batching)
+    fn try_detect_engine() -> Result<EngineType> {
+        Python::with_gil(|py| {
             if py.import("vllm_mlx").is_ok() {
                 tracing::info!("In-process engine: vllm-mlx detected");
                 return Ok(EngineType::VllmMlx);
             }
 
-            // Fall back to mlx-lm
             if py.import("mlx_lm").is_ok() {
                 tracing::info!("In-process engine: mlx-lm detected (fallback)");
                 return Ok(EngineType::MlxLm);
@@ -209,9 +295,21 @@ impl InProcessEngine {
     pub fn load(&mut self) -> Result<()> {
         self.engine_type = Self::detect_engine()?;
 
-        Python::with_gil(|py| match self.engine_type {
-            EngineType::VllmMlx => self.load_vllm_mlx(py),
-            EngineType::MlxLm => self.load_mlx_lm(py),
+        Python::with_gil(|py| -> Result<()> {
+            match self.engine_type {
+                EngineType::VllmMlx => self.load_vllm_mlx(py)?,
+                EngineType::MlxLm => self.load_mlx_lm(py)?,
+            }
+            // Lock path and block dangerous modules AFTER the engine loads.
+            // The engine needs full sys.path + socket/multiprocessing during
+            // initialization. Once loaded, we lock down for the serving phase.
+            if let Err(e) = Self::lock_python_path(py) {
+                tracing::warn!("Python path lock failed (defense-in-depth): {e:#}");
+            }
+            if let Err(e) = Self::block_dangerous_modules(py) {
+                tracing::warn!("Failed to block dangerous modules: {e:#}");
+            }
+            Ok(())
         })?;
 
         self.loaded = true;
@@ -243,11 +341,17 @@ impl InProcessEngine {
         let model = serde_json::to_string(&self.model_id).context("invalid model path")?;
         let cache_key = serde_json::to_string(&self.cache_key).context("invalid cache key")?;
         let code = format!(
-            "import builtins\n\
-             from vllm_mlx import LLM\n\
-             if not hasattr(builtins, '{store}'):\n\
-                 builtins.{store} = {{}}\n\
-             builtins.{store}[{cache_key}] = LLM(model={model})\n",
+            r#"
+import builtins, traceback as _tb
+try:
+    from vllm_mlx.engine import SimpleEngine
+    if not hasattr(builtins, '{store}'):
+        builtins.{store} = {{}}
+    builtins.{store}[{cache_key}] = SimpleEngine(model_name={model})
+except Exception as _e:
+    _err_detail = _tb.format_exc()
+    raise RuntimeError(f"vllm-mlx init failed: {{_err_detail}}") from _e
+"#,
             store = VLLM_ENGINE_STORE,
             cache_key = cache_key,
             model = model
@@ -262,11 +366,13 @@ impl InProcessEngine {
         let model = serde_json::to_string(&self.model_id).context("invalid model path")?;
         let cache_key = serde_json::to_string(&self.cache_key).context("invalid cache key")?;
         let code = format!(
-            "import builtins\n\
-             import mlx_lm\n\
-             if not hasattr(builtins, '{store}'):\n\
-                 builtins.{store} = {{}}\n\
-             builtins.{store}[{cache_key}] = mlx_lm.load({model})\n",
+            r#"
+import builtins
+import mlx_lm
+if not hasattr(builtins, '{store}'):
+    builtins.{store} = {{}}
+builtins.{store}[{cache_key}] = mlx_lm.load({model})
+"#,
             store = MLX_ENGINE_STORE,
             cache_key = cache_key,
             model = model
@@ -280,11 +386,13 @@ impl InProcessEngine {
     fn unload_vllm_mlx(&self, py: Python<'_>) -> Result<()> {
         let cache_key = serde_json::to_string(&self.cache_key).context("invalid cache key")?;
         let code = format!(
-            "import builtins, gc\n\
-             store = getattr(builtins, '{store}', None)\n\
-             if isinstance(store, dict):\n\
-                 store.pop({cache_key}, None)\n\
-             gc.collect()\n",
+            r#"
+import builtins, gc
+store = getattr(builtins, '{store}', None)
+if isinstance(store, dict):
+    store.pop({cache_key}, None)
+gc.collect()
+"#,
             store = VLLM_ENGINE_STORE,
             cache_key = cache_key
         );
@@ -297,11 +405,13 @@ impl InProcessEngine {
     fn unload_mlx_lm(&self, py: Python<'_>) -> Result<()> {
         let cache_key = serde_json::to_string(&self.cache_key).context("invalid cache key")?;
         let code = format!(
-            "import builtins, gc\n\
-             store = getattr(builtins, '{store}', None)\n\
-             if isinstance(store, dict):\n\
-                 store.pop({cache_key}, None)\n\
-             gc.collect()\n",
+            r#"
+import builtins, gc
+store = getattr(builtins, '{store}', None)
+if isinstance(store, dict):
+    store.pop({cache_key}, None)
+gc.collect()
+"#,
             store = MLX_ENGINE_STORE,
             cache_key = cache_key
         );
@@ -335,46 +445,49 @@ impl InProcessEngine {
         max_tokens: u64,
         temperature: f64,
     ) -> Result<InferenceResult> {
-        let prompt = format_chat_prompt(messages);
+        let mut prompt = format_chat_prompt(messages);
+        let result = (|| -> Result<InferenceResult> {
+            let locals = PyDict::new(py);
+            locals.set_item("engine_key", &self.cache_key)?;
+            locals.set_item("prompt", &prompt)?;
+            locals.set_item("max_tokens", max_tokens)?;
+            locals.set_item("temperature", temperature)?;
 
-        let locals = PyDict::new(py);
-        locals.set_item("engine_key", &self.cache_key)?;
-        locals.set_item("prompt", &prompt)?;
-        locals.set_item("max_tokens", max_tokens)?;
-        locals.set_item("temperature", temperature)?;
+            let code = CString::new(
+                r#"
+import builtins
+engine = builtins._eigeninference_vllm_engines[engine_key]
+output = engine.generate(prompt, max_tokens=int(max_tokens), temperature=float(temperature))
+_result_text = output.text
+_result_prompt_tokens = output.prompt_tokens
+_result_completion_tokens = output.completion_tokens
+"#,
+            )
+            .unwrap();
+            py.run(code.as_c_str(), None, Some(&locals))
+                .context("vllm-mlx generate failed")?;
 
-        let code = CString::new(
-            "import builtins\n\
-             from vllm import SamplingParams\n\
-             params = SamplingParams(max_tokens=int(max_tokens), temperature=float(temperature))\n\
-             engine = builtins._eigeninference_vllm_engines[engine_key]\n\
-             outputs = engine.generate([prompt], params)\n\
-             _result_text = outputs[0].outputs[0].text\n\
-             _result_prompt_tokens = len(outputs[0].prompt_token_ids)\n\
-             _result_completion_tokens = len(outputs[0].outputs[0].token_ids)\n",
-        )
-        .unwrap();
-        py.run(code.as_c_str(), None, Some(&locals))
-            .context("vllm-mlx generate failed")?;
+            let text: String = locals
+                .get_item("_result_text")?
+                .ok_or_else(|| anyhow::anyhow!("no result text"))?
+                .extract()?;
+            let prompt_tokens: u64 = locals
+                .get_item("_result_prompt_tokens")?
+                .ok_or_else(|| anyhow::anyhow!("no prompt tokens"))?
+                .extract()?;
+            let completion_tokens: u64 = locals
+                .get_item("_result_completion_tokens")?
+                .ok_or_else(|| anyhow::anyhow!("no completion tokens"))?
+                .extract()?;
 
-        let text: String = locals
-            .get_item("_result_text")?
-            .ok_or_else(|| anyhow::anyhow!("no result text"))?
-            .extract()?;
-        let prompt_tokens: u64 = locals
-            .get_item("_result_prompt_tokens")?
-            .ok_or_else(|| anyhow::anyhow!("no prompt tokens"))?
-            .extract()?;
-        let completion_tokens: u64 = locals
-            .get_item("_result_completion_tokens")?
-            .ok_or_else(|| anyhow::anyhow!("no completion tokens"))?
-            .extract()?;
-
-        Ok(InferenceResult {
-            text,
-            prompt_tokens,
-            completion_tokens,
-        })
+            Ok(InferenceResult {
+                text,
+                prompt_tokens,
+                completion_tokens,
+            })
+        })();
+        crate::security::secure_zero_string(std::mem::take(&mut prompt));
+        result
     }
 
     fn generate_mlx_lm(
@@ -384,35 +497,38 @@ impl InProcessEngine {
         max_tokens: u64,
         _temperature: f64,
     ) -> Result<InferenceResult> {
-        let prompt = format_chat_prompt(messages);
+        let mut prompt = format_chat_prompt(messages);
+        let result = (|| -> Result<InferenceResult> {
+            // Import modules and call generate directly via PyO3 API
+            let mlx_lm = py.import("mlx_lm").context("failed to import mlx_lm")?;
+            let builtins = py.import("builtins").context("failed to import builtins")?;
+            let engines = builtins
+                .getattr(MLX_ENGINE_STORE)
+                .context("mlx-lm engine store not initialized")?;
+            let entry = engines
+                .get_item(self.cache_key.as_str())
+                .context("mlx-lm engine not loaded for model")?;
+            let (model, tokenizer): (PyObject, PyObject) = entry.extract()?;
 
-        // Import modules and call generate directly via PyO3 API
-        let mlx_lm = py.import("mlx_lm").context("failed to import mlx_lm")?;
-        let builtins = py.import("builtins").context("failed to import builtins")?;
-        let engines = builtins
-            .getattr(MLX_ENGINE_STORE)
-            .context("mlx-lm engine store not initialized")?;
-        let entry = engines
-            .get_item(self.cache_key.as_str())
-            .context("mlx-lm engine not loaded for model")?;
-        let (model, tokenizer): (PyObject, PyObject) = entry.extract()?;
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("prompt", prompt.as_str())?;
+            kwargs.set_item("max_tokens", max_tokens)?;
 
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("prompt", prompt.as_str())?;
-        kwargs.set_item("max_tokens", max_tokens)?;
+            let result = mlx_lm
+                .call_method("generate", (model, tokenizer), Some(&kwargs))
+                .context("mlx-lm generate call failed")?;
 
-        let result = mlx_lm
-            .call_method("generate", (model, tokenizer), Some(&kwargs))
-            .context("mlx-lm generate call failed")?;
+            let text: String = result.extract().context("failed to extract result text")?;
+            let completion_tokens = text.split_whitespace().count() as u64;
 
-        let text: String = result.extract().context("failed to extract result text")?;
-        let completion_tokens = text.split_whitespace().count() as u64;
-
-        Ok(InferenceResult {
-            text,
-            prompt_tokens: 0,
-            completion_tokens,
-        })
+            Ok(InferenceResult {
+                text,
+                prompt_tokens: 0,
+                completion_tokens,
+            })
+        })();
+        crate::security::secure_zero_string(std::mem::take(&mut prompt));
+        result
     }
 
     /// Run streaming inference. Calls the callback for each token.
@@ -423,71 +539,80 @@ impl InProcessEngine {
         &self,
         messages: &[serde_json::Value],
         max_tokens: u64,
-        temperature: f64,
-        mut on_token: impl FnMut(StreamToken),
+        _temperature: f64,
+        mut on_token: impl FnMut(StreamToken) -> Result<()>,
     ) -> Result<(u64, u64)> {
         if !self.loaded {
             anyhow::bail!("Model not loaded — call load() first");
         }
+        if matches!(self.engine_type, EngineType::VllmMlx) {
+            anyhow::bail!(
+                "private text streaming requires mlx-lm; vllm-mlx only exposes buffered completions"
+            );
+        }
 
         Python::with_gil(|py| {
-            let prompt = format_chat_prompt(messages);
+            let mut prompt = format_chat_prompt(messages);
+            let mut pending_text: Option<String> = None;
+            let mut completion_tokens = 0u64;
 
-            let locals = PyDict::new(py);
-            locals.set_item("engine_key", &self.cache_key)?;
-            locals.set_item("prompt", &prompt)?;
-            locals.set_item("max_tokens", max_tokens)?;
-            locals.set_item("temperature", temperature)?;
-
-            let (code_str, engine_name) = match self.engine_type {
-                EngineType::VllmMlx => (
-                    "import builtins\n\
-                     from vllm import SamplingParams\n\
-                     params = SamplingParams(max_tokens=int(max_tokens), temperature=float(temperature))\n\
-                     engine = builtins._eigeninference_vllm_engines[engine_key]\n\
-                     _stream_outputs = engine.generate([prompt], params, use_tqdm=False)\n\
-                     _stream_tokens = []\n\
-                     for output in _stream_outputs:\n\
-                         for o in output.outputs:\n\
-                             _stream_tokens.append(o.text)\n",
-                    "vllm-mlx",
-                ),
-                EngineType::MlxLm => (
-                    "import mlx_lm, builtins\n\
-                     _engine = builtins._eigeninference_mlx_engines[engine_key]\n\
-                     _model = _engine[0]\n\
-                     _tokenizer = _engine[1]\n\
-                     _stream_tokens = []\n\
-                     for token in mlx_lm.stream_generate(\n\
-                         _model, _tokenizer,\n\
-                         prompt=prompt, max_tokens=int(max_tokens)):\n\
-                         _stream_tokens.append(token)\n",
-                    "mlx-lm",
-                ),
+            let mut emit_token = |text: String| -> Result<()> {
+                if let Some(prev) = pending_text.take() {
+                    if let Err(err) = on_token(StreamToken {
+                        text: prev,
+                        finish_reason: None,
+                    }) {
+                        crate::security::secure_zero_string(text);
+                        return Err(err);
+                    }
+                    completion_tokens += 1;
+                }
+                pending_text = Some(text);
+                Ok(())
             };
 
-            let code = CString::new(code_str).unwrap();
-            py.run(code.as_c_str(), None, Some(&locals))
-                .context(format!("{engine_name} stream generate failed"))?;
+            let stream_result: Result<()> = match self.engine_type {
+                EngineType::MlxLm => {
+                    let mlx_lm = py.import("mlx_lm").context("failed to import mlx_lm")?;
+                    let builtins = py.import("builtins").context("failed to import builtins")?;
+                    let engines = builtins
+                        .getattr(MLX_ENGINE_STORE)
+                        .context("mlx-lm engine store not initialized")?;
+                    let entry = engines
+                        .get_item(self.cache_key.as_str())
+                        .context("mlx-lm engine not loaded for model")?;
+                    let (model, tokenizer): (PyObject, PyObject) = entry.extract()?;
 
-            let tokens: Vec<String> = locals
-                .get_item("_stream_tokens")?
-                .ok_or_else(|| anyhow::anyhow!("no stream tokens"))?
-                .extract()?;
+                    let kwargs = PyDict::new(py);
+                    kwargs.set_item("prompt", prompt.as_str())?;
+                    kwargs.set_item("max_tokens", max_tokens)?;
+                    let generator = mlx_lm
+                        .call_method("stream_generate", (model, tokenizer), Some(&kwargs))
+                        .context("mlx-lm stream_generate call failed")?;
 
-            let count = tokens.len() as u64;
-            for (i, text) in tokens.into_iter().enumerate() {
+                    for token in generator.try_iter().context("mlx-lm stream not iterable")? {
+                        let text: String = token?
+                            .extract()
+                            .context("failed to extract mlx-lm streamed text")?;
+                        emit_token(text)?;
+                    }
+                    Ok(())
+                }
+                EngineType::VllmMlx => unreachable!("vllm-mlx streaming is rejected above"),
+            };
+
+            crate::security::secure_zero_string(std::mem::take(&mut prompt));
+            stream_result?;
+
+            if let Some(text) = pending_text.take() {
                 on_token(StreamToken {
                     text,
-                    finish_reason: if i == count as usize - 1 {
-                        Some("stop".to_string())
-                    } else {
-                        None
-                    },
-                });
+                    finish_reason: Some("stop".to_string()),
+                })?;
+                completion_tokens += 1;
             }
 
-            Ok((0, count))
+            Ok((0, completion_tokens))
         })
     }
 
@@ -550,30 +675,45 @@ impl SharedEngine {
     ) -> Result<InferenceResult> {
         let engine = self.inner.clone();
         tokio::task::spawn_blocking(move || {
+            let mut messages = messages;
             let e = engine.blocking_lock();
-            e.generate(&messages, max_tokens, temperature)
+            let result = e.generate(&messages, max_tokens, temperature);
+            for message in &mut messages {
+                crate::security::secure_zero_json_value(message);
+            }
+            result
         })
         .await?
     }
 
-    /// Run streaming inference and collect the emitted tokens.
-    pub async fn stream_generate(
+    /// Streaming inference with a channel: sends each token through the channel
+    /// as it's generated so the caller can encrypt-and-zeroize immediately.
+    /// Only one plaintext token exists in Rust memory at a time.
+    pub fn stream_generate_channel(
         &self,
         messages: Vec<serde_json::Value>,
         max_tokens: u64,
         temperature: f64,
-    ) -> Result<(u64, u64, Vec<StreamToken>)> {
+        token_tx: tokio::sync::mpsc::Sender<StreamToken>,
+    ) -> tokio::task::JoinHandle<Result<(u64, u64)>> {
         let engine = self.inner.clone();
         tokio::task::spawn_blocking(move || {
+            let mut messages = messages;
             let e = engine.blocking_lock();
-            let mut tokens = Vec::new();
-            let (prompt_tokens, completion_tokens) =
-                e.stream_generate(&messages, max_tokens, temperature, |token| {
-                    tokens.push(token);
-                })?;
-            Ok((prompt_tokens, completion_tokens, tokens))
+            let result = e.stream_generate(&messages, max_tokens, temperature, |token| {
+                if let Err(err) = token_tx.blocking_send(token) {
+                    let mut token = err.0;
+                    crate::security::secure_zero_string(std::mem::take(&mut token.text));
+                    return Err(anyhow::anyhow!("stream receiver dropped"));
+                }
+                Ok(())
+            });
+            for message in &mut messages {
+                crate::security::secure_zero_json_value(message);
+            }
+            let (prompt_tokens, completion_tokens) = result?;
+            Ok((prompt_tokens, completion_tokens))
         })
-        .await?
     }
 
     /// Unload the model so GPU memory can be reclaimed.
@@ -670,6 +810,77 @@ mod tests {
     }
 
     #[test]
+    fn test_streaming_rejects_buffered_vllm_engine() {
+        let engine = InProcessEngine {
+            model_id: "test-model".to_string(),
+            cache_key: "cache-key".to_string(),
+            engine_type: EngineType::VllmMlx,
+            loaded: true,
+        };
+
+        let err = engine
+            .stream_generate(&[], 16, 0.7, |_token| Ok(()))
+            .expect_err("vllm-mlx streaming should fail closed");
+        assert!(
+            err.to_string().contains("requires mlx-lm"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_block_dangerous_modules_blocks_imports() {
+        Python::with_gil(|py| {
+            InProcessEngine::block_dangerous_modules(py).expect("install blocker");
+            for module in [
+                "socket",
+                "subprocess",
+                "ctypes",
+                "multiprocessing",
+                "faulthandler",
+            ] {
+                let err = py
+                    .import(module)
+                    .expect_err("dangerous module import should fail");
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("blocked in private text mode"),
+                    "unexpected import error for {module}: {msg}"
+                );
+            }
+
+            let os_checks = CString::new(
+                r#"import os
+try:
+    os.system('/usr/bin/true')
+    raise AssertionError('os.system should be blocked')
+except Exception as exc:
+    assert 'private text mode' in str(exc)
+
+if hasattr(os, 'fork'):
+    try:
+        os.fork()
+        raise AssertionError('os.fork should be blocked')
+    except Exception as exc:
+        assert 'private text mode' in str(exc)
+"#,
+            )
+            .unwrap();
+            py.run(os_checks.as_c_str(), None, None)
+                .expect("os process-control hooks should be blocked");
+
+            let cleanup = CString::new(
+                r#"import builtins
+if hasattr(builtins, '_eigeninference_original_import'):
+    builtins.__import__ = builtins._eigeninference_original_import
+"#,
+            )
+            .unwrap();
+            py.run(cleanup.as_c_str(), None, None)
+                .expect("remove blocker");
+        });
+    }
+
+    #[test]
     fn test_engine_cache_key_stable_and_unique() {
         let a = engine_cache_key_for("model-a");
         let b = engine_cache_key_for("model-a");
@@ -721,6 +932,24 @@ mod tests {
     }
 
     #[test]
+    fn test_approved_python_runtime_roots_rejects_missing_runtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = tmp.path().join("bin/darkbloom");
+        let home = tmp.path().join("home");
+
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, b"").unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+
+        let err = approved_python_runtime_roots(&exe, Some(home.as_path())).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("no approved Python runtime roots found"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn test_detect_engine_graceful_failure() {
         // This will fail if neither vllm-mlx nor mlx-lm is installed,
         // which is expected in test environments without MLX.
@@ -735,7 +964,10 @@ mod tests {
                 // Expected when MLX packages aren't installed
                 let msg = e.to_string();
                 assert!(
-                    msg.contains("vllm") || msg.contains("mlx") || msg.contains("install"),
+                    msg.contains("approved Python runtime roots")
+                        || msg.contains("vllm")
+                        || msg.contains("mlx")
+                        || msg.contains("install"),
                     "unexpected error: {msg}"
                 );
             }

@@ -39,7 +39,7 @@ func TestIntegration_ProviderEvictionRemovesFromRouting(t *testing.T) {
 
 	pubKey := testPublicKeyB64()
 	model := "eviction-routing-model"
-	models := []protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}}
+	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
 	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
 

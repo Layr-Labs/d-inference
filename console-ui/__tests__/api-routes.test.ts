@@ -10,6 +10,8 @@ import { NextRequest } from "next/server";
 // module level for forwarding to the coordinator).
 let upstreamFetch: ReturnType<typeof vi.fn>;
 
+const DEFAULT_COORD = "https://api.darkbloom.dev";
+
 beforeEach(() => {
   upstreamFetch = vi.fn();
   vi.stubGlobal("fetch", upstreamFetch);
@@ -57,22 +59,37 @@ describe("GET /api/payments/balance", () => {
     const { GET } = await import("@/app/api/payments/balance/route");
     const req = makeRequest("/api/payments/balance", {
       headers: {
-        "x-coordinator-url": "https://coord.test",
         "x-api-key": "key123",
       },
     });
     const res = await GET(req);
     const data = await res.json();
 
-    // Verify upstream was called correctly
     expect(upstreamFetch).toHaveBeenCalledOnce();
     const [upstreamUrl, upstreamOpts] = upstreamFetch.mock.calls[0];
-    expect(upstreamUrl).toBe("https://coord.test/v1/payments/balance");
+    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/payments/balance`);
     expect(upstreamOpts.headers.Authorization).toBe("Bearer key123");
 
-    // Verify response forwarded
     expect(res.status).toBe(200);
     expect(data.balance_usd).toBe(0.001);
+  });
+
+  it("ignores x-coordinator-url header (SSRF prevention)", async () => {
+    upstreamFetch.mockResolvedValueOnce(
+      upstreamOk({ balance_micro_usd: 0, balance_usd: 0 })
+    );
+
+    const { GET } = await import("@/app/api/payments/balance/route");
+    const req = makeRequest("/api/payments/balance", {
+      headers: {
+        "x-coordinator-url": "https://attacker.example.com",
+        "x-api-key": "key123",
+      },
+    });
+    await GET(req);
+
+    const [upstreamUrl] = upstreamFetch.mock.calls[0];
+    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/payments/balance`);
   });
 
   it("returns upstream status on error", async () => {
@@ -106,7 +123,7 @@ describe("GET /api/payments/balance", () => {
 // =========================================================================
 
 describe("POST /api/payments/deposit", () => {
-  it("forwards body and auth to coordinator /v1/payments/deposit", async () => {
+  it("forwards body and auth to coordinator /v1/billing/deposit", async () => {
     upstreamFetch.mockResolvedValueOnce(upstreamOk({ ok: true }));
 
     const { POST } = await import("@/app/api/payments/deposit/route");
@@ -114,7 +131,6 @@ describe("POST /api/payments/deposit", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-coordinator-url": "https://coord.test",
         "x-api-key": "key-dep",
       },
       body: JSON.stringify({ amount_usd: 25 }),
@@ -123,7 +139,7 @@ describe("POST /api/payments/deposit", () => {
 
     expect(res.status).toBe(200);
     const [upstreamUrl, upstreamOpts] = upstreamFetch.mock.calls[0];
-    expect(upstreamUrl).toBe("https://coord.test/v1/payments/deposit");
+    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/billing/deposit`);
     expect(upstreamOpts.method).toBe("POST");
     expect(upstreamOpts.headers["Content-Type"]).toBe("application/json");
     expect(upstreamOpts.headers.Authorization).toBe("Bearer key-dep");
@@ -160,7 +176,6 @@ describe("POST /api/payments/withdraw", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-coordinator-url": "https://coord.test",
         "x-api-key": "key-wd",
       },
       body: JSON.stringify({ amount_usd: 5, wallet_address: "0xabc" }),
@@ -169,7 +184,7 @@ describe("POST /api/payments/withdraw", () => {
 
     expect(res.status).toBe(200);
     const [upstreamUrl, upstreamOpts] = upstreamFetch.mock.calls[0];
-    expect(upstreamUrl).toBe("https://coord.test/v1/payments/withdraw");
+    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/payments/withdraw`);
     expect(JSON.parse(upstreamOpts.body)).toEqual({
       amount_usd: 5,
       wallet_address: "0xabc",
@@ -214,7 +229,6 @@ describe("GET /api/payments/usage", () => {
     const { GET } = await import("@/app/api/payments/usage/route");
     const req = makeRequest("/api/payments/usage", {
       headers: {
-        "x-coordinator-url": "https://coord.test",
         "x-api-key": "key-u",
       },
     });
@@ -225,7 +239,7 @@ describe("GET /api/payments/usage", () => {
     expect(data.usage).toHaveLength(1);
 
     const [upstreamUrl, upstreamOpts] = upstreamFetch.mock.calls[0];
-    expect(upstreamUrl).toBe("https://coord.test/v1/payments/usage");
+    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/payments/usage`);
     expect(upstreamOpts.headers.Authorization).toBe("Bearer key-u");
   });
 
@@ -255,7 +269,6 @@ describe("POST /api/invite/redeem", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-coordinator-url": "https://coord.test",
         "x-api-key": "key-inv",
       },
       body: JSON.stringify({ code: "INV-TEST1234" }),
@@ -267,7 +280,7 @@ describe("POST /api/invite/redeem", () => {
     expect(data.credited_usd).toBe("5.00");
 
     const [upstreamUrl, upstreamOpts] = upstreamFetch.mock.calls[0];
-    expect(upstreamUrl).toBe("https://coord.test/v1/invite/redeem");
+    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/invite/redeem`);
     expect(upstreamOpts.headers.Authorization).toBe("Bearer key-inv");
     expect(JSON.parse(upstreamOpts.body)).toEqual({ code: "INV-TEST1234" });
   });

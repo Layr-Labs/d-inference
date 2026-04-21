@@ -12,12 +12,10 @@ import {
   EyeOff,
   ChevronDown,
   MessageSquare,
-  Mic,
   List,
   BarChart3,
   Shield,
   CreditCard,
-  Image as ImageIcon,
 } from "lucide-react";
 
 const API_KEY_STORAGE = "darkbloom_api_key";
@@ -94,49 +92,6 @@ const ENDPOINTS = [
     notes: "OpenAI Responses API format. Accepts 'input' (string or array) instead of 'messages'. Uses input_tokens/output_tokens for usage. Supports streaming. Same routing, encryption, and billing as chat completions.",
   },
   {
-    method: "POST",
-    path: "/v1/images/generations",
-    description: "Generate images with FLUX models (OpenAI-compatible)",
-    icon: ImageIcon,
-    auth: true,
-    request: `{
-  "model": "flux_2_klein_4b_q8p.ckpt",
-  "prompt": "A serene mountain landscape at sunset",
-  "negative_prompt": "blurry, low quality",
-  "n": 1,
-  "size": "1024x1024",
-  "steps": 20
-}`,
-    response: `{
-  "created": 1712345678,
-  "data": [
-    {"b64_json": "<base64-encoded PNG>"}
-  ]
-}`,
-    notes: "Images are generated on Metal-accelerated Apple Silicon. Supports FLUX.2 Klein 4B and 9B models. The prompt is E2E encrypted.",
-  },
-  {
-    method: "POST",
-    path: "/v1/audio/transcriptions",
-    description: "Transcribe audio files to text (multipart form data)",
-    icon: Mic,
-    auth: true,
-    request: `Content-Type: multipart/form-data
-
-file: <audio file (wav, mp3, webm)>
-model: CohereLabs/cohere-transcribe-03-2026
-language: en (optional)`,
-    response: `{
-  "text": "Hello, how are you?",
-  "language": "en",
-  "duration": 2.5,
-  "segments": [
-    {"start": 0.0, "end": 2.5, "text": "Hello, how are you?"}
-  ]
-}`,
-    notes: "Accepts audio up to 25MB. Supported formats: WAV, MP3, WebM, M4A, FLAC. The Cohere Transcribe model runs locally on provider hardware.",
-  },
-  {
     method: "GET",
     path: "/v1/models",
     description: "List all available models with provider coverage and pricing",
@@ -197,18 +152,12 @@ language: en (optional)`,
   {
     method: "GET",
     path: "/v1/pricing",
-    description: "Current pricing for all models (per million tokens / per image / per audio minute)",
+    description: "Current pricing for all models (per million tokens)",
     icon: CreditCard,
     auth: false,
     response: `{
   "prices": [
     {"model": "qwen3.5-27b-claude-opus-8bit", "input_price": 100000, "output_price": 780000, "input_usd": "$0.10", "output_usd": "$0.78"}
-  ],
-  "image_prices": [
-    {"model": "flux_2_klein_4b_q8p.ckpt", "price_per_image": 1500, "price_usd": "$0.0015"}
-  ],
-  "transcription_prices": [
-    {"model": "CohereLabs/cohere-transcribe-03-2026", "price_per_minute": 1000, "price_usd": "$0.001"}
   ]
 }`,
   },
@@ -474,68 +423,6 @@ console.log(text);`,
     },
   ];
 
-  const imageExample = [
-    {
-      label: "Python",
-      language: "python",
-      code: `import base64
-from openai import OpenAI
-
-client = OpenAI(base_url="${u}/v1", api_key="${k}")
-
-response = client.images.generate(
-    model="flux_2_klein_4b_q8p.ckpt",
-    prompt="A serene mountain landscape at sunset",
-    n=1,
-    size="1024x1024",
-)
-
-# Save the image
-img_data = base64.b64decode(response.data[0].b64_json)
-with open("output.png", "wb") as f:
-    f.write(img_data)`,
-    },
-    {
-      label: "cURL",
-      language: "bash",
-      code: `curl -X POST ${u}/v1/images/generations \\
-  -H "Authorization: Bearer ${k}" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "flux_2_klein_4b_q8p.ckpt",
-    "prompt": "A serene mountain landscape at sunset",
-    "n": 1,
-    "size": "1024x1024"
-  }'`,
-    },
-  ];
-
-  const transcriptionExample = [
-    {
-      label: "Python",
-      language: "python",
-      code: `from openai import OpenAI
-
-client = OpenAI(base_url="${u}/v1", api_key="${k}")
-
-with open("audio.wav", "rb") as f:
-    transcript = client.audio.transcriptions.create(
-        model="CohereLabs/cohere-transcribe-03-2026",
-        file=f,
-    )
-
-print(transcript.text)`,
-    },
-    {
-      label: "cURL",
-      language: "bash",
-      code: `curl -X POST ${u}/v1/audio/transcriptions \\
-  -H "Authorization: Bearer ${k}" \\
-  -F "file=@audio.wav" \\
-  -F "model=CohereLabs/cohere-transcribe-03-2026"`,
-    },
-  ];
-
   const modelsExample = [
     {
       label: "Python",
@@ -661,16 +548,11 @@ for model in models.data:
                     { id: "qwen3.5-27b-claude-opus-8bit", type: "text", arch: "27B dense, Claude Opus distilled" },
                     { id: "mlx-community/Qwen3.5-122B-A10B-8bit", type: "text", arch: "122B MoE, 10B active" },
                     { id: "mlx-community/MiniMax-M2.5-8bit", type: "text", arch: "239B MoE, 11B active" },
-                    { id: "CohereLabs/cohere-transcribe-03-2026", type: "stt", arch: "2B conformer" },
                   ].map((m) => (
                     <tr key={m.id} className="border-b border-border-dim/50 last:border-0">
                       <td className="px-4 py-2.5 text-sm font-mono text-text-primary">{m.id}</td>
                       <td className="px-4 py-2.5">
-                        <span className={`text-xs font-mono px-2 py-0.5 rounded ${
-                          m.type === "text" ? "bg-accent-brand/10 text-accent-brand" :
-                          m.type === "image" ? "bg-purple/10 text-purple" :
-                          "bg-accent-green/10 text-accent-green"
-                        }`}>{m.type}</span>
+                        <span className="text-xs font-mono px-2 py-0.5 rounded bg-accent-brand/10 text-accent-brand">{m.type}</span>
                       </td>
                       <td className="px-4 py-2.5 text-xs text-text-tertiary">{m.arch}</td>
                     </tr>
@@ -690,24 +572,6 @@ for model in models.data:
               Stream chat completions with any supported model. Supports system messages, multi-turn conversations, and thinking/reasoning output.
             </p>
             <CodeExample examples={chatExample} />
-          </section>
-
-          {/* Image Generation */}
-          <section>
-            <h2 className="text-lg font-semibold text-text-primary mb-2">Image Generation</h2>
-            <p className="text-sm text-text-secondary mb-4">
-              Generate images with FLUX models running on Metal-accelerated Apple Silicon. Returns base64-encoded PNG.
-            </p>
-            <CodeExample examples={imageExample} />
-          </section>
-
-          {/* Speech-to-Text */}
-          <section>
-            <h2 className="text-lg font-semibold text-text-primary mb-2">Speech-to-Text</h2>
-            <p className="text-sm text-text-secondary mb-4">
-              Transcribe audio files using the Cohere Transcribe model. Supports WAV, MP3, WebM, M4A, and FLAC.
-            </p>
-            <CodeExample examples={transcriptionExample} />
           </section>
 
           {/* List Models */}

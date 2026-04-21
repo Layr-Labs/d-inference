@@ -423,7 +423,7 @@ func TestMultiProvider_ConcurrentRegistration(t *testing.T) {
 					MemoryGB:     64,
 				},
 				Models:    models,
-				Backend:   "test",
+				Backend:   "inprocess-mlx",
 				PublicKey: pk,
 			}
 			regData, _ := json.Marshal(regMsg)

@@ -1,6 +1,6 @@
 [package]
 name = "darkbloom"
-version = "0.3.10"
+version = "0.3.12-dev.6"
 edition = "2024"
 description = "EigenInference provider agent for Apple Silicon Macs"
 
@@ -26,15 +26,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # HTTP client (for backend health checks + proxying)
-reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 
 # WebSocket client
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 
 # macOS Keychain / Security.framework
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "3"
-security-framework-sys = "2"
 core-foundation = "0.10"
 futures-util = "0.3"
 
@@ -68,6 +66,9 @@ base64 = "0.22"
 
 # SHA-256 — streaming hash for model weight fingerprinting and binary integrity
 sha2 = "0.10"
+
+# Secure memory wiping — prevents decrypted plaintext from lingering in freed memory
+zeroize = "1"
 
 # Embedded Python — for in-process inference (Phase 3)
 # Links the Python interpreter directly into our binary so inference

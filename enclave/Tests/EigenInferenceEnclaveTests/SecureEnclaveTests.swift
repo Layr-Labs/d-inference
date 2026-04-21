@@ -78,27 +78,6 @@ final class SecureEnclaveTests: XCTestCase {
         XCTAssertTrue(identity.verify(signature: sig, for: large))
     }
 
-    // MARK: - Persistence
-
-    func testSaveAndLoadIdentity() throws {
-        let original = try SecureEnclaveIdentity()
-        let data = original.dataRepresentation
-        XCTAssertFalse(data.isEmpty)
-
-        // Reload from the opaque data representation
-        let loaded = try SecureEnclaveIdentity(dataRepresentation: data)
-        XCTAssertEqual(
-            original.publicKeyBase64,
-            loaded.publicKeyBase64,
-            "Loaded identity must have the same public key"
-        )
-
-        // Sign with original, verify with loaded — proves it's the same key
-        let message = "test data".data(using: .utf8)!
-        let sig = try original.sign(message)
-        XCTAssertTrue(loaded.verify(signature: sig, for: message))
-    }
-
     // MARK: - Attestation
 
     func testAttestation() throws {
@@ -240,38 +219,92 @@ final class SecureEnclaveTests: XCTestCase {
         XCTAssertTrue(AttestationService.verify(signed))
     }
 
-    func testBridgeSaveAndLoad() {
+    func testBridgeEphemeralKeysDiffer() {
         guard let ptr1 = eigeninference_enclave_create() else {
+            XCTFail("Failed to create first ephemeral identity")
+            return
+        }
+        guard let ptr2 = eigeninference_enclave_create() else {
+            eigeninference_enclave_free(ptr1)
+            XCTFail("Failed to create second ephemeral identity")
+            return
+        }
+
+        let key1Ptr = eigeninference_enclave_public_key_base64(ptr1)!
+        let key2Ptr = eigeninference_enclave_public_key_base64(ptr2)!
+        let key1 = String(cString: key1Ptr)
+        let key2 = String(cString: key2Ptr)
+
+        eigeninference_enclave_free_string(key1Ptr)
+        eigeninference_enclave_free_string(key2Ptr)
+        eigeninference_enclave_free(ptr1)
+        eigeninference_enclave_free(ptr2)
+
+        XCTAssertNotEqual(key1, key2, "Two ephemeral SE keys must have different public keys")
+    }
+
+    func testBridgeEphemeralSignAndVerify() {
+        guard let ptr = eigeninference_enclave_create() else {
+            XCTFail("Failed to create ephemeral identity")
+            return
+        }
+        defer { eigeninference_enclave_free(ptr) }
+
+        let message = "ephemeral challenge data".data(using: .utf8)!
+        let sigPtr = message.withUnsafeBytes { buf -> UnsafeMutablePointer<CChar>? in
+            eigeninference_enclave_sign(
+                ptr,
+                buf.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                message.count
+            )
+        }
+        guard let sigPtr = sigPtr else {
+            XCTFail("Ephemeral key failed to sign")
+            return
+        }
+        let sigBase64 = String(cString: sigPtr)
+
+        guard let keyPtr = eigeninference_enclave_public_key_base64(ptr) else {
+            eigeninference_enclave_free_string(sigPtr)
+            XCTFail("Failed to get ephemeral public key")
+            return
+        }
+        let pubKeyBase64 = String(cString: keyPtr)
+
+        let valid = message.withUnsafeBytes { buf -> Int32 in
+            eigeninference_enclave_verify(
+                pubKeyBase64,
+                buf.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                message.count,
+                sigBase64
+            )
+        }
+        XCTAssertEqual(valid, 1, "Ephemeral key signature must verify")
+
+        eigeninference_enclave_free_string(sigPtr)
+        eigeninference_enclave_free_string(keyPtr)
+    }
+
+    func testBridgeCreateAttestationFull() throws {
+        guard let ptr = eigeninference_enclave_create() else {
             XCTFail("Failed to create identity")
             return
         }
+        defer { eigeninference_enclave_free(ptr) }
 
-        // Query required buffer size
-        let size = eigeninference_enclave_data_representation(ptr1, nil, 0)
-        XCTAssertGreaterThan(size, 0)
-
-        // Read data representation
-        var buffer = [UInt8](repeating: 0, count: size)
-        let written = eigeninference_enclave_data_representation(ptr1, &buffer, size)
-        XCTAssertEqual(written, size)
-
-        // Capture public key from original
-        let key1Ptr = eigeninference_enclave_public_key_base64(ptr1)!
-        let key1 = String(cString: key1Ptr)
-        eigeninference_enclave_free_string(key1Ptr)
-        eigeninference_enclave_free(ptr1)
-
-        // Load from saved data
-        guard let ptr2 = eigeninference_enclave_load(buffer, size) else {
-            XCTFail("Failed to load identity from saved data")
+        let encKey = "dGVzdC1lbmNyeXB0aW9uLWtleQ=="
+        let binHash = "abcd1234"
+        guard let jsonPtr = eigeninference_enclave_create_attestation_full(
+            ptr, encKey, binHash
+        ) else {
+            XCTFail("Failed to create full attestation via FFI")
             return
         }
+        let json = String(cString: jsonPtr)
+        eigeninference_enclave_free_string(jsonPtr)
 
-        let key2Ptr = eigeninference_enclave_public_key_base64(ptr2)!
-        let key2 = String(cString: key2Ptr)
-        eigeninference_enclave_free_string(key2Ptr)
-        eigeninference_enclave_free(ptr2)
-
-        XCTAssertEqual(key1, key2, "Loaded identity should have same public key")
+        XCTAssertTrue(json.contains("publicKey"))
+        XCTAssertTrue(json.contains("signature"))
+        XCTAssertTrue(json.contains("encryptionPublicKey"))
     }
 }

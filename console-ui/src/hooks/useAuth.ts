@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuthContext } from "@/components/providers/PrivyClientProvider";
 
 const API_KEY_STORAGE = "darkbloom_api_key";
 const OLD_API_KEY_STORAGE = "eigeninference_api_key";
+const COORD_URL_STORAGE = "darkbloom_coordinator_url";
 
 export function useAuth() {
-  const { ready, authenticated, user, login, logout, getAccessToken } = useAuthContext();
+  const { ready, authenticated, user, login, logout: privyLogout, getAccessToken } = useAuthContext();
   const [apiKeyReady, setApiKeyReady] = useState(false);
 
   // Derive useful fields from the Privy user
@@ -103,6 +104,22 @@ export function useAuth() {
   useEffect(() => {
     if (!authenticated) setApiKeyReady(false);
   }, [authenticated]);
+
+  // Clear all app-specific localStorage on login to prevent session poisoning
+  // (e.g. attacker pre-sets coordinator URL before victim logs in).
+  useEffect(() => {
+    if (!authenticated || typeof window === "undefined") return;
+    localStorage.removeItem(COORD_URL_STORAGE);
+  }, [authenticated]);
+
+  const logout = useCallback(async () => {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem(API_KEY_STORAGE);
+      localStorage.removeItem(OLD_API_KEY_STORAGE);
+      localStorage.removeItem(COORD_URL_STORAGE);
+    }
+    await privyLogout();
+  }, [privyLogout]);
 
   return {
     ready,

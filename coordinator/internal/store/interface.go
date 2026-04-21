@@ -362,18 +362,18 @@ type User struct {
 // SupportedModel represents a model in the admin-managed catalog.
 // The coordinator is the single source of truth for which models providers can serve.
 //
-// ModelType determines routing: "text" for chat/completions, "transcription" for
-// speech-to-text, "embedding" for vector search, etc. Only add models that produce
-// output worth paying for — small chat models (< 7B) are not useful, but small
-// specialized models (transcription, embeddings) can be best-in-class.
+// ModelType determines routing: "text" for chat/completions, "embedding" for
+// vector search, etc. Only add models that produce output worth paying for —
+// small chat models (< 7B) are not useful, but small specialized models
+// (embeddings) can be best-in-class.
 type SupportedModel struct {
 	ID           string  `json:"id"`           // HuggingFace path (e.g. "mlx-community/Qwen3.5-9B-MLX-4bit")
 	S3Name       string  `json:"s3_name"`      // CDN key for download (e.g. "Qwen3.5-9B-MLX-4bit")
 	DisplayName  string  `json:"display_name"` // Human-readable (e.g. "Qwen3.5 9B")
-	ModelType    string  `json:"model_type"`   // "text", "transcription", "embedding", "tts", "image"
+	ModelType    string  `json:"model_type"`   // "text", "embedding", "tts"
 	SizeGB       float64 `json:"size_gb"`      // Disk/memory size in GB
 	Architecture string  `json:"architecture"` // e.g. "9B dense", "2B conformer"
-	Description  string  `json:"description"`  // e.g. "Balanced", "Best-in-class STT"
+	Description  string  `json:"description"`  // e.g. "Balanced", "Fast reasoning"
 	MinRAMGB     int     `json:"min_ram_gb"`   // Minimum system RAM for auto-selection
 	Active       bool    `json:"active"`       // Whether available for use
 	WeightHash   string  `json:"weight_hash"`  // Expected SHA-256 fingerprint of model weight files
@@ -389,10 +389,8 @@ type Release struct {
 	BundleHash      string    `json:"bundle_hash"`                 // SHA-256 of the bundle tarball (install.sh download verification)
 	PythonHash      string    `json:"python_hash,omitempty"`       // SHA-256 of bundled Python binary (runtime verification)
 	RuntimeHash     string    `json:"runtime_hash,omitempty"`      // SHA-256 of vllm-mlx package (runtime verification)
-	TemplateHashes  string    `json:"template_hashes,omitempty"`   // comma-separated name=hash pairs
-	GrpcBinaryHash  string    `json:"grpc_binary_hash,omitempty"`  // SHA-256 of gRPCServerCLI binary (image generation)
-	ImageBridgeHash string    `json:"image_bridge_hash,omitempty"` // SHA-256 of image bridge Python source
-	URL             string    `json:"url"`                         // R2 download URL for the bundle tarball
+	TemplateHashes string    `json:"template_hashes,omitempty"` // comma-separated name=hash pairs
+	URL            string    `json:"url"`                       // R2 download URL for the bundle tarball
 	Changelog       string    `json:"changelog"`                   // human-readable changes in this version
 	Active          bool      `json:"active"`                      // whether this version is accepted by the coordinator
 	CreatedAt       time.Time `json:"created_at"`

@@ -1,25 +1,27 @@
 // All requests go through Next.js API routes (/api/*) to avoid CORS.
-// The coordinator URL and API key are passed as custom headers so the
-// server-side route can forward them to the upstream coordinator.
+// The API key is passed as a custom header so the server-side route can
+// forward it to the upstream coordinator. The coordinator URL is resolved
+// server-side from NEXT_PUBLIC_COORDINATOR_URL — never from client input.
 
-const DEFAULT_COORDINATOR =
-  process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
+import {
+  SEALED_CONTENT_TYPE,
+  clearCoordinatorKeyCache,
+  getCoordinatorKey,
+  isEncryptionEnabled,
+  sealRequest,
+  unsealResponse,
+  unsealSseEvent,
+} from "./encryption";
 
-const getConfig = () => {
-  if (typeof window === "undefined") return { apiKey: "", baseUrl: DEFAULT_COORDINATOR };
-  return {
-    apiKey: localStorage.getItem("darkbloom_api_key") || "",
-    baseUrl:
-      localStorage.getItem("darkbloom_coordinator_url") || DEFAULT_COORDINATOR,
-  };
+const getApiKey = () => {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem("darkbloom_api_key") || "";
 };
 
-/** Headers that tell our API proxy where to forward and how to auth. */
 function proxyHeaders(extra?: Record<string, string>): Record<string, string> {
-  const { apiKey, baseUrl } = getConfig();
+  const apiKey = getApiKey();
   return {
     "Content-Type": "application/json",
-    "x-coordinator-url": baseUrl,
     ...(apiKey ? { "x-api-key": apiKey } : {}),
     ...extra,
   };
@@ -86,45 +88,6 @@ export interface StreamCallbacks {
   onError: (error: string) => void;
 }
 
-export interface TranscriptionResult {
-  text: string;
-  language?: string;
-  duration?: number;
-  segments?: { start: number; end: number; text: string }[];
-}
-
-export async function transcribeAudio(
-  file: File | Blob,
-  model: string,
-  language?: string
-): Promise<TranscriptionResult> {
-  const { apiKey, baseUrl } = getConfig();
-
-  const form = new FormData();
-  const filename = file instanceof File
-    ? file.name
-    : file.type?.includes("webm") ? "recording.webm" : "recording.wav";
-  form.append("file", file, filename);
-  form.append("model", model);
-  if (language) form.append("language", language);
-
-  const res = await fetch("/api/transcribe", {
-    method: "POST",
-    headers: {
-      "x-coordinator-url": baseUrl,
-      ...(apiKey ? { "x-api-key": apiKey } : {}),
-    },
-    body: form,
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Transcription failed (${res.status}): ${text}`);
-  }
-
-  return res.json();
-}
-
 export async function fetchModels(): Promise<Model[]> {
   const res = await fetch("/api/models", { headers: proxyHeaders() });
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
@@ -153,24 +116,8 @@ export interface PriceEntry {
   output_usd: string;
 }
 
-export interface TranscriptionPriceEntry {
-  model: string;
-  price_per_minute: number;
-  price_usd: string;
-  unit: string;
-}
-
-export interface ImagePriceEntry {
-  model: string;
-  price_per_image: number;
-  price_usd: string;
-  unit: string;
-}
-
 export interface PricingResponse {
   prices: PriceEntry[];
-  transcription_prices: TranscriptionPriceEntry[];
-  image_prices: ImagePriceEntry[];
 }
 
 export async function fetchPricing(): Promise<PricingResponse> {
@@ -214,7 +161,7 @@ export async function deposit(amountUsd: number): Promise<void> {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data?.error?.message || data?.error || `Purchase failed (${res.status})`);
+    throw new Error(data?.error?.message || data?.error || `Deposit failed (${res.status})`);
   }
 }
 
@@ -240,40 +187,6 @@ export async function submitDepositTx(txSignature: string, referralCode?: string
     const data = await res.json().catch(() => ({}));
     throw new Error(data?.error?.message || data?.error || `Deposit verification failed (${res.status})`);
   }
-}
-
-export interface ImageGenerationRequest {
-  model: string;
-  prompt: string;
-  negative_prompt?: string;
-  n?: number;
-  size?: string;
-  steps?: number;
-  seed?: number;
-}
-
-export interface GeneratedImage {
-  b64_json: string;
-}
-
-export interface ImageGenerationResponse {
-  created: number;
-  data: GeneratedImage[];
-}
-
-export async function generateImage(
-  params: ImageGenerationRequest
-): Promise<ImageGenerationResponse> {
-  const res = await fetch("/api/images", {
-    method: "POST",
-    headers: proxyHeaders(),
-    body: JSON.stringify(params),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Image generation failed (${res.status}): ${text}`);
-  }
-  return res.json();
 }
 
 export interface InviteRedeemResponse {
@@ -307,12 +220,52 @@ export async function streamChat(
   callbacks: StreamCallbacks,
   signal?: AbortSignal
 ): Promise<void> {
+  // Optional sender→coordinator encryption. Defaults off so plaintext SDK
+  // and curl flows keep working unchanged. When enabled we NaCl-Box-seal the
+  // outgoing body to the coordinator's published X25519 pubkey, then decrypt
+  // each SSE event on the way back.
+  const requestBody = { model, messages, stream: true };
+  let sealCtx: { ephemPriv: Uint8Array; coordPub: Uint8Array } | null = null;
+  let fetchHeaders = proxyHeaders();
+  let fetchBody: string;
+
+  if (isEncryptionEnabled()) {
+    try {
+      const coordKey = await getCoordinatorKey();
+      const sealed = sealRequest(requestBody, coordKey);
+      fetchBody = sealed.envelopeJson;
+      fetchHeaders = proxyHeaders({ "Content-Type": SEALED_CONTENT_TYPE });
+      sealCtx = {
+        ephemPriv: sealed.ephemeralPrivateKey,
+        coordPub: coordKey.publicKey,
+      };
+    } catch (err) {
+      // Hard-fail per "don't silently fall back" rule. The user opted in to
+      // encryption, so plaintext-fallback would defeat the purpose.
+      callbacks.onError(
+        `Encryption setup failed: ${err instanceof Error ? err.message : String(err)} — disable "Encrypt to coordinator" in Settings to continue in plaintext.`,
+      );
+      return;
+    }
+  } else {
+    fetchBody = JSON.stringify(requestBody);
+  }
+
   const res = await fetch("/api/chat", {
     method: "POST",
-    headers: proxyHeaders(),
-    body: JSON.stringify({ model, messages, stream: true }),
+    headers: fetchHeaders,
+    body: fetchBody,
     signal,
   });
+
+  // If the coordinator advertised a kid mismatch (we cached a stale rotation),
+  // clear our cache so the next attempt re-fetches the fresh pubkey.
+  if (sealCtx && res.status === 400) {
+    const text = await res.clone().text();
+    if (text.includes("kid_mismatch")) {
+      clearCoordinatorKeyCache();
+    }
+  }
 
   if (!res.ok) {
     // If 401, key is stale — clear it so useAuth re-provisions on next render
@@ -323,7 +276,25 @@ export async function streamChat(
       callbacks.onError("Session expired — please try again");
       return;
     }
-    const text = await res.text();
+    let text = await res.text();
+    // When the request was sealed, the coordinator seals 4xx/5xx bodies too
+    // (so middleboxes still can't see what went wrong). Decrypt the envelope
+    // before trying to parse a user-facing message.
+    const errCt = res.headers.get("content-type") || "";
+    const errSealed =
+      sealCtx && (res.headers.get("x-eigen-sealed") === "true" ||
+        errCt.toLowerCase().startsWith(SEALED_CONTENT_TYPE));
+    if (errSealed && sealCtx) {
+      try {
+        const pt = unsealResponse(text, sealCtx.ephemPriv, sealCtx.coordPub);
+        text = new TextDecoder().decode(pt);
+      } catch (err) {
+        callbacks.onError(
+          `Could not decrypt sealed error response: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return;
+      }
+    }
     // Parse error for user-friendly messages
     try {
       const errData = JSON.parse(text);
@@ -471,6 +442,11 @@ export async function streamChat(
     if (cleaned) callbacks.onToken(cleaned);
   }
 
+  // When the response is sealed, the wire format is
+  // `data: <b64(nonce||sealed)>\n\n` per upstream event. We unseal each event
+  // back to its original `data: {...}` form before feeding it to the parser.
+  const responseSealed = sealCtx !== null && res.headers.get("x-eigen-sealed") === "true";
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -483,7 +459,26 @@ export async function streamChat(
       const trimmed = line.trim();
       if (!trimmed || !trimmed.startsWith("data: ")) continue;
 
-      const payload = trimmed.slice(6);
+      let payload = trimmed.slice(6);
+      if (responseSealed && sealCtx) {
+        try {
+          const inner = unsealSseEvent(payload, sealCtx.ephemPriv, sealCtx.coordPub);
+          // Inner is the upstream event minus the trailing \n\n — typically
+          // `data: {...}` or `data: [DONE]`. Strip the inner data: prefix so
+          // the existing parser sees the same shape it always has.
+          const innerTrimmed = inner.trim();
+          if (innerTrimmed.startsWith("data: ")) {
+            payload = innerTrimmed.slice(6);
+          } else {
+            payload = innerTrimmed;
+          }
+        } catch (err) {
+          callbacks.onError(
+            `Sealed stream decryption failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          return;
+        }
+      }
       if (payload === "[DONE]") {
         flushContentAccum();
         emitMetrics();

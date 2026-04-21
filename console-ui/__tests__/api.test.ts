@@ -67,7 +67,7 @@ describe("fetchBalance", () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/payments/balance");
     expect(opts.headers["Content-Type"]).toBe("application/json");
-    expect(opts.headers["x-coordinator-url"]).toBeDefined();
+    expect(opts.headers["x-api-key"]).toBeDefined();
     expect(result).toEqual(payload);
   });
 
@@ -145,7 +145,7 @@ describe("deposit", () => {
 
   it("throws on failure", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({}, 400));
-    await expect(deposit(0)).rejects.toThrow("Deposit failed: 400");
+    await expect(deposit(0)).rejects.toThrow("Deposit failed (400)");
   });
 });
 
@@ -171,7 +171,7 @@ describe("withdraw", () => {
 
   it("throws on failure", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({}, 502));
-    await expect(withdraw(5, "0xfoo")).rejects.toThrow("Withdrawal failed: 502");
+    await expect(withdraw(5, "0xfoo")).rejects.toThrow("Withdrawal failed (502)");
   });
 });
 
@@ -259,8 +259,6 @@ describe("fetchPricing", () => {
       prices: [
         { model: "m1", input_price: 100, output_price: 200, input_usd: "0.01", output_usd: "0.02" },
       ],
-      transcription_prices: [],
-      image_prices: [],
     };
     fetchMock.mockResolvedValueOnce(jsonResponse(payload));
 
@@ -294,12 +292,12 @@ describe("healthCheck", () => {
 // ---------------------------------------------------------------------------
 
 describe("proxy headers", () => {
-  it("includes x-coordinator-url defaulting to public coordinator", async () => {
+  it("does not include x-coordinator-url (server-side only)", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ balance_micro_usd: 0, balance_usd: 0 }));
     await fetchBalance();
 
     const [, opts] = fetchMock.mock.calls[0];
-    expect(opts.headers["x-coordinator-url"]).toContain("darkbloom.dev");
+    expect(opts.headers["x-coordinator-url"]).toBeUndefined();
   });
 
   it("includes x-api-key when set in localStorage", async () => {

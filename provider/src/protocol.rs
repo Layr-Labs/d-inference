@@ -21,6 +21,10 @@ use crate::hardware::{HardwareInfo, SystemMetrics};
 use crate::models::ModelInfo;
 use serde::{Deserialize, Serialize};
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Messages sent from provider to coordinator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -35,6 +39,10 @@ pub enum ProviderMessage {
         version: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         public_key: Option<String>,
+        /// True when text response chunks are encrypted back to the coordinator
+        /// using the request's session key.
+        #[serde(default, skip_serializing_if = "is_false")]
+        encrypted_response_chunks: bool,
         /// Ethereum-format hex wallet address for Tempo blockchain payouts (pathUSD).
         #[serde(skip_serializing_if = "Option::is_none")]
         wallet_address: Option<String>,
@@ -62,12 +70,9 @@ pub enum ProviderMessage {
         /// Per-file SHA-256 hashes of Jinja templates.
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         template_hashes: std::collections::HashMap<String, String>,
-        /// SHA-256 hash of the gRPCServerCLI binary (image generation).
+        /// Privacy capability fields attested at registration.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        grpc_binary_hash: Option<String>,
-        /// Combined SHA-256 hash of image bridge Python source files.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        image_bridge_hash: Option<String>,
+        privacy_capabilities: Option<PrivacyCapabilities>,
     },
     Heartbeat {
         status: ProviderStatus,
@@ -87,7 +92,10 @@ pub enum ProviderMessage {
     },
     InferenceResponseChunk {
         request_id: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_data: Option<EncryptedPayload>,
     },
     InferenceComplete {
         request_id: String,
@@ -104,25 +112,6 @@ pub enum ProviderMessage {
         request_id: String,
         error: String,
         status_code: u16,
-    },
-    /// Transcription result — full text and optional segments.
-    TranscriptionComplete {
-        request_id: String,
-        text: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        segments: Option<Vec<TranscriptionSegment>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        language: Option<String>,
-        usage: TranscriptionUsage,
-        /// Processing time in seconds.
-        duration_secs: f64,
-    },
-    /// Image generation complete — images were uploaded via HTTP, this just carries metadata.
-    ImageGenerationComplete {
-        request_id: String,
-        usage: ImageGenerationUsage,
-        /// Processing time in seconds.
-        duration_secs: f64,
     },
     /// Response to an attestation challenge from the coordinator.
     /// Includes a fresh SIP status check — the coordinator verifies this
@@ -163,14 +152,7 @@ pub enum ProviderMessage {
         /// Per-file SHA-256 hashes of Jinja templates.
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         template_hashes: std::collections::HashMap<String, String>,
-        /// SHA-256 hash of the gRPCServerCLI binary (image generation).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        grpc_binary_hash: Option<String>,
-        /// Combined SHA-256 hash of image bridge Python source files.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        image_bridge_hash: Option<String>,
         /// Per-model weight hashes: model_id → SHA-256 of weight files.
-        /// Covers all active models (text, STT, image).
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         model_hashes: std::collections::HashMap<String, String>,
     },
@@ -185,27 +167,6 @@ pub enum CoordinatorMessage {
         #[serde(default)]
         body: serde_json::Value,
         /// E2E encrypted request body — only the hardened process can decrypt
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        encrypted_body: Option<EncryptedPayload>,
-    },
-    /// Transcription request — provider should transcribe the audio data.
-    TranscriptionRequest {
-        request_id: String,
-        #[serde(default)]
-        body: serde_json::Value,
-        /// E2E encrypted transcription body — same encryption as inference requests
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        encrypted_body: Option<EncryptedPayload>,
-    },
-    /// Image generation request — provider should generate images from prompt.
-    /// Images are uploaded to upload_url via HTTP POST (not sent over WebSocket).
-    ImageGenerationRequest {
-        request_id: String,
-        /// HTTP URL where the provider should POST generated image bytes.
-        #[serde(default)]
-        upload_url: String,
-        #[serde(default)]
-        body: serde_json::Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         encrypted_body: Option<EncryptedPayload>,
     },
@@ -227,20 +188,6 @@ pub enum CoordinatorMessage {
     },
 }
 
-/// Body of a transcription request from the coordinator.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TranscriptionRequestBody {
-    pub model: String,
-    /// Base64-encoded audio data.
-    pub audio: String,
-    /// ISO 639-1 language code (e.g. "en"). Optional — model may auto-detect.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub language: Option<String>,
-    /// Audio format hint: "mp3", "wav", "webm", etc.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub format: String,
-}
-
 /// NaCl Box encrypted payload for E2E encryption.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EncryptedPayload {
@@ -248,6 +195,22 @@ pub struct EncryptedPayload {
     pub ephemeral_public_key: String,
     /// Nonce + encrypted data (base64)
     pub ciphertext: String,
+}
+
+/// Privacy capability fields reported by the provider at registration and
+/// verified by the coordinator before routing private text jobs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PrivacyCapabilities {
+    pub text_backend_inprocess: bool,
+    pub text_proxy_disabled: bool,
+    pub python_runtime_locked: bool,
+    pub dangerous_modules_blocked: bool,
+    pub sip_enabled: bool,
+    pub anti_debug_enabled: bool,
+    pub core_dumps_disabled: bool,
+    pub env_scrubbed: bool,
+    #[serde(default)]
+    pub hypervisor_active: bool,
 }
 
 /// A single runtime component whose hash doesn't match the coordinator's known-good value.
@@ -333,60 +296,6 @@ pub struct UsageInfo {
     pub completion_tokens: u64,
 }
 
-/// A timed segment within a transcription result.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TranscriptionSegment {
-    pub start: f64,
-    pub end: f64,
-    pub text: String,
-}
-
-/// Usage info for billing STT requests.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TranscriptionUsage {
-    pub audio_seconds: f64,
-    pub generation_tokens: u64,
-}
-
-/// Body of an image generation request from the coordinator.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ImageGenerationRequestBody {
-    pub model: String,
-    pub prompt: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub negative_prompt: Option<String>,
-    #[serde(default = "default_image_count")]
-    pub n: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub size: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub steps: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub seed: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_format: Option<String>,
-}
-
-fn default_image_count() -> u32 {
-    1
-}
-
-/// A single generated image in base64 format.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ImageDataPayload {
-    pub b64_json: String,
-}
-
-/// Usage info for billing image generation requests.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ImageGenerationUsage {
-    pub images_generated: u32,
-    pub width: u32,
-    pub height: u32,
-    pub steps: u32,
-    pub model: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,6 +335,7 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: None,
+            encrypted_response_chunks: true,
             wallet_address: None,
             attestation: None,
             prefill_tps: None,
@@ -434,8 +344,7 @@ mod tests {
             python_hash: None,
             runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
-            grpc_binary_hash: None,
-            image_bridge_hash: None,
+            privacy_capabilities: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -471,6 +380,7 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: None,
+            encrypted_response_chunks: true,
             wallet_address: Some("0x1234567890abcdef1234567890abcdef12345678".to_string()),
             attestation: None,
             prefill_tps: None,
@@ -479,8 +389,7 @@ mod tests {
             python_hash: None,
             runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
-            grpc_binary_hash: None,
-            image_bridge_hash: None,
+            privacy_capabilities: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -509,6 +418,7 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: Some("c29tZWtleQ==".to_string()),
+            encrypted_response_chunks: true,
             wallet_address: None,
             attestation: Some(attestation_raw),
             prefill_tps: Some(500.0),
@@ -517,8 +427,7 @@ mod tests {
             python_hash: None,
             runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
-            grpc_binary_hash: None,
-            image_bridge_hash: None,
+            privacy_capabilities: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -587,10 +496,29 @@ mod tests {
         let msg = ProviderMessage::InferenceResponseChunk {
             request_id: "uuid-123".to_string(),
             data: "data: {\"choices\":[]}".to_string(),
+            encrypted_data: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"inference_response_chunk\""));
+        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, deserialized);
+    }
+
+    #[test]
+    fn test_inference_response_chunk_encrypted_roundtrip() {
+        let msg = ProviderMessage::InferenceResponseChunk {
+            request_id: "uuid-enc".to_string(),
+            data: String::new(),
+            encrypted_data: Some(EncryptedPayload {
+                ephemeral_public_key: "provider-public-key".to_string(),
+                ciphertext: "ciphertext".to_string(),
+            }),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"inference_response_chunk\""));
+        assert!(json.contains("\"encrypted_data\""));
         let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, deserialized);
     }
@@ -724,8 +652,6 @@ mod tests {
             python_hash: None,
             runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
-            grpc_binary_hash: None,
-            image_bridge_hash: None,
             model_hashes: std::collections::HashMap::new(),
         };
 
@@ -887,187 +813,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_transcription_request_roundtrip() {
-        let body = serde_json::json!({
-            "model": "CohereLabs/cohere-transcribe",
-            "audio": "SGVsbG8=",
-            "language": "en",
-            "format": "wav"
-        });
-        let msg = CoordinatorMessage::TranscriptionRequest {
-            request_id: "stt-123".to_string(),
-            body,
-            encrypted_body: None,
-        };
-
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"type\":\"transcription_request\""));
-        assert!(json.contains("\"request_id\":\"stt-123\""));
-        assert!(json.contains("\"model\":\"CohereLabs/cohere-transcribe\""));
-        assert!(json.contains("\"audio\":\"SGVsbG8=\""));
-        let deserialized: CoordinatorMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg, deserialized);
-    }
-
-    #[test]
-    fn test_transcription_complete_roundtrip() {
-        let msg = ProviderMessage::TranscriptionComplete {
-            request_id: "stt-456".to_string(),
-            text: "Hello world".to_string(),
-            segments: Some(vec![TranscriptionSegment {
-                start: 0.0,
-                end: 5.0,
-                text: "Hello world".to_string(),
-            }]),
-            language: Some("en".to_string()),
-            usage: TranscriptionUsage {
-                audio_seconds: 5.0,
-                generation_tokens: 10,
-            },
-            duration_secs: 0.5,
-        };
-
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"type\":\"transcription_complete\""));
-        assert!(json.contains("\"text\":\"Hello world\""));
-        assert!(json.contains("\"audio_seconds\":5.0"));
-        assert!(json.contains("\"duration_secs\":0.5"));
-        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg, deserialized);
-    }
-
-    #[test]
-    fn test_deserialize_transcription_request_from_go_json() {
-        // This is the JSON format that Go coordinator would produce (plaintext)
-        let raw = r#"{"type":"transcription_request","request_id":"go-req-1","body":{"model":"cohere-transcribe","audio":"dGVzdA==","language":"en","format":"mp3"}}"#;
-        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
-        match msg {
-            CoordinatorMessage::TranscriptionRequest {
-                request_id,
-                body,
-                encrypted_body,
-            } => {
-                assert_eq!(request_id, "go-req-1");
-                assert_eq!(body["model"], "cohere-transcribe");
-                assert_eq!(body["audio"], "dGVzdA==");
-                assert!(encrypted_body.is_none());
-            }
-            _ => panic!("expected TranscriptionRequest"),
-        }
-    }
-
-    #[test]
-    fn test_deserialize_transcription_request_encrypted() {
-        // When E2E encrypted, body is empty and encrypted_body is present
-        let raw = r#"{"type":"transcription_request","request_id":"enc-1","encrypted_body":{"ephemeral_public_key":"a2V5","ciphertext":"Y2lwaGVy"}}"#;
-        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
-        match msg {
-            CoordinatorMessage::TranscriptionRequest {
-                request_id,
-                encrypted_body,
-                ..
-            } => {
-                assert_eq!(request_id, "enc-1");
-                let enc = encrypted_body.unwrap();
-                assert_eq!(enc.ephemeral_public_key, "a2V5");
-                assert_eq!(enc.ciphertext, "Y2lwaGVy");
-            }
-            _ => panic!("expected TranscriptionRequest"),
-        }
-    }
-
-    #[test]
-    fn test_image_generation_request_roundtrip() {
-        let body = serde_json::json!({
-            "model": "flux-klein-4b",
-            "prompt": "a cat wearing a hat",
-            "n": 1,
-            "size": "1024x1024"
-        });
-        let msg = CoordinatorMessage::ImageGenerationRequest {
-            request_id: "img-123".to_string(),
-            upload_url: "https://example.com/v1/provider/image-upload?request_id=img-123"
-                .to_string(),
-            body,
-            encrypted_body: None,
-        };
-
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"type\":\"image_generation_request\""));
-        assert!(json.contains("\"request_id\":\"img-123\""));
-        assert!(json.contains("\"upload_url\""));
-        assert!(json.contains("\"prompt\":\"a cat wearing a hat\""));
-        let deserialized: CoordinatorMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg, deserialized);
-    }
-
-    #[test]
-    fn test_image_generation_complete_roundtrip() {
-        // Complete message carries only usage metadata — images uploaded via HTTP
-        let msg = ProviderMessage::ImageGenerationComplete {
-            request_id: "img-456".to_string(),
-            usage: ImageGenerationUsage {
-                images_generated: 1,
-                width: 1024,
-                height: 1024,
-                steps: 4,
-                model: "flux-klein-4b".to_string(),
-            },
-            duration_secs: 7.5,
-        };
-
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"type\":\"image_generation_complete\""));
-        assert!(json.contains("\"images_generated\":1"));
-        assert!(json.contains("\"duration_secs\":7.5"));
-        // No images field — they're uploaded via HTTP
-        assert!(!json.contains("b64_json"));
-        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg, deserialized);
-    }
-
-    #[test]
-    fn test_deserialize_image_generation_request_from_go_json() {
-        let raw = r#"{"type":"image_generation_request","request_id":"go-img-1","upload_url":"https://example.com/upload","body":{"model":"flux-klein-4b","prompt":"sunset over mountains","n":2,"size":"512x512"}}"#;
-        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
-        match msg {
-            CoordinatorMessage::ImageGenerationRequest {
-                request_id,
-                upload_url,
-                body,
-                encrypted_body,
-            } => {
-                assert_eq!(request_id, "go-img-1");
-                assert_eq!(upload_url, "https://example.com/upload");
-                assert_eq!(body["model"], "flux-klein-4b");
-                assert_eq!(body["prompt"], "sunset over mountains");
-                assert_eq!(body["n"], 2);
-                assert!(encrypted_body.is_none());
-            }
-            _ => panic!("expected ImageGenerationRequest"),
-        }
-    }
-
-    #[test]
-    fn test_deserialize_image_generation_request_encrypted() {
-        let raw = r#"{"type":"image_generation_request","request_id":"enc-img-1","upload_url":"https://example.com/upload","encrypted_body":{"ephemeral_public_key":"a2V5","ciphertext":"Y2lwaGVy"}}"#;
-        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
-        match msg {
-            CoordinatorMessage::ImageGenerationRequest {
-                request_id,
-                encrypted_body,
-                ..
-            } => {
-                assert_eq!(request_id, "enc-img-1");
-                let enc = encrypted_body.unwrap();
-                assert_eq!(enc.ephemeral_public_key, "a2V5");
-                assert_eq!(enc.ciphertext, "Y2lwaGVy");
-            }
-            _ => panic!("expected ImageGenerationRequest"),
-        }
-    }
-
     // -----------------------------------------------------------------------
     // Go-format JSON deserialization tests — simulating coordinator messages
     // -----------------------------------------------------------------------
@@ -1194,6 +939,7 @@ mod tests {
                 backend: "vllm_mlx".to_string(),
                 version: None,
                 public_key: None,
+                encrypted_response_chunks: true,
                 wallet_address: None,
                 attestation: None,
                 prefill_tps: None,
@@ -1202,8 +948,7 @@ mod tests {
                 python_hash: None,
                 runtime_hash: None,
                 template_hashes: std::collections::HashMap::new(),
-                grpc_binary_hash: None,
-                image_bridge_hash: None,
+                privacy_capabilities: None,
             },
             // Heartbeat (idle)
             ProviderMessage::Heartbeat {
@@ -1238,6 +983,7 @@ mod tests {
             ProviderMessage::InferenceResponseChunk {
                 request_id: "req-1".to_string(),
                 data: "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}".to_string(),
+                encrypted_data: None,
             },
             // InferenceComplete
             ProviderMessage::InferenceComplete {
@@ -1269,8 +1015,6 @@ mod tests {
                 python_hash: None,
                 runtime_hash: None,
                 template_hashes: std::collections::HashMap::new(),
-                grpc_binary_hash: None,
-                image_bridge_hash: None,
                 model_hashes: std::collections::HashMap::new(),
             },
         ];
@@ -1297,17 +1041,6 @@ mod tests {
                     ephemeral_public_key: "ZXBoZW1lcmFs".to_string(),
                     ciphertext: "Y2lwaGVy".to_string(),
                 }),
-            },
-            CoordinatorMessage::TranscriptionRequest {
-                request_id: "t1".to_string(),
-                body: serde_json::json!({"model": "whisper", "audio": "YXVkaW8="}),
-                encrypted_body: None,
-            },
-            CoordinatorMessage::ImageGenerationRequest {
-                request_id: "i1".to_string(),
-                upload_url: "https://example.com/upload".to_string(),
-                body: serde_json::json!({"model": "flux", "prompt": "a cat"}),
-                encrypted_body: None,
             },
             CoordinatorMessage::Cancel {
                 request_id: "c1".to_string(),
@@ -1452,6 +1185,7 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: None,
+            encrypted_response_chunks: true,
             wallet_address: None,
             attestation: None,
             prefill_tps: None,
@@ -1460,8 +1194,7 @@ mod tests {
             python_hash: Some("pythonhash123".to_string()),
             runtime_hash: Some("runtimehash456".to_string()),
             template_hashes,
-            grpc_binary_hash: None,
-            image_bridge_hash: None,
+            privacy_capabilities: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();

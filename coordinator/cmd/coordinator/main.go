@@ -38,6 +38,7 @@ import (
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/billing"
+	"github.com/eigeninference/coordinator/internal/e2e"
 	"github.com/eigeninference/coordinator/internal/mdm"
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/registry"
@@ -108,6 +109,32 @@ func main() {
 	if consoleURL := os.Getenv("EIGENINFERENCE_CONSOLE_URL"); consoleURL != "" {
 		srv.SetConsoleURL(consoleURL)
 		logger.Info("console URL configured", "url", consoleURL)
+	}
+
+	// CORS origin — restrict cross-origin access to the console domain.
+	if corsOrigin := os.Getenv("CORS_ORIGIN"); corsOrigin != "" {
+		srv.SetCORSOrigin(corsOrigin)
+		logger.Info("CORS origin configured", "origin", corsOrigin)
+	}
+
+	// Base URL — this coordinator's public origin (e.g. https://api.dev.darkbloom.xyz).
+	// Templated into the embedded install.sh at serve time so a single binary
+	// can serve both prod and dev. Falls back to the request's Host header if unset.
+	if baseURL := os.Getenv("EIGENINFERENCE_BASE_URL"); baseURL != "" {
+		srv.SetBaseURL(baseURL)
+		logger.Info("base URL configured", "url", baseURL)
+	}
+
+	// R2 CDN URLs — substituted into install.sh at serve time. Each env has its
+	// own R2 bucket (prod: d-inf-app; dev: d-inf-app-dev). Dev can set only the
+	// primary CDN and the site-packages one defaults to the same bucket.
+	if cdn := os.Getenv("EIGENINFERENCE_R2_CDN_URL"); cdn != "" {
+		srv.SetR2CDNURL(cdn)
+		logger.Info("R2 CDN URL configured", "url", cdn)
+	}
+	if cdn := os.Getenv("EIGENINFERENCE_R2_SITE_PACKAGES_CDN_URL"); cdn != "" {
+		srv.SetR2SitePackagesCDNURL(cdn)
+		logger.Info("R2 site-packages CDN URL configured", "url", cdn)
 	}
 
 	// Scoped release key — GitHub Actions uses this to register new releases.
@@ -211,6 +238,23 @@ func main() {
 	ledger := payments.NewLedger(st)
 	billingSvc := billing.NewService(st, ledger, logger, billingCfg)
 	srv.SetBilling(billingSvc)
+
+	// Derive the coordinator's long-lived X25519 key for sender→coordinator
+	// request encryption. Reuses the same BIP39 mnemonic as billing but with
+	// a distinct HKDF domain, so the encryption key is independent of the
+	// Solana keypair. Optional: dev environments without a mnemonic just get
+	// the /v1/encryption-key endpoint disabled (senders fall back to plaintext).
+	if coordKey, err := e2e.DeriveCoordinatorKey(billingCfg.SolanaMnemonic); err == nil {
+		srv.SetCoordinatorKey(coordKey)
+		logger.Info("sender→coordinator encryption enabled",
+			"kid", coordKey.KID,
+			"hkdf_info", e2e.CoordinatorKeyHKDFInfo,
+		)
+	} else if err != e2e.ErrNoMnemonic {
+		logger.Error("failed to derive coordinator encryption key", "error", err)
+	} else {
+		logger.Warn("sender→coordinator encryption disabled — no mnemonic configured")
+	}
 
 	// Configure admin accounts.
 	if adminEmails := os.Getenv("EIGENINFERENCE_ADMIN_EMAILS"); adminEmails != "" {
@@ -388,13 +432,6 @@ func seedModelCatalog(st store.Store, logger *slog.Logger) {
 	}
 
 	models := []store.SupportedModel{
-		// --- Transcription (speech-to-text) ---
-		{ID: "CohereLabs/cohere-transcribe-03-2026", S3Name: "cohere-transcribe-03-2026", DisplayName: "Cohere Transcribe", ModelType: "transcription", SizeGB: 4.2, Architecture: "2B conformer", Description: "Best-in-class STT", MinRAMGB: 8, Active: true},
-
-		// --- Image generation (Draw Things + Metal FlashAttention) ---
-		{ID: "flux_2_klein_4b_q8p.ckpt", S3Name: "flux-klein-4b-q8", DisplayName: "FLUX.2 Klein 4B", ModelType: "image", SizeGB: 8.1, Architecture: "4B diffusion", Description: "Fast image gen", MinRAMGB: 16, Active: true},
-		{ID: "flux_2_klein_9b_q8p.ckpt", S3Name: "flux-klein-9b-q8", DisplayName: "FLUX.2 Klein 9B", ModelType: "image", SizeGB: 17.4, Architecture: "9B diffusion + Qwen 8B encoder", Description: "Higher quality image gen", MinRAMGB: 32, Active: true},
-
 		// --- Text generation (8-bit quantization) ---
 		{ID: "qwen3.5-27b-claude-opus-8bit", S3Name: "qwen35-27b-claude-opus-8bit", DisplayName: "Qwen3.5 27B Claude Opus Distilled", ModelType: "text", SizeGB: 27.0, Architecture: "27B dense, Claude Opus distilled", Description: "Frontier quality reasoning", MinRAMGB: 36, Active: true},
 		{ID: "mlx-community/Trinity-Mini-8bit", S3Name: "Trinity-Mini-8bit", DisplayName: "Trinity Mini", ModelType: "text", SizeGB: 26.0, Architecture: "27B Adaptive MoE", Description: "Fast agentic inference", MinRAMGB: 48, Active: true},

@@ -49,6 +49,13 @@ vi.mock("@/components/providers/PrivyClientProvider", () => ({
   }),
 }));
 
+// Mock Privy Solana hooks — BillingContent uses them directly, and they
+// panic without a PrivyProvider wrapper.
+vi.mock("@privy-io/react-auth/solana", () => ({
+  useWallets: () => ({ wallets: [] }),
+  useSignAndSendTransaction: () => ({ signAndSendTransaction: vi.fn() }),
+}));
+
 // Mock @/lib/api — prevent real fetches
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
@@ -68,8 +75,6 @@ vi.mock("@/lib/api", async (importOriginal) => {
     fetchModels: vi.fn().mockResolvedValue([]),
     fetchPricing: vi.fn().mockResolvedValue({
       prices: [],
-      transcription_prices: [],
-      image_prices: [],
     }),
     healthCheck: vi.fn().mockResolvedValue({ status: "ok", providers: 0 }),
   };
@@ -117,20 +122,23 @@ afterEach(() => {
 // =========================================================================
 
 describe("BillingPage", () => {
+  // page.tsx wraps BillingContent in next/dynamic({ ssr: false }), whose
+  // loading fallback never resolves in vitest. Import the content component
+  // directly so the test actually renders the UI under test.
   it("renders without crashing and shows key elements", async () => {
-    const BillingPage = (await import("@/app/billing/page")).default;
-    render(<BillingPage />);
+    const BillingContent = (await import("@/app/billing/BillingContent")).default;
+    render(<BillingContent />);
 
     // TopBar is mocked and should show "Billing"
     expect(screen.getByTestId("topbar")).toHaveTextContent("Billing");
 
-    // Deposit and Withdraw buttons should be present
-    expect(screen.getByText("Deposit")).toBeInTheDocument();
-    expect(screen.getByText("Withdraw")).toBeInTheDocument();
+    // Research preview banner — purchases disabled, Buy Credits button present
+    expect(screen.getByText("Available Credits")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Buy Credits/i })).toBeInTheDocument();
 
     // Invite code section
     expect(screen.getByText("Invite Code")).toBeInTheDocument();
-    expect(screen.getByText("Redeem")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Redeem/i })).toBeInTheDocument();
 
     // Stats labels
     expect(screen.getByText("Total Spent")).toBeInTheDocument();
@@ -139,8 +147,8 @@ describe("BillingPage", () => {
   });
 
   it("shows usage history section", async () => {
-    const BillingPage = (await import("@/app/billing/page")).default;
-    render(<BillingPage />);
+    const BillingContent = (await import("@/app/billing/BillingContent")).default;
+    render(<BillingContent />);
 
     expect(screen.getByText("Usage History")).toBeInTheDocument();
   });

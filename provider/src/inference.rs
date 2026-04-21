@@ -621,6 +621,7 @@ try:
     _created = int(time.time())
 
     async def _run_stream(_eng, _kwargs, _sp, _rid, _ts, _mn):
+        import json
         _chunks = []
         _pt, _ct = 0, 0
         async for _out in _eng.stream_chat(**_kwargs):

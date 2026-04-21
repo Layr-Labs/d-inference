@@ -1,6 +1,6 @@
 [package]
 name = "darkbloom"
-version = "0.3.12-dev.16"
+version = "0.3.12-dev.17"
 edition = "2024"
 description = "EigenInference provider agent for Apple Silicon Macs"
 

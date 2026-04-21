@@ -344,13 +344,13 @@ for _name in (
             r#"
 import builtins, traceback as _tb
 try:
-    from vllm_mlx import LLM
+    from vllm_mlx.engine import SimpleEngine
     if not hasattr(builtins, '{store}'):
         builtins.{store} = {{}}
-    builtins.{store}[{cache_key}] = LLM(model={model})
+    builtins.{store}[{cache_key}] = SimpleEngine(model_name={model})
 except Exception as _e:
     _err_detail = _tb.format_exc()
-    raise RuntimeError(f"vllm-mlx LLM init failed: {{_err_detail}}") from _e
+    raise RuntimeError(f"vllm-mlx init failed: {{_err_detail}}") from _e
 "#,
             store = VLLM_ENGINE_STORE,
             cache_key = cache_key,
@@ -456,13 +456,11 @@ gc.collect()
             let code = CString::new(
                 r#"
 import builtins
-from vllm import SamplingParams
-params = SamplingParams(max_tokens=int(max_tokens), temperature=float(temperature))
 engine = builtins._eigeninference_vllm_engines[engine_key]
-outputs = engine.generate([prompt], params)
-_result_text = outputs[0].outputs[0].text
-_result_prompt_tokens = len(outputs[0].prompt_token_ids)
-_result_completion_tokens = len(outputs[0].outputs[0].token_ids)
+output = engine.generate(prompt, max_tokens=int(max_tokens), temperature=float(temperature))
+_result_text = output.text
+_result_prompt_tokens = output.prompt_tokens
+_result_completion_tokens = output.completion_tokens
 "#,
             )
             .unwrap();

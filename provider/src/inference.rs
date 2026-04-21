@@ -250,20 +250,37 @@ for _name in (
     }
 
     /// Detect which Python inference engine is available.
-    /// First locks the Python import path to bundled packages (if in app bundle).
+    /// Retries on failure to handle site-packages being replaced concurrently
+    /// (e.g. runtime self-heal running from a previous process).
     pub fn detect_engine() -> Result<EngineType> {
+        let max_attempts = 3;
+        let mut last_err = None;
+        for attempt in 1..=max_attempts {
+            match Self::try_detect_engine() {
+                Ok(engine) => return Ok(engine),
+                Err(e) => {
+                    if attempt < max_attempts {
+                        tracing::warn!(
+                            "Engine detection attempt {attempt}/{max_attempts} failed: {e} — retrying in 5s"
+                        );
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap())
+    }
+
+    fn try_detect_engine() -> Result<EngineType> {
         Python::with_gil(|py| {
-            // Lock Python to only load from our bundle (production)
-            // or warn about using system packages (development)
             Self::lock_python_path(py)?;
 
-            // Try vllm-mlx first (preferred — supports batching)
             if py.import("vllm_mlx").is_ok() {
                 tracing::info!("In-process engine: vllm-mlx detected");
                 return Ok(EngineType::VllmMlx);
             }
 
-            // Fall back to mlx-lm
             if py.import("mlx_lm").is_ok() {
                 tracing::info!("In-process engine: mlx-lm detected (fallback)");
                 return Ok(EngineType::MlxLm);

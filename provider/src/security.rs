@@ -514,6 +514,9 @@ fn collect_files_recursive(
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            if path.file_name().and_then(|n| n.to_str()) == Some("__pycache__") {
+                continue;
+            }
             collect_files_recursive(&path, extension, out);
         } else if extension == "*" || path.extension().and_then(|e| e.to_str()) == Some(extension) {
             out.push(path);

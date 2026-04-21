@@ -106,6 +106,7 @@ EIGENINFERENCE_MIN_TRUST=hardware
 EIGENINFERENCE_BILLING_MOCK=false
 EIGENINFERENCE_BASE_URL=https://api.dev.darkbloom.xyz
 EIGENINFERENCE_CONSOLE_URL=https://console.dev.darkbloom.xyz
+CORS_ORIGIN=https://console.dev.darkbloom.xyz
 EIGENINFERENCE_R2_CDN_URL=$(fetch eigeninference-r2-cdn-url)
 EIGENINFERENCE_SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 EIGENINFERENCE_SOLANA_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v

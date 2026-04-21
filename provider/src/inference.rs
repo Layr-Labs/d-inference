@@ -620,10 +620,9 @@ try:
     _response_id = f'chatcmpl-{uuid.uuid4().hex[:8]}'
     _created = int(time.time())
     _chunks = []
-    _prompt_tokens = 0
-    _completion_tokens = 0
+    _token_counts = [0, 0]
     async def _collect():
-        nonlocal _prompt_tokens, _completion_tokens
+        _prompt_tokens, _completion_tokens = 0, 0
         async for _out in engine.stream_chat(**_chat_kwargs):
             _delta = _out.new_text
             if hasattr(_out, 'prompt_tokens') and _out.prompt_tokens:
@@ -659,10 +658,12 @@ try:
                     }],
                 }
                 _chunks.append(json.dumps(_chunk))
+        _token_counts[0] = _prompt_tokens
+        _token_counts[1] = _completion_tokens
     asyncio.run(_collect())
     _stream_chunks = _chunks
-    _stream_prompt_tokens = _prompt_tokens
-    _stream_completion_tokens = _completion_tokens
+    _stream_prompt_tokens = _token_counts[0]
+    _stream_completion_tokens = _token_counts[1]
 except Exception as _e:
     _err_detail = _tb.format_exc()
     raise RuntimeError(f"stream generate failed: {_err_detail}") from _e

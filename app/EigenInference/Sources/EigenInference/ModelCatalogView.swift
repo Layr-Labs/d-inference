@@ -73,7 +73,7 @@ struct ModelCatalogView: View {
         return HStack(spacing: 12) {
             // Fit indicator
             Image(systemName: fits ? "checkmark.circle.fill" : "xmark.circle")
-                .foregroundColor(fits ? .tealAccent : .warmError)
+                .foregroundColor(fits ? .adaptiveTealAccent : .adaptiveError)
                 .font(.caption)
                 .help(fits ? "Fits in memory" : "Requires more RAM")
 
@@ -83,24 +83,24 @@ struct ModelCatalogView: View {
                     Text(entry.name)
                         .fontWeight(.medium)
                     Text(entry.modelType)
-                        .font(.caption2)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
+                        .font(.captionWarm)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
                         .background(typeColor(entry.modelType).opacity(0.15))
                         .foregroundColor(typeColor(entry.modelType))
                         .cornerRadius(3)
                     if isDefault {
                         Text("default")
-                            .font(.caption2)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Color.accentColor.opacity(0.15))
-                            .foregroundColor(.accentColor)
+                            .font(.captionWarm)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.adaptiveCoral.opacity(0.15))
+                            .foregroundColor(.adaptiveCoral)
                             .cornerRadius(3)
                     }
                 }
                 Text("\(String(format: "%.1f", entry.sizeGB)) GB  \(entry.architecture)")
-                    .font(.caption)
+                    .font(.captionWarm)
                     .foregroundColor(.warmInkLight)
             }
 
@@ -109,11 +109,11 @@ struct ModelCatalogView: View {
             // Status badges
             if isDownloaded {
                 Text("Downloaded")
-                    .font(.caption2)
+                    .font(.captionWarm)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Color.tealAccent.opacity(0.15))
-                    .foregroundColor(.tealAccent)
+                    .background(Color.adaptiveTealAccent.opacity(0.15))
+                    .foregroundColor(.adaptiveTealAccent)
                     .cornerRadius(4)
             }
 
@@ -134,7 +134,7 @@ struct ModelCatalogView: View {
                         Task { await removeModel(entry.id) }
                     } label: {
                         Image(systemName: "trash")
-                            .foregroundColor(.warmError)
+                            .foregroundColor(.adaptiveError)
                     }
                     .buttonStyle(.borderless)
                     .controlSize(.mini)
@@ -150,20 +150,20 @@ struct ModelCatalogView: View {
                 .controlSize(.mini)
             } else {
                 Text("Too large")
-                    .font(.caption)
-                    .foregroundColor(.warmError)
+                    .font(.captionWarm)
+                    .foregroundColor(.adaptiveError)
             }
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
-        .background(isActive ? Color.accentColor.opacity(0.08) : Color.clear)
+        .background(isActive ? Color.adaptiveCoral.opacity(0.06) : Color.clear)
         .cornerRadius(6)
     }
 
     private func typeColor(_ type: String) -> Color {
         switch type {
-        case "text": return .blueAccent
-        default: return .warmInkFaint
+        case "text": return .adaptiveBlueAccent
+        default: return .adaptiveInkFaint
         }
     }
 

@@ -794,6 +794,10 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				// or object=response) and pass through directly — this is
 				// format-agnostic and works for chat completions, Responses
 				// API, or any future endpoint without parsing.
+				s.logger.Info("non-streaming chunk close",
+					"num_chunks", len(chunks),
+					"first_chunk_len", func() int { if len(chunks) > 0 { return len(chunks[0]) }; return 0 }(),
+				)
 				if len(chunks) == 1 {
 					raw := strings.TrimPrefix(chunks[0], "data: ")
 					var obj map[string]any

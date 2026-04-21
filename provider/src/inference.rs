@@ -619,51 +619,37 @@ try:
     _SPECIAL_TOKENS = re.compile(r'<\|(?:im_start|im_end|endoftext|end_of_turn|eot_id|end_header_id|start_header_id|finetune_right_pad_id)\|>')
     _response_id = f'chatcmpl-{uuid.uuid4().hex[:8]}'
     _created = int(time.time())
-    _chunks = []
-    _token_counts = [0, 0]
-    async def _collect():
-        _prompt_tokens, _completion_tokens = 0, 0
-        async for _out in engine.stream_chat(**_chat_kwargs):
+
+    async def _run_stream(_eng, _kwargs, _sp, _rid, _ts, _mn):
+        _chunks = []
+        _pt, _ct = 0, 0
+        async for _out in _eng.stream_chat(**_kwargs):
             _delta = _out.new_text
             if hasattr(_out, 'prompt_tokens') and _out.prompt_tokens:
-                _prompt_tokens = _out.prompt_tokens
+                _pt = _out.prompt_tokens
             if hasattr(_out, 'completion_tokens') and _out.completion_tokens:
-                _completion_tokens = _out.completion_tokens
+                _ct = _out.completion_tokens
             if _delta:
-                _content = _SPECIAL_TOKENS.sub('', _delta)
+                _content = _sp.sub('', _delta)
                 if _content:
                     _finish = _out.finish_reason if _out.finished else None
-                    _chunk = {
-                        'id': _response_id,
-                        'object': 'chat.completion.chunk',
-                        'created': _created,
-                        'model': _model_name,
-                        'choices': [{
-                            'index': 0,
-                            'delta': {'content': _content},
-                            'finish_reason': _finish,
-                        }],
-                    }
-                    _chunks.append(json.dumps(_chunk))
+                    _chunks.append(json.dumps({
+                        'id': _rid, 'object': 'chat.completion.chunk',
+                        'created': _ts, 'model': _mn,
+                        'choices': [{'index': 0, 'delta': {'content': _content}, 'finish_reason': _finish}],
+                    }))
             elif _out.finished:
-                _chunk = {
-                    'id': _response_id,
-                    'object': 'chat.completion.chunk',
-                    'created': _created,
-                    'model': _model_name,
-                    'choices': [{
-                        'index': 0,
-                        'delta': {},
-                        'finish_reason': _out.finish_reason or 'stop',
-                    }],
-                }
-                _chunks.append(json.dumps(_chunk))
-        _token_counts[0] = _prompt_tokens
-        _token_counts[1] = _completion_tokens
-    asyncio.run(_collect())
-    _stream_chunks = _chunks
-    _stream_prompt_tokens = _token_counts[0]
-    _stream_completion_tokens = _token_counts[1]
+                _chunks.append(json.dumps({
+                    'id': _rid, 'object': 'chat.completion.chunk',
+                    'created': _ts, 'model': _mn,
+                    'choices': [{'index': 0, 'delta': {}, 'finish_reason': _out.finish_reason or 'stop'}],
+                }))
+        return _chunks, _pt, _ct
+
+    _result = asyncio.run(_run_stream(engine, _chat_kwargs, _SPECIAL_TOKENS, _response_id, _created, _model_name))
+    _stream_chunks = _result[0]
+    _stream_prompt_tokens = _result[1]
+    _stream_completion_tokens = _result[2]
 except Exception as _e:
     _err_detail = _tb.format_exc()
     raise RuntimeError(f"stream generate failed: {_err_detail}") from _e

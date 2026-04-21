@@ -183,9 +183,6 @@ importlib.invalidate_caches()
         py.run(code.as_c_str(), None, None)
             .context("failed to lock Python import path")?;
         tracing::info!("Python path locked to runtime roots: {:?}", allowed_roots);
-
-        Self::block_dangerous_modules(py)?;
-
         Ok(())
     }
 
@@ -303,9 +300,19 @@ for _name in (
     pub fn load(&mut self) -> Result<()> {
         self.engine_type = Self::detect_engine()?;
 
-        Python::with_gil(|py| match self.engine_type {
-            EngineType::VllmMlx => self.load_vllm_mlx(py),
-            EngineType::MlxLm => self.load_mlx_lm(py),
+        Python::with_gil(|py| -> Result<()> {
+            match self.engine_type {
+                EngineType::VllmMlx => self.load_vllm_mlx(py)?,
+                EngineType::MlxLm => self.load_mlx_lm(py)?,
+            }
+            // Block dangerous modules AFTER the engine loads. The engine needs
+            // socket/multiprocessing during initialization (worker pools, etc.)
+            // but inference itself doesn't. This prevents injected code from
+            // using these modules to exfiltrate data during serving.
+            if let Err(e) = Self::block_dangerous_modules(py) {
+                tracing::warn!("Failed to block dangerous modules: {e:#}");
+            }
+            Ok(())
         })?;
 
         self.loaded = true;

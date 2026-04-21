@@ -565,7 +565,10 @@ pub fn compute_runtime_hashes(python_cmd: &str) -> RuntimeHashes {
             collect_files_recursive(&lib_dir, "*", &mut runtime_files);
             runtime_files
                 .retain(|path| path.extension().and_then(|ext| ext.to_str()) != Some("pyc"));
-            runtime_files.sort();
+            // Sort by string representation to match Python's str sort order.
+            // PathBuf::cmp uses OS-specific ordering which can differ from
+            // Python's os.path lexicographic sort on certain characters.
+            runtime_files.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
             if runtime_files.is_empty() {
                 None
             } else {

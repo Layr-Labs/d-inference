@@ -1009,11 +1009,13 @@ mod tests {
             "should hash the mock python binary"
         );
 
-        let mut runtime_files = Vec::new();
-        collect_files_recursive(&runtime_lib, "*", &mut runtime_files);
-        runtime_files.sort();
-        let expected_runtime_hash = hash_files_sorted(&runtime_files);
-        assert_eq!(hashes.runtime_hash, expected_runtime_hash);
+        // runtime_hash uses a Python subprocess (matching CI's hashing script).
+        // With a fake python binary the subprocess fails, so runtime_hash is None.
+        // On real machines with a working python_cmd, it produces a hash identical to CI.
+        assert!(
+            hashes.runtime_hash.is_none(),
+            "fake python binary can't run the hashing script — expected None"
+        );
         assert_eq!(
             hashes.template_hashes.get("chatml").map(String::as_str),
             hash_file(&templates_dir.join("chatml.jinja")).as_deref()

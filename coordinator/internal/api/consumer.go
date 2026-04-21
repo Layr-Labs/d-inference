@@ -797,8 +797,13 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				if len(chunks) == 1 {
 					raw := strings.TrimPrefix(chunks[0], "data: ")
 					var obj map[string]any
-					if json.Unmarshal([]byte(raw), &obj) == nil {
+					if err := json.Unmarshal([]byte(raw), &obj); err == nil {
 						objType, _ := obj["object"].(string)
+						s.logger.Info("non-streaming passthrough",
+							"chunk_len", len(chunks[0]),
+							"raw_len", len(raw),
+							"object", objType,
+						)
 						// Complete responses have object=chat.completion or
 						// object=response. Delta chunks have object=chat.completion.chunk.
 						if objType == "chat.completion" || objType == "response" {

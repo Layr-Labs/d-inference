@@ -426,7 +426,13 @@ try:
     engine = builtins._eigeninference_vllm_engines[engine_key]
     _req = json.loads(request_json)
     _messages = _req.get('messages', [])
-    _max_tokens = int(_req.get('max_tokens', 256))
+    if not _messages and _req.get('input'):
+        _input = _req['input']
+        if isinstance(_input, str):
+            _messages = [{'role': 'user', 'content': _input}]
+        elif isinstance(_input, list):
+            _messages = _input
+    _max_tokens = int(_req.get('max_tokens') or _req.get('max_output_tokens') or 256)
     _temperature = float(_req.get('temperature', 0.7))
     _top_p = float(_req.get('top_p', 0.9))
     _stop = _req.get('stop', None)
@@ -566,7 +572,13 @@ try:
     engine = builtins._eigeninference_vllm_engines[engine_key]
     _req = json.loads(request_json)
     _messages = _req.get('messages', [])
-    _max_tokens = int(_req.get('max_tokens', 256))
+    if not _messages and _req.get('input'):
+        _input = _req['input']
+        if isinstance(_input, str):
+            _messages = [{'role': 'user', 'content': _input}]
+        elif isinstance(_input, list):
+            _messages = _input
+    _max_tokens = int(_req.get('max_tokens') or _req.get('max_output_tokens') or 256)
     _temperature = float(_req.get('temperature', 0.7))
     _top_p = float(_req.get('top_p', 0.9))
     _stop = _req.get('stop', None)

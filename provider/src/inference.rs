@@ -156,26 +156,27 @@ impl InProcessEngine {
         let allowed_json =
             serde_json::to_string(&allowed_roots).context("failed to encode runtime roots")?;
         let code = CString::new(format!(
-            "import importlib, os, sys, traceback as _tb\n\
-             _diag = dict(prefix=sys.prefix, home=os.environ.get('PYTHONHOME','unset'), path=list(sys.path))\n\
-             allowed = [os.path.realpath(p) for p in {allowed_json}]\n\
-             locked = []\n\
-             for root in allowed:\n\
-                 lib = os.path.join(root, 'lib', 'python3.12')\n\
-                 site = os.path.join(lib, 'site-packages')\n\
-                 dyn = os.path.join(lib, 'lib-dynload')\n\
-                 for candidate in (site, dyn, lib):\n\
-                     if os.path.exists(candidate) and candidate not in locked:\n\
-                         locked.append(candidate)\n\
-             for path in sys.path:\n\
-                 real = os.path.realpath(path or '.')\n\
-                 if any(real == root or real.startswith(root + os.sep) for root in allowed):\n\
-                     if path not in locked:\n\
-                         locked.append(path)\n\
-             if not locked:\n\
-                 raise RuntimeError(f'No approved paths found. diag={{_diag}}, allowed={{allowed}}')\n\
-             sys.path = locked\n\
-             importlib.invalidate_caches()\n",
+            r#"
+import importlib, os, sys
+allowed = [os.path.realpath(p) for p in {allowed_json}]
+locked = []
+for root in allowed:
+    lib = os.path.join(root, 'lib', 'python3.12')
+    site = os.path.join(lib, 'site-packages')
+    dyn = os.path.join(lib, 'lib-dynload')
+    for candidate in (site, dyn, lib):
+        if os.path.exists(candidate) and candidate not in locked:
+            locked.append(candidate)
+for path in sys.path:
+    real = os.path.realpath(path or '.')
+    if any(real == root or real.startswith(root + os.sep) for root in allowed):
+        if path not in locked:
+            locked.append(path)
+if not locked:
+    raise RuntimeError(f'No approved paths found. prefix={{sys.prefix}}, PYTHONHOME={{os.environ.get("PYTHONHOME","unset")}}, sys.path={{sys.path}}, allowed={{allowed}}')
+sys.path = locked
+importlib.invalidate_caches()
+"#,
             allowed_json = allowed_json
         ))
         .unwrap();
@@ -336,11 +337,13 @@ for _name in (
         let model = serde_json::to_string(&self.model_id).context("invalid model path")?;
         let cache_key = serde_json::to_string(&self.cache_key).context("invalid cache key")?;
         let code = format!(
-            "import builtins\n\
-             from vllm_mlx import LLM\n\
-             if not hasattr(builtins, '{store}'):\n\
-                 builtins.{store} = {{}}\n\
-             builtins.{store}[{cache_key}] = LLM(model={model})\n",
+            r#"
+import builtins
+from vllm_mlx import LLM
+if not hasattr(builtins, '{store}'):
+    builtins.{store} = {{}}
+builtins.{store}[{cache_key}] = LLM(model={model})
+"#,
             store = VLLM_ENGINE_STORE,
             cache_key = cache_key,
             model = model
@@ -355,11 +358,13 @@ for _name in (
         let model = serde_json::to_string(&self.model_id).context("invalid model path")?;
         let cache_key = serde_json::to_string(&self.cache_key).context("invalid cache key")?;
         let code = format!(
-            "import builtins\n\
-             import mlx_lm\n\
-             if not hasattr(builtins, '{store}'):\n\
-                 builtins.{store} = {{}}\n\
-             builtins.{store}[{cache_key}] = mlx_lm.load({model})\n",
+            r#"
+import builtins
+import mlx_lm
+if not hasattr(builtins, '{store}'):
+    builtins.{store} = {{}}
+builtins.{store}[{cache_key}] = mlx_lm.load({model})
+"#,
             store = MLX_ENGINE_STORE,
             cache_key = cache_key,
             model = model
@@ -373,11 +378,13 @@ for _name in (
     fn unload_vllm_mlx(&self, py: Python<'_>) -> Result<()> {
         let cache_key = serde_json::to_string(&self.cache_key).context("invalid cache key")?;
         let code = format!(
-            "import builtins, gc\n\
-             store = getattr(builtins, '{store}', None)\n\
-             if isinstance(store, dict):\n\
-                 store.pop({cache_key}, None)\n\
-             gc.collect()\n",
+            r#"
+import builtins, gc
+store = getattr(builtins, '{store}', None)
+if isinstance(store, dict):
+    store.pop({cache_key}, None)
+gc.collect()
+"#,
             store = VLLM_ENGINE_STORE,
             cache_key = cache_key
         );
@@ -390,11 +397,13 @@ for _name in (
     fn unload_mlx_lm(&self, py: Python<'_>) -> Result<()> {
         let cache_key = serde_json::to_string(&self.cache_key).context("invalid cache key")?;
         let code = format!(
-            "import builtins, gc\n\
-             store = getattr(builtins, '{store}', None)\n\
-             if isinstance(store, dict):\n\
-                 store.pop({cache_key}, None)\n\
-             gc.collect()\n",
+            r#"
+import builtins, gc
+store = getattr(builtins, '{store}', None)
+if isinstance(store, dict):
+    store.pop({cache_key}, None)
+gc.collect()
+"#,
             store = MLX_ENGINE_STORE,
             cache_key = cache_key
         );
@@ -437,14 +446,16 @@ for _name in (
             locals.set_item("temperature", temperature)?;
 
             let code = CString::new(
-                "import builtins\n\
-                 from vllm import SamplingParams\n\
-                 params = SamplingParams(max_tokens=int(max_tokens), temperature=float(temperature))\n\
-                 engine = builtins._eigeninference_vllm_engines[engine_key]\n\
-                 outputs = engine.generate([prompt], params)\n\
-                 _result_text = outputs[0].outputs[0].text\n\
-                 _result_prompt_tokens = len(outputs[0].prompt_token_ids)\n\
-                 _result_completion_tokens = len(outputs[0].outputs[0].token_ids)\n",
+                r#"
+import builtins
+from vllm import SamplingParams
+params = SamplingParams(max_tokens=int(max_tokens), temperature=float(temperature))
+engine = builtins._eigeninference_vllm_engines[engine_key]
+outputs = engine.generate([prompt], params)
+_result_text = outputs[0].outputs[0].text
+_result_prompt_tokens = len(outputs[0].prompt_token_ids)
+_result_completion_tokens = len(outputs[0].outputs[0].token_ids)
+"#,
             )
             .unwrap();
             py.run(code.as_c_str(), None, Some(&locals))

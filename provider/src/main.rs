@@ -4201,6 +4201,12 @@ async fn handle_inprocess_request(
 
     match result {
         Ok(mut inference_result) => {
+            tracing::info!(
+                "In-process result: text_len={} prompt={} completion={}",
+                inference_result.text.len(),
+                inference_result.prompt_tokens,
+                inference_result.completion_tokens,
+            );
             let (response_hash, se_signature) = if !is_streaming {
                 let payload = match build_inprocess_response_payload(
                     &response_endpoint,

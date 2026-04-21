@@ -345,11 +345,15 @@ for _name in (
         let cache_key = serde_json::to_string(&self.cache_key).context("invalid cache key")?;
         let code = format!(
             r#"
-import builtins
-from vllm_mlx import LLM
-if not hasattr(builtins, '{store}'):
-    builtins.{store} = {{}}
-builtins.{store}[{cache_key}] = LLM(model={model})
+import builtins, traceback as _tb
+try:
+    from vllm_mlx import LLM
+    if not hasattr(builtins, '{store}'):
+        builtins.{store} = {{}}
+    builtins.{store}[{cache_key}] = LLM(model={model})
+except Exception as _e:
+    _err_detail = _tb.format_exc()
+    raise RuntimeError(f"vllm-mlx LLM init failed: {{_err_detail}}") from _e
 "#,
             store = VLLM_ENGINE_STORE,
             cache_key = cache_key,

@@ -146,6 +146,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			continue
 		}
 
+		if msg.Type == protocol.TypeInferenceResponseChunk || msg.Type == protocol.TypeInferenceComplete {
+			s.logger.Info("DEBUG provider msg", "type", msg.Type, "provider_id", providerID)
+		}
 		switch msg.Type {
 		case protocol.TypeRegister:
 			regMsg := msg.Payload.(*protocol.RegisterMessage)

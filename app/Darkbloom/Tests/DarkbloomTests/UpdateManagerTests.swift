@@ -2,7 +2,7 @@
 
 import Testing
 import Foundation
-@testable import EigenInference
+@testable import Darkbloom
 
 @Suite("UpdateManager - Version Comparison")
 struct UpdateManagerVersionTests {

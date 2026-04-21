@@ -158,7 +158,7 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 | Coordinator (`coordinator/`) | Go | Control plane: routing, attestation, billing, API |
 | Provider (`provider/`) | Rust | Inference agent: security, attestation, WebSocket client |
 | Console (`console-ui/`) | Next.js 16 | Web dashboard: chat, billing, provider verification |
-| macOS App (`app/EigenInference/`) | Swift | Menu bar app: status, scheduling, earnings |
+| macOS App (`app/Darkbloom/`) | Swift | Menu bar app: status, scheduling, earnings |
 | Secure Enclave (`enclave/`) | Swift | Hardware-bound P-256 identity |
 | Landing (`landing/`) | HTML | Static landing page |
 
@@ -172,7 +172,7 @@ cd coordinator && go test ./...
 cd provider && cargo test
 
 # macOS App
-cd app/EigenInference && swift build -c release
+cd app/Darkbloom && swift build -c release
 
 # Console UI
 cd console-ui && npm install && npm run dev

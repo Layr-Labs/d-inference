@@ -31,7 +31,7 @@ Apple-bound work (~15 min of ~20) is the critical floor that no amount of bigger
 2. **Cache the signed Python runtime across releases.**  
    It only changes when `requirements.txt`, the vllm-mlx fork, or `PBS_PYTHON_VERSION` changes — maybe once a week. Key a cache on a hash of those inputs. Subsequent releases skip ~5 min of pip install + Mach-O signing.
 3. **Conditional macOS app build.**  
-   If a release commit doesn't touch `app/EigenInference/**`, skip building the DMG and reuse the previous release's DMG pointer in the registration payload. Saves ~7 min on provider-only releases.
+   If a release commit doesn't touch `app/Darkbloom/**`, skip building the DMG and reuse the previous release's DMG pointer in the registration payload. Saves ~7 min on provider-only releases.
 
 Implementation: all three are in-workflow changes plus one `actions/cache` entry. No new jobs.
 

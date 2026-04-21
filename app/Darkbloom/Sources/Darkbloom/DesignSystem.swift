@@ -422,9 +422,9 @@ extension View {
     }
 }
 
-// MARK: - DarkBloom Brand Name
+// MARK: - Darkbloom Brand Name
 
-struct DarkBloomBrand: View {
+struct DarkbloomBrand: View {
     var size: CGFloat = 18
 
     var body: some View {

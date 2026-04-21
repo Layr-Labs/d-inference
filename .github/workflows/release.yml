@@ -196,7 +196,7 @@ jobs:
           # Task D: Swift macOS app (compile only — assembly happens after signing)
           (
             set -e
-            cd app/EigenInference && swift build -c release
+            cd app/Darkbloom && swift build -c release
           ) > /tmp/app-build.log 2>&1 &
           APP_PID=$!
           echo "Started Swift app build (pid $APP_PID)"
@@ -384,9 +384,9 @@ jobs:
           echo "Started bundle notarization (pid $NOTARIZE_BUNDLE_PID)"
 
           # ---- Task B: Build macOS app + DMG (foreground, overlaps with notarize) ----
-          APP_BIN=$(cd app/EigenInference && swift build -c release --show-bin-path)/EigenInference
+          APP_BIN=$(cd app/Darkbloom && swift build -c release --show-bin-path)/Darkbloom
 
-          APP_DIR="/tmp/EigenInference.app"
+          APP_DIR="/tmp/Darkbloom.app"
           CONTENTS="$APP_DIR/Contents"
           MACOS="$CONTENTS/MacOS"
           RESOURCES="$CONTENTS/Resources"
@@ -399,12 +399,12 @@ jobs:
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-            <key>CFBundleName</key><string>EigenInference</string>
-            <key>CFBundleDisplayName</key><string>EigenInference</string>
+            <key>CFBundleName</key><string>Darkbloom</string>
+            <key>CFBundleDisplayName</key><string>Darkbloom</string>
             <key>CFBundleIdentifier</key><string>io.darkbloom.provider</string>
             <key>CFBundleVersion</key><string>${VERSION}</string>
             <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-            <key>CFBundleExecutable</key><string>EigenInference</string>
+            <key>CFBundleExecutable</key><string>Darkbloom</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleIconFile</key><string>AppIcon</string>
             <key>LSMinimumSystemVersion</key><string>14.0</string>
@@ -414,7 +414,7 @@ jobs:
           </plist>
           PLIST
 
-          cp "$APP_BIN" "$MACOS/EigenInference"
+          cp "$APP_BIN" "$MACOS/Darkbloom"
           cp /tmp/eigeninference-bundle/bin/darkbloom "$MACOS/darkbloom"
           cp /tmp/eigeninference-bundle/bin/eigeninference-enclave "$MACOS/eigeninference-enclave" 2>/dev/null || true
 

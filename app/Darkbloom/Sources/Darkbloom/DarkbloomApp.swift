@@ -1,4 +1,4 @@
-/// DarkBloomApp — Main entry point for the Darkbloom macOS menu bar application.
+/// DarkbloomApp — Main entry point for the Darkbloom macOS menu bar application.
 ///
 /// Menu-bar-only app (no dock icon) that wraps the Rust `darkbloom`
 /// binary. Uses SwiftUI's MenuBarExtra (macOS 13+) for the status icon.
@@ -20,7 +20,7 @@
 import SwiftUI
 
 @main
-struct DarkBloomApp: App {
+struct DarkbloomApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var viewModel = StatusViewModel()
 
@@ -58,7 +58,7 @@ struct DarkBloomApp: App {
 
     }
 
-    private var eigenLogo: NSImage? {
+    private var darkbloomLogo: NSImage? {
         guard let url = Bundle.module.url(forResource: "MenuBarIcon@2x", withExtension: "png"),
               let data = try? Data(contentsOf: url),
               let bitmap = NSBitmapImageRep(data: data),
@@ -70,7 +70,7 @@ struct DarkBloomApp: App {
 
     private var menuBarLabel: some View {
         HStack(spacing: 4) {
-            if let logo = eigenLogo {
+            if let logo = darkbloomLogo {
                 Image(nsImage: logo)
                     .frame(width: 18, height: 18)
                     .clipped()

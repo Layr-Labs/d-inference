@@ -62,9 +62,9 @@ image-bridge/         Python FastAPI image generation bridge
 ├── requirements.txt
 └── tests/                     pytest coverage for server/backend/integration
 
-app/EigenInference/            SwiftUI macOS menu bar app
-├── Sources/EigenInference/
-│   ├── EigenInferenceApp.swift
+app/Darkbloom/                 SwiftUI macOS menu bar app
+├── Sources/Darkbloom/
+│   ├── DarkbloomApp.swift
 │   ├── StatusViewModel.swift
 │   ├── ProviderManager.swift
 │   ├── CLIRunner.swift
@@ -79,7 +79,7 @@ app/EigenInference/            SwiftUI macOS menu bar app
 │   ├── MenuBarView.swift / SetupWizardView.swift
 │   ├── DoctorView.swift / LogViewerView.swift / ModelCatalogView.swift
 │   └── Resources/
-└── Tests/EigenInferenceTests/
+└── Tests/DarkbloomTests/
 
 enclave/              Swift Secure Enclave helper + bridge binary
 ├── Sources/EigenInferenceEnclave/      enclave key + attestation library + FFI bridge
@@ -100,7 +100,7 @@ console-ui/           Next.js 16 / React 19 frontend
 
 scripts/              build, signing, install, and deploy helpers
 ├── build-bundle.sh   provider/enclave/python/ffmpeg bundle builder (+ optional upload)
-├── bundle-app.sh     build EigenInference.app + DMG
+├── bundle-app.sh     build Darkbloom.app + DMG
 ├── install.sh        end-user installer served from coordinator (hash + codesign verification)
 ├── sign-hardened.sh  hardened runtime signing helper
 ├── admin.sh          admin CLI (Privy auth, release mgmt, API calls)
@@ -156,7 +156,7 @@ PYTHONPATH=. pytest
 
 ### macOS App (Swift)
 ```bash
-cd app/EigenInference
+cd app/Darkbloom
 swift build -c release
 swift test
 ```

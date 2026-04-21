@@ -6,7 +6,7 @@
 ///
 /// TOML structure:
 ///   [provider]
-///   name = "eigeninference-mac16-1"
+///   name = "darkbloom-mac16-1"
 ///   memory_reserve_gb = 4
 ///
 ///   [backend]
@@ -52,16 +52,9 @@ enum ConfigManager {
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first!
 
-        let newPath = appSupport.appendingPathComponent("darkbloom").appendingPathComponent("provider.toml")
-        let legacyPath = appSupport.appendingPathComponent("eigeninference").appendingPathComponent("provider.toml")
-
-        if FileManager.default.fileExists(atPath: newPath.path) {
-            return newPath
-        }
-        if FileManager.default.fileExists(atPath: legacyPath.path) {
-            return legacyPath
-        }
-        return newPath
+        return appSupport
+            .appendingPathComponent("darkbloom")
+            .appendingPathComponent("provider.toml")
     }
 
     static var darkbloomDir: URL {

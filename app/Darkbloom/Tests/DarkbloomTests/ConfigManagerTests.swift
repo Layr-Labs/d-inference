@@ -2,7 +2,7 @@
 
 import Testing
 import Foundation
-@testable import EigenInference
+@testable import Darkbloom
 
 @Suite("ConfigManager - Default Values")
 struct ConfigDefaultTests {
@@ -246,7 +246,7 @@ struct ConfigRoundTripTests {
     @Test("save and load round trip to temp directory")
     func saveLoadRoundTrip() throws {
         let tmpDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("eigeninference-test-\(UUID().uuidString)")
+            .appendingPathComponent("darkbloom-test-\(UUID().uuidString)")
         let tmpFile = tmpDir.appendingPathComponent("provider.toml")
 
         defer {

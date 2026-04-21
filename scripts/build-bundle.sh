@@ -258,26 +258,26 @@ echo ""
 
 # ─── 7. Build macOS app + DMG ─────────────────────────────────
 echo "7. Building macOS app..."
-cd "$PROJECT_DIR/app/EigenInference"
+cd "$PROJECT_DIR/app/Darkbloom"
 swift build -c release 2>&1 | tail -3
-APP_BIN=$(swift build -c release --show-bin-path)/EigenInference
+APP_BIN=$(swift build -c release --show-bin-path)/Darkbloom
 
 if [ -f "$APP_BIN" ]; then
     APP_BUILD_DIR="$PROJECT_DIR/build"
-    rm -rf "$APP_BUILD_DIR/EigenInference.app"
-    mkdir -p "$APP_BUILD_DIR/EigenInference.app/Contents/MacOS" "$APP_BUILD_DIR/EigenInference.app/Contents/Resources"
+    rm -rf "$APP_BUILD_DIR/Darkbloom.app"
+    mkdir -p "$APP_BUILD_DIR/Darkbloom.app/Contents/MacOS" "$APP_BUILD_DIR/Darkbloom.app/Contents/Resources"
 
     # Info.plist
-    cat > "$APP_BUILD_DIR/EigenInference.app/Contents/Info.plist" << 'PLIST'
+    cat > "$APP_BUILD_DIR/Darkbloom.app/Contents/Info.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>EigenInference</string>
+    <key>CFBundleName</key><string>Darkbloom</string>
     <key>CFBundleIdentifier</key><string>io.darkbloom.app</string>
     <key>CFBundleVersion</key><string>0.1.0</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleExecutable</key><string>EigenInference</string>
+    <key>CFBundleExecutable</key><string>Darkbloom</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
@@ -286,23 +286,23 @@ if [ -f "$APP_BIN" ]; then
 </plist>
 PLIST
 
-    cp "$APP_BIN" "$APP_BUILD_DIR/EigenInference.app/Contents/MacOS/EigenInference"
-    codesign --force --sign - --options runtime "$APP_BUILD_DIR/EigenInference.app/Contents/MacOS/EigenInference" 2>/dev/null
-    codesign --force --sign - --options runtime --no-strict "$APP_BUILD_DIR/EigenInference.app" 2>/dev/null
+    cp "$APP_BIN" "$APP_BUILD_DIR/Darkbloom.app/Contents/MacOS/Darkbloom"
+    codesign --force --sign - --options runtime "$APP_BUILD_DIR/Darkbloom.app/Contents/MacOS/Darkbloom" 2>/dev/null
+    codesign --force --sign - --options runtime --no-strict "$APP_BUILD_DIR/Darkbloom.app" 2>/dev/null
 
     # Create DMG
-    DMG_PATH="$APP_BUILD_DIR/EigenInference-latest.dmg"
+    DMG_PATH="$APP_BUILD_DIR/Darkbloom-latest.dmg"
     rm -f "$DMG_PATH"
     DMG_TMP="$APP_BUILD_DIR/dmg-staging"
     rm -rf "$DMG_TMP"
     mkdir -p "$DMG_TMP"
-    cp -a "$APP_BUILD_DIR/EigenInference.app" "$DMG_TMP/"
+    cp -a "$APP_BUILD_DIR/Darkbloom.app" "$DMG_TMP/"
     ln -s /Applications "$DMG_TMP/Applications"
-    hdiutil create -volname "EigenInference" -srcfolder "$DMG_TMP" -ov -format UDZO "$DMG_PATH" >/dev/null 2>&1
+    hdiutil create -volname "Darkbloom" -srcfolder "$DMG_TMP" -ov -format UDZO "$DMG_PATH" >/dev/null 2>&1
     rm -rf "$DMG_TMP"
 
     DMG_SIZE=$(du -h "$DMG_PATH" | cut -f1)
-    echo "   ✓ EigenInference.app + DMG ($DMG_SIZE)"
+    echo "   ✓ Darkbloom.app + DMG ($DMG_SIZE)"
 else
     echo "   ⚠ Swift build failed — app not included"
 fi
@@ -327,11 +327,11 @@ if [ "$UPLOAD" = true ]; then
     echo "   ✓ Bundle uploaded"
 
     # Upload DMG
-    if [ -f "$APP_BUILD_DIR/EigenInference-latest.dmg" ]; then
-        scp -i "$SSH_KEY" "$APP_BUILD_DIR/EigenInference-latest.dmg" "$SERVER:/tmp/EigenInference-latest.dmg"
+    if [ -f "$APP_BUILD_DIR/Darkbloom-latest.dmg" ]; then
+        scp -i "$SSH_KEY" "$APP_BUILD_DIR/Darkbloom-latest.dmg" "$SERVER:/tmp/Darkbloom-latest.dmg"
         ssh -i "$SSH_KEY" "$SERVER" '
-            sudo cp /tmp/EigenInference-latest.dmg /var/www/html/dl/EigenInference-latest.dmg
-            sudo chmod 644 /var/www/html/dl/EigenInference-latest.dmg
+            sudo cp /tmp/Darkbloom-latest.dmg /var/www/html/dl/Darkbloom-latest.dmg
+            sudo chmod 644 /var/www/html/dl/Darkbloom-latest.dmg
         '
         echo "   ✓ App DMG uploaded"
     fi

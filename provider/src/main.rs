@@ -2575,7 +2575,7 @@ async fn cmd_serve(
                         Err(e) => {
                             slot.healthy = false;
                             tracing::error!(
-                                "Failed to load in-process engine for {}: {e}",
+                                "Failed to load in-process engine for {}: {e:#}",
                                 slot.model_id
                             );
                         }

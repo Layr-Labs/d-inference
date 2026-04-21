@@ -736,6 +736,10 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		return
 	}
 	chunkData, err := decryptTextResponseChunk(provider, pr, msg)
+	s.logger.Info("DEBUG chunk decrypted",
+		"request_id", msg.RequestID,
+		"chunk_len", len(chunkData),
+	)
 	if err != nil {
 		s.logger.Warn("rejecting insecure response chunk",
 			"provider_id", providerID,

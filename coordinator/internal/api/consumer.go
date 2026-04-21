@@ -794,20 +794,11 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				// or object=response) and pass through directly — this is
 				// format-agnostic and works for chat completions, Responses
 				// API, or any future endpoint without parsing.
-				s.logger.Info("non-streaming chunk close",
-					"num_chunks", len(chunks),
-					"first_chunk_len", func() int { if len(chunks) > 0 { return len(chunks[0]) }; return 0 }(),
-				)
 				if len(chunks) == 1 {
 					raw := strings.TrimPrefix(chunks[0], "data: ")
 					var obj map[string]any
 					if err := json.Unmarshal([]byte(raw), &obj); err == nil {
 						objType, _ := obj["object"].(string)
-						s.logger.Info("non-streaming passthrough",
-							"chunk_len", len(chunks[0]),
-							"raw_len", len(raw),
-							"object", objType,
-						)
 						// Complete responses have object=chat.completion or
 						// object=response. Delta chunks have object=chat.completion.chunk.
 						if objType == "chat.completion" || objType == "response" {

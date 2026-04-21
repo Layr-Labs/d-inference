@@ -146,9 +146,6 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			continue
 		}
 
-		if msg.Type == protocol.TypeInferenceResponseChunk || msg.Type == protocol.TypeInferenceComplete {
-			s.logger.Info("DEBUG provider msg", "type", msg.Type, "provider_id", providerID)
-		}
 		switch msg.Type {
 		case protocol.TypeRegister:
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
@@ -739,10 +736,6 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		return
 	}
 	chunkData, err := decryptTextResponseChunk(provider, pr, msg)
-	s.logger.Info("DEBUG chunk decrypted",
-		"request_id", msg.RequestID,
-		"chunk_len", len(chunkData),
-	)
 	if err != nil {
 		s.logger.Warn("rejecting insecure response chunk",
 			"provider_id", providerID,

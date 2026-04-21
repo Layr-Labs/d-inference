@@ -417,8 +417,8 @@ fn collect_weight_files(snapshot_dir: &Path) -> (u64, Vec<PathBuf>) {
             continue;
         }
         if let Ok(meta) = entry.metadata() {
-            let is_weight = WEIGHT_EXTENSIONS.iter().any(|ext| name.ends_with(ext))
-                || name == "weights.npz";
+            let is_weight =
+                WEIGHT_EXTENSIONS.iter().any(|ext| name.ends_with(ext)) || name == "weights.npz";
 
             // Handle symlinks — resolve to actual file size
             if meta.is_file() {
@@ -952,7 +952,10 @@ mod tests {
 
         let (size, paths) = collect_weight_files(&snap);
 
-        assert_eq!(size, 8000, "size should only count weight files (5000 + 3000)");
+        assert_eq!(
+            size, 8000,
+            "size should only count weight files (5000 + 3000)"
+        );
         assert_eq!(paths.len(), 4, "all 4 files should be in the path list");
     }
 
@@ -973,7 +976,10 @@ mod tests {
         let (_, paths2) = collect_weight_files(&snap);
         let hash2 = crate::security::hash_files_sorted(&paths2).unwrap();
 
-        assert_ne!(hash1, hash2, "model hash must change when config.json is modified");
+        assert_ne!(
+            hash1, hash2,
+            "model hash must change when config.json is modified"
+        );
     }
 
     #[test]
@@ -988,12 +994,19 @@ mod tests {
         let (_, paths1) = collect_weight_files(&snap);
         let hash1 = crate::security::hash_files_sorted(&paths1).unwrap();
 
-        fs::write(snap.join("chat_template.jinja"), "{{ messages | evil_filter }}").unwrap();
+        fs::write(
+            snap.join("chat_template.jinja"),
+            "{{ messages | evil_filter }}",
+        )
+        .unwrap();
 
         let (_, paths2) = collect_weight_files(&snap);
         let hash2 = crate::security::hash_files_sorted(&paths2).unwrap();
 
-        assert_ne!(hash1, hash2, "model hash must change when chat_template.jinja is modified");
+        assert_ne!(
+            hash1, hash2,
+            "model hash must change when chat_template.jinja is modified"
+        );
     }
 
     #[test]
@@ -1008,12 +1021,19 @@ mod tests {
         let (_, paths1) = collect_weight_files(&snap);
         let hash1 = crate::security::hash_files_sorted(&paths1).unwrap();
 
-        fs::write(snap.join("tokenizer.json"), r#"{"model": {"vocab": {"<evil>": 99999}}}"#).unwrap();
+        fs::write(
+            snap.join("tokenizer.json"),
+            r#"{"model": {"vocab": {"<evil>": 99999}}}"#,
+        )
+        .unwrap();
 
         let (_, paths2) = collect_weight_files(&snap);
         let hash2 = crate::security::hash_files_sorted(&paths2).unwrap();
 
-        assert_ne!(hash1, hash2, "model hash must change when tokenizer.json is modified");
+        assert_ne!(
+            hash1, hash2,
+            "model hash must change when tokenizer.json is modified"
+        );
     }
 
     #[test]
@@ -1034,7 +1054,10 @@ mod tests {
         let (_, paths2) = collect_weight_files(&snap);
         let hash2 = crate::security::hash_files_sorted(&paths2).unwrap();
 
-        assert_eq!(hash1, hash2, "model hash should NOT change when README.md is modified");
+        assert_eq!(
+            hash1, hash2,
+            "model hash should NOT change when README.md is modified"
+        );
     }
 
     #[test]

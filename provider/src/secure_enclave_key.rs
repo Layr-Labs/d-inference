@@ -40,9 +40,7 @@ impl SecureEnclaveHandle {
     pub fn create() -> Result<Self> {
         let ptr = unsafe { eigeninference_enclave_create() };
         if ptr.is_null() {
-            return Err(anyhow!(
-                "Secure Enclave unavailable or key creation failed"
-            ));
+            return Err(anyhow!("Secure Enclave unavailable or key creation failed"));
         }
 
         let pk_ptr = unsafe { eigeninference_enclave_public_key_base64(ptr) };
@@ -55,7 +53,10 @@ impl SecureEnclaveHandle {
             .into_owned();
         unsafe { eigeninference_enclave_free_string(pk_ptr) };
 
-        Ok(Self { ptr, public_key_b64 })
+        Ok(Self {
+            ptr,
+            public_key_b64,
+        })
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -71,8 +72,7 @@ impl SecureEnclaveHandle {
     pub fn sign(&self, data: &[u8]) -> Result<String> {
         use anyhow::Context;
         let data_len: c_int = data.len().try_into().context("data too large for FFI")?;
-        let sig_ptr =
-            unsafe { eigeninference_enclave_sign(self.ptr, data.as_ptr(), data_len) };
+        let sig_ptr = unsafe { eigeninference_enclave_sign(self.ptr, data.as_ptr(), data_len) };
         if sig_ptr.is_null() {
             return Err(anyhow!("Secure Enclave signing failed"));
         }
@@ -105,9 +105,7 @@ impl SecureEnclaveHandle {
             eigeninference_enclave_create_attestation_full(
                 self.ptr,
                 enc_key_c.as_ptr(),
-                hash_c
-                    .as_ref()
-                    .map_or(std::ptr::null(), |c| c.as_ptr()),
+                hash_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
             )
         };
         if json_ptr.is_null() {
@@ -118,8 +116,7 @@ impl SecureEnclaveHandle {
             .into_owned();
         unsafe { eigeninference_enclave_free_string(json_ptr) };
 
-        serde_json::value::RawValue::from_string(json_str)
-            .context("attestation JSON is not valid")
+        serde_json::value::RawValue::from_string(json_str).context("attestation JSON is not valid")
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -202,7 +199,11 @@ mod tests {
         let pk = handle.public_key_base64();
         assert!(!pk.is_empty(), "public key must be non-empty");
         // Base64 of 64 raw P-256 bytes = 88 chars
-        assert_eq!(pk.len(), 88, "P-256 raw public key base64 should be 88 chars");
+        assert_eq!(
+            pk.len(),
+            88,
+            "P-256 raw public key base64 should be 88 chars"
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -233,23 +234,30 @@ mod tests {
         let handle = SecureEnclaveHandle::create().unwrap();
         let sig1 = handle.sign(b"message alpha").unwrap();
         let sig2 = handle.sign(b"message beta").unwrap();
-        assert_ne!(sig1, sig2, "different inputs must produce different signatures");
+        assert_ne!(
+            sig1, sig2,
+            "different inputs must produce different signatures"
+        );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn test_ephemeral_handle_creates_attestation() {
         let handle = SecureEnclaveHandle::create().unwrap();
-        let enc_key = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            &[0u8; 32],
-        );
+        let enc_key =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &[0u8; 32]);
         let att = handle
             .create_attestation(&enc_key, Some("abcdef1234567890"))
             .expect("attestation should succeed");
         let json = att.get();
-        assert!(json.contains("publicKey"), "attestation must contain publicKey");
-        assert!(json.contains("signature"), "attestation must contain signature");
+        assert!(
+            json.contains("publicKey"),
+            "attestation must contain publicKey"
+        );
+        assert!(
+            json.contains("signature"),
+            "attestation must contain signature"
+        );
         assert!(
             json.contains("encryptionPublicKey"),
             "attestation must bind encryption key"
@@ -260,10 +268,8 @@ mod tests {
     #[test]
     fn test_ephemeral_handle_attestation_without_binary_hash() {
         let handle = SecureEnclaveHandle::create().unwrap();
-        let enc_key = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            &[1u8; 32],
-        );
+        let enc_key =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &[1u8; 32]);
         let att = handle
             .create_attestation(&enc_key, None)
             .expect("attestation without binary hash should succeed");
@@ -289,10 +295,7 @@ mod tests {
         // Verify no key files were written to the temp HOME
         for file in LEGACY_KEY_FILES {
             let path = tmp.path().join(file);
-            assert!(
-                !path.exists(),
-                "ephemeral handle must not create {file}"
-            );
+            assert!(!path.exists(), "ephemeral handle must not create {file}");
         }
 
         // Also check that no .darkbloom directory was created at all
@@ -324,7 +327,10 @@ mod tests {
 
         // Verify they exist
         for file in LEGACY_KEY_FILES {
-            assert!(home.join(file).exists(), "{file} should exist before cleanup");
+            assert!(
+                home.join(file).exists(),
+                "{file} should exist before cleanup"
+            );
         }
 
         let old_home = std::env::var_os("HOME");

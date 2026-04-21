@@ -487,8 +487,6 @@ fn download_model_from_cdn(s3_name: &str, cache_dir: &std::path::Path, display_n
     all_ok
 }
 
-
-
 /// Ensure a model's tokenizer_config.json contains a chat_template.
 ///
 /// vllm-mlx calls `tokenizer.apply_chat_template()` which requires this field.
@@ -1522,9 +1520,7 @@ async fn main() -> Result<()> {
             coordinator,
             model,
             idle_timeout,
-        } => {
-            cmd_start(coordinator, model, idle_timeout).await
-        }
+        } => cmd_start(coordinator, model, idle_timeout).await,
         Command::Stop => cmd_stop().await,
         Command::Logs { lines, watch } => cmd_logs(lines, watch).await,
         Command::Update { coordinator, force } => cmd_update(coordinator, force).await,
@@ -2397,7 +2393,9 @@ async fn cmd_serve(
                 }
             }
         });
-        let se_public_key = se_handle.as_ref().map(|h| h.public_key_base64().to_string());
+        let se_public_key = se_handle
+            .as_ref()
+            .map(|h| h.public_key_base64().to_string());
 
         // Load device auth token if the provider has been linked to an account.
         let auth_token = load_auth_token();
@@ -3882,144 +3880,6 @@ async fn reload_backend(
 }
 
 #[cfg(feature = "python")]
-fn extract_inprocess_input_text(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::String(text) => text.clone(),
-        serde_json::Value::Array(items) => items
-            .iter()
-            .map(extract_inprocess_input_text)
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n"),
-        serde_json::Value::Object(map) => {
-            if let Some(text) = map.get("text").and_then(|v| v.as_str()) {
-                text.to_string()
-            } else if let Some(content) = map.get("content") {
-                extract_inprocess_input_text(content)
-            } else {
-                String::new()
-            }
-        }
-        _ => String::new(),
-    }
-}
-
-#[cfg(feature = "python")]
-fn extract_inprocess_messages(body: &serde_json::Value) -> Vec<serde_json::Value> {
-    if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
-        return messages
-            .iter()
-            .map(|msg| {
-                let role = msg
-                    .get("role")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("user")
-                    .to_string();
-                let content = msg
-                    .get("content")
-                    .map(extract_inprocess_input_text)
-                    .unwrap_or_default();
-                serde_json::json!({
-                    "role": role,
-                    "content": content,
-                })
-            })
-            .collect();
-    }
-
-    if let Some(prompt) = body.get("prompt") {
-        let prompt = extract_inprocess_input_text(prompt);
-        if !prompt.is_empty() {
-            return vec![serde_json::json!({
-                "role": "user",
-                "content": prompt,
-            })];
-        }
-    }
-
-    if let Some(input) = body.get("input") {
-        let input = extract_inprocess_input_text(input);
-        if !input.is_empty() {
-            return vec![serde_json::json!({
-                "role": "user",
-                "content": input,
-            })];
-        }
-    }
-
-    Vec::new()
-}
-
-#[cfg(feature = "python")]
-fn build_stream_chunk_payload(text: &str, finish_reason: Option<&str>) -> anyhow::Result<String> {
-    let mut escaped_text =
-        serde_json::to_string(text).context("failed to encode streamed completion text")?;
-    let finish_reason_json =
-        serde_json::to_string(&finish_reason).context("failed to encode finish reason")?;
-    let payload = format!(
-        "data: {{\"id\":\"chatcmpl-{}\",\"object\":\"chat.completion.chunk\",\"choices\":[{{\"delta\":{{\"content\":{}}},\"index\":0,\"finish_reason\":{}}}]}}",
-        uuid::Uuid::new_v4(),
-        escaped_text,
-        finish_reason_json,
-    );
-    security::secure_zero_string(std::mem::take(&mut escaped_text));
-    Ok(payload)
-}
-
-#[cfg(feature = "python")]
-fn build_inprocess_response_payload(
-    endpoint: &str,
-    model: &str,
-    text: &str,
-    prompt_tokens: u64,
-    completion_tokens: u64,
-) -> anyhow::Result<String> {
-    let model_json = serde_json::to_string(model).context("failed to encode model")?;
-    let mut text_json = serde_json::to_string(text).context("failed to encode completion text")?;
-    let payload = match endpoint {
-        "/v1/completions" => format!(
-            "data: {{\"id\":\"cmpl-{}\",\"object\":\"text_completion\",\"model\":{},\"choices\":[{{\"index\":0,\"text\":{},\"finish_reason\":\"stop\"}}],\"usage\":{{\"prompt_tokens\":{},\"completion_tokens\":{},\"total_tokens\":{}}}}}",
-            uuid::Uuid::new_v4(),
-            model_json,
-            text_json,
-            prompt_tokens,
-            completion_tokens,
-            prompt_tokens + completion_tokens,
-        ),
-        "/v1/messages" => format!(
-            "data: {{\"id\":\"msg_{}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":{},\"content\":[{{\"type\":\"text\",\"text\":{}}}],\"stop_reason\":\"end_turn\",\"usage\":{{\"input_tokens\":{},\"output_tokens\":{}}}}}",
-            uuid::Uuid::new_v4(),
-            model_json,
-            text_json,
-            prompt_tokens,
-            completion_tokens,
-        ),
-        "/v1/responses" => format!(
-            "data: {{\"id\":\"resp_{}\",\"object\":\"response\",\"model\":{},\"output\":[{{\"id\":\"msg_{}\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":{},\"annotations\":[]}}]}}],\"output_text\":{},\"usage\":{{\"input_tokens\":{},\"output_tokens\":{},\"total_tokens\":{}}}}}",
-            uuid::Uuid::new_v4(),
-            model_json,
-            uuid::Uuid::new_v4(),
-            text_json,
-            text_json,
-            prompt_tokens,
-            completion_tokens,
-            prompt_tokens + completion_tokens,
-        ),
-        _ => format!(
-            "data: {{\"id\":\"chatcmpl-{}\",\"object\":\"chat.completion\",\"model\":{},\"choices\":[{{\"index\":0,\"message\":{{\"role\":\"assistant\",\"content\":{}}},\"finish_reason\":\"stop\"}}],\"usage\":{{\"prompt_tokens\":{},\"completion_tokens\":{},\"total_tokens\":{}}}}}",
-            uuid::Uuid::new_v4(),
-            model_json,
-            text_json,
-            prompt_tokens,
-            completion_tokens,
-            prompt_tokens + completion_tokens,
-        ),
-    };
-    security::secure_zero_string(std::mem::take(&mut text_json));
-    Ok(payload)
-}
-
-#[cfg(feature = "python")]
 async fn send_encrypted_inference_chunk(
     outbound_tx: &tokio::sync::mpsc::Sender<protocol::ProviderMessage>,
     request_id: &str,
@@ -4073,68 +3933,37 @@ async fn handle_inprocess_request(
         return;
     }
 
-    // Extract parameters then immediately wipe the request body.
-    // The body contains the consumer's prompts — minimize its lifetime.
-    let messages = extract_inprocess_messages(&body);
-    let max_tokens = body
-        .get("max_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(256);
-    let temperature = body
-        .get("temperature")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.7);
+    // Extract only the control fields we need; the full body is passed
+    // to the engine which handles message extraction, chat templates,
+    // tool calling, and structured output internally.
     let is_streaming = body
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let response_endpoint = body
-        .get("endpoint")
-        .and_then(|v| v.as_str())
-        .unwrap_or("/v1/chat/completions")
-        .to_string();
-    let response_model = body
-        .get("model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
 
-    // Wipe the raw request body now that we've extracted what we need.
-    security::secure_zero_json_value(&mut body);
-    drop(body);
-    // The cloned `messages` Vec<Value> still holds prompt text; it is wiped
-    // inside the engine wrapper after generation completes or fails.
+    // The body is passed to the engine which wipes it after use.
+    // No need to extract messages separately — the server handler
+    // reads them directly from the JSON.
 
     let result = if is_streaming {
         let (token_tx, mut token_rx) = tokio::sync::mpsc::channel::<inference::StreamToken>(4);
-        let stream_handle =
-            engine.stream_generate_channel(messages, max_tokens, temperature, token_tx);
+        let stream_handle = engine.stream_generate_channel(body, token_tx);
 
         let mut send_err: Option<anyhow::Error> = None;
         let mut streamed_count: u64 = 0;
         let mut signed_response = String::new();
 
-        // Encrypt-and-send each token as it arrives from the channel,
-        // then immediately zeroize the plaintext.
+        // Each token.text is already a complete SSE chunk (data: {...}).
+        // Encrypt-and-send directly, then zeroize.
         while let Some(mut token) = token_rx.recv().await {
             signed_response.push_str(&token.text);
-            let chunk_data =
-                match build_stream_chunk_payload(&token.text, token.finish_reason.as_deref()) {
-                    Ok(chunk_data) => chunk_data,
-                    Err(err) => {
-                        security::secure_zero_string(std::mem::take(&mut token.text));
-                        send_err = Some(err);
-                        break;
-                    }
-                };
-            security::secure_zero_string(std::mem::take(&mut token.text));
 
             if let Err(err) = send_encrypted_inference_chunk(
                 &outbound_tx,
                 &request_id,
                 &response_public_key,
                 node_keypair.as_ref(),
-                chunk_data,
+                std::mem::take(&mut token.text),
             )
             .await
             {
@@ -4196,7 +4025,7 @@ async fn handle_inprocess_request(
             }
         }
     } else {
-        engine.generate(messages, max_tokens, temperature).await
+        engine.generate(body).await
     };
 
     match result {
@@ -4208,26 +4037,10 @@ async fn handle_inprocess_request(
                 inference_result.completion_tokens,
             );
             let (response_hash, se_signature) = if !is_streaming {
-                let payload = match build_inprocess_response_payload(
-                    &response_endpoint,
-                    &response_model,
-                    &inference_result.text,
-                    inference_result.prompt_tokens,
-                    inference_result.completion_tokens,
-                ) {
-                    Ok(payload) => payload,
-                    Err(err) => {
-                        security::secure_zero_string(std::mem::take(&mut inference_result.text));
-                        let _ = outbound_tx
-                            .send(protocol::ProviderMessage::InferenceError {
-                                request_id: request_id.clone(),
-                                error: format!("failed to encode non-streaming response: {err}"),
-                                status_code: 500,
-                            })
-                            .await;
-                        return;
-                    }
-                };
+                // For non-streaming, inference_result.text contains the full
+                // OpenAI-compatible JSON response from the vllm-mlx server
+                // handler. Wrap it in SSE format and send directly.
+                let payload = format!("data: {}", inference_result.text);
                 let (response_hash, se_signature) = security::compute_response_attestation(
                     se_handle.as_deref(),
                     &request_id,
@@ -5512,125 +5325,124 @@ async fn cmd_start(
         downloaded.iter().map(|m| m.id.clone()).collect();
 
     // Interactive model selection if no --model specified
-    let selected_models: Vec<String> =
-        if let Some(m) = model_override {
-            vec![m]
-        } else {
-            // Build picker items from catalog: all models that fit in RAM.
-            struct PickerItem {
-                id: String,
-                display: String,
-                size_gb: f64,
-                downloaded: bool,
-                s3_name: String,
-                model_type: String,
-            }
+    let selected_models: Vec<String> = if let Some(m) = model_override {
+        vec![m]
+    } else {
+        // Build picker items from catalog: all models that fit in RAM.
+        struct PickerItem {
+            id: String,
+            display: String,
+            size_gb: f64,
+            downloaded: bool,
+            s3_name: String,
+            model_type: String,
+        }
 
-            // Fetch expected file sizes from CDN via HEAD requests to detect partial downloads.
-            let cdn_base = DEFAULT_R2_CDN_URL;
-            let cdn_sizes: std::collections::HashMap<String, u64> = {
-                let client = reqwest::Client::new();
-                let mut sizes = std::collections::HashMap::new();
-                for c in &catalog {
-                    if let Some(on_disk) = downloaded.iter().find(|m| m.id == c.id) {
-                        // Only HEAD-check models we have locally (to verify completeness)
-                        let url = format!("{}/{}/model.safetensors", cdn_base, c.s3_name);
-                        if let Ok(resp) = client
-                            .head(&url)
-                            .timeout(std::time::Duration::from_secs(5))
-                            .send()
-                            .await
-                        {
-                            if let Some(len) = resp.content_length() {
-                                sizes.insert(c.id.clone(), len);
-                            }
+        // Fetch expected file sizes from CDN via HEAD requests to detect partial downloads.
+        let cdn_base = DEFAULT_R2_CDN_URL;
+        let cdn_sizes: std::collections::HashMap<String, u64> = {
+            let client = reqwest::Client::new();
+            let mut sizes = std::collections::HashMap::new();
+            for c in &catalog {
+                if let Some(on_disk) = downloaded.iter().find(|m| m.id == c.id) {
+                    // Only HEAD-check models we have locally (to verify completeness)
+                    let url = format!("{}/{}/model.safetensors", cdn_base, c.s3_name);
+                    if let Ok(resp) = client
+                        .head(&url)
+                        .timeout(std::time::Duration::from_secs(5))
+                        .send()
+                        .await
+                    {
+                        if let Some(len) = resp.content_length() {
+                            sizes.insert(c.id.clone(), len);
                         }
                     }
                 }
-                sizes
-            };
-
-            let mut items: Vec<PickerItem> = catalog
-                .iter()
-                // Only show text models in the picker
-                .filter(|c| c.model_type == "text")
-                .filter(|c| (c.min_ram_gb as f64) <= hw.memory_gb as f64)
-                .map(|c| {
-                    // Check if model is downloaded AND complete.
-                    let on_disk = downloaded.iter().find(|m| m.id == c.id);
-                    let is_downloaded = on_disk.is_some_and(|m| {
-                        if let Some(&expected) = cdn_sizes.get(&c.id) {
-                            m.size_bytes >= expected
-                        } else {
-                            m.size_bytes > 500_000_000
-                        }
-                    });
-                    let size = if is_downloaded {
-                        on_disk.map(|m| m.estimated_memory_gb).unwrap_or(c.size_gb)
-                    } else {
-                        c.size_gb
-                    };
-                    PickerItem {
-                        id: c.id.clone(),
-                        display: c.display_name.clone(),
-                        size_gb: size,
-                        downloaded: is_downloaded,
-                        s3_name: c.s3_name.clone(),
-                        model_type: c.model_type.clone(),
-                    }
-                })
-                .collect();
-
-            // Sort: downloaded first, then by size descending
-            items.sort_by(|a, b| {
-                b.downloaded.cmp(&a.downloaded).then(
-                    b.size_gb
-                        .partial_cmp(&a.size_gb)
-                        .unwrap_or(std::cmp::Ordering::Equal),
-                )
-            });
-
-            if items.is_empty() {
-                anyhow::bail!("No supported models fit in {} GB RAM", hw.memory_gb);
             }
-
-            // Convert to PickerEntry for the interactive picker
-            let entries: Vec<PickerEntry> = items
-                .iter()
-                .map(|i| PickerEntry {
-                    display: i.display.clone(),
-                    size_gb: i.size_gb,
-                    downloaded: i.downloaded,
-                })
-                .collect();
-
-            let selected_indices = run_model_picker(&entries, hw.memory_gb as f64)?;
-
-            // Download any selected models that aren't local yet
-            for &idx in &selected_indices {
-                let item = &items[idx];
-                if !item.downloaded {
-                    println!();
-                    println!("  Downloading {}...", item.display);
-                    let cache_dir = dirs::home_dir()
-                        .unwrap_or_default()
-                        .join(".cache/huggingface/hub")
-                        .join(format!("models--{}", item.id.replace('/', "--")))
-                        .join("snapshots/main");
-                    std::fs::create_dir_all(&cache_dir)?;
-                    if !download_model_from_cdn(&item.s3_name, &cache_dir, &item.display) {
-                        anyhow::bail!("Failed to download {}", item.display);
-                    }
-                    println!("  ✓ Downloaded {}", item.display);
-                }
-            }
-
-            let text_models: Vec<String> = selected_indices
-                .iter()
-                .map(|&idx| items[idx].id.clone())
-                .collect();
-            text_models
+            sizes
         };
+
+        let mut items: Vec<PickerItem> = catalog
+            .iter()
+            // Only show text models in the picker
+            .filter(|c| c.model_type == "text")
+            .filter(|c| (c.min_ram_gb as f64) <= hw.memory_gb as f64)
+            .map(|c| {
+                // Check if model is downloaded AND complete.
+                let on_disk = downloaded.iter().find(|m| m.id == c.id);
+                let is_downloaded = on_disk.is_some_and(|m| {
+                    if let Some(&expected) = cdn_sizes.get(&c.id) {
+                        m.size_bytes >= expected
+                    } else {
+                        m.size_bytes > 500_000_000
+                    }
+                });
+                let size = if is_downloaded {
+                    on_disk.map(|m| m.estimated_memory_gb).unwrap_or(c.size_gb)
+                } else {
+                    c.size_gb
+                };
+                PickerItem {
+                    id: c.id.clone(),
+                    display: c.display_name.clone(),
+                    size_gb: size,
+                    downloaded: is_downloaded,
+                    s3_name: c.s3_name.clone(),
+                    model_type: c.model_type.clone(),
+                }
+            })
+            .collect();
+
+        // Sort: downloaded first, then by size descending
+        items.sort_by(|a, b| {
+            b.downloaded.cmp(&a.downloaded).then(
+                b.size_gb
+                    .partial_cmp(&a.size_gb)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+        });
+
+        if items.is_empty() {
+            anyhow::bail!("No supported models fit in {} GB RAM", hw.memory_gb);
+        }
+
+        // Convert to PickerEntry for the interactive picker
+        let entries: Vec<PickerEntry> = items
+            .iter()
+            .map(|i| PickerEntry {
+                display: i.display.clone(),
+                size_gb: i.size_gb,
+                downloaded: i.downloaded,
+            })
+            .collect();
+
+        let selected_indices = run_model_picker(&entries, hw.memory_gb as f64)?;
+
+        // Download any selected models that aren't local yet
+        for &idx in &selected_indices {
+            let item = &items[idx];
+            if !item.downloaded {
+                println!();
+                println!("  Downloading {}...", item.display);
+                let cache_dir = dirs::home_dir()
+                    .unwrap_or_default()
+                    .join(".cache/huggingface/hub")
+                    .join(format!("models--{}", item.id.replace('/', "--")))
+                    .join("snapshots/main");
+                std::fs::create_dir_all(&cache_dir)?;
+                if !download_model_from_cdn(&item.s3_name, &cache_dir, &item.display) {
+                    anyhow::bail!("Failed to download {}", item.display);
+                }
+                println!("  ✓ Downloaded {}", item.display);
+            }
+        }
+
+        let text_models: Vec<String> = selected_indices
+            .iter()
+            .map(|&idx| items[idx].id.clone())
+            .collect();
+        text_models
+    };
 
     if selected_models.is_empty() {
         anyhow::bail!("No models selected");
@@ -5641,11 +5453,7 @@ async fn cmd_start(
         .join(".darkbloom/provider.log");
 
     // Install as launchd user agent
-    service::install_and_start(
-        &coordinator_url,
-        &selected_models,
-        idle_timeout,
-    )?;
+    service::install_and_start(&coordinator_url, &selected_models, idle_timeout)?;
 
     println!("Provider installed as system service");
     println!(

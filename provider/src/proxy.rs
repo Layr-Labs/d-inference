@@ -181,8 +181,12 @@ async fn handle_non_streaming_request(
     let raw_json = serde_json::to_string(&response_json).unwrap_or_default();
 
     // Sign the raw response with the Secure Enclave key.
-    let (response_hash, se_signature) =
-        security::compute_response_attestation(se_handle.as_deref(), request_id, completion_tokens, &raw_json);
+    let (response_hash, se_signature) = security::compute_response_attestation(
+        se_handle.as_deref(),
+        request_id,
+        completion_tokens,
+        &raw_json,
+    );
 
     outbound_tx
         .send(ProviderMessage::InferenceResponseChunk {

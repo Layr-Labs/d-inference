@@ -1048,7 +1048,8 @@ mod tests {
         std::fs::write(pycache.join("os.cpython-312.pyc"), "bytecode").unwrap();
 
         // Find a working python3 to use
-        let python = ["python3.12", "python3", "python"].iter()
+        let python = ["python3.12", "python3", "python"]
+            .iter()
             .find(|cmd| {
                 std::process::Command::new(cmd)
                     .args(["-c", "print('ok')"])
@@ -1088,8 +1089,11 @@ print(final.hexdigest())
             .args(["-c", &script, &lib_dir.to_string_lossy()])
             .output()
             .expect("python subprocess failed");
-        assert!(output.status.success(), "python hashing script failed: {}",
-            String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "python hashing script failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
         assert_eq!(hash.len(), 64, "expected 64-char hex hash, got: {hash}");
 
@@ -1101,13 +1105,17 @@ print(final.hexdigest())
                     &lib_dir.to_string_lossy()])
                 .output().unwrap().stdout
         ).trim().parse().unwrap();
-        assert_eq!(file_count, 3, "should find exactly 3 files (excluding __pycache__/.pyc)");
+        assert_eq!(
+            file_count, 3,
+            "should find exactly 3 files (excluding __pycache__/.pyc)"
+        );
 
         // Verify the hash changes when a file is modified
         std::fs::write(site.join("core.py"), "def run(): return 'tampered'\n").unwrap();
         let output2 = std::process::Command::new(python)
             .args(["-c", &script, &lib_dir.to_string_lossy()])
-            .output().unwrap();
+            .output()
+            .unwrap();
         let hash2 = String::from_utf8_lossy(&output2.stdout).trim().to_string();
         assert_ne!(hash, hash2, "hash must change when a file is modified");
 

@@ -7,14 +7,16 @@
 //!   - Hardened Runtime blocks memory inspection of the entire process
 //!   - Model weights, prompts, and outputs all live in our protected memory
 //!
-//! We embed Python via PyO3 and call vllm-mlx's engine API directly.
-//! vllm-mlx still handles continuous batching, prefix caching, and
-//! all its optimizations — we just call it from inside our process.
+//! We embed Python via PyO3 and call vllm-mlx's server-level API directly.
+//! Instead of calling the low-level SimpleEngine.generate(), we call
+//! engine.chat() which handles chat templates, tool calling, and structured
+//! output. The response is built using vllm-mlx's Pydantic models to produce
+//! full OpenAI-compatible JSON responses in-process.
 //!
 //! Architecture:
 //!   Rust (main loop, WebSocket, security)
 //!     └── PyO3 embedded Python
-//!           └── vllm_mlx.LLM or mlx_lm (loaded as Python module)
+//!           └── vllm_mlx server handler (engine.chat / engine.stream_chat)
 //!                 └── MLX → Metal → Apple Silicon GPU
 
 use anyhow::{Context, Result};
@@ -28,24 +30,21 @@ use tokio::sync::Mutex;
 
 /// In-process inference engine backed by embedded Python.
 ///
-/// Wraps either vllm-mlx (preferred, supports batching) or mlx-lm
-/// (fallback, single-request) depending on what's installed.
+/// Uses vllm-mlx's server-level engine API (engine.chat / engine.stream_chat)
+/// rather than the low-level SimpleEngine.generate(). This gives us full
+/// OpenAI-compatible features: tool calling, structured output, proper chat
+/// templates, and streaming — all in-process without starting an HTTP server.
 pub struct InProcessEngine {
     model_id: String,
     cache_key: String,
-    engine_type: EngineType,
     pub loaded: bool,
 }
 
-#[derive(Debug, Clone)]
-pub enum EngineType {
-    /// vllm-mlx: continuous batching, prefix caching, high throughput
-    VllmMlx,
-    /// mlx-lm: simpler, single-request, but always available with MLX
-    MlxLm,
-}
-
 /// A single inference result (non-streaming).
+///
+/// For the server-handler path, `text` contains the full OpenAI-compatible
+/// JSON response (ChatCompletionResponse serialized). For streaming,
+/// individual SSE chunks are delivered via `StreamToken`.
 #[derive(Debug)]
 pub struct InferenceResult {
     pub text: String,
@@ -53,7 +52,10 @@ pub struct InferenceResult {
     pub completion_tokens: u64,
 }
 
-/// A streaming token from the inference engine.
+/// A streaming chunk from the inference engine.
+///
+/// `text` contains a complete SSE-formatted chunk
+/// (e.g. `data: {"id":"chatcmpl-...","choices":[...]}\n\n`).
 #[derive(Debug)]
 pub struct StreamToken {
     pub text: String,
@@ -61,7 +63,6 @@ pub struct StreamToken {
 }
 
 const VLLM_ENGINE_STORE: &str = "_eigeninference_vllm_engines";
-const MLX_ENGINE_STORE: &str = "_eigeninference_mlx_engines";
 
 fn engine_cache_key_for(model_id: &str) -> String {
     let mut hasher = Sha256::new();
@@ -125,7 +126,6 @@ impl InProcessEngine {
         Self {
             cache_key: engine_cache_key_for(&model_id),
             model_id,
-            engine_type: EngineType::VllmMlx, // will detect at load time
             loaded: false,
         }
     }
@@ -248,15 +248,15 @@ for _name in (
         Ok(())
     }
 
-    /// Detect which Python inference engine is available.
+    /// Check that vllm-mlx is importable.
     /// Retries on failure to handle site-packages being replaced concurrently
     /// (e.g. runtime self-heal running from a previous process).
-    pub fn detect_engine() -> Result<EngineType> {
+    pub fn detect_engine() -> Result<()> {
         let max_attempts = 3;
         let mut last_err = None;
         for attempt in 1..=max_attempts {
             match Self::try_detect_engine() {
-                Ok(engine) => return Ok(engine),
+                Ok(()) => return Ok(()),
                 Err(e) => {
                     if attempt < max_attempts {
                         tracing::warn!(
@@ -271,35 +271,31 @@ for _name in (
         Err(last_err.unwrap())
     }
 
-    fn try_detect_engine() -> Result<EngineType> {
+    fn try_detect_engine() -> Result<()> {
         Python::with_gil(|py| {
             if py.import("vllm_mlx").is_ok() {
                 tracing::info!("In-process engine: vllm-mlx detected");
-                return Ok(EngineType::VllmMlx);
-            }
-
-            if py.import("mlx_lm").is_ok() {
-                tracing::info!("In-process engine: mlx-lm detected (fallback)");
-                return Ok(EngineType::MlxLm);
+                return Ok(());
             }
 
             Err(anyhow::anyhow!(
-                "Neither vllm-mlx nor mlx-lm is installed. \
-                 Install with: pip install vllm-mlx (or pip install mlx-lm)"
+                "vllm-mlx is not installed. \
+                 Install with: pip install vllm-mlx"
             ))
         })
     }
 
     /// Load the model into memory. This is slow (downloads if needed,
     /// loads weights into GPU memory) but only happens once.
+    ///
+    /// Uses vllm-mlx's `load_model()` to initialize the engine via the
+    /// server module's startup path (AdaptiveEngine wrapping SimpleEngine).
+    /// No HTTP server is started — we only use the engine object.
     pub fn load(&mut self) -> Result<()> {
-        self.engine_type = Self::detect_engine()?;
+        Self::detect_engine()?;
 
         Python::with_gil(|py| -> Result<()> {
-            match self.engine_type {
-                EngineType::VllmMlx => self.load_vllm_mlx(py)?,
-                EngineType::MlxLm => self.load_mlx_lm(py)?,
-            }
+            self.load_vllm_mlx(py)?;
             // Lock sys.path to approved runtime roots. This is the primary
             // defense — prevents loading code from provider-controlled paths.
             // We do NOT block socket/subprocess/ctypes because vllm-mlx uses
@@ -313,9 +309,8 @@ for _name in (
 
         self.loaded = true;
         tracing::info!(
-            "Model loaded in-process: {} via {:?}",
-            self.model_id,
-            self.engine_type
+            "Model loaded in-process: {} via vllm-mlx server handler",
+            self.model_id
         );
         Ok(())
     }
@@ -326,16 +321,20 @@ for _name in (
             return Ok(());
         }
 
-        Python::with_gil(|py| match self.engine_type {
-            EngineType::VllmMlx => self.unload_vllm_mlx(py),
-            EngineType::MlxLm => self.unload_mlx_lm(py),
-        })?;
+        Python::with_gil(|py| self.unload_vllm_mlx(py))?;
 
         self.loaded = false;
         tracing::info!("Model unloaded in-process: {}", self.model_id);
         Ok(())
     }
 
+    /// Initialize the vllm-mlx engine via its server module's `load_model()`.
+    ///
+    /// This creates an AdaptiveEngine (SimpleEngine + request queuing) and
+    /// stores it in a Python builtins dict keyed by cache_key. The engine
+    /// supports `engine.chat()` and `engine.stream_chat()` with full
+    /// OpenAI-compatible features (chat templates, tool calling, structured
+    /// output) without starting an HTTP server.
     fn load_vllm_mlx(&self, py: Python<'_>) -> Result<()> {
         let model = serde_json::to_string(&self.model_id).context("invalid model path")?;
         let cache_key = serde_json::to_string(&self.cache_key).context("invalid cache key")?;
@@ -343,13 +342,18 @@ for _name in (
             r#"
 import builtins, traceback as _tb
 try:
-    from vllm_mlx.engine import SimpleEngine
+    from vllm_mlx.server import load_model as _load_model
+    import vllm_mlx.server as _server
+    _load_model({model})
+    _engine = _server._engine
+    if _engine is None:
+        raise RuntimeError("load_model() did not initialize the engine")
     if not hasattr(builtins, '{store}'):
         builtins.{store} = {{}}
-    builtins.{store}[{cache_key}] = SimpleEngine(model_name={model})
+    builtins.{store}[{cache_key}] = _engine
 except Exception as _e:
     _err_detail = _tb.format_exc()
-    raise RuntimeError(f"vllm-mlx init failed: {{_err_detail}}") from _e
+    raise RuntimeError(f"vllm-mlx server init failed: {{_err_detail}}") from _e
 "#,
             store = VLLM_ENGINE_STORE,
             cache_key = cache_key,
@@ -357,28 +361,7 @@ except Exception as _e:
         );
         let ccode = CString::new(code).context("invalid code string")?;
         py.run(ccode.as_c_str(), None, None)
-            .context("failed to initialize vllm-mlx engine")?;
-        Ok(())
-    }
-
-    fn load_mlx_lm(&self, py: Python<'_>) -> Result<()> {
-        let model = serde_json::to_string(&self.model_id).context("invalid model path")?;
-        let cache_key = serde_json::to_string(&self.cache_key).context("invalid cache key")?;
-        let code = format!(
-            r#"
-import builtins
-import mlx_lm
-if not hasattr(builtins, '{store}'):
-    builtins.{store} = {{}}
-builtins.{store}[{cache_key}] = mlx_lm.load({model})
-"#,
-            store = MLX_ENGINE_STORE,
-            cache_key = cache_key,
-            model = model
-        );
-        let ccode = CString::new(code).context("invalid code string")?;
-        py.run(ccode.as_c_str(), None, None)
-            .context("failed to load model via mlx-lm")?;
+            .context("failed to initialize vllm-mlx engine via server handler")?;
         Ok(())
     }
 
@@ -386,10 +369,15 @@ builtins.{store}[{cache_key}] = mlx_lm.load({model})
         let cache_key = serde_json::to_string(&self.cache_key).context("invalid cache key")?;
         let code = format!(
             r#"
-import builtins, gc
+import asyncio, builtins, gc
 store = getattr(builtins, '{store}', None)
 if isinstance(store, dict):
-    store.pop({cache_key}, None)
+    engine = store.pop({cache_key}, None)
+    if engine is not None and hasattr(engine, 'stop'):
+        try:
+            asyncio.run(engine.stop())
+        except Exception:
+            pass
 gc.collect()
 "#,
             store = VLLM_ENGINE_STORE,
@@ -401,77 +389,128 @@ gc.collect()
         Ok(())
     }
 
-    fn unload_mlx_lm(&self, py: Python<'_>) -> Result<()> {
-        let cache_key = serde_json::to_string(&self.cache_key).context("invalid cache key")?;
-        let code = format!(
-            r#"
-import builtins, gc
-store = getattr(builtins, '{store}', None)
-if isinstance(store, dict):
-    store.pop({cache_key}, None)
-gc.collect()
-"#,
-            store = MLX_ENGINE_STORE,
-            cache_key = cache_key
-        );
-        let ccode = CString::new(code).context("invalid code string")?;
-        py.run(ccode.as_c_str(), None, None)
-            .context("failed to unload mlx-lm engine")?;
-        Ok(())
-    }
-
-    /// Run non-streaming inference. Returns the complete response.
-    pub fn generate(
-        &self,
-        messages: &[serde_json::Value],
-        max_tokens: u64,
-        temperature: f64,
-    ) -> Result<InferenceResult> {
+    /// Run non-streaming inference via vllm-mlx's server-level engine.
+    ///
+    /// Calls `engine.chat()` with the full set of OpenAI-compatible
+    /// parameters (messages, tools, response_format, etc.), then builds
+    /// a complete `ChatCompletionResponse` JSON using vllm-mlx's Pydantic
+    /// models. Returns the response JSON in `InferenceResult.text`.
+    ///
+    /// The `request_body` should be the full JSON request body from the
+    /// consumer. The engine handles chat template application, tool calling
+    /// parsing, and structured output enforcement internally.
+    pub fn generate(&self, request_body: &serde_json::Value) -> Result<InferenceResult> {
         if !self.loaded {
             anyhow::bail!("Model not loaded — call load() first");
         }
 
-        Python::with_gil(|py| match self.engine_type {
-            EngineType::VllmMlx => self.generate_vllm_mlx(py, messages, max_tokens, temperature),
-            EngineType::MlxLm => self.generate_mlx_lm(py, messages, max_tokens, temperature),
-        })
+        Python::with_gil(|py| self.generate_via_server_handler(py, request_body))
     }
 
-    fn generate_vllm_mlx(
+    fn generate_via_server_handler(
         &self,
         py: Python<'_>,
-        messages: &[serde_json::Value],
-        max_tokens: u64,
-        temperature: f64,
+        request_body: &serde_json::Value,
     ) -> Result<InferenceResult> {
-        let mut prompt = format_chat_prompt(messages);
+        let mut request_json =
+            serde_json::to_string(request_body).context("failed to serialize request body")?;
         let result = (|| -> Result<InferenceResult> {
             let locals = PyDict::new(py);
             locals.set_item("engine_key", &self.cache_key)?;
-            locals.set_item("prompt", &prompt)?;
-            locals.set_item("max_tokens", max_tokens)?;
-            locals.set_item("temperature", temperature)?;
+            locals.set_item("request_json", &request_json)?;
 
             let code = CString::new(
                 r#"
-import asyncio, builtins, traceback as _tb
+import asyncio, builtins, json, traceback as _tb
 try:
     engine = builtins._eigeninference_vllm_engines[engine_key]
-    output = asyncio.run(engine.generate(prompt, max_tokens=int(max_tokens), temperature=float(temperature)))
-    _result_text = output.text
-    _result_prompt_tokens = output.prompt_tokens
-    _result_completion_tokens = output.completion_tokens
+    _req = json.loads(request_json)
+    _messages = _req.get('messages', [])
+    _max_tokens = int(_req.get('max_tokens', 256))
+    _temperature = float(_req.get('temperature', 0.7))
+    _top_p = float(_req.get('top_p', 0.9))
+    _stop = _req.get('stop', None)
+    _tools = _req.get('tools', None)
+    _tool_choice = _req.get('tool_choice', None)
+    _response_format = _req.get('response_format', None)
+    _model_name = _req.get('model', 'unknown')
+    _chat_kwargs = dict(
+        messages=_messages,
+        max_tokens=_max_tokens,
+        temperature=_temperature,
+        top_p=_top_p,
+    )
+    if _tools:
+        from vllm_mlx.api.tool_calling import convert_tools_for_template
+        from vllm_mlx.api.models import ToolDefinition
+        _chat_kwargs['tools'] = convert_tools_for_template(
+            [ToolDefinition(**t) for t in _tools]
+        )
+    if _response_format:
+        from vllm_mlx.api.tool_calling import build_json_system_prompt
+        _json_instr = build_json_system_prompt(_response_format)
+        if _json_instr:
+            _msgs = list(_messages)
+            _sys_idx = None
+            for _i, _m in enumerate(_msgs):
+                if _m.get('role') == 'system':
+                    _sys_idx = _i
+                    break
+            if _sys_idx is not None:
+                _msgs[_sys_idx] = dict(_msgs[_sys_idx])
+                _msgs[_sys_idx]['content'] = (_msgs[_sys_idx].get('content', '') or '') + '\n\n' + _json_instr
+            else:
+                _msgs.insert(0, {'role': 'system', 'content': _json_instr})
+            _chat_kwargs['messages'] = _msgs
+    if _stop:
+        _chat_kwargs['stop'] = _stop
+    _output = asyncio.run(engine.chat(**_chat_kwargs))
+    from vllm_mlx.api.models import (
+        ChatCompletionResponse, ChatCompletionChoice, AssistantMessage, Usage
+    )
+    from vllm_mlx.api.tool_calling import parse_tool_calls
+    from vllm_mlx.api.utils import clean_output_text
+    from vllm_mlx.api.models import ToolCall, FunctionCall
+    _cleaned_text, _tool_calls = parse_tool_calls(_output.text, _req)
+    _final_content = clean_output_text(_cleaned_text) if _cleaned_text else None
+    if _response_format and not _tool_calls:
+        from vllm_mlx.api.tool_calling import parse_json_output
+        _, _parsed_json, _is_valid, _err = parse_json_output(
+            _cleaned_text or _output.text, _response_format
+        )
+        if _parsed_json is not None:
+            _final_content = json.dumps(_parsed_json)
+    _finish_reason = 'tool_calls' if _tool_calls else _output.finish_reason
+    _resp = ChatCompletionResponse(
+        model=_model_name,
+        choices=[ChatCompletionChoice(
+            message=AssistantMessage(
+                content=_final_content,
+                tool_calls=_tool_calls,
+            ),
+            finish_reason=_finish_reason,
+        )],
+        usage=Usage(
+            prompt_tokens=_output.prompt_tokens,
+            completion_tokens=_output.completion_tokens,
+            total_tokens=_output.prompt_tokens + _output.completion_tokens,
+        ),
+    )
+    _result_json = _resp.model_dump_json()
+    _result_prompt_tokens = _output.prompt_tokens
+    _result_completion_tokens = _output.completion_tokens
 except Exception as _e:
-    raise RuntimeError(f"generate failed: {_tb.format_exc()}") from _e
+    _err_detail = _tb.format_exc()
+    raise RuntimeError(f"generate via server handler failed: {_err_detail}") from _e
 "#,
             )
             .unwrap();
             py.run(code.as_c_str(), None, Some(&locals))
-                .context("vllm-mlx generate failed")?;
+                .context("vllm-mlx server handler generate failed")?;
 
             let text: String = locals
-                .get_item("_result_text")?
-                .ok_or_else(|| anyhow::anyhow!("no result text"))?
+                .get_item("_result_json")?
+                .ok_or_else(|| anyhow::anyhow!("no result JSON"))?
                 .extract()?;
             let prompt_tokens: u64 = locals
                 .get_item("_result_prompt_tokens")?
@@ -488,133 +527,171 @@ except Exception as _e:
                 completion_tokens,
             })
         })();
-        crate::security::secure_zero_string(std::mem::take(&mut prompt));
+        crate::security::secure_zero_string(std::mem::take(&mut request_json));
         result
     }
 
-    fn generate_mlx_lm(
-        &self,
-        py: Python<'_>,
-        messages: &[serde_json::Value],
-        max_tokens: u64,
-        _temperature: f64,
-    ) -> Result<InferenceResult> {
-        let mut prompt = format_chat_prompt(messages);
-        let result = (|| -> Result<InferenceResult> {
-            // Import modules and call generate directly via PyO3 API
-            let mlx_lm = py.import("mlx_lm").context("failed to import mlx_lm")?;
-            let builtins = py.import("builtins").context("failed to import builtins")?;
-            let engines = builtins
-                .getattr(MLX_ENGINE_STORE)
-                .context("mlx-lm engine store not initialized")?;
-            let entry = engines
-                .get_item(self.cache_key.as_str())
-                .context("mlx-lm engine not loaded for model")?;
-            let (model, tokenizer): (PyObject, PyObject) = entry.extract()?;
-
-            let kwargs = PyDict::new(py);
-            kwargs.set_item("prompt", prompt.as_str())?;
-            kwargs.set_item("max_tokens", max_tokens)?;
-
-            let result = mlx_lm
-                .call_method("generate", (model, tokenizer), Some(&kwargs))
-                .context("mlx-lm generate call failed")?;
-
-            let text: String = result.extract().context("failed to extract result text")?;
-            let completion_tokens = text.split_whitespace().count() as u64;
-
-            Ok(InferenceResult {
-                text,
-                prompt_tokens: 0,
-                completion_tokens,
-            })
-        })();
-        crate::security::secure_zero_string(std::mem::take(&mut prompt));
-        result
-    }
-
-    /// Run streaming inference. Calls the callback for each token.
+    /// Run streaming inference via vllm-mlx's `engine.stream_chat()`.
+    ///
+    /// Calls the callback for each SSE chunk. Each `StreamToken.text`
+    /// contains a fully-formatted SSE chunk (e.g. `data: {...}\n\n`).
     ///
     /// This runs synchronously in the Python GIL. For async integration,
     /// wrap in `tokio::task::spawn_blocking`.
     pub fn stream_generate(
         &self,
-        messages: &[serde_json::Value],
-        max_tokens: u64,
-        _temperature: f64,
+        request_body: &serde_json::Value,
         mut on_token: impl FnMut(StreamToken) -> Result<()>,
     ) -> Result<(u64, u64)> {
         if !self.loaded {
             anyhow::bail!("Model not loaded — call load() first");
         }
-        if matches!(self.engine_type, EngineType::VllmMlx) {
-            anyhow::bail!(
-                "private text streaming requires mlx-lm; vllm-mlx only exposes buffered completions"
-            );
-        }
 
         Python::with_gil(|py| {
-            let mut prompt = format_chat_prompt(messages);
-            let mut pending_text: Option<String> = None;
-            let mut completion_tokens = 0u64;
+            let mut request_json =
+                serde_json::to_string(request_body).context("failed to serialize request body")?;
+            let result = (|| -> Result<(u64, u64)> {
+                let locals = PyDict::new(py);
+                locals.set_item("engine_key", &self.cache_key)?;
+                locals.set_item("request_json", &request_json)?;
 
-            let mut emit_token = |text: String| -> Result<()> {
-                if let Some(prev) = pending_text.take() {
-                    if let Err(err) = on_token(StreamToken {
-                        text: prev,
-                        finish_reason: None,
-                    }) {
-                        crate::security::secure_zero_string(text);
-                        return Err(err);
+                // Phase 1: set up the async generator and collect all chunks
+                // in Python. We can't iterate a Python async generator from
+                // Rust's synchronous GIL context, so we collect into a list
+                // via asyncio.run().
+                let code = CString::new(
+                    r#"
+import asyncio, builtins, json, uuid, time, traceback as _tb
+try:
+    engine = builtins._eigeninference_vllm_engines[engine_key]
+    _req = json.loads(request_json)
+    _messages = _req.get('messages', [])
+    _max_tokens = int(_req.get('max_tokens', 256))
+    _temperature = float(_req.get('temperature', 0.7))
+    _top_p = float(_req.get('top_p', 0.9))
+    _stop = _req.get('stop', None)
+    _tools = _req.get('tools', None)
+    _model_name = _req.get('model', 'unknown')
+    _response_format = _req.get('response_format', None)
+    _chat_kwargs = dict(
+        messages=_messages,
+        max_tokens=_max_tokens,
+        temperature=_temperature,
+        top_p=_top_p,
+    )
+    if _tools:
+        from vllm_mlx.api.tool_calling import convert_tools_for_template
+        from vllm_mlx.api.models import ToolDefinition
+        _chat_kwargs['tools'] = convert_tools_for_template(
+            [ToolDefinition(**t) for t in _tools]
+        )
+    if _response_format:
+        from vllm_mlx.api.tool_calling import build_json_system_prompt
+        _json_instr = build_json_system_prompt(_response_format)
+        if _json_instr:
+            _msgs = list(_messages)
+            _sys_idx = None
+            for _i, _m in enumerate(_msgs):
+                if _m.get('role') == 'system':
+                    _sys_idx = _i
+                    break
+            if _sys_idx is not None:
+                _msgs[_sys_idx] = dict(_msgs[_sys_idx])
+                _msgs[_sys_idx]['content'] = (_msgs[_sys_idx].get('content', '') or '') + '\n\n' + _json_instr
+            else:
+                _msgs.insert(0, {'role': 'system', 'content': _json_instr})
+            _chat_kwargs['messages'] = _msgs
+    if _stop:
+        _chat_kwargs['stop'] = _stop
+    import re
+    _SPECIAL_TOKENS = re.compile(r'<\|(?:im_start|im_end|endoftext|end_of_turn|eot_id|end_header_id|start_header_id|finetune_right_pad_id)\|>')
+    _response_id = f'chatcmpl-{uuid.uuid4().hex[:8]}'
+    _created = int(time.time())
+    _chunks = []
+    _prompt_tokens = 0
+    _completion_tokens = 0
+    async def _collect():
+        nonlocal _prompt_tokens, _completion_tokens
+        async for _out in engine.stream_chat(**_chat_kwargs):
+            _delta = _out.new_text
+            if hasattr(_out, 'prompt_tokens') and _out.prompt_tokens:
+                _prompt_tokens = _out.prompt_tokens
+            if hasattr(_out, 'completion_tokens') and _out.completion_tokens:
+                _completion_tokens = _out.completion_tokens
+            if _delta:
+                _content = _SPECIAL_TOKENS.sub('', _delta)
+                if _content:
+                    _finish = _out.finish_reason if _out.finished else None
+                    _chunk = {
+                        'id': _response_id,
+                        'object': 'chat.completion.chunk',
+                        'created': _created,
+                        'model': _model_name,
+                        'choices': [{
+                            'index': 0,
+                            'delta': {'content': _content},
+                            'finish_reason': _finish,
+                        }],
                     }
-                    completion_tokens += 1;
+                    _chunks.append(json.dumps(_chunk))
+            elif _out.finished:
+                _chunk = {
+                    'id': _response_id,
+                    'object': 'chat.completion.chunk',
+                    'created': _created,
+                    'model': _model_name,
+                    'choices': [{
+                        'index': 0,
+                        'delta': {},
+                        'finish_reason': _out.finish_reason or 'stop',
+                    }],
                 }
-                pending_text = Some(text);
-                Ok(())
-            };
+                _chunks.append(json.dumps(_chunk))
+    asyncio.run(_collect())
+    _stream_chunks = _chunks
+    _stream_prompt_tokens = _prompt_tokens
+    _stream_completion_tokens = _completion_tokens
+except Exception as _e:
+    _err_detail = _tb.format_exc()
+    raise RuntimeError(f"stream generate failed: {_err_detail}") from _e
+"#,
+                )
+                .unwrap();
+                py.run(code.as_c_str(), None, Some(&locals))
+                    .context("vllm-mlx stream_chat failed")?;
 
-            let stream_result: Result<()> = match self.engine_type {
-                EngineType::MlxLm => {
-                    let mlx_lm = py.import("mlx_lm").context("failed to import mlx_lm")?;
-                    let builtins = py.import("builtins").context("failed to import builtins")?;
-                    let engines = builtins
-                        .getattr(MLX_ENGINE_STORE)
-                        .context("mlx-lm engine store not initialized")?;
-                    let entry = engines
-                        .get_item(self.cache_key.as_str())
-                        .context("mlx-lm engine not loaded for model")?;
-                    let (model, tokenizer): (PyObject, PyObject) = entry.extract()?;
+                let chunks: Vec<String> = locals
+                    .get_item("_stream_chunks")?
+                    .ok_or_else(|| anyhow::anyhow!("no stream chunks"))?
+                    .extract()?;
+                let prompt_tokens: u64 = locals
+                    .get_item("_stream_prompt_tokens")?
+                    .ok_or_else(|| anyhow::anyhow!("no prompt tokens"))?
+                    .extract()?;
+                let completion_tokens: u64 = locals
+                    .get_item("_stream_completion_tokens")?
+                    .ok_or_else(|| anyhow::anyhow!("no completion tokens"))?
+                    .extract()?;
 
-                    let kwargs = PyDict::new(py);
-                    kwargs.set_item("prompt", prompt.as_str())?;
-                    kwargs.set_item("max_tokens", max_tokens)?;
-                    let generator = mlx_lm
-                        .call_method("stream_generate", (model, tokenizer), Some(&kwargs))
-                        .context("mlx-lm stream_generate call failed")?;
-
-                    for token in generator.try_iter().context("mlx-lm stream not iterable")? {
-                        let text: String = token?
-                            .extract()
-                            .context("failed to extract mlx-lm streamed text")?;
-                        emit_token(text)?;
-                    }
-                    Ok(())
+                // Deliver chunks to the callback
+                let num_chunks = chunks.len();
+                for (i, chunk_json) in chunks.into_iter().enumerate() {
+                    let is_last = i == num_chunks - 1;
+                    let sse_line = format!("data: {}", chunk_json);
+                    on_token(StreamToken {
+                        text: sse_line,
+                        finish_reason: if is_last {
+                            Some("stop".to_string())
+                        } else {
+                            None
+                        },
+                    })?;
                 }
-                EngineType::VllmMlx => unreachable!("vllm-mlx streaming is rejected above"),
-            };
 
-            crate::security::secure_zero_string(std::mem::take(&mut prompt));
-            stream_result?;
-
-            if let Some(text) = pending_text.take() {
-                on_token(StreamToken {
-                    text,
-                    finish_reason: Some("stop".to_string()),
-                })?;
-                completion_tokens += 1;
-            }
-
-            Ok((0, completion_tokens))
+                Ok((prompt_tokens, completion_tokens))
+            })();
+            crate::security::secure_zero_string(std::mem::take(&mut request_json));
+            result
         })
     }
 
@@ -627,19 +704,6 @@ except Exception as _e:
     pub fn model_id(&self) -> &str {
         &self.model_id
     }
-}
-
-/// Format chat messages into a prompt string.
-/// Follows the ChatML-style format that most models expect.
-fn format_chat_prompt(messages: &[serde_json::Value]) -> String {
-    let mut prompt = String::new();
-    for msg in messages {
-        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("user");
-        let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
-        prompt.push_str(&format!("<|im_start|>{role}\n{content}<|im_end|>\n"));
-    }
-    prompt.push_str("<|im_start|>assistant\n");
-    prompt
 }
 
 /// Thread-safe wrapper around InProcessEngine for use with tokio.
@@ -668,41 +732,31 @@ impl SharedEngine {
         .await?
     }
 
-    /// Run non-streaming inference.
-    pub async fn generate(
-        &self,
-        messages: Vec<serde_json::Value>,
-        max_tokens: u64,
-        temperature: f64,
-    ) -> Result<InferenceResult> {
+    /// Run non-streaming inference. Takes the full request body JSON
+    /// and returns a complete OpenAI-compatible response.
+    pub async fn generate(&self, mut request_body: serde_json::Value) -> Result<InferenceResult> {
         let engine = self.inner.clone();
         tokio::task::spawn_blocking(move || {
-            let mut messages = messages;
             let e = engine.blocking_lock();
-            let result = e.generate(&messages, max_tokens, temperature);
-            for message in &mut messages {
-                crate::security::secure_zero_json_value(message);
-            }
+            let result = e.generate(&request_body);
+            crate::security::secure_zero_json_value(&mut request_body);
             result
         })
         .await?
     }
 
-    /// Streaming inference with a channel: sends each token through the channel
-    /// as it's generated so the caller can encrypt-and-zeroize immediately.
-    /// Only one plaintext token exists in Rust memory at a time.
+    /// Streaming inference with a channel: sends each SSE chunk through
+    /// the channel as it's generated so the caller can encrypt-and-zeroize
+    /// immediately. Each chunk is a complete `data: {...}` SSE line.
     pub fn stream_generate_channel(
         &self,
-        messages: Vec<serde_json::Value>,
-        max_tokens: u64,
-        temperature: f64,
+        mut request_body: serde_json::Value,
         token_tx: tokio::sync::mpsc::Sender<StreamToken>,
     ) -> tokio::task::JoinHandle<Result<(u64, u64)>> {
         let engine = self.inner.clone();
         tokio::task::spawn_blocking(move || {
-            let mut messages = messages;
             let e = engine.blocking_lock();
-            let result = e.stream_generate(&messages, max_tokens, temperature, |token| {
+            let result = e.stream_generate(&request_body, |token| {
                 if let Err(err) = token_tx.blocking_send(token) {
                     let mut token = err.0;
                     crate::security::secure_zero_string(std::mem::take(&mut token.text));
@@ -710,9 +764,7 @@ impl SharedEngine {
                 }
                 Ok(())
             });
-            for message in &mut messages {
-                crate::security::secure_zero_json_value(message);
-            }
+            crate::security::secure_zero_json_value(&mut request_body);
             let (prompt_tokens, completion_tokens) = result?;
             Ok((prompt_tokens, completion_tokens))
         })
@@ -767,64 +819,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_format_chat_prompt_single_message() {
-        let messages = vec![serde_json::json!({"role": "user", "content": "hello"})];
-        let prompt = format_chat_prompt(&messages);
-        assert!(prompt.contains("<|im_start|>user"));
-        assert!(prompt.contains("hello"));
-        assert!(prompt.ends_with("<|im_start|>assistant\n"));
-    }
-
-    #[test]
-    fn test_format_chat_prompt_multi_turn() {
-        let messages = vec![
-            serde_json::json!({"role": "system", "content": "You are helpful."}),
-            serde_json::json!({"role": "user", "content": "What is 2+2?"}),
-            serde_json::json!({"role": "assistant", "content": "4"}),
-            serde_json::json!({"role": "user", "content": "And 3+3?"}),
-        ];
-        let prompt = format_chat_prompt(&messages);
-        assert!(prompt.contains("<|im_start|>system"));
-        assert!(prompt.contains("You are helpful."));
-        assert!(prompt.contains("<|im_start|>user"));
-        assert!(prompt.contains("What is 2+2?"));
-        assert!(prompt.contains("<|im_start|>assistant"));
-        assert!(prompt.contains("4<|im_end|>"));
-        assert!(prompt.contains("And 3+3?"));
-    }
-
-    #[test]
-    fn test_format_chat_prompt_empty() {
-        let messages: Vec<serde_json::Value> = vec![];
-        let prompt = format_chat_prompt(&messages);
-        assert_eq!(prompt, "<|im_start|>assistant\n");
-    }
-
-    #[test]
     fn test_engine_not_loaded() {
         let engine = InProcessEngine::new("test-model".to_string());
         assert!(!engine.is_loaded());
         assert_eq!(engine.model_id(), "test-model");
 
-        let result = engine.generate(&[], 100, 0.7);
+        let body = serde_json::json!({
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 100,
+            "temperature": 0.7,
+        });
+        let result = engine.generate(&body);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not loaded"));
     }
 
     #[test]
-    fn test_streaming_rejects_buffered_vllm_engine() {
-        let engine = InProcessEngine {
-            model_id: "test-model".to_string(),
-            cache_key: "cache-key".to_string(),
-            engine_type: EngineType::VllmMlx,
-            loaded: true,
-        };
+    fn test_stream_not_loaded() {
+        let engine = InProcessEngine::new("test-model".to_string());
 
+        let body = serde_json::json!({
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 16,
+            "stream": true,
+        });
         let err = engine
-            .stream_generate(&[], 16, 0.7, |_token| Ok(()))
-            .expect_err("vllm-mlx streaming should fail closed");
+            .stream_generate(&body, |_token| Ok(()))
+            .expect_err("should fail when not loaded");
         assert!(
-            err.to_string().contains("requires mlx-lm"),
+            err.to_string().contains("not loaded"),
             "unexpected error: {err}"
         );
     }
@@ -953,17 +976,15 @@ if hasattr(builtins, '_eigeninference_original_import'):
 
     #[test]
     fn test_detect_engine_graceful_failure() {
-        // This will fail if neither vllm-mlx nor mlx-lm is installed,
+        // This will fail if vllm-mlx is not installed,
         // which is expected in test environments without MLX.
         let result = InProcessEngine::detect_engine();
-        // Either succeeds (MLX installed) or fails gracefully with an error
+        // Either succeeds (vllm-mlx installed) or fails gracefully
         match result {
-            Ok(engine_type) => {
-                // MLX is installed — great
-                println!("Detected engine: {:?}", engine_type);
+            Ok(()) => {
+                println!("Detected engine: vllm-mlx");
             }
             Err(e) => {
-                // Expected when MLX packages aren't installed
                 let msg = e.to_string();
                 assert!(
                     msg.contains("approved Python runtime roots")

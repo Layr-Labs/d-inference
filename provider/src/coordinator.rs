@@ -24,9 +24,7 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::backend::ExponentialBackoff;
 use crate::hardware::HardwareInfo;
 use crate::models::ModelInfo;
-use crate::protocol::{
-    CoordinatorMessage, ProviderMessage, ProviderStats, ProviderStatus,
-};
+use crate::protocol::{CoordinatorMessage, ProviderMessage, ProviderStats, ProviderStatus};
 use crate::security::RuntimeHashes;
 
 /// Thread-safe counters for provider statistics, shared between the main
@@ -288,16 +286,16 @@ impl CoordinatorClient {
         let (mut write, mut read) = ws_stream.split();
 
         // Send registration message
-        let (python_hash, runtime_hash, template_hashes) =
-            if let Some(ref rh) = self.runtime_hashes {
-                (
-                    rh.python_hash.clone(),
-                    rh.runtime_hash.clone(),
-                    rh.template_hashes.clone(),
-                )
-            } else {
-                (None, None, std::collections::HashMap::new())
-            };
+        let (python_hash, runtime_hash, template_hashes) = if let Some(ref rh) = self.runtime_hashes
+        {
+            (
+                rh.python_hash.clone(),
+                rh.runtime_hash.clone(),
+                rh.template_hashes.clone(),
+            )
+        } else {
+            (None, None, std::collections::HashMap::new())
+        };
         let privacy_caps = crate::protocol::PrivacyCapabilities {
             text_backend_inprocess: true,
             text_proxy_disabled: true,
@@ -625,16 +623,15 @@ pub fn handle_attestation_challenge(
         );
     }
 
-    let (python_hash, rt_hash, template_hashes) =
-        if let Some(rh) = runtime_hashes {
-            (
-                rh.python_hash.clone(),
-                rh.runtime_hash.clone(),
-                rh.template_hashes.clone(),
-            )
-        } else {
-            (None, None, std::collections::HashMap::new())
-        };
+    let (python_hash, rt_hash, template_hashes) = if let Some(rh) = runtime_hashes {
+        (
+            rh.python_hash.clone(),
+            rh.runtime_hash.clone(),
+            rh.template_hashes.clone(),
+        )
+    } else {
+        (None, None, std::collections::HashMap::new())
+    };
 
     ProviderMessage::AttestationResponse {
         nonce: nonce.to_string(),

@@ -185,12 +185,7 @@ pub fn install_and_start(
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
 
-    write_plist(
-        &binary_path,
-        coordinator_url,
-        models,
-        idle_timeout,
-    )?;
+    write_plist(&binary_path, coordinator_url, models, idle_timeout)?;
     load_service().context("Failed to load launchd service")?;
 
     Ok(())

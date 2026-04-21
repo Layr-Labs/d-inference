@@ -273,11 +273,6 @@ for _name in (
 
     fn try_detect_engine() -> Result<EngineType> {
         Python::with_gil(|py| {
-            if let Err(e) = Self::lock_python_path(py) {
-                tracing::warn!("Python path lock failed (defense-in-depth): {e:#}");
-                tracing::warn!("Proceeding without path lock — PYTHONNOUSERSITE still active");
-            }
-
             if py.import("vllm_mlx").is_ok() {
                 tracing::info!("In-process engine: vllm-mlx detected");
                 return Ok(EngineType::VllmMlx);
@@ -305,10 +300,12 @@ for _name in (
                 EngineType::VllmMlx => self.load_vllm_mlx(py)?,
                 EngineType::MlxLm => self.load_mlx_lm(py)?,
             }
-            // Block dangerous modules AFTER the engine loads. The engine needs
-            // socket/multiprocessing during initialization (worker pools, etc.)
-            // but inference itself doesn't. This prevents injected code from
-            // using these modules to exfiltrate data during serving.
+            // Lock path and block dangerous modules AFTER the engine loads.
+            // The engine needs full sys.path + socket/multiprocessing during
+            // initialization. Once loaded, we lock down for the serving phase.
+            if let Err(e) = Self::lock_python_path(py) {
+                tracing::warn!("Python path lock failed (defense-in-depth): {e:#}");
+            }
             if let Err(e) = Self::block_dangerous_modules(py) {
                 tracing::warn!("Failed to block dangerous modules: {e:#}");
             }

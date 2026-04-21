@@ -561,19 +561,43 @@ pub fn compute_runtime_hashes(python_cmd: &str) -> RuntimeHashes {
         .filter(|lib_dir| lib_dir.exists())
         .and_then(|lib_dir| {
             purge_pycache(&lib_dir);
-            let mut runtime_files = Vec::new();
-            collect_files_recursive(&lib_dir, "*", &mut runtime_files);
-            runtime_files
-                .retain(|path| path.extension().and_then(|ext| ext.to_str()) != Some("pyc"));
-            // Sort by string representation to match Python's str sort order.
-            // PathBuf::cmp uses OS-specific ordering which can differ from
-            // Python's os.path lexicographic sort on certain characters.
-            runtime_files.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
-            if runtime_files.is_empty() {
-                None
-            } else {
-                hash_files_sorted(&runtime_files)
-            }
+            // Use the same Python hashing logic as CI (release.yml) to guarantee
+            // identical results. Rust's file walk differs from Python's os.walk
+            // in symlink handling and sort order, causing hash mismatches.
+            let script = format!(
+                r#"
+import hashlib, os, sys
+d = sys.argv[1]
+files = []
+for r, dirs, fs in os.walk(d):
+    dirs[:] = [name for name in dirs if name != '__pycache__']
+    for f in fs:
+        if f.endswith('.pyc'):
+            continue
+        files.append(os.path.join(r, f))
+files.sort()
+final = hashlib.sha256()
+for path in files:
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        while True:
+            chunk = fh.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    final.update(h.digest())
+print(final.hexdigest())
+"#
+            );
+            std::process::Command::new(python_cmd)
+                .args(["-c", &script, &lib_dir.to_string_lossy()])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| {
+                    let h = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if h.len() == 64 { Some(h) } else { None }
+                })
         });
 
     // Hash templates in ~/.darkbloom/templates/

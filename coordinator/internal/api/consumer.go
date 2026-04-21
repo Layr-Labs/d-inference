@@ -1152,6 +1152,38 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleRevokeKey handles DELETE /v1/auth/keys — revokes an API key.
+// The caller must own the key (same account). Requires Privy auth so a
+// compromised API key cannot revoke legitimate keys.
+func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
+		return
+	}
+
+	var body struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", "provide {\"key\": \"eigeninference-...\"}"))
+		return
+	}
+
+	owner := s.store.GetKeyAccount(body.Key)
+	if owner != user.AccountID {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "you can only revoke your own keys"))
+		return
+	}
+
+	if !s.store.RevokeKey(body.Key) {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "key not found or already revoked"))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked"})
+}
+
 // handleHealth handles GET /health.
 // Returns the coordinator's status and the number of connected providers.
 // This endpoint does not require authentication.

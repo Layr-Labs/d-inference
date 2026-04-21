@@ -191,8 +191,12 @@ func TestCORSHeaders(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
-	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
-		t.Errorf("CORS origin = %q, want *", w.Header().Get("Access-Control-Allow-Origin"))
+	origin := w.Header().Get("Access-Control-Allow-Origin")
+	if origin == "*" {
+		t.Errorf("CORS origin must not be wildcard, got %q", origin)
+	}
+	if origin == "" {
+		t.Errorf("CORS origin header missing")
 	}
 }
 

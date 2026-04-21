@@ -6,9 +6,10 @@ export const dynamic = "force-dynamic";
 
 const SEALED_CT = "application/eigeninference-sealed+json";
 
+const COORD_URL = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
+
 export async function POST(req: NextRequest) {
-  const defaultCoord = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
-  const coordUrl = req.headers.get("x-coordinator-url") || defaultCoord;
+  const coordUrl = COORD_URL;
   const apiKey = req.headers.get("x-api-key") || "";
   const incomingCt = req.headers.get("content-type") || "application/json";
   const isSealed = incomingCt.toLowerCase().startsWith(SEALED_CT);

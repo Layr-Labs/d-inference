@@ -67,7 +67,7 @@ describe("fetchBalance", () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/payments/balance");
     expect(opts.headers["Content-Type"]).toBe("application/json");
-    expect(opts.headers["x-coordinator-url"]).toBeDefined();
+    expect(opts.headers["x-api-key"]).toBeDefined();
     expect(result).toEqual(payload);
   });
 
@@ -292,12 +292,12 @@ describe("healthCheck", () => {
 // ---------------------------------------------------------------------------
 
 describe("proxy headers", () => {
-  it("includes x-coordinator-url defaulting to public coordinator", async () => {
+  it("does not include x-coordinator-url (server-side only)", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ balance_micro_usd: 0, balance_usd: 0 }));
     await fetchBalance();
 
     const [, opts] = fetchMock.mock.calls[0];
-    expect(opts.headers["x-coordinator-url"]).toContain("darkbloom.dev");
+    expect(opts.headers["x-coordinator-url"]).toBeUndefined();
   });
 
   it("includes x-api-key when set in localStorage", async () => {

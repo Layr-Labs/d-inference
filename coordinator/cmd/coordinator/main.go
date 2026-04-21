@@ -111,6 +111,12 @@ func main() {
 		logger.Info("console URL configured", "url", consoleURL)
 	}
 
+	// CORS origin — restrict cross-origin access to the console domain.
+	if corsOrigin := os.Getenv("CORS_ORIGIN"); corsOrigin != "" {
+		srv.SetCORSOrigin(corsOrigin)
+		logger.Info("CORS origin configured", "origin", corsOrigin)
+	}
+
 	// Base URL — this coordinator's public origin (e.g. https://api.dev.darkbloom.xyz).
 	// Templated into the embedded install.sh at serve time so a single binary
 	// can serve both prod and dev. Falls back to the request's Host header if unset.

@@ -351,7 +351,7 @@ func TestSecurity_AuthBypass(t *testing.T) {
 			method:     http.MethodPost,
 			authHeader: "Bearer invalid-key",
 			body:       `{"user_code":"ABCD-1234"}`,
-			wantStatus: http.StatusUnauthorized,
+			wantStatus: http.StatusForbidden,
 		},
 		{
 			name:       "withdraw_no_auth",

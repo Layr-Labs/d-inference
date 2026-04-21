@@ -109,7 +109,6 @@ export async function getCoordinatorKey(force = false): Promise<CoordinatorKey> 
   const res = await fetch("/api/encryption-key", {
     method: "GET",
     cache: "no-store",
-    headers: { "x-coordinator-url": coordUrl },
   });
   if (res.status === 503) {
     throw new Error(

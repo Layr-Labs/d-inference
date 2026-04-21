@@ -114,6 +114,10 @@ type Server struct {
 	// Prod historically uses a second bucket; dev can reuse r2CDNURL.
 	r2SitePackagesCDNURL string
 
+	// corsOrigin is the allowed CORS origin (e.g. "https://console.darkbloom.dev").
+	// Set from CORS_ORIGIN env var. Empty defaults to the production console domain.
+	corsOrigin string
+
 	// storedProviders is a lookup table of persisted provider records, indexed
 	// by serial number and SE public key. When a provider reconnects after a
 	// coordinator restart, this table is checked to restore trust/reputation.
@@ -247,6 +251,11 @@ func (s *Server) AddKnownBinaryHashes(hashes []string) {
 // SetConsoleURL sets the frontend URL for device auth verification links.
 func (s *Server) SetConsoleURL(url string) {
 	s.consoleURL = url
+}
+
+// SetCORSOrigin configures the allowed CORS origin.
+func (s *Server) SetCORSOrigin(origin string) {
+	s.corsOrigin = origin
 }
 
 // SetReleaseKey configures the scoped release key for GitHub Actions.
@@ -587,8 +596,10 @@ func (s *Server) routes() {
 	// Provider WebSocket — no API key auth (providers authenticate differently).
 	s.mux.HandleFunc("GET /ws/provider", s.handleProviderWS)
 
-	// Key generation — requires Privy auth, key is linked to account.
-	s.mux.HandleFunc("POST /v1/auth/keys", s.requireAuth(s.handleCreateKey))
+	// Key management — requires interactive Privy session (API keys rejected
+	// to prevent self-replication from a leaked key).
+	s.mux.HandleFunc("POST /v1/auth/keys", s.requirePrivyAuth(s.handleCreateKey))
+	s.mux.HandleFunc("DELETE /v1/auth/keys", s.requirePrivyAuth(s.handleRevokeKey))
 
 	// Consumer endpoints — API key auth required.
 	// Inference endpoints are wrapped in sealedTransport so senders can opt into
@@ -640,7 +651,7 @@ func (s *Server) routes() {
 	// Device authorization flow — providers link to user accounts.
 	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)                      // no auth — provider not yet authenticated
 	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)                    // no auth — polls with device_code secret
-	s.mux.HandleFunc("POST /v1/device/approve", s.requireAuth(s.handleDeviceApprove)) // Privy auth — user approves in browser
+	s.mux.HandleFunc("POST /v1/device/approve", s.requirePrivyAuth(s.handleDeviceApprove)) // interactive session only — API keys rejected
 
 	// --- Billing endpoints (multi-chain payments + referrals) ---
 
@@ -759,13 +770,52 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// corsMiddleware adds permissive CORS headers for development.
-// In production, this should be restricted to the actual frontend origin.
+// requirePrivyAuth wraps a handler requiring a Privy JWT session. Unlike
+// requireAuth, API keys are rejected. Use for sensitive account operations
+// (key creation, device approval) that must not be triggerable by a leaked
+// API key.
+func (s *Server) requirePrivyAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := extractBearerToken(r)
+		if token == "" {
+			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing credentials"))
+			return
+		}
+		if s.privyAuth == nil || !strings.HasPrefix(token, "eyJ") {
+			writeJSON(w, http.StatusForbidden, errorResponse("forbidden",
+				"this endpoint requires an interactive session — API keys are not accepted"))
+			return
+		}
+		privyUserID, err := s.privyAuth.VerifyToken(token)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "invalid Privy token"))
+			return
+		}
+		user, err := s.privyAuth.GetOrCreateUser(privyUserID)
+		if err != nil {
+			s.logger.Error("privy: user resolution failed", "error", err)
+			writeJSON(w, http.StatusInternalServerError, errorResponse("auth_error", "failed to resolve user"))
+			return
+		}
+		ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
+		ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+// corsMiddleware sets CORS headers. The allowed origin is derived from the
+// CORS_ORIGIN environment variable; if unset it defaults to the production
+// console domain. Wildcard (*) is never used in production.
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
+	origin := s.corsOrigin
+	if origin == "" {
+		origin = "https://console.darkbloom.dev"
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

@@ -1,6 +1,7 @@
 // All requests go through Next.js API routes (/api/*) to avoid CORS.
-// The coordinator URL and API key are passed as custom headers so the
-// server-side route can forward them to the upstream coordinator.
+// The API key is passed as a custom header so the server-side route can
+// forward it to the upstream coordinator. The coordinator URL is resolved
+// server-side from NEXT_PUBLIC_COORDINATOR_URL — never from client input.
 
 import {
   SEALED_CONTENT_TYPE,
@@ -12,24 +13,15 @@ import {
   unsealSseEvent,
 } from "./encryption";
 
-const DEFAULT_COORDINATOR =
-  process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
-
-const getConfig = () => {
-  if (typeof window === "undefined") return { apiKey: "", baseUrl: DEFAULT_COORDINATOR };
-  return {
-    apiKey: localStorage.getItem("darkbloom_api_key") || "",
-    baseUrl:
-      localStorage.getItem("darkbloom_coordinator_url") || DEFAULT_COORDINATOR,
-  };
+const getApiKey = () => {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem("darkbloom_api_key") || "";
 };
 
-/** Headers that tell our API proxy where to forward and how to auth. */
 function proxyHeaders(extra?: Record<string, string>): Record<string, string> {
-  const { apiKey, baseUrl } = getConfig();
+  const apiKey = getApiKey();
   return {
     "Content-Type": "application/json",
-    "x-coordinator-url": baseUrl,
     ...(apiKey ? { "x-api-key": apiKey } : {}),
     ...extra,
   };

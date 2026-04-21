@@ -126,7 +126,7 @@ describe("encryption — coordinator key fetch + cache", () => {
     vi.restoreAllMocks();
   });
 
-  it("fetches the published key, caches per coordinator URL, and forwards x-coordinator-url", async () => {
+  it("fetches the published key, caches per coordinator URL, and does NOT forward x-coordinator-url", async () => {
     const fakePub = new Uint8Array(32).fill(7);
     const pubB64 = btoa(String.fromCharCode(...fakePub));
     const fetchMock = vi.fn().mockResolvedValue({
@@ -142,18 +142,17 @@ describe("encryption — coordinator key fetch + cache", () => {
     expect(k1.publicKey).toEqual(fakePub);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    // Codex review: the proxy must receive the user-selected coordinator URL,
-    // otherwise it forwards to the default and we cache the wrong key.
+    // SSRF fix: x-coordinator-url must NOT be sent to the proxy.
     const initArg = fetchMock.mock.calls[0][1] as RequestInit;
-    const headers = initArg.headers as Record<string, string>;
-    expect(headers["x-coordinator-url"]).toBe("https://coord-a.example");
+    const headers = initArg.headers as Record<string, string> | undefined;
+    expect(headers?.["x-coordinator-url"]).toBeUndefined();
 
     // Second call to the same URL hits cache.
     const k2 = await getCoordinatorKey();
     expect(k2.kid).toBe("abcd1234abcd1234");
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    // Switching coordinators MUST trigger a fresh fetch (cache is per-URL).
+    // Switching coordinators triggers a fresh fetch (cache is per-URL).
     fetchMock.mockResolvedValueOnce({
       ok: true,
       status: 200,
@@ -163,9 +162,6 @@ describe("encryption — coordinator key fetch + cache", () => {
     const k3 = await getCoordinatorKey();
     expect(k3.kid).toBe("ffff0000ffff0000");
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    const initArg2 = fetchMock.mock.calls[1][1] as RequestInit;
-    const headers2 = initArg2.headers as Record<string, string>;
-    expect(headers2["x-coordinator-url"]).toBe("https://coord-b.example");
 
     clearCoordinatorKeyCache();
     await getCoordinatorKey();

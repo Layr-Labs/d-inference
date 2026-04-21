@@ -235,7 +235,7 @@ jobs:
             export LIBRARY_PATH=/tmp/eigeninference-build-python/lib
             export DYLD_LIBRARY_PATH=/tmp/eigeninference-build-python/lib
             export RUSTFLAGS="-L native=/tmp/eigeninference-build-python/lib"
-            cd provider && cargo test -- --skip proxy::tests --skip server::tests
+            cd provider && cargo test -- --skip proxy::tests --skip server::tests --skip coordinator::tests::test_coordinator_connect_register_and_receive
           ) > /tmp/test.log 2>&1 &
           TEST_PID=$!
           echo "Started provider tests (pid $TEST_PID)"

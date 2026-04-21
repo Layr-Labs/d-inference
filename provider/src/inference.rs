@@ -300,14 +300,13 @@ for _name in (
                 EngineType::VllmMlx => self.load_vllm_mlx(py)?,
                 EngineType::MlxLm => self.load_mlx_lm(py)?,
             }
-            // Lock path and block dangerous modules AFTER the engine loads.
-            // The engine needs full sys.path + socket/multiprocessing during
-            // initialization. Once loaded, we lock down for the serving phase.
+            // Lock sys.path to approved runtime roots. This is the primary
+            // defense — prevents loading code from provider-controlled paths.
+            // We do NOT block socket/subprocess/ctypes because vllm-mlx uses
+            // them internally (requests library, lazy model loading, etc.).
+            // The path lock + PYTHONNOUSERSITE + SIP is sufficient.
             if let Err(e) = Self::lock_python_path(py) {
                 tracing::warn!("Python path lock failed (defense-in-depth): {e:#}");
-            }
-            if let Err(e) = Self::block_dangerous_modules(py) {
-                tracing::warn!("Failed to block dangerous modules: {e:#}");
             }
             Ok(())
         })?;

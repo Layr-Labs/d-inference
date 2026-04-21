@@ -996,8 +996,8 @@ mod tests {
 
     #[test]
     fn test_compute_response_attestation_changes_with_response_body() {
-        let (hash_a, _) = compute_response_attestation("req-1", 7, "alpha");
-        let (hash_b, _) = compute_response_attestation("req-1", 7, "beta");
+        let (hash_a, _) = compute_response_attestation(None, "req-1", 7, "alpha");
+        let (hash_b, _) = compute_response_attestation(None, "req-1", 7, "beta");
 
         assert_ne!(
             hash_a, hash_b,
@@ -1006,34 +1006,15 @@ mod tests {
     }
 }
 
-/// Sign data with the Secure Enclave key via eigeninference-enclave CLI.
-/// Returns the base64-encoded DER ECDSA signature.
-pub fn se_sign(data: &[u8]) -> Option<String> {
-    let eigeninference_dir = dirs::home_dir()?.join(".darkbloom");
-    let enclave_bin = eigeninference_dir.join("bin/eigeninference-enclave");
-
-    if !enclave_bin.exists() {
-        return None;
-    }
-
-    // Write data to a temp file (eigeninference-enclave reads from stdin)
-    let data_b64 = base64::engine::general_purpose::STANDARD.encode(data);
-
-    let output = Command::new(&enclave_bin)
-        .args(["sign", "--data", &data_b64])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let sig = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if sig.is_empty() {
-        return None;
-    }
-
-    Some(sig)
+/// Sign data with the in-process Secure Enclave handle.
+///
+/// Returns the base64-encoded DER ECDSA signature, or None if no handle
+/// is available (e.g. running on a platform without Secure Enclave).
+pub fn se_sign(
+    handle: Option<&crate::secure_enclave_key::SecureEnclaveHandle>,
+    data: &[u8],
+) -> Option<String> {
+    handle.and_then(|h| h.sign(data).ok())
 }
 
 /// Compute SHA-256 hash of data, return as hex string.
@@ -1042,12 +1023,13 @@ pub fn sha256_hex(data: &[u8]) -> String {
 }
 
 pub fn compute_response_attestation(
+    se_handle: Option<&crate::secure_enclave_key::SecureEnclaveHandle>,
     request_id: &str,
     completion_tokens: u64,
     response_body: &str,
 ) -> (String, Option<String>) {
     let sign_data = format!("{request_id}:{completion_tokens}:{response_body}");
     let response_hash = sha256_hex(sign_data.as_bytes());
-    let se_signature = se_sign(response_hash.as_bytes());
+    let se_signature = se_sign(se_handle, response_hash.as_bytes());
     (response_hash, se_signature)
 }

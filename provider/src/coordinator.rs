@@ -99,6 +99,8 @@ pub struct CoordinatorClient {
     model_hashes: std::collections::HashMap<String, String>,
     /// Live backend capacity data (updated by main loop, read by heartbeat tick).
     backend_capacity: Arc<std::sync::Mutex<Option<crate::protocol::BackendCapacity>>>,
+    /// Ephemeral Secure Enclave handle for challenge-response signing.
+    se_handle: Option<Arc<crate::secure_enclave_key::SecureEnclaveHandle>>,
 }
 
 impl CoordinatorClient {
@@ -131,6 +133,7 @@ impl CoordinatorClient {
             runtime_hash_command: None,
             model_hashes: std::collections::HashMap::new(),
             backend_capacity: Arc::new(std::sync::Mutex::new(None)),
+            se_handle: None,
         }
     }
 
@@ -200,6 +203,15 @@ impl CoordinatorClient {
     /// Set the Python interpreter used to recompute runtime hashes at challenge time.
     pub fn with_runtime_hash_command(mut self, python_cmd: Option<String>) -> Self {
         self.runtime_hash_command = python_cmd;
+        self
+    }
+
+    /// Set the ephemeral Secure Enclave handle for challenge-response signing.
+    pub fn with_se_handle(
+        mut self,
+        handle: Option<Arc<crate::secure_enclave_key::SecureEnclaveHandle>>,
+    ) -> Self {
+        self.se_handle = handle;
         self
     }
 
@@ -454,6 +466,7 @@ impl CoordinatorClient {
                                             .as_ref()
                                             .or(self.runtime_hashes.as_ref()),
                                         self.model_hashes.clone(),
+                                        self.se_handle.as_deref(),
                                     );
                                     let json = serde_json::to_string(&response)
                                         .unwrap_or_default();
@@ -574,15 +587,12 @@ pub fn handle_attestation_challenge(
     current_model_hash: Option<&str>,
     runtime_hashes: Option<&RuntimeHashes>,
     model_hashes: std::collections::HashMap<String, String>,
+    se_handle: Option<&crate::secure_enclave_key::SecureEnclaveHandle>,
 ) -> ProviderMessage {
     let data = format!("{}{}", nonce, timestamp);
 
-    // Sign the challenge data (nonce + timestamp) with the Secure Enclave
-    // P-256 key via the eigeninference-enclave CLI tool. The coordinator
-    // verifies this signature using the provider's SE public key from the
-    // attestation blob, proving the same hardware is still responding.
     let pk_str = public_key.unwrap_or("");
-    let signature = match crate::security::se_sign(data.as_bytes()) {
+    let signature = match crate::security::se_sign(se_handle, data.as_bytes()) {
         Some(sig) => sig,
         None => {
             tracing::warn!(
@@ -751,6 +761,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         match response {
@@ -780,6 +791,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         match response {
@@ -808,6 +820,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
         let resp2 = handle_attestation_challenge(
             "bm9uY2U=",
@@ -816,6 +829,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         // Same inputs should produce same output (deterministic).
@@ -837,6 +851,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
         let resp2 = handle_attestation_challenge(
             "bm9uY2Uy",
@@ -845,6 +860,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         // The nonce fields must differ.
@@ -868,6 +884,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"type\":\"attestation_response\""));
@@ -1020,6 +1037,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         match response {
@@ -1072,6 +1090,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         match response {
@@ -1092,6 +1111,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         match response {
@@ -1115,6 +1135,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
         let resp2 = handle_attestation_challenge(
             "bm9uY2U=",
@@ -1123,6 +1144,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         // Both should be valid AttestationResponse messages
@@ -1149,6 +1171,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         let json = serde_json::to_string(&response).unwrap();

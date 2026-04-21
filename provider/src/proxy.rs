@@ -38,6 +38,7 @@ pub async fn handle_inference_request(
     _node_keypair: Option<Arc<NodeKeyPair>>,
     cancel_token: CancellationToken,
     stats: Option<Arc<AtomicProviderStats>>,
+    se_handle: Option<Arc<crate::secure_enclave_key::SecureEnclaveHandle>>,
 ) -> bool {
     // Pre-request SIP check: verify SIP is still enabled before processing
     // any consumer data. SIP can't be disabled at runtime (requires reboot),
@@ -67,6 +68,7 @@ pub async fn handle_inference_request(
             &outbound_tx,
             &cancel_token,
             &stats,
+            &se_handle,
         )
         .await
     } else {
@@ -77,6 +79,7 @@ pub async fn handle_inference_request(
             &outbound_tx,
             &cancel_token,
             &stats,
+            &se_handle,
         )
         .await
     };
@@ -125,6 +128,7 @@ async fn handle_non_streaming_request(
     outbound_tx: &mpsc::Sender<ProviderMessage>,
     cancel_token: &CancellationToken,
     stats: &Option<Arc<AtomicProviderStats>>,
+    se_handle: &Option<Arc<crate::secure_enclave_key::SecureEnclaveHandle>>,
 ) -> Result<()> {
     let endpoint = body
         .get("endpoint")
@@ -178,7 +182,7 @@ async fn handle_non_streaming_request(
 
     // Sign the raw response with the Secure Enclave key.
     let (response_hash, se_signature) =
-        security::compute_response_attestation(request_id, completion_tokens, &raw_json);
+        security::compute_response_attestation(se_handle.as_deref(), request_id, completion_tokens, &raw_json);
 
     outbound_tx
         .send(ProviderMessage::InferenceResponseChunk {
@@ -232,6 +236,7 @@ async fn handle_streaming_request(
     outbound_tx: &mpsc::Sender<ProviderMessage>,
     cancel_token: &CancellationToken,
     stats: &Option<Arc<AtomicProviderStats>>,
+    se_handle: &Option<Arc<crate::secure_enclave_key::SecureEnclaveHandle>>,
 ) -> Result<()> {
     let endpoint = body
         .get("endpoint")
@@ -305,6 +310,7 @@ async fn handle_streaming_request(
                 if data == "[DONE]" {
                     // Stream complete — sign the actual response content
                     let (response_hash, se_signature) = security::compute_response_attestation(
+                        se_handle.as_deref(),
                         request_id,
                         total_completion_tokens,
                         &response_content,
@@ -382,6 +388,7 @@ async fn handle_streaming_request(
     // If we get here without [DONE], send completion with what we have
     // Sign the actual accumulated response content
     let (response_hash, se_signature) = security::compute_response_attestation(
+        se_handle.as_deref(),
         request_id,
         total_completion_tokens,
         &response_content,
@@ -563,6 +570,7 @@ mod tests {
             None,
             CancellationToken::new(),
             None,
+            None,
         )
         .await;
         assert!(!dead, "backend should not be reported as dead");
@@ -622,6 +630,7 @@ mod tests {
             tx,
             None,
             CancellationToken::new(),
+            None,
             None,
         )
         .await;
@@ -686,6 +695,7 @@ mod tests {
             tx,
             None,
             CancellationToken::new(),
+            None,
             None,
         )
         .await;
@@ -769,6 +779,7 @@ mod tests {
                 None,
                 token_clone,
                 None,
+                None,
             )
             .await;
         });
@@ -850,6 +861,7 @@ mod tests {
             tx,
             None,
             CancellationToken::new(),
+            None,
             None,
         )
         .await;
@@ -937,6 +949,7 @@ mod tests {
             tx,
             None,
             CancellationToken::new(),
+            None,
             None,
         )
         .await;
@@ -1028,6 +1041,7 @@ mod tests {
                 None,
                 token_clone,
                 None,
+                None,
             )
             .await;
         });
@@ -1076,6 +1090,7 @@ mod tests {
             None,
             CancellationToken::new(),
             None,
+            None,
         )
         .await;
 
@@ -1119,6 +1134,7 @@ mod tests {
             None,
             CancellationToken::new(),
             None,
+            None,
         )
         .await;
 
@@ -1154,6 +1170,7 @@ mod tests {
             None,
             CancellationToken::new(),
             None,
+            None,
         )
         .await;
 
@@ -1188,6 +1205,7 @@ mod tests {
             tx,
             None,
             CancellationToken::new(),
+            None,
             None,
         )
         .await;
@@ -1245,6 +1263,7 @@ mod tests {
             None,
             CancellationToken::new(),
             Some(stats.clone()),
+            None,
         )
         .await;
 
@@ -1300,6 +1319,7 @@ mod tests {
             None,
             CancellationToken::new(),
             Some(stats.clone()),
+            None,
         )
         .await;
 
@@ -1364,6 +1384,7 @@ mod tests {
             None,
             CancellationToken::new(),
             None,
+            None,
         )
         .await;
 
@@ -1421,6 +1442,7 @@ mod tests {
             tx,
             None,
             CancellationToken::new(),
+            None,
             None,
         )
         .await;
@@ -1491,6 +1513,7 @@ mod tests {
             tx,
             None,
             CancellationToken::new(),
+            None,
             None,
         )
         .await;
@@ -1604,6 +1627,7 @@ mod tests {
             None,
             CancellationToken::new(),
             None,
+            None,
         )
         .await;
 
@@ -1648,6 +1672,7 @@ mod tests {
             tx,
             None,
             CancellationToken::new(),
+            None,
             None,
         )
         .await;

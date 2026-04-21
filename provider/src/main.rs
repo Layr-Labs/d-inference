@@ -36,7 +36,6 @@ mod models;
 mod protocol;
 mod proxy;
 mod scheduling;
-#[cfg(target_os = "macos")]
 mod secure_enclave_key;
 mod security;
 mod server;
@@ -537,17 +536,33 @@ fn ensure_chat_template(
     let cached_template = templates_dir.join(format!("{template_name}.jinja"));
 
     if cached_template.exists() {
-        // Copy cached template to model directory
-        match std::fs::copy(&cached_template, &jinja_path) {
-            Ok(_) => {
-                tracing::info!(
-                    "Installed {template_name} chat template from cache to {}",
-                    jinja_path.display()
-                );
+        if let Some(expected) = template_hashes.get(template_name) {
+            if let Some(actual) = security::hash_file(&cached_template) {
+                if &actual != expected {
+                    tracing::error!(
+                        "Cached template {template_name} hash mismatch — deleting tampered file. Expected {expected}, got {actual}"
+                    );
+                    let _ = std::fs::remove_file(&cached_template);
+                    // Fall through to download fresh copy below
+                } else {
+                    match std::fs::copy(&cached_template, &jinja_path) {
+                        Ok(_) => tracing::info!(
+                            "Installed {template_name} chat template from verified cache"
+                        ),
+                        Err(e) => tracing::warn!("Failed to copy cached template: {e}"),
+                    }
+                    return;
+                }
             }
-            Err(e) => tracing::warn!("Failed to copy cached template: {e}"),
+        } else {
+            match std::fs::copy(&cached_template, &jinja_path) {
+                Ok(_) => tracing::info!(
+                    "Installed {template_name} chat template from cache (no manifest hash available)"
+                ),
+                Err(e) => tracing::warn!("Failed to copy cached template: {e}"),
+            }
+            return;
         }
-        return;
     }
 
     // Verify a downloaded template against the manifest hash.
@@ -1600,18 +1615,16 @@ async fn cmd_init() -> Result<()> {
     }
 
     // Generate or load the E2E encryption key pair
-    let kp = crypto::NodeKeyPair::load_or_generate()?;
-    tracing::info!("E2E key loaded from Secure Enclave-backed identity blob");
+    let kp = crypto::NodeKeyPair::generate();
+    tracing::info!("Ephemeral E2E key generated");
     println!("Public key: {}", kp.public_key_base64());
 
     Ok(())
 }
 
 async fn cmd_key_status() -> Result<()> {
-    let Some(kp) = crypto::NodeKeyPair::load_existing()? else {
-        anyhow::bail!("text E2E key not provisioned");
-    };
-    println!("Public key: {}", kp.public_key_base64());
+    println!("E2E keys are ephemeral — generated fresh on each provider launch.");
+    println!("Run `darkbloom serve` to see the current public key.");
     Ok(())
 }
 
@@ -1641,9 +1654,8 @@ async fn cmd_install(
         let cfg = config::ProviderConfig::default_for_hardware(&hw);
         config::save(&config_path, &cfg)?;
     }
-    let _kp = crypto::NodeKeyPair::load_or_generate()?;
     println!("  ✓ Config: {}", config_path.display());
-    println!("  ✓ E2E key: Secure Enclave-backed");
+    println!("  ✓ E2E key: ephemeral (generated at startup)");
     println!();
 
     // Step 3: MDM enrollment (skip if already enrolled)
@@ -2102,12 +2114,31 @@ async fn cmd_serve(
         tracing::info!("Schedule enabled: {}", sched.describe());
     }
 
-    // Load or generate E2E encryption key pair
-    let node_keypair = std::sync::Arc::new(crypto::NodeKeyPair::load_or_generate()?);
+    // Generate ephemeral E2E encryption key pair
+    let node_keypair = std::sync::Arc::new(crypto::NodeKeyPair::generate());
     tracing::info!(
-        "E2E encryption key loaded (public: {})",
+        "Ephemeral E2E key generated (public: {})",
         node_keypair.public_key_base64()
     );
+
+    // Create ephemeral Secure Enclave signing handle
+    let se_handle: Option<std::sync::Arc<secure_enclave_key::SecureEnclaveHandle>> =
+        match secure_enclave_key::SecureEnclaveHandle::create() {
+            Ok(h) => {
+                tracing::info!(
+                    "Ephemeral SE signing key created (public: {})",
+                    h.public_key_base64()
+                );
+                Some(std::sync::Arc::new(h))
+            }
+            Err(e) => {
+                tracing::warn!("Secure Enclave unavailable: {e}");
+                None
+            }
+        };
+
+    // Clean up legacy persistent key files from previous versions
+    secure_enclave_key::cleanup_legacy_key_files();
 
     // Determine backend port (CLI override > config)
     let be_port = backend_port_override.unwrap_or(cfg.backend.port);
@@ -2352,9 +2383,21 @@ async fn cmd_serve(
         // Compute SHA-256 of our own binary for integrity attestation.
         let binary_hash = security::self_binary_hash();
 
-        // Generate Secure Enclave attestation, binding the X25519 encryption key
-        // and our binary hash (so coordinator can verify we're running blessed code).
-        let attestation = generate_attestation(&public_key_b64, binary_hash.as_deref());
+        // Generate Secure Enclave attestation via in-process FFI, binding the
+        // X25519 encryption key and binary hash to the ephemeral SE identity.
+        let attestation = se_handle.as_ref().and_then(|h| {
+            match h.create_attestation(&public_key_b64, binary_hash.as_deref()) {
+                Ok(att) => {
+                    tracing::info!("Secure Enclave attestation generated via FFI");
+                    Some(att)
+                }
+                Err(e) => {
+                    tracing::warn!("Attestation generation failed: {e}");
+                    None
+                }
+            }
+        });
+        let se_public_key = se_handle.as_ref().map(|h| h.public_key_base64().to_string());
 
         // Load device auth token if the provider has been linked to an account.
         let auth_token = load_auth_token();
@@ -2442,7 +2485,8 @@ async fn cmd_serve(
         .with_warm_models(warm_models)
         .with_current_model_hash(current_model_hash)
         .with_model_hashes(all_model_hashes)
-        .with_backend_capacity(backend_capacity);
+        .with_backend_capacity(backend_capacity)
+        .with_se_handle(se_handle.clone());
 
         // Store coordinator client for deferred spawn after backends are ready.
         deferred_coordinator = Some((client, event_tx, outbound_rx, shutdown_rx));
@@ -3332,6 +3376,7 @@ async fn cmd_serve(
                                         let rid2 = rid.clone();
                                         let stats = proxy_stats.clone();
                                         let response_keypair = node_keypair.clone();
+                                        let se_h = se_handle.clone();
                                         tokio::spawn(async move {
                                             handle_inprocess_request(
                                                 rid2,
@@ -3341,6 +3386,7 @@ async fn cmd_serve(
                                                 engine,
                                                 tx,
                                                 Some(stats),
+                                                se_h,
                                             )
                                             .await;
                                             let _ = done_tx.send((rid, false)).await;
@@ -4013,6 +4059,7 @@ async fn handle_inprocess_request(
     engine: std::sync::Arc<inference::SharedEngine>,
     outbound_tx: tokio::sync::mpsc::Sender<protocol::ProviderMessage>,
     stats: Option<std::sync::Arc<coordinator::AtomicProviderStats>>,
+    se_handle: Option<std::sync::Arc<secure_enclave_key::SecureEnclaveHandle>>,
 ) {
     // Pre-request SIP check
     if !security::check_sip_enabled() {
@@ -4176,6 +4223,7 @@ async fn handle_inprocess_request(
                     }
                 };
                 let (response_hash, se_signature) = security::compute_response_attestation(
+                    se_handle.as_deref(),
                     &request_id,
                     inference_result.completion_tokens,
                     &payload,
@@ -4203,6 +4251,7 @@ async fn handle_inprocess_request(
                 (response_hash, se_signature)
             } else {
                 let (response_hash, se_signature) = security::compute_response_attestation(
+                    se_handle.as_deref(),
                     &request_id,
                     inference_result.completion_tokens,
                     &inference_result.text,
@@ -4253,255 +4302,6 @@ async fn handle_inprocess_request(
 /// regenerated. This avoids providers registering with unverifiable attestations.
 ///
 /// Returns None if the CLI tool is not available or fails (graceful degradation).
-fn generate_attestation(
-    encryption_key_base64: &str,
-    binary_hash: Option<&str>,
-) -> Option<Box<serde_json::value::RawValue>> {
-    // Look for the enclave CLI binary in common locations
-    // Check ~/.darkbloom/bin first (standard install location)
-    let home_bin = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".darkbloom/bin/eigeninference-enclave");
-    let home_bin_str = home_bin.to_string_lossy().to_string();
-
-    let binary_paths = [
-        // Standard install location
-        home_bin_str.as_str(),
-        // Built in the enclave directory (development)
-        "../enclave/.build/release/eigeninference-enclave",
-        // System-wide install
-        "/usr/local/bin/eigeninference-enclave",
-        // Homebrew
-        "/opt/homebrew/bin/eigeninference-enclave",
-        // Adjacent to provider binary
-        "eigeninference-enclave",
-    ];
-
-    let mut binary_path = None;
-    for path in &binary_paths {
-        let p = std::path::Path::new(path);
-        if p.exists() {
-            binary_path = Some(p.to_path_buf());
-            break;
-        }
-    }
-
-    // Also check PATH
-    if binary_path.is_none() {
-        if let Ok(output) = std::process::Command::new("which")
-            .arg("eigeninference-enclave")
-            .output()
-        {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path.is_empty() {
-                    binary_path = Some(std::path::PathBuf::from(path));
-                }
-            }
-        }
-    }
-
-    let binary = match binary_path {
-        Some(p) => p,
-        None => {
-            tracing::info!(
-                "eigeninference-enclave binary not found, registering without attestation"
-            );
-            return None;
-        }
-    };
-
-    // Try up to 2 times: first with existing key, then with fresh key if stale
-    for attempt in 0..2 {
-        if attempt == 1 {
-            // Delete stale enclave key and retry
-            let home = dirs::home_dir().unwrap_or_default();
-            let key_path = home.join(".darkbloom/enclave_key.data");
-            if key_path.exists() {
-                tracing::warn!("Deleting stale enclave key at {}", key_path.display());
-                let _ = std::fs::remove_file(&key_path);
-            }
-        }
-
-        tracing::info!(
-            "Generating Secure Enclave attestation via {} (attempt {})",
-            binary.display(),
-            attempt + 1
-        );
-
-        let mut args = vec!["attest", "--encryption-key", encryption_key_base64];
-        let hash_string;
-        if let Some(hash) = binary_hash {
-            hash_string = hash.to_string();
-            args.push("--binary-hash");
-            args.push(&hash_string);
-        }
-
-        let output = match std::process::Command::new(&binary).args(&args).output() {
-            Ok(o) => o,
-            Err(e) => {
-                tracing::warn!("Failed to run eigeninference-enclave: {e}");
-                return None;
-            }
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!("eigeninference-enclave failed: {stderr}");
-            if attempt == 0 {
-                tracing::info!("Retrying with fresh enclave key...");
-                continue;
-            }
-            return None;
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-        // Validate it's valid JSON with a signature field
-        let check: serde_json::Value = match serde_json::from_str(&stdout) {
-            Ok(j) => j,
-            Err(e) => {
-                tracing::warn!("Failed to parse attestation JSON: {e}");
-                return None;
-            }
-        };
-
-        if let Some(sig) = check.get("signature").and_then(|s| s.as_str()) {
-            if sig.is_empty() {
-                tracing::warn!("Attestation has empty signature");
-                if attempt == 0 {
-                    tracing::info!("Retrying with fresh enclave key...");
-                    continue;
-                }
-            }
-        }
-
-        // Return as RawValue to preserve exact Swift JSON encoding.
-        // This is critical: the signature was computed over Swift's specific
-        // JSON byte encoding. Re-serializing through serde_json::Value
-        // changes the bytes and breaks signature verification.
-        match serde_json::value::RawValue::from_string(stdout) {
-            Ok(raw) => {
-                tracing::info!(
-                    "Secure Enclave attestation generated successfully (raw bytes preserved)"
-                );
-                return Some(raw);
-            }
-            Err(e) => {
-                tracing::warn!("Failed to create RawValue: {e}");
-                return None;
-            }
-        }
-    }
-
-    None
-}
-
-/// Self-verify an attestation's P-256 ECDSA signature using macOS security tools.
-/// Returns true if the signature is valid, false if stale/invalid.
-fn self_verify_attestation(attestation_json: &serde_json::Value) -> bool {
-    use base64::Engine;
-
-    let signature_b64 = match attestation_json.get("signature").and_then(|s| s.as_str()) {
-        Some(s) if !s.is_empty() => s,
-        _ => return false,
-    };
-
-    let attestation_blob = match attestation_json.get("attestation") {
-        Some(blob) => blob,
-        None => return false,
-    };
-
-    let public_key_b64 = match attestation_blob.get("publicKey").and_then(|p| p.as_str()) {
-        Some(p) => p,
-        None => return false,
-    };
-
-    // Re-encode the attestation blob as sorted JSON (matching what was signed)
-    let blob_json = match serde_json::to_string(attestation_blob) {
-        Ok(j) => j,
-        Err(_) => return false,
-    };
-
-    // Decode base64 values
-    let sig_bytes = match base64::engine::general_purpose::STANDARD.decode(signature_b64) {
-        Ok(b) => b,
-        Err(_) => return false,
-    };
-    let pubkey_bytes = match base64::engine::general_purpose::STANDARD.decode(public_key_b64) {
-        Ok(b) => b,
-        Err(_) => return false,
-    };
-
-    // Write temp files for openssl verification
-    let tmp_dir = std::env::temp_dir();
-    let sig_path = tmp_dir.join("eigeninference-verify-sig.der");
-    let data_path = tmp_dir.join("eigeninference-verify-data.bin");
-    let pubkey_path = tmp_dir.join("eigeninference-verify-pubkey.der");
-
-    // Write signature and raw data (openssl dgst will hash it)
-    if std::fs::write(&sig_path, &sig_bytes).is_err() {
-        return false;
-    }
-    if std::fs::write(&data_path, blob_json.as_bytes()).is_err() {
-        return false;
-    }
-
-    // Build DER-encoded SubjectPublicKeyInfo for P-256
-    // ASN.1: SEQUENCE { SEQUENCE { OID ecPublicKey, OID prime256v1 }, BIT STRING { pubkey } }
-    let mut spki = vec![
-        0x30, 0x59, // SEQUENCE, length 89
-        0x30, 0x13, // SEQUENCE, length 19
-        0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
-        0x01, // OID 1.2.840.10045.2.1 (ecPublicKey)
-        0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01,
-        0x07, // OID 1.2.840.10045.3.1.7 (prime256v1)
-        0x03, 0x42, 0x00, // BIT STRING, length 66, no unused bits
-    ];
-    // pubkey_bytes should be 65 bytes (0x04 + 32 X + 32 Y) or 64 bytes (raw X||Y)
-    if pubkey_bytes.len() == 64 {
-        spki.push(0x04); // uncompressed point prefix
-    }
-    spki.extend_from_slice(&pubkey_bytes);
-    // Fix SPKI length if pubkey was 64 bytes (we added 0x04, total = 90)
-    if pubkey_bytes.len() == 64 {
-        spki[1] = 0x5a; // outer SEQUENCE length = 90
-        spki[24] = 0x43; // BIT STRING length = 67
-    }
-
-    if std::fs::write(&pubkey_path, &spki).is_err() {
-        return false;
-    }
-
-    // Verify with openssl
-    let result = std::process::Command::new("/usr/bin/openssl")
-        .args([
-            "dgst",
-            "-sha256",
-            "-verify",
-            &pubkey_path.to_string_lossy(),
-            "-signature",
-            &sig_path.to_string_lossy(),
-            "-keyform",
-            "DER",
-            &data_path.to_string_lossy().into_owned(),
-        ])
-        .output();
-
-    // Cleanup
-    let _ = std::fs::remove_file(&sig_path);
-    let _ = std::fs::remove_file(&data_path);
-    let _ = std::fs::remove_file(&pubkey_path);
-
-    match result {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout.contains("Verified OK")
-        }
-        Err(_) => false,
-    }
-}
-
 async fn cmd_enroll(coordinator_url: String) -> Result<()> {
     println!("Darkbloom Device Attestation Enrollment");
     println!();
@@ -4613,9 +4413,7 @@ async fn cmd_unenroll() -> Result<()> {
     println!();
     println!("Clean up local Darkbloom data? This removes:");
     println!("  - Config: ~/.config/eigeninference/");
-    println!("  - Secure Enclave E2E key");
-    println!("  - Legacy node key file: ~/.darkbloom/node_key");
-    println!("  - Enclave key: ~/.darkbloom/enclave_key.data");
+    println!("  - Legacy key files in ~/.darkbloom/");
     println!("  - Auth token: ~/.darkbloom/auth_token");
     println!();
     println!("Type 'yes' to confirm:");
@@ -4624,9 +4422,9 @@ async fn cmd_unenroll() -> Result<()> {
     if input.trim() == "yes" {
         let home = dirs::home_dir().unwrap_or_default();
         let _ = std::fs::remove_dir_all(home.join(".config/eigeninference"));
-        let _ = crypto::delete_persistent_key();
-        let _ = std::fs::remove_file(home.join(".darkbloom/enclave_key.data"));
+        secure_enclave_key::cleanup_legacy_key_files();
         let _ = std::fs::remove_file(home.join(".darkbloom/wallet_key"));
+        let _ = std::fs::remove_file(home.join(".darkbloom/auth_token"));
         println!("  ✓ Local data cleaned up");
     } else {
         println!("  Skipped cleanup");
@@ -4910,15 +4708,7 @@ async fn cmd_status() -> Result<()> {
     );
     println!("    Secure Enclave: ✓ Available");
 
-    let enclave_key = eigeninference_dir.join("enclave_key.data");
-    println!(
-        "    Enclave key:    {}",
-        if enclave_key.exists() {
-            "✓ Generated"
-        } else {
-            "✗ Not generated"
-        }
-    );
+    println!("    SE signing:     ✓ Ephemeral (per-launch)");
 
     println!(
         "    MDM enrolled:   {}",
@@ -5451,18 +5241,10 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
         issues.push("Download a model: darkbloom models download".to_string());
     }
 
-    // 7. Text E2E key (must be Secure Enclave-backed for the privacy guarantee)
+    // 7. Text E2E key (ephemeral, generated at startup)
     print!("7. Text E2E key................ ");
-    if crypto::NodeKeyPair::load_existing().is_ok_and(|key| key.is_some()) {
-        println!("✓ Secure Enclave-backed");
-        passed += 1;
-    } else {
-        println!("✗ Unavailable");
-        issues.push(
-            "Run `darkbloom init` or start the signed provider build on a Secure Enclave-capable Mac"
-                .to_string(),
-        );
-    }
+    println!("✓ Ephemeral (generated at startup)");
+    passed += 1;
 
     // 8. Coordinator connectivity
     print!("8. Coordinator connectivity.... ");

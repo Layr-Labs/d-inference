@@ -33,11 +33,6 @@ tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 
 # macOS Keychain / Security.framework
 [target.'cfg(target_os = "macos")'.dependencies]
-# OSX_10_15 feature enables the data protection keychain constants
-# (kSecUseDataProtectionKeychain etc.) — required for Secure Enclave key
-# storage on macOS Developer ID signed apps. Our min macOS target is 14+.
-security-framework = { version = "3", features = ["OSX_10_15"] }
-security-framework-sys = { version = "2", features = ["OSX_10_15"] }
 core-foundation = "0.10"
 futures-util = "0.3"
 

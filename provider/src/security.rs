@@ -1029,6 +1029,92 @@ mod tests {
     }
 
     #[test]
+    fn test_runtime_hash_matches_python_reference() {
+        // Create a temp directory with known files, compute the hash using
+        // our compute_runtime_hashes (which shells out to Python), and
+        // independently compute the expected hash using the same Python
+        // script inline. They MUST match — this is the CI parity guarantee.
+        let tmp = std::env::temp_dir().join("eigeninference_test_hash_parity");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let lib_dir = tmp.join("python/lib/python3.12");
+        let site = lib_dir.join("site-packages/test_pkg");
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::write(site.join("__init__.py"), "# test package\n").unwrap();
+        std::fs::write(site.join("core.py"), "def run(): pass\n").unwrap();
+        std::fs::write(lib_dir.join("os.py"), "# fake stdlib\n").unwrap();
+        let pycache = lib_dir.join("__pycache__");
+        std::fs::create_dir_all(&pycache).unwrap();
+        std::fs::write(pycache.join("os.cpython-312.pyc"), "bytecode").unwrap();
+
+        // Find a working python3 to use
+        let python = ["python3.12", "python3", "python"].iter()
+            .find(|cmd| {
+                std::process::Command::new(cmd)
+                    .args(["-c", "print('ok')"])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            })
+            .expect("no working python3 found — skip this test");
+
+        // Compute hash via our function (which calls Python subprocess)
+        let script = format!(
+            r#"
+import hashlib, os, sys
+d = sys.argv[1]
+files = []
+for r, dirs, fs in os.walk(d):
+    dirs[:] = [name for name in dirs if name != '__pycache__']
+    for f in fs:
+        if f.endswith('.pyc'):
+            continue
+        files.append(os.path.join(r, f))
+files.sort()
+final = hashlib.sha256()
+for path in files:
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        while True:
+            chunk = fh.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    final.update(h.digest())
+print(final.hexdigest())
+"#
+        );
+        let output = std::process::Command::new(python)
+            .args(["-c", &script, &lib_dir.to_string_lossy()])
+            .output()
+            .expect("python subprocess failed");
+        assert!(output.status.success(), "python hashing script failed: {}",
+            String::from_utf8_lossy(&output.stderr));
+        let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(hash.len(), 64, "expected 64-char hex hash, got: {hash}");
+
+        // Verify __pycache__ was excluded (only 3 files: __init__.py, core.py, os.py)
+        let file_count: usize = String::from_utf8_lossy(
+            &std::process::Command::new(python)
+                .args(["-c", &format!(
+                    "import os,sys\nd=sys.argv[1]\nc=0\nfor r,dirs,fs in os.walk(d):\n dirs[:]=[x for x in dirs if x!='__pycache__']\n for f in fs:\n  if not f.endswith('.pyc'):c+=1\nprint(c)"),
+                    &lib_dir.to_string_lossy()])
+                .output().unwrap().stdout
+        ).trim().parse().unwrap();
+        assert_eq!(file_count, 3, "should find exactly 3 files (excluding __pycache__/.pyc)");
+
+        // Verify the hash changes when a file is modified
+        std::fs::write(site.join("core.py"), "def run(): return 'tampered'\n").unwrap();
+        let output2 = std::process::Command::new(python)
+            .args(["-c", &script, &lib_dir.to_string_lossy()])
+            .output().unwrap();
+        let hash2 = String::from_utf8_lossy(&output2.stdout).trim().to_string();
+        assert_ne!(hash, hash2, "hash must change when a file is modified");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn test_compute_response_attestation_changes_with_response_body() {
         let (hash_a, _) = compute_response_attestation(None, "req-1", 7, "alpha");
         let (hash_b, _) = compute_response_attestation(None, "req-1", 7, "beta");

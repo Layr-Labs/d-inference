@@ -455,12 +455,15 @@ gc.collect()
 
             let code = CString::new(
                 r#"
-import builtins
-engine = builtins._eigeninference_vllm_engines[engine_key]
-output = engine.generate(prompt, max_tokens=int(max_tokens), temperature=float(temperature))
-_result_text = output.text
-_result_prompt_tokens = output.prompt_tokens
-_result_completion_tokens = output.completion_tokens
+import builtins, traceback as _tb
+try:
+    engine = builtins._eigeninference_vllm_engines[engine_key]
+    output = engine.generate(prompt, max_tokens=int(max_tokens), temperature=float(temperature))
+    _result_text = output.text
+    _result_prompt_tokens = output.prompt_tokens
+    _result_completion_tokens = output.completion_tokens
+except Exception as _e:
+    raise RuntimeError(f"generate failed: {_tb.format_exc()}") from _e
 "#,
             )
             .unwrap();

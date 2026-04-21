@@ -4280,7 +4280,7 @@ async fn handle_inprocess_request(
             }
         }
         Err(e) => {
-            tracing::error!("In-process inference failed: {e}");
+            tracing::error!("In-process inference failed: {e:#}");
             let _ = outbound_tx
                 .send(protocol::ProviderMessage::InferenceError {
                     request_id,

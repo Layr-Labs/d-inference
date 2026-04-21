@@ -119,9 +119,12 @@ pub fn isolate_python_preinit() {
     unsafe {
         std::env::set_var("PYTHONNOUSERSITE", "1");
         std::env::set_var("PYTHONDONTWRITEBYTECODE", "1");
-        std::env::set_var("PYTHONISOLATED", "1");
+        // Do NOT set PYTHONISOLATED — it causes Python to ignore PYTHONHOME,
+        // breaking the bundled runtime path. PYTHONNOUSERSITE is sufficient to
+        // block user site-packages. The full import path lock (lock_python_path)
+        // handles the rest after initialization.
     }
-    tracing::info!("Python pre-init isolation: PYTHONNOUSERSITE=1, PYTHONISOLATED=1");
+    tracing::info!("Python pre-init isolation: PYTHONNOUSERSITE=1, PYTHONDONTWRITEBYTECODE=1");
 }
 
 /// Check if System Integrity Protection (SIP) is enabled.
@@ -792,10 +795,9 @@ mod tests {
             "1",
             "PYTHONNOUSERSITE should be set"
         );
-        assert_eq!(
-            std::env::var("PYTHONISOLATED").unwrap(),
-            "1",
-            "PYTHONISOLATED should be set"
+        assert!(
+            std::env::var_os("PYTHONISOLATED").is_none(),
+            "PYTHONISOLATED must not be set — it makes Python ignore PYTHONHOME"
         );
     }
 

@@ -220,6 +220,15 @@ func main() {
 		StripeWebhookSecret: os.Getenv("EIGENINFERENCE_STRIPE_WEBHOOK_SECRET"),
 		StripeSuccessURL:    os.Getenv("EIGENINFERENCE_STRIPE_SUCCESS_URL"),
 		StripeCancelURL:     os.Getenv("EIGENINFERENCE_STRIPE_CANCEL_URL"),
+
+		// Stripe Connect Express — bank/card payouts. Reuses StripeSecretKey
+		// for API auth; the Connect webhook endpoint has its own signing
+		// secret. Return/refresh URLs are where Stripe sends users back to
+		// after the hosted onboarding flow.
+		StripeConnectWebhookSecret:   os.Getenv("EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET"),
+		StripeConnectPlatformCountry: envOr("EIGENINFERENCE_STRIPE_CONNECT_COUNTRY", "US"),
+		StripeConnectReturnURL:       os.Getenv("EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL"),
+		StripeConnectRefreshURL:      os.Getenv("EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL"),
 	}
 
 	// Mock billing mode — skips on-chain verification, auto-credits test balance.

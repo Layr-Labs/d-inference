@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/eigeninference/coordinator/internal/auth"
@@ -117,6 +118,12 @@ type Server struct {
 	// corsOrigin is the allowed CORS origin (e.g. "https://console.darkbloom.dev").
 	// Set from CORS_ORIGIN env var. Empty defaults to the production console domain.
 	corsOrigin string
+
+	// imageUploads stores generated images keyed by request_id.
+	// Providers upload images via HTTP POST, then send a small WebSocket
+	// completion message. The consumer handler retrieves images from here.
+	imageUploads   map[string][][]byte // request_id → list of PNG images
+	imageUploadsMu sync.Mutex
 
 	// storedProviders is a lookup table of persisted provider records, indexed
 	// by serial number and SE public key. When a provider reconnects after a
@@ -664,6 +671,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/billing/deposit", s.requireAuth(s.handleSolanaDeposit))
 	s.mux.HandleFunc("POST /v1/billing/withdraw/solana", s.requireAuth(s.handleSolanaWithdraw))
 	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
+
+	// Stripe Payouts (Connect Express) — bank/card withdrawals.
+	s.mux.HandleFunc("POST /v1/billing/stripe/onboard", s.requireAuth(s.handleStripeOnboard))
+	s.mux.HandleFunc("GET /v1/billing/stripe/status", s.requireAuth(s.handleStripeStatus))
+	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requireAuth(s.handleStripeWithdraw))
+	s.mux.HandleFunc("GET /v1/billing/stripe/withdrawals", s.requireAuth(s.handleStripeWithdrawals))
+	s.mux.HandleFunc("POST /v1/billing/stripe/connect/webhook", s.handleStripeConnectWebhook) // no auth — Stripe signs it
 
 	// Pricing — GET is public, PUT/DELETE require auth
 	s.mux.HandleFunc("GET /v1/pricing", s.handleGetPricing)                        // public

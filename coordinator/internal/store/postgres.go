@@ -369,8 +369,35 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_provider_payouts_address ON provider_payouts(provider_address, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_provider_payouts_settled ON provider_payouts(settled, created_at DESC)`,
 
-		// Telemetry events — production observability table. Append-heavy, read
-		// from the admin console. TTL'd by the retention loop in the coordinator.
+		// Stripe Connect — bank/card payouts
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_account_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_account_status TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_destination_type TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_destination_last4 TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_instant_eligible BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_stripe_account ON users(stripe_account_id) WHERE stripe_account_id != ''`,
+
+		`CREATE TABLE IF NOT EXISTS stripe_withdrawals (
+			id TEXT PRIMARY KEY,
+			account_id TEXT NOT NULL,
+			stripe_account_id TEXT NOT NULL,
+			transfer_id TEXT NOT NULL DEFAULT '',
+			payout_id TEXT NOT NULL DEFAULT '',
+			amount_micro_usd BIGINT NOT NULL,
+			fee_micro_usd BIGINT NOT NULL DEFAULT 0,
+			net_micro_usd BIGINT NOT NULL,
+			method TEXT NOT NULL,
+			status TEXT NOT NULL,
+			failure_reason TEXT NOT NULL DEFAULT '',
+			refunded BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_account ON stripe_withdrawals(account_id, created_at DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_stripe_withdrawals_transfer ON stripe_withdrawals(transfer_id) WHERE transfer_id != ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_stripe_withdrawals_payout ON stripe_withdrawals(payout_id) WHERE payout_id != ''`,
+
+		// Telemetry events — production observability table.
 		`CREATE TABLE IF NOT EXISTS telemetry_events (
 			id UUID PRIMARY KEY,
 			ts TIMESTAMPTZ NOT NULL,
@@ -1063,20 +1090,35 @@ func (s *PostgresStore) CreateUser(user *User) error {
 	return nil
 }
 
+const userSelectColumns = `account_id, privy_user_id, email, solana_wallet_address, solana_wallet_id,
+	stripe_account_id, stripe_account_status, stripe_destination_type,
+	stripe_destination_last4, stripe_instant_eligible, created_at`
+
+func scanUser(row interface {
+	Scan(...any) error
+}) (*User, error) {
+	var u User
+	if err := row.Scan(&u.AccountID, &u.PrivyUserID, &u.Email, &u.SolanaWalletAddress, &u.SolanaWalletID,
+		&u.StripeAccountID, &u.StripeAccountStatus, &u.StripeDestinationType,
+		&u.StripeDestinationLast4, &u.StripeInstantEligible, &u.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
 // GetUserByPrivyID returns the user for a Privy DID.
 func (s *PostgresStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var u User
-	err := s.pool.QueryRow(ctx,
-		`SELECT account_id, privy_user_id, email, solana_wallet_address, solana_wallet_id, created_at
-		 FROM users WHERE privy_user_id = $1`, privyUserID,
-	).Scan(&u.AccountID, &u.PrivyUserID, &u.Email, &u.SolanaWalletAddress, &u.SolanaWalletID, &u.CreatedAt)
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+userSelectColumns+` FROM users WHERE privy_user_id = $1`, privyUserID,
+	)
+	u, err := scanUser(row)
 	if err != nil {
 		return nil, fmt.Errorf("store: user not found: %w", err)
 	}
-	return &u, nil
+	return u, nil
 }
 
 // GetUserByAccountID returns the user for an internal account ID.
@@ -1084,15 +1126,189 @@ func (s *PostgresStore) GetUserByAccountID(accountID string) (*User, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var u User
-	err := s.pool.QueryRow(ctx,
-		`SELECT account_id, privy_user_id, email, solana_wallet_address, solana_wallet_id, created_at
-		 FROM users WHERE account_id = $1`, accountID,
-	).Scan(&u.AccountID, &u.PrivyUserID, &u.Email, &u.SolanaWalletAddress, &u.SolanaWalletID, &u.CreatedAt)
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+userSelectColumns+` FROM users WHERE account_id = $1`, accountID,
+	)
+	u, err := scanUser(row)
 	if err != nil {
 		return nil, fmt.Errorf("store: user not found: %w", err)
 	}
-	return &u, nil
+	return u, nil
+}
+
+// SetUserStripeAccount upserts the Stripe Connect fields on a user record.
+func (s *PostgresStore) SetUserStripeAccount(accountID, stripeAccountID, status, destinationType, destinationLast4 string, instantEligible bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE users SET
+			stripe_account_id = $2,
+			stripe_account_status = $3,
+			stripe_destination_type = $4,
+			stripe_destination_last4 = $5,
+			stripe_instant_eligible = $6
+		 WHERE account_id = $1`,
+		accountID, stripeAccountID, status, destinationType, destinationLast4, instantEligible,
+	)
+	if err != nil {
+		return fmt.Errorf("store: set stripe account: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("user with account ID %q not found", accountID)
+	}
+	return nil
+}
+
+// GetUserByStripeAccount finds a user by their Stripe connected account ID.
+func (s *PostgresStore) GetUserByStripeAccount(stripeAccountID string) (*User, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+userSelectColumns+` FROM users WHERE stripe_account_id = $1`, stripeAccountID,
+	)
+	u, err := scanUser(row)
+	if err != nil {
+		return nil, fmt.Errorf("store: user with Stripe account %q not found: %w", stripeAccountID, err)
+	}
+	return u, nil
+}
+
+// --- Stripe Withdrawals ---
+
+func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
+	if w == nil || w.ID == "" {
+		return fmt.Errorf("stripe withdrawal id is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	now := time.Now()
+	if w.CreatedAt.IsZero() {
+		w.CreatedAt = now
+	}
+	if w.UpdatedAt.IsZero() {
+		w.UpdatedAt = w.CreatedAt
+	}
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO stripe_withdrawals
+		 (id, account_id, stripe_account_id, transfer_id, payout_id,
+		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
+		  failure_reason, refunded, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID,
+		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Status,
+		w.FailureReason, w.Refunded, w.CreatedAt, w.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: create stripe withdrawal: %w", err)
+	}
+	return nil
+}
+
+const stripeWithdrawalSelectColumns = `id, account_id, stripe_account_id, transfer_id, payout_id,
+	amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
+	failure_reason, refunded, created_at, updated_at`
+
+func scanStripeWithdrawal(row interface{ Scan(...any) error }) (*StripeWithdrawal, error) {
+	var w StripeWithdrawal
+	if err := row.Scan(&w.ID, &w.AccountID, &w.StripeAccountID, &w.TransferID, &w.PayoutID,
+		&w.AmountMicroUSD, &w.FeeMicroUSD, &w.NetMicroUSD, &w.Method, &w.Status,
+		&w.FailureReason, &w.Refunded, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &w, nil
+}
+
+func (s *PostgresStore) GetStripeWithdrawal(id string) (*StripeWithdrawal, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals WHERE id = $1`, id)
+	w, err := scanStripeWithdrawal(row)
+	if err != nil {
+		return nil, fmt.Errorf("store: stripe withdrawal %q not found: %w", id, err)
+	}
+	return w, nil
+}
+
+func (s *PostgresStore) GetStripeWithdrawalByPayoutID(payoutID string) (*StripeWithdrawal, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals WHERE payout_id = $1`, payoutID)
+	w, err := scanStripeWithdrawal(row)
+	if err != nil {
+		return nil, fmt.Errorf("store: stripe withdrawal with payout %q not found: %w", payoutID, err)
+	}
+	return w, nil
+}
+
+func (s *PostgresStore) GetStripeWithdrawalByTransferID(transferID string) (*StripeWithdrawal, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals WHERE transfer_id = $1`, transferID)
+	w, err := scanStripeWithdrawal(row)
+	if err != nil {
+		return nil, fmt.Errorf("store: stripe withdrawal with transfer %q not found: %w", transferID, err)
+	}
+	return w, nil
+}
+
+func (s *PostgresStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
+	if w == nil || w.ID == "" {
+		return fmt.Errorf("stripe withdrawal id is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE stripe_withdrawals SET
+			transfer_id = $2, payout_id = $3, status = $4,
+			failure_reason = $5, refunded = $6, updated_at = NOW()
+		 WHERE id = $1`,
+		w.ID, w.TransferID, w.PayoutID, w.Status, w.FailureReason, w.Refunded,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update stripe withdrawal: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("stripe withdrawal %q not found", w.ID)
+	}
+	w.UpdatedAt = time.Now()
+	return nil
+}
+
+func (s *PostgresStore) ListStripeWithdrawals(accountID string, limit int) ([]StripeWithdrawal, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	q := `SELECT ` + stripeWithdrawalSelectColumns + ` FROM stripe_withdrawals WHERE account_id = $1 ORDER BY created_at DESC`
+	args := []any{accountID}
+	if limit > 0 {
+		q += ` LIMIT $2`
+		args = append(args, limit)
+	}
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list stripe withdrawals: %w", err)
+	}
+	defer rows.Close()
+
+	var out []StripeWithdrawal
+	for rows.Next() {
+		w, err := scanStripeWithdrawal(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan stripe withdrawal: %w", err)
+		}
+		out = append(out, *w)
+	}
+	if out == nil {
+		return []StripeWithdrawal{}, nil
+	}
+	return out, nil
 }
 
 // --- Supported Models ---

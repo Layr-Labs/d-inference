@@ -119,90 +119,52 @@ describe("GET /api/payments/balance", () => {
 });
 
 // =========================================================================
-// POST /api/payments/deposit
+// POST /api/payments/stripe/checkout
 // =========================================================================
 
-describe("POST /api/payments/deposit", () => {
-  it("forwards body and auth to coordinator /v1/billing/deposit", async () => {
-    upstreamFetch.mockResolvedValueOnce(upstreamOk({ ok: true }));
+describe("POST /api/payments/stripe/checkout", () => {
+  it("forwards body and auth to coordinator /v1/billing/stripe/create-session", async () => {
+    upstreamFetch.mockResolvedValueOnce(
+      upstreamOk({ url: "https://checkout.stripe.com/session/123", session_id: "cs_123" })
+    );
 
-    const { POST } = await import("@/app/api/payments/deposit/route");
-    const req = makeRequest("/api/payments/deposit", {
+    const { POST } = await import("@/app/api/payments/stripe/checkout/route");
+    const req = makeRequest("/api/payments/stripe/checkout", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": "key-dep",
+        authorization: "Bearer privy-token-123",
       },
-      body: JSON.stringify({ amount_usd: 25 }),
+      body: JSON.stringify({ amount_usd: "10" }),
     });
     const res = await POST(req);
 
     expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.url).toBe("https://checkout.stripe.com/session/123");
+
     const [upstreamUrl, upstreamOpts] = upstreamFetch.mock.calls[0];
-    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/billing/deposit`);
+    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/billing/stripe/create-session`);
     expect(upstreamOpts.method).toBe("POST");
     expect(upstreamOpts.headers["Content-Type"]).toBe("application/json");
-    expect(upstreamOpts.headers.Authorization).toBe("Bearer key-dep");
-    expect(JSON.parse(upstreamOpts.body)).toEqual({ amount_usd: 25 });
+    expect(upstreamOpts.headers.Authorization).toBe("Bearer privy-token-123");
+    expect(JSON.parse(upstreamOpts.body)).toEqual({ amount_usd: "10" });
   });
 
-  it("returns error text on failure", async () => {
+  it("returns error on upstream failure", async () => {
     upstreamFetch.mockResolvedValueOnce(upstreamError(400, "bad request"));
 
-    const { POST } = await import("@/app/api/payments/deposit/route");
-    const req = makeRequest("/api/payments/deposit", {
+    const { POST } = await import("@/app/api/payments/stripe/checkout/route");
+    const req = makeRequest("/api/payments/stripe/checkout", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ amount_usd: -1 }),
+      body: JSON.stringify({ amount_usd: "-1" }),
     });
     const res = await POST(req);
 
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toBe("bad request");
-  });
-});
-
-// =========================================================================
-// POST /api/payments/withdraw
-// =========================================================================
-
-describe("POST /api/payments/withdraw", () => {
-  it("forwards body and auth to coordinator /v1/payments/withdraw", async () => {
-    upstreamFetch.mockResolvedValueOnce(upstreamOk({ ok: true }));
-
-    const { POST } = await import("@/app/api/payments/withdraw/route");
-    const req = makeRequest("/api/payments/withdraw", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": "key-wd",
-      },
-      body: JSON.stringify({ amount_usd: 5, wallet_address: "0xabc" }),
-    });
-    const res = await POST(req);
-
-    expect(res.status).toBe(200);
-    const [upstreamUrl, upstreamOpts] = upstreamFetch.mock.calls[0];
-    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/payments/withdraw`);
-    expect(JSON.parse(upstreamOpts.body)).toEqual({
-      amount_usd: 5,
-      wallet_address: "0xabc",
-    });
-  });
-
-  it("returns error on upstream failure", async () => {
-    upstreamFetch.mockResolvedValueOnce(upstreamError(500, "internal error"));
-
-    const { POST } = await import("@/app/api/payments/withdraw/route");
-    const req = makeRequest("/api/payments/withdraw", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ amount_usd: 100, wallet_address: "0x1" }),
-    });
-    const res = await POST(req);
-
-    expect(res.status).toBe(500);
   });
 });
 

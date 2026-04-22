@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useAuthContext } from "@/components/providers/PrivyClientProvider";
 
 const API_KEY_STORAGE = "darkbloom_api_key";
@@ -14,20 +14,7 @@ export function useAuth() {
   // Derive useful fields from the Privy user
   const email = (user as { email?: { address?: string } } | null)?.email?.address || null;
 
-  const walletAddress = useMemo(() => {
-    if (!user) return null;
-    const u = user as {
-      wallet?: { address?: string };
-      linkedAccounts?: Array<{ type: string; chainType?: string; address?: string }>;
-    };
-    if (u.wallet?.address) return u.wallet.address;
-    const solana = u.linkedAccounts?.find(
-      (a) => a.type === "wallet" && a.chainType === "solana"
-    );
-    return solana?.address || null;
-  }, [user]);
-
-  const displayName = email || (walletAddress ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : null);
+  const displayName = email || null;
 
   // Migrate old API key and auto-provision on auth
   useEffect(() => {
@@ -130,7 +117,6 @@ export function useAuth() {
     logout,
     getAccessToken,
     email,
-    walletAddress,
     displayName,
   };
 }

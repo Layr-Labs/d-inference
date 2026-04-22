@@ -2,8 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   fetchBalance,
   fetchUsage,
-  deposit,
-  withdraw,
+  createStripeCheckout,
   redeemInviteCode,
   fetchModels,
   fetchPricing,
@@ -127,51 +126,37 @@ describe("fetchUsage", () => {
 });
 
 // ---------------------------------------------------------------------------
-// deposit
+// createStripeCheckout
 // ---------------------------------------------------------------------------
 
-describe("deposit", () => {
-  it("sends POST to /api/payments/deposit with amount_usd in body", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+describe("createStripeCheckout", () => {
+  it("sends POST to /api/payments/stripe/checkout with amount_usd", async () => {
+    const payload = { url: "https://checkout.stripe.com/session/123", session_id: "cs_123" };
+    fetchMock.mockResolvedValueOnce(jsonResponse(payload));
 
-    await deposit(25);
+    const result = await createStripeCheckout("10");
 
     expect(fetchMock).toHaveBeenCalledOnce();
     const [url, opts] = fetchMock.mock.calls[0];
-    expect(url).toBe("/api/payments/deposit");
+    expect(url).toBe("/api/payments/stripe/checkout");
     expect(opts.method).toBe("POST");
-    expect(JSON.parse(opts.body)).toEqual({ amount_usd: 25 });
+    expect(JSON.parse(opts.body)).toEqual({ amount_usd: "10" });
+    expect(result).toEqual(payload);
+  });
+
+  it("includes email when provided", async () => {
+    const payload = { url: "https://checkout.stripe.com/session/456", session_id: "cs_456" };
+    fetchMock.mockResolvedValueOnce(jsonResponse(payload));
+
+    await createStripeCheckout("5", "test@example.com");
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(opts.body)).toEqual({ amount_usd: "5", email: "test@example.com" });
   });
 
   it("throws on failure", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({}, 400));
-    await expect(deposit(0)).rejects.toThrow("Deposit failed (400)");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// withdraw
-// ---------------------------------------------------------------------------
-
-describe("withdraw", () => {
-  it("sends POST to /api/payments/withdraw with amount and wallet address", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
-
-    await withdraw(10, "0xabc123");
-
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const [url, opts] = fetchMock.mock.calls[0];
-    expect(url).toBe("/api/payments/withdraw");
-    expect(opts.method).toBe("POST");
-    expect(JSON.parse(opts.body)).toEqual({
-      amount_usd: 10,
-      wallet_address: "0xabc123",
-    });
-  });
-
-  it("throws on failure", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({}, 502));
-    await expect(withdraw(5, "0xfoo")).rejects.toThrow("Withdrawal failed (502)");
+    await expect(createStripeCheckout("0")).rejects.toThrow("Checkout failed (400)");
   });
 });
 

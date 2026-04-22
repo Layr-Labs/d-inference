@@ -2,9 +2,6 @@
   "name": "web",
   "version": "0.1.0",
   "overrides": {
-    "@solana-program/memo": {
-      "@solana/kit": "$@solana/kit"
-    },
     "axios": "^1.15.0"
   },
   "private": true,
@@ -20,9 +17,6 @@
     "@datadog/browser-rum": "^6.32.0",
     "@privy-io/react-auth": "^3.18.0",
     "@privy-io/server-auth": "^1.32.5",
-    "@solana-program/memo": "^0.11.0",
-    "@solana/spl-token": "^0.4.14",
-    "@solana/web3.js": "^1.98.4",
     "asn1js": "^3.0.7",
     "lucide-react": "^1.0.1",
     "next": "^16.2.2",

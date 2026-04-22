@@ -122,6 +122,12 @@ type Server struct {
 	// Set from CORS_ORIGIN env var. Empty defaults to the production console domain.
 	corsOrigin string
 
+	// imageUploads stores generated images keyed by request_id.
+	// Providers upload images via HTTP POST, then send a small WebSocket
+	// completion message. The consumer handler retrieves images from here.
+	imageUploads   map[string][][]byte // request_id → list of PNG images
+	imageUploadsMu sync.Mutex
+
 	// storedProviders is a lookup table of persisted provider records, indexed
 	// by serial number and SE public key. When a provider reconnects after a
 	// coordinator restart, this table is checked to restore trust/reputation.
@@ -132,12 +138,6 @@ type Server struct {
 	// requests from senders. Set via SetCoordinatorKey. nil disables the
 	// /v1/encryption-key endpoint and the sealed-request middleware.
 	coordinatorKey *e2e.CoordinatorKey
-
-	// imageUploads stores generated images keyed by request_id.
-	// Providers upload images via HTTP POST, then send a small WebSocket
-	// completion message. The consumer handler retrieves images from here.
-	imageUploads   map[string][][]byte // request_id → list of PNG images
-	imageUploadsMu sync.Mutex
 
 	// metrics is the in-process metrics registry exposed via /v1/admin/metrics
 	// and used by internal counters/histograms. Never nil.
@@ -768,17 +768,22 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)                         // no auth — polls with device_code secret
 	s.mux.HandleFunc("POST /v1/device/approve", s.requirePrivyAuth(s.handleDeviceApprove)) // interactive session only — API keys rejected
 
-	// --- Billing endpoints (multi-chain payments + referrals) ---
+	// --- Billing endpoints (Stripe payments + referrals) ---
 
 	// Stripe
 	s.mux.HandleFunc("POST /v1/billing/stripe/create-session", s.requireAuth(s.handleStripeCreateSession))
 	s.mux.HandleFunc("POST /v1/billing/stripe/webhook", s.handleStripeWebhook) // no auth — Stripe signs it
 	s.mux.HandleFunc("GET /v1/billing/stripe/session", s.requireAuth(s.handleStripeSessionStatus))
 
-	// Solana deposits and withdrawals
-	s.mux.HandleFunc("POST /v1/billing/deposit", s.requireAuth(s.handleSolanaDeposit))
-	s.mux.HandleFunc("POST /v1/billing/withdraw/solana", s.requireAuth(s.handleSolanaWithdraw))
+	// Wallet balance
 	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
+
+	// Stripe Payouts (Connect Express) — bank/card withdrawals.
+	s.mux.HandleFunc("POST /v1/billing/stripe/onboard", s.requireAuth(s.handleStripeOnboard))
+	s.mux.HandleFunc("GET /v1/billing/stripe/status", s.requireAuth(s.handleStripeStatus))
+	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requireAuth(s.handleStripeWithdraw))
+	s.mux.HandleFunc("GET /v1/billing/stripe/withdrawals", s.requireAuth(s.handleStripeWithdrawals))
+	s.mux.HandleFunc("POST /v1/billing/stripe/connect/webhook", s.handleStripeConnectWebhook) // no auth — Stripe signs it
 
 	// Pricing — GET is public, PUT/DELETE require auth
 	s.mux.HandleFunc("GET /v1/pricing", s.handleGetPricing)                        // public

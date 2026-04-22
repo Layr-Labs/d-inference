@@ -565,131 +565,147 @@ except Exception as _e:
                 locals.set_item("engine_key", &self.cache_key)?;
                 locals.set_item("request_json", &request_json)?;
 
-                // Phase 1: set up the async generator and collect all chunks
-                // in Python. We can't iterate a Python async generator from
-                // Rust's synchronous GIL context, so we collect into a list
-                // via asyncio.run().
-                let code = CString::new(
+                // Set up a Python queue.SimpleQueue for real-time streaming.
+                // A Python thread runs the async generator and pushes each
+                // chunk to the queue. Rust releases the GIL and polls the
+                // queue, sending each chunk to the coordinator immediately.
+                let setup_code = CString::new(
                     r#"
-import asyncio, builtins, json, uuid, time, traceback as _tb
-try:
-    engine = builtins._eigeninference_vllm_engines[engine_key]
-    _req = json.loads(request_json)
-    _messages = _req.get('messages', [])
-    if not _messages and _req.get('input'):
-        _input = _req['input']
-        if isinstance(_input, str):
-            _messages = [{'role': 'user', 'content': _input}]
-        elif isinstance(_input, list):
-            _messages = _input
-    _max_tokens = int(_req.get('max_tokens') or _req.get('max_output_tokens') or 256)
-    _temperature = float(_req.get('temperature', 0.7))
-    _top_p = float(_req.get('top_p', 0.9))
-    _stop = _req.get('stop', None)
-    _tools = _req.get('tools', None)
-    _model_name = _req.get('model', 'unknown')
-    _response_format = _req.get('response_format', None)
-    _chat_kwargs = dict(
-        messages=_messages,
-        max_tokens=_max_tokens,
-        temperature=_temperature,
-        top_p=_top_p,
+import builtins, json, uuid, time, queue, threading, asyncio, re, traceback as _tb
+
+engine = builtins._eigeninference_vllm_engines[engine_key]
+_req = json.loads(request_json)
+_messages = _req.get('messages', [])
+if not _messages and _req.get('input'):
+    _input = _req['input']
+    if isinstance(_input, str):
+        _messages = [{'role': 'user', 'content': _input}]
+    elif isinstance(_input, list):
+        _messages = _input
+_max_tokens = int(_req.get('max_tokens') or _req.get('max_output_tokens') or 256)
+_temperature = float(_req.get('temperature', 0.7))
+_top_p = float(_req.get('top_p', 0.9))
+_stop = _req.get('stop', None)
+_tools = _req.get('tools', None)
+_model_name = _req.get('model', 'unknown')
+_response_format = _req.get('response_format', None)
+_chat_kwargs = dict(
+    messages=_messages,
+    max_tokens=_max_tokens,
+    temperature=_temperature,
+    top_p=_top_p,
+)
+if _tools:
+    from vllm_mlx.api.tool_calling import convert_tools_for_template
+    from vllm_mlx.api.models import ToolDefinition
+    _chat_kwargs['tools'] = convert_tools_for_template(
+        [ToolDefinition(**t) for t in _tools]
     )
-    if _tools:
-        from vllm_mlx.api.tool_calling import convert_tools_for_template
-        from vllm_mlx.api.models import ToolDefinition
-        _chat_kwargs['tools'] = convert_tools_for_template(
-            [ToolDefinition(**t) for t in _tools]
-        )
-    if _response_format:
-        from vllm_mlx.api.tool_calling import build_json_system_prompt
-        _json_instr = build_json_system_prompt(_response_format)
-        if _json_instr:
-            _msgs = list(_messages)
-            _sys_idx = None
-            for _i, _m in enumerate(_msgs):
-                if _m.get('role') == 'system':
-                    _sys_idx = _i
-                    break
-            if _sys_idx is not None:
-                _msgs[_sys_idx] = dict(_msgs[_sys_idx])
-                _msgs[_sys_idx]['content'] = (_msgs[_sys_idx].get('content', '') or '') + '\n\n' + _json_instr
-            else:
-                _msgs.insert(0, {'role': 'system', 'content': _json_instr})
-            _chat_kwargs['messages'] = _msgs
-    if _stop:
-        _chat_kwargs['stop'] = _stop
-    import re
-    _SPECIAL_TOKENS = re.compile(r'<\|(?:im_start|im_end|endoftext|end_of_turn|eot_id|end_header_id|start_header_id|finetune_right_pad_id)\|>')
-    _response_id = f'chatcmpl-{uuid.uuid4().hex[:8]}'
-    _created = int(time.time())
+if _response_format:
+    from vllm_mlx.api.tool_calling import build_json_system_prompt
+    _json_instr = build_json_system_prompt(_response_format)
+    if _json_instr:
+        _msgs = list(_messages)
+        _sys_idx = None
+        for _i, _m in enumerate(_msgs):
+            if _m.get('role') == 'system':
+                _sys_idx = _i
+                break
+        if _sys_idx is not None:
+            _msgs[_sys_idx] = dict(_msgs[_sys_idx])
+            _msgs[_sys_idx]['content'] = (_msgs[_sys_idx].get('content', '') or '') + '\n\n' + _json_instr
+        else:
+            _msgs.insert(0, {'role': 'system', 'content': _json_instr})
+        _chat_kwargs['messages'] = _msgs
+if _stop:
+    _chat_kwargs['stop'] = _stop
 
-    async def _run_stream(_eng, _kwargs, _sp, _rid, _ts, _mn):
-        import json
-        _chunks = []
-        _pt, _ct = 0, 0
-        async for _out in _eng.stream_chat(**_kwargs):
-            _delta = _out.new_text
-            if hasattr(_out, 'prompt_tokens') and _out.prompt_tokens:
-                _pt = _out.prompt_tokens
-            if hasattr(_out, 'completion_tokens') and _out.completion_tokens:
-                _ct = _out.completion_tokens
-            if _delta:
-                _content = _sp.sub('', _delta)
-                if _content:
-                    _finish = _out.finish_reason if _out.finished else None
-                    _chunks.append(json.dumps({
-                        'id': _rid, 'object': 'chat.completion.chunk',
-                        'created': _ts, 'model': _mn,
-                        'choices': [{'index': 0, 'delta': {'content': _content}, 'finish_reason': _finish}],
+_SPECIAL_TOKENS = re.compile(r'<\|(?:im_start|im_end|endoftext|end_of_turn|eot_id|end_header_id|start_header_id|finetune_right_pad_id)\|>')
+_response_id = f'chatcmpl-{uuid.uuid4().hex[:8]}'
+_created = int(time.time())
+_token_queue = queue.SimpleQueue()
+
+def _stream_worker():
+    import json as _json
+    try:
+        async def _run():
+            _pt, _ct = 0, 0
+            async for _out in engine.stream_chat(**_chat_kwargs):
+                _delta = _out.new_text
+                if hasattr(_out, 'prompt_tokens') and _out.prompt_tokens:
+                    _pt = _out.prompt_tokens
+                if hasattr(_out, 'completion_tokens') and _out.completion_tokens:
+                    _ct = _out.completion_tokens
+                if _delta:
+                    _content = _SPECIAL_TOKENS.sub('', _delta)
+                    if _content:
+                        _finish = _out.finish_reason if _out.finished else None
+                        _token_queue.put(_json.dumps({
+                            'id': _response_id, 'object': 'chat.completion.chunk',
+                            'created': _created, 'model': _model_name,
+                            'choices': [{'index': 0, 'delta': {'content': _content}, 'finish_reason': _finish}],
+                        }))
+                elif _out.finished:
+                    _token_queue.put(_json.dumps({
+                        'id': _response_id, 'object': 'chat.completion.chunk',
+                        'created': _created, 'model': _model_name,
+                        'choices': [{'index': 0, 'delta': {}, 'finish_reason': _out.finish_reason or 'stop'}],
                     }))
-            elif _out.finished:
-                _chunks.append(json.dumps({
-                    'id': _rid, 'object': 'chat.completion.chunk',
-                    'created': _ts, 'model': _mn,
-                    'choices': [{'index': 0, 'delta': {}, 'finish_reason': _out.finish_reason or 'stop'}],
-                }))
-        return _chunks, _pt, _ct
+            _token_queue.put(('__DONE__', _pt, _ct))
+        asyncio.run(_run())
+    except Exception as _e:
+        _token_queue.put(('__ERROR__', str(_e)))
 
-    _result = asyncio.run(_run_stream(engine, _chat_kwargs, _SPECIAL_TOKENS, _response_id, _created, _model_name))
-    _stream_chunks = _result[0]
-    _stream_prompt_tokens = _result[1]
-    _stream_completion_tokens = _result[2]
-except Exception as _e:
-    _err_detail = _tb.format_exc()
-    raise RuntimeError(f"stream generate failed: {_err_detail}") from _e
+_stream_thread = threading.Thread(target=_stream_worker, daemon=True)
+_stream_thread.start()
 "#,
                 )
                 .unwrap();
-                py.run(code.as_c_str(), None, Some(&locals))
-                    .context("vllm-mlx stream_chat failed")?;
+                py.run(setup_code.as_c_str(), None, Some(&locals))
+                    .context("vllm-mlx stream setup failed")?;
 
-                let chunks: Vec<String> = locals
-                    .get_item("_stream_chunks")?
-                    .ok_or_else(|| anyhow::anyhow!("no stream chunks"))?
-                    .extract()?;
-                let prompt_tokens: u64 = locals
-                    .get_item("_stream_prompt_tokens")?
-                    .ok_or_else(|| anyhow::anyhow!("no prompt tokens"))?
-                    .extract()?;
-                let completion_tokens: u64 = locals
-                    .get_item("_stream_completion_tokens")?
-                    .ok_or_else(|| anyhow::anyhow!("no completion tokens"))?
-                    .extract()?;
+                let token_queue = locals
+                    .get_item("_token_queue")?
+                    .ok_or_else(|| anyhow::anyhow!("no token queue"))?
+                    .clone()
+                    .unbind();
 
-                // Deliver chunks to the callback
-                let num_chunks = chunks.len();
-                for (i, chunk_json) in chunks.into_iter().enumerate() {
-                    let is_last = i == num_chunks - 1;
-                    let sse_line = format!("data: {}", chunk_json);
-                    on_token(StreamToken {
-                        text: sse_line,
-                        finish_reason: if is_last {
-                            Some("stop".to_string())
-                        } else {
-                            None
-                        },
+                // Release the GIL and poll the queue for real-time streaming.
+                let mut prompt_tokens = 0u64;
+                let mut completion_tokens = 0u64;
+                loop {
+                    // Acquire GIL briefly to get one item from the queue.
+                    let item = Python::with_gil(|py| -> Result<Option<String>> {
+                        let queue = token_queue.bind(py);
+                        let item = queue
+                            .call_method1("get", (true, 120.0))
+                            .context("queue.get timeout")?;
+
+                        if let Ok(tup) = item.extract::<(String, u64, u64)>() {
+                            if tup.0 == "__DONE__" {
+                                prompt_tokens = tup.1;
+                                completion_tokens = tup.2;
+                                return Ok(None);
+                            }
+                        }
+                        if let Ok(tup) = item.extract::<(String, String)>() {
+                            if tup.0 == "__ERROR__" {
+                                anyhow::bail!("stream error: {}", tup.1);
+                            }
+                        }
+                        Ok(Some(item.extract::<String>()?))
                     })?;
+
+                    match item {
+                        Some(chunk_json) => {
+                            let sse_line = format!("data: {}", chunk_json);
+                            on_token(StreamToken {
+                                text: sse_line,
+                                finish_reason: None,
+                            })?;
+                        }
+                        None => break,
+                    }
                 }
 
                 Ok((prompt_tokens, completion_tokens))

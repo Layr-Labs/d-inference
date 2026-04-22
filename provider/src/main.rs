@@ -3940,6 +3940,7 @@ async fn handle_inprocess_request(
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    tracing::info!("Request stream={is_streaming} (raw stream field: {:?})", body.get("stream"));
 
     // The body is passed to the engine which wipes it after use.
     // No need to extract messages separately — the server handler

@@ -625,38 +625,42 @@ _response_id = f'chatcmpl-{uuid.uuid4().hex[:8]}'
 _created = int(time.time())
 _token_queue = queue.SimpleQueue()
 
-def _stream_worker():
-    import json as _json
+def _stream_worker(_q, _eng, _kwargs, _sp, _rid, _ts, _mn):
+    import asyncio as _aio, json as _json
     try:
         async def _run():
             _pt, _ct = 0, 0
-            async for _out in engine.stream_chat(**_chat_kwargs):
+            async for _out in _eng.stream_chat(**_kwargs):
                 _delta = _out.new_text
                 if hasattr(_out, 'prompt_tokens') and _out.prompt_tokens:
                     _pt = _out.prompt_tokens
                 if hasattr(_out, 'completion_tokens') and _out.completion_tokens:
                     _ct = _out.completion_tokens
                 if _delta:
-                    _content = _SPECIAL_TOKENS.sub('', _delta)
+                    _content = _sp.sub('', _delta)
                     if _content:
                         _finish = _out.finish_reason if _out.finished else None
-                        _token_queue.put(_json.dumps({
-                            'id': _response_id, 'object': 'chat.completion.chunk',
-                            'created': _created, 'model': _model_name,
+                        _q.put(_json.dumps({
+                            'id': _rid, 'object': 'chat.completion.chunk',
+                            'created': _ts, 'model': _mn,
                             'choices': [{'index': 0, 'delta': {'content': _content}, 'finish_reason': _finish}],
                         }))
                 elif _out.finished:
-                    _token_queue.put(_json.dumps({
-                        'id': _response_id, 'object': 'chat.completion.chunk',
-                        'created': _created, 'model': _model_name,
+                    _q.put(_json.dumps({
+                        'id': _rid, 'object': 'chat.completion.chunk',
+                        'created': _ts, 'model': _mn,
                         'choices': [{'index': 0, 'delta': {}, 'finish_reason': _out.finish_reason or 'stop'}],
                     }))
-            _token_queue.put(('__DONE__', _pt, _ct))
-        asyncio.run(_run())
+            _q.put(('__DONE__', _pt, _ct))
+        _aio.run(_run())
     except Exception as _e:
-        _token_queue.put(('__ERROR__', str(_e)))
+        _q.put(('__ERROR__', str(_e)))
 
-_stream_thread = threading.Thread(target=_stream_worker, daemon=True)
+_stream_thread = threading.Thread(
+    target=_stream_worker,
+    args=(_token_queue, engine, _chat_kwargs, _SPECIAL_TOKENS, _response_id, _created, _model_name),
+    daemon=True,
+)
 _stream_thread.start()
 "#,
                 )

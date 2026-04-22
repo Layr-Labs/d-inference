@@ -200,7 +200,11 @@ func (c *Client) ForwardLog(entry TelemetryLogEntry) {
 		return
 	}
 
-	attrs := make(map[string]any, len(entry.Fields)+6)
+	n := len(entry.Fields)
+	if n > 10000 {
+		n = 10000
+	}
+	attrs := make(map[string]any, n+6)
 	for k, v := range entry.Fields {
 		attrs[k] = v
 	}

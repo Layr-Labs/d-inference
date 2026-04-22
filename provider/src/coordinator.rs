@@ -232,6 +232,7 @@ impl CoordinatorClient {
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Result<()> {
         let mut backoff = ExponentialBackoff::new();
+        let mut reconnect_count: u64 = 0;
 
         loop {
             // Check for shutdown before attempting connection
@@ -258,6 +259,22 @@ impl CoordinatorClient {
                         "Coordinator connection error: {e}. Reconnecting in {:?}",
                         delay
                     );
+                    reconnect_count += 1;
+                    // Only report connectivity telemetry after a few failures
+                    // so transient hiccups don't flood the admin console.
+                    if reconnect_count == 3 || reconnect_count == 10 || reconnect_count % 30 == 0 {
+                        crate::telemetry::emit(
+                            crate::telemetry::TelemetryEvent::new(
+                                crate::telemetry::Source::Provider,
+                                crate::telemetry::Severity::Warn,
+                                crate::telemetry::Kind::Connectivity,
+                                "coordinator reconnect",
+                            )
+                            .with_field("reconnect_count", reconnect_count as i64)
+                            .with_field("last_error", format!("{e}"))
+                            .with_field("ws_state", "reconnecting"),
+                        );
+                    }
 
                     tokio::select! {
                         _ = tokio::time::sleep(delay) => {}

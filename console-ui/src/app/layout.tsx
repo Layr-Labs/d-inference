@@ -4,6 +4,8 @@ import { AppShell } from "@/components/AppShell";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { PrivyClientProvider } from "@/components/providers/PrivyClientProvider";
 import { VerificationModeProvider } from "@/lib/verification-mode";
+import { TelemetryInitializer } from "@/components/TelemetryInitializer";
+import { DatadogRUM } from "@/components/DatadogRUM";
 
 export const metadata: Metadata = {
   title: "Darkbloom — Private AI on Verified Macs",
@@ -25,6 +27,8 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="font-sans antialiased">
+        <TelemetryInitializer />
+        <DatadogRUM />
         <ThemeProvider>
           <PrivyClientProvider>
             <VerificationModeProvider>

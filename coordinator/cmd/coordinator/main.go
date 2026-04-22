@@ -38,18 +38,27 @@ import (
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/billing"
+	"github.com/eigeninference/coordinator/internal/datadog"
 	"github.com/eigeninference/coordinator/internal/e2e"
 	"github.com/eigeninference/coordinator/internal/mdm"
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/telemetry"
+
+	ddtracer "gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
 
 func main() {
-	// Structured logging.
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	// Structured JSON logging. When Datadog is active, we wrap the handler
+	// with trace context injection so logs correlate with APM traces.
+	var slogHandler slog.Handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
-	}))
+	})
+	if os.Getenv("DD_API_KEY") != "" || os.Getenv("DD_AGENT_HOST") != "" {
+		slogHandler = datadog.NewTraceHandler(slogHandler)
+	}
+	logger := slog.New(slogHandler)
 	slog.SetDefault(logger)
 
 	// Configuration from environment.
@@ -100,6 +109,37 @@ func main() {
 
 	srv := api.NewServer(reg, st, logger)
 	srv.SetAdminKey(adminKey)
+
+	// Coordinator self-telemetry emitter. Writes directly to the store so
+	// panics and handler errors are observable from the admin console.
+	telemetryEmitter := telemetry.NewEmitter(logger, st, srv.Metrics(), telemetry.CoordinatorVersion)
+	srv.SetEmitter(telemetryEmitter)
+
+	// --- Datadog APM + DogStatsD + Logs API ---
+	ddCfg := datadog.ConfigFromEnv()
+	if ddCfg.APIKey != "" || os.Getenv("DD_AGENT_HOST") != "" {
+		// Start dd-trace-go APM tracer. The DD agent sidecar collects traces.
+		ddtracer.Start(
+			ddtracer.WithService(ddCfg.Service),
+			ddtracer.WithEnv(ddCfg.Env),
+		)
+		defer ddtracer.Stop()
+		logger.Info("datadog APM tracer started", "service", ddCfg.Service, "env", ddCfg.Env)
+
+		ddClient, err := datadog.NewClient(ddCfg, logger)
+		if err != nil {
+			logger.Warn("datadog client init failed (continuing without DD)", "error", err)
+		} else {
+			srv.SetDatadog(ddClient)
+			telemetryEmitter.SetDatadog(ddClient)
+			defer ddClient.Close()
+			logger.Info("datadog integration enabled",
+				"statsd_addr", ddCfg.StatsdAddr,
+				"logs_api", ddCfg.APIKey != "",
+				"site", ddCfg.Site,
+			)
+		}
+	}
 
 	// Sync the model catalog to the registry so providers and consumers
 	// are filtered against the admin-managed whitelist.
@@ -377,6 +417,11 @@ func main() {
 
 	// Start background eviction of stale providers.
 	reg.StartEvictionLoop(ctx, 90*time.Second)
+
+	// Push gauge values to DogStatsD periodically.
+	go srv.StartDDGaugeLoop(ctx)
+
+	// Telemetry retention is handled by Datadog; no local retention loop needed.
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{

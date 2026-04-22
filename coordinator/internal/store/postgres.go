@@ -396,6 +396,29 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_account ON stripe_withdrawals(account_id, created_at DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_stripe_withdrawals_transfer ON stripe_withdrawals(transfer_id) WHERE transfer_id != ''`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_stripe_withdrawals_payout ON stripe_withdrawals(payout_id) WHERE payout_id != ''`,
+
+		// Telemetry events — production observability table.
+		`CREATE TABLE IF NOT EXISTS telemetry_events (
+			id UUID PRIMARY KEY,
+			ts TIMESTAMPTZ NOT NULL,
+			source TEXT NOT NULL,
+			severity TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			version TEXT NOT NULL DEFAULT '',
+			machine_id TEXT NOT NULL DEFAULT '',
+			account_id TEXT NOT NULL DEFAULT '',
+			request_id TEXT NOT NULL DEFAULT '',
+			session_id TEXT NOT NULL DEFAULT '',
+			message TEXT NOT NULL,
+			fields JSONB NOT NULL DEFAULT '{}'::jsonb,
+			stack TEXT NOT NULL DEFAULT '',
+			received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_telemetry_ts ON telemetry_events(ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_telemetry_source_sev ON telemetry_events(source, severity, ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_telemetry_kind ON telemetry_events(kind, ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_telemetry_machine ON telemetry_events(machine_id, ts DESC) WHERE machine_id != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_telemetry_request ON telemetry_events(request_id) WHERE request_id != ''`,
 	}
 
 	for _, m := range migrations {

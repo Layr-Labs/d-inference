@@ -303,7 +303,40 @@ type Store interface {
 
 	// GetReputation returns a provider's reputation record.
 	GetReputation(ctx context.Context, providerID string) (*ReputationRecord, error)
+
+	// --- Telemetry ---
+	//
+	// Telemetry events are forwarded to Datadog (Logs API + DogStatsD).
+	// The store retains a bounded in-memory ring buffer for the /v1/admin/metrics
+	// endpoint, but Postgres persistence and admin read/prune endpoints have
+	// been removed — Datadog handles retention and querying.
+
+	// InsertTelemetryEvents appends events to the in-memory ring buffer.
+	// Used by the ingestion handler and the coordinator emitter. The primary
+	// destination is Datadog; this is secondary for debugging.
+	InsertTelemetryEvents(ctx context.Context, events []TelemetryEventRecord) error
 }
+
+// TelemetryEventRecord is the persistence-layer representation of a telemetry
+// event. It mirrors protocol.TelemetryEvent but lives in this package so the
+// store can stay free of protocol-layer dependencies.
+type TelemetryEventRecord struct {
+	ID         string          `json:"id"`
+	Timestamp  time.Time       `json:"timestamp"`
+	Source     string          `json:"source"`
+	Severity   string          `json:"severity"`
+	Kind       string          `json:"kind"`
+	Version    string          `json:"version,omitempty"`
+	MachineID  string          `json:"machine_id,omitempty"`
+	AccountID  string          `json:"account_id,omitempty"`
+	RequestID  string          `json:"request_id,omitempty"`
+	SessionID  string          `json:"session_id,omitempty"`
+	Message    string          `json:"message"`
+	Fields     json.RawMessage `json:"fields,omitempty"`
+	Stack      string          `json:"stack,omitempty"`
+	ReceivedAt time.Time       `json:"received_at"`
+}
+
 
 // UsageRecord captures a single inference usage event.
 type UsageRecord struct {

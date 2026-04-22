@@ -127,6 +127,10 @@ MNEMONIC=$(fetch eigeninference-solana-mnemonic)
 MICROMDM_API_KEY=$(fetch eigeninference-micromdm-api-key)
 EIGENINFERENCE_MDM_API_KEY=$(fetch eigeninference-micromdm-api-key)
 MDM_PUSH_P12_B64=$(fetch eigeninference-mdm-push-p12-b64)
+DD_API_KEY=$(fetch eigeninference-dd-api-key)
+DD_SITE=$(fetch eigeninference-dd-site)
+DD_ENV=development
+DD_SERVICE=d-inference-coordinator
 EOF
 chmod 600 "$ENV_FILE"
 

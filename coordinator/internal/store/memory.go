@@ -89,6 +89,9 @@ type MemoryStore struct {
 	providerRecords    map[string]*ProviderRecord   // providerID → record
 	reputationRecords  map[string]*ReputationRecord // providerID → reputation
 	serialToProviderID map[string]string            // serialNumber → providerID
+
+	// Telemetry ring buffer (bounded at memTelemetryCap)
+	telemetryEvents []TelemetryEventRecord
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -127,6 +130,7 @@ func NewMemory(adminKey string) *MemoryStore {
 		providerRecords:       make(map[string]*ProviderRecord),
 		reputationRecords:     make(map[string]*ReputationRecord),
 		serialToProviderID:    make(map[string]string),
+		telemetryEvents:       make([]TelemetryEventRecord, 0, memTelemetryCap),
 	}
 	if adminKey != "" {
 		s.keys[adminKey] = true

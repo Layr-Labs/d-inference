@@ -47,12 +47,12 @@ image-bridge/         Python FastAPI image generation bridge
 ├── requirements.txt
 └── tests/
 
-app/EigenInference/   Swift — macOS menu bar app (SwiftUI)
-├── Sources/EigenInference/
-│   ├── EigenInferenceApp.swift    App entry, menu bar setup
+app/Darkbloom/        Swift — macOS menu bar app (SwiftUI)
+├── Sources/Darkbloom/
+│   ├── DarkbloomApp.swift         App entry, menu bar setup
 │   ├── StatusViewModel.swift      Core state management
 │   ├── ProviderManager.swift      Provider subprocess lifecycle
-│   ├── CLIRunner.swift            Launches eigeninference-provider
+│   ├── CLIRunner.swift            Launches darkbloom
 │   ├── ConfigManager.swift        TOML config read/write
 │   ├── SecurityManager.swift      Trust level checks (SIP, SE, MDM, Secure Boot)
 │   ├── ModelManager.swift         HuggingFace model scanning
@@ -71,7 +71,7 @@ app/EigenInference/   Swift — macOS menu bar app (SwiftUI)
 │   ├── ModelCatalogView.swift     Model browser with RAM fit indicators
 │   ├── GuideAvatar.swift          Animated mascot (mood-based PNGs)
 │   └── Illustrations.swift        Procedural Mac illustration
-├── Tests/EigenInferenceTests/
+├── Tests/DarkbloomTests/
 
 enclave/              Swift — Secure Enclave attestation CLI helper
 ├── Sources/
@@ -135,7 +135,7 @@ cargo build --release --no-default-features
 
 ### macOS App (Swift)
 ```bash
-cd app/EigenInference
+cd app/Darkbloom
 swift build -c release
 swift test
 ```

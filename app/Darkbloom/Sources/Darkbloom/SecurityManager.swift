@@ -101,7 +101,6 @@ final class SecurityManager: ObservableObject {
         let profiles = await CLIRunner.shell("profiles list 2>&1")
         let combined = (profiles.stdout + profiles.stderr).lowercased()
         if combined.contains("micromdm") || combined.contains("darkbloom") ||
-           combined.contains("eigeninference") ||
            combined.contains("com.github.micromdm") {
             return true
         }

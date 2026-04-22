@@ -14,7 +14,7 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 8) {
             // Header
             HStack {
-                DarkBloomBrand(size: 18)
+                DarkbloomBrand(size: 18)
                 Circle()
                     .fill(viewModel.coordinatorConnected ? Color.adaptiveTealAccent : Color.adaptiveError)
                     .frame(width: 6, height: 6)

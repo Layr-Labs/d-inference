@@ -41,7 +41,7 @@ struct DashboardView: View {
             }
 
             VStack(alignment: .leading, spacing: 3) {
-                DarkBloomBrand(size: 24)
+                DarkbloomBrand(size: 24)
                 HStack(spacing: 6) {
                     Text(providerStatusText)
                         .font(.bodyWarm)

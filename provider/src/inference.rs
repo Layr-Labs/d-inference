@@ -943,7 +943,7 @@ if hasattr(builtins, '_eigeninference_original_import'):
     #[test]
     fn test_python_runtime_roots_discovers_bundle_and_home_runtime() {
         let tmp = tempfile::tempdir().unwrap();
-        let app_root = tmp.path().join("EigenInference.app");
+        let app_root = tmp.path().join("Darkbloom.app");
         let exe = app_root.join("Contents/MacOS/darkbloom");
         let frameworks_python = app_root.join("Contents/Frameworks/python");
         let resources_python = app_root.join("Contents/Resources/python");

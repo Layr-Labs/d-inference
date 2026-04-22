@@ -91,7 +91,7 @@ CLI commands: `configure`, `models`, `ask`, `chat`, `deposit`, `balance`, `usage
 
 EigenInference-specific response fields: `provider_attested` (bool), `provider_trust_level` (string).
 
-### macOS App (`app/EigenInference/`)
+### macOS App (`app/Darkbloom/`)
 
 **Language:** Swift/SwiftUI
 

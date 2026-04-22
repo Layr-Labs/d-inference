@@ -2,7 +2,7 @@
 
 import Testing
 import Foundation
-@testable import EigenInference
+@testable import Darkbloom
 
 @Suite("CLIRunner - Binary Resolution")
 struct CLIRunnerBinaryTests {

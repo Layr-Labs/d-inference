@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/eigeninference/coordinator/internal/datadog"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/store"
 	"github.com/google/uuid"
@@ -39,6 +40,7 @@ type Emitter struct {
 	logger  *slog.Logger
 	store   store.Store
 	metrics MetricsSink
+	dd      *datadog.Client
 	version string
 }
 
@@ -52,6 +54,14 @@ func NewEmitter(logger *slog.Logger, st store.Store, metrics MetricsSink, versio
 		store:   st,
 		metrics: metrics,
 		version: version,
+	}
+}
+
+// SetDatadog wires the Datadog client so coordinator-emitted events are also
+// forwarded to the DD Logs API.
+func (e *Emitter) SetDatadog(dd *datadog.Client) {
+	if e != nil {
+		e.dd = dd
 	}
 }
 
@@ -125,6 +135,21 @@ func (e *Emitter) Emit(ctx context.Context, ev Event) {
 			string(ev.Severity),
 			string(ev.Kind),
 		)
+	}
+
+	// Forward to Datadog Logs API.
+	if e.dd != nil {
+		e.dd.ForwardLog(datadog.TelemetryLogEntry{
+			Source:    string(protocol.TelemetrySourceCoordinator),
+			Severity:  string(ev.Severity),
+			Kind:      string(ev.Kind),
+			Message:   ev.Message,
+			RequestID: ev.RequestID,
+			SessionID: SessionID,
+			Version:   e.version,
+			Fields:    ev.Fields,
+			Stack:     ev.Stack,
+		})
 	}
 }
 

@@ -26,10 +26,12 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/billing"
+	"github.com/eigeninference/coordinator/internal/datadog"
 	"github.com/eigeninference/coordinator/internal/e2e"
 	"github.com/eigeninference/coordinator/internal/mdm"
 	"github.com/eigeninference/coordinator/internal/payments"
@@ -131,6 +133,12 @@ type Server struct {
 	// /v1/encryption-key endpoint and the sealed-request middleware.
 	coordinatorKey *e2e.CoordinatorKey
 
+	// imageUploads stores generated images keyed by request_id.
+	// Providers upload images via HTTP POST, then send a small WebSocket
+	// completion message. The consumer handler retrieves images from here.
+	imageUploads   map[string][][]byte // request_id → list of PNG images
+	imageUploadsMu sync.Mutex
+
 	// metrics is the in-process metrics registry exposed via /v1/admin/metrics
 	// and used by internal counters/histograms. Never nil.
 	metrics *Metrics
@@ -142,6 +150,10 @@ type Server struct {
 	// failures, attestation failures, etc.). Set via SetEmitter; nil before
 	// main.go wires it up.
 	emitter *telemetry.Emitter
+
+	// dd is the Datadog integration client for DogStatsD metrics and
+	// Logs API event forwarding. Nil when DD is not configured.
+	dd *datadog.Client
 }
 
 // NewServer creates a configured Server with all routes mounted.
@@ -155,6 +167,7 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 		ledger:               payments.NewLedger(st),
 		logger:               logger,
 		mux:                  http.NewServeMux(),
+		imageUploads:         make(map[string][][]byte),
 		knownRuntimeManifest: &RuntimeManifest{},
 		metrics:              NewMetrics(),
 		telemetryLimiter:     newTelemetryLimiter(),
@@ -200,6 +213,17 @@ func (s *Server) SetEmitter(e *telemetry.Emitter) {
 	s.emitter = e
 }
 
+// SetDatadog wires the Datadog client for DogStatsD metrics and Logs API forwarding.
+func (s *Server) SetDatadog(dd *datadog.Client) {
+	s.dd = dd
+}
+
+// Datadog returns the Datadog client (or nil). Exposed so main.go and the
+// telemetry emitter can share the same client.
+func (s *Server) Datadog() *datadog.Client {
+	return s.dd
+}
+
 // Metrics returns the in-process metrics registry so cmd/coordinator can
 // expose it to the telemetry emitter and other integrations.
 func (s *Server) Metrics() *Metrics {
@@ -233,6 +257,27 @@ func (s *Server) emitRequest(ctx context.Context, severity protocol.TelemetrySev
 		Fields:    fields,
 		RequestID: requestID,
 	})
+}
+
+// ddIncr increments a DogStatsD counter. No-op if DD is not configured.
+func (s *Server) ddIncr(name string, tags []string) {
+	if s.dd != nil {
+		s.dd.Incr(name, tags)
+	}
+}
+
+// ddHistogram records a DogStatsD histogram value. No-op if DD is not configured.
+func (s *Server) ddHistogram(name string, value float64, tags []string) {
+	if s.dd != nil {
+		s.dd.Histogram(name, value, tags)
+	}
+}
+
+// ddGauge sets a DogStatsD gauge value. No-op if DD is not configured.
+func (s *Server) ddGauge(name string, value float64, tags []string) {
+	if s.dd != nil {
+		s.dd.Gauge(name, value, tags)
+	}
 }
 
 // emitPanic is the panic-specific emit helper. Captures stack separately.
@@ -577,7 +622,6 @@ func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHas
 		}
 	}
 
-
 	return len(mismatches) == 0, mismatches
 }
 
@@ -720,8 +764,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/releases/latest", s.handleLatestRelease) // public (install.sh)
 
 	// Device authorization flow — providers link to user accounts.
-	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)                      // no auth — provider not yet authenticated
-	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)                    // no auth — polls with device_code secret
+	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)                           // no auth — provider not yet authenticated
+	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)                         // no auth — polls with device_code secret
 	s.mux.HandleFunc("POST /v1/device/approve", s.requirePrivyAuth(s.handleDeviceApprove)) // interactive session only — API keys rejected
 
 	// --- Billing endpoints (multi-chain payments + referrals) ---
@@ -778,11 +822,9 @@ func (s *Server) routes() {
 
 	// Telemetry ingestion — authentication is resolved inside the handler
 	// because providers, consumers, and anonymous clients all hit this path.
+	// Events are forwarded to Datadog; admin read/summary endpoints have been
+	// removed (use Datadog Log Explorer).
 	s.mux.HandleFunc("POST /v1/telemetry/events", s.handleTelemetryIngest)
-
-	// Telemetry admin reads
-	s.mux.HandleFunc("GET /v1/admin/telemetry", s.handleAdminTelemetryList)
-	s.mux.HandleFunc("GET /v1/admin/telemetry/summary", s.handleAdminTelemetrySummary)
 
 	// Metrics snapshot (admin only)
 	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
@@ -799,6 +841,28 @@ func (s *Server) registerDefaultGauges() {
 		defer s.imageUploadsMu.Unlock()
 		return float64(len(s.imageUploads))
 	})
+}
+
+// StartDDGaugeLoop periodically pushes gauge values to DogStatsD. Gauges
+// are point-in-time values and must be pushed regularly (not on-demand like
+// counters). Call as a goroutine; stops when ctx is cancelled.
+func (s *Server) StartDDGaugeLoop(ctx context.Context) {
+	if s.dd == nil {
+		return
+	}
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.ddGauge("providers.online", float64(s.registry.ProviderCount()), nil)
+			if q := s.registry.Queue(); q != nil {
+				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
+			}
+		}
+	}
 }
 
 // handleAdminMetrics returns the metrics snapshot in JSON or Prometheus text.
@@ -998,17 +1062,31 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 			"remote", r.RemoteAddr,
 		)
 
+		pathLabel := httpPathLabel(r.URL.Path)
+		statusStr := strconvItoa(sw.status)
+
 		if s.metrics != nil {
 			s.metrics.IncCounter("http_requests_total",
 				MetricLabel{"method", r.Method},
-				MetricLabel{"path", httpPathLabel(r.URL.Path)},
-				MetricLabel{"status", strconvItoa(sw.status)},
+				MetricLabel{"path", pathLabel},
+				MetricLabel{"status", statusStr},
 			)
 			s.metrics.ObserveHistogram("http_request_duration_ms",
 				float64(dur.Milliseconds()),
 				MetricLabel{"method", r.Method},
-				MetricLabel{"path", httpPathLabel(r.URL.Path)},
+				MetricLabel{"path", pathLabel},
 			)
+		}
+
+		// DogStatsD — emit request counter and latency histogram.
+		if s.dd != nil {
+			tags := []string{
+				"method:" + r.Method,
+				"path:" + pathLabel,
+				"status_code:" + statusStr,
+			}
+			s.dd.Incr("http.requests", tags)
+			s.dd.Histogram("http.latency_ms", float64(dur.Milliseconds()), tags)
 		}
 	})
 }
@@ -1079,4 +1157,3 @@ func extractBearerToken(r *http.Request) string {
 	}
 	return strings.TrimSpace(parts[1])
 }
-

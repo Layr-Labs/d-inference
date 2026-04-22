@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -85,7 +84,7 @@ func TestTelemetryIngest_Anonymous(t *testing.T) {
 		t.Fatalf("code: got %d want 202 (body=%s)", rr.Code, rr.Body.String())
 	}
 
-	events, _ := st.ListTelemetryEvents(context.Background(), store.TelemetryFilter{Limit: 10})
+	events := st.TelemetryEventsSnapshot()
 	if len(events) != 1 {
 		t.Fatalf("stored events: got %d want 1", len(events))
 	}
@@ -145,7 +144,7 @@ func TestTelemetryIngest_MessageRequired(t *testing.T) {
 	if resp.Accepted != 0 || resp.Rejected != 1 {
 		t.Fatalf("got accepted=%d rejected=%d", resp.Accepted, resp.Rejected)
 	}
-	events, _ := st.ListTelemetryEvents(context.Background(), store.TelemetryFilter{Limit: 10})
+	events := st.TelemetryEventsSnapshot()
 	if len(events) != 0 {
 		t.Fatalf("expected no stored events")
 	}
@@ -177,7 +176,7 @@ func TestTelemetryIngest_UnknownEnumsCoerced(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("code: %d", rr.Code)
 	}
-	events, _ := st.ListTelemetryEvents(context.Background(), store.TelemetryFilter{Limit: 10})
+	events := st.TelemetryEventsSnapshot()
 	if len(events) != 1 {
 		t.Fatalf("stored: %d", len(events))
 	}
@@ -192,55 +191,7 @@ func TestTelemetryIngest_UnknownEnumsCoerced(t *testing.T) {
 	}
 }
 
-func TestTelemetryAdmin_RequiresAuth(t *testing.T) {
-	srv, _ := telemetryTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/v1/admin/telemetry", nil)
-	rr := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rr, req)
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("admin without auth: got %d want 403", rr.Code)
-	}
-}
-
-func TestTelemetryAdmin_ListAndSummary(t *testing.T) {
-	srv, _ := telemetryTestServer(t)
-
-	// Seed with a few events (anonymous ingest).
-	batch := protocol.TelemetryBatch{Events: []protocol.TelemetryEvent{
-		mkProtocolEvent("one"),
-		mkProtocolEvent("two"),
-	}}
-	postJSON(t, srv, "/v1/telemetry/events", batch, "")
-
-	// Admin list
-	req := httptest.NewRequest(http.MethodGet, "/v1/admin/telemetry?limit=5", nil)
-	req.Header.Set("Authorization", "Bearer admin-key")
-	rr := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("admin list: got %d want 200", rr.Code)
-	}
-	var listResp struct {
-		Events []any `json:"events"`
-	}
-	_ = json.NewDecoder(rr.Body).Decode(&listResp)
-	if len(listResp.Events) != 2 {
-		t.Fatalf("admin list events: got %d want 2", len(listResp.Events))
-	}
-
-	// Admin summary
-	req = httptest.NewRequest(http.MethodGet, "/v1/admin/telemetry/summary?window=1h", nil)
-	req.Header.Set("Authorization", "Bearer admin-key")
-	rr = httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("admin summary: got %d want 200", rr.Code)
-	}
-}
-
 func TestTelemetryFieldAllowlistHasKnownKeys(t *testing.T) {
-	// Canonical sanity: a handful of hot-path fields must exist, else a typo
-	// in the allowlist will silently drop production telemetry.
 	for _, k := range []string{"component", "model", "exit_code", "reason", "duration_ms"} {
 		if _, ok := telemetryFieldAllowlist[k]; !ok {
 			t.Errorf("allowlist missing expected key %q", k)

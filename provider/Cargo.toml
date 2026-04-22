@@ -31,10 +31,6 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 # WebSocket client
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 
-# macOS Keychain / Security.framework
-[target.'cfg(target_os = "macos")'.dependencies]
-core-foundation = "0.10"
-
 # Futures combinators
 futures-util = "0.3"
 

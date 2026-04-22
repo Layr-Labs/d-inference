@@ -1,12 +1,10 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/eigeninference/coordinator/internal/store"
 	"github.com/eigeninference/coordinator/internal/telemetry"
 )
 
@@ -30,14 +28,18 @@ func TestRecoverMiddlewareCatchesPanic(t *testing.T) {
 		t.Fatalf("status: got %d want 500", rr.Code)
 	}
 
-	events, err := st.ListTelemetryEvents(context.Background(), store.TelemetryFilter{Kind: "panic", Limit: 10})
-	if err != nil {
-		t.Fatalf("list events: %v", err)
+	events := st.TelemetryEventsSnapshot()
+	found := false
+	for _, e := range events {
+		if e.Kind == "panic" {
+			found = true
+			if e.Stack == "" {
+				t.Fatalf("stack missing on panic event")
+			}
+			break
+		}
 	}
-	if len(events) == 0 {
+	if !found {
 		t.Fatalf("no panic telemetry stored")
-	}
-	if events[0].Stack == "" {
-		t.Fatalf("stack missing on panic event")
 	}
 }

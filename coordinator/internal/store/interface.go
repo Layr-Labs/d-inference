@@ -273,21 +273,16 @@ type Store interface {
 	GetReputation(ctx context.Context, providerID string) (*ReputationRecord, error)
 
 	// --- Telemetry ---
+	//
+	// Telemetry events are forwarded to Datadog (Logs API + DogStatsD).
+	// The store retains a bounded in-memory ring buffer for the /v1/admin/metrics
+	// endpoint, but Postgres persistence and admin read/prune endpoints have
+	// been removed — Datadog handles retention and querying.
 
-	// InsertTelemetryEvents appends a batch of events. Implementations should
-	// persist them durably (Postgres) or store in a bounded ring buffer (memory).
+	// InsertTelemetryEvents appends events to the in-memory ring buffer.
+	// Used by the ingestion handler and the coordinator emitter. The primary
+	// destination is Datadog; this is secondary for debugging.
 	InsertTelemetryEvents(ctx context.Context, events []TelemetryEventRecord) error
-
-	// ListTelemetryEvents returns events matching the filter, newest first.
-	ListTelemetryEvents(ctx context.Context, f TelemetryFilter) ([]TelemetryEventRecord, error)
-
-	// DeleteTelemetryEventsOlderThan prunes events older than the cutoff.
-	// Returns the number of rows removed.
-	DeleteTelemetryEventsOlderThan(ctx context.Context, before time.Time) (int64, error)
-
-	// CountTelemetryEventsByKind returns counts grouped by (source, severity, kind)
-	// within a time window. Used for the admin dashboard summary tile.
-	CountTelemetryEventsByKind(ctx context.Context, since time.Time) ([]TelemetryKindCount, error)
 }
 
 // TelemetryEventRecord is the persistence-layer representation of a telemetry
@@ -310,26 +305,6 @@ type TelemetryEventRecord struct {
 	ReceivedAt time.Time       `json:"received_at"`
 }
 
-// TelemetryFilter narrows a telemetry query.
-type TelemetryFilter struct {
-	Source    string
-	Severity  string
-	Kind      string
-	MachineID string
-	AccountID string
-	RequestID string
-	Since     time.Time
-	Until     time.Time
-	Limit     int
-}
-
-// TelemetryKindCount is one row from CountTelemetryEventsByKind.
-type TelemetryKindCount struct {
-	Source   string `json:"source"`
-	Severity string `json:"severity"`
-	Kind     string `json:"kind"`
-	Count    int64  `json:"count"`
-}
 
 // UsageRecord captures a single inference usage event.
 type UsageRecord struct {

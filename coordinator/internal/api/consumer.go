@@ -375,6 +375,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				refundReservation()
+				s.ddIncr("request_queue.timeout", []string{"model:" + model})
 				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider became available for model %q (queue timeout)", model)))
 				return
 			}
@@ -502,6 +503,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			if s.metrics != nil {
 				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
 			}
+			s.ddIncr("inference.dispatches", []string{"status:retry"})
 			provider = nil
 			pr = nil
 			continue
@@ -529,6 +531,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			if s.metrics != nil {
 				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
 			}
+			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			provider = nil
 			pr = nil
 			continue
@@ -615,6 +618,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if s.metrics != nil {
 			s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "failure"})
 		}
+		s.ddIncr("inference.dispatches", []string{"status:failure"})
 		writeJSON(w, statusCode, errorResponse("provider_error",
 			fmt.Sprintf("inference failed after %d attempt(s): %s", maxDispatchAttempts, lastErr)))
 		return
@@ -622,6 +626,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if s.metrics != nil {
 		s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "success"})
 	}
+	s.ddIncr("inference.dispatches", []string{"status:success"})
 
 	// Write provider attestation headers now that we're committed.
 	provider.Mu().Lock()

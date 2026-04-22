@@ -148,6 +148,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 						MetricLabel{"reason", "read_error"},
 					)
 				}
+				s.ddIncr("ws.disconnects", []string{"reason:read_error"})
 			}
 			return
 		}
@@ -170,6 +171,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					MetricLabel{"trust_level", string(provider.TrustLevel)},
 				)
 			}
+			s.ddIncr("providers.registrations", []string{"trust_level:" + string(provider.TrustLevel)})
 			s.emit(context.Background(), protocol.SeverityInfo, protocol.KindLog,
 				"provider registered",
 				map[string]any{
@@ -764,6 +766,7 @@ func (s *Server) handleChallengeFailure(providerID string, reason string) {
 			MetricLabel{"reason", reason},
 		)
 	}
+	s.ddIncr("attestation.failures", []string{"reason:" + reason})
 }
 
 func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg *protocol.InferenceResponseChunkMessage) {

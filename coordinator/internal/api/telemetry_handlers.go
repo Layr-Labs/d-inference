@@ -1,10 +1,12 @@
 package api
 
-// Telemetry ingestion and admin read endpoints.
+// Telemetry ingestion endpoint and Datadog forwarding.
 //
 // Ingest:   POST /v1/telemetry/events    (provider token | Privy JWT | API key | anon)
-// Read:     GET  /v1/admin/telemetry     (admin only)
-// Summary:  GET  /v1/admin/telemetry/summary (admin only)
+//
+// Events are stored in the in-memory ring buffer (for admin metrics) and
+// forwarded to Datadog Logs API for durable persistence and querying.
+// Admin read endpoints have been removed — use Datadog Log Explorer.
 //
 // Design rules:
 //   - Hard cap: 100 events/batch, 64KB body.
@@ -21,10 +23,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
+	"github.com/eigeninference/coordinator/internal/datadog"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/store"
 	"github.com/google/uuid"
@@ -220,6 +222,9 @@ func (s *Server) handleTelemetryIngest(w http.ResponseWriter, r *http.Request) {
 				)
 			}
 		}
+
+		// Forward to Datadog Logs API asynchronously.
+		s.forwardTelemetryToDatadog(records)
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]any{
@@ -404,76 +409,37 @@ func truncField(s string, maxLen int) string {
 	return s[:maxLen]
 }
 
-// ---------------------------------------------------------------------------
-// Admin read endpoints
-// ---------------------------------------------------------------------------
-
-// handleAdminTelemetryList returns recent events matching the filter.
-func (s *Server) handleAdminTelemetryList(w http.ResponseWriter, r *http.Request) {
-	if !s.isAdminAuthorized(w, r) {
+// forwardTelemetryToDatadog asynchronously forwards ingested telemetry records
+// to the Datadog Logs API via the batching client. Each record becomes one log
+// entry. Fatal events also trigger a DD Event for alerting.
+func (s *Server) forwardTelemetryToDatadog(records []store.TelemetryEventRecord) {
+	if s.dd == nil {
 		return
 	}
-	q := r.URL.Query()
-	limit, _ := strconv.Atoi(q.Get("limit"))
-	if limit <= 0 {
-		limit = 100
-	}
-	since := parseTime(q.Get("since"))
-	until := parseTime(q.Get("until"))
+	for _, rec := range records {
+		var fields map[string]any
+		if len(rec.Fields) > 0 {
+			_ = json.Unmarshal(rec.Fields, &fields)
+		}
+		s.dd.ForwardLog(datadog.TelemetryLogEntry{
+			Source:    rec.Source,
+			Severity:  rec.Severity,
+			Kind:      rec.Kind,
+			Message:   rec.Message,
+			MachineID: rec.MachineID,
+			AccountID: rec.AccountID,
+			RequestID: rec.RequestID,
+			SessionID: rec.SessionID,
+			Version:   rec.Version,
+			Fields:    fields,
+			Stack:     rec.Stack,
+		})
 
-	filter := store.TelemetryFilter{
-		Source:    q.Get("source"),
-		Severity:  q.Get("severity"),
-		Kind:      q.Get("kind"),
-		MachineID: q.Get("machine_id"),
-		AccountID: q.Get("account_id"),
-		RequestID: q.Get("request_id"),
-		Since:     since,
-		Until:     until,
-		Limit:     limit,
+		// DogStatsD counter for ingested events.
+		s.dd.Incr("telemetry.events_ingested", []string{
+			"source:" + rec.Source,
+			"severity:" + rec.Severity,
+			"kind:" + rec.Kind,
+		})
 	}
-	events, err := s.store.ListTelemetryEvents(r.Context(), filter)
-	if err != nil {
-		s.logger.Error("telemetry: list failed", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list telemetry"))
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
-
-// handleAdminTelemetrySummary returns counts grouped by kind for the dashboard tile.
-func (s *Server) handleAdminTelemetrySummary(w http.ResponseWriter, r *http.Request) {
-	if !s.isAdminAuthorized(w, r) {
-		return
-	}
-	windowStr := r.URL.Query().Get("window")
-	d, err := time.ParseDuration(windowStr)
-	if err != nil || d <= 0 {
-		d = 24 * time.Hour
-	}
-	counts, err := s.store.CountTelemetryEventsByKind(r.Context(), time.Now().Add(-d))
-	if err != nil {
-		s.logger.Error("telemetry: summary failed", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to summarize telemetry"))
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"window": d.String(),
-		"counts": counts,
-	})
-}
-
-func parseTime(s string) time.Time {
-	if s == "" {
-		return time.Time{}
-	}
-	// Accept RFC3339 or unix seconds.
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t
-	}
-	if secs, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return time.Unix(secs, 0)
-	}
-	return time.Time{}
-}
-

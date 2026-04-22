@@ -139,54 +139,22 @@ export async function fetchUsage(): Promise<UsageEntry[]> {
   return data.usage || data;
 }
 
-export interface WalletInfo {
-  credit_balance_micro_usd: number;
-  wallet_address?: string;
-  wallet_usdc_balance?: number;
-  wallet_usdc_usd?: string;
-  coordinator_address?: string;
+export interface StripeCheckoutResponse {
+  url: string;
+  session_id: string;
 }
 
-export async function fetchWalletInfo(): Promise<WalletInfo> {
-  const res = await fetch("/api/payments/wallet", { headers: proxyHeaders() });
-  if (!res.ok) throw new Error(`Failed to fetch wallet info: ${res.status}`);
+export async function createStripeCheckout(amountUsd: string, email?: string): Promise<StripeCheckoutResponse> {
+  const res = await fetch("/api/payments/stripe/checkout", {
+    method: "POST",
+    headers: proxyHeaders(),
+    body: JSON.stringify({ amount_usd: amountUsd, ...(email ? { email } : {}) }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || data?.error || `Checkout failed (${res.status})`);
+  }
   return res.json();
-}
-
-export async function deposit(amountUsd: number): Promise<void> {
-  const res = await fetch("/api/payments/deposit", {
-    method: "POST",
-    headers: proxyHeaders(),
-    body: JSON.stringify({ amount_usd: amountUsd }),
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data?.error?.message || data?.error || `Deposit failed (${res.status})`);
-  }
-}
-
-export async function withdraw(amountUsd: number, walletAddress: string): Promise<void> {
-  const res = await fetch("/api/payments/withdraw", {
-    method: "POST",
-    headers: proxyHeaders(),
-    body: JSON.stringify({ amount_usd: amountUsd, wallet_address: walletAddress }),
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data?.error?.message || data?.error || `Withdrawal failed (${res.status})`);
-  }
-}
-
-export async function submitDepositTx(txSignature: string, referralCode?: string): Promise<void> {
-  const res = await fetch("/api/payments/deposit", {
-    method: "POST",
-    headers: proxyHeaders(),
-    body: JSON.stringify({ tx_signature: txSignature, referral_code: referralCode }),
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data?.error?.message || data?.error || `Deposit verification failed (${res.status})`);
-  }
 }
 
 export interface InviteRedeemResponse {

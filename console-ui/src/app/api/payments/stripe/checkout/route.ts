@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// Proxy for POST /v1/billing/withdraw/stripe. Forwards the Privy session
-// token via cookie fallback so the Billing page can call it with no API key
-// configured.
+// Proxy for POST /v1/billing/stripe/create-session. Stripe Checkout is
+// Privy-only (no API-key access), so we forward the Privy session token via
+// the cookie fallback when no Authorization header is present.
 
 const DEFAULT_COORD = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
 
@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => ({}));
 
-  const res = await fetch(`${coordUrl}/v1/billing/withdraw/stripe`, {
+  const res = await fetch(`${coordUrl}/v1/billing/stripe/create-session`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

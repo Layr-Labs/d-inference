@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/billing"
-	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
@@ -28,26 +26,6 @@ func securityTestServer(t *testing.T) (*Server, *store.MemoryStore) {
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	return srv, st
-}
-
-// securityTestServerWithBilling creates a Server with mock billing configured.
-func securityTestServerWithBilling(t *testing.T) (*Server, *store.MemoryStore) {
-	t.Helper()
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
-
-	ledger := payments.NewLedger(st)
-	billingSvc := billing.NewService(st, ledger, logger, billing.Config{
-		SolanaRPCURL:             "http://localhost:8899",
-		SolanaCoordinatorAddress: "CoordAddress1111111111111111111111111111111",
-		SolanaUSDCMint:           "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-		SolanaMnemonic:           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-		MockMode:                 true,
-	})
-	srv.SetBilling(billingSvc)
 	return srv, st
 }
 
@@ -354,22 +332,6 @@ func TestSecurity_AuthBypass(t *testing.T) {
 			wantStatus: http.StatusForbidden,
 		},
 		{
-			name:       "withdraw_no_auth",
-			path:       "/v1/billing/withdraw/solana",
-			method:     http.MethodPost,
-			authHeader: "",
-			body:       `{"wallet_address":"x","amount_usd":"1.00"}`,
-			wantStatus: http.StatusUnauthorized,
-		},
-		{
-			name:       "withdraw_invalid_bearer",
-			path:       "/v1/billing/withdraw/solana",
-			method:     http.MethodPost,
-			authHeader: "Bearer fake-key-12345",
-			body:       `{"wallet_address":"x","amount_usd":"1.00"}`,
-			wantStatus: http.StatusUnauthorized,
-		},
-		{
 			name:       "models_no_auth",
 			path:       "/v1/models",
 			method:     http.MethodGet,
@@ -636,85 +598,7 @@ func TestSecurity_DeviceCodeBruteForce(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: Withdrawal to Foreign Wallet
-// ---------------------------------------------------------------------------
-
-func TestSecurity_WithdrawalToForeignWallet(t *testing.T) {
-	srv, _ := securityTestServerWithBilling(t)
-
-	user := &store.User{
-		AccountID:           "withdraw-test-acct",
-		PrivyUserID:         "did:privy:withdraw-test",
-		SolanaWalletAddress: "UserWalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-	}
-
-	// Seed some balance so insufficient_funds doesn't mask the wallet check.
-	srv.billing.Ledger().Deposit(user.AccountID, 100_000_000) // $100
-
-	t.Run("foreign_wallet_rejected", func(t *testing.T) {
-		body := `{"wallet_address":"ForeignWalletBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB","amount_usd":"5.00"}`
-		req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/solana", strings.NewReader(body))
-		req = withPrivyUser(req, user)
-		w := httptest.NewRecorder()
-
-		srv.handleSolanaWithdraw(w, req)
-
-		if w.Code != http.StatusForbidden {
-			t.Errorf("withdraw to foreign wallet: status %d, want 403, body: %s", w.Code, w.Body.String())
-		}
-
-		resp := parseJSONResponse(t, w.Body.Bytes())
-		errObj, _ := resp["error"].(map[string]any)
-		if errObj == nil || errObj["type"] != "wallet_mismatch" {
-			t.Errorf("expected wallet_mismatch error, got: %v", errObj)
-		}
-	})
-
-	t.Run("empty_wallet_auto_populates", func(t *testing.T) {
-		// When wallet_address is empty, it auto-populates from the user's account.
-		body := `{"wallet_address":"","amount_usd":"1.00"}`
-		req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/solana", strings.NewReader(body))
-		req = withPrivyUser(req, user)
-		w := httptest.NewRecorder()
-
-		srv.handleSolanaWithdraw(w, req)
-
-		// Mock mode doesn't have a real Solana client — we expect it to fail
-		// at the Solana send step (502), not at the wallet validation step (403).
-		// The important thing is it did NOT return 403 (wallet mismatch) or
-		// 400 (missing wallet), meaning it auto-populated correctly.
-		if w.Code == http.StatusForbidden {
-			t.Errorf("empty wallet should auto-populate, not return 403")
-		}
-		if w.Code == http.StatusBadRequest {
-			resp := parseJSONResponse(t, w.Body.Bytes())
-			errObj, _ := resp["error"].(map[string]any)
-			if errObj != nil && strings.Contains(fmt.Sprint(errObj["message"]), "wallet_address") {
-				t.Errorf("empty wallet should auto-populate from user's account, got: %v", errObj)
-			}
-		}
-		t.Logf("empty wallet auto-populate: status %d", w.Code)
-	})
-
-	t.Run("own_wallet_accepted", func(t *testing.T) {
-		// Withdrawing to your own linked wallet should pass the wallet check.
-		body := fmt.Sprintf(`{"wallet_address":"%s","amount_usd":"1.00"}`, user.SolanaWalletAddress)
-		req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/solana", strings.NewReader(body))
-		req = withPrivyUser(req, user)
-		w := httptest.NewRecorder()
-
-		srv.handleSolanaWithdraw(w, req)
-
-		// Should not be 403 (wallet mismatch).
-		if w.Code == http.StatusForbidden {
-			t.Errorf("withdraw to own wallet should not return 403: %s", w.Body.String())
-		}
-		t.Logf("own wallet withdrawal: status %d", w.Code)
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Test 8: SQL Injection
+// Test 7: SQL Injection (was Test 8 pre-migration)
 // ---------------------------------------------------------------------------
 
 func TestSecurity_SQLInjection(t *testing.T) {

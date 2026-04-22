@@ -660,16 +660,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)                    // no auth — polls with device_code secret
 	s.mux.HandleFunc("POST /v1/device/approve", s.requirePrivyAuth(s.handleDeviceApprove)) // interactive session only — API keys rejected
 
-	// --- Billing endpoints (multi-chain payments + referrals) ---
+	// --- Billing endpoints (Stripe payments + referrals) ---
 
 	// Stripe
 	s.mux.HandleFunc("POST /v1/billing/stripe/create-session", s.requireAuth(s.handleStripeCreateSession))
 	s.mux.HandleFunc("POST /v1/billing/stripe/webhook", s.handleStripeWebhook) // no auth — Stripe signs it
 	s.mux.HandleFunc("GET /v1/billing/stripe/session", s.requireAuth(s.handleStripeSessionStatus))
 
-	// Solana deposits and withdrawals
-	s.mux.HandleFunc("POST /v1/billing/deposit", s.requireAuth(s.handleSolanaDeposit))
-	s.mux.HandleFunc("POST /v1/billing/withdraw/solana", s.requireAuth(s.handleSolanaWithdraw))
+	// Wallet balance
 	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
 
 	// Stripe Payouts (Connect Express) — bank/card withdrawals.

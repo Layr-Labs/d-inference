@@ -1,16 +1,11 @@
 // Package billing provides unified payment processing for the Darkbloom coordinator.
 //
-// Payment flow (Privy auth + client-side Solana signing):
-//  1. User authenticates via Privy → gets embedded Solana wallet
-//  2. User deposits USDC into their Privy wallet (from exchange, etc.)
-//  3. User signs a USDC transfer to the coordinator address in the frontend
-//  4. User submits the tx signature to POST /v1/billing/deposit
-//  5. Backend verifies the on-chain tx came FROM the user's wallet, credits balance
+// Payment flow (Stripe):
+//  1. User authenticates via Privy
+//  2. User creates a Stripe Checkout session via POST /v1/billing/stripe/create-session
+//  3. Stripe webhook confirms payment and credits internal balance
 //
-// The user controls their own keys at all times. The backend never signs
-// transactions — it only verifies what happened on-chain.
-//
-// Stripe checkout is wired but not activated for day-1 launch.
+// Payouts to providers use Stripe Connect Express (bank/card withdrawals).
 // A referral system allows accounts to earn a share of platform fees.
 package billing
 
@@ -26,19 +21,11 @@ type PaymentMethod string
 
 const (
 	MethodStripe PaymentMethod = "stripe"
-	MethodSolana PaymentMethod = "solana"
-)
-
-// Chain identifies the specific blockchain network.
-type Chain string
-
-const (
-	ChainSolana Chain = "solana"
 )
 
 // Config holds billing service configuration, typically from environment variables.
 type Config struct {
-	// Stripe — present but not activated day-1 (set env vars to enable)
+	// Stripe — primary payment rail for deposits.
 	StripeSecretKey     string
 	StripeWebhookSecret string
 	StripeSuccessURL    string
@@ -52,16 +39,9 @@ type Config struct {
 	StripeConnectReturnURL       string // where Stripe redirects after onboarding completes
 	StripeConnectRefreshURL      string // where Stripe redirects if the link expires
 
-	// Solana — primary payment rail for launch
-	SolanaRPCURL             string
-	SolanaUSDCMint           string
-	SolanaCoordinatorAddress string // address that receives USDC deposits
-
-	// SolanaMnemonic is a BIP39 mnemonic phrase (12 or 24 words) from which
-	// the coordinator's Solana keypair is derived (SLIP-0010, path m/44'/501'/0'/0').
-	// The derived public key becomes the deposit address, and the private key
-	// is used for withdrawal transactions. SolanaCoordinatorAddress is
-	// auto-derived from the mnemonic.
+	// SolanaMnemonic is a BIP39 mnemonic phrase used to derive the coordinator's
+	// X25519 encryption key (via HKDF). Kept for backward compatibility with
+	// the e2e.DeriveCoordinatorKey() call path.
 	SolanaMnemonic string
 
 	// Referral
@@ -82,7 +62,6 @@ type Service struct {
 
 	stripe        *StripeProcessor
 	stripeConnect *StripeConnect
-	solana        *SolanaProcessor
 	referral      *ReferralService
 }
 
@@ -128,36 +107,6 @@ func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cf
 		logger.Info("billing: Stripe Connect mock-mode enabled")
 	}
 
-	// Initialize Solana processor
-	if cfg.SolanaRPCURL != "" {
-		var privKey string
-		var coordAddr string
-
-		if cfg.SolanaMnemonic != "" {
-			derivedKey, derivedAddr, err := DeriveKeypairFromMnemonic(cfg.SolanaMnemonic)
-			if err != nil {
-				logger.Error("billing: failed to derive Solana keypair from mnemonic", "error", err)
-			} else {
-				privKey = base58Encode(derivedKey)
-				coordAddr = derivedAddr
-				svc.config.SolanaCoordinatorAddress = derivedAddr // update stored config so CoordinatorAddress() works
-				logger.Info("billing: Solana keypair derived from mnemonic",
-					"coordinator_address", coordAddr,
-				)
-			}
-		} else if !cfg.MockMode {
-			logger.Warn("billing: MNEMONIC not set — deposits will work but withdrawals are disabled")
-			coordAddr = cfg.SolanaCoordinatorAddress
-		}
-
-		svc.solana = NewSolanaProcessor(cfg.SolanaRPCURL, coordAddr,
-			cfg.SolanaUSDCMint, privKey, cfg.MockMode, logger)
-		logger.Info("billing: Solana processor enabled",
-			"coordinator_address", coordAddr,
-			"mock_mode", cfg.MockMode,
-		)
-	}
-
 	return svc
 }
 
@@ -175,9 +124,6 @@ func (s *Service) StripeConnectReturnURL() string { return s.config.StripeConnec
 // StripeConnectRefreshURL returns the configured link-refresh URL.
 func (s *Service) StripeConnectRefreshURL() string { return s.config.StripeConnectRefreshURL }
 
-// Solana returns the Solana processor, or nil if not configured.
-func (s *Service) Solana() *SolanaProcessor { return s.solana }
-
 // Referral returns the referral service.
 func (s *Service) Referral() *ReferralService { return s.referral }
 
@@ -190,9 +136,6 @@ func (s *Service) Store() store.Store { return s.store }
 // Ledger returns the underlying ledger for direct access.
 func (s *Service) Ledger() *payments.Ledger { return s.ledger }
 
-// CoordinatorAddress returns the Solana address that receives USDC payments.
-func (s *Service) CoordinatorAddress() string { return s.config.SolanaCoordinatorAddress }
-
 // SupportedMethods returns which payment methods are configured and available.
 func (s *Service) SupportedMethods() []PaymentMethodInfo {
 	var methods []PaymentMethodInfo
@@ -202,15 +145,6 @@ func (s *Service) SupportedMethods() []PaymentMethodInfo {
 			Method:      MethodStripe,
 			DisplayName: "Credit/Debit Card (Stripe)",
 			Currencies:  []string{"USD"},
-		})
-	}
-
-	if s.solana != nil {
-		methods = append(methods, PaymentMethodInfo{
-			Method:      MethodSolana,
-			Chain:       ChainSolana,
-			DisplayName: "USDC on Solana",
-			Currencies:  []string{"USDC"},
 		})
 	}
 
@@ -231,7 +165,6 @@ func (s *Service) CreditDeposit(accountID string, amountMicroUSD int64, entryTyp
 // PaymentMethodInfo describes a supported payment method for the API.
 type PaymentMethodInfo struct {
 	Method      PaymentMethod `json:"method"`
-	Chain       Chain         `json:"chain,omitempty"`
 	DisplayName string        `json:"display_name"`
 	Currencies  []string      `json:"currencies"`
 }

@@ -53,14 +53,12 @@ func DeriveCoordinatorKey(mnemonic string) (*CoordinatorKey, error) {
 		return nil, fmt.Errorf("mnemonic must be 12 or 24 words, got %d", len(words))
 	}
 
-	// BIP39 seed (same plumbing as billing.DeriveKeypairFromMnemonic; we keep
-	// this local instead of importing billing to avoid a dependency cycle and
-	// keep the e2e package self-contained for testing).
+	// Standard BIP39 seed derivation (PBKDF2 with "mnemonic" salt).
 	seed := pbkdf2.Key([]byte(mnemonic), []byte("mnemonic"), 2048, 64, sha512.New)
 
 	// HKDF-SHA256 with a coordinator-specific info string to derive 32 bytes
 	// of X25519 private-key material. Domain separation ensures this key
-	// cannot collide with the Solana keypair derived from the same seed.
+	// cannot collide with any other key derived from the same seed.
 	r := hkdf.New(sha256.New, seed, nil, []byte(CoordinatorKeyHKDFInfo))
 	var priv [32]byte
 	if _, err := io.ReadFull(r, priv[:]); err != nil {

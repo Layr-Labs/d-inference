@@ -2,7 +2,7 @@ package api
 
 // Stripe Payouts handlers — bank/card withdrawals via Stripe Connect Express.
 //
-// Flow (mirrors handleSolanaWithdraw, but for fiat):
+// Flow:
 //
 //  1. Onboard. POST /v1/billing/stripe/onboard creates a Stripe Express
 //     connected account for the Privy user (idempotent — reuses an existing

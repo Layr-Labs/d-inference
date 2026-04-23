@@ -29,19 +29,19 @@ import (
 // Message type constants.
 const (
 	// Provider → Coordinator
-	TypeRegister                = "register"
-	TypeHeartbeat               = "heartbeat"
-	TypeInferenceAccepted       = "inference_accepted"
-	TypeInferenceResponseChunk  = "inference_response_chunk"
-	TypeInferenceComplete       = "inference_complete"
-	TypeInferenceError          = "inference_error"
-	TypeAttestationResponse = "attestation_response"
+	TypeRegister               = "register"
+	TypeHeartbeat              = "heartbeat"
+	TypeInferenceAccepted      = "inference_accepted"
+	TypeInferenceResponseChunk = "inference_response_chunk"
+	TypeInferenceComplete      = "inference_complete"
+	TypeInferenceError         = "inference_error"
+	TypeAttestationResponse    = "attestation_response"
 
 	// Coordinator → Provider
-	TypeInferenceRequest    = "inference_request"
-	TypeCancel              = "cancel"
+	TypeInferenceRequest     = "inference_request"
+	TypeCancel               = "cancel"
 	TypeAttestationChallenge = "attestation_challenge"
-	TypeRuntimeStatus       = "runtime_status"
+	TypeRuntimeStatus        = "runtime_status"
 )
 
 // ---------------------------------------------------------------------------

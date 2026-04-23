@@ -58,8 +58,8 @@ type MemoryStore struct {
 
 	// Stripe Connect withdrawals
 	stripeWithdrawalsByID         map[string]*StripeWithdrawal
-	stripeWithdrawalsByTransferID map[string]string // transferID → withdrawalID
-	stripeWithdrawalsByPayoutID   map[string]string // payoutID → withdrawalID
+	stripeWithdrawalsByTransferID map[string]string   // transferID → withdrawalID
+	stripeWithdrawalsByPayoutID   map[string]string   // payoutID → withdrawalID
 	stripeWithdrawalsByAccount    map[string][]string // accountID → []withdrawalID, newest last
 
 	// Device authorization
@@ -98,19 +98,19 @@ type MemoryStore struct {
 // pre-seeded as a valid API key for bootstrapping.
 func NewMemory(adminKey string) *MemoryStore {
 	s := &MemoryStore{
-		keys:                  make(map[string]bool),
-		keyAccounts:           make(map[string]string),
-		usage:                 make([]UsageRecord, 0),
-		payments:              make([]PaymentRecord, 0),
-		balances:              make(map[string]int64),
-		ledgerEntries:         make([]LedgerEntry, 0),
-		referrersByCode:       make(map[string]*Referrer),
-		referrersByAccount:    make(map[string]*Referrer),
-		referrals:             make(map[string]string),
-		referralCounts:        make(map[string]int),
-		billingSessions:       make(map[string]*BillingSession),
-		modelPrices:           make(map[string]ModelPrice),
-		supportedModels:       make(map[string]*SupportedModel),
+		keys:                          make(map[string]bool),
+		keyAccounts:                   make(map[string]string),
+		usage:                         make([]UsageRecord, 0),
+		payments:                      make([]PaymentRecord, 0),
+		balances:                      make(map[string]int64),
+		ledgerEntries:                 make([]LedgerEntry, 0),
+		referrersByCode:               make(map[string]*Referrer),
+		referrersByAccount:            make(map[string]*Referrer),
+		referrals:                     make(map[string]string),
+		referralCounts:                make(map[string]int),
+		billingSessions:               make(map[string]*BillingSession),
+		modelPrices:                   make(map[string]ModelPrice),
+		supportedModels:               make(map[string]*SupportedModel),
 		usersByPrivyID:                make(map[string]*User),
 		usersByAccountID:              make(map[string]*User),
 		usersByStripeAccountID:        make(map[string]*User),
@@ -118,19 +118,19 @@ func NewMemory(adminKey string) *MemoryStore {
 		stripeWithdrawalsByTransferID: make(map[string]string),
 		stripeWithdrawalsByPayoutID:   make(map[string]string),
 		stripeWithdrawalsByAccount:    make(map[string][]string),
-		deviceCodesByCode:     make(map[string]*DeviceCode),
-		deviceCodesByUserCode: make(map[string]*DeviceCode),
-		providerTokens:        make(map[string]*ProviderToken),
-		inviteCodes:           make(map[string]*InviteCode),
-		inviteRedemptions:     make(map[string][]InviteRedemption),
-		accountRedemptions:    make(map[string]map[string]bool),
-		providerEarnings:      make([]ProviderEarning, 0),
-		providerPayouts:       make([]ProviderPayout, 0),
-		releases:              make(map[string]*Release),
-		providerRecords:       make(map[string]*ProviderRecord),
-		reputationRecords:     make(map[string]*ReputationRecord),
-		serialToProviderID:    make(map[string]string),
-		telemetryEvents:       make([]TelemetryEventRecord, 0, memTelemetryCap),
+		deviceCodesByCode:             make(map[string]*DeviceCode),
+		deviceCodesByUserCode:         make(map[string]*DeviceCode),
+		providerTokens:                make(map[string]*ProviderToken),
+		inviteCodes:                   make(map[string]*InviteCode),
+		inviteRedemptions:             make(map[string][]InviteRedemption),
+		accountRedemptions:            make(map[string]map[string]bool),
+		providerEarnings:              make([]ProviderEarning, 0),
+		providerPayouts:               make([]ProviderPayout, 0),
+		releases:                      make(map[string]*Release),
+		providerRecords:               make(map[string]*ProviderRecord),
+		reputationRecords:             make(map[string]*ReputationRecord),
+		serialToProviderID:            make(map[string]string),
+		telemetryEvents:               make([]TelemetryEventRecord, 0, memTelemetryCap),
 	}
 	if adminKey != "" {
 		s.keys[adminKey] = true

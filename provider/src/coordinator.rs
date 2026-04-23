@@ -1030,11 +1030,16 @@ mod tests {
         // Verify server received register and inference_error messages.
         // Heartbeats may arrive between them, so search by type.
         let received = server_handle.await.unwrap();
-        assert!(received.len() >= 2, "expected at least register and error messages, got {}", received.len());
+        assert!(
+            received.len() >= 2,
+            "expected at least register and error messages, got {}",
+            received.len()
+        );
         let register: serde_json::Value = serde_json::from_str(&received[0]).unwrap();
         assert_eq!(register["type"], "register");
         assert_eq!(register["backend"], "vllm_mlx");
-        let err = received.iter()
+        let err = received
+            .iter()
             .filter_map(|m| serde_json::from_str::<serde_json::Value>(m).ok())
             .find(|v| v["type"] == "inference_error")
             .expect("expected an inference_error message");

@@ -46,8 +46,8 @@ func TestFeeForInstantPayoutMicroUSD(t *testing.T) {
 		{"five_dollar", 5_000_000, 500_000},
 		{"thirty_dollar", 30_000_000, 500_000},
 		// 1.5% kicks in above the $0.50 / 1.5% = ~$33.33 threshold.
-		{"fifty_dollar", 50_000_000, 750_000},     // 1.5% of $50 = $0.75
-		{"one_hundred", 100_000_000, 1_500_000},  // $1.50
+		{"fifty_dollar", 50_000_000, 750_000},       // 1.5% of $50 = $0.75
+		{"one_hundred", 100_000_000, 1_500_000},     // $1.50
 		{"one_thousand", 1_000_000_000, 15_000_000}, // $15
 		// Edge cases.
 		{"zero", 0, 0},

@@ -224,4 +224,3 @@ func TestIntegration_SSEChunkNormalization(t *testing.T) {
 		t.Errorf("assembled content = %q, want %q", msg.Content, "The answer is 42")
 	}
 }
-

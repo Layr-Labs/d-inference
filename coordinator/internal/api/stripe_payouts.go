@@ -160,16 +160,16 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"has_account":           user.StripeAccountID != "",
-		"configured":            true,
-		"stripe_account_id":     user.StripeAccountID,
-		"status":                user.StripeAccountStatus,
-		"destination_type":      user.StripeDestinationType,
-		"destination_last4":     user.StripeDestinationLast4,
-		"instant_eligible":      user.StripeInstantEligible,
+		"has_account":            user.StripeAccountID != "",
+		"configured":             true,
+		"stripe_account_id":      user.StripeAccountID,
+		"status":                 user.StripeAccountStatus,
+		"destination_type":       user.StripeDestinationType,
+		"destination_last4":      user.StripeDestinationLast4,
+		"instant_eligible":       user.StripeInstantEligible,
 		"min_withdraw_micro_usd": billing.MinWithdrawMicroUSD,
-		"instant_fee_bps":       billing.InstantFeeBps,
-		"instant_fee_min_usd":   float64(billing.InstantFeeMinMicroUSD) / 1_000_000,
+		"instant_fee_bps":        billing.InstantFeeBps,
+		"instant_fee_min_usd":    float64(billing.InstantFeeMinMicroUSD) / 1_000_000,
 	}
 
 	// Optional refresh=1 query param fetches the latest snapshot from Stripe
@@ -379,14 +379,14 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("stripe payout: create payout failed", "error", err,
 			"withdrawal_id", withdrawalID, "transfer_id", transfer.ID)
 		writeJSON(w, http.StatusAccepted, map[string]any{
-			"status":           "transferred",
-			"withdrawal_id":    withdrawalID,
-			"transfer_id":      transfer.ID,
-			"amount_usd":       formatUSD(grossMicroUSD),
-			"fee_usd":          formatUSD(feeMicroUSD),
-			"net_usd":          formatUSD(netMicroUSD),
-			"method":           method,
-			"message":          "transfer succeeded but payout failed; funds will arrive on Stripe's default schedule",
+			"status":            "transferred",
+			"withdrawal_id":     withdrawalID,
+			"transfer_id":       transfer.ID,
+			"amount_usd":        formatUSD(grossMicroUSD),
+			"fee_usd":           formatUSD(feeMicroUSD),
+			"net_usd":           formatUSD(netMicroUSD),
+			"method":            method,
+			"message":           "transfer succeeded but payout failed; funds will arrive on Stripe's default schedule",
 			"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
 		})
 		return

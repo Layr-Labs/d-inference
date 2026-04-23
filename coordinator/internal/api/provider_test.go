@@ -1463,12 +1463,12 @@ func TestHandleChunkDecryptsEncryptedTextChunk(t *testing.T) {
 	}
 
 	pr := &registry.PendingRequest{
-		RequestID:         "req-1",
-		Model:             "test-model",
-		ChunkCh:           make(chan string, 1),
-		CompleteCh:        make(chan protocol.UsageInfo, 1),
-		ErrorCh:           make(chan protocol.InferenceErrorMessage, 1),
-		SessionPrivKey:    &sessionKeys.PrivateKey,
+		RequestID:      "req-1",
+		Model:          "test-model",
+		ChunkCh:        make(chan string, 1),
+		CompleteCh:     make(chan protocol.UsageInfo, 1),
+		ErrorCh:        make(chan protocol.InferenceErrorMessage, 1),
+		SessionPrivKey: &sessionKeys.PrivateKey,
 	}
 	provider.AddPending(pr)
 
@@ -1522,12 +1522,12 @@ func TestHandleChunkRejectsPlaintextTextChunk(t *testing.T) {
 	}
 
 	pr := &registry.PendingRequest{
-		RequestID:         "req-plain",
-		Model:             "test-model",
-		ChunkCh:           make(chan string, 1),
-		CompleteCh:        make(chan protocol.UsageInfo, 1),
-		ErrorCh:           make(chan protocol.InferenceErrorMessage, 1),
-		SessionPrivKey:    &sessionKeys.PrivateKey,
+		RequestID:      "req-plain",
+		Model:          "test-model",
+		ChunkCh:        make(chan string, 1),
+		CompleteCh:     make(chan protocol.UsageInfo, 1),
+		ErrorCh:        make(chan protocol.InferenceErrorMessage, 1),
+		SessionPrivKey: &sessionKeys.PrivateKey,
 	}
 	provider.AddPending(pr)
 
@@ -1593,12 +1593,12 @@ func TestHandleChunkRejectsMixedPlaintextAndEncryptedTextChunk(t *testing.T) {
 	}
 
 	pr := &registry.PendingRequest{
-		RequestID:         "req-mixed",
-		Model:             "test-model",
-		ChunkCh:           make(chan string, 1),
-		CompleteCh:        make(chan protocol.UsageInfo, 1),
-		ErrorCh:           make(chan protocol.InferenceErrorMessage, 1),
-		SessionPrivKey:    &sessionKeys.PrivateKey,
+		RequestID:      "req-mixed",
+		Model:          "test-model",
+		ChunkCh:        make(chan string, 1),
+		CompleteCh:     make(chan protocol.UsageInfo, 1),
+		ErrorCh:        make(chan protocol.InferenceErrorMessage, 1),
+		SessionPrivKey: &sessionKeys.PrivateKey,
 	}
 	provider.AddPending(pr)
 

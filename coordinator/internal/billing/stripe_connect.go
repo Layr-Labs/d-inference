@@ -116,17 +116,17 @@ func SetStripeAPIBaseForTest(url string) string {
 // ExpressAccount captures the subset of fields we care about on a Stripe
 // connected account.
 type ExpressAccount struct {
-	ID                string
-	Email             string
-	ChargesEnabled    bool
-	PayoutsEnabled    bool
-	DetailsSubmitted  bool
-	CurrentlyDue      []string // requirements blocking the account from being live
-	DisabledReason    string   // populated when Stripe permanently disables the account
-	DestinationType   string   // "bank" | "card" | ""
-	DestinationLast4  string
-	DestinationCard   string // brand for cards (e.g. "visa")
-	InstantEligible   bool   // debit card destination supports Instant Payouts
+	ID               string
+	Email            string
+	ChargesEnabled   bool
+	PayoutsEnabled   bool
+	DetailsSubmitted bool
+	CurrentlyDue     []string // requirements blocking the account from being live
+	DisabledReason   string   // populated when Stripe permanently disables the account
+	DestinationType  string   // "bank" | "card" | ""
+	DestinationLast4 string
+	DestinationCard  string // brand for cards (e.g. "visa")
+	InstantEligible  bool   // debit card destination supports Instant Payouts
 }
 
 // CreateExpressAccountParams gates which prefilled fields we pass to Stripe on
@@ -465,13 +465,13 @@ func (c *StripeConnect) PayoutFromEvent(event *WebhookEvent, rawAccount string) 
 	}
 	var data struct {
 		Object struct {
-			ID            string `json:"id"`
-			Status        string `json:"status"`
-			Amount        int64  `json:"amount"`
-			Method        string `json:"method"`
-			FailureCode   string `json:"failure_code"`
-			FailureMsg    string `json:"failure_message"`
-			Destination   string `json:"destination"`
+			ID          string `json:"id"`
+			Status      string `json:"status"`
+			Amount      int64  `json:"amount"`
+			Method      string `json:"method"`
+			FailureCode string `json:"failure_code"`
+			FailureMsg  string `json:"failure_message"`
+			Destination string `json:"destination"`
 		} `json:"object"`
 	}
 	if err := json.Unmarshal(event.Data, &data); err != nil {
@@ -596,11 +596,11 @@ func parseAccount(body []byte) (*ExpressAccount, error) {
 		} `json:"requirements"`
 		ExternalAccounts struct {
 			Data []struct {
-				Object   string `json:"object"` // "bank_account" | "card"
-				Last4    string `json:"last4"`
-				Brand    string `json:"brand"`
-				Funding  string `json:"funding"`
-				DefaultForCurrency bool `json:"default_for_currency"`
+				Object             string `json:"object"` // "bank_account" | "card"
+				Last4              string `json:"last4"`
+				Brand              string `json:"brand"`
+				Funding            string `json:"funding"`
+				DefaultForCurrency bool   `json:"default_for_currency"`
 			} `json:"data"`
 		} `json:"external_accounts"`
 	}
@@ -621,11 +621,11 @@ func parseAccount(body []byte) (*ExpressAccount, error) {
 	// Pick the default external account (or the first one) as the destination
 	// we display. Instant Payouts only work against debit cards.
 	var pick *struct {
-		Object   string `json:"object"`
-		Last4    string `json:"last4"`
-		Brand    string `json:"brand"`
-		Funding  string `json:"funding"`
-		DefaultForCurrency bool `json:"default_for_currency"`
+		Object             string `json:"object"`
+		Last4              string `json:"last4"`
+		Brand              string `json:"brand"`
+		Funding            string `json:"funding"`
+		DefaultForCurrency bool   `json:"default_for_currency"`
 	}
 	for i := range resp.ExternalAccounts.Data {
 		ea := &resp.ExternalAccounts.Data[i]

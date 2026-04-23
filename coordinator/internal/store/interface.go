@@ -337,7 +337,6 @@ type TelemetryEventRecord struct {
 	ReceivedAt time.Time       `json:"received_at"`
 }
 
-
 // UsageRecord captures a single inference usage event.
 type UsageRecord struct {
 	ProviderID       string    `json:"provider_id"`
@@ -440,18 +439,18 @@ type User struct {
 // On failure at any stage we re-credit the user via LedgerRefund and set the
 // status to "failed".
 type StripeWithdrawal struct {
-	ID              string    `json:"id"`                          // internal UUID, used as Stripe idempotency key prefix
-	AccountID       string    `json:"account_id"`                  // internal account that owns the withdrawal
-	StripeAccountID string    `json:"stripe_account_id"`           // Stripe connected account (acct_…)
-	TransferID      string    `json:"transfer_id,omitempty"`       // Stripe transfer (tr_…)
-	PayoutID        string    `json:"payout_id,omitempty"`         // Stripe payout (po_…)
-	AmountMicroUSD  int64     `json:"amount_micro_usd"`            // gross amount debited from ledger
-	FeeMicroUSD     int64     `json:"fee_micro_usd"`               // fee retained by platform
-	NetMicroUSD     int64     `json:"net_micro_usd"`               // amount transferred to user (gross - fee)
-	Method          string    `json:"method"`                      // "standard" | "instant"
-	Status          string    `json:"status"`                      // "pending" | "transferred" | "paid" | "failed"
-	FailureReason   string    `json:"failure_reason,omitempty"`    // populated when Status="failed"
-	Refunded        bool      `json:"refunded,omitempty"`          // true after the failure refund is credited
+	ID              string    `json:"id"`                       // internal UUID, used as Stripe idempotency key prefix
+	AccountID       string    `json:"account_id"`               // internal account that owns the withdrawal
+	StripeAccountID string    `json:"stripe_account_id"`        // Stripe connected account (acct_…)
+	TransferID      string    `json:"transfer_id,omitempty"`    // Stripe transfer (tr_…)
+	PayoutID        string    `json:"payout_id,omitempty"`      // Stripe payout (po_…)
+	AmountMicroUSD  int64     `json:"amount_micro_usd"`         // gross amount debited from ledger
+	FeeMicroUSD     int64     `json:"fee_micro_usd"`            // fee retained by platform
+	NetMicroUSD     int64     `json:"net_micro_usd"`            // amount transferred to user (gross - fee)
+	Method          string    `json:"method"`                   // "standard" | "instant"
+	Status          string    `json:"status"`                   // "pending" | "transferred" | "paid" | "failed"
+	FailureReason   string    `json:"failure_reason,omitempty"` // populated when Status="failed"
+	Refunded        bool      `json:"refunded,omitempty"`       // true after the failure refund is credited
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
@@ -482,17 +481,17 @@ type SupportedModel struct {
 // The GitHub Action registers new releases via POST /v1/releases (scoped key).
 // Admins manage releases via /v1/admin/releases (Privy auth).
 type Release struct {
-	Version         string    `json:"version"`                     // semver, e.g. "0.2.1"
-	Platform        string    `json:"platform"`                    // "macos-arm64"
-	BinaryHash      string    `json:"binary_hash"`                 // SHA-256 of darkbloom binary (attestation verification)
-	BundleHash      string    `json:"bundle_hash"`                 // SHA-256 of the bundle tarball (install.sh download verification)
-	PythonHash      string    `json:"python_hash,omitempty"`       // SHA-256 of bundled Python binary (runtime verification)
-	RuntimeHash     string    `json:"runtime_hash,omitempty"`      // SHA-256 of vllm-mlx package (runtime verification)
+	Version        string    `json:"version"`                   // semver, e.g. "0.2.1"
+	Platform       string    `json:"platform"`                  // "macos-arm64"
+	BinaryHash     string    `json:"binary_hash"`               // SHA-256 of darkbloom binary (attestation verification)
+	BundleHash     string    `json:"bundle_hash"`               // SHA-256 of the bundle tarball (install.sh download verification)
+	PythonHash     string    `json:"python_hash,omitempty"`     // SHA-256 of bundled Python binary (runtime verification)
+	RuntimeHash    string    `json:"runtime_hash,omitempty"`    // SHA-256 of vllm-mlx package (runtime verification)
 	TemplateHashes string    `json:"template_hashes,omitempty"` // comma-separated name=hash pairs
 	URL            string    `json:"url"`                       // R2 download URL for the bundle tarball
-	Changelog       string    `json:"changelog"`                   // human-readable changes in this version
-	Active          bool      `json:"active"`                      // whether this version is accepted by the coordinator
-	CreatedAt       time.Time `json:"created_at"`
+	Changelog      string    `json:"changelog"`                 // human-readable changes in this version
+	Active         bool      `json:"active"`                    // whether this version is accepted by the coordinator
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // DeviceCode represents a pending device authorization request (RFC 8628-style).

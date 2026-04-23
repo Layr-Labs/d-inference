@@ -905,9 +905,7 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				// ErrAbortHandler is the Go-idiomatic way for a handler to
-				// force-close the connection — propagate it unchanged.
-				if errors.Is(http.ErrAbortHandler, rec) {
+				if recErr, ok := rec.(error); ok && errors.Is(recErr, http.ErrAbortHandler) {
 					panic(rec)
 				}
 				stack := string(debug.Stack())

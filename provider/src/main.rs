@@ -4395,44 +4395,47 @@ async fn cmd_benchmark() -> Result<()> {
     // Run benchmark via vllm-mlx: load model, measure prefill (TTFT) and decode (tok/s)
     let bench_script = format!(
         r#"
-import time, json, sys
+import time, json, sys, asyncio
 sys.path.insert(0, '.')
-from vllm_mlx.engine import MLXEngine
+from vllm_mlx.engine import SimpleEngine
 
-engine = MLXEngine(model="{model_path}", tokenizer="{model_path}")
+async def main():
+    engine = SimpleEngine(model_name="{model_path}")
 
-prompt = "Write a detailed analysis of the economic impact of artificial intelligence on the global workforce over the next decade."
+    prompt = "Write a detailed analysis of the economic impact of artificial intelligence on the global workforce over the next decade."
 
-# Warmup
-print("  Warming up...", flush=True)
-engine.generate(prompt, max_tokens=10)
+    # Warmup
+    print("  Warming up...", flush=True)
+    await engine.generate(prompt, max_tokens=10)
 
-# Benchmark: 3 runs
-results = []
-for run in range(3):
-    start = time.perf_counter()
-    tokens = []
-    first_token_time = None
-    for tok in engine.generate_stream(prompt, max_tokens=200):
-        if first_token_time is None:
-            first_token_time = time.perf_counter()
-        tokens.append(tok)
-    end = time.perf_counter()
+    # Benchmark: 3 runs
+    results = []
+    for run in range(3):
+        start = time.perf_counter()
+        token_count = 0
+        first_token_time = None
+        async for out in engine.stream_generate(prompt, max_tokens=200):
+            if first_token_time is None:
+                first_token_time = time.perf_counter()
+            token_count = out.completion_tokens
+        end = time.perf_counter()
 
-    ttft_ms = (first_token_time - start) * 1000 if first_token_time else 0
-    decode_time = end - first_token_time if first_token_time else end - start
-    n_tokens = len(tokens)
-    tps = n_tokens / decode_time if decode_time > 0 else 0
+        ttft_ms = (first_token_time - start) * 1000 if first_token_time else 0
+        decode_time = end - first_token_time if first_token_time else end - start
+        n_tokens = token_count
+        tps = n_tokens / decode_time if decode_time > 0 else 0
 
-    results.append({{"ttft_ms": ttft_ms, "tokens": n_tokens, "tps": tps, "total_s": end - start}})
-    print(f"  Run {{run+1}}: {{tps:.1f}} tok/s | TTFT {{ttft_ms:.0f}}ms | {{n_tokens}} tokens in {{end-start:.2f}}s", flush=True)
+        results.append({{"ttft_ms": ttft_ms, "tokens": n_tokens, "tps": tps, "total_s": end - start}})
+        print(f"  Run {{run+1}}: {{tps:.1f}} tok/s | TTFT {{ttft_ms:.0f}}ms | {{n_tokens}} tokens in {{end-start:.2f}}s", flush=True)
 
-# Summary
-avg_tps = sum(r["tps"] for r in results) / len(results)
-avg_ttft = sum(r["ttft_ms"] for r in results) / len(results)
-print()
-print(f"  Average: {{avg_tps:.1f}} tok/s | TTFT {{avg_ttft:.0f}}ms")
-print(json.dumps({{"avg_tps": avg_tps, "avg_ttft_ms": avg_ttft, "runs": results}}))
+    # Summary
+    avg_tps = sum(r["tps"] for r in results) / len(results)
+    avg_ttft = sum(r["ttft_ms"] for r in results) / len(results)
+    print()
+    print(f"  Average: {{avg_tps:.1f}} tok/s | TTFT {{avg_ttft:.0f}}ms")
+    print(json.dumps({{"avg_tps": avg_tps, "avg_ttft_ms": avg_ttft, "runs": results}}))
+
+asyncio.run(main())
 "#,
         model_path = model_path.display()
     );

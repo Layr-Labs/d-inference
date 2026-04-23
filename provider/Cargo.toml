@@ -1,6 +1,6 @@
 [package]
 name = "darkbloom"
-version = "0.3.10"
+version = "0.3.12-dev.21"
 edition = "2024"
 description = "EigenInference provider agent for Apple Silicon Macs"
 
@@ -26,16 +26,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # HTTP client (for backend health checks + proxying)
-reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 
 # WebSocket client
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 
-# macOS Keychain / Security.framework
-[target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "3"
-security-framework-sys = "2"
-core-foundation = "0.10"
+# Futures combinators
 futures-util = "0.3"
 
 # HTTP server (local mode)
@@ -58,6 +54,8 @@ libc = "0.2"
 # Misc
 dirs = "6"
 chrono = "0.4"
+once_cell = "1"
+backtrace = "0.3"
 
 # Terminal UI — raw key input for interactive model picker
 crossterm = "0.28"
@@ -69,11 +67,20 @@ base64 = "0.22"
 # SHA-256 — streaming hash for model weight fingerprinting and binary integrity
 sha2 = "0.10"
 
+# Secure memory wiping — prevents decrypted plaintext from lingering in freed memory
+zeroize = "1"
+
 # Embedded Python — for in-process inference (Phase 3)
 # Links the Python interpreter directly into our binary so inference
 # happens in our hardened process. No subprocess, no IPC, no sniffable channel.
 # Behind a feature flag so `cargo test` doesn't need Python linked.
 pyo3 = { version = "0.24", features = ["auto-initialize"], optional = true }
+
+# macOS Keychain / Security.framework (host-only)
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+security-framework-sys = "2"
+core-foundation = "0.10"
 
 [features]
 default = ["python"]

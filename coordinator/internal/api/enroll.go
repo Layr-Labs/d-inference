@@ -14,7 +14,6 @@ type enrollRequest struct {
 	SerialNumber string `json:"serial_number"`
 }
 
-//nolint:gochecknoglobals // compiled regex, safe for concurrent use
 var serialRegex = regexp.MustCompile(`^[A-Z0-9]{8,14}$`)
 
 // handleEnroll generates a per-device .mobileconfig containing both MDM
@@ -45,9 +44,9 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Derive base URL from the incoming request (respects reverse proxy headers)
-	scheme := schemeHTTPS
+	scheme := "https"
 	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") == "" {
-		scheme = schemeHTTP
+		scheme = "http"
 	}
 	baseURL := fmt.Sprintf("%s://%s", scheme, r.Host)
 
@@ -56,7 +55,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-apple-aspen-config")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="EigenInference-Enroll-%s.mobileconfig"`, req.SerialNumber))
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(profile))
+	w.Write([]byte(profile))
 }
 
 // generateCombinedProfile creates a .mobileconfig with three payloads:
@@ -82,8 +81,6 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 //	Bit 10 (1024) — Security-related queries (SIP, SecureBoot) ✓ REQUESTED
 //	Bit 11 (2048) — Change device settings                     ✗ NOT requested
 //	Bit 12 (4096) — App management                             ✗ NOT requested
-//
-//nolint:funlen
 func generateCombinedProfile(serialNumber, baseURL string) string {
 	acmePayloadUUID := uuid.New().String()
 	profileUUID := uuid.New().String()

@@ -3,6 +3,7 @@
 import { useState, useMemo } from "react";
 import { TopBar } from "@/components/TopBar";
 import { useAuth } from "@/hooks/useAuth";
+import { trackEvent } from "@/lib/google-analytics";
 import Link from "next/link";
 import {
   Cpu,
@@ -80,31 +81,19 @@ const MAC_TYPES = ["MacBook Air", "MacBook Pro", "Mac Mini", "Mac Studio", "Mac 
 interface CatalogModel {
   id: string;
   name: string;
-  type: "text" | "image" | "transcription";
   minRAMGB: number;
   demandNote: string; // demand expectation shown as infotip
-  // Text model params
-  activeParamsGB?: number;
-  modelSizeGB?: number;
-  outputPriceMicro?: number;
-  // Image model params
-  baseImagesPerHour?: number;
-  imagePriceMicro?: number;
-  referenceBandwidth?: number;
-  // Transcription params
-  baseAudioMinPerHour?: number;
-  pricePerMinMicro?: number;
+  activeParamsGB: number;
+  modelSizeGB: number;
+  outputPriceMicro: number;
 }
 
 const CATALOG_MODELS: CatalogModel[] = [
-  { id: "cohere-transcribe", name: "Cohere Transcribe", type: "transcription", minRAMGB: 8, baseAudioMinPerHour: 1800, pricePerMinMicro: 1_000, demandNote: "Lower demand — most users need text inference. STT requests are bursty and less frequent." },
-  { id: "flux-4b", name: "FLUX.2 Klein 4B", type: "image", minRAMGB: 16, baseImagesPerHour: 450, imagePriceMicro: 1_500, referenceBandwidth: 100, demandNote: "Paused for maintenance — image routing is disabled right now. Earnings projection shown for reference; no image requests are being served currently." },
-  { id: "flux-9b", name: "FLUX.2 Klein 9B", type: "image", minRAMGB: 24, baseImagesPerHour: 300, imagePriceMicro: 2_500, referenceBandwidth: 150, demandNote: "Paused for maintenance — image routing is disabled right now. Earnings projection shown for reference; no image requests are being served currently." },
-  { id: "qwen-27b", name: "Qwen3.5 27B Claude Opus", type: "text", minRAMGB: 36, activeParamsGB: 27, modelSizeGB: 27, outputPriceMicro: 780_000, demandNote: "High demand — text/chat inference is the primary workload on the network." },
-  { id: "trinity-mini", name: "Trinity Mini", type: "text", minRAMGB: 48, activeParamsGB: 3, modelSizeGB: 26, outputPriceMicro: 75_000, demandNote: "High demand — fast MoE model popular for agentic and coding tasks." },
-  { id: "gemma-4-26b", name: "Gemma 4 26B", type: "text", minRAMGB: 36, activeParamsGB: 4, modelSizeGB: 28, outputPriceMicro: 200_000, demandNote: "High demand — Google's latest MoE, strong quality at fast speed." },
-  { id: "qwen-122b", name: "Qwen3.5 122B", type: "text", minRAMGB: 128, activeParamsGB: 10, modelSizeGB: 122, outputPriceMicro: 1_040_000, demandNote: "High demand — premium quality attracts users willing to pay more per token." },
-  { id: "minimax-m2.5", name: "MiniMax M2.5", type: "text", minRAMGB: 256, activeParamsGB: 11, modelSizeGB: 243, outputPriceMicro: 500_000, demandNote: "High demand — SOTA coding model, attracts power users and enterprises." },
+  { id: "qwen-27b", name: "Qwen3.5 27B Claude Opus", minRAMGB: 36, activeParamsGB: 27, modelSizeGB: 27, outputPriceMicro: 780_000, demandNote: "High demand — text/chat inference is the primary workload on the network." },
+  { id: "trinity-mini", name: "Trinity Mini", minRAMGB: 48, activeParamsGB: 3, modelSizeGB: 26, outputPriceMicro: 75_000, demandNote: "High demand — fast MoE model popular for agentic and coding tasks." },
+  { id: "gemma-4-26b", name: "Gemma 4 26B", minRAMGB: 36, activeParamsGB: 4, modelSizeGB: 28, outputPriceMicro: 200_000, demandNote: "High demand — Google's latest MoE, strong quality at fast speed." },
+  { id: "qwen-122b", name: "Qwen3.5 122B", minRAMGB: 128, activeParamsGB: 10, modelSizeGB: 122, outputPriceMicro: 1_040_000, demandNote: "High demand — premium quality attracts users willing to pay more per token." },
+  { id: "minimax-m2.5", name: "MiniMax M2.5", minRAMGB: 256, activeParamsGB: 11, modelSizeGB: 243, outputPriceMicro: 500_000, demandNote: "High demand — SOTA coding model, attracts power users and enterprises." },
 ];
 
 /* ─── Earnings calculation ─── */
@@ -112,9 +101,7 @@ const CATALOG_MODELS: CatalogModel[] = [
 interface ModelEarnings {
   modelId: string;
   modelName: string;
-  modelType: "text" | "image" | "transcription";
-  decodeTokPerSec: number | null;
-  throughputLabel: string | null;
+  decodeTokPerSec: number;
   revenuePerHour: number;
   elecPerHour: number;
   netPerHour: number;
@@ -124,12 +111,10 @@ interface ModelEarnings {
   annualNet: number;
   elecPercent: number;
   // Formula breakdown fields
-  batchSize: number | null;
-  batchEff: number | null;
-  activeParamsGB: number | null;
-  outputPriceMicro: number | null;
-  scaledImagesPerHour: number | null;
-  scaledAudioMinPerHour: number | null;
+  batchSize: number;
+  batchEff: number;
+  activeParamsGB: number;
+  outputPriceMicro: number;
   marginalWatts: number;
   // Catalog reference for formula display
   catalogModel: CatalogModel;
@@ -142,38 +127,14 @@ function calculateModelEarnings(
   hoursPerDay: number,
   elecCostPerKWh: number
 ): ModelEarnings {
-  let revenuePerHour: number;
-  let decodeTokPerSec: number | null = null;
-  let throughputLabel: string | null = null;
-  let batchSize: number | null = null;
-  let batchEff: number | null = null;
-  let activeParamsGB: number | null = null;
-  let outputPriceMicro: number | null = null;
-  let scaledImagesPerHour: number | null = null;
-  let scaledAudioMinPerHour: number | null = null;
-
-  if (model.type === "text") {
-    const freeRAM = ramGB - model.modelSizeGB!;
-    batchSize = Math.max(1, Math.min(16, Math.floor(freeRAM / 2)));
-    batchEff = batchSize <= 4 ? 0.80 : batchSize <= 8 ? 0.85 : 0.90;
-    activeParamsGB = model.activeParamsGB!;
-    outputPriceMicro = model.outputPriceMicro!;
-    const singleTokPerSec = (config.bandwidthGBs / activeParamsGB) * 0.60;
-    const batchedTokPerSec = singleTokPerSec * batchSize * batchEff;
-    decodeTokPerSec = batchedTokPerSec;
-    const tokPerHour = batchedTokPerSec * 3600;
-    revenuePerHour = (tokPerHour / 1_000_000) * (outputPriceMicro / 1_000_000);
-  } else if (model.type === "image") {
-    const scaled = model.baseImagesPerHour! * (config.bandwidthGBs / model.referenceBandwidth!);
-    scaledImagesPerHour = scaled;
-    revenuePerHour = scaled * (model.imagePriceMicro! / 1_000_000);
-    throughputLabel = `${Math.round(scaled).toLocaleString()} images/hr`;
-  } else {
-    const scaled = model.baseAudioMinPerHour! * (config.bandwidthGBs / 100);
-    scaledAudioMinPerHour = scaled;
-    revenuePerHour = scaled * (model.pricePerMinMicro! / 1_000_000);
-    throughputLabel = `${Math.round(scaled).toLocaleString()} audio-min/hr`;
-  }
+  const freeRAM = ramGB - model.modelSizeGB;
+  const batchSize = Math.max(1, Math.min(16, Math.floor(freeRAM / 2)));
+  const batchEff = batchSize <= 4 ? 0.80 : batchSize <= 8 ? 0.85 : 0.90;
+  const { activeParamsGB, outputPriceMicro } = model;
+  const singleTokPerSec = (config.bandwidthGBs / activeParamsGB) * 0.60;
+  const decodeTokPerSec = singleTokPerSec * batchSize * batchEff;
+  const tokPerHour = decodeTokPerSec * 3600;
+  const revenuePerHour = (tokPerHour / 1_000_000) * (outputPriceMicro / 1_000_000);
 
   const marginalWatts = config.inferWatts - config.idleWatts;
   const elecPerHour = (marginalWatts / 1000) * elecCostPerKWh;
@@ -189,9 +150,7 @@ function calculateModelEarnings(
   return {
     modelId: model.id,
     modelName: model.name,
-    modelType: model.type,
     decodeTokPerSec,
-    throughputLabel,
     revenuePerHour,
     elecPerHour,
     netPerHour,
@@ -204,8 +163,6 @@ function calculateModelEarnings(
     batchEff,
     activeParamsGB,
     outputPriceMicro,
-    scaledImagesPerHour,
-    scaledAudioMinPerHour,
     marginalWatts,
     catalogModel: model,
   };
@@ -257,22 +214,6 @@ function fmtUSDWhole(n: number): string {
   return "$" + n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 }
 
-/* ─── Model type badge ─── */
-
-function ModelTypeBadge({ type }: { type: "text" | "image" | "transcription" }) {
-  const config = {
-    text: { label: "text", bg: "bg-blue-500/10", text: "text-blue-400", border: "border-blue-500/20" },
-    image: { label: "image", bg: "bg-purple-500/10", text: "text-purple-400", border: "border-purple-500/20" },
-    transcription: { label: "stt", bg: "bg-orange-500/10", text: "text-orange-400", border: "border-orange-500/20" },
-  }[type];
-
-  return (
-    <span className={`px-2 py-0.5 rounded text-xs font-mono ${config.bg} ${config.text} border ${config.border}`}>
-      {config.label}
-    </span>
-  );
-}
-
 /* ─── Selector pill button ─── */
 
 function PillButton({
@@ -308,7 +249,6 @@ export default function EarnPage() {
   const [selectedChip, setSelectedChip] = useState("M4 Max");
   const [selectedRAM, setSelectedRAM] = useState(48);
   const [inferenceHours, setInferenceHours] = useState(18);
-  const [hoursManuallySet, setHoursManuallySet] = useState(false);
   const [elecCost, setElecCost] = useState("0.15");
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
 
@@ -344,16 +284,12 @@ export default function EarnPage() {
     ? selectedRAM
     : availableRAM[availableRAM.length - 1] ?? 8;
 
-  // Default inference hours per model type
-  const defaultHoursForType = (type: string) =>
-    type === "text" ? 18 : type === "image" ? 12 : 1;
-
-  // Calculate earnings for ALL eligible models, each using its own default hours
+  // Calculate earnings for ALL eligible models
   const rankedModels = useMemo(() => {
     if (!selectedConfig) return [];
     const eligible = CATALOG_MODELS.filter((m) => m.minRAMGB <= effectiveRAM);
     const results = eligible.map((m) =>
-      calculateModelEarnings(m, selectedConfig, effectiveRAM, defaultHoursForType(m.type), elecCostNum)
+      calculateModelEarnings(m, selectedConfig, effectiveRAM, 18, elecCostNum)
     );
     results.sort((a, b) => b.monthlyNet - a.monthlyNet);
     return results;
@@ -375,17 +311,6 @@ export default function EarnPage() {
     return calculateModelEarnings(selectedCatalogModel, selectedConfig, effectiveRAM, inferenceHours, elecCostNum);
   }, [selectedConfig, selectedCatalogModel, effectiveRAM, inferenceHours, elecCostNum]);
 
-  // Auto-set inference hours based on model type (unless user manually adjusted)
-  const selectedModelType = result?.modelType;
-  const prevModelTypeRef = useState<string | null>(null);
-  if (selectedModelType && selectedModelType !== prevModelTypeRef[0] && !hoursManuallySet) {
-    prevModelTypeRef[1](selectedModelType);
-    const defaultHours = defaultHoursForType(selectedModelType);
-    if (inferenceHours !== defaultHours) {
-      setInferenceHours(defaultHours);
-    }
-  }
-
   const comparisons = useMemo(
     () => (result ? getComparisons(result.monthlyNet) : []),
     [result]
@@ -395,19 +320,16 @@ export default function EarnPage() {
   const handleMacTypeSelect = (macType: string) => {
     setSelectedMacType(macType);
     setSelectedModelId(null);
-    setHoursManuallySet(false);
   };
 
   const handleChipSelect = (chip: string) => {
     setSelectedChip(chip);
     setSelectedModelId(null);
-    setHoursManuallySet(false);
   };
 
   const handleRAMSelect = (ram: number) => {
     setSelectedRAM(ram);
     setSelectedModelId(null);
-    setHoursManuallySet(false);
   };
 
   if (!selectedConfig || !result) return null;
@@ -447,7 +369,12 @@ export default function EarnPage() {
                   </div>
                 </div>
                 <button
-                  onClick={login}
+                  onClick={() => {
+                    trackEvent("login_cta_clicked", {
+                      source: "earn_page_setup_provider_cta",
+                    });
+                    login();
+                  }}
                   disabled={!ready}
                   className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg
                              bg-coral text-white font-medium text-sm
@@ -476,6 +403,11 @@ export default function EarnPage() {
                 </div>
                 <Link
                   href="/providers/setup"
+                  onClick={() => {
+                    trackEvent("provider_setup_clicked", {
+                      source: "earn_page_setup_provider_cta",
+                    });
+                  }}
                   className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg
                              bg-accent-brand text-white font-medium text-sm
                              hover:bg-accent-brand-hover
@@ -623,16 +555,6 @@ export default function EarnPage() {
                         {m.modelName}
                       </span>
 
-                      {/* Type badge */}
-                      <ModelTypeBadge type={m.modelType} />
-
-                      {/* Paused badge for image models — routing is paused for maintenance */}
-                      {m.modelType === "image" && (
-                        <span className="px-2 py-0.5 rounded text-xs font-medium bg-coral/10 text-coral border border-coral/20 whitespace-nowrap">
-                          Paused
-                        </span>
-                      )}
-
                       {/* Monthly net */}
                       <span className={`text-sm font-mono tabular-nums whitespace-nowrap ${
                         m.monthlyNet >= 0 ? "text-accent-green" : "text-accent-red"
@@ -641,7 +563,7 @@ export default function EarnPage() {
                       </span>
 
                       {/* Best badge */}
-                      {isBest && m.monthlyNet > 0 && m.modelType !== "image" && (
+                      {isBest && m.monthlyNet > 0 && (
                         <span className="px-2 py-0.5 rounded text-xs font-medium bg-accent-green/10 text-accent-green border border-accent-green/20 whitespace-nowrap">
                           Best
                         </span>
@@ -691,7 +613,6 @@ export default function EarnPage() {
                 value={inferenceHours}
                 onChange={(e) => {
                   setInferenceHours(parseInt(e.target.value));
-                  setHoursManuallySet(true);
                 }}
                 className="w-full accent-accent-brand"
               />
@@ -761,18 +682,14 @@ export default function EarnPage() {
 
             {/* Detail grid */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              {(result.decodeTokPerSec !== null || result.throughputLabel !== null) && (
-                <div>
-                  <p className="text-xs text-text-tertiary mb-0.5">
-                    {result.decodeTokPerSec !== null ? "Batched decode speed" : "Throughput"}
-                  </p>
-                  <p className="text-sm font-mono text-text-primary">
-                    {result.decodeTokPerSec !== null
-                      ? `${result.decodeTokPerSec.toFixed(1)} tok/s`
-                      : result.throughputLabel}
-                  </p>
-                </div>
-              )}
+              <div>
+                <p className="text-xs text-text-tertiary mb-0.5">
+                  Batched decode speed
+                </p>
+                <p className="text-sm font-mono text-text-primary">
+                  {result.decodeTokPerSec.toFixed(1)} tok/s
+                </p>
+              </div>
               <div>
                 <p className="text-xs text-text-tertiary mb-0.5">
                   Monthly revenue
@@ -842,70 +759,22 @@ export default function EarnPage() {
               How this is calculated
             </h3>
             <div className="text-xs text-text-tertiary font-mono space-y-1 bg-bg-tertiary rounded-lg p-4 overflow-x-auto">
-              {result.modelType === "transcription" ? (
-                <>
-                  <p>
-                    scaled_audio_min/hr = {result.catalogModel.baseAudioMinPerHour!.toLocaleString()} * ({selectedConfig.bandwidthGBs} GB/s / 100 GB/s) = {Math.round(result.scaledAudioMinPerHour!).toLocaleString()}
-                  </p>
-                  <p>
-                    revenue/hr = {Math.round(result.scaledAudioMinPerHour!).toLocaleString()} min * $
-                    {(result.catalogModel.pricePerMinMicro! / 1_000_000).toFixed(4)}
-                    /min = {fmtUSD(result.revenuePerHour, 4)}
-                  </p>
-                  <p>
-                    marginal_watts = {selectedConfig.inferWatts}W (inference) - {selectedConfig.idleWatts}W (idle) = {result.marginalWatts}W
-                  </p>
-                  <p>
-                    elec/hr = ({result.marginalWatts}W / 1000) * ${elecCostNum.toFixed(2)}/kWh = {fmtUSD(result.elecPerHour, 4)}
-                  </p>
-                  <p>
-                    net/hr = {fmtUSD(result.revenuePerHour, 4)} - {fmtUSD(result.elecPerHour, 4)} = {fmtUSD(result.netPerHour, 4)}
-                  </p>
-                  <p>
-                    monthly = {fmtUSD(result.netPerHour, 4)} * {inferenceHours} hrs/day * 30 days = {fmtUSD(result.monthlyNet)}
-                  </p>
-                </>
-              ) : result.modelType === "image" ? (
-                <>
-                  <p>
-                    scaled_images/hr = {result.catalogModel.baseImagesPerHour!} * ({selectedConfig.bandwidthGBs} GB/s / {result.catalogModel.referenceBandwidth!} GB/s) = {Math.round(result.scaledImagesPerHour!)}
-                  </p>
-                  <p>
-                    revenue/hr = {Math.round(result.scaledImagesPerHour!)} images/hr * $
-                    {(result.catalogModel.imagePriceMicro! / 1_000_000).toFixed(4)}
-                    /image = {fmtUSD(result.revenuePerHour, 4)}
-                  </p>
-                  <p>
-                    marginal_watts = {selectedConfig.inferWatts}W (inference) - {selectedConfig.idleWatts}W (idle) = {result.marginalWatts}W
-                  </p>
-                  <p>
-                    elec/hr = ({result.marginalWatts}W / 1000) * ${elecCostNum.toFixed(2)}/kWh = {fmtUSD(result.elecPerHour, 4)}
-                  </p>
-                  <p>
-                    net/hr = {fmtUSD(result.revenuePerHour, 4)} - {fmtUSD(result.elecPerHour, 4)} = {fmtUSD(result.netPerHour, 4)}
-                  </p>
-                  <p>
-                    monthly = {fmtUSD(result.netPerHour, 4)} * {inferenceHours} hrs/day * 30 days = {fmtUSD(result.monthlyNet)}
-                  </p>
-                </>
-              ) : (
-                <>
                   <p>
                     single_tok/s = ({selectedConfig.bandwidthGBs} GB/s / {result.activeParamsGB} GB) * 0.60 ={" "}
-                    {((selectedConfig.bandwidthGBs / result.activeParamsGB!) * 0.6).toFixed(1)} tok/s
+                    {((selectedConfig.bandwidthGBs / result.activeParamsGB) * 0.6).toFixed(1)} tok/s
                   </p>
                   <p>
                     batched_tok/s ={" "}
-                    {((selectedConfig.bandwidthGBs / result.activeParamsGB!) * 0.6).toFixed(1)} * {result.batchSize} * {result.batchEff} ={" "}
-                    {result.decodeTokPerSec?.toFixed(1)} tok/s
+                    {((selectedConfig.bandwidthGBs / result.activeParamsGB) * 0.6).toFixed(1)} * {result.batchSize} * {result.batchEff} ={" "}
+                    {result.decodeTokPerSec.toFixed(1)} tok/s
                   </p>
                   <p>
-                    tok/hr = {result.decodeTokPerSec?.toFixed(1)} * 3600 ={" "}
-                    {((result.decodeTokPerSec ?? 0) * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                    tok/hr = {result.decodeTokPerSec.toFixed(1)} * 3600 ={" "}
+                    {(result.decodeTokPerSec * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                   </p>
                   <p>
-                    revenue/hr = ({((result.decodeTokPerSec ?? 0) * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })} / 1M) * $
-                    {((result.outputPriceMicro ?? 0) / 1_000_000).toFixed(6)} = {fmtUSD(result.revenuePerHour, 4)}
+                    revenue/hr = ({(result.decodeTokPerSec * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })} / 1M) * $
+                    {(result.outputPriceMicro / 1_000_000).toFixed(6)} = {fmtUSD(result.revenuePerHour, 4)}
                   </p>
                   <p>
                     marginal_watts = {selectedConfig.inferWatts}W (inference) - {selectedConfig.idleWatts}W (idle) = {result.marginalWatts}W
@@ -919,8 +788,6 @@ export default function EarnPage() {
                   <p>
                     monthly = {fmtUSD(result.netPerHour, 4)} * {inferenceHours} hrs/day * 30 days = {fmtUSD(result.monthlyNet)}
                   </p>
-                </>
-              )}
             </div>
           </div>
 
@@ -953,7 +820,7 @@ export default function EarnPage() {
               When your Mac is idle (no inference requests), it consumes minimal power — you don&apos;t lose significant money waiting for requests. The electricity costs shown only apply during active inference.
             </p>
             <p className="text-xs text-text-tertiary">
-              Text models typically see the highest and most consistent demand. Image generation and transcription requests are bursty — high volume during peaks, quiet otherwise.
+              Models with higher demand and more active users tend to produce more consistent earnings.
             </p>
           </div>
         </div>

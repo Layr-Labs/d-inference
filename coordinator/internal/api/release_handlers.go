@@ -30,7 +30,7 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if release.Platform == "" {
-		release.Platform = platformMacOSARM64 // default
+		release.Platform = "macos-arm64" // default
 	}
 	if release.BinaryHash == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "binary_hash is required"))
@@ -69,7 +69,7 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLatestRelease(w http.ResponseWriter, r *http.Request) {
 	platform := r.URL.Query().Get("platform")
 	if platform == "" {
-		platform = platformMacOSARM64
+		platform = "macos-arm64"
 	}
 
 	release := s.store.GetLatestRelease(platform)
@@ -115,7 +115,7 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if req.Platform == "" {
-		req.Platform = platformMacOSARM64
+		req.Platform = "macos-arm64"
 	}
 
 	if err := s.store.DeleteRelease(req.Version, req.Platform); err != nil {

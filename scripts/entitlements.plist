@@ -9,10 +9,17 @@
     <true/>
     <key>com.apple.security.network.server</key>
     <true/>
-    <!-- Keychain access for wallet storage -->
+    <!--
+      Keychain access for E2E key storage.
+      Team prefix is hardcoded because codesign (our release flow) does NOT
+      expand $(AppIdentifierPrefix) — that's an Xcode-only build variable.
+      A literal unexpanded macro gets baked into the entitlements blob and
+      keychain writes fail with errSecMissingEntitlement (-34018).
+      Format per Apple docs: "TEAMID.identifier".
+    -->
     <key>com.apple.security.keychain-access-groups</key>
     <array>
-        <string>$(AppIdentifierPrefix)io.darkbloom.provider</string>
+        <string>SLDQ2GJ6TL.io.darkbloom.provider</string>
     </array>
 </dict>
 </plist>

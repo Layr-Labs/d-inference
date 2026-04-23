@@ -1,25 +1,27 @@
 // All requests go through Next.js API routes (/api/*) to avoid CORS.
-// The coordinator URL and API key are passed as custom headers so the
-// server-side route can forward them to the upstream coordinator.
+// The API key is passed as a custom header so the server-side route can
+// forward it to the upstream coordinator. The coordinator URL is resolved
+// server-side from NEXT_PUBLIC_COORDINATOR_URL — never from client input.
 
-const DEFAULT_COORDINATOR =
-  process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
+import {
+  SEALED_CONTENT_TYPE,
+  clearCoordinatorKeyCache,
+  getCoordinatorKey,
+  isEncryptionEnabled,
+  sealRequest,
+  unsealResponse,
+  unsealSseEvent,
+} from "./encryption";
 
-const getConfig = () => {
-  if (typeof window === "undefined") return { apiKey: "", baseUrl: DEFAULT_COORDINATOR };
-  return {
-    apiKey: localStorage.getItem("darkbloom_api_key") || "",
-    baseUrl:
-      localStorage.getItem("darkbloom_coordinator_url") || DEFAULT_COORDINATOR,
-  };
+const getApiKey = () => {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem("darkbloom_api_key") || "";
 };
 
-/** Headers that tell our API proxy where to forward and how to auth. */
 function proxyHeaders(extra?: Record<string, string>): Record<string, string> {
-  const { apiKey, baseUrl } = getConfig();
+  const apiKey = getApiKey();
   return {
     "Content-Type": "application/json",
-    "x-coordinator-url": baseUrl,
     ...(apiKey ? { "x-api-key": apiKey } : {}),
     ...extra,
   };
@@ -86,45 +88,6 @@ export interface StreamCallbacks {
   onError: (error: string) => void;
 }
 
-export interface TranscriptionResult {
-  text: string;
-  language?: string;
-  duration?: number;
-  segments?: { start: number; end: number; text: string }[];
-}
-
-export async function transcribeAudio(
-  file: File | Blob,
-  model: string,
-  language?: string
-): Promise<TranscriptionResult> {
-  const { apiKey, baseUrl } = getConfig();
-
-  const form = new FormData();
-  const filename = file instanceof File
-    ? file.name
-    : file.type?.includes("webm") ? "recording.webm" : "recording.wav";
-  form.append("file", file, filename);
-  form.append("model", model);
-  if (language) form.append("language", language);
-
-  const res = await fetch("/api/transcribe", {
-    method: "POST",
-    headers: {
-      "x-coordinator-url": baseUrl,
-      ...(apiKey ? { "x-api-key": apiKey } : {}),
-    },
-    body: form,
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Transcription failed (${res.status}): ${text}`);
-  }
-
-  return res.json();
-}
-
 export async function fetchModels(): Promise<Model[]> {
   const res = await fetch("/api/models", { headers: proxyHeaders() });
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
@@ -153,24 +116,8 @@ export interface PriceEntry {
   output_usd: string;
 }
 
-export interface TranscriptionPriceEntry {
-  model: string;
-  price_per_minute: number;
-  price_usd: string;
-  unit: string;
-}
-
-export interface ImagePriceEntry {
-  model: string;
-  price_per_image: number;
-  price_usd: string;
-  unit: string;
-}
-
 export interface PricingResponse {
   prices: PriceEntry[];
-  transcription_prices: TranscriptionPriceEntry[];
-  image_prices: ImagePriceEntry[];
 }
 
 export async function fetchPricing(): Promise<PricingResponse> {
@@ -192,86 +139,20 @@ export async function fetchUsage(): Promise<UsageEntry[]> {
   return data.usage || data;
 }
 
-export interface WalletInfo {
-  credit_balance_micro_usd: number;
-  wallet_address?: string;
-  wallet_usdc_balance?: number;
-  wallet_usdc_usd?: string;
-  coordinator_address?: string;
+export interface StripeCheckoutResponse {
+  url: string;
+  session_id: string;
 }
 
-export async function fetchWalletInfo(): Promise<WalletInfo> {
-  const res = await fetch("/api/payments/wallet", { headers: proxyHeaders() });
-  if (!res.ok) throw new Error(`Failed to fetch wallet info: ${res.status}`);
-  return res.json();
-}
-
-export async function deposit(amountUsd: number): Promise<void> {
-  const res = await fetch("/api/payments/deposit", {
+export async function createStripeCheckout(amountUsd: string, email?: string): Promise<StripeCheckoutResponse> {
+  const res = await fetch("/api/payments/stripe/checkout", {
     method: "POST",
     headers: proxyHeaders(),
-    body: JSON.stringify({ amount_usd: amountUsd }),
+    body: JSON.stringify({ amount_usd: amountUsd, ...(email ? { email } : {}) }),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data?.error?.message || data?.error || `Purchase failed (${res.status})`);
-  }
-}
-
-export async function withdraw(amountUsd: number, walletAddress: string): Promise<void> {
-  const res = await fetch("/api/payments/withdraw", {
-    method: "POST",
-    headers: proxyHeaders(),
-    body: JSON.stringify({ amount_usd: amountUsd, wallet_address: walletAddress }),
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data?.error?.message || data?.error || `Withdrawal failed (${res.status})`);
-  }
-}
-
-export async function submitDepositTx(txSignature: string, referralCode?: string): Promise<void> {
-  const res = await fetch("/api/payments/deposit", {
-    method: "POST",
-    headers: proxyHeaders(),
-    body: JSON.stringify({ tx_signature: txSignature, referral_code: referralCode }),
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data?.error?.message || data?.error || `Deposit verification failed (${res.status})`);
-  }
-}
-
-export interface ImageGenerationRequest {
-  model: string;
-  prompt: string;
-  negative_prompt?: string;
-  n?: number;
-  size?: string;
-  steps?: number;
-  seed?: number;
-}
-
-export interface GeneratedImage {
-  b64_json: string;
-}
-
-export interface ImageGenerationResponse {
-  created: number;
-  data: GeneratedImage[];
-}
-
-export async function generateImage(
-  params: ImageGenerationRequest
-): Promise<ImageGenerationResponse> {
-  const res = await fetch("/api/images", {
-    method: "POST",
-    headers: proxyHeaders(),
-    body: JSON.stringify(params),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Image generation failed (${res.status}): ${text}`);
+    throw new Error(data?.error?.message || data?.error || `Checkout failed (${res.status})`);
   }
   return res.json();
 }
@@ -295,6 +176,118 @@ export async function redeemInviteCode(code: string): Promise<InviteRedeemRespon
   return data;
 }
 
+// --- Stripe Payouts (Connect Express) ---
+//
+// All Stripe Payouts endpoints require a Privy session — no API-key access.
+// The proxy routes fall back to the privy-token cookie when no Authorization
+// header is present, so the browser-side fetch needs no extra plumbing.
+
+export interface StripeStatus {
+  configured: boolean;
+  has_account: boolean;
+  stripe_account_id?: string;
+  status: "" | "pending" | "ready" | "restricted" | "rejected";
+  destination_type?: "" | "bank" | "card";
+  destination_last4?: string;
+  instant_eligible?: boolean;
+  min_withdraw_micro_usd?: number;
+  instant_fee_bps?: number;
+  instant_fee_min_usd?: number;
+  currently_due?: string[];
+}
+
+export async function fetchStripeStatus(refresh = false): Promise<StripeStatus> {
+  const url = refresh ? "/api/payments/stripe/status?refresh=1" : "/api/payments/stripe/status";
+  const res = await fetch(url, { headers: proxyHeaders() });
+  if (!res.ok) throw new Error(`Failed to fetch Stripe status: ${res.status}`);
+  return res.json();
+}
+
+export interface StripeOnboardResponse {
+  url: string;
+  stripe_account_id: string;
+  status: string;
+}
+
+export async function startStripeOnboarding(returnURL?: string): Promise<StripeOnboardResponse> {
+  const res = await fetch("/api/payments/stripe/onboard", {
+    method: "POST",
+    headers: proxyHeaders(),
+    body: JSON.stringify({ return_url: returnURL }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || data?.error || `Stripe onboarding failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export interface StripeWithdrawResponse {
+  status: string;
+  withdrawal_id: string;
+  transfer_id?: string;
+  payout_id?: string;
+  amount_usd: string;
+  fee_usd: string;
+  net_usd: string;
+  method: "standard" | "instant";
+  eta?: string;
+  arrival_unix?: number;
+  balance_micro_usd: number;
+}
+
+export async function withdrawStripe(amountUsd: string, method: "standard" | "instant"): Promise<StripeWithdrawResponse> {
+  const res = await fetch("/api/payments/withdraw/stripe", {
+    method: "POST",
+    headers: proxyHeaders(),
+    body: JSON.stringify({ amount_usd: amountUsd, method }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || data?.error || `Withdrawal failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export interface StripeWithdrawal {
+  id: string;
+  account_id: string;
+  stripe_account_id: string;
+  transfer_id?: string;
+  payout_id?: string;
+  amount_micro_usd: number;
+  fee_micro_usd: number;
+  net_micro_usd: number;
+  method: "standard" | "instant";
+  status: "pending" | "transferred" | "paid" | "failed";
+  failure_reason?: string;
+  refunded?: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function fetchStripeWithdrawals(limit = 20): Promise<StripeWithdrawal[]> {
+  const res = await fetch(`/api/payments/stripe/withdrawals?limit=${limit}`, { headers: proxyHeaders() });
+  if (!res.ok) throw new Error(`Failed to fetch withdrawals: ${res.status}`);
+  const data = await res.json();
+  return data.withdrawals || [];
+}
+
+// computeStripeFeeUsd mirrors billing.FeeForMethodMicroUSD on the server so
+// the UI can preview the fee without a round-trip. Keep these formulas in
+// lockstep — see coordinator/internal/billing/stripe_connect.go.
+//
+// All math is done in integer micro-USD (matching the server) to avoid
+// floating-point drift on amounts near the floor boundary; only the final
+// result is converted back to USD for display.
+export function computeStripeFeeUsd(amountUsd: number, method: "standard" | "instant", instantFeeBps = 150, instantFeeMinUsd = 0.5): number {
+  if (method !== "instant" || amountUsd <= 0) return 0;
+  const grossMicro = Math.round(amountUsd * 1_000_000);
+  const minMicro = Math.round(instantFeeMinUsd * 1_000_000);
+  const pctMicro = Math.floor((grossMicro * instantFeeBps) / 10_000);
+  return Math.max(pctMicro, minMicro) / 1_000_000;
+}
+
 export async function healthCheck(): Promise<{ status: string; providers: number }> {
   const res = await fetch("/api/health", { headers: proxyHeaders() });
   if (!res.ok) throw new Error(`Health check failed: ${res.status}`);
@@ -307,12 +300,52 @@ export async function streamChat(
   callbacks: StreamCallbacks,
   signal?: AbortSignal
 ): Promise<void> {
+  // Optional sender→coordinator encryption. Defaults off so plaintext SDK
+  // and curl flows keep working unchanged. When enabled we NaCl-Box-seal the
+  // outgoing body to the coordinator's published X25519 pubkey, then decrypt
+  // each SSE event on the way back.
+  const requestBody = { model, messages, stream: true };
+  let sealCtx: { ephemPriv: Uint8Array; coordPub: Uint8Array } | null = null;
+  let fetchHeaders = proxyHeaders();
+  let fetchBody: string;
+
+  if (isEncryptionEnabled()) {
+    try {
+      const coordKey = await getCoordinatorKey();
+      const sealed = sealRequest(requestBody, coordKey);
+      fetchBody = sealed.envelopeJson;
+      fetchHeaders = proxyHeaders({ "Content-Type": SEALED_CONTENT_TYPE });
+      sealCtx = {
+        ephemPriv: sealed.ephemeralPrivateKey,
+        coordPub: coordKey.publicKey,
+      };
+    } catch (err) {
+      // Hard-fail per "don't silently fall back" rule. The user opted in to
+      // encryption, so plaintext-fallback would defeat the purpose.
+      callbacks.onError(
+        `Encryption setup failed: ${err instanceof Error ? err.message : String(err)} — disable "Encrypt to coordinator" in Settings to continue in plaintext.`,
+      );
+      return;
+    }
+  } else {
+    fetchBody = JSON.stringify(requestBody);
+  }
+
   const res = await fetch("/api/chat", {
     method: "POST",
-    headers: proxyHeaders(),
-    body: JSON.stringify({ model, messages, stream: true }),
+    headers: fetchHeaders,
+    body: fetchBody,
     signal,
   });
+
+  // If the coordinator advertised a kid mismatch (we cached a stale rotation),
+  // clear our cache so the next attempt re-fetches the fresh pubkey.
+  if (sealCtx && res.status === 400) {
+    const text = await res.clone().text();
+    if (text.includes("kid_mismatch")) {
+      clearCoordinatorKeyCache();
+    }
+  }
 
   if (!res.ok) {
     // If 401, key is stale — clear it so useAuth re-provisions on next render
@@ -323,7 +356,25 @@ export async function streamChat(
       callbacks.onError("Session expired — please try again");
       return;
     }
-    const text = await res.text();
+    let text = await res.text();
+    // When the request was sealed, the coordinator seals 4xx/5xx bodies too
+    // (so middleboxes still can't see what went wrong). Decrypt the envelope
+    // before trying to parse a user-facing message.
+    const errCt = res.headers.get("content-type") || "";
+    const errSealed =
+      sealCtx && (res.headers.get("x-eigen-sealed") === "true" ||
+        errCt.toLowerCase().startsWith(SEALED_CONTENT_TYPE));
+    if (errSealed && sealCtx) {
+      try {
+        const pt = unsealResponse(text, sealCtx.ephemPriv, sealCtx.coordPub);
+        text = new TextDecoder().decode(pt);
+      } catch (err) {
+        callbacks.onError(
+          `Could not decrypt sealed error response: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return;
+      }
+    }
     // Parse error for user-friendly messages
     try {
       const errData = JSON.parse(text);
@@ -471,6 +522,11 @@ export async function streamChat(
     if (cleaned) callbacks.onToken(cleaned);
   }
 
+  // When the response is sealed, the wire format is
+  // `data: <b64(nonce||sealed)>\n\n` per upstream event. We unseal each event
+  // back to its original `data: {...}` form before feeding it to the parser.
+  const responseSealed = sealCtx !== null && res.headers.get("x-eigen-sealed") === "true";
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -483,7 +539,26 @@ export async function streamChat(
       const trimmed = line.trim();
       if (!trimmed || !trimmed.startsWith("data: ")) continue;
 
-      const payload = trimmed.slice(6);
+      let payload = trimmed.slice(6);
+      if (responseSealed && sealCtx) {
+        try {
+          const inner = unsealSseEvent(payload, sealCtx.ephemPriv, sealCtx.coordPub);
+          // Inner is the upstream event minus the trailing \n\n — typically
+          // `data: {...}` or `data: [DONE]`. Strip the inner data: prefix so
+          // the existing parser sees the same shape it always has.
+          const innerTrimmed = inner.trim();
+          if (innerTrimmed.startsWith("data: ")) {
+            payload = innerTrimmed.slice(6);
+          } else {
+            payload = innerTrimmed;
+          }
+        } catch (err) {
+          callbacks.onError(
+            `Sealed stream decryption failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          return;
+        }
+      }
       if (payload === "[DONE]") {
         flushContentAccum();
         emitMetrics();

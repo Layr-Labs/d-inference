@@ -70,6 +70,10 @@ func startBackend(t *testing.T, model string, port int) *backendProcess {
 	return startBackendWithOptions(t, model, port, false)
 }
 
+func startBackendWithBatching(t *testing.T, model string, port int) *backendProcess {
+	return startBackendWithOptions(t, model, port, true)
+}
+
 func startBackendWithOptions(t *testing.T, model string, port int, continuousBatching bool) *backendProcess {
 	t.Helper()
 	args := []string{"serve", model, "--port", fmt.Sprintf("%d", port)}
@@ -187,9 +191,11 @@ func (p *simulatedProvider) connect(ctx context.Context, coordinatorURL string) 
 			Quantization: "4bit",
 			SizeBytes:    500_000_000,
 		}},
-		Backend:   "vllm-mlx",
-		PublicKey: p.pubKeyB64,
-		DecodeTPS: 100.0,
+		Backend:                 "inprocess-mlx",
+		PublicKey:               p.pubKeyB64,
+		DecodeTPS:               100.0,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
 	}
 	data, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
@@ -245,7 +251,6 @@ func (p *simulatedProvider) handleChallenge(ctx context.Context, data []byte) {
 	p.conn.Write(ctx, websocket.MessageText, respData)
 }
 
-//nolint:gocognit
 func (p *simulatedProvider) handleInferenceRequest(ctx context.Context, data []byte, client *http.Client) {
 	var msg struct {
 		Type      string `json:"type"`
@@ -349,15 +354,30 @@ func (p *simulatedProvider) handleInferenceRequest(ctx context.Context, data []b
 			}
 		}
 
-		// Forward chunk to coordinator
-		chunkMsg := protocol.InferenceResponseChunkMessage{
-			Type:      protocol.TypeInferenceResponseChunk,
-			RequestID: msg.RequestID,
-			Data:      "data: " + sseData + "\n\n",
-		}
-		chunkData, _ := json.Marshal(chunkMsg)
-		if err := p.conn.Write(ctx, websocket.MessageText, chunkData); err != nil {
-			return
+		// Encrypt and forward chunk to coordinator
+		if msg.EncryptedBody != nil {
+			coordinatorPub, err := e2e.ParsePublicKey(msg.EncryptedBody.EphemeralPublicKey)
+			if err == nil {
+				session := &e2e.SessionKeys{
+					PublicKey:  p.pubKey,
+					PrivateKey: p.privKey,
+				}
+				payload, err := e2e.Encrypt([]byte("data: "+sseData+"\n\n"), coordinatorPub, session)
+				if err == nil {
+					chunkMsg := protocol.InferenceResponseChunkMessage{
+						Type:      protocol.TypeInferenceResponseChunk,
+						RequestID: msg.RequestID,
+						EncryptedData: &protocol.EncryptedPayload{
+							EphemeralPublicKey: payload.EphemeralPublicKey,
+							Ciphertext:         payload.Ciphertext,
+						},
+					}
+					chunkData, _ := json.Marshal(chunkMsg)
+					if err := p.conn.Write(ctx, websocket.MessageText, chunkData); err != nil {
+						return
+					}
+				}
+			}
 		}
 	}
 
@@ -402,7 +422,6 @@ func (p *simulatedProvider) requestsServed() int64 {
 // Consumer helper — sends requests through the coordinator
 // ---------------------------------------------------------------------------
 
-//nolint:unparam // apiKey kept as param for future multi-key test scenarios
 func consumerRequest(ctx context.Context, coordinatorURL, apiKey, model, prompt string, stream bool) (int, string, error) {
 	maxTokens := 20
 	temp := 0.0
@@ -436,7 +455,6 @@ func consumerRequest(ctx context.Context, coordinatorURL, apiKey, model, prompt 
 // Full-stack tests
 // ============================================================================
 
-//nolint:gocognit,gocyclo
 func TestFullStack_MultiProviderInference(t *testing.T) {
 	if !shouldRunFullStack() {
 		t.Skip("skipping full-stack test (set LIVE_FULLSTACK_TEST=1 to enable)")
@@ -663,7 +681,7 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 
 	// --- Test 8: Model not available ---
 	t.Log("--- Test 8: Model not available ---")
-	code, _, _ = consumerRequest(ctx, ts.URL, "test-key", "nonexistent-model-xyz",
+	code, body, _ = consumerRequest(ctx, ts.URL, "test-key", "nonexistent-model-xyz",
 		"hello", true)
 	if code == 200 {
 		t.Error("request for nonexistent model should not succeed")
@@ -678,14 +696,14 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 	var bwg sync.WaitGroup
 	for i := 0; i < 50; i++ {
 		bwg.Add(1)
-		go func() {
+		go func(idx int) {
 			defer bwg.Done()
 			code, _, err := consumerRequest(ctx, ts.URL, "test-key", testModel,
 				"hi", true)
 			if err == nil && code == 200 {
 				atomic.AddInt32(&burstSuccess, 1)
 			}
-		}()
+		}(i)
 	}
 	bwg.Wait()
 	burstDuration := time.Since(burstStart)
@@ -1005,8 +1023,6 @@ func runBatchingBenchmark(t *testing.T, numProviders, numRequests int, continuou
 // memory pressure, and generation quality. Requires the model to be downloaded.
 //
 //	LIVE_FULLSTACK_TEST=1 go test ./internal/api/ -run TestFullStack_LargeModel -v -timeout=600s
-//
-//nolint:gocognit
 func TestFullStack_LargeModelInference(t *testing.T) {
 	if !shouldRunFullStack() {
 		t.Skip("skipping full-stack test (set LIVE_FULLSTACK_TEST=1 to enable)")

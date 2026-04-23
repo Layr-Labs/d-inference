@@ -1,8 +1,11 @@
 package api
 
 import (
+	"crypto/ecdsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/url"
 )
@@ -14,6 +17,7 @@ type ACMEVerificationResult struct {
 	SerialNumber string // CN from the cert (device serial)
 	Issuer       string
 	PublicKeyAlg string
+	PublicKey    string // uncompressed P-256 point, base64 encoded
 	Error        string
 }
 
@@ -94,6 +98,12 @@ func (s *Server) extractAndVerifyClientCert(r *http.Request) *ACMEVerificationRe
 	result.SerialNumber = cert.Subject.CommonName
 	result.Issuer = cert.Issuer.CommonName
 	result.PublicKeyAlg = cert.PublicKeyAlgorithm.String()
+	result.PublicKey, err = encodeP256PublicKey(cert.PublicKey)
+	if err != nil {
+		result.Valid = false
+		result.Error = err.Error()
+		return result
+	}
 
 	s.logger.Info("ACME client cert verified",
 		"serial", result.SerialNumber,
@@ -103,4 +113,21 @@ func (s *Server) extractAndVerifyClientCert(r *http.Request) *ACMEVerificationRe
 	)
 
 	return result
+}
+
+func encodeP256PublicKey(rawKey any) (string, error) {
+	pubKey, ok := rawKey.(*ecdsa.PublicKey)
+	if !ok {
+		return "", fmt.Errorf("client cert public key was %T, expected ECDSA P-256", rawKey)
+	}
+	if pubKey.Curve == nil || pubKey.Curve.Params().BitSize != 256 {
+		return "", fmt.Errorf("client cert public key was not P-256")
+	}
+
+	xBytes := pubKey.X.Bytes()
+	yBytes := pubKey.Y.Bytes()
+	encoded := make([]byte, 64)
+	copy(encoded[32-len(xBytes):32], xBytes)
+	copy(encoded[64-len(yBytes):64], yBytes)
+	return base64.StdEncoding.EncodeToString(encoded), nil
 }

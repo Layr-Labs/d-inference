@@ -1,15 +1,13 @@
 package api
 
-// Billing API handlers for Stripe, Solana payments and referral system.
+// Billing API handlers for Stripe payments and referral system.
 //
-// Consumer payment flow (Privy auth + client-side Solana signing):
-//   1. User authenticates via Privy JWT → we know their wallet address
-//   2. User signs a USDC transfer to coordinator address in the frontend
-//   3. User submits tx signature to POST /v1/billing/deposit
-//   4. Backend verifies on-chain that the tx came FROM the user's wallet
-//   5. Credits internal balance
+// Consumer payment flow (Stripe Checkout):
+//   1. User authenticates via Privy JWT
+//   2. User creates a Stripe Checkout session
+//   3. Stripe webhook confirms payment and credits internal balance
 //
-// The user controls their own keys. We only verify what happened on-chain.
+// Provider payouts use Stripe Connect Express (bank/card withdrawals).
 //
 // Endpoints that modify account state (referral, pricing, deposits) require
 // Privy authentication to prevent spam. API key auth is accepted for
@@ -207,125 +205,6 @@ func (s *Server) handleStripeSessionStatus(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// --- Solana Deposit (client-side signed) ---
-
-// handleSolanaDeposit handles POST /v1/billing/deposit.
-// The user signs a USDC transfer in their frontend wallet, then submits the
-// tx signature here. We verify on-chain that:
-//  1. The tx contains a USDC transfer TO our coordinator address
-//  2. The tx sender matches the authenticated user's wallet
-//  3. The tx hasn't been submitted before (double-spend protection)
-//
-//nolint:funlen
-func (s *Server) handleSolanaDeposit(w http.ResponseWriter, r *http.Request) {
-	if s.billing == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "billing not configured"))
-		return
-	}
-
-	// --- Mock mode: skip on-chain verification, credit directly ---
-	if s.billing.MockMode() {
-		s.handleMockDeposit(w, r)
-		return
-	}
-
-	if s.billing.Solana() == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Solana payments not configured"))
-		return
-	}
-	if s.requirePrivyUser(w, r) == nil {
-		return
-	}
-
-	var req struct {
-		TxSignature  string `json:"tx_signature"`
-		ReferralCode string `json:"referral_code,omitempty"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
-		return
-	}
-	if req.TxSignature == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "tx_signature is required"))
-		return
-	}
-
-	// Double-spend check (DB-backed, survives restarts).
-	if s.billing.IsExternalIDProcessed(req.TxSignature) {
-		writeJSON(w, http.StatusConflict, errorResponse("duplicate_deposit", "this transaction has already been credited"))
-		return
-	}
-
-	// Verify the on-chain transaction.
-	result, err := s.billing.Solana().VerifyDeposit(req.TxSignature)
-	if err != nil {
-		s.logger.Error("deposit: verification failed", "tx_sig", req.TxSignature, "error", err)
-		writeJSON(w, http.StatusBadRequest, errorResponse("verification_failed", err.Error()))
-		return
-	}
-
-	// Auth binding: verify the sender matches the authenticated user's wallet.
-	accountID := s.resolveAccountID(r)
-	user := auth.UserFromContext(r.Context())
-	if user != nil && user.SolanaWalletAddress != "" {
-		if result.From != user.SolanaWalletAddress {
-			s.logger.Warn("deposit: sender mismatch",
-				"expected", user.SolanaWalletAddress,
-				"got", result.From,
-				"account", accountID[:min(8, len(accountID))]+"...",
-			)
-			writeJSON(w, http.StatusForbidden, errorResponse("sender_mismatch",
-				"transaction sender does not match your authenticated wallet"))
-			return
-		}
-	}
-
-	// Create billing session (marks external_id as processed).
-	sessionID := uuid.New().String()
-	if err := s.billing.Store().CreateBillingSession(&store.BillingSession{
-		ID:             sessionID,
-		AccountID:      accountID,
-		PaymentMethod:  "solana",
-		Chain:          "solana",
-		AmountMicroUSD: result.AmountMicroUSD,
-		ExternalID:     req.TxSignature,
-		Status:         "completed",
-		ReferralCode:   req.ReferralCode,
-		CreatedAt:      time.Now(),
-	}); err != nil {
-		writeJSON(w, http.StatusConflict, errorResponse("duplicate_deposit", "this transaction has already been credited"))
-		return
-	}
-
-	// Credit balance.
-	if err := s.billing.CreditDeposit(accountID, result.AmountMicroUSD, store.LedgerDeposit,
-		"solana:"+req.TxSignature); err != nil {
-		s.logger.Error("deposit: credit failed", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to credit balance"))
-		return
-	}
-
-	if req.ReferralCode != "" {
-		_ = s.billing.Referral().Apply(accountID, req.ReferralCode)
-	}
-
-	s.logger.Info("deposit: credited",
-		"account", accountID[:min(8, len(accountID))]+"...",
-		"tx_sig", req.TxSignature,
-		"amount_micro_usd", result.AmountMicroUSD,
-		"from", result.From,
-	)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":            "deposited",
-		"tx_signature":      req.TxSignature,
-		"from":              result.From,
-		"amount_micro_usd":  result.AmountMicroUSD,
-		"amount_usd":        fmt.Sprintf("%.6f", float64(result.AmountMicroUSD)/1_000_000),
-		"balance_micro_usd": s.billing.Ledger().Balance(accountID),
-	})
-}
-
 // handleWalletBalance handles GET /v1/billing/wallet/balance.
 func (s *Server) handleWalletBalance(w http.ResponseWriter, r *http.Request) {
 	accountID := s.resolveAccountID(r)
@@ -334,114 +213,7 @@ func (s *Server) handleWalletBalance(w http.ResponseWriter, r *http.Request) {
 		"credit_balance_micro_usd": s.billing.Ledger().Balance(accountID),
 	}
 
-	if user := auth.UserFromContext(r.Context()); user != nil && user.SolanaWalletAddress != "" {
-		resp["wallet_address"] = user.SolanaWalletAddress
-
-		if s.billing != nil && s.billing.Solana() != nil {
-			balance, err := s.billing.Solana().GetTokenBalance(user.SolanaWalletAddress)
-			if err == nil {
-				resp["wallet_usdc_balance"] = balance
-				resp["wallet_usdc_usd"] = fmt.Sprintf("%.6f", float64(balance)/1_000_000)
-			}
-		}
-	}
-
-	// Also return the coordinator address so the frontend knows where to send USDC.
-	if s.billing != nil && s.billing.CoordinatorAddress() != "" {
-		resp["coordinator_address"] = s.billing.CoordinatorAddress()
-	}
-
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// --- Withdraw ---
-
-// MinWithdrawalMicroUSD is the minimum withdrawal amount (1,000,000 micro-USD = $1.00).
-const MinWithdrawalMicroUSD = 1_000_000
-
-// handleSolanaWithdraw handles POST /v1/billing/withdraw/solana.
-func (s *Server) handleSolanaWithdraw(w http.ResponseWriter, r *http.Request) {
-	// Require Privy auth — withdrawals must be tied to an authenticated user.
-	user := s.requirePrivyUser(w, r)
-	if user == nil {
-		return
-	}
-
-	if s.billing == nil || s.billing.Solana() == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Solana payments not configured"))
-		return
-	}
-
-	var req struct {
-		WalletAddress string `json:"wallet_address"`
-		AmountUSD     string `json:"amount_usd"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
-		return
-	}
-
-	// Auto-populate wallet from account if not provided in request.
-	if req.WalletAddress == "" {
-		req.WalletAddress = user.SolanaWalletAddress
-	}
-
-	if req.WalletAddress == "" || req.AmountUSD == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "wallet_address and amount_usd are required"))
-		return
-	}
-
-	// Validate destination wallet — must match the user's linked Solana wallet
-	// to prevent fund theft (cannot withdraw to someone else's address).
-	if user.SolanaWalletAddress != "" && req.WalletAddress != user.SolanaWalletAddress {
-		writeJSON(w, http.StatusForbidden, errorResponse("wallet_mismatch",
-			"withdrawals must go to your linked Solana wallet"))
-		return
-	}
-
-	amountFloat, err := strconv.ParseFloat(req.AmountUSD, 64)
-	if err != nil || amountFloat <= 0 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "amount_usd must be a positive number"))
-		return
-	}
-
-	amountMicroUSD := int64(amountFloat * 1_000_000)
-
-	// Minimum withdrawal check — must be at least $1.00.
-	if amountMicroUSD < MinWithdrawalMicroUSD {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
-			fmt.Sprintf("minimum withdrawal is $%.2f", float64(MinWithdrawalMicroUSD)/1_000_000)))
-		return
-	}
-
-	// Use the authenticated user's account ID for the debit.
-	accountID := user.AccountID
-
-	if err := s.billing.Ledger().Charge(accountID, amountMicroUSD, "withdraw:solana:"+req.WalletAddress); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("insufficient_funds", err.Error()))
-		return
-	}
-
-	result, err := s.billing.Solana().SendWithdrawal(billing.SolanaWithdrawRequest{
-		ToAddress:      req.WalletAddress,
-		AmountMicroUSD: amountMicroUSD,
-	})
-	if err != nil {
-		_ = s.billing.Ledger().Deposit(accountID, amountMicroUSD)
-		s.logger.Error("solana: withdrawal failed, re-credited", "error", err)
-		writeJSON(w, http.StatusBadGateway, errorResponse("withdrawal_error", err.Error()))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":            "withdrawn",
-		"chain":             "solana",
-		"wallet_address":    req.WalletAddress,
-		"amount_usd":        req.AmountUSD,
-		"amount_micro_usd":  amountMicroUSD,
-		"tx_signature":      result.TxSignature,
-		"balance_micro_usd": s.billing.Ledger().Balance(accountID),
-	})
 }
 
 // --- Referral Handlers ---
@@ -589,44 +361,8 @@ func (s *Server) handleGetPricing(w http.ResponseWriter, r *http.Request) {
 		prices = append(prices, p)
 	}
 
-	// Transcription pricing (per audio-minute).
-	type transcriptionPriceEntry struct {
-		Model    string `json:"model"`
-		Price    int64  `json:"price_per_minute"` // micro-USD per audio-minute
-		PriceUSD string `json:"price_usd"`
-		Unit     string `json:"unit"`
-	}
-	var transcriptionPrices []transcriptionPriceEntry
-	for model, price := range payments.DefaultTranscriptionPrices() {
-		transcriptionPrices = append(transcriptionPrices, transcriptionPriceEntry{
-			Model:    model,
-			Price:    price,
-			PriceUSD: fmt.Sprintf("$%.4f", float64(price)/1_000_000),
-			Unit:     "per audio-minute",
-		})
-	}
-
-	// Image pricing (per image at 1024x1024).
-	type imagePriceEntry struct {
-		Model    string `json:"model"`
-		Price    int64  `json:"price_per_image"` // micro-USD per image
-		PriceUSD string `json:"price_usd"`
-		Unit     string `json:"unit"`
-	}
-	var imagePrices []imagePriceEntry
-	for model, price := range payments.DefaultImagePrices() {
-		imagePrices = append(imagePrices, imagePriceEntry{
-			Model:    model,
-			Price:    price,
-			PriceUSD: fmt.Sprintf("$%.4f", float64(price)/1_000_000),
-			Unit:     "per image (1024x1024)",
-		})
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
-		"prices":               prices,
-		"transcription_prices": transcriptionPrices,
-		"image_prices":         imagePrices,
+		"prices": prices,
 	})
 }
 
@@ -766,9 +502,6 @@ func (s *Server) handleBillingMethods(w http.ResponseWriter, r *http.Request) {
 			"enabled":       true,
 			"share_percent": s.billing.Referral().SharePercent(),
 		}
-	}
-	if s.billing.CoordinatorAddress() != "" {
-		resp["coordinator_address"] = s.billing.CoordinatorAddress()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

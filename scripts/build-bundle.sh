@@ -6,8 +6,6 @@ set -euo pipefail
 # Creates a self-contained tarball with:
 #   darkbloom     Rust CLI binary (no Python linking)
 #   eigeninference-enclave      Swift Secure Enclave CLI
-#   ffmpeg             Static binary for audio transcription
-#   stt_server.py      Speech-to-text server script
 #   python/            Python 3.12 venv with vllm-mlx, mlx, transformers
 #
 # Usage:
@@ -90,7 +88,7 @@ echo "   Installing vllm-mlx and dependencies..."
 "$PYTHON312" -m pip install --quiet --no-cache-dir \
   'mlx-lm>=0.31.2' \
   'git+https://github.com/Gajesh2007/vllm-mlx.git@main' \
-  grpcio flatbuffers Pillow mlx-audio tokenizers
+  grpcio Pillow tokenizers
 # Force-upgrade mlx-lm in case a transitive dep pinned an older version
 "$PYTHON312" -m pip install --quiet --no-cache-dir --upgrade 'mlx-lm>=0.31.2'
 
@@ -182,96 +180,28 @@ if [ -f "$ENCLAVE_BIN" ]; then
 fi
 echo ""
 
-# ─── 5. Include ffmpeg static binary ─────────────────────────
-echo "5. Including ffmpeg..."
-
-# Check for a pre-downloaded ffmpeg, otherwise download one
-FFMPEG_SRC=""
-if [ -f "$PROJECT_DIR/vendor/ffmpeg" ]; then
-    FFMPEG_SRC="$PROJECT_DIR/vendor/ffmpeg"
-elif [ -f "/tmp/ffmpeg-macos-arm64" ]; then
-    FFMPEG_SRC="/tmp/ffmpeg-macos-arm64"
-elif command -v ffmpeg &>/dev/null; then
-    # Use system ffmpeg as fallback (may not be static, but works for bundle)
-    FFMPEG_SRC="$(which ffmpeg)"
-fi
-
-if [ -n "$FFMPEG_SRC" ]; then
-    cp "$FFMPEG_SRC" "$BUNDLE_DIR/bin/ffmpeg"
-    chmod +x "$BUNDLE_DIR/bin/ffmpeg"
-    echo "   ✓ ffmpeg ($(du -h "$BUNDLE_DIR/bin/ffmpeg" | cut -f1), from $FFMPEG_SRC)"
-else
-    echo "   ⚠ ffmpeg not found. Place a static binary at vendor/ffmpeg or /tmp/ffmpeg-macos-arm64"
-    echo "     The installer will attempt to download it at install time."
-fi
-echo ""
-
-# ─── 6. Include STT server script ────────────────────────────
-echo "6. Including stt_server.py..."
-STT_SERVER="$PROJECT_DIR/provider/stt_server.py"
-if [ -f "$STT_SERVER" ]; then
-    cp "$STT_SERVER" "$BUNDLE_DIR/bin/stt_server.py"
-    echo "   ✓ stt_server.py"
-else
-    echo "   ⚠ stt_server.py not found at $STT_SERVER"
-fi
-echo ""
-
-# ─── 7. Build and include gRPCServerCLI (Draw Things image backend) ──
-echo "7. Building gRPCServerCLI (Draw Things community)..."
-DRAWTHINGS_DIR="/tmp/draw-things-community"
-if [ ! -d "$DRAWTHINGS_DIR" ]; then
-    git clone --depth 1 https://github.com/drawthingsai/draw-things-community.git "$DRAWTHINGS_DIR"
-fi
-cd "$DRAWTHINGS_DIR"
-swift build -c release --product gRPCServerCLI 2>&1 | tail -3
-GRPC_BIN="$DRAWTHINGS_DIR/.build/arm64-apple-macosx/release/gRPCServerCLI"
-if [ -f "$GRPC_BIN" ]; then
-    cp "$GRPC_BIN" "$BUNDLE_DIR/bin/gRPCServerCLI"
-    chmod +x "$BUNDLE_DIR/bin/gRPCServerCLI"
-    echo "   ✓ gRPCServerCLI ($(du -h "$BUNDLE_DIR/bin/gRPCServerCLI" | cut -f1))"
-else
-    echo "   ⚠ gRPCServerCLI build failed — image generation will not work"
-fi
-echo ""
-
-# ─── 8. Include image bridge ────────────────────────────────
-echo "8. Including image bridge..."
-IMAGE_BRIDGE_SRC="$PROJECT_DIR/image-bridge/eigeninference_image_bridge"
-if [ -d "$IMAGE_BRIDGE_SRC" ]; then
-    mkdir -p "$BUNDLE_DIR/image-bridge/eigeninference_image_bridge"
-    cp -r "$IMAGE_BRIDGE_SRC/"*.py "$BUNDLE_DIR/image-bridge/eigeninference_image_bridge/"
-    # Copy generated protobuf/flatbuffers if they exist
-    [ -d "$IMAGE_BRIDGE_SRC/generated" ] && cp -r "$IMAGE_BRIDGE_SRC/generated" "$BUNDLE_DIR/image-bridge/eigeninference_image_bridge/"
-    echo "   ✓ image bridge"
-else
-    echo "   ⚠ image bridge not found at $IMAGE_BRIDGE_SRC"
-fi
-echo ""
-
-# ─── 8.5. Compute runtime integrity manifest ─────────────────
-echo "8.5. Computing runtime integrity hashes..."
+# ─── 5. Compute runtime integrity manifest ───────────────────
+echo "5. Computing runtime integrity hashes..."
 
 # Use the provider binary itself for hash computation (ensures parity with runtime)
 PYTHON_HASH=$(shasum -a 256 "$BUNDLE_DIR/python/bin/python3.12" | cut -d' ' -f1)
 echo "   Python hash: ${PYTHON_HASH:0:16}..."
 
-# Hash all .py files in vllm_mlx package (sorted, using same algorithm as Rust hash_files_sorted)
-# Each file is hashed independently, then file hashes are combined in sorted order
-VLLM_MLX_DIR="$BUNDLE_DIR/python/lib/python3.12/site-packages/vllm_mlx"
-if [ -d "$VLLM_MLX_DIR" ]; then
-    # Must match Rust hash_files_sorted(): hash each file to raw 32 bytes,
-    # concatenate in sorted filename order, SHA-256 the concatenation.
-    # Python reproduces the Rust algorithm exactly.
+# Hash the full allowed Python runtime tree (stdlib + lib-dynload + site-packages)
+# using the same sorted-file algorithm as the provider runtime verifier.
+PYTHON_LIB_DIR="$BUNDLE_DIR/python/lib/python3.12"
+if [ -d "$PYTHON_LIB_DIR" ]; then
     RUNTIME_HASH=$("$BUNDLE_DIR/python/bin/python3.12" -c "
 import hashlib, os, sys
 d = sys.argv[1]
-files = sorted(
-    os.path.join(r, f)
-    for r, _, fs in os.walk(d)
-    for f in fs
-    if f.endswith('.py')
-)
+files = []
+for r, dirs, fs in os.walk(d):
+    dirs[:] = [name for name in dirs if name != '__pycache__']
+    for f in fs:
+        if f.endswith('.pyc'):
+            continue
+        files.append(os.path.join(r, f))
+files.sort()
 final = hashlib.sha256()
 for path in files:
     h = hashlib.sha256()
@@ -283,11 +213,11 @@ for path in files:
             h.update(chunk)
     final.update(h.digest())  # raw 32 bytes, not hex
 print(final.hexdigest())
-" "$VLLM_MLX_DIR")
-    echo "   Runtime hash (vllm-mlx): ${RUNTIME_HASH:0:16}..."
+" "$PYTHON_LIB_DIR")
+    echo "   Runtime hash (full python lib): ${RUNTIME_HASH:0:16}..."
 else
     RUNTIME_HASH=""
-    echo "   ⚠ vllm_mlx not found — runtime hash unavailable"
+    echo "   ⚠ python runtime lib not found — runtime hash unavailable"
 fi
 
 # Hash templates from R2 CDN
@@ -318,16 +248,16 @@ MANIFEST
 echo "   ✓ manifest.json written"
 echo ""
 
-# ─── 9. Create tarball ────────────────────────────────────────
-echo "9. Creating tarball..."
+# ─── 6. Create tarball ────────────────────────────────────────
+echo "6. Creating tarball..."
 rm -f "$TARBALL"
 cd /tmp && tar czf "$TARBALL" -C eigeninference-bundle .
 TARBALL_SIZE=$(du -h "$TARBALL" | cut -f1)
 echo "   ✓ $TARBALL ($TARBALL_SIZE)"
 echo ""
 
-# ─── 8. Build macOS app + DMG ─────────────────────────────────
-echo "10. Building macOS app..."
+# ─── 7. Build macOS app + DMG ─────────────────────────────────
+echo "7. Building macOS app..."
 cd "$PROJECT_DIR/app/EigenInference"
 swift build -c release 2>&1 | tail -3
 APP_BIN=$(swift build -c release --show-bin-path)/EigenInference
@@ -378,9 +308,9 @@ else
 fi
 echo ""
 
-# ─── 9. Upload (optional) ────────────────────────────────────
+# ─── 8. Upload (optional) ────────────────────────────────────
 if [ "$UPLOAD" = true ]; then
-    echo "9. Uploading to server..."
+    echo "8. Uploading to server..."
     SSH_KEY="$HOME/.ssh/eigeninference-infra"
     SERVER="ubuntu@34.197.17.112"
 

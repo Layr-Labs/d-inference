@@ -3,24 +3,23 @@
 import { useEffect, useState, useCallback } from "react";
 import { useToastStore } from "@/hooks/useToast";
 import { useAuth } from "@/hooks/useAuth";
-import { useSignAndSendTransaction, useWallets } from "@privy-io/react-auth/solana";
-import {
-  createAssociatedTokenAccountInstruction,
-  getAssociatedTokenAddress,
-  createTransferInstruction,
-} from "@solana/spl-token";
-import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import { TopBar } from "@/components/TopBar";
 import {
   fetchBalance,
   fetchUsage,
-  fetchWalletInfo,
-  submitDepositTx,
+  createStripeCheckout,
   redeemInviteCode,
+  fetchStripeStatus,
+  startStripeOnboarding,
+  withdrawStripe,
+  fetchStripeWithdrawals,
+  computeStripeFeeUsd,
   type BalanceResponse,
   type UsageEntry,
-  type WalletInfo,
+  type StripeStatus,
+  type StripeWithdrawal,
 } from "@/lib/api";
+import { trackEvent } from "@/lib/google-analytics";
 import {
   Clock,
   X,
@@ -30,15 +29,12 @@ import {
   Ticket,
   Check,
   CreditCard,
-  Wallet,
-  Copy,
-  Info,
+  Building2,
+  Zap,
+  AlertCircle,
+  ArrowDownToLine,
 } from "lucide-react";
 import { UsageChart } from "@/components/UsageChart";
-
-const USDC_MINT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
-const USDC_DECIMALS = 6;
-const SOLANA_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
 
 function Modal({
   open,
@@ -67,36 +63,15 @@ function Modal({
   );
 }
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      onClick={() => {
-        navigator.clipboard.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      }}
-      className="p-1 rounded hover:bg-bg-hover text-text-tertiary hover:text-text-primary transition-colors"
-      title="Copy"
-    >
-      {copied ? <Check size={12} className="text-teal" /> : <Copy size={12} />}
-    </button>
-  );
-}
-
 export default function BillingContent() {
   const addToast = useToastStore((s) => s.addToast);
-  const { walletAddress } = useAuth();
-  const { signAndSendTransaction } = useSignAndSendTransaction();
-  const { wallets } = useWallets();
+  const { email } = useAuth();
   const [balance, setBalance] = useState<BalanceResponse | null>(null);
   const [usage, setUsage] = useState<UsageEntry[]>([]);
-  const [walletInfo, setWalletInfo] = useState<WalletInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [buyOpen, setBuyOpen] = useState(false);
   const [buyAmount, setBuyAmount] = useState("10");
   const [actionLoading, setActionLoading] = useState(false);
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteSuccess, setInviteSuccess] = useState("");
@@ -105,77 +80,128 @@ export default function BillingContent() {
   );
   const [sortAsc, setSortAsc] = useState(false);
 
+  // Stripe Payouts state.
+  const [stripeStatus, setStripeStatus] = useState<StripeStatus | null>(null);
+  const [stripeWithdrawals, setStripeWithdrawals] = useState<StripeWithdrawal[]>([]);
+  const [stripeOnboardLoading, setStripeOnboardLoading] = useState(false);
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
+  const [withdrawAmount, setWithdrawAmount] = useState("10");
+  const [withdrawMethod, setWithdrawMethod] = useState<"standard" | "instant">("standard");
+  const [withdrawLoading, setWithdrawLoading] = useState(false);
+
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [b, u, w] = await Promise.all([
+      const [b, u] = await Promise.all([
         fetchBalance(),
         fetchUsage(),
-        fetchWalletInfo().catch(() => null),
       ]);
       setBalance(b);
       setUsage(u);
-      if (w) setWalletInfo(w);
     } catch (e) {
       addToast(`Failed to load billing data: ${(e as Error).message}`);
     }
     setLoading(false);
   }, [addToast]);
 
+  // Stripe payouts data loads independently — we don't want a misconfigured
+  // coordinator to block the rest of the billing page.
+  const loadStripe = useCallback(async (refresh = false) => {
+    try {
+      const [s, wds] = await Promise.all([
+        fetchStripeStatus(refresh),
+        fetchStripeWithdrawals(20).catch(() => [] as StripeWithdrawal[]),
+      ]);
+      setStripeStatus(s);
+      setStripeWithdrawals(wds);
+    } catch (e) {
+      // Silent — Stripe Payouts is optional infrastructure.
+      console.warn("stripe status fetch failed:", (e as Error).message);
+    }
+  }, []);
+
   useEffect(() => {
     loadData();
   }, [loadData]);
 
-  const handleBuyCredits = async () => {
-    const embeddedWallet = wallets.find((w) => w.address === walletAddress);
-    if (!embeddedWallet) {
-      addToast("No wallet found. Sign in again.");
-      return;
+  // Refresh Stripe status on mount; if the user just came back from the
+  // Stripe-hosted onboarding flow (return URL adds ?stripe_return=1) we hit
+  // ?refresh=1 so the coordinator pulls the latest snapshot from Stripe
+  // before the webhook arrives.
+  useEffect(() => {
+    const params = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+    const justReturned = params?.get("stripe_return") === "1";
+    loadStripe(justReturned);
+    if (justReturned) {
+      addToast("Stripe onboarding complete — verifying...", "success");
+      // Strip the query param so a refresh doesn't re-trigger the toast.
+      const url = new URL(window.location.href);
+      url.searchParams.delete("stripe_return");
+      window.history.replaceState({}, "", url.toString());
     }
-    const coordAddr = walletInfo?.coordinator_address || "Cy3tQ1XeixVjaQyPCdkt3Hh9PYMPKfvtYvdFNgyFB2VD";
+  }, [loadStripe, addToast]);
 
-    setActionLoading(true);
-    try {
-      const connection = new Connection(SOLANA_RPC);
-      const fromPubkey = new PublicKey(embeddedWallet.address);
-      const toPubkey = new PublicKey(coordAddr);
-      const amountLamports = Math.round(parseFloat(buyAmount) * 10 ** USDC_DECIMALS);
-
-      const sourceATA = await getAssociatedTokenAddress(USDC_MINT, fromPubkey);
-      const destATA = await getAssociatedTokenAddress(USDC_MINT, toPubkey);
-
-      const tx = new Transaction();
-
-      // Create destination ATA if it doesn't exist
-      const destAccount = await connection.getAccountInfo(destATA);
-      if (!destAccount) {
-        tx.add(
-          createAssociatedTokenAccountInstruction(fromPubkey, destATA, toPubkey, USDC_MINT)
-        );
-      }
-
-      tx.add(createTransferInstruction(sourceATA, destATA, fromPubkey, amountLamports));
-      tx.feePayer = fromPubkey;
-      tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-
-      const serialized = tx.serialize({ requireAllSignatures: false });
-
-      const result = await signAndSendTransaction({
-        transaction: serialized,
-        wallet: embeddedWallet,
-        options: { sponsor: true },
-      });
-
-      // Submit the on-chain tx signature to the coordinator for credit
-      await submitDepositTx(result.signature);
-
-      setBuyOpen(false);
-      addToast(`$${buyAmount} credits added`, "success");
+  // Detect Stripe Checkout success redirect
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("stripe_checkout_success") === "1") {
+      addToast("Payment successful!", "success");
       loadData();
+      const url = new URL(window.location.href);
+      url.searchParams.delete("stripe_checkout_success");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, [addToast, loadData]);
+
+  const handleStripeOnboard = async () => {
+    setStripeOnboardLoading(true);
+    try {
+      // We pass the current page (with ?stripe_return=1) as the return URL so
+      // the user lands back on Billing after KYC.
+      const returnURL = typeof window !== "undefined"
+        ? `${window.location.origin}${window.location.pathname}?stripe_return=1`
+        : undefined;
+      const resp = await startStripeOnboarding(returnURL);
+      window.location.href = resp.url;
+    } catch (e) {
+      addToast(`Stripe onboarding failed: ${(e as Error).message}`);
+      setStripeOnboardLoading(false);
+    }
+  };
+
+  const handleStripeWithdraw = async () => {
+    setWithdrawLoading(true);
+    try {
+      const resp = await withdrawStripe(withdrawAmount, withdrawMethod);
+      addToast(`Withdrawal submitted — ${resp.eta || "processing"}`, "success");
+      setWithdrawOpen(false);
+      // Reload balance + history.
+      await Promise.all([loadData(), loadStripe(false)]);
     } catch (e) {
       addToast(`${(e as Error).message}`);
     }
-    setActionLoading(false);
+    setWithdrawLoading(false);
+  };
+
+  const handleStripeCheckout = async () => {
+    setActionLoading(true);
+    trackEvent("billing_buy_credits_submitted", {
+      amount_usd: Number(buyAmount),
+    });
+    try {
+      const resp = await createStripeCheckout(buyAmount, email || undefined);
+      trackEvent("billing_buy_credits_redirected", {
+        amount_usd: Number(buyAmount),
+      });
+      window.location.href = resp.url;
+    } catch (e) {
+      trackEvent("billing_buy_credits_failed", {
+        reason: "checkout_error",
+      });
+      addToast(`${(e as Error).message}`);
+      setActionLoading(false);
+    }
   };
 
   const handleRedeem = async () => {
@@ -183,12 +209,22 @@ export default function BillingContent() {
     if (!code) return;
     setInviteLoading(true);
     setInviteSuccess("");
+    trackEvent("invite_redeem_submitted", {
+      surface: "billing_page",
+    });
     try {
       const result = await redeemInviteCode(code);
+      trackEvent("invite_redeem_succeeded", {
+        surface: "billing_page",
+        credited_usd: result.credited_usd,
+      });
       setInviteSuccess(`$${result.credited_usd} credited to your account`);
       setInviteCode("");
       loadData();
     } catch (e) {
+      trackEvent("invite_redeem_failed", {
+        surface: "billing_page",
+      });
       addToast(`${(e as Error).message}`);
     }
     setInviteLoading(false);
@@ -206,57 +242,14 @@ export default function BillingContent() {
     0
   );
 
-  const displayWallet = walletInfo?.wallet_address || walletAddress;
-  const truncatedWallet = displayWallet
-    ? `${displayWallet.slice(0, 6)}...${displayWallet.slice(-4)}`
-    : null;
-
   return (
     <div className="flex flex-col h-full">
       <TopBar title="Billing" />
 
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto px-3 sm:px-6 py-6 sm:py-8 space-y-8">
-          {/* Research Preview Banner */}
-          <div className="rounded-2xl border-2 border-gold/40 bg-gold/10 p-5 sm:p-6 shadow-sm">
-            <div className="flex items-start gap-3">
-              <Info size={18} className="text-gold mt-0.5 flex-shrink-0" />
-              <div className="text-sm text-text-primary leading-relaxed">
-                <p className="font-semibold mb-2">We&apos;re in research preview.</p>
-                <p className="text-text-secondary mb-3">
-                  We&apos;re not taking funds from customers yet &mdash; we&apos;re personally paying for all the provider requests during this phase. Credit purchases are disabled.
-                </p>
-                <p className="text-text-secondary">
-                  Want an invite code? Email{" "}
-                  <a
-                    href="mailto:gajesh@eigenlabs.org"
-                    className="font-semibold text-coral hover:underline"
-                  >
-                    gajesh@eigenlabs.org
-                  </a>{" "}
-                  or DM{" "}
-                  <a
-                    href="https://x.com/gajesh"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="font-semibold text-coral hover:underline"
-                  >
-                    @gajesh
-                  </a>
-                  .
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Balance Card (disabled during research preview) */}
-          <div
-            className="relative overflow-hidden rounded-2xl border border-border-dim bg-bg-white p-6 sm:p-8 shadow-md opacity-60 pointer-events-none select-none"
-            aria-disabled="true"
-          >
-            <div className="absolute top-4 right-4 text-[10px] font-mono uppercase tracking-widest text-text-tertiary bg-bg-primary border border-border-dim rounded px-2 py-1">
-              Disabled during research preview
-            </div>
+          {/* Balance Card */}
+          <div className="relative overflow-hidden rounded-2xl border border-border-dim bg-bg-white p-6 sm:p-8 shadow-md">
             <div className="relative">
               <p className="text-xs font-mono text-text-tertiary uppercase tracking-widest mb-2">
                 Available Credits
@@ -268,7 +261,7 @@ export default function BillingContent() {
                 </div>
               ) : (
                 <div className="flex items-baseline gap-1 mb-4">
-                  <span className="text-4xl font-bold text-text-tertiary font-mono tracking-tight">
+                  <span className="text-4xl font-bold text-text-primary font-mono tracking-tight">
                     ${Number(balance?.balance_usd ?? 0).toFixed(2)}
                   </span>
                   <span className="text-sm text-text-tertiary font-mono">
@@ -277,22 +270,9 @@ export default function BillingContent() {
                 </div>
               )}
 
-              {/* Wallet info */}
-              {truncatedWallet && (
-                <div className="flex items-center gap-2 mb-4 text-xs text-text-tertiary font-mono">
-                  <Wallet size={12} />
-                  <span>{truncatedWallet}</span>
-                  {walletInfo?.wallet_usdc_usd && (
-                    <span className="ml-2 text-text-tertiary font-semibold">
-                      {walletInfo.wallet_usdc_usd} USDC
-                    </span>
-                  )}
-                </div>
-              )}
-
               <button
-                disabled
-                className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-text-tertiary/40 border border-border-dim text-white text-sm font-bold cursor-not-allowed"
+                onClick={() => setBuyOpen(true)}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-coral border-2 border-ink text-white text-sm font-bold hover:opacity-90 transition-all"
               >
                 <CreditCard size={14} />
                 Buy Credits
@@ -340,6 +320,20 @@ export default function BillingContent() {
               </div>
             )}
           </div>
+
+          {/* Withdraw to Bank (Stripe Connect Express) */}
+          <StripePayoutsCard
+            status={stripeStatus}
+            withdrawals={stripeWithdrawals}
+            balanceMicroUsd={balance?.balance_micro_usd ?? 0}
+            onboardLoading={stripeOnboardLoading}
+            onOnboard={handleStripeOnboard}
+            onOpenWithdraw={() => {
+              setWithdrawAmount("10");
+              setWithdrawMethod(stripeStatus?.instant_eligible ? "instant" : "standard");
+              setWithdrawOpen(true);
+            }}
+          />
 
           {/* Stats row */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
@@ -425,7 +419,7 @@ export default function BillingContent() {
                           }`}
                         >
                           {label}
-                          {sortField === key && (sortAsc ? " \u2191" : " \u2193")}
+                          {sortField === key && (sortAsc ? " ↑" : " ↓")}
                         </th>
                       ))}
                     </tr>
@@ -473,24 +467,6 @@ export default function BillingContent() {
             Credits are used to pay for inference requests.
           </p>
 
-          {/* Wallet info in modal */}
-          {truncatedWallet && (
-            <div className="rounded-lg bg-bg-primary border-2 border-border-dim p-3 mb-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-xs text-text-tertiary">
-                  <Wallet size={12} />
-                  <span className="font-mono">{truncatedWallet}</span>
-                  <CopyButton text={displayWallet!} />
-                </div>
-                {walletInfo?.wallet_usdc_usd && (
-                  <span className="text-xs font-mono font-semibold text-teal">
-                    {walletInfo.wallet_usdc_usd} USDC
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-
           <label className="block text-xs font-mono text-text-tertiary uppercase tracking-wider mb-2">
             Amount (USD)
           </label>
@@ -525,66 +501,368 @@ export default function BillingContent() {
             ))}
           </div>
           <button
-            onClick={() => setConfirmOpen(true)}
+            onClick={handleStripeCheckout}
             disabled={actionLoading || !buyAmount || parseFloat(buyAmount) <= 0 || parseFloat(buyAmount) > 20}
             className="w-full py-3 rounded-lg bg-coral border border-border-dim text-white font-bold text-sm
                        hover:opacity-90
                        disabled:opacity-50
                        transition-all flex items-center justify-center gap-2"
           >
-            Continue
+            {actionLoading && <Loader2 size={14} className="animate-spin" />}
+            {actionLoading ? "Redirecting..." : "Continue"}
           </button>
           <p className="mt-4 text-xs text-text-tertiary text-center">
-            Paid via USDC on Solana. Transaction fees are sponsored.
+            Powered by Stripe. Secure card payment.
           </p>
         </div>
       </Modal>
 
-      {/* Confirmation Modal */}
-      <Modal open={confirmOpen} onClose={() => !actionLoading && setConfirmOpen(false)}>
-        <div className="px-6 pb-6">
-          <h3 className="text-xl font-semibold text-ink mb-2">Confirm Purchase</h3>
-          <p className="text-sm text-text-secondary mb-4">
-            This will transfer <span className="font-bold text-text-primary">${buyAmount} USDC</span> from your wallet to buy inference credits.
-          </p>
-
-          {truncatedWallet && walletInfo?.wallet_usdc_usd && (
-            <div className="rounded-lg bg-bg-primary border-2 border-border-dim p-3 mb-4 text-xs">
-              <div className="flex justify-between text-text-tertiary">
-                <span>Wallet balance</span>
-                <span className="font-mono font-semibold text-teal">{walletInfo.wallet_usdc_usd} USDC</span>
-              </div>
-              <div className="flex justify-between text-text-tertiary mt-1">
-                <span>After purchase</span>
-                <span className="font-mono">{(parseFloat(walletInfo.wallet_usdc_usd) - parseFloat(buyAmount)).toFixed(2)} USDC</span>
-              </div>
-            </div>
-          )}
-
-          <div className="flex gap-3">
-            <button
-              onClick={() => setConfirmOpen(false)}
-              disabled={actionLoading}
-              className="flex-1 py-3 rounded-lg border-2 border-border-dim text-text-secondary text-sm font-bold hover:bg-bg-hover transition-all"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={async () => {
-                await handleBuyCredits();
-                setConfirmOpen(false);
-              }}
-              disabled={actionLoading}
-              className="flex-1 py-3 rounded-lg bg-coral border border-border-dim text-white font-bold text-sm
-                         hover:opacity-90
-                         disabled:opacity-50 transition-all flex items-center justify-center gap-2"
-            >
-              {actionLoading && <Loader2 size={14} className="animate-spin" />}
-              {actionLoading ? "Processing..." : `Confirm $${buyAmount}`}
-            </button>
-          </div>
-        </div>
+      {/* Stripe Withdraw Modal */}
+      <Modal open={withdrawOpen} onClose={() => !withdrawLoading && setWithdrawOpen(false)}>
+        <StripeWithdrawModal
+          status={stripeStatus}
+          balanceMicroUsd={balance?.balance_micro_usd ?? 0}
+          amount={withdrawAmount}
+          method={withdrawMethod}
+          loading={withdrawLoading}
+          onAmountChange={setWithdrawAmount}
+          onMethodChange={setWithdrawMethod}
+          onConfirm={handleStripeWithdraw}
+          onCancel={() => setWithdrawOpen(false)}
+        />
       </Modal>
     </div>
+  );
+}
+
+// --- Stripe Payouts components ---
+
+function StripePayoutsCard({
+  status,
+  withdrawals,
+  balanceMicroUsd,
+  onboardLoading,
+  onOnboard,
+  onOpenWithdraw,
+}: {
+  status: StripeStatus | null;
+  withdrawals: StripeWithdrawal[];
+  balanceMicroUsd: number;
+  onboardLoading: boolean;
+  onOnboard: () => void;
+  onOpenWithdraw: () => void;
+}) {
+  // Stripe payouts not configured on this coordinator — hide the card entirely.
+  if (status && !status.configured) return null;
+
+  const ready = status?.status === "ready";
+  const restricted = status?.status === "restricted";
+  const rejected = status?.status === "rejected";
+  const pending = status?.status === "pending";
+  const balanceUsd = balanceMicroUsd / 1_000_000;
+  const minWithdrawUsd = (status?.min_withdraw_micro_usd ?? 1_000_000) / 1_000_000;
+  const canWithdraw = ready && balanceUsd >= minWithdrawUsd;
+
+  return (
+    <div className="rounded-2xl border border-border-dim bg-bg-white p-6 shadow-md">
+      <div className="flex items-center gap-2 mb-4">
+        <Building2 size={16} className="text-teal" />
+        <h3 className="text-sm font-semibold text-text-primary">Withdraw to Bank</h3>
+        {ready && (
+          <span className="ml-auto text-[10px] font-mono uppercase tracking-widest text-teal bg-teal/10 border border-teal/30 rounded px-2 py-0.5">
+            Ready
+          </span>
+        )}
+        {pending && (
+          <span className="ml-auto text-[10px] font-mono uppercase tracking-widest text-gold bg-gold/10 border border-gold/30 rounded px-2 py-0.5">
+            Pending
+          </span>
+        )}
+        {(restricted || rejected) && (
+          <span className="ml-auto text-[10px] font-mono uppercase tracking-widest text-coral bg-coral/10 border border-coral/30 rounded px-2 py-0.5">
+            Action needed
+          </span>
+        )}
+      </div>
+
+      {!status?.has_account ? (
+        <>
+          <p className="text-sm text-text-secondary mb-4 leading-relaxed">
+            Link a bank account or debit card via Stripe to withdraw your credits.
+            Stripe handles identity verification — onboarding takes about 2 minutes.
+          </p>
+          <button
+            onClick={onOnboard}
+            disabled={onboardLoading}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 transition-all"
+          >
+            {onboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
+            {onboardLoading ? "Redirecting..." : "Link bank via Stripe"}
+          </button>
+        </>
+      ) : ready ? (
+        <>
+          <div className="rounded-lg bg-bg-primary border border-border-dim p-3 mb-4 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm text-text-secondary">
+              {status.destination_type === "card" ? (
+                <CreditCard size={14} className="text-teal" />
+              ) : (
+                <Building2 size={14} className="text-teal" />
+              )}
+              <span className="font-mono">
+                {status.destination_type === "card" ? "Debit card" : "Bank"} ••{status.destination_last4}
+              </span>
+              {status.instant_eligible && (
+                <span className="text-[10px] font-mono uppercase text-gold bg-gold/10 border border-gold/30 rounded px-1.5 py-0.5">
+                  Instant
+                </span>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={onOpenWithdraw}
+            disabled={!canWithdraw}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+          >
+            <ArrowDownToLine size={14} />
+            Withdraw
+          </button>
+          {!canWithdraw && balanceUsd < minWithdrawUsd && (
+            <p className="text-xs text-text-tertiary mt-2">
+              Minimum withdrawal is ${minWithdrawUsd.toFixed(2)} — your balance is ${balanceUsd.toFixed(2)}.
+            </p>
+          )}
+        </>
+      ) : (
+        <>
+          <p className="text-sm text-text-secondary mb-4 leading-relaxed flex items-start gap-2">
+            <AlertCircle size={14} className="text-coral mt-0.5 flex-shrink-0" />
+            {restricted
+              ? "Stripe needs more information to enable payouts on your account."
+              : rejected
+              ? "Stripe has disabled payouts on this account. Contact support."
+              : "Finish linking your account on Stripe to enable withdrawals."}
+          </p>
+          {!rejected && (
+            <button
+              onClick={onOnboard}
+              disabled={onboardLoading}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 transition-all"
+            >
+              {onboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
+              {onboardLoading ? "Redirecting..." : restricted ? "Provide more info" : "Continue setup"}
+            </button>
+          )}
+        </>
+      )}
+
+      {withdrawals.length > 0 && (
+        <div className="mt-5 pt-5 border-t border-border-subtle">
+          <p className="text-xs font-mono text-text-tertiary uppercase tracking-wider mb-3">
+            Recent withdrawals
+          </p>
+          <div className="space-y-2">
+            {withdrawals.slice(0, 5).map((w) => (
+              <div key={w.id} className="flex items-center justify-between text-sm">
+                <div className="flex items-center gap-2">
+                  {w.status === "paid" ? (
+                    <Check size={12} className="text-teal" />
+                  ) : w.status === "failed" ? (
+                    <X size={12} className="text-coral" />
+                  ) : (
+                    <Clock size={12} className="text-gold" />
+                  )}
+                  <span className="font-mono text-text-secondary">
+                    ${(w.net_micro_usd / 1_000_000).toFixed(2)}
+                  </span>
+                  <span className="text-[10px] font-mono uppercase text-text-tertiary">
+                    {w.method}
+                  </span>
+                </div>
+                <span className={`text-xs font-mono ${
+                  w.status === "paid" ? "text-teal" :
+                  w.status === "failed" ? "text-coral" :
+                  "text-text-tertiary"
+                }`}>
+                  {w.status}
+                  {w.refunded ? " (refunded)" : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StripeWithdrawModal({
+  status,
+  balanceMicroUsd,
+  amount,
+  method,
+  loading,
+  onAmountChange,
+  onMethodChange,
+  onConfirm,
+  onCancel,
+}: {
+  status: StripeStatus | null;
+  balanceMicroUsd: number;
+  amount: string;
+  method: "standard" | "instant";
+  loading: boolean;
+  onAmountChange: (v: string) => void;
+  onMethodChange: (m: "standard" | "instant") => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const amountNum = parseFloat(amount) || 0;
+  const balanceUsd = balanceMicroUsd / 1_000_000;
+  const minWithdrawUsd = (status?.min_withdraw_micro_usd ?? 1_000_000) / 1_000_000;
+  const instantBps = status?.instant_fee_bps ?? 150;
+  const instantMinUsd = status?.instant_fee_min_usd ?? 0.5;
+  const fee = computeStripeFeeUsd(amountNum, method, instantBps, instantMinUsd);
+  const net = Math.max(0, amountNum - fee);
+
+  const tooSmall = amountNum > 0 && amountNum < minWithdrawUsd;
+  const tooLarge = amountNum > balanceUsd;
+  const valid = amountNum >= minWithdrawUsd && !tooLarge;
+
+  return (
+    <div className="px-6 pb-6">
+      <h3 className="text-2xl font-semibold text-ink mb-2">Withdraw to {status?.destination_type === "card" ? "card" : "bank"}</h3>
+      <p className="text-sm text-text-secondary mb-4">
+        Funds go to {status?.destination_type === "card" ? "your linked card" : "your linked bank account"} ••{status?.destination_last4}.
+      </p>
+
+      <label className="block text-xs font-mono text-text-tertiary uppercase tracking-wider mb-2">
+        Amount (USD)
+      </label>
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-text-tertiary text-lg">$</span>
+        <input
+          type="number"
+          value={amount}
+          onChange={(e) => onAmountChange(e.target.value)}
+          className="flex-1 bg-bg-primary border border-border-dim rounded-lg px-4 py-3 text-text-primary font-mono text-lg outline-none focus:border-teal transition-colors"
+          min={minWithdrawUsd}
+          max={balanceUsd}
+          step="0.01"
+        />
+      </div>
+      <p className="text-xs text-text-tertiary mb-4">
+        Available: ${balanceUsd.toFixed(2)} · Min: ${minWithdrawUsd.toFixed(2)}
+      </p>
+      {tooSmall && (
+        <p className="text-xs text-coral mb-3">Minimum withdrawal is ${minWithdrawUsd.toFixed(2)}.</p>
+      )}
+      {tooLarge && (
+        <p className="text-xs text-coral mb-3">Insufficient balance.</p>
+      )}
+
+      {/* Method picker */}
+      <label className="block text-xs font-mono text-text-tertiary uppercase tracking-wider mb-2">
+        Speed
+      </label>
+      <div className="grid grid-cols-1 gap-2 mb-4">
+        <MethodOption
+          selected={method === "standard"}
+          onClick={() => onMethodChange("standard")}
+          icon={<Clock size={14} />}
+          label="Standard"
+          eta="1-2 business days"
+          fee="Free"
+        />
+        <MethodOption
+          selected={method === "instant"}
+          onClick={() => status?.instant_eligible && onMethodChange("instant")}
+          disabled={!status?.instant_eligible}
+          icon={<Zap size={14} />}
+          label="Instant"
+          eta="~30 minutes"
+          fee={`${(instantBps / 100).toFixed(2)}% (min $${instantMinUsd.toFixed(2)})`}
+          tooltip={!status?.instant_eligible ? "Link a debit card via Stripe to enable Instant Payouts" : undefined}
+        />
+      </div>
+
+      {/* Fee breakdown */}
+      <div className="rounded-lg bg-bg-primary border border-border-dim p-3 mb-5 text-xs space-y-1">
+        <div className="flex justify-between text-text-tertiary">
+          <span>Withdrawal</span>
+          <span className="font-mono">${amountNum.toFixed(2)}</span>
+        </div>
+        <div className="flex justify-between text-text-tertiary">
+          <span>Fee</span>
+          <span className="font-mono">${fee.toFixed(2)}</span>
+        </div>
+        <div className="flex justify-between text-text-primary font-bold pt-1 border-t border-border-subtle">
+          <span>You receive</span>
+          <span className="font-mono text-teal">${net.toFixed(2)}</span>
+        </div>
+      </div>
+
+      <div className="flex gap-3">
+        <button
+          onClick={onCancel}
+          disabled={loading}
+          className="flex-1 py-3 rounded-lg border-2 border-border-dim text-text-secondary text-sm font-bold hover:bg-bg-hover transition-all"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={onConfirm}
+          disabled={loading || !valid}
+          className="flex-1 py-3 rounded-lg bg-teal border border-border-dim text-white font-bold text-sm hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+        >
+          {loading && <Loader2 size={14} className="animate-spin" />}
+          {loading ? "Processing..." : `Withdraw $${amountNum.toFixed(2)}`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MethodOption({
+  selected,
+  onClick,
+  disabled,
+  icon,
+  label,
+  eta,
+  fee,
+  tooltip,
+}: {
+  selected: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+  icon: React.ReactNode;
+  label: string;
+  eta: string;
+  fee: string;
+  tooltip?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={tooltip}
+      className={`flex items-center justify-between gap-3 px-3 py-3 rounded-lg border-2 transition-all text-left ${
+        selected
+          ? "bg-teal/10 border-teal text-teal"
+          : disabled
+          ? "bg-bg-primary border-border-dim text-text-tertiary cursor-not-allowed opacity-60"
+          : "bg-bg-primary border-border-dim text-text-secondary hover:border-teal/30 hover:text-teal"
+      }`}
+    >
+      <div className="flex items-center gap-3">
+        {icon}
+        <div>
+          <div className="text-sm font-semibold">{label}</div>
+          <div className="text-xs font-mono text-text-tertiary">{eta}</div>
+        </div>
+      </div>
+      <div className="text-xs font-mono">{fee}</div>
+    </button>
   );
 }

@@ -1,4 +1,4 @@
-/// EigenInferenceApp — Main entry point for the Darkbloom macOS menu bar application.
+/// DarkBloomApp — Main entry point for the Darkbloom macOS menu bar application.
 ///
 /// Menu-bar-only app (no dock icon) that wraps the Rust `darkbloom`
 /// binary. Uses SwiftUI's MenuBarExtra (macOS 13+) for the status icon.
@@ -20,7 +20,7 @@
 import SwiftUI
 
 @main
-struct EigenInferenceApp: App {
+struct DarkBloomApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var viewModel = StatusViewModel()
 
@@ -58,32 +58,40 @@ struct EigenInferenceApp: App {
 
     }
 
+    private var eigenLogo: NSImage? {
+        guard let url = Bundle.module.url(forResource: "MenuBarIcon@2x", withExtension: "png"),
+              let data = try? Data(contentsOf: url),
+              let bitmap = NSBitmapImageRep(data: data),
+              let cgImage = bitmap.cgImage else { return nil }
+        let icon = NSImage(cgImage: cgImage, size: NSSize(width: 18, height: 18))
+        icon.isTemplate = true
+        return icon
+    }
+
     private var menuBarLabel: some View {
         HStack(spacing: 4) {
-            Image(systemName: menuBarIcon)
-                .foregroundColor(menuBarColor)
-                .symbolEffect(.pulse, isActive: viewModel.isServing)
+            if let logo = eigenLogo {
+                Image(nsImage: logo)
+                    .frame(width: 18, height: 18)
+                    .clipped()
+            } else {
+                Image(systemName: "circle")
+                    .foregroundColor(menuBarColor)
+            }
             if viewModel.isServing {
                 Text(formatThroughput(viewModel.tokensPerSecond))
-                    .font(.caption)
+                    .font(.captionWarm)
                     .monospacedDigit()
                     .contentTransition(.numericText())
             }
             if viewModel.updateManager.updateAvailable {
                 Circle()
-                    .fill(.orange)
+                    .fill(Color.adaptiveGold)
                     .frame(width: 6, height: 6)
             }
         }
         .animation(.smooth, value: viewModel.isServing)
         .animation(.smooth, value: viewModel.tokensPerSecond)
-    }
-
-    private var menuBarIcon: String {
-        if viewModel.isPaused { return "pause.circle.fill" }
-        if viewModel.isServing { return "bolt.circle.fill" }
-        if viewModel.isOnline { return "circle.fill" }
-        return "circle"
     }
 
     private var menuBarColor: Color {
@@ -114,6 +122,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Start as accessory (no dock icon, menu bar only)
         NSApplication.shared.setActivationPolicy(.accessory)
+
+        // Wire the telemetry reporter as early as possible so even
+        // initialization errors can be reported.
+        configureTelemetry()
+
+        // Uncaught Objective-C exceptions — rare in Swift but still possible
+        // when bridging into AppKit.
+        NSSetUncaughtExceptionHandler { exception in
+            TelemetryReporter.shared.emit(
+                kind: .panic,
+                severity: .fatal,
+                message: "uncaught NSException: \(exception.name.rawValue)",
+                fields: [
+                    "component": "app",
+                    "reason": "ns_exception",
+                    "error": exception.reason ?? "<no reason>",
+                ],
+                stack: exception.callStackSymbols.joined(separator: "\n")
+            )
+            TelemetryReporter.shared.flushNow()
+        }
 
         // Watch for windows appearing/disappearing
         let center = NotificationCenter.default
@@ -169,5 +198,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     deinit {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
+    }
+
+    /// Configure TelemetryReporter with the coordinator URL derived from the
+    /// provider config. We intentionally accept a plain HTTPS base URL even
+    /// though the provider config uses `wss://` for the WebSocket — the
+    /// telemetry endpoint lives on a different scheme/path.
+    private func configureTelemetry() {
+        let cfg = ConfigManager.load()
+        // provider config holds something like "wss://api.darkbloom.dev/ws/provider".
+        // Convert to the HTTPS base the ingest endpoint lives under.
+        let httpsBase = Self.httpsBase(from: cfg.coordinatorURL)
+        TelemetryReporter.shared.coordinatorBaseURL = httpsBase
+    }
+
+    /// Translate a `wss://host[:port]/...` URL into `https://host[:port]/`.
+    /// Falls back to the production endpoint if parsing fails.
+    static func httpsBase(from ws: String) -> URL? {
+        guard var comps = URLComponents(string: ws) else {
+            return URL(string: "https://api.darkbloom.dev")
+        }
+        comps.path = ""
+        comps.query = nil
+        switch comps.scheme {
+        case "wss": comps.scheme = "https"
+        case "ws": comps.scheme = "http"
+        default: break
+        }
+        return comps.url
     }
 }

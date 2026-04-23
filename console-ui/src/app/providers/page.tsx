@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { trackEvent } from "@/lib/google-analytics";
 import { useAuth } from "@/hooks/useAuth";
 import { useVerificationMode } from "@/lib/verification-mode";
 import {
@@ -282,7 +283,7 @@ function ProviderCard({ provider }: { provider: Provider }) {
 }
 
 export default function ProvidersPage() {
-  const { ready, authenticated, login, walletAddress } = useAuth();
+  const { ready, authenticated, login } = useAuth();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -323,10 +324,9 @@ export default function ProvidersPage() {
     );
   }
 
-  // Check if user is a provider
-  const myProvider = walletAddress
-    ? providers.find((p) => p.wallet_address === walletAddress)
-    : null;
+  // Provider matching by wallet address is no longer available after Solana removal.
+  // TODO: match by account_id once coordinator exposes it on the attestation endpoint.
+  const myProvider = null as Provider | null;
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
@@ -343,7 +343,12 @@ export default function ProvidersPage() {
               </p>
             </div>
             <button
-              onClick={login}
+              onClick={() => {
+                trackEvent("login_cta_clicked", {
+                  source: "providers_page",
+                });
+                login();
+              }}
               disabled={!ready}
               className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg
                          bg-coral text-white font-medium text-sm
@@ -404,6 +409,11 @@ export default function ProvidersPage() {
           {!myProvider && (
             <Link
               href="/providers/setup"
+              onClick={() => {
+                trackEvent("provider_setup_clicked", {
+                  source: "providers_page",
+                });
+              }}
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-accent-brand text-white text-sm font-medium hover:bg-accent-brand-hover transition-colors"
             >
               Become a Provider <ArrowRight size={14} />
@@ -439,6 +449,11 @@ export default function ProvidersPage() {
             <p className="text-sm">No providers online</p>
             <Link
               href="/providers/setup"
+              onClick={() => {
+                trackEvent("provider_setup_clicked", {
+                  source: "providers_empty_state",
+                });
+              }}
               className="inline-flex items-center gap-1.5 mt-3 text-sm text-accent-brand font-medium hover:underline"
             >
               Learn how to become a provider <ArrowRight size={14} />

@@ -57,12 +57,10 @@ func billingTestServer(t *testing.T) (*Server, *store.MemoryStore, *payments.Led
 
 // setupProviderForBilling connects a provider, sets trust, records challenge
 // success, and returns the WebSocket connection, provider ID, and public key.
-//
-//nolint:unparam // string returns kept for future test assertions
 func setupProviderForBilling(t *testing.T, ctx context.Context, ts *httptest.Server, reg *registry.Registry, model string) (*websocket.Conn, string, string) {
 	t.Helper()
 	pubKey := testPublicKeyB64()
-	models := []protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}}
+	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
 	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
 
@@ -107,13 +105,8 @@ func serveOneInference(ctx context.Context, t *testing.T, conn *websocket.Conn, 
 				var inferReq protocol.InferenceRequestMessage
 				json.Unmarshal(data, &inferReq)
 
-				chunk := protocol.InferenceResponseChunkMessage{
-					Type:      protocol.TypeInferenceResponseChunk,
-					RequestID: inferReq.RequestID,
-					Data:      `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"ok"}}]}` + "\n\n",
-				}
-				chunkData, _ := json.Marshal(chunk)
-				conn.Write(ctx, websocket.MessageText, chunkData)
+				writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
+					`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"ok"}}]}`+"\n\n")
 
 				complete := protocol.InferenceCompleteMessage{
 					Type:      protocol.TypeInferenceComplete,
@@ -488,8 +481,6 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 // TestIntegration_DeviceAuthFullFlow tests the complete device authorization
 // flow: code generation, approval, token issuance, and provider registration
 // with account linking. Verifies that inference earnings go to the linked account.
-//
-//nolint:gocognit
 func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	srv, st, _ := billingTestServer(t)
 
@@ -568,7 +559,7 @@ func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	// Step 5: Connect a provider via WebSocket using the auth token.
 	pubKey := testPublicKeyB64()
 	model := "device-auth-model"
-	models := []protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}}
+	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 	conn := connectProviderWithToken(t, ctx, ts.URL, models, pubKey, tokenResult.Token, "0xDeviceTestWallet")
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
@@ -672,14 +663,14 @@ func TestIntegration_MultiNodeSameAccount(t *testing.T) {
 	model2 := "multi-node-model-b"
 
 	conn1 := connectProviderWithToken(t, ctx, ts.URL,
-		[]protocol.ModelInfo{{ID: model1, ModelType: "test", Quantization: "4bit"}},
+		[]protocol.ModelInfo{{ID: model1, ModelType: "chat", Quantization: "4bit"}},
 		pubKey1, rawToken, "0xMultiNode1")
 	defer conn1.Close(websocket.StatusNormalClosure, "")
 
 	time.Sleep(200 * time.Millisecond)
 
 	conn2 := connectProviderWithToken(t, ctx, ts.URL,
-		[]protocol.ModelInfo{{ID: model2, ModelType: "test", Quantization: "4bit"}},
+		[]protocol.ModelInfo{{ID: model2, ModelType: "chat", Quantization: "4bit"}},
 		pubKey2, rawToken, "0xMultiNode2")
 	defer conn2.Close(websocket.StatusNormalClosure, "")
 

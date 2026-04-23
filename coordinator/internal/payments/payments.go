@@ -1,15 +1,13 @@
 // Package payments provides balance tracking and pricing for Darkbloom inference.
 //
 // The payment flow:
-//  1. Consumer deposits USDC on Solana (verified on-chain via JSON-RPC)
-//     or pays via Stripe checkout
+//  1. Consumer pays via Stripe Checkout — webhook credits internal balance
 //  2. Consumer makes inference requests — the coordinator debits per-request
 //     based on output token count
 //  3. Provider earns a payout (total cost minus 10% platform fee)
-//  4. Payouts accumulate and can be settled on-chain
+//  4. Payouts are settled via Stripe Connect Express (bank/card withdrawals)
 //
-// All amounts are in micro-USD (1 USD = 1,000,000 micro-USD). This maps 1:1
-// to USDC's 6-decimal on-chain representation.
+// All amounts are in micro-USD (1 USD = 1,000,000 micro-USD).
 //
 // The Ledger wraps a Store for balance persistence and adds in-memory tracking
 // of per-consumer usage history.

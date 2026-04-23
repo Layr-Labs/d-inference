@@ -63,6 +63,19 @@ if ! command -v cloud-sql-proxy >/dev/null; then
   chmod +x /usr/local/bin/cloud-sql-proxy
 fi
 
+# Caddy for TLS termination + reverse proxy to the coordinator on :8080.
+# In prod, EigenCloud injects Caddy next to the container; on our GCE VM we
+# run it as a host-level systemd service. Auto-TLS via Let's Encrypt
+# HTTP-01 challenge (port 80 allowed by firewall).
+if ! command -v caddy >/dev/null; then
+  curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key | \
+    gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
+    > /etc/apt/sources.list.d/caddy-stable.list
+  apt-get update
+  apt-get install -y caddy
+fi
+
 # Now it is safe to invoke gcloud.
 SQL_CONN=$(gcloud sql instances describe d-inference-dev-db --format='value(connectionName)')
 if [ -z "$SQL_CONN" ]; then
@@ -91,14 +104,15 @@ cat > "$ENV_FILE" <<EOF
 EIGENINFERENCE_PORT=8080
 EIGENINFERENCE_MIN_TRUST=hardware
 EIGENINFERENCE_BILLING_MOCK=false
-EIGENINFERENCE_BASE_URL=https://api.dev.darkbloom.dev
-EIGENINFERENCE_CONSOLE_URL=https://console.dev.darkbloom.dev
+EIGENINFERENCE_BASE_URL=https://api.dev.darkbloom.xyz
+EIGENINFERENCE_CONSOLE_URL=https://console.dev.darkbloom.xyz
+CORS_ORIGIN=https://console.dev.darkbloom.xyz
 EIGENINFERENCE_R2_CDN_URL=$(fetch eigeninference-r2-cdn-url)
 EIGENINFERENCE_SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 EIGENINFERENCE_SOLANA_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
 EIGENINFERENCE_ADMIN_EMAILS=gajesh@eigenlabs.org
 EIGENINFERENCE_REFERRAL_SHARE_PCT=15
-DOMAIN=api.dev.darkbloom.dev
+DOMAIN=api.dev.darkbloom.xyz
 APP_PORT=8080
 EIGENINFERENCE_MDM_URL=https://localhost:9002
 EIGENINFERENCE_STEP_CA_ROOT=/data/step-ca/certs/root_ca.crt
@@ -113,6 +127,10 @@ MNEMONIC=$(fetch eigeninference-solana-mnemonic)
 MICROMDM_API_KEY=$(fetch eigeninference-micromdm-api-key)
 EIGENINFERENCE_MDM_API_KEY=$(fetch eigeninference-micromdm-api-key)
 MDM_PUSH_P12_B64=$(fetch eigeninference-mdm-push-p12-b64)
+DD_API_KEY=$(fetch eigeninference-dd-api-key)
+DD_SITE=$(fetch eigeninference-dd-site)
+DD_ENV=development
+DD_SERVICE=d-inference-coordinator
 EOF
 chmod 600 "$ENV_FILE"
 
@@ -134,15 +152,25 @@ EOF
 
 # ---- 5. Coordinator startup wrapper + systemd unit ----
 # Wrapper resolves the image tag from instance metadata at each start so
-# Cloud Build can pin a specific SHA by writing DINF_IMAGE_TAG.
+# Cloud Build can pin a specific SHA by writing DINF_IMAGE_TAG. Auth to
+# Artifact Registry uses the VM's service-account access token from the
+# metadata server — no gcloud dependency, so the wrapper works even if
+# google-cloud-cli isn't present at /usr/bin/gcloud.
 cat > /usr/local/bin/d-inference-run.sh <<'WRAPPER'
 #!/bin/bash
 set -euo pipefail
-META="http://metadata.google.internal/computeMetadata/v1/instance/attributes/DINF_IMAGE_TAG"
-TAG=$(curl -fsSL -H "Metadata-Flavor: Google" "$META" 2>/dev/null || echo latest)
+META="http://metadata.google.internal/computeMetadata/v1/instance"
+TAG=$(curl -fsSL -H "Metadata-Flavor: Google" "$META/attributes/DINF_IMAGE_TAG" 2>/dev/null || echo latest)
 IMAGE="us-central1-docker.pkg.dev/sepolia-ai/coordinator/coordinator:${TAG}"
 echo "Starting coordinator with image $IMAGE"
-/usr/bin/gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+# Fetch an access token for the VM's default SA and docker login.
+TOKEN=$(curl -fsSL -H "Metadata-Flavor: Google" \
+  "$META/service-accounts/default/token" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+printf '%s' "$TOKEN" | /usr/bin/docker login -u oauth2accesstoken --password-stdin us-central1-docker.pkg.dev
+unset TOKEN
+
 /usr/bin/docker pull "$IMAGE"
 exec /usr/bin/docker run --rm --name d-inference-coordinator \
   --network host \
@@ -171,9 +199,64 @@ ExecStop=/usr/bin/docker stop -t 30 d-inference-coordinator
 WantedBy=multi-user.target
 EOF
 
+# ---- 6. Caddy config (TLS terminator + path routing for coordinator/step-ca/MicroMDM) ----
+# Mirrors the prod coordinator/Caddyfile routes:
+#   /scep, /mdm/*  -> MicroMDM (127.0.0.1:9002, HTTPS self-signed)
+#   /acme/*        -> step-ca  (127.0.0.1:9000, HTTPS self-signed)
+#   everything else -> coordinator (127.0.0.1:8080, HTTP)
+# Without these routes, Mac enrollment fails with "SCEP server rejected."
+cat > /etc/caddy/Caddyfile <<'CADDYFILE'
+api.dev.darkbloom.xyz {
+  # step-ca ACME proxy (device-attest-01 challenges)
+  handle /acme/* {
+    reverse_proxy https://127.0.0.1:9000 {
+      transport http {
+        tls_insecure_skip_verify
+      }
+      header_up Host {host}
+    }
+  }
+
+  # MicroMDM — SCEP + MDM checkin/connect
+  handle /scep {
+    reverse_proxy https://127.0.0.1:9002 {
+      transport http {
+        tls_insecure_skip_verify
+      }
+    }
+  }
+  handle /mdm/* {
+    reverse_proxy https://127.0.0.1:9002 {
+      transport http {
+        tls_insecure_skip_verify
+      }
+    }
+  }
+
+  # All other traffic -> coordinator (HTTP + WebSocket)
+  reverse_proxy 127.0.0.1:8080 {
+    health_uri /health
+    health_interval 30s
+    health_timeout 5s
+    health_status 200
+  }
+
+  request_body {
+    max_size 25MB
+  }
+
+  log {
+    output stdout
+    format console
+    level INFO
+  }
+}
+CADDYFILE
+
 systemctl daemon-reload
-systemctl enable cloud-sql-proxy.service d-inference-coordinator.service
+systemctl enable cloud-sql-proxy.service d-inference-coordinator.service caddy.service
 systemctl restart cloud-sql-proxy.service
 systemctl restart d-inference-coordinator.service
+systemctl restart caddy.service
 
 echo "==> Startup complete at $(date -Iseconds)"

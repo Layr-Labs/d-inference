@@ -11,10 +11,11 @@
 //	                        inference_complete, inference_error, attestation_response
 //	Coordinator → Provider: inference_request, cancel, attestation_challenge
 //
-// The inference request body is plain JSON (model, messages, stream). No
-// encryption fields are needed in the wire protocol because the coordinator
-// runs in a Confidential VM and can read requests for routing. The provider
-// is attested via Secure Enclave challenge-response.
+// Inference requests may be carried either as plain JSON in Body or as an
+// X25519/NaCl-box encrypted payload in EncryptedBody. The coordinator can
+// decrypt sender-sealed requests inside its Confidential VM for routing, then
+// re-encrypts to the provider before dispatch. The provider is attested via
+// Secure Enclave challenge-response.
 package protocol
 
 import (
@@ -28,23 +29,19 @@ import (
 // Message type constants.
 const (
 	// Provider → Coordinator
-	TypeRegister                = "register"
-	TypeHeartbeat               = "heartbeat"
-	TypeInferenceAccepted       = "inference_accepted"
-	TypeInferenceResponseChunk  = "inference_response_chunk"
-	TypeInferenceComplete       = "inference_complete"
-	TypeInferenceError          = "inference_error"
-	TypeAttestationResponse     = "attestation_response"
-	TypeTranscriptionComplete   = "transcription_complete"
-	TypeImageGenerationComplete = "image_generation_complete"
+	TypeRegister               = "register"
+	TypeHeartbeat              = "heartbeat"
+	TypeInferenceAccepted      = "inference_accepted"
+	TypeInferenceResponseChunk = "inference_response_chunk"
+	TypeInferenceComplete      = "inference_complete"
+	TypeInferenceError         = "inference_error"
+	TypeAttestationResponse    = "attestation_response"
 
 	// Coordinator → Provider
-	TypeInferenceRequest       = "inference_request"
-	TypeCancel                 = "cancel"
-	TypeAttestationChallenge   = "attestation_challenge"
-	TypeTranscriptionRequest   = "transcription_request"
-	TypeImageGenerationRequest = "image_generation_request"
-	TypeRuntimeStatus          = "runtime_status"
+	TypeInferenceRequest     = "inference_request"
+	TypeCancel               = "cancel"
+	TypeAttestationChallenge = "attestation_challenge"
+	TypeRuntimeStatus        = "runtime_status"
 )
 
 // ---------------------------------------------------------------------------
@@ -86,24 +83,37 @@ type ModelInfo struct {
 
 // RegisterMessage is sent when a provider first connects.
 type RegisterMessage struct {
-	Type          string          `json:"type"`
-	Hardware      Hardware        `json:"hardware"`
-	Models        []ModelInfo     `json:"models"`
-	Backend       string          `json:"backend"`
-	Version       string          `json:"version,omitempty"`        // provider binary version (e.g. "0.2.31")
-	PublicKey     string          `json:"public_key,omitempty"`     // base64-encoded X25519 public key for E2E encryption
-	WalletAddress string          `json:"wallet_address,omitempty"` // Ethereum-format hex address for Tempo payouts
-	Attestation   json.RawMessage `json:"attestation,omitempty"`    // signed Secure Enclave attestation blob
-	PrefillTPS    float64         `json:"prefill_tps,omitempty"`    // benchmark: prefill tokens per second
-	DecodeTPS     float64         `json:"decode_tps,omitempty"`     // benchmark: decode tokens per second
-	AuthToken     string          `json:"auth_token,omitempty"`     // device-linked provider token (from darkbloom login)
+	Type                    string          `json:"type"`
+	Hardware                Hardware        `json:"hardware"`
+	Models                  []ModelInfo     `json:"models"`
+	Backend                 string          `json:"backend"`
+	Version                 string          `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
+	PublicKey               string          `json:"public_key,omitempty"`                // base64-encoded X25519 public key for E2E encryption
+	EncryptedResponseChunks bool            `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are returned encrypted to the coordinator
+	WalletAddress           string          `json:"wallet_address,omitempty"`            // Ethereum-format hex address for Tempo payouts
+	Attestation             json.RawMessage `json:"attestation,omitempty"`               // signed Secure Enclave attestation blob
+	PrefillTPS              float64         `json:"prefill_tps,omitempty"`               // benchmark: prefill tokens per second
+	DecodeTPS               float64         `json:"decode_tps,omitempty"`                // benchmark: decode tokens per second
+	AuthToken               string          `json:"auth_token,omitempty"`                // device-linked provider token (from darkbloom login)
 
 	// Runtime integrity hashes — used for runtime verification against known-good manifests.
-	PythonHash      string            `json:"python_hash,omitempty"`       // SHA-256 of Python runtime
-	RuntimeHash     string            `json:"runtime_hash,omitempty"`      // SHA-256 of inference runtime (vllm-mlx)
-	TemplateHashes  map[string]string `json:"template_hashes,omitempty"`   // template_name -> SHA-256 hash
-	GrpcBinaryHash  string            `json:"grpc_binary_hash,omitempty"`  // SHA-256 of gRPCServerCLI binary
-	ImageBridgeHash string            `json:"image_bridge_hash,omitempty"` // SHA-256 of image bridge Python source
+	PythonHash          string               `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
+	RuntimeHash         string               `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
+	TemplateHashes      map[string]string    `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
+	PrivacyCapabilities *PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
+}
+
+// PrivacyCapabilities describes the provider's privacy invariants at registration time.
+type PrivacyCapabilities struct {
+	TextBackendInprocess    bool `json:"text_backend_inprocess"`
+	TextProxyDisabled       bool `json:"text_proxy_disabled"`
+	PythonRuntimeLocked     bool `json:"python_runtime_locked"`
+	DangerousModulesBlocked bool `json:"dangerous_modules_blocked"`
+	SIPEnabled              bool `json:"sip_enabled"`
+	AntiDebugEnabled        bool `json:"anti_debug_enabled"`
+	CoreDumpsDisabled       bool `json:"core_dumps_disabled"`
+	EnvScrubbed             bool `json:"env_scrubbed"`
+	HypervisorActive        bool `json:"hypervisor_active"`
 }
 
 // HeartbeatMessage is sent periodically by connected providers.
@@ -265,12 +275,10 @@ type AttestationResponseMessage struct {
 	ActiveModelHash   string `json:"active_model_hash,omitempty"`   // SHA-256 weight fingerprint of loaded model
 
 	// Runtime integrity hashes — fresh values reported at challenge time.
-	PythonHash      string            `json:"python_hash,omitempty"`       // SHA-256 of Python runtime
-	RuntimeHash     string            `json:"runtime_hash,omitempty"`      // SHA-256 of inference runtime (vllm-mlx)
-	TemplateHashes  map[string]string `json:"template_hashes,omitempty"`   // template_name -> SHA-256 hash
-	GrpcBinaryHash  string            `json:"grpc_binary_hash,omitempty"`  // SHA-256 of gRPCServerCLI binary
-	ImageBridgeHash string            `json:"image_bridge_hash,omitempty"` // SHA-256 of image bridge Python source
-	ModelHashes     map[string]string `json:"model_hashes,omitempty"`      // model_id -> SHA-256 weight hash (all active models)
+	PythonHash     string            `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
+	RuntimeHash    string            `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
+	TemplateHashes map[string]string `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
+	ModelHashes    map[string]string `json:"model_hashes,omitempty"`    // model_id -> SHA-256 weight hash (all active models)
 }
 
 // ---------------------------------------------------------------------------
@@ -292,98 +300,6 @@ type RuntimeMismatch struct {
 	Component string `json:"component"`
 	Expected  string `json:"expected"`
 	Got       string `json:"got"`
-}
-
-// ---------------------------------------------------------------------------
-// STT (Speech-to-Text) messages
-// ---------------------------------------------------------------------------
-
-// TranscriptionRequestBody is the body sent inside a TranscriptionRequest.
-type TranscriptionRequestBody struct {
-	Model    string  `json:"model"`
-	Audio    string  `json:"audio"`              // base64-encoded audio data
-	Language *string `json:"language,omitempty"` // ISO 639-1 language code (e.g. "en")
-	Format   string  `json:"format,omitempty"`   // audio format hint: "mp3", "wav", etc.
-}
-
-// TranscriptionRequestMessage tells a provider to transcribe audio.
-// When E2E encryption is enabled, Body is empty and EncryptedBody contains
-// the NaCl Box encrypted request (same as InferenceRequestMessage).
-type TranscriptionRequestMessage struct {
-	Type          string                   `json:"type"`
-	RequestID     string                   `json:"request_id"`
-	Body          TranscriptionRequestBody `json:"body,omitempty"`
-	EncryptedBody *EncryptedPayload        `json:"encrypted_body,omitempty"`
-}
-
-// TranscriptionSegment is a timed segment within a transcription.
-type TranscriptionSegment struct {
-	Start float64 `json:"start"`
-	End   float64 `json:"end"`
-	Text  string  `json:"text"`
-}
-
-// TranscriptionUsage carries usage info for billing STT requests.
-type TranscriptionUsage struct {
-	AudioSeconds     float64 `json:"audio_seconds"`
-	GenerationTokens int     `json:"generation_tokens"`
-}
-
-// TranscriptionCompleteMessage signals the provider finished transcribing.
-type TranscriptionCompleteMessage struct {
-	Type         string                 `json:"type"`
-	RequestID    string                 `json:"request_id"`
-	Text         string                 `json:"text"`
-	Segments     []TranscriptionSegment `json:"segments,omitempty"`
-	Language     string                 `json:"language,omitempty"`
-	Usage        TranscriptionUsage     `json:"usage"`
-	DurationSecs float64                `json:"duration_secs"` // processing time
-}
-
-// ---------------------------------------------------------------------------
-// Image Generation messages
-// ---------------------------------------------------------------------------
-
-// ImageGenerationRequestBody is the body sent inside an ImageGenerationRequest.
-type ImageGenerationRequestBody struct {
-	Model          string `json:"model"`
-	Prompt         string `json:"prompt"`
-	NegativePrompt string `json:"negative_prompt,omitempty"`
-	N              int    `json:"n,omitempty"`     // number of images (default 1)
-	Size           string `json:"size,omitempty"`  // e.g. "1024x1024"
-	Steps          *int   `json:"steps,omitempty"` // inference steps
-	Seed           *int64 `json:"seed,omitempty"`
-	ResponseFormat string `json:"response_format,omitempty"` // "b64_json" (default) or "url"
-}
-
-// ImageGenerationRequestMessage tells a provider to generate images.
-// Includes an upload_url where the provider should POST the generated images
-// via HTTP (instead of sending them over the WebSocket, which has size limits).
-type ImageGenerationRequestMessage struct {
-	Type          string                     `json:"type"`
-	RequestID     string                     `json:"request_id"`
-	UploadURL     string                     `json:"upload_url"` // HTTP endpoint for image upload
-	Body          ImageGenerationRequestBody `json:"body,omitempty"`
-	EncryptedBody *EncryptedPayload          `json:"encrypted_body,omitempty"`
-}
-
-// ImageGenerationUsage carries usage info for billing image generation requests.
-type ImageGenerationUsage struct {
-	ImagesGenerated int    `json:"images_generated"`
-	Width           int    `json:"width"`
-	Height          int    `json:"height"`
-	Steps           int    `json:"steps"`
-	Model           string `json:"model"`
-}
-
-// ImageGenerationCompleteMessage signals the provider finished generating images.
-// The actual image data is uploaded separately via HTTP to the upload_url.
-// This message only carries metadata so it stays small on the WebSocket.
-type ImageGenerationCompleteMessage struct {
-	Type         string               `json:"type"`
-	RequestID    string               `json:"request_id"`
-	Usage        ImageGenerationUsage `json:"usage"`
-	DurationSecs float64              `json:"duration_secs"` // processing time
 }
 
 // ---------------------------------------------------------------------------
@@ -411,15 +327,13 @@ func unmarshalTyped(data []byte, typeName string, target any) error {
 //
 //nolint:gochecknoglobals // immutable lookup table for JSON dispatch.
 var providerMessageFactories = map[string]func() any{
-	TypeRegister:                func() any { return &RegisterMessage{} },
-	TypeHeartbeat:               func() any { return &HeartbeatMessage{} },
-	TypeInferenceAccepted:       func() any { return &InferenceAcceptedMessage{} },
-	TypeInferenceResponseChunk:  func() any { return &InferenceResponseChunkMessage{} },
-	TypeInferenceComplete:       func() any { return &InferenceCompleteMessage{} },
-	TypeInferenceError:          func() any { return &InferenceErrorMessage{} },
-	TypeAttestationResponse:     func() any { return &AttestationResponseMessage{} },
-	TypeTranscriptionComplete:   func() any { return &TranscriptionCompleteMessage{} },
-	TypeImageGenerationComplete: func() any { return &ImageGenerationCompleteMessage{} },
+	TypeRegister:               func() any { return &RegisterMessage{} },
+	TypeHeartbeat:              func() any { return &HeartbeatMessage{} },
+	TypeInferenceAccepted:      func() any { return &InferenceAcceptedMessage{} },
+	TypeInferenceResponseChunk: func() any { return &InferenceResponseChunkMessage{} },
+	TypeInferenceComplete:      func() any { return &InferenceCompleteMessage{} },
+	TypeInferenceError:         func() any { return &InferenceErrorMessage{} },
+	TypeAttestationResponse:    func() any { return &AttestationResponseMessage{} },
 }
 
 // UnmarshalJSON reads the "type" field first, then unmarshals the full object

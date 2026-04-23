@@ -8,14 +8,14 @@ The d-inference dev environment runs on Google Cloud (GCP project `sepolia-ai`, 
 
 | Component | Location | URL / identifier |
 |---|---|---|
-| Coordinator | GCE VM `d-inference-dev` (us-central1-a, Ubuntu 24.04 + Docker + systemd) | `https://api.dev.darkbloom.dev` (static IP) |
+| Coordinator | GCE VM `d-inference-dev` (us-central1-a, Ubuntu 24.04 + Docker + systemd) | `https://api.dev.darkbloom.xyz` (static IP) |
 | Persistent disk | GCE persistent disk `d-inference-dev-data` mounted at `/mnt/disks/userdata` (same path as EigenCloud prod) — holds step-ca state + MicroMDM BoltDB | 30 GB, pd-balanced |
-| Console UI | Vercel (separate "darkbloom-console-dev" project, built from `console-ui/`) | `https://console.dev.darkbloom.dev` |
+| Console UI | Vercel (separate "darkbloom-console-dev" project, built from `console-ui/`) | `https://console.dev.darkbloom.xyz` |
 | Database | Cloud SQL Postgres 16, instance `d-inference-dev-db`, `db-f1-micro`, accessed via cloud-sql-proxy sidecar on the VM | 127.0.0.1:5432 from inside the container |
 | Release bucket | Cloudflare R2 `d-inf-app-dev` | R2 CDN URL in env vars |
 | Secrets | Google Secret Manager, prefix `eigeninference-*`. Fetched at VM boot into `/etc/d-inference/env` | see §Secrets |
 | Mac fleet | 2–4 Macs with hostnames `dev-*` | listed in `deploy/provider-fleet/dev-inventory.txt` |
-| DNS | Vercel Domains: `api.dev.darkbloom.dev` A → VM static IP; `console.dev.darkbloom.dev` CNAME → Cloud Run | — |
+| DNS | Vercel Domains: `api.dev.darkbloom.xyz` A → VM static IP; `console.dev.darkbloom.xyz` CNAME → Cloud Run | — |
 | Privy | Separate dev Privy app (not the prod one) | values in Secret Manager |
 | Solana | Mainnet, but with a dev-only BIP39 mnemonic (new wallet) | `EIGENINFERENCE_BILLING_MOCK=false` |
 | MDM / attestation | Full stack — MicroMDM + step-ca run inside the coordinator container on the VM. `MIN_TRUST=hardware`, same as prod. | |
@@ -49,8 +49,8 @@ The d-inference dev environment runs on Google Cloud (GCP project `sepolia-ai`, 
    - `eigeninference-r2-cdn-url` — the public URL of the `d-inf-app-dev` R2 bucket (e.g. `https://pub-<randomid>.r2.dev`). Used by the coordinator to template install.sh so dev providers pull artifacts from the dev bucket.
 
 3. **DNS.** The bootstrap reserves a static external IP and prints it. On Vercel Domains:
-   - `api.dev.darkbloom.dev`      A     `<VM_STATIC_IP>`
-   - `console.dev.darkbloom.dev`  CNAME `cname.vercel-dns.com` (Vercel shows the exact target when you add the custom domain in step 5)
+   - `api.dev.darkbloom.xyz`      A     `<VM_STATIC_IP>`
+   - `console.dev.darkbloom.xyz`  CNAME `cname.vercel-dns.com` (Vercel shows the exact target when you add the custom domain in step 5)
 
 4. **First coordinator deploy.** From the repo root:
    ```bash
@@ -60,8 +60,8 @@ The d-inference dev environment runs on Google Cloud (GCP project `sepolia-ai`, 
 
 5. **Console UI on Vercel.** In the Vercel dashboard:
    - Import the `d-inference` repo as a new project named `darkbloom-console-dev`. Set root directory to `console-ui/`.
-   - Environment variables: `NEXT_PUBLIC_COORDINATOR_URL=https://api.dev.darkbloom.dev`.
-   - Add custom domain `console.dev.darkbloom.dev`. Vercel provisions the cert; copy the CNAME target it shows and add it in step 3.
+   - Environment variables: `NEXT_PUBLIC_COORDINATOR_URL=https://api.dev.darkbloom.xyz`.
+   - Add custom domain `console.dev.darkbloom.xyz`. Vercel provisions the cert; copy the CNAME target it shows and add it in step 3.
    - Every push to `master` auto-builds. For isolated preview branches Vercel gives preview URLs that still hit dev coordinator.
 
 6. **Connect GitHub → Cloud Build.** One-time, from the Cloud Console: install the Google Cloud Build GitHub App on `Gajesh2007/d-inference`, authorize the repo, create a trigger targeting `deploy/gcp/cloudbuild.yaml` on push to `master` with path filter `coordinator/**` and `deploy/gcp/**`. (Console UI on Vercel handles its own CI — no second Cloud Build trigger needed.)
@@ -70,7 +70,7 @@ The d-inference dev environment runs on Google Cloud (GCP project `sepolia-ai`, 
 
 8. **Onboard the Mac fleet.** On each dev Mac:
    ```bash
-   curl -fsSL https://api.dev.darkbloom.dev/install.sh | bash
+   curl -fsSL https://api.dev.darkbloom.xyz/install.sh | bash
    ```
    The install script is served by the dev coordinator with its URL templated in, so the installed provider only talks to dev. Add the Mac's SSH host alias to `deploy/provider-fleet/dev-inventory.txt`.
 
@@ -105,7 +105,7 @@ Two environments exist: `dev` and `prod`. Each holds its own copy of:
 
 | Key | Type | Dev value | Prod value |
 |---|---|---|---|
-| `COORDINATOR_URL` | secret | `https://api.dev.darkbloom.dev` | `https://api.darkbloom.dev` |
+| `COORDINATOR_URL` | secret | `https://api.dev.darkbloom.xyz` | `https://api.darkbloom.dev` |
 | `RELEASE_KEY` | secret | dev release key | prod release key |
 | `R2_ACCESS_KEY_ID` | secret | R2 token scoped to `d-inf-app-dev` | R2 token for `d-inf-app` |
 | `R2_SECRET_ACCESS_KEY` | secret | same | same |
@@ -142,7 +142,7 @@ Prod environment: enable **required reviewers** under Settings → Environments 
 If `EIGENINFERENCE_DATABASE_URL` is unset, the coordinator resets state on every deploy. To re-register the current release and grant test credits after a redeploy, run:
 
 ```bash
-scripts/admin.sh EIGENINFERENCE_COORDINATOR_URL=https://api.dev.darkbloom.dev releases latest
+scripts/admin.sh EIGENINFERENCE_COORDINATOR_URL=https://api.dev.darkbloom.xyz releases latest
 ```
 
 (Wire a `seed-dev.sh` here when we converge on a pattern.)

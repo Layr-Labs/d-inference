@@ -30,8 +30,6 @@ import (
 // simulated streaming chunks + a complete message. It returns when the
 // context is cancelled or the connection is closed, and reports how many
 // inference requests were served.
-//
-//nolint:gocognit
 func runProviderLoop(ctx context.Context, t *testing.T, conn *websocket.Conn, pubKey, responseContent string) int {
 	t.Helper()
 	served := 0
@@ -62,25 +60,17 @@ func runProviderLoop(ctx context.Context, t *testing.T, conn *websocket.Conn, pu
 			}
 
 		case protocol.TypeInferenceRequest:
-			reqID, _ := raw["request_id"].(string)
+			var inferReq protocol.InferenceRequestMessage
+			json.Unmarshal(data, &inferReq)
 
-			// Send two chunks to simulate streaming.
 			for _, word := range []string{responseContent, " done"} {
-				chunk := protocol.InferenceResponseChunkMessage{
-					Type:      protocol.TypeInferenceResponseChunk,
-					RequestID: reqID,
-					Data:      `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"` + word + `"}}]}` + "\n\n",
-				}
-				chunkData, _ := json.Marshal(chunk)
-				if wErr := conn.Write(ctx, websocket.MessageText, chunkData); wErr != nil {
-					return served
-				}
+				sseData := `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"` + word + `"}}]}` + "\n\n"
+				writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey, sseData)
 			}
 
-			// Send complete with usage.
 			complete := protocol.InferenceCompleteMessage{
 				Type:      protocol.TypeInferenceComplete,
-				RequestID: reqID,
+				RequestID: inferReq.RequestID,
 				Usage:     protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 5},
 			}
 			completeData, _ := json.Marshal(complete)
@@ -117,8 +107,6 @@ func sendRequest(ctx context.Context, url, apiKey, model string) (int, string, e
 // sendConcurrentRequests launches count goroutines, each sending one request,
 // and collects all status codes. maxInflight limits the number of concurrent
 // in-flight requests to stay within queue capacity.
-//
-//nolint:unparam // apiKey kept flexible for future multi-key tests
 func sendConcurrentRequests(t *testing.T, url, apiKey, model string, count, maxInflight int, timeout time.Duration) []int {
 	t.Helper()
 	results := make([]int, count)
@@ -178,10 +166,12 @@ func connectAndPrepareProvider(t *testing.T, ctx context.Context, tsURL string, 
 			ChipName:     "Apple M3 Max",
 			MemoryGB:     64,
 		},
-		Models:    models,
-		Backend:   "test",
-		PublicKey: pubKey,
-		DecodeTPS: decodeTPS,
+		Models:                  models,
+		Backend:                 "inprocess-mlx",
+		PublicKey:               pubKey,
+		EncryptedResponseChunks: true,
+		DecodeTPS:               decodeTPS,
+		PrivacyCapabilities:     testPrivacyCaps(),
 	}
 	regData, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {

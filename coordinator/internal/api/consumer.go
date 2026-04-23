@@ -7,24 +7,19 @@ package api
 // layer between consumers and providers.
 //
 // Trust model:
-//   The coordinator runs in a GCP Confidential VM with AMD SEV-SNP, providing
-//   hardware-encrypted memory. Consumer traffic arrives over HTTPS/TLS.
-//   The coordinator can read requests for routing purposes but never logs
-//   prompt content. When forwarding to a provider, the coordinator sends
-//   plain JSON over the WebSocket (the provider is attested via Secure Enclave
-//   challenge-response). Future: the coordinator may encrypt request bodies
-//   with the provider's X25519 public key before forwarding.
+//   The coordinator runs in a Confidential VM, providing hardware-encrypted
+//   memory. Consumers may additionally sender-seal requests to the
+//   coordinator's X25519 key. The coordinator decrypts for routing purposes
+//   but never logs prompt content, then re-encrypts each request to the
+//   selected provider's X25519 public key before forwarding over the
+//   WebSocket. Providers are attested via Secure Enclave challenge-response.
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -59,22 +54,28 @@ const (
 	// firstChunkTimeout is how long to wait for the first chunk from a provider
 	// before considering the attempt failed and retrying.
 	firstChunkTimeout = 10 * time.Second
-
-	// jsonNull is the JSON literal "null", used when normalizing SSE chunks
-	// to detect null-valued fields that need fixing.
-	jsonNull = "null"
-
-	// finishReasonStop is the OpenAI finish_reason value for normal completion.
-	finishReasonStop = "stop"
-
-	// schemeHTTPS and schemeHTTP are URL scheme literals used when constructing
-	// public-facing URLs (download links, upload endpoints, verification URIs).
-	schemeHTTPS = "https"
-	schemeHTTP  = "http"
-
-	// platformMacOSARM64 is the default release platform identifier.
-	platformMacOSARM64 = "macos-arm64"
 )
+
+// chatCompletionRequest is the incoming OpenAI-compatible request body.
+// Consumers may send plain JSON or sender-sealed JSON (handled by
+// sealedTransport before this handler runs).
+type chatCompletionRequest struct {
+	Model       string                 `json:"model"`
+	Messages    []protocol.ChatMessage `json:"messages"`
+	Stream      bool                   `json:"stream"`
+	MaxTokens   *int                   `json:"max_tokens,omitempty"`
+	Temperature *float64               `json:"temperature,omitempty"`
+}
+
+// genericInferenceRequest captures any inference request body as raw JSON.
+// Used for /v1/completions and /v1/messages endpoints where we pass the
+// body through to the provider without parsing the endpoint-specific fields.
+type genericInferenceRequest struct {
+	Model  string `json:"model"`
+	Stream bool   `json:"stream"`
+	// RawBody is the complete request JSON, forwarded as-is to the provider.
+	RawBody json.RawMessage `json:"-"`
+}
 
 func intFromRequestValue(v any) (int, bool) {
 	switch x := v.(type) {
@@ -216,8 +217,6 @@ func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool) bool {
 // The raw request body is passed through to the provider, preserving all
 // OpenAI-compatible fields (tools, tool_choice, response_format, top_p, etc.)
 // that would otherwise be lost if we parsed into a typed struct.
-//
-//nolint:gocognit,gocyclo,cyclop,funlen
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Read the raw request body so we can forward it as-is to the provider.
 	// We only parse minimally to extract model/stream/messages for routing.
@@ -371,11 +370,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			var err error
 			provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 			if err != nil {
-				if errors.Is(err, context.Canceled) {
+				if err == context.Canceled {
 					refundReservation()
 					return
 				}
 				refundReservation()
+				s.ddIncr("request_queue.timeout", []string{"model:" + model})
 				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider became available for model %q (queue timeout)", model)))
 				return
 			}
@@ -492,6 +492,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"attempt", attempt+1,
 				"error", errMsg.Error,
 			)
+			s.emitRequest(r.Context(), protocol.SeverityWarn, protocol.KindInferenceError, requestID,
+				"provider failed, retrying",
+				map[string]any{
+					"provider_id": provider.ID,
+					"attempt":     attempt + 1,
+					"reason":      "provider_error",
+					"status_code": errMsg.StatusCode,
+				})
+			if s.metrics != nil {
+				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
+			}
+			s.ddIncr("inference.dispatches", []string{"status:retry"})
 			provider = nil
 			pr = nil
 			continue
@@ -509,6 +521,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"provider_id", provider.ID,
 				"attempt", attempt+1,
 			)
+			s.emitRequest(r.Context(), protocol.SeverityWarn, protocol.KindInferenceError, requestID,
+				"provider first-chunk timeout",
+				map[string]any{
+					"provider_id": provider.ID,
+					"attempt":     attempt + 1,
+					"reason":      "first_chunk_timeout",
+				})
+			if s.metrics != nil {
+				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+			}
+			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			provider = nil
 			pr = nil
 			continue
@@ -584,10 +607,26 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if statusCode == 0 {
 			statusCode = http.StatusServiceUnavailable
 		}
+		s.emitRequest(r.Context(), protocol.SeverityError, protocol.KindInferenceError, requestID,
+			fmt.Sprintf("inference failed after %d attempt(s)", maxDispatchAttempts),
+			map[string]any{
+				"reason":      "dispatch_exhausted",
+				"attempt":     maxDispatchAttempts,
+				"status_code": statusCode,
+				"last_error":  lastErr,
+			})
+		if s.metrics != nil {
+			s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "failure"})
+		}
+		s.ddIncr("inference.dispatches", []string{"status:failure"})
 		writeJSON(w, statusCode, errorResponse("provider_error",
 			fmt.Sprintf("inference failed after %d attempt(s): %s", maxDispatchAttempts, lastErr)))
 		return
 	}
+	if s.metrics != nil {
+		s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "success"})
+	}
+	s.ddIncr("inference.dispatches", []string{"status:success"})
 
 	// Write provider attestation headers now that we're committed.
 	provider.Mu().Lock()
@@ -603,7 +642,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	machineModel := provider.Hardware.MachineModel
 
 	if pubKey != "" {
-		w.Header().Set("X-Provider-Public-Key", pubKey)
+		w.Header().Set("X-Provider-Encrypted", "true")
 	}
 	if attested {
 		w.Header().Set("X-Provider-Attested", "true")
@@ -657,388 +696,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleTranscriptions handles POST /v1/audio/transcriptions.
-//
-// This is the OpenAI-compatible audio transcription endpoint. It accepts
-// multipart/form-data with an audio file and routes it to an STT-capable
-// provider.
-//
-//nolint:gocognit,funlen
-func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
-	// Parse multipart form (max 25MB audio)
-	if err := r.ParseMultipartForm(25 << 20); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid multipart form: "+err.Error()))
-		return
-	}
-
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "file field is required"))
-		return
-	}
-	defer file.Close()
-
-	model := r.FormValue("model")
-	if model == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
-		return
-	}
-
-	if !s.registry.IsModelInCatalog(model) {
-		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
-			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model)))
-		return
-	}
-
-	language := r.FormValue("language")
-
-	// Read the audio file into memory
-	audioBytes, err := io.ReadAll(file)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "failed to read audio file"))
-		return
-	}
-
-	// Determine audio format from filename extension
-	ext := strings.TrimPrefix(filepath.Ext(header.Filename), ".")
-	if ext == "" {
-		ext = "wav"
-	}
-
-	requestID := uuid.New().String()
-	consumerKey := consumerKeyFromContext(r.Context())
-	pr := &registry.PendingRequest{
-		RequestID:       requestID,
-		Model:           model,
-		ConsumerKey:     consumerKey,
-		ChunkCh:         make(chan string, 1),
-		CompleteCh:      make(chan protocol.UsageInfo, 1),
-		ErrorCh:         make(chan protocol.InferenceErrorMessage, 1),
-		TranscriptionCh: make(chan *protocol.TranscriptionCompleteMessage, 1),
-	}
-
-	// Find and reserve a provider that serves the requested STT model.
-	provider := s.registry.ReserveProvider(model, pr)
-	if provider == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-			fmt.Sprintf("no hardware-attested provider available for STT model %q", model)))
-		return
-	}
-
-	transcriptionBody := protocol.TranscriptionRequestBody{
-		Model:  model,
-		Audio:  base64.StdEncoding.EncodeToString(audioBytes),
-		Format: ext,
-	}
-	if language != "" {
-		transcriptionBody.Language = &language
-	}
-
-	bodyJSON, _ := json.Marshal(transcriptionBody)
-
-	// E2E encryption is mandatory for audio data. Providers without a public
-	// key cannot receive transcription requests.
-	if provider.PublicKey == "" {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
-			"no provider with E2E encryption available for this model — audio data requires encryption"))
-		return
-	}
-
-	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"provider public key invalid"))
-		return
-	}
-
-	sessionKeys, err := e2e.GenerateSessionKeys()
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"failed to generate session keys"))
-		return
-	}
-
-	encrypted, err := e2e.Encrypt(bodyJSON, providerPubKey, sessionKeys)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"failed to encrypt transcription request"))
-		return
-	}
-
-	wireMsg := map[string]any{
-		"type":       protocol.TypeTranscriptionRequest,
-		"request_id": requestID,
-		"encrypted_body": map[string]string{
-			"ephemeral_public_key": encrypted.EphemeralPublicKey,
-			"ciphertext":           encrypted.Ciphertext,
-		},
-	}
-
-	s.logger.Debug("transcription request encrypted for provider",
-		"request_id", requestID,
-		"provider_id", provider.ID,
-	)
-	if sessionKeys != nil {
-		pr.SessionPrivKey = &sessionKeys.PrivateKey
-	}
-
-	// Send the request to the provider.
-	data, err := json.Marshal(wireMsg)
-	if err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal request"))
-		return
-	}
-	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		s.logger.Error("failed to send transcription request", "request_id", requestID, "error", err)
-		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
-		return
-	}
-
-	s.logger.Info("transcription request dispatched",
-		"request_id", requestID,
-		"model", model,
-		"provider_id", provider.ID,
-		"audio_size", len(audioBytes),
-		"format", ext,
-	)
-
-	// Cleanup on return.
-	defer func() {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-	}()
-
-	// Wait for the transcription result.
-	ctx, cancel := context.WithTimeout(r.Context(), inferenceTimeout)
-	defer cancel()
-
-	select {
-	case result := <-pr.TranscriptionCh:
-		// Build OpenAI-compatible transcription response.
-		resp := map[string]any{
-			"text": result.Text,
-		}
-		if len(result.Segments) > 0 {
-			resp["segments"] = result.Segments
-		}
-		if result.Language != "" {
-			resp["language"] = result.Language
-		}
-		resp["duration"] = result.Usage.AudioSeconds
-		writeJSON(w, http.StatusOK, resp)
-
-	case errMsg := <-pr.ErrorCh:
-		statusCode := errMsg.StatusCode
-		if statusCode == 0 {
-			statusCode = http.StatusBadGateway
-		}
-		writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
-
-	case <-ctx.Done():
-		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "transcription request timed out"))
-	}
-}
-
-// handleImageGenerations handles POST /v1/images/generations.
-//
-// This is the OpenAI-compatible image generation endpoint. It accepts a JSON
-// body with model, prompt, size, etc. and routes it to an image-capable provider.
-//
-//nolint:gocognit,funlen
-func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) {
-	var req protocol.ImageGenerationRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
-		return
-	}
-
-	if req.Model == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
-		return
-	}
-	if req.Prompt == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "prompt is required"))
-		return
-	}
-	if req.N == 0 {
-		req.N = 1
-	}
-	if req.N < 0 || req.N > 4 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "n must be between 1 and 4"))
-		return
-	}
-	if !s.registry.IsModelInCatalog(req.Model) {
-		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
-			fmt.Sprintf("model %q is not available — see /v1/models for supported models", req.Model)))
-		return
-	}
-	if req.Steps != nil && *req.Steps <= 0 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "steps must be positive"))
-		return
-	}
-	if req.Size == "" {
-		req.Size = "1024x1024"
-	}
-
-	// Validate image dimensions — cap at 2048x2048 to keep responses under transport limits.
-	sizeParts := strings.SplitN(req.Size, "x", 2)
-	if len(sizeParts) != 2 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "size must be WxH (e.g. 1024x1024)"))
-		return
-	}
-	imgW, _ := strconv.Atoi(sizeParts[0])
-	imgH, _ := strconv.Atoi(sizeParts[1])
-	if imgW <= 0 || imgH <= 0 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "size dimensions must be positive"))
-		return
-	}
-	if imgW > 2048 || imgH > 2048 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "maximum image dimension is 2048x2048"))
-		return
-	}
-
-	requestID := uuid.New().String()
-	consumerKey := consumerKeyFromContext(r.Context())
-	pr := &registry.PendingRequest{
-		RequestID:         requestID,
-		Model:             req.Model,
-		ConsumerKey:       consumerKey,
-		ChunkCh:           make(chan string, 1),
-		CompleteCh:        make(chan protocol.UsageInfo, 1),
-		ErrorCh:           make(chan protocol.InferenceErrorMessage, 1),
-		ImageGenerationCh: make(chan *protocol.ImageGenerationCompleteMessage, 1),
-	}
-
-	// Find and reserve a hardware-attested provider that serves the requested image model.
-	provider := s.registry.ReserveProvider(req.Model, pr)
-	if provider == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-			fmt.Sprintf("no hardware-attested provider available for image model %q", req.Model)))
-		return
-	}
-
-	bodyJSON, _ := json.Marshal(req)
-
-	// E2E encryption — prompts are sensitive.
-	if provider.PublicKey == "" {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
-			"no provider with E2E encryption available for this model"))
-		return
-	}
-
-	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"provider public key invalid"))
-		return
-	}
-
-	sessionKeys, err := e2e.GenerateSessionKeys()
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"failed to generate session keys"))
-		return
-	}
-
-	encrypted, err := e2e.Encrypt(bodyJSON, providerPubKey, sessionKeys)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"failed to encrypt image generation request"))
-		return
-	}
-
-	// Build the upload URL for the provider to POST generated images to.
-	// Always use HTTPS — the coordinator runs behind nginx which terminates TLS,
-	// so r.TLS is always nil, but the public URL must be HTTPS to avoid
-	// HTTP→HTTPS 301 redirects that convert POST to GET (405 error).
-	uploadURL := fmt.Sprintf("https://%s/v1/provider/image-upload?request_id=%s", r.Host, requestID)
-
-	wireMsg := map[string]any{
-		"type":       protocol.TypeImageGenerationRequest,
-		"request_id": requestID,
-		"upload_url": uploadURL,
-		"encrypted_body": map[string]string{
-			"ephemeral_public_key": encrypted.EphemeralPublicKey,
-			"ciphertext":           encrypted.Ciphertext,
-		},
-	}
-	if sessionKeys != nil {
-		pr.SessionPrivKey = &sessionKeys.PrivateKey
-	}
-
-	// Send the request to the provider.
-	data, err := json.Marshal(wireMsg)
-	if err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal request"))
-		return
-	}
-	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		s.logger.Error("failed to send image generation request", "request_id", requestID, "error", err)
-		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
-		return
-	}
-
-	s.logger.Info("image generation request dispatched",
-		"request_id", requestID,
-		"model", req.Model,
-		"provider_id", provider.ID,
-		"size", req.Size,
-		"n", req.N,
-	)
-
-	// Cleanup on return.
-	defer func() {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-	}()
-
-	// Wait for the image generation result.
-	ctx, cancel := context.WithTimeout(r.Context(), inferenceTimeout)
-	defer cancel()
-
-	select {
-	case <-pr.ImageGenerationCh:
-		// Retrieve images uploaded by the provider via HTTP.
-		uploadedImages := s.getUploadedImages(requestID)
-		imageData := make([]map[string]string, len(uploadedImages))
-		for i, imgBytes := range uploadedImages {
-			imageData[i] = map[string]string{
-				"b64_json": base64.StdEncoding.EncodeToString(imgBytes),
-			}
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"created": time.Now().Unix(),
-			"data":    imageData,
-		})
-
-	case errMsg := <-pr.ErrorCh:
-		statusCode := errMsg.StatusCode
-		if statusCode == 0 {
-			statusCode = http.StatusBadGateway
-		}
-		writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
-
-	case <-ctx.Done():
-		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "image generation request timed out"))
-	}
-}
-
 // handleStreamingResponse writes SSE events to the consumer as they arrive
 // from the provider. Each chunk is forwarded in real time, providing
 // token-by-token streaming to the consumer.
@@ -1051,8 +708,6 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 // If firstChunk is non-empty, it is written before reading further chunks
 // from the channel. This allows the dispatch loop to "peek" at the first
 // chunk for retry decisions without losing it.
-//
-//nolint:gocognit
 func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -1161,8 +816,6 @@ func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, r *http.Reque
 // handleNonStreamingResponseWithFirstChunk collects all chunks from the
 // provider and assembles them into a single OpenAI-compatible JSON response.
 // If firstChunk is non-empty, it is prepended to the collected chunks.
-//
-//nolint:gocognit
 func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) {
 	ctx, cancel := context.WithTimeout(r.Context(), inferenceTimeout)
 	defer cancel()
@@ -1184,7 +837,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				if len(chunks) == 1 {
 					raw := strings.TrimPrefix(chunks[0], "data: ")
 					var obj map[string]any
-					if json.Unmarshal([]byte(raw), &obj) == nil {
+					if err := json.Unmarshal([]byte(raw), &obj); err == nil {
 						objType, _ := obj["object"].(string)
 						// Complete responses have object=chat.completion or
 						// object=response. Delta chunks have object=chat.completion.chunk.
@@ -1235,8 +888,6 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 // Some backends (e.g. vllm-mlx) emit "content":null instead of "content":"",
 // and include "usage":null which strict parsers (ForgeCode, Codex) reject
 // because they expect usage to be either absent or a full object.
-//
-//nolint:gocognit
 func normalizeSSEChunk(chunk string) string {
 	line := strings.TrimPrefix(chunk, "data: ")
 	// Only trigger the expensive JSON parse for fields we actually fix.
@@ -1264,7 +915,7 @@ func normalizeSSEChunk(chunk string) string {
 	// Remove top-level null fields (usage, system_fingerprint, etc.)
 	// ForgeCode expects usage to be absent or a full object, not null.
 	for _, key := range []string{"usage", "system_fingerprint"} {
-		if v, ok := raw[key]; ok && string(v) == jsonNull {
+		if v, ok := raw[key]; ok && string(v) == "null" {
 			delete(raw, key)
 			changed = true
 		}
@@ -1279,12 +930,12 @@ func normalizeSSEChunk(chunk string) string {
 					var delta map[string]json.RawMessage
 					if err := json.Unmarshal(deltaRaw, &delta); err == nil {
 						for _, field := range []string{"content", "reasoning_content", "reasoning", "refusal"} {
-							if v, ok := delta[field]; ok && string(v) == jsonNull {
+							if v, ok := delta[field]; ok && string(v) == "null" {
 								delta[field] = json.RawMessage(`""`)
 								changed = true
 							}
 						}
-						if v, ok := delta["tool_calls"]; ok && string(v) == jsonNull {
+						if v, ok := delta["tool_calls"]; ok && string(v) == "null" {
 							delta["tool_calls"] = json.RawMessage(`[]`)
 							changed = true
 						}
@@ -1335,8 +986,6 @@ type extractedMessage struct {
 
 // extractMessage parses SSE data lines and reconstructs the full assistant
 // message from streaming chunks, including content, reasoning, and tool_calls.
-//
-//nolint:gocognit
 func extractMessage(chunks []string) extractedMessage {
 	var contentBuilder strings.Builder
 	var reasoningBuilder strings.Builder
@@ -1373,6 +1022,10 @@ func extractMessage(chunks []string) extractedMessage {
 					} `json:"function,omitempty"`
 				} `json:"tool_calls,omitempty"`
 			} `json:"delta"`
+			Message struct {
+				Content   string `json:"content"`
+				Reasoning string `json:"reasoning"`
+			} `json:"message"`
 			FinishReason *string `json:"finish_reason"`
 		}
 		if err := json.Unmarshal(choicesRaw, &choices); err != nil {
@@ -1380,8 +1033,16 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 
 		for _, c := range choices {
-			contentBuilder.WriteString(c.Delta.Content)
-			reasoningBuilder.WriteString(c.Delta.Reasoning)
+			if c.Delta.Content != "" {
+				contentBuilder.WriteString(c.Delta.Content)
+			} else if c.Message.Content != "" {
+				contentBuilder.WriteString(c.Message.Content)
+			}
+			if c.Delta.Reasoning != "" {
+				reasoningBuilder.WriteString(c.Delta.Reasoning)
+			} else if c.Message.Reasoning != "" {
+				reasoningBuilder.WriteString(c.Message.Reasoning)
+			}
 			for _, tc := range c.Delta.ToolCalls {
 				existing, ok := toolCallMap[tc.Index]
 				if !ok {
@@ -1399,16 +1060,11 @@ func extractMessage(chunks []string) extractedMessage {
 				if tc.Type != "" {
 					existing["type"] = tc.Type
 				}
-				fn, ok := existing["function"].(map[string]any)
-				if !ok || fn == nil {
-					fn = map[string]any{"arguments": ""}
-					existing["function"] = fn
-				}
+				fn := existing["function"].(map[string]any)
 				if tc.Function.Name != "" {
 					fn["name"] = tc.Function.Name
 				}
-				prevArgs, _ := fn["arguments"].(string)
-				fn["arguments"] = prevArgs + tc.Function.Arguments
+				fn["arguments"] = fn["arguments"].(string) + tc.Function.Arguments
 			}
 		}
 	}
@@ -1437,7 +1093,7 @@ func buildNonStreamingResponse(requestID, model string, msg extractedMessage, us
 		message["reasoning"] = msg.Reasoning
 	}
 
-	finishReason := finishReasonStop
+	finishReason := "stop"
 	if len(msg.ToolCalls) > 0 {
 		message["tool_calls"] = msg.ToolCalls
 		finishReason = "tool_calls"
@@ -1548,6 +1204,38 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleRevokeKey handles DELETE /v1/auth/keys — revokes an API key.
+// The caller must own the key (same account). Requires Privy auth so a
+// compromised API key cannot revoke legitimate keys.
+func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
+		return
+	}
+
+	var body struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", "provide {\"key\": \"eigeninference-...\"}"))
+		return
+	}
+
+	owner := s.store.GetKeyAccount(body.Key)
+	if owner != user.AccountID {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "you can only revoke your own keys"))
+		return
+	}
+
+	if !s.store.RevokeKey(body.Key) {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "key not found or already revoked"))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked"})
+}
+
 // handleHealth handles GET /health.
 // Returns the coordinator's status and the number of connected providers.
 // This endpoint does not require authentication.
@@ -1564,7 +1252,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // to the hardcoded LatestProviderVersion.
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	// Try release table first.
-	if release := s.store.GetLatestRelease(platformMacOSARM64); release != nil {
+	if release := s.store.GetLatestRelease("macos-arm64"); release != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"version":      release.Version,
 			"download_url": release.URL,
@@ -1575,9 +1263,9 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fallback to hardcoded version + coordinator download.
-	scheme := schemeHTTPS
+	scheme := "https"
 	if r.TLS == nil && !strings.Contains(r.Host, "darkbloom.dev") {
-		scheme = schemeHTTP
+		scheme = "http"
 	}
 	downloadURL := fmt.Sprintf("%s://%s/dl/eigeninference-bundle-macos-arm64.tar.gz", scheme, r.Host)
 
@@ -1709,7 +1397,7 @@ func (s *Server) handleProviderEarnings(w http.ResponseWriter, r *http.Request) 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	json.NewEncoder(w).Encode(v)
 }
 
 // handleCompletions handles POST /v1/completions.
@@ -1727,8 +1415,6 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 // handleGenericInference is the shared dispatch for completions and Anthropic endpoints.
 // It reads the raw request body, extracts model/stream, sets the endpoint field,
 // and reuses the same E2E encryption + provider routing as chat completions.
-//
-//nolint:funlen,gocognit // dispatch handler with sequential validation + reservation steps
 func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, endpoint string) {
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -1815,7 +1501,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
+			if err == context.Canceled {
 				refundReservation()
 				return
 			}

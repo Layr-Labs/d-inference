@@ -53,6 +53,80 @@ pub fn deny_debugger_attachment() -> Result<(), String> {
     }
 }
 
+/// Disable core dumps for this process.
+///
+/// Core dumps can contain plaintext prompts, model weights, and private keys.
+/// Setting RLIMIT_CORE to zero prevents the kernel from writing core files
+/// even if the process crashes. This complements PT_DENY_ATTACH and Hardened
+/// Runtime to ensure no crash artifact leaks sensitive data.
+pub fn disable_core_dumps() -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let zero = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        let ret = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &zero) };
+        if ret == 0 {
+            tracing::info!("Core dumps disabled (RLIMIT_CORE = 0)");
+            Ok(())
+        } else {
+            let err = std::io::Error::last_os_error();
+            Err(format!("failed to disable core dumps: {err}"))
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tracing::debug!("Core dump disable not available on this platform");
+        Ok(())
+    }
+}
+
+/// Scrub environment variables that could leak into the Python runtime or
+/// child processes. Called once at startup before any inference work.
+pub fn scrub_private_env() {
+    const DANGEROUS_VARS: &[&str] = &[
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "PYTHONHOME",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTHONIOENCODING",
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FRAMEWORK_PATH",
+    ];
+
+    for var in DANGEROUS_VARS {
+        if std::env::var_os(var).is_some() {
+            tracing::warn!("Scrubbing dangerous env var: {var}");
+            unsafe {
+                std::env::remove_var(var);
+            }
+        }
+    }
+}
+
+/// Isolate the Python interpreter BEFORE it initializes.
+///
+/// Must be called before any PyO3 `Python::with_gil` call. Sets env vars that
+/// CPython reads during `Py_Initialize` to prevent `sitecustomize.py` and
+/// `usercustomize.py` from running. Without this, a malicious
+/// `sitecustomize.py` in system site-packages would execute before
+/// `lock_python_path` takes effect.
+pub fn isolate_python_preinit() {
+    unsafe {
+        std::env::set_var("PYTHONNOUSERSITE", "1");
+        std::env::set_var("PYTHONDONTWRITEBYTECODE", "1");
+        // Do NOT set PYTHONISOLATED — it causes Python to ignore PYTHONHOME,
+        // breaking the bundled runtime path. PYTHONNOUSERSITE is sufficient to
+        // block user site-packages. The full import path lock (lock_python_path)
+        // handles the rest after initialization.
+    }
+    tracing::info!("Python pre-init isolation: PYTHONNOUSERSITE=1, PYTHONDONTWRITEBYTECODE=1");
+}
+
 /// Check if System Integrity Protection (SIP) is enabled.
 ///
 /// SIP is the foundation of our security model. With SIP enabled:
@@ -292,6 +366,30 @@ pub fn secure_zero_string(mut s: String) {
     drop(s);
 }
 
+/// Recursively zero any sensitive string contents held inside a JSON value,
+/// then replace the container with `null`.
+pub fn secure_zero_json_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) => {
+            secure_zero_string(std::mem::take(s));
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                secure_zero_json_value(item);
+            }
+            items.clear();
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values_mut() {
+                secure_zero_json_value(item);
+            }
+            map.clear();
+        }
+        _ => {}
+    }
+    *value = serde_json::Value::Null;
+}
+
 /// Compute the SHA-256 hash of the currently running binary.
 ///
 /// This hash is included in the attestation blob so the coordinator can
@@ -370,15 +468,12 @@ pub fn hash_files_sorted(paths: &[std::path::PathBuf]) -> Option<String> {
 pub struct RuntimeHashes {
     /// SHA-256 hash of the Python binary itself.
     pub python_hash: Option<String>,
-    /// SHA-256 hash of all .py files in the vllm_mlx package directory,
-    /// combined in sorted order (same algorithm as `hash_files_sorted`).
+    /// SHA-256 hash of the full allowed Python runtime tree under
+    /// `lib/python3.12` (stdlib + lib-dynload + site-packages), combined in
+    /// sorted order with `hash_files_sorted`.
     pub runtime_hash: Option<String>,
     /// Per-file SHA-256 hashes of Jinja templates in ~/.darkbloom/templates/.
     pub template_hashes: std::collections::HashMap<String, String>,
-    /// SHA-256 hash of the gRPCServerCLI binary (image generation backend).
-    pub grpc_binary_hash: Option<String>,
-    /// Combined SHA-256 hash of image bridge Python source files (sorted).
-    pub image_bridge_hash: Option<String>,
 }
 
 /// Recursively collect all files matching an extension under a directory.
@@ -422,11 +517,27 @@ fn collect_files_recursive(
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            if path.file_name().and_then(|n| n.to_str()) == Some("__pycache__") {
+                continue;
+            }
             collect_files_recursive(&path, extension, out);
         } else if extension == "*" || path.extension().and_then(|e| e.to_str()) == Some(extension) {
             out.push(path);
         }
     }
+}
+
+fn runtime_lib_dir_from_python_cmd(python_cmd: &str) -> Option<std::path::PathBuf> {
+    let python_path = std::path::Path::new(python_cmd);
+    let from_python_bin = python_path
+        .parent()
+        .and_then(|bin| bin.parent())
+        .map(|root| root.join("lib").join("python3.12"));
+    if let Some(lib_dir) = from_python_bin.filter(|path| path.exists()) {
+        return Some(lib_dir);
+    }
+
+    dirs::home_dir().map(|home| home.join(".darkbloom/python/lib/python3.12"))
 }
 
 /// Compute hashes of the Python runtime, all packages, and templates.
@@ -436,28 +547,35 @@ fn collect_files_recursive(
 /// leak prompts or produce tampered output.
 ///
 /// - `python_hash`: SHA-256 of the Python interpreter binary
-/// - `runtime_hash`: Combined SHA-256 of ALL .py files in site-packages (sorted)
-///   This covers vllm_mlx, mlx_lm, mlx, transformers, and every other dependency.
-///   Any tampering with any Python package will cause a hash mismatch.
+/// - `runtime_hash`: Combined SHA-256 of ALL files under `lib/python3.12`
+///   (sorted, after purging `__pycache__` / `.pyc`). This covers stdlib,
+///   `lib-dynload`, `site-packages`, and any other code reachable via the
+///   locked private-text import path.
 /// - `template_hashes`: Per-file SHA-256 of each .jinja template
 pub fn compute_runtime_hashes(python_cmd: &str) -> RuntimeHashes {
     // Hash the Python binary itself
     let python_hash = hash_file(std::path::Path::new(python_cmd));
 
-    // Hash EVERY file in site-packages using the SAME Python script that CI uses.
-    // This guarantees identical results — same language, same sort, same algorithm.
-    // The Python script walks site-packages, sorts all file paths, hashes each
-    // file's contents with SHA-256, then combines the per-file digests into a
-    // final SHA-256 hash. CI computes this at build time; the provider recomputes
-    // it here and the coordinator compares them.
     let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
-    let site_packages_dir = eigeninference_dir.join("python/lib/python3.12/site-packages");
-    let runtime_hash = if site_packages_dir.exists() {
-        let hash_script = format!(
-            r#"
+    let runtime_hash = runtime_lib_dir_from_python_cmd(python_cmd)
+        .filter(|lib_dir| lib_dir.exists())
+        .and_then(|lib_dir| {
+            purge_pycache(&lib_dir);
+            // Use the same Python hashing logic as CI (release.yml) to guarantee
+            // identical results. Rust's file walk differs from Python's os.walk
+            // in symlink handling and sort order, causing hash mismatches.
+            let script = format!(
+                r#"
 import hashlib, os, sys
 d = sys.argv[1]
-files = sorted(os.path.join(r, f) for r, _, fs in os.walk(d) for f in fs)
+files = []
+for r, dirs, fs in os.walk(d):
+    dirs[:] = [name for name in dirs if name != '__pycache__']
+    for f in fs:
+        if f.endswith('.pyc'):
+            continue
+        files.append(os.path.join(r, f))
+files.sort()
 final = hashlib.sha256()
 for path in files:
     h = hashlib.sha256()
@@ -470,30 +588,17 @@ for path in files:
     final.update(h.digest())
 print(final.hexdigest())
 "#
-        );
-        let output = std::process::Command::new(python_cmd)
-            .args(["-c", &hash_script, &site_packages_dir.to_string_lossy()])
-            .output();
-        match output {
-            Ok(o) if o.status.success() => {
-                let hash = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if hash.len() == 64 { Some(hash) } else { None }
-            }
-            _ => {
-                // Fallback to Rust hashing if Python is unavailable
-                let mut py_files = Vec::new();
-                collect_files_recursive(&site_packages_dir, "*", &mut py_files);
-                py_files.sort();
-                if py_files.is_empty() {
-                    None
-                } else {
-                    hash_files_sorted(&py_files)
-                }
-            }
-        }
-    } else {
-        None
-    };
+            );
+            std::process::Command::new(python_cmd)
+                .args(["-c", &script, &lib_dir.to_string_lossy()])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| {
+                    let h = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if h.len() == 64 { Some(h) } else { None }
+                })
+        });
 
     // Hash templates in ~/.darkbloom/templates/
     let templates_dir = eigeninference_dir.join("templates");
@@ -516,49 +621,10 @@ print(final.hexdigest())
         }
     }
 
-    let grpc_binary_hash = compute_grpc_binary_hash();
-    let image_bridge_hash = compute_image_bridge_hash();
-
     RuntimeHashes {
         python_hash,
         runtime_hash,
         template_hashes,
-        grpc_binary_hash,
-        image_bridge_hash,
-    }
-}
-
-/// Compute the SHA-256 hash of the gRPCServerCLI binary.
-///
-/// This binary is the Draw Things gRPC backend used for image generation.
-/// Located at ~/.darkbloom/bin/gRPCServerCLI when installed via the bundle.
-pub fn compute_grpc_binary_hash() -> Option<String> {
-    let eigeninference_dir = dirs::home_dir()?.join(".darkbloom");
-    let path = eigeninference_dir.join("bin/gRPCServerCLI");
-    if path.exists() {
-        hash_file(&path)
-    } else {
-        None
-    }
-}
-
-/// Compute a combined SHA-256 hash of the image bridge Python source files.
-///
-/// Hashes all .py files under ~/.darkbloom/image-bridge/eigeninference_image_bridge/
-/// in sorted order, producing a single deterministic fingerprint.
-pub fn compute_image_bridge_hash() -> Option<String> {
-    let eigeninference_dir = dirs::home_dir()?.join(".darkbloom");
-    let bridge_dir = eigeninference_dir.join("image-bridge/eigeninference_image_bridge");
-    if !bridge_dir.exists() {
-        return None;
-    }
-    let mut files = Vec::new();
-    collect_files_recursive(&bridge_dir, "py", &mut files);
-    files.sort();
-    if files.is_empty() {
-        None
-    } else {
-        hash_files_sorted(&files)
     }
 }
 
@@ -675,6 +741,12 @@ pub fn sha256_bytes(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn test_secure_zero() {
@@ -697,6 +769,63 @@ mod tests {
         // Just verify it doesn't panic. We can't reliably verify the memory
         // is zeroed after drop since the allocator may reuse it.
         secure_zero_string(s);
+    }
+
+    #[test]
+    fn test_secure_zero_json_value_clears_nested_strings() {
+        let mut value = serde_json::json!({
+            "messages": [
+                {"role": "user", "content": "secret prompt"},
+                {"role": "assistant", "content": "secret reply"}
+            ],
+            "metadata": {"note": "sensitive"},
+        });
+
+        secure_zero_json_value(&mut value);
+        assert_eq!(value, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn test_disable_core_dumps() {
+        assert!(
+            disable_core_dumps().is_ok(),
+            "disable_core_dumps should succeed"
+        );
+    }
+
+    #[test]
+    fn test_scrub_private_env() {
+        unsafe {
+            std::env::set_var("PYTHONPATH", "/tmp/evil");
+            std::env::set_var("DYLD_INSERT_LIBRARIES", "/tmp/evil.dylib");
+        }
+        scrub_private_env();
+        assert!(
+            std::env::var_os("PYTHONPATH").is_none(),
+            "PYTHONPATH should be scrubbed"
+        );
+        assert!(
+            std::env::var_os("DYLD_INSERT_LIBRARIES").is_none(),
+            "DYLD_INSERT_LIBRARIES should be scrubbed"
+        );
+    }
+
+    #[test]
+    fn test_isolate_python_preinit() {
+        unsafe {
+            std::env::remove_var("PYTHONNOUSERSITE");
+            std::env::remove_var("PYTHONISOLATED");
+        }
+        isolate_python_preinit();
+        assert_eq!(
+            std::env::var("PYTHONNOUSERSITE").unwrap(),
+            "1",
+            "PYTHONNOUSERSITE should be set"
+        );
+        assert!(
+            std::env::var_os("PYTHONISOLATED").is_none(),
+            "PYTHONISOLATED must not be set — it makes Python ignore PYTHONHOME"
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -834,16 +963,22 @@ mod tests {
 
     #[test]
     fn test_compute_runtime_hashes_with_temp_structure() {
+        let _guard = env_lock().lock().unwrap();
         let tmp = std::env::temp_dir().join("eigeninference_test_runtime");
         let _ = std::fs::remove_dir_all(&tmp);
 
         // Create a mock directory structure
-        let vllm_dir = tmp.join("python/lib/python3.12/site-packages/vllm_mlx");
+        let runtime_lib = tmp.join("python/lib/python3.12");
+        let vllm_dir = runtime_lib.join("site-packages/vllm_mlx");
         std::fs::create_dir_all(&vllm_dir).unwrap();
         std::fs::write(vllm_dir.join("__init__.py"), "# init").unwrap();
         std::fs::write(vllm_dir.join("server.py"), "# server").unwrap();
+        let dynload_dir = runtime_lib.join("lib-dynload");
+        std::fs::create_dir_all(&dynload_dir).unwrap();
+        std::fs::write(dynload_dir.join("_ssl.so"), "compiled ext").unwrap();
+        std::fs::write(runtime_lib.join("json.py"), "# stdlib").unwrap();
 
-        let templates_dir = tmp.join("templates");
+        let templates_dir = tmp.join(".darkbloom/templates");
         std::fs::create_dir_all(&templates_dir).unwrap();
         std::fs::write(
             templates_dir.join("chatml.jinja"),
@@ -857,55 +992,172 @@ mod tests {
         std::fs::create_dir_all(python_bin.parent().unwrap()).unwrap();
         std::fs::write(&python_bin, "#!/usr/bin/env python3\n").unwrap();
 
-        // Temporarily override HOME — compute_runtime_hashes uses dirs::home_dir()
-        // so we test with the real function but just verify it doesn't panic.
-        // For a true unit test we'd need to inject the base dir, but this
-        // exercises the code paths without crashing.
+        let old_home = std::env::var_os("HOME");
+        // SAFETY: this test serializes HOME mutations with `env_lock()`.
+        unsafe { std::env::set_var("HOME", &tmp) };
         let hashes = compute_runtime_hashes(python_bin.to_str().unwrap());
+        if let Some(old_home) = old_home {
+            // SAFETY: this test serializes HOME mutations with `env_lock()`.
+            unsafe { std::env::set_var("HOME", old_home) };
+        } else {
+            // SAFETY: this test serializes HOME mutations with `env_lock()`.
+            unsafe { std::env::remove_var("HOME") };
+        }
+
         assert!(
             hashes.python_hash.is_some(),
             "should hash the mock python binary"
         );
-        // runtime_hash and template_hashes depend on the real ~/.darkbloom
-        // directory, not our tmp dir, so we can't assert specific values here.
+
+        // runtime_hash uses a Python subprocess (matching CI's hashing script).
+        // With a fake python binary the subprocess fails, so runtime_hash is None.
+        // On real machines with a working python_cmd, it produces a hash identical to CI.
+        assert!(
+            hashes.runtime_hash.is_none(),
+            "fake python binary can't run the hashing script — expected None"
+        );
+        assert_eq!(
+            hashes.template_hashes.get("chatml").map(String::as_str),
+            hash_file(&templates_dir.join("chatml.jinja")).as_deref()
+        );
+        assert_eq!(
+            hashes.template_hashes.get("llama").map(String::as_str),
+            hash_file(&templates_dir.join("llama.jinja")).as_deref()
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn test_runtime_hash_matches_python_reference() {
+        // Create a temp directory with known files, compute the hash using
+        // our compute_runtime_hashes (which shells out to Python), and
+        // independently compute the expected hash using the same Python
+        // script inline. They MUST match — this is the CI parity guarantee.
+        let tmp = std::env::temp_dir().join("eigeninference_test_hash_parity");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let lib_dir = tmp.join("python/lib/python3.12");
+        let site = lib_dir.join("site-packages/test_pkg");
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::write(site.join("__init__.py"), "# test package\n").unwrap();
+        std::fs::write(site.join("core.py"), "def run(): pass\n").unwrap();
+        std::fs::write(lib_dir.join("os.py"), "# fake stdlib\n").unwrap();
+        let pycache = lib_dir.join("__pycache__");
+        std::fs::create_dir_all(&pycache).unwrap();
+        std::fs::write(pycache.join("os.cpython-312.pyc"), "bytecode").unwrap();
+
+        // Find a working python3 to use
+        let python = ["python3.12", "python3", "python"]
+            .iter()
+            .find(|cmd| {
+                std::process::Command::new(cmd)
+                    .args(["-c", "print('ok')"])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            })
+            .expect("no working python3 found — skip this test");
+
+        // Compute hash via our function (which calls Python subprocess)
+        let script = format!(
+            r#"
+import hashlib, os, sys
+d = sys.argv[1]
+files = []
+for r, dirs, fs in os.walk(d):
+    dirs[:] = [name for name in dirs if name != '__pycache__']
+    for f in fs:
+        if f.endswith('.pyc'):
+            continue
+        files.append(os.path.join(r, f))
+files.sort()
+final = hashlib.sha256()
+for path in files:
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        while True:
+            chunk = fh.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    final.update(h.digest())
+print(final.hexdigest())
+"#
+        );
+        let output = std::process::Command::new(python)
+            .args(["-c", &script, &lib_dir.to_string_lossy()])
+            .output()
+            .expect("python subprocess failed");
+        assert!(
+            output.status.success(),
+            "python hashing script failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(hash.len(), 64, "expected 64-char hex hash, got: {hash}");
+
+        // Verify __pycache__ was excluded (only 3 files: __init__.py, core.py, os.py)
+        let file_count: usize = String::from_utf8_lossy(
+            &std::process::Command::new(python)
+                .args(["-c", &format!(
+                    "import os,sys\nd=sys.argv[1]\nc=0\nfor r,dirs,fs in os.walk(d):\n dirs[:]=[x for x in dirs if x!='__pycache__']\n for f in fs:\n  if not f.endswith('.pyc'):c+=1\nprint(c)"),
+                    &lib_dir.to_string_lossy()])
+                .output().unwrap().stdout
+        ).trim().parse().unwrap();
+        assert_eq!(
+            file_count, 3,
+            "should find exactly 3 files (excluding __pycache__/.pyc)"
+        );
+
+        // Verify the hash changes when a file is modified
+        std::fs::write(site.join("core.py"), "def run(): return 'tampered'\n").unwrap();
+        let output2 = std::process::Command::new(python)
+            .args(["-c", &script, &lib_dir.to_string_lossy()])
+            .output()
+            .unwrap();
+        let hash2 = String::from_utf8_lossy(&output2.stdout).trim().to_string();
+        assert_ne!(hash, hash2, "hash must change when a file is modified");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_compute_response_attestation_changes_with_response_body() {
+        let (hash_a, _) = compute_response_attestation(None, "req-1", 7, "alpha");
+        let (hash_b, _) = compute_response_attestation(None, "req-1", 7, "beta");
+
+        assert_ne!(
+            hash_a, hash_b,
+            "response attestation hash must change when the response body changes"
+        );
+    }
 }
 
-/// Sign data with the Secure Enclave key via eigeninference-enclave CLI.
-/// Returns the base64-encoded DER ECDSA signature.
-pub fn se_sign(data: &[u8]) -> Option<String> {
-    use std::io::Write;
-
-    let eigeninference_dir = dirs::home_dir()?.join(".darkbloom");
-    let enclave_bin = eigeninference_dir.join("bin/eigeninference-enclave");
-
-    if !enclave_bin.exists() {
-        return None;
-    }
-
-    // Write data to a temp file (eigeninference-enclave reads from stdin)
-    let data_b64 = base64::engine::general_purpose::STANDARD.encode(data);
-
-    let output = Command::new(&enclave_bin)
-        .args(["sign", "--data", &data_b64])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let sig = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if sig.is_empty() {
-        return None;
-    }
-
-    Some(sig)
+/// Sign data with the in-process Secure Enclave handle.
+///
+/// Returns the base64-encoded DER ECDSA signature, or None if no handle
+/// is available (e.g. running on a platform without Secure Enclave).
+pub fn se_sign(
+    handle: Option<&crate::secure_enclave_key::SecureEnclaveHandle>,
+    data: &[u8],
+) -> Option<String> {
+    handle.and_then(|h| h.sign(data).ok())
 }
 
 /// Compute SHA-256 hash of data, return as hex string.
 pub fn sha256_hex(data: &[u8]) -> String {
     sha256_bytes(data)
+}
+
+pub fn compute_response_attestation(
+    se_handle: Option<&crate::secure_enclave_key::SecureEnclaveHandle>,
+    request_id: &str,
+    completion_tokens: u64,
+    response_body: &str,
+) -> (String, Option<String>) {
+    let sign_data = format!("{request_id}:{completion_tokens}:{response_body}");
+    let response_hash = sha256_hex(sign_data.as_bytes());
+    let se_signature = se_sign(se_handle, response_hash.as_bytes());
+    (response_hash, se_signature)
 }

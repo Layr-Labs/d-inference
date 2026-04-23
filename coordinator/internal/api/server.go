@@ -24,17 +24,21 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/billing"
+	"github.com/eigeninference/coordinator/internal/datadog"
+	"github.com/eigeninference/coordinator/internal/e2e"
 	"github.com/eigeninference/coordinator/internal/mdm"
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/telemetry"
 )
 
 // contextKey is an unexported type for context keys in this package.
@@ -57,8 +61,6 @@ func consumerKeyFromContext(ctx context.Context) string {
 
 // LatestProviderVersion is the current version of the provider CLI.
 // Update this when uploading a new provider bundle.
-//
-//nolint:gochecknoglobals // updated in lockstep with bundle uploads
 var LatestProviderVersion = "0.3.10"
 
 // Server is the main HTTP/WS server for the coordinator. It ties together
@@ -102,7 +104,7 @@ type Server struct {
 	consoleURL string
 
 	// baseURL is the public URL clients reach this coordinator at
-	// (e.g. "https://api.darkbloom.dev" for prod, "https://api.dev.darkbloom.dev" for dev).
+	// (e.g. "https://api.darkbloom.dev" for prod, "https://api.dev.darkbloom.xyz" for dev).
 	// Substituted into the embedded install.sh at serve time so the same binary
 	// can serve both environments. Falls back to "https://" + request.Host when empty.
 	baseURL string
@@ -116,6 +118,10 @@ type Server struct {
 	// Prod historically uses a second bucket; dev can reuse r2CDNURL.
 	r2SitePackagesCDNURL string
 
+	// corsOrigin is the allowed CORS origin (e.g. "https://console.darkbloom.dev").
+	// Set from CORS_ORIGIN env var. Empty defaults to the production console domain.
+	corsOrigin string
+
 	// imageUploads stores generated images keyed by request_id.
 	// Providers upload images via HTTP POST, then send a small WebSocket
 	// completion message. The consumer handler retrieves images from here.
@@ -127,6 +133,27 @@ type Server struct {
 	// coordinator restart, this table is checked to restore trust/reputation.
 	// Populated once at startup from the store.
 	storedProviders map[string]*store.ProviderRecord
+
+	// coordinatorKey is the long-lived X25519 keypair used to receive sealed
+	// requests from senders. Set via SetCoordinatorKey. nil disables the
+	// /v1/encryption-key endpoint and the sealed-request middleware.
+	coordinatorKey *e2e.CoordinatorKey
+
+	// metrics is the in-process metrics registry exposed via /v1/admin/metrics
+	// and used by internal counters/histograms. Never nil.
+	metrics *Metrics
+
+	// telemetryLimiter throttles telemetry ingestion per submitter.
+	telemetryLimiter *telemetryLimiter
+
+	// emitter writes coordinator-side telemetry events (panics, handler
+	// failures, attestation failures, etc.). Set via SetEmitter; nil before
+	// main.go wires it up.
+	emitter *telemetry.Emitter
+
+	// dd is the Datadog integration client for DogStatsD metrics and
+	// Logs API event forwarding. Nil when DD is not configured.
+	dd *datadog.Client
 }
 
 // NewServer creates a configured Server with all routes mounted.
@@ -135,13 +162,17 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 	reg.SetStore(st)
 
 	s := &Server{
-		registry:     reg,
-		store:        st,
-		ledger:       payments.NewLedger(st),
-		logger:       logger,
-		mux:          http.NewServeMux(),
-		imageUploads: make(map[string][][]byte),
+		registry:             reg,
+		store:                st,
+		ledger:               payments.NewLedger(st),
+		logger:               logger,
+		mux:                  http.NewServeMux(),
+		imageUploads:         make(map[string][][]byte),
+		knownRuntimeManifest: &RuntimeManifest{},
+		metrics:              NewMetrics(),
+		telemetryLimiter:     newTelemetryLimiter(),
 	}
+	s.registerDefaultGauges()
 	s.routes()
 
 	// Load stored provider records into a lookup table for matching
@@ -175,6 +206,92 @@ func (s *Server) SetR2CDNURL(url string) {
 // tarball. Defaults to r2CDNURL when unset.
 func (s *Server) SetR2SitePackagesCDNURL(url string) {
 	s.r2SitePackagesCDNURL = strings.TrimRight(url, "/")
+}
+
+// SetEmitter wires the coordinator-side telemetry emitter. Call once at boot.
+func (s *Server) SetEmitter(e *telemetry.Emitter) {
+	s.emitter = e
+}
+
+// SetDatadog wires the Datadog client for DogStatsD metrics and Logs API forwarding.
+func (s *Server) SetDatadog(dd *datadog.Client) {
+	s.dd = dd
+}
+
+// Datadog returns the Datadog client (or nil). Exposed so main.go and the
+// telemetry emitter can share the same client.
+func (s *Server) Datadog() *datadog.Client {
+	return s.dd
+}
+
+// Metrics returns the in-process metrics registry so cmd/coordinator can
+// expose it to the telemetry emitter and other integrations.
+func (s *Server) Metrics() *Metrics {
+	return s.metrics
+}
+
+// emit is an internal convenience that funnels events through the emitter if
+// one has been wired up. No-op otherwise — telemetry must never affect control
+// flow.
+func (s *Server) emit(ctx context.Context, severity protocol.TelemetrySeverity, kind protocol.TelemetryKind, message string, fields map[string]any) {
+	if s.emitter == nil {
+		return
+	}
+	s.emitter.Emit(ctx, telemetry.Event{
+		Severity: severity,
+		Kind:     kind,
+		Message:  message,
+		Fields:   fields,
+	})
+}
+
+// emitRequest is like emit but preserves a request_id for correlation.
+func (s *Server) emitRequest(ctx context.Context, severity protocol.TelemetrySeverity, kind protocol.TelemetryKind, requestID, message string, fields map[string]any) {
+	if s.emitter == nil {
+		return
+	}
+	s.emitter.Emit(ctx, telemetry.Event{
+		Severity:  severity,
+		Kind:      kind,
+		Message:   message,
+		Fields:    fields,
+		RequestID: requestID,
+	})
+}
+
+// ddIncr increments a DogStatsD counter. No-op if DD is not configured.
+func (s *Server) ddIncr(name string, tags []string) {
+	if s.dd != nil {
+		s.dd.Incr(name, tags)
+	}
+}
+
+// ddHistogram records a DogStatsD histogram value. No-op if DD is not configured.
+func (s *Server) ddHistogram(name string, value float64, tags []string) {
+	if s.dd != nil {
+		s.dd.Histogram(name, value, tags)
+	}
+}
+
+// ddGauge sets a DogStatsD gauge value. No-op if DD is not configured.
+func (s *Server) ddGauge(name string, value float64, tags []string) {
+	if s.dd != nil {
+		s.dd.Gauge(name, value, tags)
+	}
+}
+
+// emitPanic is the panic-specific emit helper. Captures stack separately.
+func (s *Server) emitPanic(ctx context.Context, message, stack string, fields map[string]any) {
+	if s.emitter == nil {
+		return
+	}
+	s.emitter.Emit(ctx, telemetry.Event{
+		Severity: protocol.SeverityFatal,
+		Kind:     protocol.KindPanic,
+		Message:  message,
+		Fields:   fields,
+		Stack:    stack,
+	})
 }
 
 // SetStepCACerts configures the step-ca CA certificates for ACME client cert verification.
@@ -252,9 +369,26 @@ func (s *Server) SetConsoleURL(url string) {
 	s.consoleURL = url
 }
 
+// SetCORSOrigin configures the allowed CORS origin.
+func (s *Server) SetCORSOrigin(origin string) {
+	s.corsOrigin = origin
+}
+
 // SetReleaseKey configures the scoped release key for GitHub Actions.
 func (s *Server) SetReleaseKey(key string) {
 	s.releaseKey = key
+}
+
+// SetCoordinatorKey installs the X25519 keypair the coordinator publishes
+// for sender-to-coordinator request encryption. Pass nil to disable.
+func (s *Server) SetCoordinatorKey(k *e2e.CoordinatorKey) {
+	s.coordinatorKey = k
+}
+
+// CoordinatorKey returns the configured coordinator encryption key (or nil).
+// Exposed for tests; production code should not need this.
+func (s *Server) CoordinatorKey() *e2e.CoordinatorKey {
+	return s.coordinatorKey
 }
 
 // SyncBinaryHashes rebuilds knownBinaryHashes from all active releases.
@@ -273,8 +407,6 @@ func (s *Server) SyncBinaryHashes() {
 
 // SyncRuntimeManifest builds the runtime manifest from active releases.
 // Called after a release is registered to auto-update the expected hashes.
-//
-//nolint:gocognit
 func (s *Server) SyncRuntimeManifest() {
 	releases := s.store.ListReleases()
 
@@ -294,11 +426,9 @@ func (s *Server) SyncRuntimeManifest() {
 	}
 
 	manifest := &RuntimeManifest{
-		PythonHashes:      make(map[string]bool),
-		RuntimeHashes:     make(map[string]bool),
-		TemplateHashes:    make(map[string]string),
-		GrpcBinaryHashes:  make(map[string]bool),
-		ImageBridgeHashes: make(map[string]bool),
+		PythonHashes:   make(map[string]bool),
+		RuntimeHashes:  make(map[string]bool),
+		TemplateHashes: make(map[string]string),
 	}
 
 	hasAny := false
@@ -324,14 +454,6 @@ func (s *Server) SyncRuntimeManifest() {
 				}
 			}
 		}
-		if r.GrpcBinaryHash != "" {
-			manifest.GrpcBinaryHashes[r.GrpcBinaryHash] = true
-			hasAny = true
-		}
-		if r.ImageBridgeHash != "" {
-			manifest.ImageBridgeHashes[r.ImageBridgeHash] = true
-			hasAny = true
-		}
 	}
 
 	if hasAny {
@@ -341,11 +463,47 @@ func (s *Server) SyncRuntimeManifest() {
 			"python_hashes", len(manifest.PythonHashes),
 			"runtime_hashes", len(manifest.RuntimeHashes),
 			"template_hashes", len(manifest.TemplateHashes),
-			"grpc_binary_hashes", len(manifest.GrpcBinaryHashes),
-			"image_bridge_hashes", len(manifest.ImageBridgeHashes),
 		)
 	} else {
 		s.knownRuntimeManifest = nil
+	}
+
+	s.revalidateConnectedProvidersAgainstRuntimePolicy()
+}
+
+func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
+	for _, providerID := range s.registry.ProviderIDs() {
+		provider := s.registry.GetProvider(providerID)
+		if provider == nil {
+			continue
+		}
+
+		provider.Mu().Lock()
+		pythonHash := provider.PythonHash
+		runtimeHash := provider.RuntimeHash
+		templateHashes := registry.CloneStringMap(provider.TemplateHashes)
+		version := provider.Version
+		switch {
+		case s.knownRuntimeManifest == nil:
+			provider.RuntimeVerified = false
+			provider.RuntimeManifestChecked = false
+		case s.minProviderVersion != "" &&
+			version != "" &&
+			semverLess(version, s.minProviderVersion):
+			provider.RuntimeVerified = false
+			provider.RuntimeManifestChecked = false
+		default:
+			runtimeOK, _ := s.verifyRuntimeHashes(
+				pythonHash,
+				runtimeHash,
+				templateHashes,
+			)
+			if !runtimeOK {
+				provider.RuntimeVerified = false
+				provider.RuntimeManifestChecked = false
+			}
+		}
+		provider.Mu().Unlock()
 	}
 }
 
@@ -353,11 +511,9 @@ func (s *Server) SyncRuntimeManifest() {
 // When configured, the coordinator verifies provider-reported hashes against
 // this manifest at registration and during periodic attestation challenges.
 type RuntimeManifest struct {
-	PythonHashes      map[string]bool   `json:"python_hashes"`       // set of accepted Python runtime hashes
-	RuntimeHashes     map[string]bool   `json:"runtime_hashes"`      // set of accepted inference runtime hashes
-	TemplateHashes    map[string]string `json:"template_hashes"`     // template_name -> expected hash
-	GrpcBinaryHashes  map[string]bool   `json:"grpc_binary_hashes"`  // set of accepted gRPCServerCLI hashes
-	ImageBridgeHashes map[string]bool   `json:"image_bridge_hashes"` // set of accepted image bridge hashes
+	PythonHashes   map[string]bool   `json:"python_hashes"`   // set of accepted Python runtime hashes
+	RuntimeHashes  map[string]bool   `json:"runtime_hashes"`  // set of accepted inference runtime hashes
+	TemplateHashes map[string]string `json:"template_hashes"` // template_name -> expected hash
 }
 
 // SetRuntimeManifest configures the known-good runtime manifest for provider
@@ -376,10 +532,10 @@ func semverGreater(a, b string) bool {
 	for i := 0; i < len(aParts) || i < len(bParts); i++ {
 		var ai, bi int
 		if i < len(aParts) {
-			_, _ = fmt.Sscanf(aParts[i], "%d", &ai)
+			fmt.Sscanf(aParts[i], "%d", &ai)
 		}
 		if i < len(bParts) {
-			_, _ = fmt.Sscanf(bParts[i], "%d", &bi)
+			fmt.Sscanf(bParts[i], "%d", &bi)
 		}
 		if ai > bi {
 			return true
@@ -401,44 +557,55 @@ func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 }
 
 // verifyRuntimeHashes checks provider-reported runtime hashes against the
-// known-good manifest. Returns (true, nil) if all hashes match or no manifest
-// is configured. Returns (false, mismatches) if any component fails verification.
+// known-good manifest. When a component has expected hashes in the manifest,
+// the provider MUST report that component and it MUST match one of the known
+// good values. Omitting a required hash is treated as a mismatch.
 //
 //nolint:gocognit
-func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHashes map[string]string, grpcBinaryHash, imageBridgeHash string) (bool, []protocol.RuntimeMismatch) {
+func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
 	if s.knownRuntimeManifest == nil {
-		return true, nil // no manifest configured, pass by default
+		return true, nil
 	}
 
+	manifest := s.knownRuntimeManifest
 	var mismatches []protocol.RuntimeMismatch
 
-	// Check Python runtime hash.
-	if pythonHash != "" && len(s.knownRuntimeManifest.PythonHashes) > 0 {
-		if !s.knownRuntimeManifest.PythonHashes[pythonHash] {
+	requireOneOf := func(component, got string, accepted map[string]bool) {
+		if len(accepted) == 0 {
+			return
+		}
+		if got == "" {
 			mismatches = append(mismatches, protocol.RuntimeMismatch{
-				Component: "python",
+				Component: component,
+				Expected:  "reported hash matching one of known-good values",
+				Got:       "(missing)",
+			})
+			return
+		}
+		if !accepted[got] {
+			mismatches = append(mismatches, protocol.RuntimeMismatch{
+				Component: component,
 				Expected:  "one of known-good hashes",
-				Got:       pythonHash,
+				Got:       got,
 			})
 		}
 	}
 
-	// Check inference runtime hash.
-	if runtimeHash != "" && len(s.knownRuntimeManifest.RuntimeHashes) > 0 {
-		if !s.knownRuntimeManifest.RuntimeHashes[runtimeHash] {
-			mismatches = append(mismatches, protocol.RuntimeMismatch{
-				Component: "runtime",
-				Expected:  "one of known-good hashes",
-				Got:       runtimeHash,
-			})
-		}
-	}
+	requireOneOf("python", pythonHash, manifest.PythonHashes)
+	requireOneOf("runtime", runtimeHash, manifest.RuntimeHashes)
 
-	// Check template hashes.
-	if len(templateHashes) > 0 && len(s.knownRuntimeManifest.TemplateHashes) > 0 {
-		for name, got := range templateHashes {
-			expected, ok := s.knownRuntimeManifest.TemplateHashes[name]
-			if ok && got != expected {
+	if len(manifest.TemplateHashes) > 0 {
+		for name, expected := range manifest.TemplateHashes {
+			got, ok := templateHashes[name]
+			if !ok || got == "" {
+				mismatches = append(mismatches, protocol.RuntimeMismatch{
+					Component: "template:" + name,
+					Expected:  expected,
+					Got:       "(missing)",
+				})
+				continue
+			}
+			if got != expected {
 				mismatches = append(mismatches, protocol.RuntimeMismatch{
 					Component: "template:" + name,
 					Expected:  expected,
@@ -446,27 +613,14 @@ func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHas
 				})
 			}
 		}
-	}
-
-	// Check gRPCServerCLI binary hash (warn only — backward compat with older providers).
-	if grpcBinaryHash != "" && len(s.knownRuntimeManifest.GrpcBinaryHashes) > 0 {
-		if !s.knownRuntimeManifest.GrpcBinaryHashes[grpcBinaryHash] {
-			mismatches = append(mismatches, protocol.RuntimeMismatch{
-				Component: "grpc_binary",
-				Expected:  "one of known-good hashes",
-				Got:       grpcBinaryHash,
-			})
-		}
-	}
-
-	// Check image bridge hash (warn only — backward compat with older providers).
-	if imageBridgeHash != "" && len(s.knownRuntimeManifest.ImageBridgeHashes) > 0 {
-		if !s.knownRuntimeManifest.ImageBridgeHashes[imageBridgeHash] {
-			mismatches = append(mismatches, protocol.RuntimeMismatch{
-				Component: "image_bridge",
-				Expected:  "one of known-good hashes",
-				Got:       imageBridgeHash,
-			})
+		for name, got := range templateHashes {
+			if _, ok := manifest.TemplateHashes[name]; !ok {
+				mismatches = append(mismatches, protocol.RuntimeMismatch{
+					Component: "template:" + name,
+					Expected:  "template listed in runtime manifest",
+					Got:       got,
+				})
+			}
 		}
 	}
 
@@ -483,12 +637,10 @@ func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"configured":          true,
-		"python_hashes":       s.knownRuntimeManifest.PythonHashes,
-		"runtime_hashes":      s.knownRuntimeManifest.RuntimeHashes,
-		"template_hashes":     s.knownRuntimeManifest.TemplateHashes,
-		"grpc_binary_hashes":  s.knownRuntimeManifest.GrpcBinaryHashes,
-		"image_bridge_hashes": s.knownRuntimeManifest.ImageBridgeHashes,
+		"configured":      true,
+		"python_hashes":   s.knownRuntimeManifest.PythonHashes,
+		"runtime_hashes":  s.knownRuntimeManifest.RuntimeHashes,
+		"template_hashes": s.knownRuntimeManifest.TemplateHashes,
 	})
 }
 
@@ -507,9 +659,7 @@ func (s *Server) HandleMDMWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-//
 //go:embed install.sh
-//nolint:gochecknoglobals // embedded resource
 var installScript []byte
 
 // installScriptPlaceholder is substituted with the coordinator's public URL at
@@ -541,8 +691,6 @@ func (s *Server) resolveBaseURL(r *http.Request) string {
 }
 
 // routes mounts all HTTP and WebSocket handlers.
-//
-//nolint:funlen
 func (s *Server) routes() {
 	// Install script — served from embedded binary with coordinator URL +
 	// R2 CDN URLs substituted per environment.
@@ -556,7 +704,7 @@ func (s *Server) routes() {
 		rendered = strings.ReplaceAll(rendered, installScriptR2SitePackagesPlaceholder, sitePackagesURL)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
-		_, _ = io.WriteString(w, rendered)
+		io.WriteString(w, rendered)
 	})
 
 	// Health check — no auth required.
@@ -565,21 +713,25 @@ func (s *Server) routes() {
 	// Provider WebSocket — no API key auth (providers authenticate differently).
 	s.mux.HandleFunc("GET /ws/provider", s.handleProviderWS)
 
-	// Key generation — requires Privy auth, key is linked to account.
-	s.mux.HandleFunc("POST /v1/auth/keys", s.requireAuth(s.handleCreateKey))
+	// Key management — requires interactive Privy session (API keys rejected
+	// to prevent self-replication from a leaked key).
+	s.mux.HandleFunc("POST /v1/auth/keys", s.requirePrivyAuth(s.handleCreateKey))
+	s.mux.HandleFunc("DELETE /v1/auth/keys", s.requirePrivyAuth(s.handleRevokeKey))
 
 	// Consumer endpoints — API key auth required.
-	s.mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.handleChatCompletions))
-	s.mux.HandleFunc("POST /v1/responses", s.requireAuth(s.handleChatCompletions)) // Responses API — same handler, auto-detects input vs messages
-	s.mux.HandleFunc("POST /v1/completions", s.requireAuth(s.handleCompletions))
-	s.mux.HandleFunc("POST /v1/messages", s.requireAuth(s.handleAnthropicMessages))
-	s.mux.HandleFunc("POST /v1/audio/transcriptions", s.requireAuth(s.handleTranscriptions))
-	s.mux.HandleFunc("POST /v1/images/generations", s.requireAuth(s.handleImageGenerations))
+	// Inference endpoints are wrapped in sealedTransport so senders can opt into
+	// sender→coordinator encryption by setting Content-Type:
+	// application/eigeninference-sealed+json (see sender_encryption.go).
+	s.mux.HandleFunc("POST /v1/chat/completions", s.requireAuth(s.sealedTransport(s.handleChatCompletions)))
+	s.mux.HandleFunc("POST /v1/responses", s.requireAuth(s.sealedTransport(s.handleChatCompletions))) // Responses API — same handler, auto-detects input vs messages
+	s.mux.HandleFunc("POST /v1/completions", s.requireAuth(s.sealedTransport(s.handleCompletions)))
+	s.mux.HandleFunc("POST /v1/messages", s.requireAuth(s.sealedTransport(s.handleAnthropicMessages)))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
 
-	// Provider image upload — providers POST generated images here (no API key auth,
-	// providers authenticate via request_id which is a secret between coordinator and provider).
-	s.mux.HandleFunc("POST /v1/provider/image-upload", s.handleImageUpload)
+	// Sender encryption — public key publication for sender→coordinator E2E.
+	// Optional: senders may use this to encrypt request bodies; plaintext path
+	// continues to work unchanged when this header isn't set.
+	s.mux.HandleFunc("GET /v1/encryption-key", s.handleEncryptionKey)
 
 	// MDM webhook — MicroMDM sends command responses here.
 	s.mux.HandleFunc("POST /v1/mdm/webhook", s.HandleMDMWebhook)
@@ -614,21 +766,26 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/releases/latest", s.handleLatestRelease) // public (install.sh)
 
 	// Device authorization flow — providers link to user accounts.
-	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)                      // no auth — provider not yet authenticated
-	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)                    // no auth — polls with device_code secret
-	s.mux.HandleFunc("POST /v1/device/approve", s.requireAuth(s.handleDeviceApprove)) // Privy auth — user approves in browser
+	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)                           // no auth — provider not yet authenticated
+	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)                         // no auth — polls with device_code secret
+	s.mux.HandleFunc("POST /v1/device/approve", s.requirePrivyAuth(s.handleDeviceApprove)) // interactive session only — API keys rejected
 
-	// --- Billing endpoints (multi-chain payments + referrals) ---
+	// --- Billing endpoints (Stripe payments + referrals) ---
 
 	// Stripe
 	s.mux.HandleFunc("POST /v1/billing/stripe/create-session", s.requireAuth(s.handleStripeCreateSession))
 	s.mux.HandleFunc("POST /v1/billing/stripe/webhook", s.handleStripeWebhook) // no auth — Stripe signs it
 	s.mux.HandleFunc("GET /v1/billing/stripe/session", s.requireAuth(s.handleStripeSessionStatus))
 
-	// Solana deposits and withdrawals
-	s.mux.HandleFunc("POST /v1/billing/deposit", s.requireAuth(s.handleSolanaDeposit))
-	s.mux.HandleFunc("POST /v1/billing/withdraw/solana", s.requireAuth(s.handleSolanaWithdraw))
+	// Wallet balance
 	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
+
+	// Stripe Payouts (Connect Express) — bank/card withdrawals.
+	s.mux.HandleFunc("POST /v1/billing/stripe/onboard", s.requireAuth(s.handleStripeOnboard))
+	s.mux.HandleFunc("GET /v1/billing/stripe/status", s.requireAuth(s.handleStripeStatus))
+	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requireAuth(s.handleStripeWithdraw))
+	s.mux.HandleFunc("GET /v1/billing/stripe/withdrawals", s.requireAuth(s.handleStripeWithdrawals))
+	s.mux.HandleFunc("POST /v1/billing/stripe/connect/webhook", s.handleStripeConnectWebhook) // no auth — Stripe signs it
 
 	// Pricing — GET is public, PUT/DELETE require auth
 	s.mux.HandleFunc("GET /v1/pricing", s.handleGetPricing)                        // public
@@ -669,18 +826,120 @@ func (s *Server) routes() {
 
 	// Invite code redemption (user)
 	s.mux.HandleFunc("POST /v1/invite/redeem", s.requireAuth(s.handleRedeemInviteCode))
+
+	// Telemetry ingestion — authentication is resolved inside the handler
+	// because providers, consumers, and anonymous clients all hit this path.
+	// Events are forwarded to Datadog; admin read/summary endpoints have been
+	// removed (use Datadog Log Explorer).
+	s.mux.HandleFunc("POST /v1/telemetry/events", s.handleTelemetryIngest)
+
+	// Metrics snapshot (admin only)
+	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
+}
+
+// registerDefaultGauges wires live-computed gauges (fleet size, etc.) into
+// the metrics registry at construction time.
+func (s *Server) registerDefaultGauges() {
+	s.metrics.RegisterGauge("providers_online", func() float64 {
+		return float64(s.registry.ProviderCount())
+	})
+	s.metrics.RegisterGauge("pending_image_uploads", func() float64 {
+		s.imageUploadsMu.Lock()
+		defer s.imageUploadsMu.Unlock()
+		return float64(len(s.imageUploads))
+	})
+}
+
+// StartDDGaugeLoop periodically pushes gauge values to DogStatsD. Gauges
+// are point-in-time values and must be pushed regularly (not on-demand like
+// counters). Call as a goroutine; stops when ctx is cancelled.
+func (s *Server) StartDDGaugeLoop(ctx context.Context) {
+	if s.dd == nil {
+		return
+	}
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.ddGauge("providers.online", float64(s.registry.ProviderCount()), nil)
+			if q := s.registry.Queue(); q != nil {
+				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
+			}
+		}
+	}
+}
+
+// handleAdminMetrics returns the metrics snapshot in JSON or Prometheus text.
+func (s *Server) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdminAuthorized(w, r) {
+		return
+	}
+	snap := s.metrics.Snapshot()
+	if r.URL.Query().Get("format") == "prom" {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(snap.RenderProm()))
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
 }
 
 // Handler returns the root http.Handler with global middleware applied.
+// Middleware order (outside-in):
+//
+//	cors → recover → logging → mux
+//
+// Recover must sit outside logging so a panic during logging doesn't leak.
 func (s *Server) Handler() http.Handler {
-	return s.corsMiddleware(s.loggingMiddleware(s.mux))
+	return s.corsMiddleware(s.recoverMiddleware(s.loggingMiddleware(s.mux)))
+}
+
+// recoverMiddleware catches panics in any handler, emits a telemetry event
+// with the stack trace, and returns 500 to the client. Without this, a single
+// nil deref takes down the whole coordinator — panics from tests have hit us
+// in production more than once.
+func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				// ErrAbortHandler is the Go-idiomatic way for a handler to
+				// force-close the connection — propagate it unchanged.
+				if rec == http.ErrAbortHandler {
+					panic(rec)
+				}
+				stack := string(debug.Stack())
+				s.logger.Error("panic in HTTP handler",
+					"error", fmt.Sprintf("%v", rec),
+					"path", r.URL.Path,
+					"method", r.Method,
+					"stack", stack,
+				)
+				s.emitPanic(r.Context(),
+					fmt.Sprintf("panic in handler %s %s: %v", r.Method, r.URL.Path, rec),
+					stack,
+					map[string]any{
+						"handler":  r.URL.Path,
+						"endpoint": r.URL.Path,
+					},
+				)
+				// Write a 500 if the response hasn't started yet. If the
+				// handler already flushed headers (e.g. streaming SSE), we
+				// can't do anything useful — the client will see the stream
+				// truncated.
+				defer func() { _ = recover() }() // guard against double-write
+				writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "internal server error"))
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // requireAuth wraps a handler with authentication. It tries Privy JWT first
 // (if configured), then falls back to API key validation. The authenticated
 // identity is stored in the request context for downstream use.
-//
-//nolint:gocognit
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := extractBearerToken(r)
@@ -737,13 +996,52 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// corsMiddleware adds permissive CORS headers for development.
-// In production, this should be restricted to the actual frontend origin.
+// requirePrivyAuth wraps a handler requiring a Privy JWT session. Unlike
+// requireAuth, API keys are rejected. Use for sensitive account operations
+// (key creation, device approval) that must not be triggerable by a leaked
+// API key.
+func (s *Server) requirePrivyAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := extractBearerToken(r)
+		if token == "" {
+			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing credentials"))
+			return
+		}
+		if s.privyAuth == nil || !strings.HasPrefix(token, "eyJ") {
+			writeJSON(w, http.StatusForbidden, errorResponse("forbidden",
+				"this endpoint requires an interactive session — API keys are not accepted"))
+			return
+		}
+		privyUserID, err := s.privyAuth.VerifyToken(token)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "invalid Privy token"))
+			return
+		}
+		user, err := s.privyAuth.GetOrCreateUser(privyUserID)
+		if err != nil {
+			s.logger.Error("privy: user resolution failed", "error", err)
+			writeJSON(w, http.StatusInternalServerError, errorResponse("auth_error", "failed to resolve user"))
+			return
+		}
+		ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
+		ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+// corsMiddleware sets CORS headers. The allowed origin is derived from the
+// CORS_ORIGIN environment variable; if unset it defaults to the production
+// console domain. Wildcard (*) is never used in production.
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
+	origin := s.corsOrigin
+	if origin == "" {
+		origin = "https://console.darkbloom.dev"
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -754,7 +1052,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// loggingMiddleware logs each request using slog.
+// loggingMiddleware logs each request using slog and updates HTTP metrics.
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -762,15 +1060,58 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(sw, r)
 
+		dur := time.Since(start)
 		s.logger.Info("request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", sw.status,
-			"duration_ms", time.Since(start).Milliseconds(),
+			"duration_ms", dur.Milliseconds(),
 			"remote", r.RemoteAddr,
 		)
+
+		pathLabel := httpPathLabel(r.URL.Path)
+		statusStr := strconvItoa(sw.status)
+
+		if s.metrics != nil {
+			s.metrics.IncCounter("http_requests_total",
+				MetricLabel{"method", r.Method},
+				MetricLabel{"path", pathLabel},
+				MetricLabel{"status", statusStr},
+			)
+			s.metrics.ObserveHistogram("http_request_duration_ms",
+				float64(dur.Milliseconds()),
+				MetricLabel{"method", r.Method},
+				MetricLabel{"path", pathLabel},
+			)
+		}
+
+		// DogStatsD — emit request counter and latency histogram.
+		if s.dd != nil {
+			tags := []string{
+				"method:" + r.Method,
+				"path:" + pathLabel,
+				"status_code:" + statusStr,
+			}
+			s.dd.Incr("http.requests", tags)
+			s.dd.Histogram("http.latency_ms", float64(dur.Milliseconds()), tags)
+		}
 	})
 }
+
+// httpPathLabel maps a request URL to a stable label value. It strips query
+// strings and collapses any dynamic path segments that would otherwise create
+// unbounded label cardinality.
+func httpPathLabel(path string) string {
+	// TODO: if the surface area grows, normalize UUID-ish segments into ":id".
+	// For now our mux uses fixed paths so the path itself is a safe label.
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	return path
+}
+
+// strconvItoa is a shim to avoid pulling strconv into every middleware file.
+func strconvItoa(i int) string { return fmt.Sprintf("%d", i) }
 
 // statusWriter wraps http.ResponseWriter to capture the status code
 // for logging. It also implements http.Flusher and http.Hijacker by
@@ -822,40 +1163,4 @@ func extractBearerToken(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimSpace(parts[1])
-}
-
-// handleImageUpload accepts image data uploaded by providers via HTTP POST.
-// This avoids sending large base64 images over the WebSocket (which has size limits).
-// The provider uploads images here after generating them, then sends a small
-// image_generation_complete message over the WebSocket with just usage metadata.
-func (s *Server) handleImageUpload(w http.ResponseWriter, r *http.Request) {
-	requestID := r.URL.Query().Get("request_id")
-	if requestID == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "request_id is required"))
-		return
-	}
-
-	// Read image data (limit to 20 MB)
-	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
-	imageData, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "failed to read image data"))
-		return
-	}
-
-	s.imageUploadsMu.Lock()
-	s.imageUploads[requestID] = append(s.imageUploads[requestID], imageData)
-	s.imageUploadsMu.Unlock()
-
-	s.logger.Debug("image uploaded", "request_id", requestID, "size", len(imageData))
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-// getUploadedImages retrieves and removes stored images for a request.
-func (s *Server) getUploadedImages(requestID string) [][]byte {
-	s.imageUploadsMu.Lock()
-	defer s.imageUploadsMu.Unlock()
-	images := s.imageUploads[requestID]
-	delete(s.imageUploads, requestID)
-	return images
 }

@@ -91,7 +91,7 @@ func (r *Registry) ReserveProvider(model string, pr *PendingRequest, excludeIDs 
 
 	// Re-check capacity under the provider lock in case another goroutine
 	// changed the pending set between snapshot and reservation.
-	if !r.providerCanAdmitLocked(p, model) {
+	if !r.providerCanAdmitLocked(p, model, pr) {
 		return nil
 	}
 
@@ -115,7 +115,7 @@ func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, e
 		if _, excluded := excludeSet[p.ID]; excluded {
 			continue
 		}
-		snap, ok := r.snapshotProviderLocked(p, model)
+		snap, ok := r.snapshotProviderLocked(p, model, pr)
 		if !ok {
 			continue
 		}
@@ -187,13 +187,16 @@ func (r *Registry) providerRoutableUnderLock(p *Provider, model string, now time
 	if !p.RuntimeVerified {
 		return false
 	}
+	if !providerSupportsPrivateTextLocked(p) {
+		return false
+	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
 		return false
 	}
 	return p.pendingCount() < p.maxConcurrency()
 }
 
-func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSnapshot, bool) {
+func (r *Registry) snapshotProviderLocked(p *Provider, model string, _ *PendingRequest) (routingSnapshot, bool) {
 	now := time.Now()
 
 	p.mu.Lock()
@@ -377,11 +380,14 @@ func providerModelIDs(p *Provider) []string {
 	return ids
 }
 
-func (r *Registry) providerCanAdmitLocked(p *Provider, model string) bool {
+func (r *Registry) providerCanAdmitLocked(p *Provider, model string, pr *PendingRequest) bool {
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
 		return false
 	}
 	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) || !p.RuntimeVerified {
+		return false
+	}
+	if !providerSupportsPrivateTextLocked(p) {
 		return false
 	}
 	if p.LastChallengeVerified.IsZero() || time.Since(p.LastChallengeVerified) > challengeFreshnessMaxAge {

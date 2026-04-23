@@ -80,14 +80,23 @@ done
 
 echo "==> Granting Cloud Build SA permission to SSH via IAP + update instance metadata"
 PROJECT_NUM=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
-CB_SA="${PROJECT_NUM}@cloudbuild.gserviceaccount.com"
-for ROLE in roles/iap.tunnelResourceAccessor roles/compute.instanceAdmin.v1 \
-            roles/iam.serviceAccountUser; do
-  gcloud projects add-iam-policy-binding "$PROJECT" \
-    --member="serviceAccount:$CB_SA" \
-    --role="$ROLE" \
-    --condition=None \
-    --quiet >/dev/null
+# New GCP projects (post-late-2024) default Cloud Build to the compute default
+# SA (not the legacy cloudbuild.gserviceaccount.com). Grant roles to both so
+# the script works regardless of project vintage.
+for CB_SA in "${PROJECT_NUM}@cloudbuild.gserviceaccount.com" \
+             "${PROJECT_NUM}-compute@developer.gserviceaccount.com"; do
+  for ROLE in roles/iap.tunnelResourceAccessor \
+              roles/compute.instanceAdmin.v1 \
+              roles/iam.serviceAccountUser \
+              roles/artifactregistry.writer \
+              roles/logging.logWriter \
+              roles/compute.osAdminLogin; do
+    gcloud projects add-iam-policy-binding "$PROJECT" \
+      --member="serviceAccount:$CB_SA" \
+      --role="$ROLE" \
+      --condition=None \
+      --quiet >/dev/null 2>&1 || true
+  done
 done
 
 echo "==> Creating Cloud KMS key ring + CMEK for high-sensitivity secrets"
@@ -110,9 +119,25 @@ for K in "$KMS_KEY_MDM" "$KMS_KEY_SOLANA"; do
       --next-rotation-time="$(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+90 days' +%Y-%m-%dT%H:%M:%SZ)"
 done
 
-# Secret Manager's own service agent must be allowed to use the CMEK, or
-# secret creation will fail.
+# Explicitly provision Secret Manager's service agent. Without this, the first
+# IAM binding on the CMEK key below fails with "Service account does not exist"
+# because the agent is created lazily on first API use. We call the REST API
+# directly to avoid depending on `gcloud beta` (which needs an interactive
+# component install) or the placeholder-secret trick.
+curl -sS -X POST \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  "https://serviceusage.googleapis.com/v1beta1/projects/${PROJECT_NUM}/services/secretmanager.googleapis.com:generateServiceIdentity" \
+  >/dev/null
 SM_AGENT="service-${PROJECT_NUM}@gcp-sa-secretmanager.iam.gserviceaccount.com"
+
+# IAM propagation can take a few seconds after the agent is created.
+for i in 1 2 3 4 5 6; do
+  if gcloud iam service-accounts describe "$SM_AGENT" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 5
+done
 for K in "$KMS_KEY_MDM" "$KMS_KEY_SOLANA"; do
   gcloud kms keys add-iam-policy-binding "$K" \
     --keyring="$KMS_RING" --location="$REGION" \
@@ -133,10 +158,26 @@ create_secret() {
   local kms="${2:-}"
   gcloud secrets describe "$name" >/dev/null 2>&1 && return 0
   if [ -n "$kms" ]; then
-    gcloud secrets create "$name" \
-      --replication-policy=user-managed \
-      --locations="$REGION" \
-      --kms-key-name="$kms"
+    # Single-region CMEK requires user-managed replication, which the CLI
+    # expects as a policy file (not a --kms-key-name flag).
+    local policy_file
+    policy_file=$(mktemp)
+    cat > "$policy_file" <<POLICY
+{
+  "userManaged": {
+    "replicas": [
+      {
+        "location": "${REGION}",
+        "customerManagedEncryption": {
+          "kmsKeyName": "${kms}"
+        }
+      }
+    ]
+  }
+}
+POLICY
+    gcloud secrets create "$name" --replication-policy-file="$policy_file"
+    rm -f "$policy_file"
   else
     gcloud secrets create "$name" --replication-policy=automatic
   fi
@@ -200,8 +241,12 @@ gcloud secrets add-iam-policy-binding eigeninference-mdm-push-p12-b64 \
 
 echo "==> Creating Cloud SQL Postgres instance (5-10 min on first run)"
 if ! gcloud sql instances describe "$SQL_INSTANCE" >/dev/null 2>&1; then
+  # Enterprise edition allows the shared-core db-f1-micro tier. Enterprise Plus
+  # (the new default in some regions) only supports perf-optimized tiers which
+  # start around $200/mo — overkill for dev.
   gcloud sql instances create "$SQL_INSTANCE" \
     --database-version=POSTGRES_16 \
+    --edition=enterprise \
     --tier=db-f1-micro \
     --region="$REGION" \
     --storage-auto-increase \
@@ -241,7 +286,7 @@ echo "==> Reserving static external IP"
 gcloud compute addresses describe d-inference-dev-ip --region="$REGION" >/dev/null 2>&1 || \
   gcloud compute addresses create d-inference-dev-ip --region="$REGION"
 EXTERNAL_IP=$(gcloud compute addresses describe d-inference-dev-ip --region="$REGION" --format='value(address)')
-echo "External IP: $EXTERNAL_IP  (point api.dev.darkbloom.dev here in Vercel DNS)"
+echo "External IP: $EXTERNAL_IP  (point api.dev.darkbloom.xyz here in Vercel DNS)"
 
 if ! gcloud compute instances describe "$INSTANCE" --zone="$ZONE" >/dev/null 2>&1; then
   echo "==> Creating GCE VM (Ubuntu + Docker + systemd)"
@@ -294,8 +339,8 @@ Next steps:
       the MDM Vendor CSR signing certificate.
 
   2. Add DNS records on Vercel Domains:
-       api.dev.darkbloom.dev      A     $EXTERNAL_IP
-       console.dev.darkbloom.dev  CNAME cname.vercel-dns.com   (after step 4)
+       api.dev.darkbloom.xyz      A     $EXTERNAL_IP
+       console.dev.darkbloom.xyz  CNAME cname.vercel-dns.com   (after step 4)
 
   3. Push the first coordinator image (triggers startup-script to come to life):
        gcloud builds submit --config=deploy/gcp/cloudbuild.yaml --project=$PROJECT
@@ -304,8 +349,8 @@ Next steps:
        - In the Vercel dashboard, import the d-inference repo as a separate
          project (e.g. "darkbloom-console-dev"), set the root to console-ui/.
        - Configure environment variables:
-           NEXT_PUBLIC_COORDINATOR_URL = https://api.dev.darkbloom.dev
-       - Add the custom domain console.dev.darkbloom.dev — Vercel will show
+           NEXT_PUBLIC_COORDINATOR_URL = https://api.dev.darkbloom.xyz
+       - Add the custom domain console.dev.darkbloom.xyz — Vercel will show
          the CNAME target (usually cname.vercel-dns.com); add it at step 2.
 
   5. Connect this repo to Cloud Build (one-time, in Cloud Console) so future

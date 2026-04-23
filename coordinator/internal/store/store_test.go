@@ -184,13 +184,13 @@ func TestSupportedModels(t *testing.T) { //nolint:gocognit
 
 	// Add models
 	m1 := &SupportedModel{
-		ID:           "CohereLabs/cohere-transcribe-03-2026",
-		S3Name:       "cohere-transcribe-03-2026",
-		DisplayName:  "Cohere Transcribe",
-		ModelType:    "transcription",
-		SizeGB:       4.2,
-		Architecture: "2B conformer",
-		Description:  "Best-in-class STT",
+		ID:           "mlx-community/Qwen2.5-0.5B-MLX-4bit",
+		S3Name:       "Qwen2.5-0.5B-MLX-4bit",
+		DisplayName:  "Qwen2.5 0.5B",
+		ModelType:    "text",
+		SizeGB:       0.5,
+		Architecture: "0.5B dense",
+		Description:  "Lightweight chat model",
 		MinRAMGB:     8,
 		Active:       true,
 	}

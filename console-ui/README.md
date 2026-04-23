@@ -1,36 +1,41 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+## Console UI
+
+Frontend for Darkbloom's consumer and provider flows, built with Next.js App Router.
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Client-side variables used by the app:
 
-## Learn More
+- `NEXT_PUBLIC_COORDINATOR_URL` - coordinator API base URL
+- `NEXT_PUBLIC_PRIVY_APP_ID` - Privy application ID
+- `NEXT_PUBLIC_SOLANA_RPC_URL` - Solana RPC endpoint
+- `NEXT_PUBLIC_GA_MEASUREMENT_ID` - optional public Google Analytics 4 measurement ID
 
-To learn more about Next.js, take a look at the following resources:
+Analytics stays disabled unless `NEXT_PUBLIC_GA_MEASUREMENT_ID` is set **and** consent is granted. When a measurement ID is configured, the app shows a small in-app prompt so users can allow or decline privacy-filtered usage analytics. Consent is persisted in `localStorage` under `darkbloom_ga_consent` (`granted` or `denied`), and a declined choice keeps analytics disabled until the user explicitly changes it later from Settings.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Google Analytics setup
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+This frontend sends sanitized manual `page_view` events:
 
-## Deploy on Vercel
+- the first pageview keeps only attribution parameters such as `utm_*`, `gclid`, `_gl`, and similar ad/campaign identifiers
+- subsequent client-side navigations send clean path-based URLs without arbitrary query strings
+- custom GA events also inherit sanitized `page_location` and `page_referrer` context
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+To avoid duplicate pageviews in GA4, disable **Enhanced measurement -> Page views -> Page changes based on browser history events** for the web data stream. The app already sets `send_page_view: false` in `gtag`, but GA4 history-based enhanced measurement is configured in the GA property and must also be turned off there when using manual SPA pageview tracking.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Checks
+
+```bash
+npm run build
+npx eslint src/
+npm test
+```

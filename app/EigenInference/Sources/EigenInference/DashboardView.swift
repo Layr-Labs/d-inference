@@ -19,7 +19,7 @@ struct DashboardView: View {
             .padding(20)
         }
         .frame(minWidth: 540, idealWidth: 580, minHeight: 600)
-        .background(Color.warmBg)
+        .background(Color.adaptiveBgPrimary)
         .task {
             await viewModel.securityManager.refresh()
         }
@@ -35,27 +35,20 @@ struct DashboardView: View {
                     .frame(width: 56, height: 56)
                     .shadow(color: statusAccentColor.opacity(0.3), radius: 8, y: 4)
                 Image(systemName: statusIconName)
-                    .font(.title2)
-                    .fontWeight(.bold)
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .symbolEffect(.pulse, isActive: viewModel.isServing)
             }
 
             VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 0) {
-                    Text("Eigen")
-                        .font(.display(24))
-                        .foregroundStyle(Color.warmInk)
-                    Text("Inference")
-                        .font(.display(24))
-                        .foregroundStyle(Color.coral)
-                }
+                DarkBloomBrand(size: 24)
                 HStack(spacing: 6) {
                     Text(providerStatusText)
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .font(.bodyWarm)
+                        .fontWeight(.semibold)
                         .foregroundStyle(statusAccentColor)
                     Text("v\(viewModel.updateManager.currentVersion)")
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .font(.captionWarm)
                         .foregroundStyle(Color.warmInkFaint)
                 }
             }
@@ -65,15 +58,7 @@ struct DashboardView: View {
             WarmBadge(text: statusLabel, color: statusAccentColor,
                       icon: statusLabel == "Serving" ? "bolt.fill" : nil)
         }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.warmBgSecondary)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .strokeBorder(statusAccentColor.opacity(0.25), lineWidth: 2)
-                )
-        )
+        .warmCard(padding: 16, border: statusAccentColor.opacity(0.25))
         .shadow(color: statusAccentColor.opacity(0.1), radius: 8, y: 4)
     }
 
@@ -91,19 +76,19 @@ struct DashboardView: View {
                 rotation: -0.5
             )
             hwCard(
-                icon: "memorychip", color: .purpleAccent,
+                icon: "memorychip", color: .adaptivePurpleAccent,
                 label: "Memory",
                 value: "\(viewModel.memoryGB) GB", detail: "Unified",
                 rotation: 0.3
             )
             hwCard(
-                icon: "gpu", color: .gold,
+                icon: "gpu", color: .adaptiveGold,
                 label: "GPU Cores",
                 value: viewModel.gpuCores > 0 ? "\(viewModel.gpuCores)" : "--",
                 rotation: 0.4
             )
             hwCard(
-                icon: "arrow.left.arrow.right", color: .tealAccent,
+                icon: "arrow.left.arrow.right", color: .adaptiveTealAccent,
                 label: "Bandwidth",
                 value: viewModel.memoryBandwidthGBs > 0 ? "\(viewModel.memoryBandwidthGBs)" : "--",
                 detail: "GB/s",
@@ -128,7 +113,7 @@ struct DashboardView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .font(.labelWarm)
                     .foregroundStyle(color)
                     .textCase(.uppercase)
                 HStack(alignment: .firstTextBaseline, spacing: 3) {
@@ -139,95 +124,79 @@ struct DashboardView: View {
                         .minimumScaleFactor(0.7)
                     if let detail {
                         Text(detail)
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .font(.captionWarm)
                             .foregroundStyle(Color.warmInkFaint)
                     }
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(Color.white.opacity(0.6))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(color.opacity(0.2), lineWidth: 2)
-                )
-        )
-        .rotationEffect(.degrees(rotation))
+        .warmCardAccent(color, padding: 12)
     }
 
     // MARK: - Provider Status
 
     private var statusCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Image(systemName: "server.rack")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 28, height: 28)
-                    .background(Color.coral, in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.adaptiveCoral, in: RoundedRectangle(cornerRadius: 8))
                 Text("Provider")
                     .font(.displaySmall)
                     .foregroundStyle(Color.warmInk)
                 Spacer()
             }
 
-            HStack(spacing: 14) {
-                VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 6) {
                     Text("MODEL")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .font(.labelWarm)
                         .foregroundStyle(Color.warmInkFaint)
-                    Text(viewModel.currentModel.components(separatedBy: "/").last ?? viewModel.currentModel)
-                        .font(.system(size: 14, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.warmInk)
-                        .lineLimit(1)
+                    Spacer()
                 }
+                Text(viewModel.currentModel.components(separatedBy: "/").last ?? viewModel.currentModel)
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.warmInk)
+                    .lineLimit(1)
 
-                Spacer()
+                Divider()
 
-                Divider().frame(height: 32)
-
-                VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
                     Text("COORDINATOR")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .font(.labelWarm)
                         .foregroundStyle(Color.warmInkFaint)
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(viewModel.coordinatorConnected ? Color.tealAccent : Color.warmError)
-                            .frame(width: 8, height: 8)
-                            .shadow(color: (viewModel.coordinatorConnected ? Color.tealAccent : Color.warmError).opacity(0.5), radius: 4)
-                        Text(viewModel.coordinatorConnected ? "Connected" : "Disconnected")
-                            .font(.system(size: 14, weight: .bold, design: .rounded))
-                            .foregroundStyle(viewModel.coordinatorConnected ? Color.tealAccent : Color.warmError)
-                    }
+                    Spacer()
+                }
+                HStack(spacing: 5) {
+                    Circle()
+                    .fill(viewModel.coordinatorConnected ? Color.adaptiveTealAccent : Color.adaptiveError)
+                    .frame(width: 8, height: 8)
+                    .shadow(color: (viewModel.coordinatorConnected ? Color.adaptiveTealAccent : Color.adaptiveError).opacity(0.5), radius: 4)
+                    Text(viewModel.coordinatorConnected ? "Connected" : "Disconnected")
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundStyle(viewModel.coordinatorConnected ? Color.adaptiveTealAccent : Color.adaptiveError)
                 }
 
                 if viewModel.isServing {
-                    Divider().frame(height: 32)
-                    VStack(alignment: .leading, spacing: 4) {
+                    Divider()
+                    HStack(spacing: 6) {
                         Text("THROUGHPUT")
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .font(.labelWarm)
                             .foregroundStyle(Color.warmInkFaint)
-                        Text(String(format: "%.1f tok/s", viewModel.tokensPerSecond))
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
-                            .foregroundStyle(Color.tealAccent)
-                            .monospacedDigit()
-                            .contentTransition(.numericText())
+                        Spacer()
                     }
+                    Text(String(format: "%.1f tok/s", viewModel.tokensPerSecond))
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color.adaptiveTealAccent)
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
                 }
             }
         }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(Color.white.opacity(0.5))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(Color.coral.opacity(0.2), lineWidth: 2)
-                )
-        )
+        .warmCardAccent(.adaptiveCoral, padding: 16)
     }
 
     // MARK: - Stats Row
@@ -235,23 +204,23 @@ struct DashboardView: View {
     private var statsRow: some View {
         HStack(spacing: 12) {
             liveStatCard(
-                icon: "clock", color: .blueAccent,
+                icon: "clock", color: .adaptiveBlueAccent,
                 label: "Uptime",
                 value: formatUptime(viewModel.uptimeSeconds)
             )
             liveStatCard(
-                icon: "arrow.up.arrow.down", color: .tealAccent,
+                icon: "arrow.up.arrow.down", color: .adaptiveTealAccent,
                 label: "Requests",
                 value: "\(viewModel.requestsServed)"
             )
             liveStatCard(
-                icon: "text.word.spacing", color: .gold,
+                icon: "text.word.spacing", color: .adaptiveGold,
                 label: "Tokens",
                 value: formatTokenCount(viewModel.tokensGenerated)
             )
             if !viewModel.earningsBalance.isEmpty {
                 liveStatCard(
-                    icon: "dollarsign.circle", color: .coral,
+                    icon: "dollarsign.circle", color: .adaptiveCoral,
                     label: "Earnings",
                     value: viewModel.earningsBalance
                 )
@@ -276,21 +245,12 @@ struct DashboardView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
             Text(label)
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .font(.labelWarm)
                 .foregroundStyle(color)
                 .textCase(.uppercase)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 14)
-        .padding(.horizontal, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(color.opacity(0.08))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(color.opacity(0.15), lineWidth: 1.5)
-                )
-        )
+        .warmCardAccent(color, padding: 14)
     }
 
     // MARK: - Trust & Attestation
@@ -302,7 +262,7 @@ struct DashboardView: View {
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 28, height: 28)
-                    .background(Color.tealAccent, in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.adaptiveTealAccent, in: RoundedRectangle(cornerRadius: 8))
                 Text("Trust & Attestation")
                     .font(.displaySmall)
                     .foregroundStyle(Color.warmInk)
@@ -336,15 +296,7 @@ struct DashboardView: View {
                 securityChip("Binary", viewModel.securityManager.binaryFound)
             }
         }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(Color.tealAccent.opacity(0.06))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(Color.tealAccent.opacity(0.2), lineWidth: 2)
-                )
-        )
+        .warmCardAccent(.adaptiveTealAccent, padding: 16)
     }
 
     private var trustBadge: some View {
@@ -359,20 +311,20 @@ struct DashboardView: View {
         HStack(spacing: 5) {
             Image(systemName: enabled ? "checkmark.circle.fill" : "xmark.circle")
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(enabled ? Color.tealAccent : Color.warmError)
+                .foregroundStyle(enabled ? Color.adaptiveTealAccent : Color.adaptiveError)
             Text(label)
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundStyle(enabled ? Color.warmInk : Color.warmInkLight)
+                .foregroundStyle(enabled ? Color.adaptiveInk : Color.adaptiveInkLight)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 7)
         .padding(.horizontal, 10)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(enabled ? Color.tealAccent.opacity(0.08) : Color.warmError.opacity(0.06))
+                .fill(enabled ? Color.adaptiveTealAccent.opacity(0.08) : Color.adaptiveError.opacity(0.06))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder((enabled ? Color.tealAccent : Color.warmError).opacity(0.15), lineWidth: 1)
+                        .strokeBorder((enabled ? Color.adaptiveTealAccent : Color.adaptiveError).opacity(0.15), lineWidth: 1)
                 )
         )
     }
@@ -381,15 +333,15 @@ struct DashboardView: View {
 
     private var actionBar: some View {
         HStack(spacing: 10) {
-            actionButton("Diagnostics", icon: "stethoscope", color: .blueAccent, window: "doctor")
-            actionButton("Logs", icon: "doc.text", color: .purpleAccent, window: "logs")
+            actionButton("Diagnostics", icon: "stethoscope", color: .adaptiveBlueAccent, window: "doctor")
+            actionButton("Logs", icon: "doc.text", color: .adaptivePurpleAccent, window: "logs")
 
             if !viewModel.hasCompletedSetup {
                 Button { openWindow(id: "setup") } label: {
                     Label("Setup", systemImage: "wrench")
-                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .font(.bodyWarm)
                 }
-                .buttonStyle(WarmButtonStyle(.coral))
+                .buttonStyle(WarmButtonStyle(.adaptiveCoral))
                 .pointerOnHover()
             }
         }
@@ -398,7 +350,7 @@ struct DashboardView: View {
     private func actionButton(_ title: String, icon: String, color: Color, window: String) -> some View {
         Button { openWindow(id: window) } label: {
             Label(title, systemImage: icon)
-                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .font(.bodyWarm)
         }
         .buttonStyle(WarmButtonStyle(color, filled: false))
         .pointerOnHover()
@@ -422,17 +374,17 @@ struct DashboardView: View {
     }
 
     private var statusGradientColors: [Color] {
-        if viewModel.isPaused { return [.gold, .goldLight] }
-        if viewModel.isServing { return [.coral, .gold] }
-        if viewModel.isOnline { return [.coral, .coralLight] }
-        return [.warmInkFaint, .warmInkFaint.opacity(0.7)]
+        if viewModel.isPaused { return [.adaptiveGold, .adaptiveGoldLight] }
+        if viewModel.isServing { return [.adaptiveCoral, .adaptiveGold] }
+        if viewModel.isOnline { return [.adaptiveCoral, .adaptiveCoralLight] }
+        return [.adaptiveInkFaint, .adaptiveInkFaint.opacity(0.7)]
     }
 
     private var statusAccentColor: Color {
-        if viewModel.isPaused { return .gold }
-        if viewModel.isServing { return .tealAccent }
-        if viewModel.isOnline { return .blueAccent }
-        return .warmInkFaint
+        if viewModel.isPaused { return .adaptiveGold }
+        if viewModel.isServing { return .adaptiveTealAccent }
+        if viewModel.isOnline { return .adaptiveBlueAccent }
+        return .adaptiveInkFaint
     }
 
     private var statusLabel: String {
@@ -451,8 +403,8 @@ struct DashboardView: View {
 
     private var trustColor: Color {
         switch viewModel.securityManager.trustLevel {
-        case .hardware: return .tealAccent
-        case .none: return .warmError
+        case .hardware: return .adaptiveTealAccent
+        case .none: return .adaptiveError
         }
     }
 

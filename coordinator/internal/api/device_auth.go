@@ -73,9 +73,9 @@ func (s *Server) handleDeviceCode(w http.ResponseWriter, r *http.Request) {
 	if s.consoleURL != "" {
 		verificationURI = strings.TrimRight(s.consoleURL, "/") + "/link"
 	} else {
-		scheme := schemeHTTPS
+		scheme := "https"
 		if r.TLS == nil && !strings.Contains(r.Host, "darkbloom.dev") {
-			scheme = schemeHTTP
+			scheme = "http"
 		}
 		verificationURI = fmt.Sprintf("%s://%s/link", scheme, r.Host)
 	}

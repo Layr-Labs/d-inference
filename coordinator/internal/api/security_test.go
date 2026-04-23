@@ -14,42 +14,18 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/eigeninference/coordinator/internal/billing"
-	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
 )
 
 // securityTestServer creates a Server with a quiet logger for security tests.
-//
-//nolint:unparam // MemoryStore returned for future assertions
 func securityTestServer(t *testing.T) (*Server, *store.MemoryStore) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	return srv, st
-}
-
-// securityTestServerWithBilling creates a Server with mock billing configured.
-func securityTestServerWithBilling(t *testing.T) (*Server, *store.MemoryStore) {
-	t.Helper()
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
-
-	ledger := payments.NewLedger(st)
-	billingSvc := billing.NewService(st, ledger, logger, billing.Config{
-		SolanaRPCURL:             "http://localhost:8899",
-		SolanaCoordinatorAddress: "CoordAddress1111111111111111111111111111111",
-		SolanaUSDCMint:           "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-		SolanaMnemonic:           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-		MockMode:                 true,
-	})
-	srv.SetBilling(billingSvc)
 	return srv, st
 }
 
@@ -91,7 +67,7 @@ func registerProvider(t *testing.T, conn *websocket.Conn, models []protocol.Mode
 			MemoryGB:     64,
 		},
 		Models:    models,
-		Backend:   "test",
+		Backend:   "inprocess-mlx",
 		PublicKey: publicKey,
 	}
 	data, _ := json.Marshal(regMsg)
@@ -124,7 +100,7 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 
 		// Connection should still be alive — send a valid register to prove it.
 		registerProvider(t, conn, []protocol.ModelInfo{
-			{ID: "test-model", SizeBytes: 1000, ModelType: "test", Quantization: "4bit"},
+			{ID: "test-model", SizeBytes: 1000, ModelType: "chat", Quantization: "4bit"},
 		}, "")
 
 		if srv.registry.ProviderCount() != 1 {
@@ -147,7 +123,7 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 		// Connection should still be alive.
 		time.Sleep(100 * time.Millisecond)
 		registerProvider(t, conn, []protocol.ModelInfo{
-			{ID: "empty-test", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+			{ID: "empty-test", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 		}, "")
 	})
 
@@ -177,7 +153,7 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 		conn2 := connectProviderWS(t, ts)
 		defer conn2.Close(websocket.StatusNormalClosure, "")
 		registerProvider(t, conn2, []protocol.ModelInfo{
-			{ID: "after-garbage", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+			{ID: "after-garbage", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 		}, "")
 	})
 
@@ -190,7 +166,7 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 
 		// First register so the provider is known.
 		registerProvider(t, conn, []protocol.ModelInfo{
-			{ID: "unknown-type-test", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+			{ID: "unknown-type-test", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 		}, "")
 
 		// Send valid JSON with unknown type — should be logged and ignored.
@@ -353,23 +329,7 @@ func TestSecurity_AuthBypass(t *testing.T) {
 			method:     http.MethodPost,
 			authHeader: "Bearer invalid-key",
 			body:       `{"user_code":"ABCD-1234"}`,
-			wantStatus: http.StatusUnauthorized,
-		},
-		{
-			name:       "withdraw_no_auth",
-			path:       "/v1/billing/withdraw/solana",
-			method:     http.MethodPost,
-			authHeader: "",
-			body:       `{"wallet_address":"x","amount_usd":"1.00"}`,
-			wantStatus: http.StatusUnauthorized,
-		},
-		{
-			name:       "withdraw_invalid_bearer",
-			path:       "/v1/billing/withdraw/solana",
-			method:     http.MethodPost,
-			authHeader: "Bearer fake-key-12345",
-			body:       `{"wallet_address":"x","amount_usd":"1.00"}`,
-			wantStatus: http.StatusUnauthorized,
+			wantStatus: http.StatusForbidden,
 		},
 		{
 			name:       "models_no_auth",
@@ -431,7 +391,6 @@ func TestSecurity_AuthBypass(t *testing.T) {
 // Test 4: Challenge Nonce Replay
 // ---------------------------------------------------------------------------
 
-//nolint:gocognit
 func TestSecurity_ChallengeNonceReplay(t *testing.T) {
 	srv, _ := securityTestServer(t)
 	// Use a very fast challenge interval for this test.
@@ -445,7 +404,7 @@ func TestSecurity_ChallengeNonceReplay(t *testing.T) {
 
 	// Register with a public key so challenges verify key consistency.
 	registerProvider(t, conn, []protocol.ModelInfo{
-		{ID: "nonce-test-model", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+		{ID: "nonce-test-model", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 	}, "dGVzdC1wdWJsaWMta2V5LWJhc2U2NA==")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -552,7 +511,7 @@ func TestSecurity_ProviderImpersonation(t *testing.T) {
 	connA := connectProviderWS(t, ts)
 	defer connA.Close(websocket.StatusNormalClosure, "")
 	registerProvider(t, connA, []protocol.ModelInfo{
-		{ID: "model-a", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+		{ID: "model-a", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 	}, sharedPubKey)
 
 	if srv.registry.ProviderCount() != 1 {
@@ -563,7 +522,7 @@ func TestSecurity_ProviderImpersonation(t *testing.T) {
 	connB := connectProviderWS(t, ts)
 	defer connB.Close(websocket.StatusNormalClosure, "")
 	registerProvider(t, connB, []protocol.ModelInfo{
-		{ID: "model-b", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+		{ID: "model-b", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 	}, sharedPubKey)
 
 	// Both connections should be tracked as separate providers (different
@@ -639,85 +598,7 @@ func TestSecurity_DeviceCodeBruteForce(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: Withdrawal to Foreign Wallet
-// ---------------------------------------------------------------------------
-
-func TestSecurity_WithdrawalToForeignWallet(t *testing.T) {
-	srv, _ := securityTestServerWithBilling(t)
-
-	user := &store.User{
-		AccountID:           "withdraw-test-acct",
-		PrivyUserID:         "did:privy:withdraw-test",
-		SolanaWalletAddress: "UserWalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-	}
-
-	// Seed some balance so insufficient_funds doesn't mask the wallet check.
-	srv.billing.Ledger().Deposit(user.AccountID, 100_000_000) // $100
-
-	t.Run("foreign_wallet_rejected", func(t *testing.T) {
-		body := `{"wallet_address":"ForeignWalletBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB","amount_usd":"5.00"}`
-		req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/solana", strings.NewReader(body))
-		req = withPrivyUser(req, user)
-		w := httptest.NewRecorder()
-
-		srv.handleSolanaWithdraw(w, req)
-
-		if w.Code != http.StatusForbidden {
-			t.Errorf("withdraw to foreign wallet: status %d, want 403, body: %s", w.Code, w.Body.String())
-		}
-
-		resp := parseJSONResponse(t, w.Body.Bytes())
-		errObj, _ := resp["error"].(map[string]any)
-		if errObj == nil || errObj["type"] != "wallet_mismatch" {
-			t.Errorf("expected wallet_mismatch error, got: %v", errObj)
-		}
-	})
-
-	t.Run("empty_wallet_auto_populates", func(t *testing.T) {
-		// When wallet_address is empty, it auto-populates from the user's account.
-		body := `{"wallet_address":"","amount_usd":"1.00"}`
-		req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/solana", strings.NewReader(body))
-		req = withPrivyUser(req, user)
-		w := httptest.NewRecorder()
-
-		srv.handleSolanaWithdraw(w, req)
-
-		// Mock mode doesn't have a real Solana client — we expect it to fail
-		// at the Solana send step (502), not at the wallet validation step (403).
-		// The important thing is it did NOT return 403 (wallet mismatch) or
-		// 400 (missing wallet), meaning it auto-populated correctly.
-		if w.Code == http.StatusForbidden {
-			t.Errorf("empty wallet should auto-populate, not return 403")
-		}
-		if w.Code == http.StatusBadRequest {
-			resp := parseJSONResponse(t, w.Body.Bytes())
-			errObj, _ := resp["error"].(map[string]any)
-			if errObj != nil && strings.Contains(fmt.Sprint(errObj["message"]), "wallet_address") {
-				t.Errorf("empty wallet should auto-populate from user's account, got: %v", errObj)
-			}
-		}
-		t.Logf("empty wallet auto-populate: status %d", w.Code)
-	})
-
-	t.Run("own_wallet_accepted", func(t *testing.T) {
-		// Withdrawing to your own linked wallet should pass the wallet check.
-		body := fmt.Sprintf(`{"wallet_address":"%s","amount_usd":"1.00"}`, user.SolanaWalletAddress)
-		req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/solana", strings.NewReader(body))
-		req = withPrivyUser(req, user)
-		w := httptest.NewRecorder()
-
-		srv.handleSolanaWithdraw(w, req)
-
-		// Should not be 403 (wallet mismatch).
-		if w.Code == http.StatusForbidden {
-			t.Errorf("withdraw to own wallet should not return 403: %s", w.Body.String())
-		}
-		t.Logf("own wallet withdrawal: status %d", w.Code)
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Test 8: SQL Injection
+// Test 7: SQL Injection (was Test 8 pre-migration)
 // ---------------------------------------------------------------------------
 
 //nolint:gocognit
@@ -880,7 +761,6 @@ func TestSecurity_HeaderInjection(t *testing.T) {
 // Test 10: Concurrent Auth Attempts
 // ---------------------------------------------------------------------------
 
-//nolint:gocognit
 func TestSecurity_ConcurrentAuthAttempts(t *testing.T) {
 	srv, _ := securityTestServer(t)
 

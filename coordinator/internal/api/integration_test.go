@@ -2,9 +2,7 @@ package api
 
 import (
 	"context"
-	crand "crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -21,7 +19,6 @@ import (
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
-	"golang.org/x/crypto/nacl/box"
 )
 
 // handleProviderMessages reads WebSocket messages in a loop, dispatches
@@ -61,7 +58,7 @@ func makeValidChallengeResponse(data []byte, publicKey string) []byte {
 	resp := protocol.AttestationResponseMessage{
 		Type:              protocol.TypeAttestationResponse,
 		Nonce:             challenge.Nonce,
-		Signature:         "dGVzdHNpZ25hdHVyZQ==",
+		Signature:         testChallengeSignature(challenge.Nonce, challenge.Timestamp, publicKey),
 		PublicKey:         publicKey,
 		RDMADisabled:      &rdmaDisabled,
 		SIPEnabled:        &sipEnabled,
@@ -109,9 +106,11 @@ func connectProvider(t *testing.T, ctx context.Context, tsURL string, models []p
 			ChipName:     "Apple M3 Max",
 			MemoryGB:     64,
 		},
-		Models:    models,
-		Backend:   "test",
-		PublicKey: publicKey,
+		Models:                  models,
+		Backend:                 "inprocess-mlx",
+		PublicKey:               publicKey,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
 	}
 	regData, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
@@ -136,11 +135,13 @@ func connectProviderWithToken(t *testing.T, ctx context.Context, tsURL string, m
 			ChipName:     "Apple M3 Max",
 			MemoryGB:     64,
 		},
-		Models:        models,
-		Backend:       "test",
-		PublicKey:     publicKey,
-		AuthToken:     authToken,
-		WalletAddress: walletAddress,
+		Models:                  models,
+		Backend:                 "inprocess-mlx",
+		PublicKey:               publicKey,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+		AuthToken:               authToken,
+		WalletAddress:           walletAddress,
 	}
 	regData, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
@@ -152,8 +153,6 @@ func connectProviderWithToken(t *testing.T, ctx context.Context, tsURL string, m
 
 // TestIntegration_ProviderReconnectRequiresChallenge verifies that a provider
 // that disconnects and reconnects is NOT routable until it passes a new challenge.
-//
-//nolint:gocognit
 func TestIntegration_ProviderReconnectRequiresChallenge(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory("test-key")
@@ -278,8 +277,6 @@ func TestIntegration_ProviderReconnectRequiresChallenge(t *testing.T) {
 
 // TestIntegration_ChallengeFailureBlocksRouting verifies that a provider
 // responding with wrong nonces gets marked untrusted after MaxFailedChallenges.
-//
-//nolint:gocognit
 func TestIntegration_ChallengeFailureBlocksRouting(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory("test-key")
@@ -388,8 +385,6 @@ func TestIntegration_ChallengeFailureBlocksRouting(t *testing.T) {
 // TestIntegration_E2EEncryptionRoundtrip tests that the coordinator's
 // encryption can be decrypted by Go code using the same NaCl Box primitives
 // that the Rust provider uses.
-//
-//nolint:gocognit
 func TestIntegration_E2EEncryptionRoundtrip(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory("test-key")
@@ -403,12 +398,14 @@ func TestIntegration_E2EEncryptionRoundtrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// Generate a real X25519 keypair (simulating the provider's Secure Enclave key).
-	providerPub, providerPriv, err := box.GenerateKey(crand.Reader)
-	if err != nil {
-		t.Fatalf("generate keypair: %v", err)
+	// Generate a real provider keypair and cache it so the encrypted chunk helper
+	// can emit responses signed by the same provider identity.
+	pubKeyB64 := testPublicKeyB64()
+	value, ok := testProviderKeys.Load(pubKeyB64)
+	if !ok {
+		t.Fatalf("missing cached provider keypair for %q", pubKeyB64)
 	}
-	pubKeyB64 := base64.StdEncoding.EncodeToString(providerPub[:])
+	keypair := value.(testProviderKeyPair)
 
 	model := "e2e-model"
 	models := []protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}}
@@ -472,17 +469,18 @@ func TestIntegration_E2EEncryptionRoundtrip(t *testing.T) {
 					EphemeralPublicKey: inferReq.EncryptedBody.EphemeralPublicKey,
 					Ciphertext:         inferReq.EncryptedBody.Ciphertext,
 				}
-				decrypted, err := e2e.DecryptWithPrivateKey(payload, *providerPriv)
+				decrypted, err := e2e.DecryptWithPrivateKey(payload, keypair.private)
 				resultCh <- inferResult{decryptedBody: decrypted, err: err}
 
 				// Send back chunks + complete so the consumer handler doesn't hang.
-				chunk := protocol.InferenceResponseChunkMessage{
-					Type:      protocol.TypeInferenceResponseChunk,
+				writeEncryptedTestChunk(t, ctx, conn, protocol.InferenceRequestMessage{
 					RequestID: inferReq.RequestID,
-					Data:      `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"ok"}}]}` + "\n\n",
-				}
-				chunkData, _ := json.Marshal(chunk)
-				conn.Write(ctx, websocket.MessageText, chunkData)
+					EncryptedBody: &protocol.EncryptedPayload{
+						EphemeralPublicKey: inferReq.EncryptedBody.EphemeralPublicKey,
+						Ciphertext:         inferReq.EncryptedBody.Ciphertext,
+					},
+				}, pubKeyB64,
+					`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"ok"}}]}`+"\n\n")
 
 				complete := protocol.InferenceCompleteMessage{
 					Type:      protocol.TypeInferenceComplete,
@@ -548,8 +546,6 @@ func TestIntegration_E2EEncryptionRoundtrip(t *testing.T) {
 
 // TestIntegration_AccountLinkedEarnings verifies that inference payouts go to the
 // linked account (not the wallet address) when a provider authenticates via device token.
-//
-//nolint:gocognit
 func TestIntegration_AccountLinkedEarnings(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory("test-key")
@@ -627,13 +623,8 @@ func TestIntegration_AccountLinkedEarnings(t *testing.T) {
 				json.Unmarshal(data, &inferReq)
 
 				// Send a chunk and complete.
-				chunk := protocol.InferenceResponseChunkMessage{
-					Type:      protocol.TypeInferenceResponseChunk,
-					RequestID: inferReq.RequestID,
-					Data:      `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"done"}}]}` + "\n\n",
-				}
-				chunkData, _ := json.Marshal(chunk)
-				conn.Write(ctx, websocket.MessageText, chunkData)
+				writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
+					`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"done"}}]}`+"\n\n")
 
 				complete := protocol.InferenceCompleteMessage{
 					Type:      protocol.TypeInferenceComplete,

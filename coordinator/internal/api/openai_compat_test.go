@@ -39,7 +39,7 @@ func testServerFastQueue(t *testing.T) (*Server, *store.MemoryStore) {
 // attestation challenges and serves inference requests via the given handler.
 // Returns the httptest server, cleanup func, and a channel that the provider
 // goroutine closes when done.
-func setupE2ETest(t *testing.T, model string, handler func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage)) (*httptest.Server, func(), <-chan struct{}) {
+func setupE2ETest(t *testing.T, model string, handler func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string)) (*httptest.Server, func(), <-chan struct{}) {
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -67,9 +67,11 @@ func setupE2ETest(t *testing.T, model string, handler func(ctx context.Context, 
 			ChipName:     "Apple M3 Max",
 			MemoryGB:     64,
 		},
-		Models:    []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
-		Backend:   "test",
-		PublicKey: pubKey,
+		Models:                  []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 "inprocess-mlx",
+		PublicKey:               pubKey,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
 	}
 	regData, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
@@ -106,7 +108,7 @@ func setupE2ETest(t *testing.T, model string, handler func(ctx context.Context, 
 			if env.Type == protocol.TypeInferenceRequest {
 				var inferReq protocol.InferenceRequestMessage
 				json.Unmarshal(data, &inferReq)
-				handler(ctx, conn, inferReq)
+				handler(ctx, conn, inferReq, pubKey)
 				return
 			}
 		}
@@ -121,15 +123,10 @@ func setupE2ETest(t *testing.T, model string, handler func(ctx context.Context, 
 	return ts, cleanup, providerDone
 }
 
-// sendChunk is a helper to send an SSE chunk via the provider WebSocket.
-func sendChunk(ctx context.Context, conn *websocket.Conn, requestID, sseData string) {
-	chunk := protocol.InferenceResponseChunkMessage{
-		Type:      protocol.TypeInferenceResponseChunk,
-		RequestID: requestID,
-		Data:      sseData,
-	}
-	data, _ := json.Marshal(chunk)
-	conn.Write(ctx, websocket.MessageText, data)
+// sendChunk is a helper to send an encrypted SSE chunk via the provider WebSocket.
+func sendChunk(t *testing.T, ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey, sseData string) {
+	t.Helper()
+	writeEncryptedTestChunk(t, ctx, conn, inferReq, providerPublicKey, sseData)
 }
 
 // sendComplete is a helper to send an inference complete message.
@@ -147,15 +144,14 @@ func sendComplete(ctx context.Context, conn *websocket.Conn, requestID string, u
 // Test 1: Streaming chat completion format
 // --------------------------------------------------------------------------
 
-//nolint:gocognit
 func TestOpenAI_ChatCompletionStreamingFormat(t *testing.T) {
-	ts, cleanup, providerDone := setupE2ETest(t, "test-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage) {
+	ts, cleanup, providerDone := setupE2ETest(t, "test-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
 		// Send 3 chunks + complete.
-		sendChunk(ctx, conn, inferReq.RequestID,
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1700000000,"model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`+"\n\n")
-		sendChunk(ctx, conn, inferReq.RequestID,
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1700000000,"model":"test-model","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}`+"\n\n")
-		sendChunk(ctx, conn, inferReq.RequestID,
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1700000000,"model":"test-model","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":"stop"}]}`+"\n\n")
 		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 3})
 	})
@@ -269,8 +265,8 @@ func TestOpenAI_ChatCompletionStreamingFormat(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestOpenAI_ChatCompletionNonStreamingFormat(t *testing.T) {
-	ts, cleanup, providerDone := setupE2ETest(t, "test-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage) {
-		sendChunk(ctx, conn, inferReq.RequestID,
+	ts, cleanup, providerDone := setupE2ETest(t, "test-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello world"}}]}`+"\n\n")
 		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 8, CompletionTokens: 3})
 	})
@@ -497,7 +493,6 @@ func TestOpenAI_ErrorFormat(t *testing.T) {
 // Test 5: Auth required
 // --------------------------------------------------------------------------
 
-//nolint:gocognit
 func TestOpenAI_AuthRequired(t *testing.T) {
 	srv, _ := testServer(t)
 
@@ -654,8 +649,8 @@ func TestOpenAI_UsageTracking(t *testing.T) {
 	completionTokens := 7
 	expectedTotal := promptTokens + completionTokens
 
-	ts, cleanup, providerDone := setupE2ETest(t, "usage-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage) {
-		sendChunk(ctx, conn, inferReq.RequestID,
+	ts, cleanup, providerDone := setupE2ETest(t, "usage-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"chatcmpl-u","choices":[{"delta":{"content":"test response"}}]}`+"\n\n")
 		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{
 			PromptTokens:     promptTokens,

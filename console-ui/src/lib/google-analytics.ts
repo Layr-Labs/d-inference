@@ -40,7 +40,7 @@ declare global {
 type GoogleAnalyticsConsentStatus = "unset" | "granted" | "denied";
 
 export function getGoogleAnalyticsMeasurementId() {
-  return process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID?.trim() ?? "";
+  return process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID?.trim() ?? "G-M65PNVW5TE";
 }
 
 export function isGoogleAnalyticsEnabled() {

@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuthContext } from "@/components/providers/PrivyClientProvider";
+import { trackEvent } from "@/lib/google-analytics";
 
 const API_KEY_STORAGE = "darkbloom_api_key";
 const OLD_API_KEY_STORAGE = "eigeninference_api_key";
@@ -14,20 +15,7 @@ export function useAuth() {
   // Derive useful fields from the Privy user
   const email = (user as { email?: { address?: string } } | null)?.email?.address || null;
 
-  const walletAddress = useMemo(() => {
-    if (!user) return null;
-    const u = user as {
-      wallet?: { address?: string };
-      linkedAccounts?: Array<{ type: string; chainType?: string; address?: string }>;
-    };
-    if (u.wallet?.address) return u.wallet.address;
-    const solana = u.linkedAccounts?.find(
-      (a) => a.type === "wallet" && a.chainType === "solana"
-    );
-    return solana?.address || null;
-  }, [user]);
-
-  const displayName = email || (walletAddress ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : null);
+  const displayName = email || null;
 
   // Migrate old API key and auto-provision on auth
   useEffect(() => {
@@ -105,6 +93,18 @@ export function useAuth() {
     if (!authenticated) setApiKeyReady(false);
   }, [authenticated]);
 
+  // Track login_success event once when the user authenticates
+  const hasTrackedLogin = useRef(false);
+  useEffect(() => {
+    if (authenticated && !hasTrackedLogin.current) {
+      hasTrackedLogin.current = true;
+      trackEvent("login_success", { method: email ? "email" : "unknown" });
+    }
+    if (!authenticated) {
+      hasTrackedLogin.current = false;
+    }
+  }, [authenticated, email]);
+
   // Clear all app-specific localStorage on login to prevent session poisoning
   // (e.g. attacker pre-sets coordinator URL before victim logs in).
   useEffect(() => {
@@ -130,7 +130,6 @@ export function useAuth() {
     logout,
     getAccessToken,
     email,
-    walletAddress,
     displayName,
   };
 }

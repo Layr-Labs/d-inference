@@ -882,6 +882,10 @@ func (s *Server) routes() {
 	// it's a financial-tier endpoint.
 	s.mux.HandleFunc("POST /v1/invite/redeem", s.requireAuth(s.rateLimitFinancial(s.handleRedeemInviteCode)))
 
+	// Admin credit & reward
+	s.mux.HandleFunc("POST /v1/admin/credit", s.requireAuth(s.handleAdminCredit))
+	s.mux.HandleFunc("POST /v1/admin/reward", s.requireAuth(s.handleAdminReward))
+
 	// Telemetry ingestion — authentication is resolved inside the handler
 	// because providers, consumers, and anonymous clients all hit this path.
 	// Events are forwarded to Datadog; admin read/summary endpoints have been

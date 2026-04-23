@@ -65,6 +65,14 @@ type Store interface {
 	// Debit subtracts micro-USD from an account. Returns error if insufficient funds.
 	Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
 
+	// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
+	GetWithdrawableBalance(accountID string) int64
+
+	// CreditWithdrawable adds micro-USD to both the total balance and the
+	// withdrawable balance, and records a ledger entry. Use for provider
+	// earnings, referral rewards, and admin rewards.
+	CreditWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
+
 	// LedgerHistory returns ledger entries for an account, newest first.
 	LedgerHistory(accountID string) []LedgerEntry
 
@@ -154,6 +162,9 @@ type Store interface {
 
 	// GetUserByAccountID returns the user for an internal account ID.
 	GetUserByAccountID(accountID string) (*User, error)
+
+	// GetUserByEmail returns the user for an email address.
+	GetUserByEmail(email string) (*User, error)
 
 	// SetUserStripeAccount upserts the Stripe Connect fields on a user record.
 	// Pass empty strings to clear the destination (e.g. before re-onboarding).
@@ -364,6 +375,8 @@ const (
 	LedgerStripePayout   LedgerEntryType = "stripe_payout"   // user-initiated bank/card withdrawal via Stripe Connect
 	LedgerInviteCredit   LedgerEntryType = "invite_credit"   // invite code redemption
 	LedgerRefund         LedgerEntryType = "refund"          // reservation refund (request failed before inference)
+	LedgerAdminCredit    LedgerEntryType = "admin_credit"    // admin-granted non-withdrawable credit
+	LedgerAdminReward    LedgerEntryType = "admin_reward"    // admin-granted withdrawable reward
 )
 
 // LedgerEntry is a single balance-changing event.

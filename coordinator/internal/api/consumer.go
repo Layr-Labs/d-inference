@@ -1332,10 +1332,13 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleBalance(w http.ResponseWriter, r *http.Request) {
 	consumerKey := consumerKeyFromContext(r.Context())
 	balance := s.ledger.Balance(consumerKey)
+	withdrawable := s.store.GetWithdrawableBalance(consumerKey)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"balance_micro_usd": balance,
-		"balance_usd":       fmt.Sprintf("%.6f", float64(balance)/1_000_000),
+		"balance_micro_usd":      balance,
+		"balance_usd":            fmt.Sprintf("%.6f", float64(balance)/1_000_000),
+		"withdrawable_micro_usd": withdrawable,
+		"withdrawable_usd":       fmt.Sprintf("%.6f", float64(withdrawable)/1_000_000),
 	})
 }
 

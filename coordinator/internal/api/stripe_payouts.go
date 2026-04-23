@@ -279,6 +279,15 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check withdrawable balance — only earnings can be withdrawn.
+	withdrawable := s.store.GetWithdrawableBalance(user.AccountID)
+	if withdrawable < grossMicroUSD {
+		writeJSON(w, http.StatusBadRequest, errorResponse("insufficient_withdrawable",
+			fmt.Sprintf("withdrawable balance is $%.2f (total balance may be higher but includes non-withdrawable credits)",
+				float64(withdrawable)/1_000_000)))
+		return
+	}
+
 	// State machine:
 	//
 	//   pending     → row persisted, ledger debited, no Stripe call yet.
@@ -308,7 +317,7 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.billing.Store().CreateStripeWithdrawal(wd); err != nil {
 		// No Stripe calls yet — refund and bail.
-		if rerr := s.billing.Store().Credit(user.AccountID, grossMicroUSD, store.LedgerRefund, debitRef); rerr != nil {
+		if rerr := s.billing.Store().CreditWithdrawable(user.AccountID, grossMicroUSD, store.LedgerRefund, debitRef); rerr != nil {
 			s.logger.Error("stripe payout: refund after persist failure failed",
 				"error", rerr, "withdrawal_id", withdrawalID)
 		}
@@ -322,7 +331,7 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		// Refund the ledger and mark the row failed atomically (best-effort —
 		// neither store call has rollback). Refunded flag prevents webhook
 		// replay from double-crediting.
-		if rerr := s.billing.Store().Credit(user.AccountID, grossMicroUSD, store.LedgerRefund, debitRef); rerr != nil {
+		if rerr := s.billing.Store().CreditWithdrawable(user.AccountID, grossMicroUSD, store.LedgerRefund, debitRef); rerr != nil {
 			s.logger.Error("stripe payout: refund failed", "error", rerr, "withdrawal_id", withdrawalID)
 		} else {
 			wd.Refunded = true
@@ -559,7 +568,7 @@ func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, _ string, suc
 		return
 	}
 	wd.FailureReason = pe.FailureCode + ": " + pe.FailureReason
-	if err := s.billing.Store().Credit(wd.AccountID, wd.AmountMicroUSD, store.LedgerRefund,
+	if err := s.billing.Store().CreditWithdrawable(wd.AccountID, wd.AmountMicroUSD, store.LedgerRefund,
 		"stripe_withdraw:"+wd.ID); err != nil {
 		s.logger.Error("stripe connect webhook: refund failed", "error", err, "withdrawal_id", wd.ID)
 		// Still update the row so we know about the failure even if the
@@ -597,7 +606,7 @@ func (s *Server) handleTransferFailed(event *billing.WebhookEvent) {
 		return
 	}
 	wd.FailureReason = "transfer_reversed"
-	if err := s.billing.Store().Credit(wd.AccountID, wd.AmountMicroUSD, store.LedgerRefund,
+	if err := s.billing.Store().CreditWithdrawable(wd.AccountID, wd.AmountMicroUSD, store.LedgerRefund,
 		"stripe_withdraw:"+wd.ID); err != nil {
 		s.logger.Error("stripe connect webhook: refund failed", "error", err, "withdrawal_id", wd.ID)
 		wd.Status = "failed"

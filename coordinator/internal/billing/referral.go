@@ -200,7 +200,7 @@ func (r *ReferralService) DistributeReferralReward(consumerKey string, platformF
 	}
 
 	// Credit the referrer
-	if err := r.store.Credit(referrer.AccountID, referralReward, store.LedgerReferralReward, jobID); err != nil {
+	if err := r.store.CreditWithdrawable(referrer.AccountID, referralReward, store.LedgerReferralReward, jobID); err != nil {
 		r.logger.Error("referral: failed to credit reward",
 			"referrer", truncateID(referrer.AccountID),
 			"reward", referralReward,

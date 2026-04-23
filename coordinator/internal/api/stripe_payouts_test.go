@@ -195,7 +195,7 @@ func TestStripeStatusReportsCurrentState(t *testing.T) {
 func TestStripeWithdrawRejectsWithoutOnboarding(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	user := seedUser(t, st, "acct-w-1", "alice@example.com")
-	st.Credit(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
+	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
 
 	body := `{"amount_usd":"5.00","method":"standard"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
@@ -211,7 +211,7 @@ func TestStripeWithdrawRejectsWithoutOnboarding(t *testing.T) {
 func TestStripeWithdrawRejectsBelowMinimum(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	user := readyUser(t, st, "acct-w-min", "alice@example.com", false)
-	st.Credit(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
+	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
 
 	body := `{"amount_usd":"0.50","method":"standard"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
@@ -227,7 +227,7 @@ func TestStripeWithdrawRejectsBelowMinimum(t *testing.T) {
 func TestStripeWithdrawRejectsInstantWithoutDebitCard(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	user := readyUser(t, st, "acct-w-inst-1", "alice@example.com", false /* instant_eligible */)
-	st.Credit(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
+	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
 
 	body := `{"amount_usd":"5.00","method":"instant"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
@@ -249,7 +249,7 @@ func TestStripeWithdrawRejectsInstantWithoutDebitCard(t *testing.T) {
 func TestStripeWithdrawStandardSuccess(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	user := readyUser(t, st, "acct-w-std", "alice@example.com", false)
-	st.Credit(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
+	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
 
 	body := `{"amount_usd":"5.00","method":"standard"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
@@ -294,7 +294,7 @@ func TestStripeWithdrawStandardSuccess(t *testing.T) {
 func TestStripeWithdrawInstantAppliesFee(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	user := readyUser(t, st, "acct-w-inst", "alice@example.com", true)
-	st.Credit(user.AccountID, 100_000_000, store.LedgerDeposit, "seed")
+	st.CreditWithdrawable(user.AccountID, 100_000_000, store.LedgerDeposit, "seed")
 
 	// $50 instant → 1.5% fee = $0.75 → net $49.25 → balance after = $50
 	body := `{"amount_usd":"50.00","method":"instant"}`
@@ -328,7 +328,7 @@ func TestStripeWithdrawInstantAppliesFee(t *testing.T) {
 func TestStripeWithdrawSmallInstantHitsFloor(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	user := readyUser(t, st, "acct-w-small", "alice@example.com", true)
-	st.Credit(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
+	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
 
 	// $5 instant → 1.5% = $0.075 < $0.50 → fee snaps to $0.50 → net $4.50
 	body := `{"amount_usd":"5.00","method":"instant"}`
@@ -367,7 +367,7 @@ func TestStripeWithdrawInsufficientBalance(t *testing.T) {
 	var resp map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	errObj, _ := resp["error"].(map[string]any)
-	if errObj["type"] != "insufficient_funds" {
+	if errObj["type"] != "insufficient_withdrawable" {
 		t.Errorf("error type = %v", errObj["type"])
 	}
 }
@@ -390,7 +390,7 @@ func TestStripeWithdrawTransferFailureRefunds(t *testing.T) {
 
 	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
 	user := readyUser(t, st, "acct-w-fail", "alice@example.com", false)
-	st.Credit(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
+	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
 
 	body := `{"amount_usd":"5.00","method":"standard"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
@@ -456,7 +456,7 @@ func TestStripeWithdrawPersistsRowAsPendingFirst(t *testing.T) {
 	}))
 
 	user := readyUser(t, st, "acct-pers-1", "alice@example.com", false)
-	st.Credit(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
+	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
 
 	body := `{"amount_usd":"5.00","method":"standard"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
@@ -496,7 +496,7 @@ func TestStripeWithdrawTransferFailureMarksRowFailedAndRefunded(t *testing.T) {
 
 	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
 	user := readyUser(t, st, "acct-w-marked", "alice@example.com", false)
-	st.Credit(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
+	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
 
 	body := `{"amount_usd":"5.00","method":"standard"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
@@ -541,7 +541,7 @@ func TestStripeWithdrawTransferOkPayoutFailLeavesRowTransferred(t *testing.T) {
 
 	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
 	user := readyUser(t, st, "acct-tr-only", "alice@example.com", false)
-	st.Credit(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
+	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
 
 	body := `{"amount_usd":"5.00","method":"standard"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
@@ -675,7 +675,7 @@ func TestConnectWebhookPayoutFailedRefundsLedger(t *testing.T) {
 
 	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
 	user := readyUser(t, st, "acct-wh-fail", "alice@example.com", false)
-	st.Credit(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
+	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
 
 	// Manually create a withdrawal row mimicking what the handler would have
 	// persisted, then debit the ledger to put us in the post-withdraw state.
@@ -734,7 +734,7 @@ func TestConnectWebhookPayoutFailedIsIdempotent(t *testing.T) {
 
 	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
 	user := readyUser(t, st, "acct-wh-idem", "alice@example.com", false)
-	st.Credit(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
+	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
 	withdrawalID := "wd-idem-1"
 	_ = st.Debit(user.AccountID, 5_000_000, store.LedgerCharge, "stripe_withdraw:"+withdrawalID)
 	_ = st.CreateStripeWithdrawal(&store.StripeWithdrawal{
@@ -767,7 +767,7 @@ func TestConnectWebhookPayoutPaidIsIdempotent(t *testing.T) {
 
 	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
 	user := readyUser(t, st, "acct-wh-paid", "alice@example.com", false)
-	st.Credit(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
+	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
 	withdrawalID := "wd-paid-1"
 	_ = st.Debit(user.AccountID, 5_000_000, store.LedgerCharge, "stripe_withdraw:"+withdrawalID)
 	_ = st.CreateStripeWithdrawal(&store.StripeWithdrawal{

@@ -658,6 +658,125 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"models": active})
 }
 
+// handleAdminCredit handles POST /v1/admin/credit.
+// Credits a user's non-withdrawable balance by email.
+func (s *Server) handleAdminCredit(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdminAuthorized(w, r) {
+		return
+	}
+
+	var req struct {
+		Email     string `json:"email"`
+		AmountUSD string `json:"amount_usd"`
+		Note      string `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		return
+	}
+	if req.Email == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "email is required"))
+		return
+	}
+	amountFloat, err := strconv.ParseFloat(req.AmountUSD, 64)
+	if err != nil || amountFloat <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "amount_usd must be a positive number"))
+		return
+	}
+	amountMicroUSD := int64(amountFloat * 1_000_000)
+
+	user, err := s.store.GetUserByEmail(req.Email)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "no user found with email: "+req.Email))
+		return
+	}
+
+	ref := "admin_credit"
+	if req.Note != "" {
+		ref = "admin_credit:" + req.Note
+	}
+	if err := s.store.Credit(user.AccountID, amountMicroUSD, store.LedgerAdminCredit, ref); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to credit: "+err.Error()))
+		return
+	}
+
+	s.logger.Info("admin credit applied",
+		"email", req.Email,
+		"account_id", user.AccountID,
+		"amount_micro_usd", amountMicroUSD,
+		"note", req.Note,
+	)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":            true,
+		"account_id":    user.AccountID,
+		"email":         user.Email,
+		"credited_usd":  amountFloat,
+		"withdrawable":  false,
+		"balance_after": float64(s.store.GetBalance(user.AccountID)) / 1_000_000,
+	})
+}
+
+// handleAdminReward handles POST /v1/admin/reward.
+// Credits a user's withdrawable balance by email (treated as earnings).
+func (s *Server) handleAdminReward(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdminAuthorized(w, r) {
+		return
+	}
+
+	var req struct {
+		Email     string `json:"email"`
+		AmountUSD string `json:"amount_usd"`
+		Note      string `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		return
+	}
+	if req.Email == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "email is required"))
+		return
+	}
+	amountFloat, err := strconv.ParseFloat(req.AmountUSD, 64)
+	if err != nil || amountFloat <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "amount_usd must be a positive number"))
+		return
+	}
+	amountMicroUSD := int64(amountFloat * 1_000_000)
+
+	user, err := s.store.GetUserByEmail(req.Email)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "no user found with email: "+req.Email))
+		return
+	}
+
+	ref := "admin_reward"
+	if req.Note != "" {
+		ref = "admin_reward:" + req.Note
+	}
+	if err := s.store.CreditWithdrawable(user.AccountID, amountMicroUSD, store.LedgerAdminReward, ref); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to reward: "+err.Error()))
+		return
+	}
+
+	s.logger.Info("admin reward applied",
+		"email", req.Email,
+		"account_id", user.AccountID,
+		"amount_micro_usd", amountMicroUSD,
+		"note", req.Note,
+	)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                 true,
+		"account_id":         user.AccountID,
+		"email":              user.Email,
+		"rewarded_usd":       amountFloat,
+		"withdrawable":       true,
+		"balance_after":      float64(s.store.GetBalance(user.AccountID)) / 1_000_000,
+		"withdrawable_after": float64(s.store.GetWithdrawableBalance(user.AccountID)) / 1_000_000,
+	})
+}
+
 // handleNodeEarnings handles GET /v1/provider/node-earnings?provider_key=<key>&limit=50.
 // Returns recent per-node earnings history plus lifetime aggregates for the node.
 func (s *Server) handleNodeEarnings(w http.ResponseWriter, r *http.Request) {

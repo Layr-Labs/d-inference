@@ -420,6 +420,18 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_telemetry_kind ON telemetry_events(kind, ts DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_telemetry_machine ON telemetry_events(machine_id, ts DESC) WHERE machine_id != ''`,
 		`CREATE INDEX IF NOT EXISTS idx_telemetry_request ON telemetry_events(request_id) WHERE request_id != ''`,
+
+		// Withdrawable balance — tracks the withdrawable subset of balance_micro_usd.
+		`ALTER TABLE balances ADD COLUMN IF NOT EXISTS withdrawable_micro_usd BIGINT NOT NULL DEFAULT 0`,
+
+		// Backfill withdrawable from ledger history: sum all provider earnings
+		// and referral rewards. Idempotent — only updates rows where withdrawable
+		// is still 0 (first deploy) so it won't overwrite live values on restart.
+		`UPDATE balances b SET withdrawable_micro_usd = COALESCE((
+			SELECT SUM(amount_micro_usd) FROM ledger_entries
+			WHERE account_id = b.account_id
+			  AND entry_type IN ('payout', 'referral_reward')
+		), 0) WHERE b.withdrawable_micro_usd = 0`,
 	}
 
 	for _, m := range migrations {
@@ -717,6 +729,40 @@ func creditTx(ctx context.Context, tx pgx.Tx, accountID string, amountMicroUSD i
 	return nil
 }
 
+func creditWithdrawableTx(ctx context.Context, tx pgx.Tx, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) error {
+	_, err := tx.Exec(ctx,
+		`INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
+		 VALUES ($1, $2, $2, NOW())
+		 ON CONFLICT (account_id) DO UPDATE SET
+		   balance_micro_usd = balances.balance_micro_usd + $2,
+		   withdrawable_micro_usd = balances.withdrawable_micro_usd + $2,
+		   updated_at = NOW()`,
+		accountID, amountMicroUSD,
+	)
+	if err != nil {
+		return fmt.Errorf("store: credit withdrawable balance: %w", err)
+	}
+
+	var balanceAfter int64
+	err = tx.QueryRow(ctx,
+		`SELECT balance_micro_usd FROM balances WHERE account_id = $1`, accountID,
+	).Scan(&balanceAfter)
+	if err != nil {
+		return fmt.Errorf("store: read balance: %w", err)
+	}
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
+		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))`,
+		accountID, string(entryType), amountMicroUSD, balanceAfter, reference, nullableCreatedAt(createdAt),
+	)
+	if err != nil {
+		return fmt.Errorf("store: insert ledger entry: %w", err)
+	}
+
+	return nil
+}
+
 // Credit adds micro-USD to an account and records a ledger entry (atomic).
 func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -729,6 +775,40 @@ func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType
 	defer tx.Rollback(ctx)
 
 	if err := creditTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
+func (s *PostgresStore) GetWithdrawableBalance(accountID string) int64 {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var balance int64
+	err := s.pool.QueryRow(ctx,
+		`SELECT withdrawable_micro_usd FROM balances WHERE account_id = $1`, accountID,
+	).Scan(&balance)
+	if err != nil {
+		return 0
+	}
+	return balance
+}
+
+// CreditWithdrawable adds micro-USD to both the total balance and the
+// withdrawable balance, and records a ledger entry.
+func (s *PostgresStore) CreditWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err := creditWithdrawableTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
 		return err
 	}
 
@@ -758,6 +838,13 @@ func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType 
 	if err != nil {
 		return errors.New("insufficient balance or account not found")
 	}
+
+	// Cap withdrawable at the new balance (credits consumed first).
+	_, _ = tx.Exec(ctx,
+		`UPDATE balances SET withdrawable_micro_usd = LEAST(withdrawable_micro_usd, balance_micro_usd)
+		 WHERE account_id = $1`,
+		accountID,
+	)
 
 	// Record ledger entry
 	_, err = tx.Exec(ctx,
@@ -1172,6 +1259,21 @@ func (s *PostgresStore) GetUserByStripeAccount(stripeAccountID string) (*User, e
 	u, err := scanUser(row)
 	if err != nil {
 		return nil, fmt.Errorf("store: user with Stripe account %q not found: %w", stripeAccountID, err)
+	}
+	return u, nil
+}
+
+// GetUserByEmail returns the user for an email address.
+func (s *PostgresStore) GetUserByEmail(email string) (*User, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+userSelectColumns+` FROM users WHERE LOWER(email) = LOWER($1)`, email,
+	)
+	u, err := scanUser(row)
+	if err != nil {
+		return nil, fmt.Errorf("user with email %q not found", email)
 	}
 	return u, nil
 }
@@ -1943,7 +2045,7 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	}
 	defer tx.Rollback(ctx)
 
-	if err := creditTx(ctx, tx, earning.AccountID, earning.AmountMicroUSD, LedgerPayout, earning.JobID, earning.CreatedAt); err != nil {
+	if err := creditWithdrawableTx(ctx, tx, earning.AccountID, earning.AmountMicroUSD, LedgerPayout, earning.JobID, earning.CreatedAt); err != nil {
 		return err
 	}
 
@@ -1987,7 +2089,7 @@ func (s *PostgresStore) CreditProviderWallet(payout *ProviderPayout) error {
 	}
 	defer tx.Rollback(ctx)
 
-	if err := creditTx(ctx, tx, payout.ProviderAddress, payout.AmountMicroUSD, LedgerPayout, payout.JobID, payout.Timestamp); err != nil {
+	if err := creditWithdrawableTx(ctx, tx, payout.ProviderAddress, payout.AmountMicroUSD, LedgerPayout, payout.JobID, payout.Timestamp); err != nil {
 		return err
 	}
 

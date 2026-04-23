@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -34,6 +35,7 @@ type MemoryStore struct {
 	usage         []UsageRecord
 	payments      []PaymentRecord
 	balances      map[string]int64 // accountID → micro-USD
+	withdrawable  map[string]int64 // accountID → withdrawable micro-USD (subset of balance)
 	ledgerEntries []LedgerEntry
 	ledgerSeq     int64 // auto-increment ID
 
@@ -104,6 +106,7 @@ func NewMemory(adminKey string) *MemoryStore {
 		usage:                         make([]UsageRecord, 0),
 		payments:                      make([]PaymentRecord, 0),
 		balances:                      make(map[string]int64),
+		withdrawable:                  make(map[string]int64),
 		ledgerEntries:                 make([]LedgerEntry, 0),
 		referrersByCode:               make(map[string]*Referrer),
 		referrersByAccount:            make(map[string]*Referrer),
@@ -334,12 +337,29 @@ func (s *MemoryStore) GetBalance(accountID string) int64 {
 	return s.balances[accountID]
 }
 
+// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
+func (s *MemoryStore) GetWithdrawableBalance(accountID string) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.withdrawable[accountID]
+}
+
 // Credit adds micro-USD to an account and records a ledger entry.
 func (s *MemoryStore) Credit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now())
+	return nil
+}
+
+// CreditWithdrawable adds micro-USD to both the total balance and the
+// withdrawable balance, and records a ledger entry.
+func (s *MemoryStore) CreditWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now())
+	s.withdrawable[accountID] += amountMicroUSD
 	return nil
 }
 
@@ -353,6 +373,9 @@ func (s *MemoryStore) Debit(accountID string, amountMicroUSD int64, entryType Le
 	}
 
 	s.balances[accountID] -= amountMicroUSD
+	if s.withdrawable[accountID] > s.balances[accountID] {
+		s.withdrawable[accountID] = s.balances[accountID]
+	}
 	s.ledgerSeq++
 	s.ledgerEntries = append(s.ledgerEntries, LedgerEntry{
 		ID:             s.ledgerSeq,
@@ -739,6 +762,20 @@ func (s *MemoryStore) GetUserByStripeAccount(stripeAccountID string) (*User, err
 	}
 	copy := *u
 	return &copy, nil
+}
+
+// GetUserByEmail returns the user for an email address.
+func (s *MemoryStore) GetUserByEmail(email string) (*User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	lower := strings.ToLower(email)
+	for _, u := range s.usersByAccountID {
+		if strings.ToLower(u.Email) == lower {
+			copy := *u
+			return &copy, nil
+		}
+	}
+	return nil, fmt.Errorf("user with email %q not found", email)
 }
 
 // --- Stripe Withdrawals ---
@@ -1226,6 +1263,7 @@ func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
 	}
 
 	s.creditLocked(cp.AccountID, cp.AmountMicroUSD, LedgerPayout, cp.JobID, cp.CreatedAt)
+	s.withdrawable[cp.AccountID] += cp.AmountMicroUSD
 	s.providerEarningsSeq++
 	cp.ID = s.providerEarningsSeq
 	s.providerEarnings = append(s.providerEarnings, cp)
@@ -1251,6 +1289,7 @@ func (s *MemoryStore) CreditProviderWallet(payout *ProviderPayout) error {
 	}
 
 	s.creditLocked(cp.ProviderAddress, cp.AmountMicroUSD, LedgerPayout, cp.JobID, cp.Timestamp)
+	s.withdrawable[cp.ProviderAddress] += cp.AmountMicroUSD
 	s.providerPayoutSeq++
 	cp.ID = s.providerPayoutSeq
 	s.providerPayouts = append(s.providerPayouts, cp)

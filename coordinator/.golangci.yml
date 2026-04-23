@@ -8,11 +8,4 @@ linters:
   enable:
     - govet
     - ineffassign
-    - staticcheck
     - unused
-
-linters-settings:
-  staticcheck:
-    checks:
-      - "all"
-      - "-SA1019"

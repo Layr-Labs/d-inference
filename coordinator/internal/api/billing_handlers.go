@@ -658,49 +658,6 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"models": active})
 }
 
-// handleMockDeposit handles deposits in mock mode: credits the account
-// directly without on-chain verification. For testing only.
-func (s *Server) handleMockDeposit(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		AmountUSD    float64 `json:"amount_usd"`
-		ReferralCode string  `json:"referral_code,omitempty"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
-		return
-	}
-
-	if req.AmountUSD <= 0 {
-		req.AmountUSD = 100.0 // default $100 test credit
-	}
-
-	accountID := s.resolveAccountID(r)
-	amountMicroUSD := int64(req.AmountUSD * 1_000_000)
-
-	if err := s.billing.CreditDeposit(accountID, amountMicroUSD, store.LedgerDeposit,
-		"mock-deposit"); err != nil {
-		s.logger.Error("mock deposit: credit failed", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to credit balance"))
-		return
-	}
-
-	s.logger.Info("mock deposit credited",
-		"account_id", accountID,
-		"amount_usd", req.AmountUSD,
-		"amount_micro_usd", amountMicroUSD,
-	)
-
-	balance := s.billing.Ledger().Balance(accountID)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":            "credited",
-		"mock":              true,
-		"amount_micro_usd":  amountMicroUSD,
-		"amount_usd":        req.AmountUSD,
-		"balance_micro_usd": balance,
-		"balance_usd":       fmt.Sprintf("%.2f", float64(balance)/1_000_000),
-	})
-}
-
 // handleNodeEarnings handles GET /v1/provider/node-earnings?provider_key=<key>&limit=50.
 // Returns recent per-node earnings history plus lifetime aggregates for the node.
 func (s *Server) handleNodeEarnings(w http.ResponseWriter, r *http.Request) {

@@ -650,21 +650,163 @@ pub fn handle_attestation_challenge(
         (None, None, std::collections::HashMap::new())
     };
 
+    let active_model_hash_owned = current_model_hash.map(|s| s.to_string());
+
+    // Build the canonical status payload and sign it. This binds all the
+    // status fields below to the SE key, preventing a compromised provider
+    // from echoing a valid nonce+timestamp signature while lying about
+    // sip_enabled, binary_hash, etc.
+    //
+    // Must stay byte-identical to coordinator/internal/attestation.go
+    // BuildStatusCanonical — sorted keys, optional fields omitted, nested
+    // maps with sorted keys (BTreeMap).
+    let canonical = build_status_canonical(
+        nonce,
+        timestamp,
+        Some(hypervisor_active),
+        Some(rdma_disabled),
+        Some(sip_enabled),
+        Some(true),
+        binary_hash.as_deref(),
+        active_model_hash_owned.as_deref(),
+        python_hash.as_deref(),
+        rt_hash.as_deref(),
+        &template_hashes,
+        None, // grpc_binary_hash removed (text-only)
+        None, // image_bridge_hash removed (text-only)
+        &model_hashes,
+    );
+    let status_signature = match canonical {
+        Ok(bytes) => crate::security::se_sign(se_handle, &bytes),
+        Err(e) => {
+            tracing::warn!(
+                "failed to build canonical status payload: {} — coordinator will treat status fields as unsigned",
+                e
+            );
+            None
+        }
+    };
+
     ProviderMessage::AttestationResponse {
         nonce: nonce.to_string(),
         signature,
+        status_signature,
         public_key: pk_str.to_string(),
         hypervisor_active: Some(hypervisor_active),
         rdma_disabled: Some(rdma_disabled),
         sip_enabled: Some(sip_enabled),
         secure_boot_enabled: Some(true), // Apple Silicon always has Secure Boot in Full Security mode
         binary_hash,
-        active_model_hash: current_model_hash.map(|s| s.to_string()),
+        active_model_hash: active_model_hash_owned,
         python_hash,
         runtime_hash: rt_hash,
         template_hashes,
         model_hashes,
     }
+}
+
+/// Build the canonical status payload bytes that get signed by the SE
+/// key for AttestationResponse.status_signature. This must produce
+/// byte-identical output to the Go BuildStatusCanonical helper.
+///
+/// Encoding rules:
+///   - Top-level keys sorted alphabetically (BTreeMap).
+///   - nonce + timestamp always present.
+///   - Optional bool/string/map fields are OMITTED if None / empty —
+///     "unknown" must serialize differently than "false" so a downgrade
+///     attacker can't strip a positive claim and have it look like
+///     legitimate omission.
+///   - Nested maps (template_hashes, model_hashes) also sorted via
+///     BTreeMap.
+///   - serde_json defaults: compact (no whitespace), bool as true/false,
+///     strings UTF-8 with standard JSON escapes.
+#[allow(clippy::too_many_arguments)]
+fn build_status_canonical(
+    nonce: &str,
+    timestamp: &str,
+    hypervisor_active: Option<bool>,
+    rdma_disabled: Option<bool>,
+    sip_enabled: Option<bool>,
+    secure_boot_enabled: Option<bool>,
+    binary_hash: Option<&str>,
+    active_model_hash: Option<&str>,
+    python_hash: Option<&str>,
+    runtime_hash: Option<&str>,
+    template_hashes: &std::collections::HashMap<String, String>,
+    grpc_binary_hash: Option<&str>,
+    image_bridge_hash: Option<&str>,
+    model_hashes: &std::collections::HashMap<String, String>,
+) -> serde_json::Result<Vec<u8>> {
+    use std::collections::BTreeMap;
+    let mut m: BTreeMap<&str, serde_json::Value> = BTreeMap::new();
+    m.insert("nonce", serde_json::Value::String(nonce.to_string()));
+    m.insert(
+        "timestamp",
+        serde_json::Value::String(timestamp.to_string()),
+    );
+    if let Some(v) = hypervisor_active {
+        m.insert("hypervisor_active", serde_json::Value::Bool(v));
+    }
+    if let Some(v) = rdma_disabled {
+        m.insert("rdma_disabled", serde_json::Value::Bool(v));
+    }
+    if let Some(v) = sip_enabled {
+        m.insert("sip_enabled", serde_json::Value::Bool(v));
+    }
+    if let Some(v) = secure_boot_enabled {
+        m.insert("secure_boot_enabled", serde_json::Value::Bool(v));
+    }
+    if let Some(v) = binary_hash {
+        if !v.is_empty() {
+            m.insert("binary_hash", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if let Some(v) = active_model_hash {
+        if !v.is_empty() {
+            m.insert(
+                "active_model_hash",
+                serde_json::Value::String(v.to_string()),
+            );
+        }
+    }
+    if let Some(v) = python_hash {
+        if !v.is_empty() {
+            m.insert("python_hash", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if let Some(v) = runtime_hash {
+        if !v.is_empty() {
+            m.insert("runtime_hash", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if let Some(v) = grpc_binary_hash {
+        if !v.is_empty() {
+            m.insert("grpc_binary_hash", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if let Some(v) = image_bridge_hash {
+        if !v.is_empty() {
+            m.insert(
+                "image_bridge_hash",
+                serde_json::Value::String(v.to_string()),
+            );
+        }
+    }
+    if !template_hashes.is_empty() {
+        let sorted: BTreeMap<&str, &str> = template_hashes
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        m.insert("template_hashes", serde_json::to_value(sorted)?);
+    }
+    if !model_hashes.is_empty() {
+        let sorted: BTreeMap<&str, &str> = model_hashes
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        m.insert("model_hashes", serde_json::to_value(sorted)?);
+    }
+    serde_json::to_vec(&m)
 }
 
 /// Build the register message for a given hardware, models, and backend.
@@ -714,6 +856,142 @@ mod tests {
     use futures_util::StreamExt;
     use std::net::SocketAddr;
     use tokio::net::TcpListener;
+
+    /// Cross-language wire-format guard. The bytes encoded here must
+    /// EXACTLY match what coordinator/internal/attestation.BuildStatusCanonical
+    /// produces in Go for the same input. If this golden bytes test ever
+    /// diverges, the corresponding Go test (in attestation_test.go) will
+    /// also fail and you'll catch the protocol drift before it ships.
+    ///
+    /// Encoding properties under test:
+    ///   - Top-level keys sorted alphabetically.
+    ///   - Optional fields (None / empty) omitted entirely.
+    ///   - Nested maps (template_hashes, model_hashes) sorted.
+    ///   - Compact (no whitespace).
+    #[test]
+    fn test_build_status_canonical_golden_bytes() {
+        let mut templates = std::collections::HashMap::new();
+        templates.insert("chatml".to_string(), "tmplhash1".to_string());
+        templates.insert("gemma".to_string(), "tmplhash2".to_string());
+
+        let mut models = std::collections::HashMap::new();
+        models.insert("qwen".to_string(), "modelhash1".to_string());
+        models.insert("trinity".to_string(), "modelhash2".to_string());
+
+        let bytes = build_status_canonical(
+            "test-nonce",
+            "2026-04-16T12:00:00Z",
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some("binhash"),
+            Some("activemodel"),
+            Some("pyhash"),
+            Some("rthash"),
+            &templates,
+            None,
+            Some("imghash"),
+            &models,
+        )
+        .expect("canonical build should succeed");
+
+        let expected = br#"{"active_model_hash":"activemodel","binary_hash":"binhash","hypervisor_active":true,"image_bridge_hash":"imghash","model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}"#;
+
+        assert_eq!(
+            bytes,
+            expected.to_vec(),
+            "canonical bytes drifted — Go side will reject signatures"
+        );
+    }
+
+    /// Empty optional fields must be omitted from canonical output, not
+    /// serialized as empty/false. This prevents downgrade attacks where
+    /// a stripped sip_enabled=true claim looks like legitimate omission.
+    #[test]
+    fn test_build_status_canonical_omits_empties() {
+        let bytes = build_status_canonical(
+            "n",
+            "t",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &std::collections::HashMap::new(),
+            None,
+            None,
+            &std::collections::HashMap::new(),
+        )
+        .expect("canonical build should succeed");
+
+        // Only nonce and timestamp survive when everything else is None.
+        assert_eq!(bytes, br#"{"nonce":"n","timestamp":"t"}"#.to_vec());
+    }
+
+    /// Mirror of Go's TestBuildStatusCanonicalFalseIsExplicit. False bool
+    /// values must be serialized explicitly, not stripped — otherwise a
+    /// downgrade attacker could reduce sip_enabled=true to "absent" and
+    /// the verify step couldn't distinguish.
+    #[test]
+    fn test_build_status_canonical_false_is_explicit() {
+        let bytes = build_status_canonical(
+            "n",
+            "t",
+            None,
+            None,
+            Some(false),
+            None,
+            None,
+            None,
+            None,
+            None,
+            &std::collections::HashMap::new(),
+            None,
+            None,
+            &std::collections::HashMap::new(),
+        )
+        .expect("canonical build should succeed");
+        assert_eq!(
+            bytes,
+            br#"{"nonce":"n","sip_enabled":false,"timestamp":"t"}"#.to_vec()
+        );
+    }
+
+    /// Mirror of Go's TestBuildStatusCanonicalUnicodeNonce. Both
+    /// serializers must pass printable Unicode through as UTF-8 (no
+    /// double-escaping). Today nonces are base64 ASCII so this is
+    /// future-proofing for any signed string field that might one day
+    /// carry non-ASCII.
+    #[test]
+    fn test_build_status_canonical_unicode_nonce() {
+        let bytes = build_status_canonical(
+            "ñön¢é-π",
+            "t",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &std::collections::HashMap::new(),
+            None,
+            None,
+            &std::collections::HashMap::new(),
+        )
+        .expect("canonical build should succeed");
+        assert_eq!(
+            bytes,
+            "{\"nonce\":\"ñön¢é-π\",\"timestamp\":\"t\"}"
+                .as_bytes()
+                .to_vec()
+        );
+    }
 
     fn sample_hardware() -> HardwareInfo {
         HardwareInfo {
@@ -1066,6 +1344,7 @@ mod tests {
             ProviderMessage::AttestationResponse {
                 nonce,
                 signature,
+                status_signature: _,
                 public_key,
                 hypervisor_active,
                 rdma_disabled,

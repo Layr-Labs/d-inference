@@ -38,6 +38,7 @@ import (
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
+	"github.com/eigeninference/coordinator/internal/saferun"
 	"github.com/eigeninference/coordinator/internal/store"
 	"github.com/google/uuid"
 	"nhooyr.io/websocket"
@@ -271,7 +272,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			s.applyACMETrust(providerID, provider, acmeResult)
 
 			// Start challenge loop after registration
-			go s.challengeLoop(loopCtx, conn, providerID, provider, tracker)
+			saferun.Go(s.logger, "challengeLoop", func() {
+				s.challengeLoop(loopCtx, conn, providerID, provider, tracker)
+			})
 
 		case protocol.TypeHeartbeat:
 			hbMsg := msg.Payload.(*protocol.HeartbeatMessage)
@@ -466,6 +469,7 @@ func (s *Server) sendChallenge(ctx context.Context, conn *websocket.Conn, provid
 		tracker.remove(nonce)
 		return
 	}
+	s.ddIncr("attestation.challenges", []string{"outcome:sent"})
 
 	s.logger.Debug("sent attestation challenge", "provider_id", providerID, "nonce", nonce[:8]+"...")
 
@@ -534,6 +538,13 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		return
 	}
 
+	// statusFieldsTrusted gates whether we treat resp.SIPEnabled,
+	// resp.BinaryHash etc. as authoritative. False means the provider
+	// signed only nonce+timestamp (legacy or downgrade), so the status
+	// fields are advisory and we must not act on them as if they were
+	// cryptographically bound.
+	statusFieldsTrusted := false
+
 	// If the provider has an attested SE public key, verify the signature.
 	// Providers without attestation (TrustNone / Open Mode) skip crypto
 	// verification — their trust is already "none".
@@ -551,7 +562,74 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			s.handleChallengeFailure(providerID, "signature verification failed: "+err.Error())
 			return
 		}
+
+		// Now verify the extended status signature if the provider sent
+		// one. Old providers (pre-v0.3.11) won't — log and continue with
+		// status fields untrusted. Mismatch is fatal: it means either
+		// tampering or the provider is signing a different canonical
+		// payload than this code expects.
+		statusInput := attestation.StatusCanonicalInput{
+			Nonce:             pc.nonce,
+			Timestamp:         pc.timestamp,
+			HypervisorActive:  resp.HypervisorActive,
+			RDMADisabled:      resp.RDMADisabled,
+			SIPEnabled:        resp.SIPEnabled,
+			SecureBootEnabled: resp.SecureBootEnabled,
+			BinaryHash:        resp.BinaryHash,
+			ActiveModelHash:   resp.ActiveModelHash,
+			PythonHash:        resp.PythonHash,
+			RuntimeHash:       resp.RuntimeHash,
+			TemplateHashes:    resp.TemplateHashes,
+			ModelHashes:       resp.ModelHashes,
+		}
+		switch err := attestation.VerifyStatusSignature(
+			provider.AttestationResult.PublicKey,
+			resp.StatusSignature,
+			statusInput,
+		); err {
+		case nil:
+			statusFieldsTrusted = true
+		case attestation.ErrStatusSignatureMissing:
+			s.ddIncr("attestation.challenges", []string{"outcome:status_sig_missing"})
+			s.logger.Warn("provider sent no status_signature — status fields are advisory; upgrade provider to bind them",
+				"provider_id", providerID,
+			)
+		default:
+			s.logger.Error("status signature verification failed — possible tampering or canonical mismatch",
+				"provider_id", providerID,
+				"error", err,
+			)
+			s.handleChallengeFailure(providerID, "status signature verification failed: "+err.Error())
+			return
+		}
 	}
+
+	// Status-field enforcement policy (asymmetric, by design):
+	//
+	// The checks below act on resp.SIPEnabled / SecureBootEnabled /
+	// RDMADisabled / BinaryHash / ActiveModelHash regardless of
+	// statusFieldsTrusted. The asymmetry is intentional during the
+	// v0.3.11 rollout window:
+	//
+	//   - Negative reports (SIP=false, hash mismatch, etc.) ALWAYS mark
+	//     the provider untrusted. Acting on a negative is safe even if
+	//     the field is spoofable: the worst case is a compromised
+	//     provider DoS-ing itself, which we want anyway.
+	//
+	//   - Positive reports (SIP=true, hash matches) are accepted but
+	//     can only be fully trusted when statusFieldsTrusted is true.
+	//     A v0.3.10 provider with a compromised process (but intact SE
+	//     key) can echo a valid nonce signature while lying that
+	//     SIPEnabled=true. We accept this risk during rollout.
+	//
+	// TODO(security/v0.3.13+): Once `attestation_challenges_total{
+	// outcome="status_sig_missing"}` is zero across the fleet for a
+	// week, treat ErrStatusSignatureMissing as a hard challenge failure
+	// (target: 2 release cycles after v0.3.11 GA).
+	s.logger.Debug("attestation challenge response verified",
+		"provider_id", providerID,
+		"status_fields_trusted", statusFieldsTrusted,
+	)
 
 	// Verify fresh SIP status. This signal is mandatory for private text:
 	// an omitted value is not evidence of safety, so fail closed.
@@ -720,6 +798,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 
 	// Challenge passed.
 	s.registry.RecordChallengeSuccess(providerID)
+	s.ddIncr("attestation.challenges", []string{"outcome:passed"})
 	s.logger.Info("attestation challenge verified",
 		"provider_id", providerID,
 		"sip_enabled", resp.SIPEnabled,
@@ -743,6 +822,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 // as untrusted if the failure threshold is reached.
 func (s *Server) handleChallengeFailure(providerID string, reason string) {
 	failures := s.registry.RecordChallengeFailure(providerID)
+	s.ddIncr("attestation.challenges", []string{"outcome:failed"})
 	s.logger.Warn("attestation challenge failed",
 		"provider_id", providerID,
 		"reason", reason,
@@ -944,6 +1024,8 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		Timestamp:        time.Now(),
 	})
 	s.store.RecordUsageWithCost(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost)
+	s.ddIncr("inference.completions", []string{"model:" + pr.Model})
+	s.ddHistogram("inference.completion_tokens", float64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
 
 	// Credit the provider's pending payout.
 	// If the provider is linked to an account (via device auth), credit that account.
@@ -1181,7 +1263,9 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 	// This upgrades trust from self_signed to hardware if MDM confirms
 	// the device is enrolled and SIP/SecureBoot match.
 	if s.mdmClient != nil && result.SerialNumber != "" {
-		go s.verifyProviderViaMDM(providerID, provider, result)
+		saferun.Go(s.logger, "verifyProviderViaMDM", func() {
+			s.verifyProviderViaMDM(providerID, provider, result)
+		})
 	} else if s.mdmClient != nil && result.SerialNumber == "" {
 		s.logger.Warn("provider attestation has no serial number — cannot verify via MDM",
 			"provider_id", providerID,

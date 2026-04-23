@@ -75,6 +75,49 @@ impl NodeKeyPair {
 
 use anyhow::Context;
 
+pub fn delete_persistent_key() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    crate::secure_enclave_key::delete_persistent_key()?;
+
+    purge_legacy_e2e_files();
+    Ok(())
+}
+
+pub fn legacy_node_key_paths() -> Vec<std::path::PathBuf> {
+    legacy_secret_paths("node_key")
+}
+
+pub fn legacy_enclave_e2e_key_paths() -> Vec<std::path::PathBuf> {
+    legacy_secret_paths("enclave_e2e_ka.data")
+}
+
+fn purge_legacy_e2e_files() {
+    for path in [legacy_node_key_paths(), legacy_enclave_e2e_key_paths()]
+        .into_iter()
+        .flatten()
+        .filter(|path| path.exists())
+    {
+        match std::fs::remove_file(&path) {
+            Ok(()) => tracing::info!("Removed legacy E2E secret file: {}", path.display()),
+            Err(err) => tracing::warn!(
+                "Failed to remove legacy E2E secret file {}: {err}",
+                path.display()
+            ),
+        }
+    }
+}
+
+fn legacy_secret_paths(file_name: &str) -> Vec<std::path::PathBuf> {
+    dirs::home_dir()
+        .map(|home| {
+            [".darkbloom", ".dginf", ".eigeninference"]
+                .into_iter()
+                .map(|dir| home.join(dir).join(file_name))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -55,7 +55,34 @@ const (
 	// firstChunkTimeout is how long to wait for the first chunk from a provider
 	// before considering the attempt failed and retrying.
 	firstChunkTimeout = 10 * time.Second
+
+	// cancelWriteTimeout bounds how long a cancel write to the provider can
+	// block. Using context.Background() unbounded here risks hanging the HTTP
+	// handler goroutine when a WebSocket is half-dead.
+	cancelWriteTimeout = 2 * time.Second
 )
+
+// sendProviderCancel sends a Cancel message for the given request to the
+// provider with a bounded timeout so a half-dead WebSocket doesn't hang the
+// caller. Errors are logged at debug level because a disconnect race is the
+// expected case — the provider may already be gone.
+func (s *Server) sendProviderCancel(provider *registry.Provider, requestID string) {
+	if provider == nil || provider.Conn == nil {
+		return
+	}
+	cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
+	cancelData, err := json.Marshal(cancelMsg)
+	if err != nil {
+		s.logger.Error("failed to marshal cancel message", "request_id", requestID, "error", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cancelWriteTimeout)
+	defer cancel()
+	if err := provider.Conn.Write(ctx, websocket.MessageText, cancelData); err != nil {
+		s.logger.Debug("failed to send cancel (provider may have disconnected)",
+			"request_id", requestID, "error", err)
+	}
+}
 
 // chatCompletionRequest is the incoming OpenAI-compatible request body.
 // Consumers may send plain JSON or sender-sealed JSON (handled by
@@ -342,12 +369,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
 		}
 
-		provider = s.registry.ReserveProvider(model, pr, excludeList()...)
+		var decision registry.RoutingDecision
+		provider, decision = s.registry.ReserveProviderEx(model, pr, excludeList()...)
 		if provider == nil {
 			// On retry attempts, don't queue — if the only available
 			// providers already failed, waiting 120s for one of them
 			// to come back won't help. Break and return the last error.
 			if attempt > 0 {
+				outcome := "no_provider"
+				if decision.CapacityRejections > 0 && decision.CandidateCount == 0 {
+					// Every fitting candidate was rejected by the
+					// admission gate (memory). Surface as over_capacity
+					// so dashboards distinguish "no provider" from
+					// "fleet over-subscribed for this model size".
+					outcome = "over_capacity"
+				}
+				s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:" + outcome})
 				break
 			}
 			// No idle provider — try queueing.
@@ -358,10 +395,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				ResponseCh: make(chan *registry.Provider, 1),
 			}
 			if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
+				s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:over_capacity"})
 				refundReservation()
 				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider available for model %q and queue is full", model)))
 				return
 			}
+			s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:queued"})
 
 			s.logger.Info("request queued, waiting for provider",
 				"model", model,
@@ -380,6 +419,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider became available for model %q (queue timeout)", model)))
 				return
 			}
+			decision = queuedReq.Decision
+		}
+		s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:selected"})
+		s.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
+		s.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model})
+		if decision.EffectiveTPS > 0 {
+			s.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
 		}
 
 		// E2E encryption — must be done per provider (different keys).
@@ -441,6 +487,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.logger.Info("inference request dispatched",
+			"trace_id", requestIDFromContext(r.Context()),
 			"request_id", requestID,
 			"model", model,
 			"provider_id", provider.ID,
@@ -510,11 +557,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			continue
 		case <-timer.C:
 			excludeProviders[provider.ID] = struct{}{}
+			// Order matters: RemovePending must precede sendProviderCancel.
+			// Each retry attempt generates a fresh requestID (line 301), so
+			// the original provider would otherwise keep generating into
+			// this requestID and could send InferenceComplete after the
+			// retry has already been billed — double-charge. Removing the
+			// pending entry first means any late chunk/Complete from the
+			// original provider hits handleChunk/handleComplete with an
+			// unknown request_id and is silently dropped, so only the
+			// retry's Complete reaches the ledger.
 			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
-			cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
-			cancelData, _ := json.Marshal(cancelMsg)
-			_ = provider.Conn.Write(context.Background(), websocket.MessageText, cancelData)
+			s.sendProviderCancel(provider, requestID)
 			lastErr = "timeout waiting for first response"
 			lastErrCode = http.StatusGatewayTimeout
 			s.logger.Warn("provider timeout, retrying",
@@ -539,6 +593,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
+			s.sendProviderCancel(provider, requestID)
 			refundReservation()
 			return
 		}
@@ -585,15 +640,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			case <-chunkTimer.C:
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
-				cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
-				cancelData, _ := json.Marshal(cancelMsg)
-				_ = provider.Conn.Write(context.Background(), websocket.MessageText, cancelData)
+				s.sendProviderCancel(provider, requestID)
 				refundReservation()
 				writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider accepted but timed out"))
 				return
 			case <-r.Context().Done():
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
+				s.sendProviderCancel(provider, requestID)
 				refundReservation()
 				return
 			}
@@ -677,17 +731,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
-
-		cancelMsg := protocol.CancelMessage{
-			Type:      protocol.TypeCancel,
-			RequestID: requestID,
-		}
-		cancelData, _ := json.Marshal(cancelMsg)
-		if err := provider.Conn.Write(context.Background(), websocket.MessageText, cancelData); err != nil {
-			s.logger.Debug("failed to send cancel (provider may have disconnected)", "request_id", requestID, "error", err)
-		} else {
-			s.logger.Info("sent cancel to provider", "request_id", requestID)
-		}
+		s.sendProviderCancel(provider, requestID)
 	}()
 
 	if stream {
@@ -719,7 +763,12 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Request-ID", pr.RequestID)
+	// X-Request-ID is set by the logging middleware to the trace ID. The
+	// internal pr.RequestID is the per-attempt provider job UUID and may
+	// change across retries — exposing it as X-Request-ID would diverge
+	// from the access log. Surface the provider job UUID under its own
+	// header for callers who need to correlate to provider-side logs.
+	w.Header().Set("X-Inference-Job-ID", pr.RequestID)
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
@@ -1486,7 +1535,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
 	}
 
-	provider := s.registry.ReserveProvider(model, pr)
+	provider, decision := s.registry.ReserveProviderEx(model, pr)
 	if provider == nil {
 		queuedReq := &registry.QueuedRequest{
 			RequestID:  requestID,
@@ -1496,10 +1545,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
 			refundReservation()
+			s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:over_capacity"})
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
 				fmt.Sprintf("no provider available for model %q", model)))
 			return
 		}
+		s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:queued"})
 		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -1511,6 +1562,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				fmt.Sprintf("no provider became available for model %q", model)))
 			return
 		}
+		decision = queuedReq.Decision
+	}
+	s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:selected"})
+	s.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
+	s.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model})
+	if decision.EffectiveTPS > 0 {
+		s.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
 	}
 
 	inferenceBody, _ := json.Marshal(parsed)
@@ -1574,6 +1632,16 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		"endpoint", endpoint,
 		"stream", stream,
 	)
+
+	// When this function returns (consumer disconnect, timeout, or
+	// completion), tell the provider to stop generating. Without this the
+	// provider keeps producing tokens into a buffered channel until the
+	// buffer fills, wasting GPU cycles.
+	defer func() {
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+		s.sendProviderCancel(provider, requestID)
+	}()
 
 	if stream {
 		s.handleStreamingResponse(w, r, pr)

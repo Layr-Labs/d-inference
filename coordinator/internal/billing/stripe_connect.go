@@ -2,6 +2,7 @@ package billing
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -148,7 +149,7 @@ type CreateExpressAccountParams struct {
 // the user fills in on Stripe's hosted page anyway.
 func (c *StripeConnect) CreateExpressAccount(params CreateExpressAccountParams) (*ExpressAccount, error) {
 	if c.secretKey == "" && !c.mockMode {
-		return nil, fmt.Errorf("stripe connect: not configured")
+		return nil, errors.New("stripe connect: not configured")
 	}
 	country := params.Country
 	if country == "" {
@@ -196,10 +197,10 @@ func (c *StripeConnect) CreateExpressAccount(params CreateExpressAccountParams) 
 // redirect to. Stripe handles the KYC + bank linking flow.
 func (c *StripeConnect) CreateAccountLink(accountID, returnURL, refreshURL string) (string, error) {
 	if c.secretKey == "" && !c.mockMode {
-		return "", fmt.Errorf("stripe connect: not configured")
+		return "", errors.New("stripe connect: not configured")
 	}
 	if accountID == "" || returnURL == "" || refreshURL == "" {
-		return "", fmt.Errorf("stripe connect: account_id, return_url, refresh_url required")
+		return "", errors.New("stripe connect: account_id, return_url, refresh_url required")
 	}
 
 	if c.mockMode {
@@ -231,10 +232,10 @@ func (c *StripeConnect) CreateAccountLink(accountID, returnURL, refreshURL strin
 // "ready" / "needs more info" state without waiting for the webhook.
 func (c *StripeConnect) GetAccount(accountID string) (*ExpressAccount, error) {
 	if c.secretKey == "" && !c.mockMode {
-		return nil, fmt.Errorf("stripe connect: not configured")
+		return nil, errors.New("stripe connect: not configured")
 	}
 	if accountID == "" {
-		return nil, fmt.Errorf("stripe connect: account_id required")
+		return nil, errors.New("stripe connect: account_id required")
 	}
 
 	if c.mockMode {
@@ -279,10 +280,10 @@ type Transfer struct {
 // can't double-pay the user.
 func (c *StripeConnect) CreateTransfer(params CreateTransferParams) (*Transfer, error) {
 	if c.secretKey == "" && !c.mockMode {
-		return nil, fmt.Errorf("stripe connect: not configured")
+		return nil, errors.New("stripe connect: not configured")
 	}
 	if params.DestinationAccountID == "" || params.AmountCents <= 0 || params.IdempotencyKey == "" {
-		return nil, fmt.Errorf("stripe connect: destination, amount_cents>0, idempotency_key required")
+		return nil, errors.New("stripe connect: destination, amount_cents>0, idempotency_key required")
 	}
 
 	if c.mockMode {
@@ -349,10 +350,10 @@ type Payout struct {
 // connected account so the payout draws from their balance, not ours.
 func (c *StripeConnect) CreatePayout(params CreatePayoutParams) (*Payout, error) {
 	if c.secretKey == "" && !c.mockMode {
-		return nil, fmt.Errorf("stripe connect: not configured")
+		return nil, errors.New("stripe connect: not configured")
 	}
 	if params.OnBehalfOfAccountID == "" || params.AmountCents <= 0 || params.IdempotencyKey == "" {
-		return nil, fmt.Errorf("stripe connect: account, amount_cents>0, idempotency_key required")
+		return nil, errors.New("stripe connect: account, amount_cents>0, idempotency_key required")
 	}
 	method := params.Method
 	if method == "" {
@@ -414,7 +415,7 @@ func (c *StripeConnect) CreatePayout(params CreatePayoutParams) (*Payout, error)
 func (c *StripeConnect) VerifyConnectWebhookSignature(payload []byte, sigHeader string) (*WebhookEvent, error) {
 	if c.connectWebhookSecret == "" {
 		if !c.mockMode {
-			return nil, fmt.Errorf("stripe connect: webhook secret not configured — refusing to verify")
+			return nil, errors.New("stripe connect: webhook secret not configured — refusing to verify")
 		}
 		// Mock-only fallback so dev tooling can post events.
 		var event WebhookEvent
@@ -461,7 +462,7 @@ type PayoutEvent struct {
 // an "account" field at the top level).
 func (c *StripeConnect) PayoutFromEvent(event *WebhookEvent, rawAccount string) (*PayoutEvent, error) {
 	if event == nil {
-		return nil, fmt.Errorf("stripe connect: nil event")
+		return nil, errors.New("stripe connect: nil event")
 	}
 	var data struct {
 		Object struct {
@@ -500,7 +501,7 @@ type TransferEvent struct {
 // TransferFromEvent extracts the transfer object from a charge/transfer event.
 func (c *StripeConnect) TransferFromEvent(event *WebhookEvent) (*TransferEvent, error) {
 	if event == nil {
-		return nil, fmt.Errorf("stripe connect: nil event")
+		return nil, errors.New("stripe connect: nil event")
 	}
 	var data struct {
 		Object struct {

@@ -797,7 +797,7 @@ func BenchmarkNormalizeSSEChunk_NoNulls(b *testing.B) {
 	chunk := `data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1700000000,"model":"qwen3.5-27b","choices":[{"index":0,"delta":{"content":"Hello world"},"finish_reason":null}]}`
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = normalizeSSEChunk(chunk)
 	}
 }
@@ -808,7 +808,7 @@ func BenchmarkNormalizeSSEChunk_WithNulls(b *testing.B) {
 	chunk := `data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1700000000,"model":"qwen3.5-27b","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":null,"reasoning_content":null},"finish_reason":null}],"usage":null,"system_fingerprint":null}`
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = normalizeSSEChunk(chunk)
 	}
 }
@@ -819,7 +819,7 @@ func BenchmarkNormalizeSSEChunk_Usage(b *testing.B) {
 	chunk := `data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1700000000,"model":"qwen3.5-27b","choices":[],"usage":{"prompt_tokens":150,"completion_tokens":83,"total_tokens":233}}`
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = normalizeSSEChunk(chunk)
 	}
 }

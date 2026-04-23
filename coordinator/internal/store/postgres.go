@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -755,7 +756,7 @@ func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType 
 		accountID, amountMicroUSD,
 	).Scan(&balanceAfter)
 	if err != nil {
-		return fmt.Errorf("insufficient balance or account not found")
+		return errors.New("insufficient balance or account not found")
 	}
 
 	// Record ledger entry
@@ -1179,7 +1180,7 @@ func (s *PostgresStore) GetUserByStripeAccount(stripeAccountID string) (*User, e
 
 func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
 	if w == nil || w.ID == "" {
-		return fmt.Errorf("stripe withdrawal id is required")
+		return errors.New("stripe withdrawal id is required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1260,7 +1261,7 @@ func (s *PostgresStore) GetStripeWithdrawalByTransferID(transferID string) (*Str
 
 func (s *PostgresStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
 	if w == nil || w.ID == "" {
-		return fmt.Errorf("stripe withdrawal id is required")
+		return errors.New("stripe withdrawal id is required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1535,7 +1536,7 @@ func (s *PostgresStore) ApproveDeviceCode(deviceCode, accountID string) error {
 		return fmt.Errorf("store: approve device code: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("device code not found, not pending, or expired")
+		return errors.New("device code not found, not pending, or expired")
 	}
 	return nil
 }
@@ -1596,7 +1597,7 @@ func (s *PostgresStore) RevokeProviderToken(token string) error {
 		return fmt.Errorf("store: revoke provider token: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("provider token not found")
+		return errors.New("provider token not found")
 	}
 	return nil
 }
@@ -1927,10 +1928,10 @@ func (s *PostgresStore) SettleProviderPayout(id int64) error {
 // the corresponding per-node earning.
 func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	if earning == nil {
-		return fmt.Errorf("provider earning is required")
+		return errors.New("provider earning is required")
 	}
 	if earning.AccountID == "" {
-		return fmt.Errorf("provider earning account_id is required")
+		return errors.New("provider earning account_id is required")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1971,10 +1972,10 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 // records the corresponding payout history row.
 func (s *PostgresStore) CreditProviderWallet(payout *ProviderPayout) error {
 	if payout == nil {
-		return fmt.Errorf("provider payout is required")
+		return errors.New("provider payout is required")
 	}
 	if payout.ProviderAddress == "" {
-		return fmt.Errorf("provider payout address is required")
+		return errors.New("provider payout address is required")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

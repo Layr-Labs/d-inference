@@ -113,7 +113,7 @@ func sendConcurrentRequests(t *testing.T, url, apiKey, model string, count, maxI
 	sem := make(chan struct{}, maxInflight)
 	var wg sync.WaitGroup
 	wg.Add(count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		sem <- struct{}{} // acquire semaphore slot
 		go func(idx int) {
 			defer wg.Done()
@@ -218,7 +218,7 @@ func TestLoad_SingleProviderBurst(t *testing.T) {
 	const numRequests = 20
 	start := time.Now()
 
-	for i := 0; i < numRequests; i++ {
+	for i := range numRequests {
 		code, _, err := sendRequest(ctx, ts.URL, "test-key", model)
 		if err != nil {
 			t.Fatalf("request %d: %v", i, err)
@@ -403,7 +403,7 @@ func TestLoad_ProviderFailureMidLoad(t *testing.T) {
 
 	// Send first 10 requests sequentially.
 	const firstBatch = 10
-	for i := 0; i < firstBatch; i++ {
+	for i := range firstBatch {
 		code, _, err := sendRequest(ctx, ts.URL, "test-key", model)
 		if err != nil {
 			t.Fatalf("batch1 request %d: %v", i, err)
@@ -420,7 +420,7 @@ func TestLoad_ProviderFailureMidLoad(t *testing.T) {
 
 	// Send remaining 10 requests — all should go to provider 2.
 	const secondBatch = 10
-	for i := 0; i < secondBatch; i++ {
+	for i := range secondBatch {
 		code, _, err := sendRequest(ctx, ts.URL, "test-key", model)
 		if err != nil {
 			t.Fatalf("batch2 request %d: %v", i, err)
@@ -528,7 +528,7 @@ func TestLoad_RaceSafety(t *testing.T) {
 	defer providerCancel()
 
 	// Connect 5 providers.
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		pk := testPublicKeyB64()
 		conn := connectAndPrepareProvider(t, ctx, ts.URL, reg, model, pk, float64(50+i*50))
 		defer conn.Close(websocket.StatusNormalClosure, "done")
@@ -540,7 +540,7 @@ func TestLoad_RaceSafety(t *testing.T) {
 	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
 	defer heartbeatCancel()
 	var heartbeatWg sync.WaitGroup
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		heartbeatWg.Add(1)
 		go func(idx int) {
 			defer heartbeatWg.Done()

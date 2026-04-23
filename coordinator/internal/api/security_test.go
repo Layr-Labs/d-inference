@@ -221,7 +221,7 @@ func TestSecurity_OversizedRequestBody(t *testing.T) {
 
 	// Pre-fill queue for "test" model so the request returns 503 immediately
 	// instead of blocking for 30s waiting for a provider.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		_ = srv.registry.Queue().Enqueue(&registry.QueuedRequest{
 			RequestID:  fmt.Sprintf("oversized-filler-%d", i),
 			Model:      "test",
@@ -560,7 +560,7 @@ func TestSecurity_DeviceCodeBruteForce(t *testing.T) {
 
 	// Try 100 random user codes — all should fail with 404.
 	userCtx := withUser(context.Background(), "brute-force-acct", "brute@test.com")
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		randomCode := fmt.Sprintf("%04d-%04d", i, i+1000)
 		body := fmt.Sprintf(`{"user_code":"%s"}`, randomCode)
 		req := httptest.NewRequest(http.MethodPost, "/v1/device/approve", strings.NewReader(body))
@@ -631,7 +631,7 @@ func TestSecurity_SQLInjection(t *testing.T) {
 		// Pre-fill the request queue for each injection model name so
 		// Enqueue returns ErrQueueFull immediately (avoids 30s queue wait).
 		for _, payload := range injectionPayloads {
-			for i := 0; i < 10; i++ {
+			for i := range 10 {
 				_ = srv.registry.Queue().Enqueue(&registry.QueuedRequest{
 					RequestID:  fmt.Sprintf("filler-%s-%d", payload, i),
 					Model:      payload,
@@ -697,7 +697,7 @@ func TestSecurity_HeaderInjection(t *testing.T) {
 		// Model name containing newlines should not inject HTTP headers.
 		// Pre-fill queue so it returns 503 immediately instead of blocking 30s.
 		injectedModel := "test\r\nX-Injected: true\r\n"
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			_ = srv.registry.Queue().Enqueue(&registry.QueuedRequest{
 				RequestID:  fmt.Sprintf("header-inj-filler-%d", i),
 				Model:      injectedModel,
@@ -769,7 +769,7 @@ func TestSecurity_ConcurrentAuthAttempts(t *testing.T) {
 		var wg sync.WaitGroup
 		results := make([]int, 50)
 
-		for i := 0; i < 50; i++ {
+		for i := range 50 {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
@@ -793,7 +793,7 @@ func TestSecurity_ConcurrentAuthAttempts(t *testing.T) {
 	t.Run("concurrent_valid_auth", func(t *testing.T) {
 		// Pre-fill queue for "test" model so requests return 503 immediately
 		// instead of blocking for 30s waiting for a provider.
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			_ = srv.registry.Queue().Enqueue(&registry.QueuedRequest{
 				RequestID:  fmt.Sprintf("concurrent-valid-filler-%d", i),
 				Model:      "test",
@@ -804,7 +804,7 @@ func TestSecurity_ConcurrentAuthAttempts(t *testing.T) {
 		var wg sync.WaitGroup
 		results := make([]int, 50)
 
-		for i := 0; i < 50; i++ {
+		for i := range 50 {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
@@ -847,7 +847,7 @@ func TestSecurity_ConcurrentAuthAttempts(t *testing.T) {
 		}
 
 		var wg sync.WaitGroup
-		for i := 0; i < 50; i++ {
+		for i := range 50 {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()

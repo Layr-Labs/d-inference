@@ -31,6 +31,7 @@ import (
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"time"
@@ -258,7 +259,7 @@ func ParseP256PublicKey(raw []byte) (*ecdsa.PublicKey, error) {
 		y := new(big.Int).SetBytes(raw[33:65])
 
 		if !curve.IsOnCurve(x, y) {
-			return nil, fmt.Errorf("point is not on the P-256 curve")
+			return nil, errors.New("point is not on the P-256 curve")
 		}
 
 		return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
@@ -271,7 +272,7 @@ func ParseP256PublicKey(raw []byte) (*ecdsa.PublicKey, error) {
 		y := new(big.Int).SetBytes(raw[32:64])
 
 		if !curve.IsOnCurve(x, y) {
-			return nil, fmt.Errorf("point is not on the P-256 curve")
+			return nil, errors.New("point is not on the P-256 curve")
 		}
 
 		return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
@@ -363,7 +364,7 @@ func VerifyChallengeSignature(sePublicKeyB64, signatureB64, data string) error {
 
 	// Verify
 	if !ecdsa.Verify(pubKey, hash[:], sig.R, sig.S) {
-		return fmt.Errorf("ECDSA signature verification failed")
+		return errors.New("ECDSA signature verification failed")
 	}
 
 	return nil

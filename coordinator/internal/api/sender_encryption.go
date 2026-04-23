@@ -40,6 +40,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -261,7 +262,7 @@ func (w *sealingResponseWriter) WriteHeader(status int) {
 		// Keep text/event-stream so the client's SSE parser is happy; the
 		// per-event payload is what's sealed, not the framing.
 		w.inner.Header().Set("X-Eigen-Sealed", "true")
-		w.inner.Header().Set("X-Eigen-Sealed-KID", w.kid)
+		w.inner.Header().Set("X-Eigen-Sealed-Kid", w.kid)
 		w.inner.Header().Del("Content-Length")
 		w.inner.WriteHeader(status)
 		if w.flusher != nil {
@@ -287,7 +288,7 @@ func (w *sealingResponseWriter) Write(p []byte) (int, error) {
 		return w.bodyBuf.Write(p)
 	default:
 		// Mode is always set by WriteHeader (invoked above when not yet).
-		return 0, fmt.Errorf("sealingResponseWriter: mode not set")
+		return 0, errors.New("sealingResponseWriter: mode not set")
 	}
 }
 
@@ -370,7 +371,7 @@ func (w *sealingResponseWriter) finish() {
 		})
 		w.inner.Header().Set("Content-Type", SealedContentType)
 		w.inner.Header().Set("X-Eigen-Sealed", "true")
-		w.inner.Header().Set("X-Eigen-Sealed-KID", w.kid)
+		w.inner.Header().Set("X-Eigen-Sealed-Kid", w.kid)
 		w.inner.WriteHeader(w.statusCode)
 		_, _ = w.inner.Write(envelope)
 		return

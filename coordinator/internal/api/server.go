@@ -19,12 +19,14 @@ import (
 	"crypto/subtle"
 	"crypto/x509"
 	_ "embed"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -905,7 +907,7 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 			if rec := recover(); rec != nil {
 				// ErrAbortHandler is the Go-idiomatic way for a handler to
 				// force-close the connection — propagate it unchanged.
-				if rec == http.ErrAbortHandler {
+				if errors.Is(http.ErrAbortHandler, rec) {
 					panic(rec)
 				}
 				stack := string(debug.Stack())
@@ -1109,7 +1111,7 @@ func httpPathLabel(path string) string {
 }
 
 // strconvItoa is a shim to avoid pulling strconv into every middleware file.
-func strconvItoa(i int) string { return fmt.Sprintf("%d", i) }
+func strconvItoa(i int) string { return strconv.Itoa(i) }
 
 // statusWriter wraps http.ResponseWriter to capture the status code
 // for logging. It also implements http.Flusher and http.Hijacker by
@@ -1141,7 +1143,7 @@ func (sw *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if hj, ok := sw.ResponseWriter.(http.Hijacker); ok {
 		return hj.Hijack()
 	}
-	return nil, nil, fmt.Errorf("underlying ResponseWriter does not implement http.Hijacker")
+	return nil, nil, errors.New("underlying ResponseWriter does not implement http.Hijacker")
 }
 
 // Unwrap returns the underlying ResponseWriter, allowing the http package

@@ -3,6 +3,7 @@ package e2e
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"testing"
 
 	"golang.org/x/crypto/nacl/box"
@@ -56,7 +57,7 @@ func TestDeriveCoordinatorKey_DistinctMnemonics(t *testing.T) {
 
 func TestDeriveCoordinatorKey_Empty(t *testing.T) {
 	_, err := DeriveCoordinatorKey("")
-	if err != ErrNoMnemonic {
+	if !errors.Is(err, ErrNoMnemonic) {
 		t.Fatalf("want ErrNoMnemonic, got %v", err)
 	}
 }

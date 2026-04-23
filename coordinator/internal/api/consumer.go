@@ -17,6 +17,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -327,7 +328,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return ids
 	}
 
-	for attempt := 0; attempt < maxDispatchAttempts; attempt++ {
+	for attempt := range maxDispatchAttempts {
 		requestID = uuid.New().String()
 		pr = &registry.PendingRequest{
 			RequestID:             requestID,
@@ -370,7 +371,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			var err error
 			provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 			if err != nil {
-				if err == context.Canceled {
+				if errors.Is(err, context.Canceled) {
 					refundReservation()
 					return
 				}
@@ -650,7 +651,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Provider-Attested", "false")
 	}
 	w.Header().Set("X-Provider-Trust-Level", string(trustLevel))
-	w.Header().Set("X-Provider-ID", providerID)
+	w.Header().Set("X-Provider-Id", providerID)
 	w.Header().Set("X-Provider-Chip", chipName)
 	w.Header().Set("X-Provider-Model", machineModel)
 	if attestResult != nil {
@@ -662,12 +663,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if mdaVerified {
-		w.Header().Set("X-Provider-MDA-Verified", "true")
+		w.Header().Set("X-Provider-Mda-Verified", "true")
 	}
 	// SE public key for attestation receipt verification.
 	// Consumers can use this to verify SE signatures on response hashes.
 	if attestResult != nil && attestResult.PublicKey != "" {
-		w.Header().Set("X-Attestation-SE-Public-Key", attestResult.PublicKey)
+		w.Header().Set("X-Attestation-Se-Public-Key", attestResult.PublicKey)
 		w.Header().Set("X-Attestation-Device-Serial", attestResult.SerialNumber)
 	}
 
@@ -1072,7 +1073,7 @@ func extractMessage(chunks []string) extractedMessage {
 	msg := extractedMessage{Content: contentBuilder.String(), Reasoning: reasoningBuilder.String()}
 	if len(toolCallMap) > 0 {
 		msg.ToolCalls = make([]map[string]any, 0, len(toolCallMap))
-		for i := 0; i < len(toolCallMap); i++ {
+		for i := range len(toolCallMap) {
 			if tc, ok := toolCallMap[i]; ok {
 				delete(tc, "index")
 				msg.ToolCalls = append(msg.ToolCalls, tc)
@@ -1501,7 +1502,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {
-			if err == context.Canceled {
+			if errors.Is(err, context.Canceled) {
 				refundReservation()
 				return
 			}

@@ -262,7 +262,7 @@ func (s MetricsSnapshot) RenderProm() string {
 
 // splitPromKey separates the metric name from the Prom-style label block.
 // Input:  "foo{a=1,b=2}"
-// Output: name="foo", labels=`{a="1",b="2"}`
+// Output: name="foo", labels=`{a="1",b="2"}`.
 func splitPromKey(key string) (string, string) {
 	i := strings.IndexByte(key, '{')
 	if i < 0 {

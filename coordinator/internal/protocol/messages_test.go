@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 )
 
@@ -191,7 +192,7 @@ func TestInferenceErrorMarshal(t *testing.T) {
 	if decoded.Error != "model not loaded" {
 		t.Errorf("error = %q", decoded.Error)
 	}
-	if decoded.StatusCode != 500 {
+	if decoded.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status_code = %d, want 500", decoded.StatusCode)
 	}
 }
@@ -341,7 +342,7 @@ func TestProviderMessageUnmarshalError(t *testing.T) {
 	if errMsg.Error != "model not loaded" {
 		t.Errorf("error = %q", errMsg.Error)
 	}
-	if errMsg.StatusCode != 500 {
+	if errMsg.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status_code = %d", errMsg.StatusCode)
 	}
 }

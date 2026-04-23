@@ -109,7 +109,7 @@ func TestHandleEnrollEndpoint(t *testing.T) {
 	srv := enrollTestServer(t)
 
 	body := `{"serial_number": "ABCD1234EFGH"}`
-	req := httptest.NewRequest("POST", "/v1/enroll", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Host = "api.darkbloom.dev"
 	req.Header.Set("X-Forwarded-Proto", "https")
@@ -152,7 +152,7 @@ func TestHandleEnrollInvalidSerial(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("POST", "/v1/enroll", strings.NewReader(tt.body))
+			req := httptest.NewRequest(http.MethodPost, "/v1/enroll", strings.NewReader(tt.body))
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 			srv.Handler().ServeHTTP(w, req)

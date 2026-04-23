@@ -14,13 +14,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -748,7 +748,7 @@ func TestConnectWebhookPayoutFailedIsIdempotent(t *testing.T) {
 		"data":{"object":{"id":"po_idem","status":"failed","amount":500,"method":"standard","failure_code":"x","failure_message":"y"}}
 	}`)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		req := signedConnectRequest(t, payload, "whsec_test")
 		w := httptest.NewRecorder()
 		srv.handleStripeConnectWebhook(w, req)
@@ -780,7 +780,7 @@ func TestConnectWebhookPayoutPaidIsIdempotent(t *testing.T) {
 		"type":"payout.paid","account":"` + user.StripeAccountID + `",
 		"data":{"object":{"id":"po_paid","status":"paid","amount":500,"method":"standard"}}
 	}`)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		req := signedConnectRequest(t, payload, "whsec_test")
 		w := httptest.NewRecorder()
 		srv.handleStripeConnectWebhook(w, req)
@@ -837,7 +837,7 @@ func readyUser(t *testing.T, st *store.MemoryStore, accountID, email string, ins
 // header for the given payload + secret.
 func signedConnectRequest(t *testing.T, payload []byte, secret string) *http.Request {
 	t.Helper()
-	ts := fmt.Sprintf("%d", time.Now().Unix())
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(ts + "." + string(payload)))
 	sig := hex.EncodeToString(mac.Sum(nil))

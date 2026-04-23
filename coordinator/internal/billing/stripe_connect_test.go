@@ -5,13 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +28,7 @@ func silentLogger() *slog.Logger {
 // "t=<unix>,v1=<HMAC-SHA256(t + . + payload)>".
 func signWebhook(t *testing.T, p *StripeProcessor, payload []byte) string {
 	t.Helper()
-	ts := fmt.Sprintf("%d", time.Now().Unix())
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	mac := hmac.New(sha256.New, []byte(p.webhookSecret))
 	mac.Write([]byte(ts + "." + string(payload)))
 	sig := hex.EncodeToString(mac.Sum(nil))

@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -28,9 +29,9 @@ func (s *Server) extractAndVerifyClientCert(r *http.Request) *ACMEVerificationRe
 		return nil // ACME verification not configured
 	}
 
-	verifyStatus := r.Header.Get("X-SSL-Client-Verify")
-	certEncoded := r.Header.Get("X-SSL-Client-Cert")
-	clientDN := r.Header.Get("X-SSL-Client-DN")
+	verifyStatus := r.Header.Get("X-Ssl-Client-Verify")
+	certEncoded := r.Header.Get("X-Ssl-Client-Cert")
+	clientDN := r.Header.Get("X-Ssl-Client-Dn")
 
 	s.logger.Info("TLS client cert headers",
 		"verify", verifyStatus,
@@ -121,7 +122,7 @@ func encodeP256PublicKey(rawKey any) (string, error) {
 		return "", fmt.Errorf("client cert public key was %T, expected ECDSA P-256", rawKey)
 	}
 	if pubKey.Curve == nil || pubKey.Curve.Params().BitSize != 256 {
-		return "", fmt.Errorf("client cert public key was not P-256")
+		return "", errors.New("client cert public key was not P-256")
 	}
 
 	xBytes := pubKey.X.Bytes()

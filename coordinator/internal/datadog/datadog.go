@@ -297,7 +297,7 @@ func (c *Client) flushLogs() {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("DD-API-KEY", c.apiKey)
+	req.Header.Set("Dd-Api-Key", c.apiKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -319,7 +319,7 @@ func (c *Client) emitDDEvent(entry TelemetryLogEntry) {
 		return
 	}
 	event := map[string]any{
-		"title":      fmt.Sprintf("[d-inference] Fatal: %s", truncate(entry.Message, 100)),
+		"title":      "[d-inference] Fatal: " + truncate(entry.Message, 100),
 		"text":       entry.Message,
 		"alert_type": "error",
 		"source":     "d-inference",
@@ -339,7 +339,7 @@ func (c *Client) emitDDEvent(entry TelemetryLogEntry) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("DD-API-KEY", c.apiKey)
+	req.Header.Set("Dd-Api-Key", c.apiKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

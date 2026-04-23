@@ -37,8 +37,8 @@ func createTestAttestationJSONWithSerial(t *testing.T, serial, encryptionKey str
 	}
 
 	// Marshal public key as uncompressed point (65 bytes: 0x04 || X || Y)
-	xBytes := privKey.PublicKey.X.Bytes()
-	yBytes := privKey.PublicKey.Y.Bytes()
+	xBytes := privKey.X.Bytes()
+	yBytes := privKey.Y.Bytes()
 	raw := make([]byte, 65)
 	raw[0] = 0x04
 	copy(raw[1+32-len(xBytes):33], xBytes)

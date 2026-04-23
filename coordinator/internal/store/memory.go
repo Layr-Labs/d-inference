@@ -16,6 +16,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -409,7 +410,7 @@ func (s *MemoryStore) RecordReferral(referrerCode, referredAccountID string) err
 		return fmt.Errorf("referral code %q not found", referrerCode)
 	}
 	if _, exists := s.referrals[referredAccountID]; exists {
-		return fmt.Errorf("account already has a referrer")
+		return errors.New("account already has a referrer")
 	}
 
 	s.referrals[referredAccountID] = referrerCode
@@ -698,7 +699,7 @@ func (s *MemoryStore) GetUserByStripeAccount(stripeAccountID string) (*User, err
 
 func (s *MemoryStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
 	if w == nil || w.ID == "" {
-		return fmt.Errorf("stripe withdrawal id is required")
+		return errors.New("stripe withdrawal id is required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -760,7 +761,7 @@ func (s *MemoryStore) GetStripeWithdrawalByTransferID(transferID string) (*Strip
 
 func (s *MemoryStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
 	if w == nil || w.ID == "" {
-		return fmt.Errorf("stripe withdrawal id is required")
+		return errors.New("stripe withdrawal id is required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -833,7 +834,7 @@ func (s *MemoryStore) GetDeviceCode(deviceCode string) (*DeviceCode, error) {
 
 	dc, ok := s.deviceCodesByCode[deviceCode]
 	if !ok {
-		return nil, fmt.Errorf("device code not found")
+		return nil, errors.New("device code not found")
 	}
 	copy := *dc
 	return &copy, nil
@@ -857,14 +858,14 @@ func (s *MemoryStore) ApproveDeviceCode(deviceCode, accountID string) error {
 
 	dc, ok := s.deviceCodesByCode[deviceCode]
 	if !ok {
-		return fmt.Errorf("device code not found")
+		return errors.New("device code not found")
 	}
 	if dc.Status != "pending" {
 		return fmt.Errorf("device code is %s, not pending", dc.Status)
 	}
 	if time.Now().After(dc.ExpiresAt) {
 		dc.Status = "expired"
-		return fmt.Errorf("device code has expired")
+		return errors.New("device code has expired")
 	}
 	dc.Status = "approved"
 	dc.AccountID = accountID
@@ -892,7 +893,7 @@ func (s *MemoryStore) CreateProviderToken(pt *ProviderToken) error {
 	defer s.mu.Unlock()
 
 	if _, exists := s.providerTokens[pt.TokenHash]; exists {
-		return fmt.Errorf("provider token already exists")
+		return errors.New("provider token already exists")
 	}
 	copy := *pt
 	s.providerTokens[pt.TokenHash] = &copy
@@ -906,10 +907,10 @@ func (s *MemoryStore) GetProviderToken(token string) (*ProviderToken, error) {
 	h := sha256Hex(token)
 	pt, ok := s.providerTokens[h]
 	if !ok {
-		return nil, fmt.Errorf("provider token not found")
+		return nil, errors.New("provider token not found")
 	}
 	if !pt.Active {
-		return nil, fmt.Errorf("provider token is revoked")
+		return nil, errors.New("provider token is revoked")
 	}
 	copy := *pt
 	return &copy, nil
@@ -922,7 +923,7 @@ func (s *MemoryStore) RevokeProviderToken(token string) error {
 	h := sha256Hex(token)
 	pt, ok := s.providerTokens[h]
 	if !ok {
-		return fmt.Errorf("provider token not found")
+		return errors.New("provider token not found")
 	}
 	pt.Active = false
 	return nil
@@ -1164,10 +1165,10 @@ func (s *MemoryStore) SettleProviderPayout(id int64) error {
 // the corresponding per-node earning.
 func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
 	if earning == nil {
-		return fmt.Errorf("provider earning is required")
+		return errors.New("provider earning is required")
 	}
 	if earning.AccountID == "" {
-		return fmt.Errorf("provider earning account_id is required")
+		return errors.New("provider earning account_id is required")
 	}
 
 	s.mu.Lock()
@@ -1189,10 +1190,10 @@ func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
 // records the corresponding payout history row.
 func (s *MemoryStore) CreditProviderWallet(payout *ProviderPayout) error {
 	if payout == nil {
-		return fmt.Errorf("provider payout is required")
+		return errors.New("provider payout is required")
 	}
 	if payout.ProviderAddress == "" {
-		return fmt.Errorf("provider payout address is required")
+		return errors.New("provider payout address is required")
 	}
 
 	s.mu.Lock()
@@ -1220,7 +1221,7 @@ func (s *MemoryStore) SetRelease(release *Release) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if release.Version == "" || release.Platform == "" {
-		return fmt.Errorf("version and platform are required")
+		return errors.New("version and platform are required")
 	}
 	r := *release
 	if r.CreatedAt.IsZero() {

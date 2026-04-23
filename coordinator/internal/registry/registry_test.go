@@ -307,7 +307,7 @@ func TestFindProviderSkipsAtMaxConcurrency(t *testing.T) {
 	testMakeTextRoutable(p1)
 
 	// Fill up the provider to max concurrency by adding pending requests.
-	for i := 0; i < DefaultMaxConcurrent; i++ {
+	for i := range DefaultMaxConcurrent {
 		p1.AddPending(&PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
 	}
 
@@ -686,7 +686,7 @@ func TestChallengeFailureThreshold(t *testing.T) {
 	reg.Register("p1", nil, msg)
 
 	// Record failures up to the threshold
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		reg.RecordChallengeFailure("p1")
 	}
 
@@ -1396,7 +1396,7 @@ func TestHeartbeatMetricsAffectScoring(t *testing.T) {
 	}
 
 	// Call FindProvider 10 times; healthy should be selected every time.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		selected := reg.FindProvider(model)
 		if selected == nil {
 			t.Fatalf("FindProvider returned nil on iteration %d", i)
@@ -1574,7 +1574,7 @@ func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 	model := msg.Models[0].ID
 
 	// Register 5 providers with different stats.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		id := fmt.Sprintf("provider-%d", i)
 		p := reg.Register(id, nil, msg)
 		p.DecodeTPS = float64(50 + i*25)
@@ -1597,7 +1597,7 @@ func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		thermalStates := []string{"nominal", "fair", "serious", "nominal"}
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			// Phase A: FindProvider + SetProviderIdle
 			p := reg.FindProvider(model)
 			if p != nil {
@@ -1627,7 +1627,7 @@ func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			id := fmt.Sprintf("provider-%d", i%5)
 			if i%3 == 0 {
 				reg.RecordJobFailure(id)
@@ -1641,7 +1641,7 @@ func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			id := fmt.Sprintf("provider-%d", i%5)
 			p := reg.GetProvider(id)
 			if p != nil {
@@ -1663,7 +1663,7 @@ func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			_ = reg.ProviderCount()
 			reg.ForEachProvider(func(p *Provider) {
 				_ = p.PendingCount()
@@ -1675,7 +1675,7 @@ func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			ids := reg.ProviderIDs()
 			for _, id := range ids {
 				_ = reg.GetProvider(id)
@@ -2086,7 +2086,7 @@ func TestFindProviderDynamicConcurrency(t *testing.T) {
 	p.mu.Unlock()
 
 	// Add 5 pending requests (exceeds old limit of 4, within new limit of 8)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		p.AddPending(&PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
 	}
 
@@ -2204,7 +2204,7 @@ func TestSetProviderIdleDynamicCap(t *testing.T) {
 	p.mu.Unlock()
 
 	// Add 5 pending requests (under max of 8)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		p.AddPending(&PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
 	}
 

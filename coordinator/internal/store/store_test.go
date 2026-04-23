@@ -447,7 +447,7 @@ func TestProviderEarnings_GetByProviderKey(t *testing.T) {
 	s := NewMemory("")
 
 	// Record earnings for two different nodes.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		key := "key-A"
 		if i%2 == 0 {
 			key = "key-B"
@@ -492,7 +492,7 @@ func TestProviderEarnings_NewestFirst(t *testing.T) {
 	s := NewMemory("")
 
 	// Record in chronological order.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		_ = s.RecordProviderEarning(&ProviderEarning{
 			AccountID: "acct-1", ProviderID: "prov-1", ProviderKey: "key-1",
 			JobID: string(rune('a' + i)), Model: "test-model",
@@ -505,7 +505,7 @@ func TestProviderEarnings_NewestFirst(t *testing.T) {
 		t.Fatalf("expected 5 earnings, got %d", len(earnings))
 	}
 	// Newest first means highest ID first.
-	for i := 0; i < len(earnings)-1; i++ {
+	for i := range len(earnings) - 1 {
 		if earnings[i].ID < earnings[i+1].ID {
 			t.Errorf("earnings not in newest-first order: ID %d before ID %d", earnings[i].ID, earnings[i+1].ID)
 		}
@@ -516,7 +516,7 @@ func TestProviderEarnings_LimitRespected(t *testing.T) {
 	s := NewMemory("")
 
 	// Record 10 earnings.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		_ = s.RecordProviderEarning(&ProviderEarning{
 			AccountID: "acct-1", ProviderID: "prov-1", ProviderKey: "key-1",
 			JobID: string(rune('a' + i)), Model: "test-model",

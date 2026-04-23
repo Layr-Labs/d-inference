@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -64,7 +65,7 @@ func (p *StripeProcessor) CreateCheckoutSession(req CheckoutSessionRequest) (*Ch
 		req.Currency = "usd"
 	}
 	if req.AmountCents < 50 {
-		return nil, fmt.Errorf("minimum Stripe charge is $0.50 (50 cents)")
+		return nil, errors.New("minimum Stripe charge is $0.50 (50 cents)")
 	}
 
 	// Build form-encoded body for Stripe API
@@ -97,7 +98,7 @@ func (p *StripeProcessor) CreateCheckoutSession(req CheckoutSessionRequest) (*Ch
 	}
 	body := strings.Join(parts, "&")
 
-	httpReq, err := http.NewRequest("POST", "https://api.stripe.com/v1/checkout/sessions",
+	httpReq, err := http.NewRequest(http.MethodPost, "https://api.stripe.com/v1/checkout/sessions",
 		strings.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("stripe: build request: %w", err)
@@ -155,7 +156,7 @@ type CheckoutSessionEvent struct {
 // VerifyWebhookSignature verifies a Stripe webhook signature and returns the parsed event.
 // Stripe signs webhooks with HMAC-SHA256 using the webhook signing secret.
 //
-// Signature header format: t=<timestamp>,v1=<signature>[,v1=<signature>...]
+// Signature header format: t=<timestamp>,v1=<signature>[,v1=<signature>...].
 func (p *StripeProcessor) VerifyWebhookSignature(payload []byte, sigHeader string) (*WebhookEvent, error) {
 	if p.webhookSecret == "" {
 		// No webhook secret configured — parse without verification (dev mode)
@@ -185,16 +186,16 @@ func (p *StripeProcessor) VerifyWebhookSignature(payload []byte, sigHeader strin
 	}
 
 	if timestamp == "" || len(signatures) == 0 {
-		return nil, fmt.Errorf("stripe: invalid signature header")
+		return nil, errors.New("stripe: invalid signature header")
 	}
 
 	// Check timestamp tolerance (5 minutes)
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil {
-		return nil, fmt.Errorf("stripe: invalid timestamp in signature")
+		return nil, errors.New("stripe: invalid timestamp in signature")
 	}
 	if time.Since(time.Unix(ts, 0)) > 5*time.Minute {
-		return nil, fmt.Errorf("stripe: webhook timestamp too old")
+		return nil, errors.New("stripe: webhook timestamp too old")
 	}
 
 	// Compute expected signature: HMAC-SHA256(timestamp + "." + payload)
@@ -212,7 +213,7 @@ func (p *StripeProcessor) VerifyWebhookSignature(payload []byte, sigHeader strin
 		}
 	}
 	if !valid {
-		return nil, fmt.Errorf("stripe: webhook signature mismatch")
+		return nil, errors.New("stripe: webhook signature mismatch")
 	}
 
 	var event WebhookEvent
@@ -243,7 +244,7 @@ func (p *StripeProcessor) ParseCheckoutSession(event *WebhookEvent) (*CheckoutSe
 
 // RetrieveSession fetches a checkout session from the Stripe API.
 func (p *StripeProcessor) RetrieveSession(sessionID string) (*CheckoutSessionEvent, error) {
-	httpReq, err := http.NewRequest("GET",
+	httpReq, err := http.NewRequest(http.MethodGet,
 		"https://api.stripe.com/v1/checkout/sessions/"+sessionID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("stripe: build request: %w", err)

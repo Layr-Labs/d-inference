@@ -54,7 +54,7 @@ func TestStress_QueueOverflow(t *testing.T) {
 	var wg sync.WaitGroup
 	results := make([]int, 10)
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -118,7 +118,7 @@ func TestStress_QueueDrainsWhenProviderAppears(t *testing.T) {
 	// Fire 3 requests BEFORE any provider is available (they'll queue)
 	var wg sync.WaitGroup
 	results := make([]int, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -231,7 +231,7 @@ func TestStress_ProviderCrashDuringMultipleInFlightRequests(t *testing.T) {
 	// Fire 5 concurrent requests
 	var wg sync.WaitGroup
 	results := make([]int, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -399,7 +399,7 @@ func TestStress_BillingBalanceExhaustion(t *testing.T) {
 
 	// Send requests until balance runs out
 	var succeeded, rejected int
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"billing %d"}],"stream":true}`, model, i)
 		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions",
 			strings.NewReader(body))
@@ -412,9 +412,10 @@ func TestStress_BillingBalanceExhaustion(t *testing.T) {
 		io.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		if resp.StatusCode == 200 {
+		switch resp.StatusCode {
+		case http.StatusOK:
 			succeeded++
-		} else if resp.StatusCode == http.StatusPaymentRequired {
+		case http.StatusPaymentRequired:
 			rejected++
 		}
 	}
@@ -438,7 +439,7 @@ func TestStress_BillingConcurrentCharges(t *testing.T) {
 	// Fire 50 concurrent charges of 100 each
 	var wg sync.WaitGroup
 	var chargeErrors int32
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -606,7 +607,7 @@ func TestStress_HeterogeneousProviderScoring(t *testing.T) {
 
 	// Find provider 10 times — the fastest (120 TPS M4 Max) should be selected most
 	selections := make(map[string]int)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		p := reg.FindProvider(model)
 		if p == nil {
 			t.Fatal("FindProvider returned nil")

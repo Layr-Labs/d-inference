@@ -90,7 +90,7 @@ func TestInstallScriptTemplating(t *testing.T) {
 
 func newTestServerWithR2(t *testing.T, cdnURL, sitePackagesURL string) *httptest.Server {
 	t.Helper()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	st := store.NewMemory("")
 	reg := registry.New(logger)
 	s := NewServer(reg, st, logger)
@@ -104,7 +104,7 @@ func newTestServerWithR2(t *testing.T, cdnURL, sitePackagesURL string) *httptest
 
 func newTestServerWithBaseURL(t *testing.T, baseURL string) *httptest.Server {
 	t.Helper()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	st := store.NewMemory("")
 	reg := registry.New(logger)
 	s := NewServer(reg, st, logger)

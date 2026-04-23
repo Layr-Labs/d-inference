@@ -192,7 +192,7 @@ func TestDrainQueuedRequestsUsesAllAvailableCapacity(t *testing.T) {
 	p.mu.Unlock()
 
 	queued := make([]*QueuedRequest, 0, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		req := &QueuedRequest{
 			RequestID:  "queued-" + string(rune('a'+i)),
 			Model:      model,

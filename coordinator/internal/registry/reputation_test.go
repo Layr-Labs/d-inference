@@ -18,7 +18,7 @@ func TestReputationSuccessfulJobsIncreaseScore(t *testing.T) {
 	initialScore := r.Score()
 
 	// Record several successful jobs with fast response times.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		r.RecordJobSuccess(500 * time.Millisecond)
 	}
 	r.RecordUptime(24 * time.Hour)
@@ -34,14 +34,14 @@ func TestReputationFailedJobsDecreaseScore(t *testing.T) {
 	r := NewReputation()
 
 	// Record some successes first to establish a baseline.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		r.RecordJobSuccess(500 * time.Millisecond)
 	}
 	r.RecordUptime(24 * time.Hour)
 	scoreAfterSuccess := r.Score()
 
 	// Now record many failures.
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		r.RecordJobFailure()
 	}
 
@@ -55,10 +55,10 @@ func TestReputationScoreBounded(t *testing.T) {
 	r := NewReputation()
 
 	// All failures — score should not go below 0.0.
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		r.RecordJobFailure()
 	}
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		r.RecordChallengeFail()
 	}
 
@@ -69,11 +69,11 @@ func TestReputationScoreBounded(t *testing.T) {
 
 	// Reset and do all successes — score should not exceed 1.0.
 	r2 := NewReputation()
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		r2.RecordJobSuccess(100 * time.Millisecond)
 	}
 	r2.RecordUptime(48 * time.Hour) // more than expected
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		r2.RecordChallengePass()
 	}
 
@@ -168,10 +168,10 @@ func TestReputationCompositeWeights(t *testing.T) {
 
 func TestReputationAllFailures(t *testing.T) {
 	r := NewReputation()
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		r.RecordJobFailure()
 	}
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		r.RecordChallengeFail()
 	}
 	// Job rate = 0, challenge rate = 0, uptime = 0.5, response = 0.5.

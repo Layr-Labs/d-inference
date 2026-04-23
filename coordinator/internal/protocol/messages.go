@@ -28,7 +28,7 @@ import (
 
 // Message type constants.
 const (
-	// Provider → Coordinator
+	// Provider → Coordinator.
 	TypeRegister               = "register"
 	TypeHeartbeat              = "heartbeat"
 	TypeInferenceAccepted      = "inference_accepted"
@@ -37,7 +37,7 @@ const (
 	TypeInferenceError         = "inference_error"
 	TypeAttestationResponse    = "attestation_response"
 
-	// Coordinator → Provider
+	// Coordinator → Provider.
 	TypeInferenceRequest     = "inference_request"
 	TypeCancel               = "cancel"
 	TypeAttestationChallenge = "attestation_challenge"

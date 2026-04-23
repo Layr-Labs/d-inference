@@ -24,6 +24,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -291,7 +292,7 @@ func main() {
 			"kid", coordKey.KID,
 			"hkdf_info", e2e.CoordinatorKeyHKDFInfo,
 		)
-	} else if err != e2e.ErrNoMnemonic {
+	} else if !errors.Is(err, e2e.ErrNoMnemonic) {
 		logger.Error("failed to derive coordinator encryption key", "error", err)
 	} else {
 		logger.Warn("sender→coordinator encryption disabled — no mnemonic configured")

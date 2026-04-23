@@ -23,6 +23,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -616,10 +617,10 @@ func (s *Server) handleTransferFailed(event *billing.WebhookEvent) {
 func validateRedirectURL(candidate, defaultURL string) error {
 	cu, err := url.Parse(candidate)
 	if err != nil {
-		return fmt.Errorf("invalid URL")
+		return errors.New("invalid URL")
 	}
 	if cu.Scheme != "https" && cu.Scheme != "http" {
-		return fmt.Errorf("scheme must be http or https")
+		return errors.New("scheme must be http or https")
 	}
 	host := strings.ToLower(cu.Hostname())
 	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
@@ -628,7 +629,7 @@ func validateRedirectURL(candidate, defaultURL string) error {
 	if defaultURL == "" {
 		// No allowlist configured → require https + non-empty host.
 		if cu.Scheme != "https" || host == "" {
-			return fmt.Errorf("must be https with a hostname when no default is configured")
+			return errors.New("must be https with a hostname when no default is configured")
 		}
 		return nil
 	}

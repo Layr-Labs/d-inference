@@ -725,7 +725,7 @@ func TestIntegration_RequestQueueDrain(t *testing.T) {
 	p := reg.GetProvider(providerID)
 
 	// Fill the provider to max concurrency with dummy pending requests.
-	for i := 0; i < registry.DefaultMaxConcurrent; i++ {
+	for i := range registry.DefaultMaxConcurrent {
 		pr := &registry.PendingRequest{
 			RequestID:  "dummy-" + string(rune('a'+i)),
 			ProviderID: providerID,

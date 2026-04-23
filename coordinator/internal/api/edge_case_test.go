@@ -378,7 +378,7 @@ func TestEdge_ProviderVeryLargeRegistration(t *testing.T) {
 
 	// Register with many models
 	var models []protocol.ModelInfo
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		models = append(models, protocol.ModelInfo{
 			ID:           fmt.Sprintf("model-%d", i),
 			ModelType:    "chat",
@@ -565,7 +565,7 @@ func TestEdge_ConcurrentRequestsSameProvider(t *testing.T) {
 	var wg sync.WaitGroup
 	results := make([]int, numRequests)
 
-	for i := 0; i < numRequests; i++ {
+	for i := range numRequests {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -956,6 +956,6 @@ func TestEdge_ProviderInvalidPublicKey(t *testing.T) {
 	// but requests to it should fail gracefully
 }
 
-// suppress unused import warnings
+// suppress unused import warnings.
 var _ = rand.Read
 var _ = base64.StdEncoding

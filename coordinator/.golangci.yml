@@ -131,23 +131,14 @@ linters-settings:
     no-global: "all"
     context: "scope"
 
-  stylecheck:
-    checks:
-      - "-ST1003"
-
-  tenv:
-    all: false
-
 linters:
   disable-all: true
   enable:
     ## enabled by default
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
-    - typecheck
     - unused
     ## disabled by default
     - asasalint
@@ -174,7 +165,7 @@ linters:
     - gocritic
     - gocyclo
     - godot
-    - goimports
+    #- goimports  # moved to formatters in v2
     - gomoddirectives
     - gomodguard
     - goprintffuncname
@@ -206,8 +197,6 @@ linters:
     - sloglint
     - spancheck
     - sqlclosecheck
-    - stylecheck
-    - tenv
     - testableexamples
     - testifylint
     - testpackage

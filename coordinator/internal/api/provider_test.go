@@ -109,7 +109,7 @@ func TestProviderWebSocketMultiple(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
 
 	// Connect two providers.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		conn, _, err := websocket.Dial(ctx, wsURL, nil)
 		if err != nil {
 			t.Fatalf("websocket dial %d: %v", i, err)
@@ -231,7 +231,7 @@ func TestProviderInferenceError(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 500 {
+	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", resp.StatusCode)
 	}
 }
@@ -296,8 +296,8 @@ func createTestAttestationJSON(t *testing.T, encryptionKey string) json.RawMessa
 	}
 
 	// Marshal public key as uncompressed point (65 bytes: 0x04 || X || Y)
-	xBytes := privKey.PublicKey.X.Bytes()
-	yBytes := privKey.PublicKey.Y.Bytes()
+	xBytes := privKey.X.Bytes()
+	yBytes := privKey.Y.Bytes()
 	raw := make([]byte, 65)
 	raw[0] = 0x04
 	copy(raw[1+32-len(xBytes):33], xBytes)
@@ -731,7 +731,7 @@ func TestChallengeResponseSuccess(t *testing.T) {
 
 	// Wait for the attestation challenge to arrive.
 	challengeReceived := false
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		readCtx, readCancel := context.WithTimeout(ctx, 500*time.Millisecond)
 		_, data, err := conn.Read(readCtx)
 		readCancel()
@@ -807,7 +807,7 @@ func TestChallengeResponseRejectsMissingSIPStatus(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	challengeReceived := false
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		readCtx, readCancel := context.WithTimeout(ctx, 500*time.Millisecond)
 		_, data, err := conn.Read(readCtx)
 		readCancel()
@@ -905,7 +905,7 @@ func TestChallengeResponseMissingSIPClearsExistingRoutingEligibility(t *testing.
 
 	readChallenge := func() protocol.AttestationChallengeMessage {
 		t.Helper()
-		for i := 0; i < 20; i++ {
+		for range 20 {
 			readCtx, readCancel := context.WithTimeout(ctx, 500*time.Millisecond)
 			_, data, err := conn.Read(readCtx)
 			readCancel()
@@ -1157,7 +1157,7 @@ func TestProviderBelowMinVersionStaysHiddenFromModelsAfterChallenge(t *testing.T
 	reg.SetTrustLevel(providerID, registry.TrustHardware)
 
 	challengeReceived := false
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		readCtx, readCancel := context.WithTimeout(ctx, 500*time.Millisecond)
 		_, data, err := conn.Read(readCtx)
 		readCancel()

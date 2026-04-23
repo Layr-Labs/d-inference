@@ -352,7 +352,7 @@ func TestMultiProvider_ManyProviders(t *testing.T) {
 	const numProviders = 10
 
 	conns := make([]*websocket.Conn, numProviders)
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		pk := testPublicKeyB64()
 		conns[i] = connectProvider(t, ctx, ts.URL, models, pk)
 		defer conns[i].Close(websocket.StatusNormalClosure, "")
@@ -368,7 +368,7 @@ func TestMultiProvider_ManyProviders(t *testing.T) {
 	}
 
 	// Should be able to find providers for the model
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		p := reg.FindProvider(model)
 		if p == nil {
 			t.Errorf("FindProvider returned nil on attempt %d", i)
@@ -402,7 +402,7 @@ func TestMultiProvider_ConcurrentRegistration(t *testing.T) {
 	errors := make([]error, numProviders)
 
 	// Register all providers concurrently
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

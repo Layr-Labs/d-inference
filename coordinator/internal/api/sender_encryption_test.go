@@ -52,7 +52,7 @@ func TestEncryptionKeyEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 	var body struct {
@@ -154,7 +154,7 @@ func TestSealedRequest_RoundTrip(t *testing.T) {
 	plaintext := []byte(`{"model":"qwen3.5-no-such-model","messages":[{"role":"user","content":"hi"}]}`)
 	env, _, ephemPriv := sealRequest(t, plaintext, coordKey.PublicKey, coordKey.KID)
 
-	req, _ := http.NewRequestWithContext(context.Background(), "POST", ts.URL+"/v1/chat/completions", bytes.NewReader(env))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/v1/chat/completions", bytes.NewReader(env))
 	req.Header.Set("Content-Type", SealedContentType)
 	req.Header.Set("Authorization", "Bearer test-key")
 	resp, err := http.DefaultClient.Do(req)
@@ -206,7 +206,7 @@ func TestSealedRequest_TamperedCiphertext(t *testing.T) {
 	parsed["ciphertext"] = base64.StdEncoding.EncodeToString(ct)
 	env2, _ := json.Marshal(parsed)
 
-	req, _ := http.NewRequest("POST", ts.URL+"/v1/chat/completions", bytes.NewReader(env2))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", bytes.NewReader(env2))
 	req.Header.Set("Content-Type", SealedContentType)
 	req.Header.Set("Authorization", "Bearer test-key")
 	resp, err := http.DefaultClient.Do(req)
@@ -231,7 +231,7 @@ func TestSealedRequest_WrongKID(t *testing.T) {
 	plaintext := []byte(`{"model":"x","messages":[{"role":"user","content":"hi"}]}`)
 	env, _, _ := sealRequest(t, plaintext, coordKey.PublicKey, "deadbeefdeadbeef")
 
-	req, _ := http.NewRequest("POST", ts.URL+"/v1/chat/completions", bytes.NewReader(env))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", bytes.NewReader(env))
 	req.Header.Set("Content-Type", SealedContentType)
 	req.Header.Set("Authorization", "Bearer test-key")
 	resp, err := http.DefaultClient.Do(req)
@@ -259,7 +259,7 @@ func TestSealedRequest_CaseInsensitiveContentType(t *testing.T) {
 	plaintext := []byte(`{"model":"qwen3.5-no-such-model","messages":[{"role":"user","content":"hi"}]}`)
 	env, _, ephemPriv := sealRequest(t, plaintext, coordKey.PublicKey, coordKey.KID)
 
-	req, _ := http.NewRequest("POST", ts.URL+"/v1/chat/completions", bytes.NewReader(env))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", bytes.NewReader(env))
 	// Mixed case + a charset parameter — both should be tolerated.
 	req.Header.Set("Content-Type", "Application/EigenInference-Sealed+JSON; charset=utf-8")
 	req.Header.Set("Authorization", "Bearer test-key")
@@ -307,7 +307,7 @@ func TestSealedTransport_SSE(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/test-sse", srv.sealedTransport(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 		f, _ := w.(http.Flusher)
 		for _, e := range events {
 			// Split each event across two writes to verify the writer buffers
@@ -325,7 +325,7 @@ func TestSealedTransport_SSE(t *testing.T) {
 	plaintext := []byte(`{"stream":true}`)
 	env, _, ephemPriv := sealRequest(t, plaintext, coordKey.PublicKey, coordKey.KID)
 
-	req, _ := http.NewRequest("POST", ts.URL+"/v1/test-sse", bytes.NewReader(env))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/test-sse", bytes.NewReader(env))
 	req.Header.Set("Content-Type", SealedContentType)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -374,7 +374,7 @@ func TestSealedRequest_PlaintextStillWorks(t *testing.T) {
 	ts, _ := newEncryptedTestServer(t)
 
 	plaintext := []byte(`{"model":"qwen3.5-no-such-model","messages":[{"role":"user","content":"hi"}]}`)
-	req, _ := http.NewRequest("POST", ts.URL+"/v1/chat/completions", bytes.NewReader(plaintext))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", bytes.NewReader(plaintext))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer test-key")
 	resp, err := http.DefaultClient.Do(req)

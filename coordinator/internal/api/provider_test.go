@@ -628,14 +628,15 @@ func TestAttestationRejectsMissingEncryptionKeyForRegisteredPublicKey(t *testing
 	if p == nil {
 		t.Fatal("expected provider to be registered")
 	}
-	if p.AttestationResult == nil {
+	ar := p.GetAttestationResult()
+	if ar == nil {
 		t.Fatal("expected attestation result to be recorded")
 	}
-	if p.AttestationResult.Valid {
+	if ar.Valid {
 		t.Fatal("attestation should be invalid when encryptionPublicKey is missing")
 	}
-	if p.AttestationResult.Error != "attestation missing encryption public key" {
-		t.Fatalf("attestation error = %q", p.AttestationResult.Error)
+	if ar.Error != "attestation missing encryption public key" {
+		t.Fatalf("attestation error = %q", ar.Error)
 	}
 }
 
@@ -680,14 +681,15 @@ func TestAttestationRejectsMismatchedEncryptionKey(t *testing.T) {
 	if p == nil {
 		t.Fatal("expected provider to be registered")
 	}
-	if p.AttestationResult == nil {
+	ar := p.GetAttestationResult()
+	if ar == nil {
 		t.Fatal("expected attestation result to be recorded")
 	}
-	if p.AttestationResult.Valid {
+	if ar.Valid {
 		t.Fatal("attestation should be invalid when encryptionPublicKey mismatches")
 	}
-	if p.AttestationResult.Error != "encryption key mismatch" {
-		t.Fatalf("attestation error = %q", p.AttestationResult.Error)
+	if ar.Error != "encryption key mismatch" {
+		t.Fatalf("attestation error = %q", ar.Error)
 	}
 }
 
@@ -850,10 +852,10 @@ func TestChallengeResponseRejectsMissingSIPStatus(t *testing.T) {
 	if p == nil {
 		t.Fatal("provider not found")
 	}
-	if !p.LastChallengeVerified.IsZero() {
+	if !p.GetLastChallengeVerified().IsZero() {
 		t.Fatal("provider should not record challenge success when SIP status is omitted")
 	}
-	if p.ChallengeVerifiedSIP {
+	if p.GetChallengeVerifiedSIP() {
 		t.Fatal("provider should not mark SIP verified when SIP status is omitted")
 	}
 }
@@ -964,10 +966,10 @@ func TestChallengeResponseMissingSIPClearsExistingRoutingEligibility(t *testing.
 	if p == nil {
 		t.Fatal("provider not found")
 	}
-	if !p.LastChallengeVerified.IsZero() {
+	if !p.GetLastChallengeVerified().IsZero() {
 		t.Fatal("failed challenge should clear prior challenge freshness")
 	}
-	if p.ChallengeVerifiedSIP {
+	if p.GetChallengeVerifiedSIP() {
 		t.Fatal("failed challenge should clear prior SIP verification")
 	}
 	if models := reg.ListModels(); len(models) != 0 {

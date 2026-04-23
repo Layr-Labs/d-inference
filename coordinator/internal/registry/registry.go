@@ -228,6 +228,20 @@ func (p *Provider) SetLastChallengeVerified(t time.Time) {
 	p.mu.Unlock()
 }
 
+// GetLastChallengeVerified returns the last challenge verification time (thread-safe).
+func (p *Provider) GetLastChallengeVerified() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.LastChallengeVerified
+}
+
+// GetChallengeVerifiedSIP returns whether SIP was verified in the last challenge (thread-safe).
+func (p *Provider) GetChallengeVerifiedSIP() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ChallengeVerifiedSIP
+}
+
 // Mu returns the provider's mutex for external callers that need to read
 // fields like Status atomically. Prefer dedicated getters where available.
 func (p *Provider) Mu() *sync.Mutex {
@@ -239,6 +253,13 @@ func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) 
 	p.mu.Lock()
 	p.AttestationResult = result
 	p.mu.Unlock()
+}
+
+// GetAttestationResult returns the current attestation result (thread-safe).
+func (p *Provider) GetAttestationResult() *attestation.VerificationResult {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.AttestationResult
 }
 
 // pendingCount returns the number of in-flight requests.

@@ -6,7 +6,7 @@ import { Sidebar } from "./Sidebar";
 import { Toasts } from "./Toasts";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { ready, authenticated } = useAuth();
+  const { ready } = useAuth();
   const pathname = usePathname();
 
   // Device-linking page — no shell

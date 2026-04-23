@@ -324,8 +324,6 @@ export default function ProvidersPage() {
     );
   }
 
-  // Provider matching by wallet address is no longer available after Solana removal.
-  // TODO: match by account_id once coordinator exposes it on the attestation endpoint.
   const myProvider = null as Provider | null;
 
   return (

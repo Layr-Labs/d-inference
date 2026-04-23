@@ -1027,14 +1027,17 @@ mod tests {
         let _ = shutdown_tx.send(true);
         let _ = tokio::time::timeout(Duration::from_secs(2), client_handle).await;
 
-        // Verify server received register message
+        // Verify server received register and inference_error messages.
+        // Heartbeats may arrive between them, so search by type.
         let received = server_handle.await.unwrap();
-        assert!(received.len() >= 2, "expected register and error messages");
+        assert!(received.len() >= 2, "expected at least register and error messages, got {}", received.len());
         let register: serde_json::Value = serde_json::from_str(&received[0]).unwrap();
         assert_eq!(register["type"], "register");
         assert_eq!(register["backend"], "vllm_mlx");
-        let err: serde_json::Value = serde_json::from_str(&received[1]).unwrap();
-        assert_eq!(err["type"], "inference_error");
+        let err = received.iter()
+            .filter_map(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+            .find(|v| v["type"] == "inference_error")
+            .expect("expected an inference_error message");
         assert_eq!(err["request_id"], "test-req-1");
     }
 

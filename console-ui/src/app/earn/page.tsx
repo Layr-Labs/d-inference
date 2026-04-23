@@ -3,6 +3,7 @@
 import { useState, useMemo } from "react";
 import { TopBar } from "@/components/TopBar";
 import { useAuth } from "@/hooks/useAuth";
+import { trackEvent } from "@/lib/google-analytics";
 import Link from "next/link";
 import {
   Cpu,
@@ -368,7 +369,12 @@ export default function EarnPage() {
                   </div>
                 </div>
                 <button
-                  onClick={login}
+                  onClick={() => {
+                    trackEvent("login_cta_clicked", {
+                      source: "earn_page_setup_provider_cta",
+                    });
+                    login();
+                  }}
                   disabled={!ready}
                   className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg
                              bg-coral text-white font-medium text-sm
@@ -397,6 +403,11 @@ export default function EarnPage() {
                 </div>
                 <Link
                   href="/providers/setup"
+                  onClick={() => {
+                    trackEvent("provider_setup_clicked", {
+                      source: "earn_page_setup_provider_cta",
+                    });
+                  }}
                   className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg
                              bg-accent-brand text-white font-medium text-sm
                              hover:bg-accent-brand-hover

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import { trackEvent } from "@/lib/google-analytics";
 import { useToastStore } from "@/hooks/useToast";
 import {
   fetchStripeStatus,
@@ -182,12 +183,23 @@ export default function EarningsContent() {
 
   const handleStripeWithdraw = async () => {
     setWithdrawLoading(true);
+    trackEvent("provider_withdraw_started", {
+      surface: "provider_earnings",
+      method: withdrawMethod,
+    });
     try {
       const resp = await withdrawStripe(withdrawAmount, withdrawMethod);
+      trackEvent("provider_withdraw_succeeded", {
+        surface: "provider_earnings",
+        method: withdrawMethod,
+      });
       addToast(`Withdrawal submitted — ${resp.eta || "processing"}`, "success");
       setWithdrawOpen(false);
       await Promise.all([fetchEarnings(), loadStripe(false)]);
     } catch (e) {
+      trackEvent("provider_withdraw_failed", {
+        surface: "provider_earnings",
+      });
       addToast(`${(e as Error).message}`);
     }
     setWithdrawLoading(false);
@@ -202,7 +214,12 @@ export default function EarningsContent() {
             Sign in to view your provider earnings.
           </p>
           <button
-            onClick={login}
+            onClick={() => {
+              trackEvent("login_cta_clicked", {
+                source: "provider_earnings_empty_state",
+              });
+              login();
+            }}
             className="px-4 py-2 rounded-lg bg-coral text-white text-sm font-medium hover:opacity-90 transition-all"
           >
             Sign In

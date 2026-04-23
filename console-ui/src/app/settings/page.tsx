@@ -1,8 +1,14 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { TopBar } from "@/components/TopBar";
 import { useToastStore } from "@/hooks/useToast";
+import {
+  getGoogleAnalyticsConsentStorageKey,
+  getGoogleAnalyticsConsentStatus,
+  grantGoogleAnalyticsConsent,
+  revokeGoogleAnalyticsConsent,
+} from "@/lib/google-analytics";
 import {
   Globe,
   Check,
@@ -10,6 +16,7 @@ import {
   Loader2,
   Server,
   Lock,
+  BarChart3,
 } from "lucide-react";
 import { healthCheck } from "@/lib/api";
 import {
@@ -22,6 +29,9 @@ import {
 export default function SettingsPage() {
   const addToast = useToastStore((s) => s.addToast);
   const [coordinatorUrl, setCoordinatorUrl] = useState("");
+  const [analyticsConsent, setAnalyticsConsent] = useState<
+    "granted" | "denied" | "unset"
+  >("unset");
   const [saved, setSaved] = useState(false);
   const [healthStatus, setHealthStatus] = useState<
     "idle" | "checking" | "ok" | "error"
@@ -34,6 +44,10 @@ export default function SettingsPage() {
   >("idle");
   const [encInfo, setEncInfo] = useState("");
 
+  const syncAnalyticsConsent = useCallback(() => {
+    setAnalyticsConsent(getGoogleAnalyticsConsentStatus());
+  }, []);
+
   useEffect(() => {
     if (typeof window !== "undefined") {
       setCoordinatorUrl(
@@ -42,8 +56,27 @@ export default function SettingsPage() {
           "https://api.darkbloom.dev"
       );
       setEncryptToCoord(isEncryptionEnabled());
+      syncAnalyticsConsent();
     }
-  }, []);
+  }, [syncAnalyticsConsent]);
+
+  useEffect(() => {
+    window.addEventListener("darkbloom-ga-consent-changed", syncAnalyticsConsent);
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === getGoogleAnalyticsConsentStorageKey()) {
+        syncAnalyticsConsent();
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+    return () =>
+      {
+        window.removeEventListener(
+          "darkbloom-ga-consent-changed",
+          syncAnalyticsConsent
+        );
+        window.removeEventListener("storage", handleStorage);
+      };
+  }, [syncAnalyticsConsent]);
 
   // When the user flips the toggle, eagerly fetch the coordinator pubkey so
   // they get an immediate signal if the feature is unavailable on this
@@ -206,6 +239,56 @@ export default function SettingsPage() {
                 </span>
               )}
             </div>
+          </section>
+
+          {/* Analytics */}
+          <section className="rounded-xl bg-bg-white border border-border-dim p-6 shadow-md">
+            <div className="flex items-center gap-2 mb-4">
+              <BarChart3 size={14} className="text-accent-green" />
+              <h3 className="text-sm font-medium text-text-primary">
+                Analytics
+              </h3>
+            </div>
+            <p className="text-xs text-text-tertiary mb-4">
+              Control whether Darkbloom can load privacy-filtered Google
+              Analytics to measure product usage. Query parameters are
+              sanitized before analytics events are sent, except for the small
+              attribution allowlist used to preserve campaign measurement.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <button
+                onClick={() => {
+                  grantGoogleAnalyticsConsent();
+                  addToast("Analytics enabled", "success");
+                }}
+                className={`rounded-lg px-4 py-2 text-sm font-semibold transition-all ${
+                  analyticsConsent === "granted"
+                    ? "bg-coral text-white"
+                    : "border border-border-dim text-text-secondary hover:bg-bg-hover"
+                }`}
+              >
+                Allow analytics
+              </button>
+              <button
+                onClick={() => {
+                  revokeGoogleAnalyticsConsent();
+                  addToast("Analytics disabled", "success");
+                }}
+                className={`rounded-lg px-4 py-2 text-sm font-semibold transition-all ${
+                  analyticsConsent === "denied"
+                    ? "bg-bg-tertiary text-text-primary"
+                    : "border border-border-dim text-text-secondary hover:bg-bg-hover"
+                }`}
+              >
+                Decline analytics
+              </button>
+            </div>
+            <p className="mt-3 text-xs text-text-tertiary">
+              Current choice:{" "}
+              <span className="font-mono text-text-secondary uppercase">
+                {analyticsConsent}
+              </span>
+            </p>
           </section>
 
           {/* Save */}

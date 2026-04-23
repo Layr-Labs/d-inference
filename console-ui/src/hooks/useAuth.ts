@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuthContext } from "@/components/providers/PrivyClientProvider";
+import { trackEvent } from "@/lib/google-analytics";
 
 const API_KEY_STORAGE = "darkbloom_api_key";
 const OLD_API_KEY_STORAGE = "eigeninference_api_key";
@@ -91,6 +92,18 @@ export function useAuth() {
   useEffect(() => {
     if (!authenticated) setApiKeyReady(false);
   }, [authenticated]);
+
+  // Track login_success event once when the user authenticates
+  const hasTrackedLogin = useRef(false);
+  useEffect(() => {
+    if (authenticated && !hasTrackedLogin.current) {
+      hasTrackedLogin.current = true;
+      trackEvent("login_success", { method: email ? "email" : "unknown" });
+    }
+    if (!authenticated) {
+      hasTrackedLogin.current = false;
+    }
+  }, [authenticated, email]);
 
   // Clear all app-specific localStorage on login to prevent session poisoning
   // (e.g. attacker pre-sets coordinator URL before victim logs in).

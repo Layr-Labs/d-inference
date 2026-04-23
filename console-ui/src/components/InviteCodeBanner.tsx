@@ -3,6 +3,7 @@
 import { useState, useCallback } from "react";
 import { Ticket, X, Check, Loader2 } from "lucide-react";
 import { redeemInviteCode } from "@/lib/api";
+import { trackEvent } from "@/lib/google-analytics";
 
 const DISMISSED_KEY = "darkbloom_invite_dismissed";
 
@@ -17,28 +18,44 @@ export function InviteCodeBanner() {
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
 
-  const handleDismiss = useCallback(() => {
+  const dismissBanner = useCallback(() => {
     setDismissed(true);
     localStorage.setItem(DISMISSED_KEY, "1");
   }, []);
 
+  const handleDismiss = useCallback(() => {
+    trackEvent("invite_banner_dismissed");
+    dismissBanner();
+  }, [dismissBanner]);
+
   const handleRedeem = useCallback(async () => {
     const trimmed = code.trim().toUpperCase();
     if (!trimmed) return;
+
+    trackEvent("invite_redeem_submitted", {
+      surface: "banner",
+    });
     setLoading(true);
     setError("");
     try {
       const result = await redeemInviteCode(trimmed);
+      trackEvent("invite_redeem_succeeded", {
+        surface: "banner",
+        credited_usd: result.credited_usd,
+      });
       setSuccess(`$${result.credited_usd} added to your account`);
       setCode("");
       setTimeout(() => {
-        handleDismiss();
+        dismissBanner();
       }, 3000);
     } catch (e) {
+      trackEvent("invite_redeem_failed", {
+        surface: "banner",
+      });
       setError((e as Error).message);
     }
     setLoading(false);
-  }, [code, handleDismiss]);
+  }, [code, dismissBanner]);
 
   if (dismissed) return null;
 
@@ -48,7 +65,15 @@ export function InviteCodeBanner() {
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3">
           <button
-            onClick={() => setExpanded(!expanded)}
+            onClick={() => {
+              const nextExpanded = !expanded;
+              if (nextExpanded) {
+                trackEvent("invite_banner_expanded", {
+                  source: "header",
+                });
+              }
+              setExpanded(nextExpanded);
+            }}
             className="flex items-center gap-2 text-sm font-semibold text-ink"
           >
             <div className="w-7 h-7 rounded-lg bg-gold-light border-2 border-gold flex items-center justify-center">
@@ -68,7 +93,12 @@ export function InviteCodeBanner() {
         {!expanded && !success && (
           <div className="px-4 pb-3">
             <button
-              onClick={() => setExpanded(true)}
+              onClick={() => {
+                trackEvent("invite_banner_expanded", {
+                  source: "claim_button",
+                });
+                setExpanded(true);
+              }}
               className="w-full py-2 rounded-lg bg-gold-light border-2 border-gold text-ink text-xs font-bold
                          transition-all"
             >

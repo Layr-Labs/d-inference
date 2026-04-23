@@ -19,6 +19,7 @@ import {
   type StripeStatus,
   type StripeWithdrawal,
 } from "@/lib/api";
+import { trackEvent } from "@/lib/google-analytics";
 import {
   Clock,
   X,
@@ -185,11 +186,19 @@ export default function BillingContent() {
 
   const handleStripeCheckout = async () => {
     setActionLoading(true);
+    trackEvent("billing_buy_credits_submitted", {
+      amount_usd: Number(buyAmount),
+    });
     try {
       const resp = await createStripeCheckout(buyAmount, email || undefined);
-      // Redirect to Stripe-hosted checkout page
+      trackEvent("billing_buy_credits_redirected", {
+        amount_usd: Number(buyAmount),
+      });
       window.location.href = resp.url;
     } catch (e) {
+      trackEvent("billing_buy_credits_failed", {
+        reason: "checkout_error",
+      });
       addToast(`${(e as Error).message}`);
       setActionLoading(false);
     }
@@ -200,12 +209,22 @@ export default function BillingContent() {
     if (!code) return;
     setInviteLoading(true);
     setInviteSuccess("");
+    trackEvent("invite_redeem_submitted", {
+      surface: "billing_page",
+    });
     try {
       const result = await redeemInviteCode(code);
+      trackEvent("invite_redeem_succeeded", {
+        surface: "billing_page",
+        credited_usd: result.credited_usd,
+      });
       setInviteSuccess(`$${result.credited_usd} credited to your account`);
       setInviteCode("");
       loadData();
     } catch (e) {
+      trackEvent("invite_redeem_failed", {
+        surface: "billing_page",
+      });
       addToast(`${(e as Error).message}`);
     }
     setInviteLoading(false);

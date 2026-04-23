@@ -284,6 +284,11 @@ type Store interface {
 	// ListProviders returns all stored provider records.
 	ListProviderRecords(ctx context.Context) ([]ProviderRecord, error)
 
+	// ListProvidersByAccount returns provider records linked to the given account ID.
+	// Used by the /v1/me/providers dashboard. Returns an empty slice (not nil)
+	// when the account owns no providers. An empty accountID returns an empty slice.
+	ListProvidersByAccount(ctx context.Context, accountID string) ([]ProviderRecord, error)
+
 	// UpdateProviderLastSeen updates the last_seen timestamp for a provider.
 	UpdateProviderLastSeen(ctx context.Context, id string) error
 

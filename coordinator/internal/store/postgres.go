@@ -113,6 +113,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS last_session_requests_served BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS last_session_tokens_generated BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_providers_serial ON providers(serial_number) WHERE serial_number != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_providers_account ON providers(account_id, last_seen DESC) WHERE account_id != ''`,
 
 		// Migrate usage table: add request_id and cost columns
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
@@ -2163,6 +2164,52 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 	}
 	if records == nil {
 		return []ProviderRecord{}, nil
+	}
+	return records, nil
+}
+
+func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID string) ([]ProviderRecord, error) {
+	if accountID == "" {
+		return []ProviderRecord{}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, hardware, models, backend, trust_level, attested,
+			attestation_result, se_public_key, serial_number,
+			mda_verified, mda_cert_chain, acme_verified,
+			version, runtime_verified, python_hash, runtime_hash,
+			last_challenge_verified, failed_challenges, account_id,
+			lifetime_requests_served, lifetime_tokens_generated,
+			last_session_requests_served, last_session_tokens_generated,
+			registered_at, last_seen
+		 FROM providers WHERE account_id = $1 ORDER BY last_seen DESC`,
+		accountID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list providers by account: %w", err)
+	}
+	defer rows.Close()
+
+	records := make([]ProviderRecord, 0)
+	for rows.Next() {
+		var p ProviderRecord
+		if err := rows.Scan(
+			&p.ID, &p.Hardware, &p.Models, &p.Backend,
+			&p.TrustLevel, &p.Attested,
+			&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
+			&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
+			&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
+			&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
+			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
+			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
+			&p.RegisteredAt, &p.LastSeen,
+		); err != nil {
+			continue
+		}
+		records = append(records, p)
 	}
 	return records, nil
 }

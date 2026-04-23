@@ -25,6 +25,7 @@ import (
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/billing"
 	"github.com/eigeninference/coordinator/internal/payments"
+	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/store"
 	"github.com/google/uuid"
 )
@@ -787,5 +788,65 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 		"history_limit":               limit,
 		"available_balance_micro_usd": availableBalance,
 		"available_balance_usd":       fmt.Sprintf("%.6f", float64(availableBalance)/1_000_000),
+	})
+}
+
+// handleStreamRateEstimate handles GET /v1/provider/stream-rate?chip_family=m4&memory_gb=64.
+// Returns the estimated monthly streaming payment rate for a given hardware config.
+// This is a public, unauthenticated endpoint so prospective providers can check
+// their expected earnings before joining.
+func (s *Server) handleStreamRateEstimate(w http.ResponseWriter, r *http.Request) {
+	chipFamily := r.URL.Query().Get("chip_family")
+	memStr := r.URL.Query().Get("memory_gb")
+
+	memGB := 16
+	if memStr != "" {
+		if v, err := strconv.Atoi(memStr); err == nil && v > 0 {
+			memGB = v
+		}
+	}
+	if chipFamily == "" {
+		chipFamily = "m1"
+	}
+
+	hw := protocol.Hardware{
+		ChipFamily: chipFamily,
+		MemoryGB:   memGB,
+	}
+
+	rate := payments.LookupStreamRate(hw)
+	perSecond := payments.MonthlyRateToPerSecond(rate.MonthlyMicroUSD)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"chip_family":             chipFamily,
+		"memory_gb":               memGB,
+		"monthly_rate_micro_usd":  rate.MonthlyMicroUSD,
+		"monthly_rate_usd":        fmt.Sprintf("%.2f", float64(rate.MonthlyMicroUSD)/1_000_000),
+		"per_second_micro_usd":    perSecond,
+		"description":             rate.Description,
+		"stream_payments_enabled": s.streamEngine != nil,
+	})
+}
+
+// handleStreamStats handles GET /v1/admin/stream-stats.
+// Returns current streaming payment statistics (admin only).
+func (s *Server) handleStreamStats(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminKey(w, r) {
+		return
+	}
+	if s.streamEngine == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"enabled":          false,
+			"active_providers": 0,
+		})
+		return
+	}
+
+	stats := s.streamEngine.Stats()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":                      true,
+		"active_providers":             stats.ActiveProviders,
+		"total_paid_session_micro_usd": stats.TotalPaidToday,
+		"total_paid_session_usd":       fmt.Sprintf("%.6f", float64(stats.TotalPaidToday)/1_000_000),
 	})
 }

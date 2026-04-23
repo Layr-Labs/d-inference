@@ -154,6 +154,10 @@ type Server struct {
 	// dd is the Datadog integration client for DogStatsD metrics and
 	// Logs API event forwarding. Nil when DD is not configured.
 	dd *datadog.Client
+
+	// streamEngine manages fixed-rate streaming payments to providers.
+	// Nil when streaming payments are disabled (EIGENINFERENCE_STREAM_PAYMENTS != "true").
+	streamEngine *payments.StreamEngine
 }
 
 // NewServer creates a configured Server with all routes mounted.
@@ -383,6 +387,12 @@ func (s *Server) SetReleaseKey(key string) {
 // for sender-to-coordinator request encryption. Pass nil to disable.
 func (s *Server) SetCoordinatorKey(k *e2e.CoordinatorKey) {
 	s.coordinatorKey = k
+}
+
+// SetStreamEngine configures the streaming payments engine.
+// When set, connected providers receive fixed-rate payments per heartbeat.
+func (s *Server) SetStreamEngine(se *payments.StreamEngine) {
+	s.streamEngine = se
 }
 
 // CoordinatorKey returns the configured coordinator encryption key (or nil).
@@ -744,6 +754,10 @@ func (s *Server) routes() {
 	// Per-node provider earnings — public by provider_key, or auth'd by account.
 	s.mux.HandleFunc("GET /v1/provider/node-earnings", s.handleNodeEarnings)
 	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
+
+	// Streaming payments — rate estimates (public) and admin stats.
+	s.mux.HandleFunc("GET /v1/provider/stream-rate", s.handleStreamRateEstimate)
+	s.mux.HandleFunc("GET /v1/admin/stream-stats", s.handleStreamStats)
 
 	// ACME enrollment — generates per-device .mobileconfig for device-attest-01.
 	// No auth needed — security comes from Apple's attestation during ACME challenge.

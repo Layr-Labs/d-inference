@@ -328,6 +328,28 @@ func main() {
 		}
 	}
 
+	// Streaming payments — fixed-rate per-heartbeat payments to providers.
+	// Enabled via EIGENINFERENCE_STREAM_PAYMENTS=true.
+	if os.Getenv("EIGENINFERENCE_STREAM_PAYMENTS") == "true" {
+		streamCfg := payments.StreamEngineConfig{
+			Enabled: true,
+		}
+		if v := os.Getenv("EIGENINFERENCE_STREAM_MAX_MEMORY_PRESSURE"); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				streamCfg.MaxMemoryPressure = f
+			}
+		}
+		if v := os.Getenv("EIGENINFERENCE_STREAM_BUDGET_ACCOUNT"); v != "" {
+			streamCfg.BudgetAccountID = v
+		}
+		streamEngine := payments.NewStreamEngine(st, logger, streamCfg)
+		srv.SetStreamEngine(streamEngine)
+		logger.Info("streaming payments enabled",
+			"max_memory_pressure", streamCfg.MaxMemoryPressure,
+			"budget_account", streamCfg.BudgetAccountID,
+		)
+	}
+
 	// Log which billing methods are active
 	methods := billingSvc.SupportedMethods()
 	if len(methods) > 0 {

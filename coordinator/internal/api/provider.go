@@ -125,6 +125,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
 		loopCancel()
+		if s.streamEngine != nil {
+			s.streamEngine.OnProviderDisconnect(providerID)
+		}
 		s.registry.Disconnect(providerID)
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
@@ -276,6 +279,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		case protocol.TypeHeartbeat:
 			hbMsg := msg.Payload.(*protocol.HeartbeatMessage)
 			s.registry.Heartbeat(providerID, hbMsg)
+
+			if s.streamEngine != nil && provider != nil {
+				s.streamEngine.ProcessHeartbeat(providerID, provider.AccountID, provider.Hardware, hbMsg.SystemMetrics, hbMsg.Status)
+			}
 
 		case protocol.TypeInferenceAccepted:
 			acceptMsg := msg.Payload.(*protocol.InferenceAcceptedMessage)

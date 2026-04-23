@@ -24,17 +24,21 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/billing"
+	"github.com/eigeninference/coordinator/internal/datadog"
 	"github.com/eigeninference/coordinator/internal/e2e"
 	"github.com/eigeninference/coordinator/internal/mdm"
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/telemetry"
 )
 
 // contextKey is an unexported type for context keys in this package.
@@ -118,6 +122,12 @@ type Server struct {
 	// Set from CORS_ORIGIN env var. Empty defaults to the production console domain.
 	corsOrigin string
 
+	// imageUploads stores generated images keyed by request_id.
+	// Providers upload images via HTTP POST, then send a small WebSocket
+	// completion message. The consumer handler retrieves images from here.
+	imageUploads   map[string][][]byte // request_id → list of PNG images
+	imageUploadsMu sync.Mutex
+
 	// storedProviders is a lookup table of persisted provider records, indexed
 	// by serial number and SE public key. When a provider reconnects after a
 	// coordinator restart, this table is checked to restore trust/reputation.
@@ -128,6 +138,22 @@ type Server struct {
 	// requests from senders. Set via SetCoordinatorKey. nil disables the
 	// /v1/encryption-key endpoint and the sealed-request middleware.
 	coordinatorKey *e2e.CoordinatorKey
+
+	// metrics is the in-process metrics registry exposed via /v1/admin/metrics
+	// and used by internal counters/histograms. Never nil.
+	metrics *Metrics
+
+	// telemetryLimiter throttles telemetry ingestion per submitter.
+	telemetryLimiter *telemetryLimiter
+
+	// emitter writes coordinator-side telemetry events (panics, handler
+	// failures, attestation failures, etc.). Set via SetEmitter; nil before
+	// main.go wires it up.
+	emitter *telemetry.Emitter
+
+	// dd is the Datadog integration client for DogStatsD metrics and
+	// Logs API event forwarding. Nil when DD is not configured.
+	dd *datadog.Client
 }
 
 // NewServer creates a configured Server with all routes mounted.
@@ -141,8 +167,12 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 		ledger:               payments.NewLedger(st),
 		logger:               logger,
 		mux:                  http.NewServeMux(),
+		imageUploads:         make(map[string][][]byte),
 		knownRuntimeManifest: &RuntimeManifest{},
+		metrics:              NewMetrics(),
+		telemetryLimiter:     newTelemetryLimiter(),
 	}
+	s.registerDefaultGauges()
 	s.routes()
 
 	// Load stored provider records into a lookup table for matching
@@ -176,6 +206,92 @@ func (s *Server) SetR2CDNURL(url string) {
 // tarball. Defaults to r2CDNURL when unset.
 func (s *Server) SetR2SitePackagesCDNURL(url string) {
 	s.r2SitePackagesCDNURL = strings.TrimRight(url, "/")
+}
+
+// SetEmitter wires the coordinator-side telemetry emitter. Call once at boot.
+func (s *Server) SetEmitter(e *telemetry.Emitter) {
+	s.emitter = e
+}
+
+// SetDatadog wires the Datadog client for DogStatsD metrics and Logs API forwarding.
+func (s *Server) SetDatadog(dd *datadog.Client) {
+	s.dd = dd
+}
+
+// Datadog returns the Datadog client (or nil). Exposed so main.go and the
+// telemetry emitter can share the same client.
+func (s *Server) Datadog() *datadog.Client {
+	return s.dd
+}
+
+// Metrics returns the in-process metrics registry so cmd/coordinator can
+// expose it to the telemetry emitter and other integrations.
+func (s *Server) Metrics() *Metrics {
+	return s.metrics
+}
+
+// emit is an internal convenience that funnels events through the emitter if
+// one has been wired up. No-op otherwise — telemetry must never affect control
+// flow.
+func (s *Server) emit(ctx context.Context, severity protocol.TelemetrySeverity, kind protocol.TelemetryKind, message string, fields map[string]any) {
+	if s.emitter == nil {
+		return
+	}
+	s.emitter.Emit(ctx, telemetry.Event{
+		Severity: severity,
+		Kind:     kind,
+		Message:  message,
+		Fields:   fields,
+	})
+}
+
+// emitRequest is like emit but preserves a request_id for correlation.
+func (s *Server) emitRequest(ctx context.Context, severity protocol.TelemetrySeverity, kind protocol.TelemetryKind, requestID, message string, fields map[string]any) {
+	if s.emitter == nil {
+		return
+	}
+	s.emitter.Emit(ctx, telemetry.Event{
+		Severity:  severity,
+		Kind:      kind,
+		Message:   message,
+		Fields:    fields,
+		RequestID: requestID,
+	})
+}
+
+// ddIncr increments a DogStatsD counter. No-op if DD is not configured.
+func (s *Server) ddIncr(name string, tags []string) {
+	if s.dd != nil {
+		s.dd.Incr(name, tags)
+	}
+}
+
+// ddHistogram records a DogStatsD histogram value. No-op if DD is not configured.
+func (s *Server) ddHistogram(name string, value float64, tags []string) {
+	if s.dd != nil {
+		s.dd.Histogram(name, value, tags)
+	}
+}
+
+// ddGauge sets a DogStatsD gauge value. No-op if DD is not configured.
+func (s *Server) ddGauge(name string, value float64, tags []string) {
+	if s.dd != nil {
+		s.dd.Gauge(name, value, tags)
+	}
+}
+
+// emitPanic is the panic-specific emit helper. Captures stack separately.
+func (s *Server) emitPanic(ctx context.Context, message, stack string, fields map[string]any) {
+	if s.emitter == nil {
+		return
+	}
+	s.emitter.Emit(ctx, telemetry.Event{
+		Severity: protocol.SeverityFatal,
+		Kind:     protocol.KindPanic,
+		Message:  message,
+		Fields:   fields,
+		Stack:    stack,
+	})
 }
 
 // SetStepCACerts configures the step-ca CA certificates for ACME client cert verification.
@@ -506,7 +622,6 @@ func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHas
 		}
 	}
 
-
 	return len(mismatches) == 0, mismatches
 }
 
@@ -649,21 +764,26 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/releases/latest", s.handleLatestRelease) // public (install.sh)
 
 	// Device authorization flow — providers link to user accounts.
-	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)                      // no auth — provider not yet authenticated
-	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)                    // no auth — polls with device_code secret
+	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)                           // no auth — provider not yet authenticated
+	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)                         // no auth — polls with device_code secret
 	s.mux.HandleFunc("POST /v1/device/approve", s.requirePrivyAuth(s.handleDeviceApprove)) // interactive session only — API keys rejected
 
-	// --- Billing endpoints (multi-chain payments + referrals) ---
+	// --- Billing endpoints (Stripe payments + referrals) ---
 
 	// Stripe
 	s.mux.HandleFunc("POST /v1/billing/stripe/create-session", s.requireAuth(s.handleStripeCreateSession))
 	s.mux.HandleFunc("POST /v1/billing/stripe/webhook", s.handleStripeWebhook) // no auth — Stripe signs it
 	s.mux.HandleFunc("GET /v1/billing/stripe/session", s.requireAuth(s.handleStripeSessionStatus))
 
-	// Solana deposits and withdrawals
-	s.mux.HandleFunc("POST /v1/billing/deposit", s.requireAuth(s.handleSolanaDeposit))
-	s.mux.HandleFunc("POST /v1/billing/withdraw/solana", s.requireAuth(s.handleSolanaWithdraw))
+	// Wallet balance
 	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
+
+	// Stripe Payouts (Connect Express) — bank/card withdrawals.
+	s.mux.HandleFunc("POST /v1/billing/stripe/onboard", s.requireAuth(s.handleStripeOnboard))
+	s.mux.HandleFunc("GET /v1/billing/stripe/status", s.requireAuth(s.handleStripeStatus))
+	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requireAuth(s.handleStripeWithdraw))
+	s.mux.HandleFunc("GET /v1/billing/stripe/withdrawals", s.requireAuth(s.handleStripeWithdrawals))
+	s.mux.HandleFunc("POST /v1/billing/stripe/connect/webhook", s.handleStripeConnectWebhook) // no auth — Stripe signs it
 
 	// Pricing — GET is public, PUT/DELETE require auth
 	s.mux.HandleFunc("GET /v1/pricing", s.handleGetPricing)                        // public
@@ -704,11 +824,115 @@ func (s *Server) routes() {
 
 	// Invite code redemption (user)
 	s.mux.HandleFunc("POST /v1/invite/redeem", s.requireAuth(s.handleRedeemInviteCode))
+
+	// Telemetry ingestion — authentication is resolved inside the handler
+	// because providers, consumers, and anonymous clients all hit this path.
+	// Events are forwarded to Datadog; admin read/summary endpoints have been
+	// removed (use Datadog Log Explorer).
+	s.mux.HandleFunc("POST /v1/telemetry/events", s.handleTelemetryIngest)
+
+	// Metrics snapshot (admin only)
+	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
+}
+
+// registerDefaultGauges wires live-computed gauges (fleet size, etc.) into
+// the metrics registry at construction time.
+func (s *Server) registerDefaultGauges() {
+	s.metrics.RegisterGauge("providers_online", func() float64 {
+		return float64(s.registry.ProviderCount())
+	})
+	s.metrics.RegisterGauge("pending_image_uploads", func() float64 {
+		s.imageUploadsMu.Lock()
+		defer s.imageUploadsMu.Unlock()
+		return float64(len(s.imageUploads))
+	})
+}
+
+// StartDDGaugeLoop periodically pushes gauge values to DogStatsD. Gauges
+// are point-in-time values and must be pushed regularly (not on-demand like
+// counters). Call as a goroutine; stops when ctx is cancelled.
+func (s *Server) StartDDGaugeLoop(ctx context.Context) {
+	if s.dd == nil {
+		return
+	}
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.ddGauge("providers.online", float64(s.registry.ProviderCount()), nil)
+			if q := s.registry.Queue(); q != nil {
+				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
+			}
+		}
+	}
+}
+
+// handleAdminMetrics returns the metrics snapshot in JSON or Prometheus text.
+func (s *Server) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdminAuthorized(w, r) {
+		return
+	}
+	snap := s.metrics.Snapshot()
+	if r.URL.Query().Get("format") == "prom" {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(snap.RenderProm()))
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
 }
 
 // Handler returns the root http.Handler with global middleware applied.
+// Middleware order (outside-in):
+//
+//	cors → recover → logging → mux
+//
+// Recover must sit outside logging so a panic during logging doesn't leak.
 func (s *Server) Handler() http.Handler {
-	return s.corsMiddleware(s.loggingMiddleware(s.mux))
+	return s.corsMiddleware(s.recoverMiddleware(s.loggingMiddleware(s.mux)))
+}
+
+// recoverMiddleware catches panics in any handler, emits a telemetry event
+// with the stack trace, and returns 500 to the client. Without this, a single
+// nil deref takes down the whole coordinator — panics from tests have hit us
+// in production more than once.
+func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				// ErrAbortHandler is the Go-idiomatic way for a handler to
+				// force-close the connection — propagate it unchanged.
+				if rec == http.ErrAbortHandler {
+					panic(rec)
+				}
+				stack := string(debug.Stack())
+				s.logger.Error("panic in HTTP handler",
+					"error", fmt.Sprintf("%v", rec),
+					"path", r.URL.Path,
+					"method", r.Method,
+					"stack", stack,
+				)
+				s.emitPanic(r.Context(),
+					fmt.Sprintf("panic in handler %s %s: %v", r.Method, r.URL.Path, rec),
+					stack,
+					map[string]any{
+						"handler":  r.URL.Path,
+						"endpoint": r.URL.Path,
+					},
+				)
+				// Write a 500 if the response hasn't started yet. If the
+				// handler already flushed headers (e.g. streaming SSE), we
+				// can't do anything useful — the client will see the stream
+				// truncated.
+				defer func() { _ = recover() }() // guard against double-write
+				writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "internal server error"))
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // requireAuth wraps a handler with authentication. It tries Privy JWT first
@@ -826,7 +1050,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// loggingMiddleware logs each request using slog.
+// loggingMiddleware logs each request using slog and updates HTTP metrics.
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -834,15 +1058,58 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(sw, r)
 
+		dur := time.Since(start)
 		s.logger.Info("request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", sw.status,
-			"duration_ms", time.Since(start).Milliseconds(),
+			"duration_ms", dur.Milliseconds(),
 			"remote", r.RemoteAddr,
 		)
+
+		pathLabel := httpPathLabel(r.URL.Path)
+		statusStr := strconvItoa(sw.status)
+
+		if s.metrics != nil {
+			s.metrics.IncCounter("http_requests_total",
+				MetricLabel{"method", r.Method},
+				MetricLabel{"path", pathLabel},
+				MetricLabel{"status", statusStr},
+			)
+			s.metrics.ObserveHistogram("http_request_duration_ms",
+				float64(dur.Milliseconds()),
+				MetricLabel{"method", r.Method},
+				MetricLabel{"path", pathLabel},
+			)
+		}
+
+		// DogStatsD — emit request counter and latency histogram.
+		if s.dd != nil {
+			tags := []string{
+				"method:" + r.Method,
+				"path:" + pathLabel,
+				"status_code:" + statusStr,
+			}
+			s.dd.Incr("http.requests", tags)
+			s.dd.Histogram("http.latency_ms", float64(dur.Milliseconds()), tags)
+		}
 	})
 }
+
+// httpPathLabel maps a request URL to a stable label value. It strips query
+// strings and collapses any dynamic path segments that would otherwise create
+// unbounded label cardinality.
+func httpPathLabel(path string) string {
+	// TODO: if the surface area grows, normalize UUID-ish segments into ":id".
+	// For now our mux uses fixed paths so the path itself is a safe label.
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	return path
+}
+
+// strconvItoa is a shim to avoid pulling strconv into every middleware file.
+func strconvItoa(i int) string { return fmt.Sprintf("%d", i) }
 
 // statusWriter wraps http.ResponseWriter to capture the status code
 // for logging. It also implements http.Flusher and http.Hijacker by
@@ -895,4 +1162,3 @@ func extractBearerToken(r *http.Request) string {
 	}
 	return strings.TrimSpace(parts[1])
 }
-

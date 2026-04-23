@@ -3,13 +3,16 @@
 import { useEffect, useState, useCallback } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { trackEvent } from "@/lib/google-analytics";
-import { useSignAndSendTransaction, useWallets } from "@privy-io/react-auth/solana";
+import { useToastStore } from "@/hooks/useToast";
 import {
-  createAssociatedTokenAccountInstruction,
-  getAssociatedTokenAddress,
-  createTransferInstruction,
-} from "@solana/spl-token";
-import { Connection, PublicKey, Transaction } from "@solana/web3.js";
+  fetchStripeStatus,
+  startStripeOnboarding,
+  withdrawStripe,
+  fetchStripeWithdrawals,
+  computeStripeFeeUsd,
+  type StripeStatus,
+  type StripeWithdrawal,
+} from "@/lib/api";
 import {
   Loader2,
   DollarSign,
@@ -17,15 +20,14 @@ import {
   TrendingUp,
   LogIn,
   ArrowDownToLine,
-  ArrowUpRight,
   Check,
   AlertCircle,
-  Wallet,
+  Building2,
+  CreditCard,
+  Clock,
+  Zap,
+  X,
 } from "lucide-react";
-
-const USDC_MINT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
-const USDC_DECIMALS = 6;
-const SOLANA_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
 
 interface Earning {
   id: number;
@@ -51,25 +53,50 @@ interface EarningsResponse {
   available_balance_usd: string;
 }
 
+function Modal({
+  open,
+  onClose,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+      <div className="bg-bg-white border border-border-dim rounded-xl w-full max-w-md mx-2 sm:mx-4 shadow-lg">
+        <div className="flex justify-end p-3">
+          <button
+            onClick={onClose}
+            className="p-1 rounded hover:bg-bg-hover text-text-tertiary"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export default function EarningsContent() {
-  const { authenticated, login, walletAddress, getAccessToken } = useAuth();
-  const { signAndSendTransaction } = useSignAndSendTransaction();
-  const { wallets } = useWallets();
+  const { authenticated, login, getAccessToken } = useAuth();
+  const addToast = useToastStore((s) => s.addToast);
   const [data, setData] = useState<EarningsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Claim state (coordinator → Privy wallet)
-  const [claiming, setClaiming] = useState(false);
-  const [claimResult, setClaimResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  // Stripe Payouts state
+  const [stripeStatus, setStripeStatus] = useState<StripeStatus | null>(null);
+  const [stripeWithdrawals, setStripeWithdrawals] = useState<StripeWithdrawal[]>([]);
+  const [stripeOnboardLoading, setStripeOnboardLoading] = useState(false);
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
+  const [withdrawAmount, setWithdrawAmount] = useState("10");
+  const [withdrawMethod, setWithdrawMethod] = useState<"standard" | "instant">("standard");
+  const [withdrawLoading, setWithdrawLoading] = useState(false);
 
-  // Withdraw state (Privy wallet → external)
-  const [withdrawAddr, setWithdrawAddr] = useState("");
-  const [withdrawAmount, setWithdrawAmount] = useState("");
-  const [withdrawing, setWithdrawing] = useState(false);
-  const [withdrawResult, setWithdrawResult] = useState<{ ok: boolean; msg: string } | null>(null);
-
-  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+  const getAuthHeaders = useCallback(async () => {
     const accessToken = await getAccessToken().catch(() => null);
     if (accessToken) {
       return { Authorization: `Bearer ${accessToken}` };
@@ -103,6 +130,19 @@ export default function EarningsContent() {
     }
   }, [getAuthHeaders]);
 
+  const loadStripe = useCallback(async (refresh = false) => {
+    try {
+      const [s, wds] = await Promise.all([
+        fetchStripeStatus(refresh),
+        fetchStripeWithdrawals(20).catch(() => [] as StripeWithdrawal[]),
+      ]);
+      setStripeStatus(s);
+      setStripeWithdrawals(wds);
+    } catch (e) {
+      console.warn("stripe status fetch failed:", (e as Error).message);
+    }
+  }, []);
+
   useEffect(() => {
     if (!authenticated) {
       setLoading(false);
@@ -113,135 +153,57 @@ export default function EarningsContent() {
     return () => clearInterval(interval);
   }, [authenticated, fetchEarnings]);
 
-  // Step 1: Claim all earnings → sends USDC from coordinator hot wallet to Privy wallet
-  const handleClaim = useCallback(async () => {
-    if (!walletAddress) return;
-    const availableMicro = data?.available_balance_micro_usd || 0;
-    if (availableMicro < 1_000_000) return;
-    const amountUsd = Number(
-      data?.available_balance_usd || (availableMicro / 1_000_000).toFixed(6)
-    );
+  // Load Stripe status; detect return from Stripe onboarding
+  useEffect(() => {
+    if (!authenticated) return;
+    const params = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+    const justReturned = params?.get("stripe_return") === "1";
+    loadStripe(justReturned);
+    if (justReturned) {
+      addToast("Stripe onboarding complete — verifying...", "success");
+      const url = new URL(window.location.href);
+      url.searchParams.delete("stripe_return");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, [authenticated, loadStripe, addToast]);
 
-    setClaiming(true);
-    setClaimResult(null);
-    trackEvent("provider_claim_started", {
-      surface: "provider_earnings",
-      amount_usd: amountUsd,
-    });
+  const handleStripeOnboard = async () => {
+    setStripeOnboardLoading(true);
     try {
-      const coordinatorUrl =
-        localStorage.getItem("darkbloom_coordinator_url") ||
-        process.env.NEXT_PUBLIC_COORDINATOR_URL ||
-        "https://api.darkbloom.dev";
-      const headers = await getAuthHeaders();
-
-      const res = await fetch(`${coordinatorUrl}/v1/billing/withdraw/solana`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...headers,
-        },
-        body: JSON.stringify({
-          amount_usd: amountUsd.toFixed(6),
-          wallet_address: walletAddress,
-        }),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        const msg = errData?.error?.message || errData?.error || `Claim failed (${res.status})`;
-        throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
-      }
-
-      const result = await res.json();
-      trackEvent("provider_claim_succeeded", {
-        surface: "provider_earnings",
-        amount_usd: amountUsd,
-      });
-      setClaimResult({
-        ok: true,
-        msg: `$${amountUsd.toFixed(6)} USDC claimed to your wallet. Tx: ${(result.tx_signature || "").slice(0, 16)}...`,
-      });
-      fetchEarnings();
+      const returnURL = typeof window !== "undefined"
+        ? `${window.location.origin}${window.location.pathname}?stripe_return=1`
+        : undefined;
+      const resp = await startStripeOnboarding(returnURL);
+      window.location.href = resp.url;
     } catch (e) {
-      trackEvent("provider_claim_failed", {
-        surface: "provider_earnings",
-      });
-      setClaimResult({ ok: false, msg: (e as Error).message });
-    } finally {
-      setClaiming(false);
+      addToast(`Stripe onboarding failed: ${(e as Error).message}`);
+      setStripeOnboardLoading(false);
     }
-  }, [data, walletAddress, fetchEarnings, getAuthHeaders]);
+  };
 
-  // Step 2: Withdraw USDC from Privy wallet → external address (gas-sponsored)
-  const handleWithdraw = useCallback(async () => {
-    if (!withdrawAddr || !withdrawAmount) return;
-    const amount = parseFloat(withdrawAmount);
-    if (isNaN(amount) || amount <= 0) return;
-
-    const embeddedWallet = wallets.find((w) => w.address === walletAddress);
-    if (!embeddedWallet) {
-      setWithdrawResult({ ok: false, msg: "No wallet found. Sign in again." });
-      return;
-    }
-
-    setWithdrawing(true);
-    setWithdrawResult(null);
+  const handleStripeWithdraw = async () => {
+    setWithdrawLoading(true);
     trackEvent("provider_withdraw_started", {
       surface: "provider_earnings",
-      amount_usd: amount,
+      method: withdrawMethod,
     });
     try {
-      const connection = new Connection(SOLANA_RPC);
-      const fromPubkey = new PublicKey(embeddedWallet.address);
-      const toPubkey = new PublicKey(withdrawAddr);
-      const amountLamports = Math.round(amount * 10 ** USDC_DECIMALS);
-
-      const sourceATA = await getAssociatedTokenAddress(USDC_MINT, fromPubkey);
-      const destATA = await getAssociatedTokenAddress(USDC_MINT, toPubkey);
-
-      const tx = new Transaction();
-
-      // Create destination ATA if it doesn't exist
-      const destAccount = await connection.getAccountInfo(destATA);
-      if (!destAccount) {
-        tx.add(
-          createAssociatedTokenAccountInstruction(fromPubkey, destATA, toPubkey, USDC_MINT)
-        );
-      }
-
-      tx.add(createTransferInstruction(sourceATA, destATA, fromPubkey, amountLamports));
-      tx.feePayer = fromPubkey;
-      tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-
-      const serialized = tx.serialize({ requireAllSignatures: false });
-
-      const result = await signAndSendTransaction({
-        transaction: serialized,
-        wallet: embeddedWallet,
-        chain: "solana:mainnet",
-        options: { sponsor: true },
-      });
-
+      const resp = await withdrawStripe(withdrawAmount, withdrawMethod);
       trackEvent("provider_withdraw_succeeded", {
         surface: "provider_earnings",
-        amount_usd: amount,
+        method: withdrawMethod,
       });
-      setWithdrawResult({
-        ok: true,
-        msg: `$${withdrawAmount} USDC sent. Tx: ${(result.signature || "").slice(0, 16)}...`,
-      });
-      setWithdrawAmount("");
-      setWithdrawAddr("");
+      addToast(`Withdrawal submitted — ${resp.eta || "processing"}`, "success");
+      setWithdrawOpen(false);
+      await Promise.all([fetchEarnings(), loadStripe(false)]);
     } catch (e) {
       trackEvent("provider_withdraw_failed", {
         surface: "provider_earnings",
       });
-      setWithdrawResult({ ok: false, msg: (e as Error).message });
-    } finally {
-      setWithdrawing(false);
+      addToast(`${(e as Error).message}`);
     }
-  }, [withdrawAddr, withdrawAmount, wallets, signAndSendTransaction, walletAddress]);
+    setWithdrawLoading(false);
+  };
 
   if (!authenticated) {
     return (
@@ -288,7 +250,14 @@ export default function EarningsContent() {
   const availableBalanceMicro = data?.available_balance_micro_usd || 0;
   const totalJobs = data?.count || 0;
   const recentCount = data?.recent_count ?? data?.earnings.length ?? 0;
-  const canClaim = availableBalanceMicro >= 1_000_000;
+
+  const ready = stripeStatus?.status === "ready";
+  const restricted = stripeStatus?.status === "restricted";
+  const rejected = stripeStatus?.status === "rejected";
+  const pending = stripeStatus?.status === "pending";
+  const minWithdrawUsd = (stripeStatus?.min_withdraw_micro_usd ?? 1_000_000) / 1_000_000;
+  const availableUsd = availableBalanceMicro / 1_000_000;
+  const canWithdraw = ready && availableUsd >= minWithdrawUsd;
 
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-6">
@@ -330,112 +299,145 @@ export default function EarningsContent() {
         </div>
       </div>
 
-      {/* Step 1: Claim Fees */}
+      {/* Withdraw Earnings (Stripe Connect) */}
       <div className="rounded-xl bg-bg-secondary shadow-sm p-5">
         <div className="flex items-center gap-2 mb-1">
-          <ArrowDownToLine size={16} className="text-accent-green" />
-          <h3 className="text-sm font-semibold text-text-primary">Step 1 — Claim Fees</h3>
+          <ArrowDownToLine size={16} className="text-teal" />
+          <h3 className="text-sm font-semibold text-text-primary">Withdraw Earnings</h3>
+          {ready && (
+            <span className="ml-auto text-[10px] font-mono uppercase tracking-widest text-teal bg-teal/10 border border-teal/30 rounded px-2 py-0.5">
+              Ready
+            </span>
+          )}
+          {pending && (
+            <span className="ml-auto text-[10px] font-mono uppercase tracking-widest text-gold bg-gold/10 border border-gold/30 rounded px-2 py-0.5">
+              Pending
+            </span>
+          )}
+          {(restricted || rejected) && (
+            <span className="ml-auto text-[10px] font-mono uppercase tracking-widest text-coral bg-coral/10 border border-coral/30 rounded px-2 py-0.5">
+              Action needed
+            </span>
+          )}
         </div>
-        <p className="text-xs text-text-tertiary mb-4">
-          Transfer your earned USDC from the Darkbloom coordinator to your Privy wallet.
-        </p>
 
-        {!walletAddress ? (
-          <p className="text-sm text-text-tertiary">
-            Link a Solana wallet to your account to claim earnings.
-          </p>
-        ) : (
+        {/* Available balance display */}
+        <div className="flex items-baseline gap-1 mb-4 mt-3">
+          <span className="text-3xl font-bold text-text-primary font-mono tracking-tight">
+            ${availableBalance}
+          </span>
+          <span className="text-sm text-text-tertiary font-mono">available</span>
+        </div>
+
+        {!stripeStatus?.has_account ? (
           <>
-            <div className="flex items-center gap-3 mb-4 px-3 py-2.5 rounded-lg bg-bg-primary border border-border-dim">
-              <Wallet size={14} className="text-text-tertiary" />
-              <div className="flex-1 min-w-0">
-                <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wide">Your Privy Wallet</p>
-                <p className="text-sm font-mono text-text-primary truncate">{walletAddress}</p>
+            <p className="text-sm text-text-secondary mb-4 leading-relaxed">
+              Link a bank account or debit card via Stripe to withdraw your earnings.
+              Stripe handles identity verification — onboarding takes about 2 minutes.
+            </p>
+            <button
+              onClick={handleStripeOnboard}
+              disabled={stripeOnboardLoading}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 transition-all"
+            >
+              {stripeOnboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
+              {stripeOnboardLoading ? "Redirecting..." : "Link bank via Stripe"}
+            </button>
+          </>
+        ) : ready ? (
+          <>
+            <div className="rounded-lg bg-bg-primary border border-border-dim p-3 mb-4 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm text-text-secondary">
+                {stripeStatus.destination_type === "card" ? (
+                  <CreditCard size={14} className="text-teal" />
+                ) : (
+                  <Building2 size={14} className="text-teal" />
+                )}
+                <span className="font-mono">
+                  {stripeStatus.destination_type === "card" ? "Debit card" : "Bank"} ••{stripeStatus.destination_last4}
+                </span>
+                {stripeStatus.instant_eligible && (
+                  <span className="text-[10px] font-mono uppercase text-gold bg-gold/10 border border-gold/30 rounded px-1.5 py-0.5">
+                    Instant
+                  </span>
+                )}
               </div>
             </div>
-
-            <div className="flex items-center gap-3">
-              <div className="flex-1">
-                <p className="text-sm font-mono text-text-primary">
-                  ${availableBalance} <span className="text-text-tertiary">available to withdraw</span>
-                </p>
-              </div>
-              <button
-                onClick={handleClaim}
-                disabled={claiming || !canClaim}
-                className="px-5 py-2.5 rounded-lg bg-coral text-white text-sm font-semibold hover:opacity-90 disabled:opacity-40 transition-all flex items-center gap-2"
-              >
-                {claiming ? <Loader2 size={14} className="animate-spin" /> : <ArrowDownToLine size={14} />}
-                Claim All
-              </button>
-            </div>
-
-            {!canClaim && availableBalanceMicro > 0 && (
+            <button
+              onClick={() => {
+                setWithdrawAmount(availableUsd >= minWithdrawUsd ? availableUsd.toFixed(2) : "10");
+                setWithdrawMethod(stripeStatus?.instant_eligible ? "instant" : "standard");
+                setWithdrawOpen(true);
+              }}
+              disabled={!canWithdraw}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            >
+              <ArrowDownToLine size={14} />
+              Withdraw
+            </button>
+            {!canWithdraw && availableUsd < minWithdrawUsd && (
               <p className="text-xs text-text-tertiary mt-2">
-                Minimum claim is $1.00
+                Minimum withdrawal is ${minWithdrawUsd.toFixed(2)} — your available balance is ${availableUsd.toFixed(2)}.
               </p>
             )}
-
-            {claimResult && (
-              <div className={`flex items-center gap-2 mt-3 text-xs font-medium ${
-                claimResult.ok ? "text-accent-green" : "text-accent-red"
-              }`}>
-                {claimResult.ok ? <Check size={14} /> : <AlertCircle size={14} />}
-                {claimResult.msg}
-              </div>
+          </>
+        ) : (
+          <>
+            <p className="text-sm text-text-secondary mb-4 leading-relaxed flex items-start gap-2">
+              <AlertCircle size={14} className="text-coral mt-0.5 flex-shrink-0" />
+              {restricted
+                ? "Stripe needs more information to enable payouts on your account."
+                : rejected
+                ? "Stripe has disabled payouts on this account. Contact support."
+                : "Finish linking your account on Stripe to enable withdrawals."}
+            </p>
+            {!rejected && (
+              <button
+                onClick={handleStripeOnboard}
+                disabled={stripeOnboardLoading}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 transition-all"
+              >
+                {stripeOnboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
+                {stripeOnboardLoading ? "Redirecting..." : restricted ? "Provide more info" : "Continue setup"}
+              </button>
             )}
           </>
         )}
-      </div>
 
-      {/* Step 2: Withdraw to Exchange */}
-      <div className="rounded-xl bg-bg-secondary shadow-sm p-5">
-        <div className="flex items-center gap-2 mb-1">
-          <ArrowUpRight size={16} className="text-accent-brand" />
-          <h3 className="text-sm font-semibold text-text-primary">Step 2 — Withdraw to Exchange</h3>
-        </div>
-        <p className="text-xs text-text-tertiary mb-4">
-          Send USDC from your Privy wallet to an external wallet or exchange. Gas fees are sponsored.
-        </p>
-
-        <div className="space-y-3">
-          <input
-            type="text"
-            value={withdrawAddr}
-            onChange={(e) => { setWithdrawResult(null); setWithdrawAddr(e.target.value); }}
-            placeholder="Destination Solana address"
-            className="w-full bg-bg-primary border border-border-dim rounded-lg px-3 py-2.5 text-sm font-mono text-text-primary outline-none focus:border-accent-brand/50 transition-colors placeholder:text-text-tertiary/50"
-          />
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary text-sm">$</span>
-              <input
-                type="number"
-                step="0.01"
-                min="0.01"
-                value={withdrawAmount}
-                onChange={(e) => { setWithdrawResult(null); setWithdrawAmount(e.target.value); }}
-                placeholder="0.00"
-                className="w-full bg-bg-primary border border-border-dim rounded-lg pl-7 pr-3 py-2.5 text-sm font-mono text-text-primary outline-none focus:border-accent-brand/50 transition-colors"
-              />
+        {stripeWithdrawals.length > 0 && (
+          <div className="mt-5 pt-5 border-t border-border-subtle">
+            <p className="text-xs font-mono text-text-tertiary uppercase tracking-wider mb-3">
+              Recent withdrawals
+            </p>
+            <div className="space-y-2">
+              {stripeWithdrawals.slice(0, 5).map((w) => (
+                <div key={w.id} className="flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-2">
+                    {w.status === "paid" ? (
+                      <Check size={12} className="text-teal" />
+                    ) : w.status === "failed" ? (
+                      <X size={12} className="text-coral" />
+                    ) : (
+                      <Clock size={12} className="text-gold" />
+                    )}
+                    <span className="font-mono text-text-secondary">
+                      ${(w.net_micro_usd / 1_000_000).toFixed(2)}
+                    </span>
+                    <span className="text-[10px] font-mono uppercase text-text-tertiary">
+                      {w.method}
+                    </span>
+                  </div>
+                  <span className={`text-xs font-mono ${
+                    w.status === "paid" ? "text-teal" :
+                    w.status === "failed" ? "text-coral" :
+                    "text-text-tertiary"
+                  }`}>
+                    {w.status}
+                    {w.refunded ? " (refunded)" : ""}
+                  </span>
+                </div>
+              ))}
             </div>
-            <button
-              onClick={handleWithdraw}
-              disabled={withdrawing || !withdrawAddr || !withdrawAmount}
-              className="px-5 py-2.5 rounded-lg bg-coral text-white text-sm font-semibold hover:opacity-90 disabled:opacity-40 transition-all flex items-center gap-2"
-            >
-              {withdrawing ? <Loader2 size={14} className="animate-spin" /> : <ArrowUpRight size={14} />}
-              Send
-            </button>
-          </div>
-        </div>
-
-        {withdrawResult && (
-          <div className={`flex items-center gap-2 mt-3 text-xs font-medium ${
-            withdrawResult.ok ? "text-accent-green" : "text-accent-red"
-          }`}>
-            {withdrawResult.ok ? <Check size={14} /> : <AlertCircle size={14} />}
-            {withdrawResult.msg}
           </div>
         )}
       </div>
@@ -486,6 +488,192 @@ export default function EarningsContent() {
           )}
         </div>
       </div>
+
+      {/* Stripe Withdraw Modal */}
+      <Modal open={withdrawOpen} onClose={() => !withdrawLoading && setWithdrawOpen(false)}>
+        <StripeWithdrawModal
+          status={stripeStatus}
+          balanceMicroUsd={availableBalanceMicro}
+          amount={withdrawAmount}
+          method={withdrawMethod}
+          loading={withdrawLoading}
+          onAmountChange={setWithdrawAmount}
+          onMethodChange={setWithdrawMethod}
+          onConfirm={handleStripeWithdraw}
+          onCancel={() => setWithdrawOpen(false)}
+        />
+      </Modal>
     </div>
+  );
+}
+
+function StripeWithdrawModal({
+  status,
+  balanceMicroUsd,
+  amount,
+  method,
+  loading,
+  onAmountChange,
+  onMethodChange,
+  onConfirm,
+  onCancel,
+}: {
+  status: StripeStatus | null;
+  balanceMicroUsd: number;
+  amount: string;
+  method: "standard" | "instant";
+  loading: boolean;
+  onAmountChange: (v: string) => void;
+  onMethodChange: (m: "standard" | "instant") => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const amountNum = parseFloat(amount) || 0;
+  const balanceUsd = balanceMicroUsd / 1_000_000;
+  const minWithdrawUsd = (status?.min_withdraw_micro_usd ?? 1_000_000) / 1_000_000;
+  const instantBps = status?.instant_fee_bps ?? 150;
+  const instantMinUsd = status?.instant_fee_min_usd ?? 0.5;
+  const fee = computeStripeFeeUsd(amountNum, method, instantBps, instantMinUsd);
+  const net = Math.max(0, amountNum - fee);
+
+  const tooSmall = amountNum > 0 && amountNum < minWithdrawUsd;
+  const tooLarge = amountNum > balanceUsd;
+  const valid = amountNum >= minWithdrawUsd && !tooLarge;
+
+  return (
+    <div className="px-6 pb-6">
+      <h3 className="text-2xl font-semibold text-ink mb-2">Withdraw to {status?.destination_type === "card" ? "card" : "bank"}</h3>
+      <p className="text-sm text-text-secondary mb-4">
+        Funds go to {status?.destination_type === "card" ? "your linked card" : "your linked bank account"} ••{status?.destination_last4}.
+      </p>
+
+      <label className="block text-xs font-mono text-text-tertiary uppercase tracking-wider mb-2">
+        Amount (USD)
+      </label>
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-text-tertiary text-lg">$</span>
+        <input
+          type="number"
+          value={amount}
+          onChange={(e) => onAmountChange(e.target.value)}
+          className="flex-1 bg-bg-primary border border-border-dim rounded-lg px-4 py-3 text-text-primary font-mono text-lg outline-none focus:border-teal transition-colors"
+          min={minWithdrawUsd}
+          max={balanceUsd}
+          step="0.01"
+        />
+      </div>
+      <p className="text-xs text-text-tertiary mb-4">
+        Available: ${balanceUsd.toFixed(2)} · Min: ${minWithdrawUsd.toFixed(2)}
+      </p>
+      {tooSmall && (
+        <p className="text-xs text-coral mb-3">Minimum withdrawal is ${minWithdrawUsd.toFixed(2)}.</p>
+      )}
+      {tooLarge && (
+        <p className="text-xs text-coral mb-3">Insufficient balance.</p>
+      )}
+
+      {/* Method picker */}
+      <label className="block text-xs font-mono text-text-tertiary uppercase tracking-wider mb-2">
+        Speed
+      </label>
+      <div className="grid grid-cols-1 gap-2 mb-4">
+        <MethodOption
+          selected={method === "standard"}
+          onClick={() => onMethodChange("standard")}
+          icon={<Clock size={14} />}
+          label="Standard"
+          eta="1-2 business days"
+          fee="Free"
+        />
+        <MethodOption
+          selected={method === "instant"}
+          onClick={() => status?.instant_eligible && onMethodChange("instant")}
+          disabled={!status?.instant_eligible}
+          icon={<Zap size={14} />}
+          label="Instant"
+          eta="~30 minutes"
+          fee={`${(instantBps / 100).toFixed(2)}% (min $${instantMinUsd.toFixed(2)})`}
+          tooltip={!status?.instant_eligible ? "Link a debit card via Stripe to enable Instant Payouts" : undefined}
+        />
+      </div>
+
+      {/* Fee breakdown */}
+      <div className="rounded-lg bg-bg-primary border border-border-dim p-3 mb-5 text-xs space-y-1">
+        <div className="flex justify-between text-text-tertiary">
+          <span>Withdrawal</span>
+          <span className="font-mono">${amountNum.toFixed(2)}</span>
+        </div>
+        <div className="flex justify-between text-text-tertiary">
+          <span>Fee</span>
+          <span className="font-mono">${fee.toFixed(2)}</span>
+        </div>
+        <div className="flex justify-between text-text-primary font-bold pt-1 border-t border-border-subtle">
+          <span>You receive</span>
+          <span className="font-mono text-teal">${net.toFixed(2)}</span>
+        </div>
+      </div>
+
+      <div className="flex gap-3">
+        <button
+          onClick={onCancel}
+          disabled={loading}
+          className="flex-1 py-3 rounded-lg border-2 border-border-dim text-text-secondary text-sm font-bold hover:bg-bg-hover transition-all"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={onConfirm}
+          disabled={loading || !valid}
+          className="flex-1 py-3 rounded-lg bg-teal border border-border-dim text-white font-bold text-sm hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+        >
+          {loading && <Loader2 size={14} className="animate-spin" />}
+          {loading ? "Processing..." : `Withdraw $${amountNum.toFixed(2)}`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MethodOption({
+  selected,
+  onClick,
+  disabled,
+  icon,
+  label,
+  eta,
+  fee,
+  tooltip,
+}: {
+  selected: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+  icon: React.ReactNode;
+  label: string;
+  eta: string;
+  fee: string;
+  tooltip?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={tooltip}
+      className={`flex items-center justify-between gap-3 px-3 py-3 rounded-lg border-2 transition-all text-left ${
+        selected
+          ? "bg-teal/10 border-teal text-teal"
+          : disabled
+          ? "bg-bg-primary border-border-dim text-text-tertiary cursor-not-allowed opacity-60"
+          : "bg-bg-primary border-border-dim text-text-secondary hover:border-teal/30 hover:text-teal"
+      }`}
+    >
+      <div className="flex items-center gap-3">
+        {icon}
+        <div>
+          <div className="text-sm font-semibold">{label}</div>
+          <div className="text-xs font-mono text-text-tertiary">{eta}</div>
+        </div>
+      </div>
+      <div className="text-xs font-mono">{fee}</div>
+    </button>
   );
 }

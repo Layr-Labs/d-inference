@@ -271,6 +271,7 @@ Always think from first principles. When fixing a bug or designing a feature:
 ## Common Pitfalls
 
 - Protocol changes require updating both `provider/src/protocol.rs` (Rust) AND `coordinator/internal/protocol/messages.go` (Go). They must stay in sync.
+- Telemetry wire types are mirrored in three places: `coordinator/internal/protocol/telemetry.go`, `provider/src/telemetry/event.rs`, and `console-ui/src/lib/telemetry-types.ts`. The field allowlist (`coordinator/internal/api/telemetry_handlers.go`) is the privacy backstop — never add prompt/completion fields. See `docs/telemetry.md`.
 - Attestation tests need `AuthenticatedRootEnabled: true` in test blobs or the ARV check fails and overwrites earlier error messages (the checks run sequentially, last failure wins).
 - The `python` feature flag in the provider Cargo.toml links PyO3. Use `--no-default-features` when building for distribution to avoid Python linking issues.
 - The coordinator uses in-memory store by default. Provider state is lost on restart. Postgres store exists but is not used in production yet.

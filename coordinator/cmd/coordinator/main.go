@@ -38,18 +38,27 @@ import (
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/billing"
+	"github.com/eigeninference/coordinator/internal/datadog"
 	"github.com/eigeninference/coordinator/internal/e2e"
 	"github.com/eigeninference/coordinator/internal/mdm"
 	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/eigeninference/coordinator/internal/telemetry"
+
+	ddtracer "gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
 
 func main() {
-	// Structured logging.
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	// Structured JSON logging. When Datadog is active, we wrap the handler
+	// with trace context injection so logs correlate with APM traces.
+	var slogHandler slog.Handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
-	}))
+	})
+	if os.Getenv("DD_API_KEY") != "" || os.Getenv("DD_AGENT_HOST") != "" {
+		slogHandler = datadog.NewTraceHandler(slogHandler)
+	}
+	logger := slog.New(slogHandler)
 	slog.SetDefault(logger)
 
 	// Configuration from environment.
@@ -100,6 +109,37 @@ func main() {
 
 	srv := api.NewServer(reg, st, logger)
 	srv.SetAdminKey(adminKey)
+
+	// Coordinator self-telemetry emitter. Writes directly to the store so
+	// panics and handler errors are observable from the admin console.
+	telemetryEmitter := telemetry.NewEmitter(logger, st, srv.Metrics(), telemetry.CoordinatorVersion)
+	srv.SetEmitter(telemetryEmitter)
+
+	// --- Datadog APM + DogStatsD + Logs API ---
+	ddCfg := datadog.ConfigFromEnv()
+	if ddCfg.APIKey != "" || os.Getenv("DD_AGENT_HOST") != "" {
+		// Start dd-trace-go APM tracer. The DD agent sidecar collects traces.
+		ddtracer.Start(
+			ddtracer.WithService(ddCfg.Service),
+			ddtracer.WithEnv(ddCfg.Env),
+		)
+		defer ddtracer.Stop()
+		logger.Info("datadog APM tracer started", "service", ddCfg.Service, "env", ddCfg.Env)
+
+		ddClient, err := datadog.NewClient(ddCfg, logger)
+		if err != nil {
+			logger.Warn("datadog client init failed (continuing without DD)", "error", err)
+		} else {
+			srv.SetDatadog(ddClient)
+			telemetryEmitter.SetDatadog(ddClient)
+			defer ddClient.Close()
+			logger.Info("datadog integration enabled",
+				"statsd_addr", ddCfg.StatsdAddr,
+				"logs_api", ddCfg.APIKey != "",
+				"site", ddCfg.Site,
+			)
+		}
+	}
 
 	// Sync the model catalog to the registry so providers and consumers
 	// are filtered against the admin-managed whitelist.
@@ -202,30 +242,31 @@ func main() {
 		}
 	}
 
-	// Configure billing service.
-	//
-	// Day-1 launch: Solana USDC (via Privy embedded wallets) + Referrals.
-	// Users sign their own USDC transfers in the frontend, then submit the
-	// tx signature here. We verify on-chain and credit their balance.
-	// Stripe is wired but not activated until we flip the env vars on.
+	// Configure billing service (Stripe-only).
 	billingCfg := billing.Config{
-		// Solana — primary payment rail
-		SolanaRPCURL:             os.Getenv("EIGENINFERENCE_SOLANA_RPC_URL"),
-		SolanaUSDCMint:           envOr("EIGENINFERENCE_SOLANA_USDC_MINT", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), // mainnet USDC
-		SolanaCoordinatorAddress: os.Getenv("EIGENINFERENCE_SOLANA_COORDINATOR_ADDRESS"),                                   // fallback if no mnemonic (deposit-only, no withdrawals)
-		SolanaMnemonic:           envOr("MNEMONIC", os.Getenv("EIGENINFERENCE_SOLANA_MNEMONIC")),                           // BIP39 mnemonic → derive keypair + deposit address (legacy: EIGENINFERENCE_SOLANA_MNEMONIC)
+		// Mnemonic — used for coordinator encryption key derivation (e2e.DeriveCoordinatorKey).
+		SolanaMnemonic: envOr("MNEMONIC", os.Getenv("EIGENINFERENCE_SOLANA_MNEMONIC")),
 
-		// Stripe — present but not activated day-1 (set env vars to enable)
+		// Stripe — primary payment rail for deposits.
 		StripeSecretKey:     os.Getenv("EIGENINFERENCE_STRIPE_SECRET_KEY"),
 		StripeWebhookSecret: os.Getenv("EIGENINFERENCE_STRIPE_WEBHOOK_SECRET"),
 		StripeSuccessURL:    os.Getenv("EIGENINFERENCE_STRIPE_SUCCESS_URL"),
 		StripeCancelURL:     os.Getenv("EIGENINFERENCE_STRIPE_CANCEL_URL"),
+
+		// Stripe Connect Express — bank/card payouts. Reuses StripeSecretKey
+		// for API auth; the Connect webhook endpoint has its own signing
+		// secret. Return/refresh URLs are where Stripe sends users back to
+		// after the hosted onboarding flow.
+		StripeConnectWebhookSecret:   os.Getenv("EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET"),
+		StripeConnectPlatformCountry: envOr("EIGENINFERENCE_STRIPE_CONNECT_COUNTRY", "US"),
+		StripeConnectReturnURL:       os.Getenv("EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL"),
+		StripeConnectRefreshURL:      os.Getenv("EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL"),
 	}
 
-	// Mock billing mode — skips on-chain verification, auto-credits test balance.
+	// Mock billing mode — auto-credits test balance without real payment.
 	if os.Getenv("EIGENINFERENCE_BILLING_MOCK") == "true" {
 		billingCfg.MockMode = true
-		logger.Warn("BILLING MOCK MODE ENABLED — deposits skip on-chain verification")
+		logger.Warn("BILLING MOCK MODE ENABLED — deposits auto-credited without payment")
 	}
 
 	// Parse referral share percentage
@@ -240,10 +281,10 @@ func main() {
 	srv.SetBilling(billingSvc)
 
 	// Derive the coordinator's long-lived X25519 key for sender→coordinator
-	// request encryption. Reuses the same BIP39 mnemonic as billing but with
-	// a distinct HKDF domain, so the encryption key is independent of the
-	// Solana keypair. Optional: dev environments without a mnemonic just get
-	// the /v1/encryption-key endpoint disabled (senders fall back to plaintext).
+	// request encryption. The key is derived from the BIP39 mnemonic via HKDF
+	// with a coordinator-specific domain. Optional: dev environments without a
+	// mnemonic just get the /v1/encryption-key endpoint disabled (senders fall
+	// back to plaintext).
 	if coordKey, err := e2e.DeriveCoordinatorKey(billingCfg.SolanaMnemonic); err == nil {
 		srv.SetCoordinatorKey(coordKey)
 		logger.Info("sender→coordinator encryption enabled",
@@ -376,6 +417,11 @@ func main() {
 
 	// Start background eviction of stale providers.
 	reg.StartEvictionLoop(ctx, 90*time.Second)
+
+	// Push gauge values to DogStatsD periodically.
+	go srv.StartDDGaugeLoop(ctx)
+
+	// Telemetry retention is handled by Datadog; no local retention loop needed.
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{

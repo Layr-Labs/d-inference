@@ -4,17 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/auth"
-	"github.com/eigeninference/coordinator/internal/billing"
-	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
@@ -230,100 +225,3 @@ func TestIntegration_SSEChunkNormalization(t *testing.T) {
 	}
 }
 
-// TestIntegration_ConcurrentWithdrawals verifies that concurrent withdrawal
-// requests against the same account are serialized correctly by the store's
-// mutex, preventing negative balances.
-func TestIntegration_ConcurrentWithdrawals(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
-
-	// Set up billing in mock mode.
-	ledger := payments.NewLedger(st)
-	billingSvc := billing.NewService(st, ledger, logger, billing.Config{
-		SolanaRPCURL:             "http://localhost:8899",
-		SolanaCoordinatorAddress: "CoordAddress1111111111111111111111111111111",
-		SolanaUSDCMint:           "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-		SolanaMnemonic:           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-		MockMode:                 true,
-	})
-	srv.SetBilling(billingSvc)
-
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	// Create an account and credit $5.
-	user := &store.User{
-		AccountID:           "acct-concurrent",
-		PrivyUserID:         "did:privy:concurrent",
-		SolanaWalletAddress: "ConcurrentWallet1111111111111111111111111111",
-	}
-	st.Credit(user.AccountID, 5_000_000, store.LedgerDeposit, "seed") // $5.00
-
-	// Send two concurrent $3 withdrawal requests.
-	var wg sync.WaitGroup
-	results := make([]int, 2)
-	bodies := make([]string, 2)
-
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			body := `{"wallet_address":"ConcurrentWallet1111111111111111111111111111","amount_usd":"3.00"}`
-			req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/solana", strings.NewReader(body))
-			// Set Privy user context directly (bypassing middleware).
-			ctx := context.WithValue(req.Context(), ctxKeyConsumer, user.AccountID)
-			ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
-			req = req.WithContext(ctx)
-
-			w := httptest.NewRecorder()
-			srv.handleSolanaWithdraw(w, req)
-			results[idx] = w.Code
-			bodies[idx] = w.Body.String()
-		}(i)
-	}
-
-	wg.Wait()
-
-	// Exactly one should succeed (200) and one should fail (400 insufficient funds).
-	successCount := 0
-	failCount := 0
-	for i, code := range results {
-		switch code {
-		case http.StatusOK:
-			successCount++
-		case http.StatusBadRequest:
-			failCount++
-			// Verify it's an insufficient funds error.
-			var resp map[string]any
-			json.Unmarshal([]byte(bodies[i]), &resp)
-			errObj, _ := resp["error"].(map[string]any)
-			if errObj != nil {
-				if errObj["type"] != "insufficient_funds" {
-					t.Errorf("withdrawal %d: expected insufficient_funds error, got %v", i, errObj["type"])
-				}
-			}
-		default:
-			t.Errorf("withdrawal %d: unexpected status %d: %s", i, code, bodies[i])
-		}
-	}
-
-	if successCount != 1 {
-		t.Errorf("expected exactly 1 successful withdrawal, got %d", successCount)
-	}
-	if failCount != 1 {
-		t.Errorf("expected exactly 1 failed withdrawal, got %d", failCount)
-	}
-
-	// Final balance should be $2 (5 - 3 = 2).
-	finalBalance := st.GetBalance(user.AccountID)
-	if finalBalance != 2_000_000 {
-		t.Errorf("final balance = %d micro-USD, want 2_000_000 ($2.00)", finalBalance)
-	}
-
-	// Balance must never be negative.
-	if finalBalance < 0 {
-		t.Errorf("balance went negative: %d micro-USD", finalBalance)
-	}
-}

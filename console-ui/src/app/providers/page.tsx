@@ -283,7 +283,7 @@ function ProviderCard({ provider }: { provider: Provider }) {
 }
 
 export default function ProvidersPage() {
-  const { ready, authenticated, login, walletAddress } = useAuth();
+  const { ready, authenticated, login } = useAuth();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -324,10 +324,9 @@ export default function ProvidersPage() {
     );
   }
 
-  // Check if user is a provider
-  const myProvider = walletAddress
-    ? providers.find((p) => p.wallet_address === walletAddress)
-    : null;
+  // Provider matching by wallet address is no longer available after Solana removal.
+  // TODO: match by account_id once coordinator exposes it on the attestation endpoint.
+  const myProvider = null as Provider | null;
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">

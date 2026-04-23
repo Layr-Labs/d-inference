@@ -52,8 +52,15 @@ type MemoryStore struct {
 	supportedModels map[string]*SupportedModel // modelID → model
 
 	// Users (Privy)
-	usersByPrivyID   map[string]*User // privyUserID → user
-	usersByAccountID map[string]*User // accountID → user
+	usersByPrivyID         map[string]*User // privyUserID → user
+	usersByAccountID       map[string]*User // accountID → user
+	usersByStripeAccountID map[string]*User // stripeAccountID → user (subset of usersByAccountID)
+
+	// Stripe Connect withdrawals
+	stripeWithdrawalsByID         map[string]*StripeWithdrawal
+	stripeWithdrawalsByTransferID map[string]string // transferID → withdrawalID
+	stripeWithdrawalsByPayoutID   map[string]string // payoutID → withdrawalID
+	stripeWithdrawalsByAccount    map[string][]string // accountID → []withdrawalID, newest last
 
 	// Device authorization
 	deviceCodesByCode     map[string]*DeviceCode // deviceCode → DeviceCode
@@ -82,6 +89,9 @@ type MemoryStore struct {
 	providerRecords    map[string]*ProviderRecord   // providerID → record
 	reputationRecords  map[string]*ReputationRecord // providerID → reputation
 	serialToProviderID map[string]string            // serialNumber → providerID
+
+	// Telemetry ring buffer (bounded at memTelemetryCap)
+	telemetryEvents []TelemetryEventRecord
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -101,8 +111,13 @@ func NewMemory(adminKey string) *MemoryStore {
 		billingSessions:       make(map[string]*BillingSession),
 		modelPrices:           make(map[string]ModelPrice),
 		supportedModels:       make(map[string]*SupportedModel),
-		usersByPrivyID:        make(map[string]*User),
-		usersByAccountID:      make(map[string]*User),
+		usersByPrivyID:                make(map[string]*User),
+		usersByAccountID:              make(map[string]*User),
+		usersByStripeAccountID:        make(map[string]*User),
+		stripeWithdrawalsByID:         make(map[string]*StripeWithdrawal),
+		stripeWithdrawalsByTransferID: make(map[string]string),
+		stripeWithdrawalsByPayoutID:   make(map[string]string),
+		stripeWithdrawalsByAccount:    make(map[string][]string),
 		deviceCodesByCode:     make(map[string]*DeviceCode),
 		deviceCodesByUserCode: make(map[string]*DeviceCode),
 		providerTokens:        make(map[string]*ProviderToken),
@@ -115,6 +130,7 @@ func NewMemory(adminKey string) *MemoryStore {
 		providerRecords:       make(map[string]*ProviderRecord),
 		reputationRecords:     make(map[string]*ReputationRecord),
 		serialToProviderID:    make(map[string]string),
+		telemetryEvents:       make([]TelemetryEventRecord, 0, memTelemetryCap),
 	}
 	if adminKey != "" {
 		s.keys[adminKey] = true
@@ -635,6 +651,165 @@ func (s *MemoryStore) GetUserByAccountID(accountID string) (*User, error) {
 	}
 	copy := *u
 	return &copy, nil
+}
+
+// SetUserStripeAccount upserts the Stripe Connect fields on a user record.
+func (s *MemoryStore) SetUserStripeAccount(accountID, stripeAccountID, status, destinationType, destinationLast4 string, instantEligible bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	u, ok := s.usersByAccountID[accountID]
+	if !ok {
+		return fmt.Errorf("user with account ID %q not found", accountID)
+	}
+
+	// Maintain the by-stripe-account index. A user may switch accounts (e.g.
+	// after a manual reset) so we drop the old mapping if it was different.
+	if u.StripeAccountID != "" && u.StripeAccountID != stripeAccountID {
+		delete(s.usersByStripeAccountID, u.StripeAccountID)
+	}
+
+	u.StripeAccountID = stripeAccountID
+	u.StripeAccountStatus = status
+	u.StripeDestinationType = destinationType
+	u.StripeDestinationLast4 = destinationLast4
+	u.StripeInstantEligible = instantEligible
+
+	if stripeAccountID != "" {
+		s.usersByStripeAccountID[stripeAccountID] = u
+	}
+	return nil
+}
+
+// GetUserByStripeAccount finds a user by their Stripe connected account ID.
+func (s *MemoryStore) GetUserByStripeAccount(stripeAccountID string) (*User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	u, ok := s.usersByStripeAccountID[stripeAccountID]
+	if !ok {
+		return nil, fmt.Errorf("user with Stripe account %q not found", stripeAccountID)
+	}
+	copy := *u
+	return &copy, nil
+}
+
+// --- Stripe Withdrawals ---
+
+func (s *MemoryStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
+	if w == nil || w.ID == "" {
+		return fmt.Errorf("stripe withdrawal id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.stripeWithdrawalsByID[w.ID]; exists {
+		return fmt.Errorf("stripe withdrawal %q already exists", w.ID)
+	}
+	cp := *w
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = time.Now()
+	}
+	if cp.UpdatedAt.IsZero() {
+		cp.UpdatedAt = cp.CreatedAt
+	}
+	s.stripeWithdrawalsByID[cp.ID] = &cp
+	if cp.TransferID != "" {
+		s.stripeWithdrawalsByTransferID[cp.TransferID] = cp.ID
+	}
+	if cp.PayoutID != "" {
+		s.stripeWithdrawalsByPayoutID[cp.PayoutID] = cp.ID
+	}
+	s.stripeWithdrawalsByAccount[cp.AccountID] = append(s.stripeWithdrawalsByAccount[cp.AccountID], cp.ID)
+	return nil
+}
+
+func (s *MemoryStore) GetStripeWithdrawal(id string) (*StripeWithdrawal, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok {
+		return nil, fmt.Errorf("stripe withdrawal %q not found", id)
+	}
+	cp := *w
+	return &cp, nil
+}
+
+func (s *MemoryStore) GetStripeWithdrawalByPayoutID(payoutID string) (*StripeWithdrawal, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id, ok := s.stripeWithdrawalsByPayoutID[payoutID]
+	if !ok {
+		return nil, fmt.Errorf("stripe withdrawal with payout %q not found", payoutID)
+	}
+	w := s.stripeWithdrawalsByID[id]
+	cp := *w
+	return &cp, nil
+}
+
+func (s *MemoryStore) GetStripeWithdrawalByTransferID(transferID string) (*StripeWithdrawal, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id, ok := s.stripeWithdrawalsByTransferID[transferID]
+	if !ok {
+		return nil, fmt.Errorf("stripe withdrawal with transfer %q not found", transferID)
+	}
+	w := s.stripeWithdrawalsByID[id]
+	cp := *w
+	return &cp, nil
+}
+
+func (s *MemoryStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
+	if w == nil || w.ID == "" {
+		return fmt.Errorf("stripe withdrawal id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.stripeWithdrawalsByID[w.ID]
+	if !ok {
+		return fmt.Errorf("stripe withdrawal %q not found", w.ID)
+	}
+	// Re-index transfer/payout IDs if they changed.
+	if existing.TransferID != w.TransferID {
+		if existing.TransferID != "" {
+			delete(s.stripeWithdrawalsByTransferID, existing.TransferID)
+		}
+		if w.TransferID != "" {
+			s.stripeWithdrawalsByTransferID[w.TransferID] = w.ID
+		}
+	}
+	if existing.PayoutID != w.PayoutID {
+		if existing.PayoutID != "" {
+			delete(s.stripeWithdrawalsByPayoutID, existing.PayoutID)
+		}
+		if w.PayoutID != "" {
+			s.stripeWithdrawalsByPayoutID[w.PayoutID] = w.ID
+		}
+	}
+	cp := *w
+	cp.UpdatedAt = time.Now()
+	s.stripeWithdrawalsByID[w.ID] = &cp
+	return nil
+}
+
+func (s *MemoryStore) ListStripeWithdrawals(accountID string, limit int) ([]StripeWithdrawal, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := s.stripeWithdrawalsByAccount[accountID]
+	if len(ids) == 0 {
+		return []StripeWithdrawal{}, nil
+	}
+	out := make([]StripeWithdrawal, 0, len(ids))
+	for i := len(ids) - 1; i >= 0; i-- {
+		w, ok := s.stripeWithdrawalsByID[ids[i]]
+		if !ok {
+			continue
+		}
+		out = append(out, *w)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // --- Device Authorization ---

@@ -28,16 +28,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Unauthenticated — show page content without sidebar
-  if (!authenticated) {
-    return (
-      <div className="flex h-screen overflow-hidden bg-bg-primary">
-        <main className="flex-1 flex flex-col overflow-y-auto">{children}</main>
-        <Toasts />
-      </div>
-    );
-  }
-
   return (
     <div className="flex h-screen overflow-hidden bg-bg-primary">
       <Sidebar />

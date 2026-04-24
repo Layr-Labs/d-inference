@@ -126,6 +126,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
 		loopCancel()
+		s.streamTracker.StopSession(providerID)
 		s.registry.Disconnect(providerID)
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
@@ -271,6 +272,16 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 			s.applyACMETrust(providerID, provider, acmeResult)
 
+			// Start streaming payments if the machine qualifies.
+			provider.Mu().Lock()
+			streamAcctID := provider.AccountID
+			streamPubKey := provider.PublicKey
+			streamTrust := string(provider.TrustLevel)
+			streamMemGB := regMsg.Hardware.MemoryGB
+			streamBW := regMsg.Hardware.MemoryBandwidthGBs
+			provider.Mu().Unlock()
+			s.streamTracker.StartSession(providerID, streamPubKey, streamAcctID, streamTrust, streamMemGB, streamBW)
+
 			// Start challenge loop after registration
 			saferun.Go(s.logger, "challengeLoop", func() {
 				s.challengeLoop(loopCtx, conn, providerID, provider, tracker)
@@ -279,6 +290,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		case protocol.TypeHeartbeat:
 			hbMsg := msg.Payload.(*protocol.HeartbeatMessage)
 			s.registry.Heartbeat(providerID, hbMsg)
+			hasWarmModel := len(hbMsg.WarmModels) > 0 || hbMsg.ActiveModel != nil
+			s.streamTracker.Heartbeat(providerID, hbMsg.SystemMetrics.MemoryPressure, hbMsg.SystemMetrics.ThermalState, hasWarmModel)
 
 		case protocol.TypeInferenceAccepted:
 			acceptMsg := msg.Payload.(*protocol.InferenceAcceptedMessage)

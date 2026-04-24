@@ -328,16 +328,16 @@ export default function EarningsContent() {
         {/* Withdrawable earnings display */}
         <div className="flex items-baseline gap-1 mb-1 mt-3">
           <span className="text-3xl font-bold text-text-primary font-mono tracking-tight">
-            ${Number(withdrawableBalance).toFixed(2)}
+            ${(totalBalance / 1_000_000).toFixed(2)}
           </span>
-          <span className="text-sm text-text-tertiary font-mono">earnings</span>
+          <span className="text-sm text-text-tertiary font-mono">balance</span>
         </div>
-        {creditsBalance > 0 && (
-          <p className="text-xs text-text-tertiary font-mono mb-4">
-            + ${(creditsBalance / 1_000_000).toFixed(2)} credits (non-withdrawable)
-          </p>
-        )}
-        {creditsBalance <= 0 && <div className="mb-4" />}
+        <div className="flex gap-4 mb-4 text-xs font-mono text-text-tertiary">
+          <span>${(withdrawableBalanceMicro / 1_000_000).toFixed(2)} withdrawable earnings</span>
+          {creditsBalance > 0 && (
+            <span>${(creditsBalance / 1_000_000).toFixed(2)} credits (non-withdrawable)</span>
+          )}
+        </div>
 
         {!stripeStatus?.has_account ? (
           <>

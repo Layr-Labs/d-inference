@@ -28,35 +28,35 @@ func TestStreamRate(t *testing.T) {
 		{"31GB/400bw", 31, 400, 0},
 
 		// 32-47GB tier ($6 base) + bandwidth bonus
-		{"M1 Max 32GB", 32, 400, 12_000_000},  // $6 + $6
-		{"M2 Max 32GB", 32, 400, 12_000_000},  // $6 + $6
-		{"M3 Pro 36GB", 36, 150, 10_000_000},  // $6 + $4
-		{"M3 Max 36GB", 36, 300, 11_000_000},  // $6 + $5
-		{"M4 Max 36GB", 36, 546, 13_000_000},  // $6 + $7
+		{"M1 Max 32GB", 32, 400, 12_000_000}, // $6 + $6
+		{"M2 Max 32GB", 32, 400, 12_000_000}, // $6 + $6
+		{"M3 Pro 36GB", 36, 150, 10_000_000}, // $6 + $4
+		{"M3 Max 36GB", 36, 300, 11_000_000}, // $6 + $5
+		{"M4 Max 36GB", 36, 546, 13_000_000}, // $6 + $7
 
 		// 48GB tier ($7 base) + bandwidth bonus
-		{"M4 Pro 48GB", 48, 273, 12_000_000},  // $7 + $5
-		{"M3 Max 48GB", 48, 400, 13_000_000},  // $7 + $6
-		{"M4 Max 48GB", 48, 546, 14_000_000},  // $7 + $7
+		{"M4 Pro 48GB", 48, 273, 12_000_000}, // $7 + $5
+		{"M3 Max 48GB", 48, 400, 13_000_000}, // $7 + $6
+		{"M4 Max 48GB", 48, 546, 14_000_000}, // $7 + $7
 
 		// 64GB tier ($9 base) + bandwidth bonus
-		{"M1 Max 64GB", 64, 400, 15_000_000},  // $9 + $6
-		{"M4 Max 64GB", 64, 546, 16_000_000},  // $9 + $7
+		{"M1 Max 64GB", 64, 400, 15_000_000}, // $9 + $6
+		{"M4 Max 64GB", 64, 546, 16_000_000}, // $9 + $7
 
 		// 96GB tier ($10 base) + bandwidth bonus
-		{"M2 Max 96GB", 96, 400, 16_000_000},  // $10 + $6
-		{"M3 Max 96GB", 96, 400, 16_000_000},  // $10 + $6
+		{"M2 Max 96GB", 96, 400, 16_000_000}, // $10 + $6
+		{"M3 Max 96GB", 96, 400, 16_000_000}, // $10 + $6
 
 		// 128-255GB tier ($12 base) + bandwidth bonus
-		{"M4 Max 128GB", 128, 546, 19_000_000},    // $12 + $7
-		{"M2 Ultra 128GB", 128, 800, 20_000_000},  // $12 + $8
-		{"M3 Ultra 192GB", 192, 819, 20_000_000},  // $12 + $8
+		{"M4 Max 128GB", 128, 546, 19_000_000},   // $12 + $7
+		{"M2 Ultra 128GB", 128, 800, 20_000_000}, // $12 + $8
+		{"M3 Ultra 192GB", 192, 819, 20_000_000}, // $12 + $8
 
 		// 256GB tier ($17 base) + bandwidth bonus
-		{"M4 Ultra 256GB", 256, 800, 25_000_000},  // $17 + $8
+		{"M4 Ultra 256GB", 256, 800, 25_000_000}, // $17 + $8
 
 		// 512GB tier ($22 base) + bandwidth bonus
-		{"512GB Ultra", 512, 800, 30_000_000},  // $22 + $8
+		{"512GB Ultra", 512, 800, 30_000_000}, // $22 + $8
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -109,25 +109,27 @@ func TestStreamEligible(t *testing.T) {
 		memoryPressure float64
 		thermalState   string
 		hasWarmModel   bool
+		trusted        bool
 		want           bool
 	}{
-		{"nominal with model", 0.3, "nominal", true, true},
-		{"no model loaded", 0.3, "nominal", false, false},
-		{"fair thermal", 0.5, "fair", true, true},
-		{"high pressure", 0.8, "nominal", true, false},
-		{"over pressure", 0.95, "nominal", true, false},
-		{"critical thermal", 0.3, "critical", true, false},
-		{"both bad", 0.9, "critical", true, false},
-		{"edge pressure", 0.79, "nominal", true, true},
-		{"serious thermal ok", 0.3, "serious", true, true},
-		{"all bad no model", 0.9, "critical", false, false},
+		{"nominal with model", 0.3, "nominal", true, true, true},
+		{"no model loaded", 0.3, "nominal", false, true, false},
+		{"untrusted provider", 0.3, "nominal", true, false, false},
+		{"fair thermal", 0.5, "fair", true, true, true},
+		{"high pressure", 0.8, "nominal", true, true, false},
+		{"over pressure", 0.95, "nominal", true, true, false},
+		{"critical thermal", 0.3, "critical", true, true, false},
+		{"both bad", 0.9, "critical", true, true, false},
+		{"edge pressure", 0.79, "nominal", true, true, true},
+		{"serious thermal ok", 0.3, "serious", true, true, true},
+		{"all bad no model", 0.9, "critical", false, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := streamEligible(tt.memoryPressure, tt.thermalState, tt.hasWarmModel)
+			got := streamEligible(tt.memoryPressure, tt.thermalState, tt.hasWarmModel, tt.trusted)
 			if got != tt.want {
-				t.Errorf("streamEligible(%v, %q, %v) = %v, want %v",
-					tt.memoryPressure, tt.thermalState, tt.hasWarmModel, got, tt.want)
+				t.Errorf("streamEligible(%v, %q, %v, %v) = %v, want %v",
+					tt.memoryPressure, tt.thermalState, tt.hasWarmModel, tt.trusted, got, tt.want)
 			}
 		})
 	}
@@ -200,7 +202,7 @@ func TestStartSession_Idempotent(t *testing.T) {
 
 func TestHeartbeat_NoSession(t *testing.T) {
 	tracker, _ := newTestTracker()
-	accrued := tracker.Heartbeat("p1", 0.3, "nominal", true)
+	accrued := tracker.Heartbeat("p1", 0.3, "nominal", true, true)
 	if accrued != 0 {
 		t.Errorf("heartbeat without session should return 0, got %d", accrued)
 	}
@@ -210,9 +212,23 @@ func TestHeartbeat_Ineligible(t *testing.T) {
 	tracker, _ := newTestTracker()
 	tracker.StartSession("p1", "key1", "acc1", "hardware", 64, 400)
 
-	accrued := tracker.Heartbeat("p1", 0.9, "nominal", true)
+	accrued := tracker.Heartbeat("p1", 0.9, "nominal", true, true)
 	if accrued != 0 {
 		t.Errorf("heartbeat with high memory pressure should return 0, got %d", accrued)
+	}
+}
+
+func TestHeartbeat_Untrusted(t *testing.T) {
+	tracker, _ := newTestTracker()
+	tracker.StartSession("p1", "key1", "acc1", "hardware", 64, 400)
+
+	tracker.mu.Lock()
+	tracker.sessions["p1"].LastAccrual = time.Now().Add(-2 * time.Minute)
+	tracker.mu.Unlock()
+
+	accrued := tracker.Heartbeat("p1", 0.3, "nominal", true, false)
+	if accrued != 0 {
+		t.Errorf("heartbeat from untrusted provider should return 0, got %d", accrued)
 	}
 }
 
@@ -224,7 +240,7 @@ func TestHeartbeat_NoModel(t *testing.T) {
 	tracker.sessions["p1"].LastAccrual = time.Now().Add(-2 * time.Minute)
 	tracker.mu.Unlock()
 
-	accrued := tracker.Heartbeat("p1", 0.3, "nominal", false)
+	accrued := tracker.Heartbeat("p1", 0.3, "nominal", false, true)
 	if accrued != 0 {
 		t.Errorf("heartbeat without warm model should return 0, got %d", accrued)
 	}
@@ -238,7 +254,7 @@ func TestHeartbeat_AccruesOverTime(t *testing.T) {
 	tracker.sessions["p1"].LastAccrual = time.Now().Add(-2 * time.Minute)
 	tracker.mu.Unlock()
 
-	accrued := tracker.Heartbeat("p1", 0.3, "nominal", true)
+	accrued := tracker.Heartbeat("p1", 0.3, "nominal", true, true)
 
 	ratePerMin := StreamRatePerMin(12_000_000)
 	expected := ratePerMin * 2
@@ -257,8 +273,8 @@ func TestHeartbeat_BandwidthAffectsRate(t *testing.T) {
 	tracker.sessions["p2"].LastAccrual = time.Now().Add(-2 * time.Minute)
 	tracker.mu.Unlock()
 
-	a1 := tracker.Heartbeat("p1", 0.3, "nominal", true)
-	a2 := tracker.Heartbeat("p2", 0.3, "nominal", true)
+	a1 := tracker.Heartbeat("p1", 0.3, "nominal", true, true)
+	a2 := tracker.Heartbeat("p2", 0.3, "nominal", true, true)
 
 	if a2 <= a1 {
 		t.Errorf("higher bandwidth should earn more: a1=%d (150 GB/s), a2=%d (546 GB/s)", a1, a2)
@@ -269,7 +285,7 @@ func TestHeartbeat_SkipsShortInterval(t *testing.T) {
 	tracker, _ := newTestTracker()
 	tracker.StartSession("p1", "key1", "acc1", "hardware", 64, 400)
 
-	accrued := tracker.Heartbeat("p1", 0.3, "nominal", true)
+	accrued := tracker.Heartbeat("p1", 0.3, "nominal", true, true)
 	if accrued != 0 {
 		t.Errorf("heartbeat within 30s should return 0, got %d", accrued)
 	}
@@ -285,7 +301,7 @@ func TestStopSession_FlushesRemaining(t *testing.T) {
 	tracker.mu.Lock()
 	tracker.sessions["p1"].LastAccrual = time.Now().Add(-5 * time.Minute)
 	tracker.mu.Unlock()
-	tracker.Heartbeat("p1", 0.3, "nominal", true)
+	tracker.Heartbeat("p1", 0.3, "nominal", true, true)
 
 	tracker.StopSession("p1")
 
@@ -318,8 +334,8 @@ func TestFlushAll(t *testing.T) {
 	tracker.sessions["p2"].LastAccrual = time.Now().Add(-3 * time.Minute)
 	tracker.mu.Unlock()
 
-	tracker.Heartbeat("p1", 0.3, "nominal", true)
-	tracker.Heartbeat("p2", 0.3, "nominal", true)
+	tracker.Heartbeat("p1", 0.3, "nominal", true, true)
+	tracker.Heartbeat("p2", 0.3, "nominal", true, true)
 
 	tracker.FlushAll()
 

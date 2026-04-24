@@ -145,7 +145,7 @@ func (t *StreamTracker) StartSession(providerID, providerKey, accountID, trustLe
 // Heartbeat is called on every provider heartbeat. It checks eligibility
 // conditions and accrues earnings if the provider qualifies. Returns the
 // micro-USD accrued in this tick (0 if ineligible or no active session).
-func (t *StreamTracker) Heartbeat(providerID string, memoryPressure float64, thermalState string, hasWarmModel bool) int64 {
+func (t *StreamTracker) Heartbeat(providerID string, memoryPressure float64, thermalState string, hasWarmModel, trusted bool) int64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -154,7 +154,7 @@ func (t *StreamTracker) Heartbeat(providerID string, memoryPressure float64, the
 		return 0
 	}
 
-	if !streamEligible(memoryPressure, thermalState, hasWarmModel) {
+	if !streamEligible(memoryPressure, thermalState, hasWarmModel, trusted) {
 		sess.LastAccrual = time.Now()
 		return 0
 	}
@@ -179,7 +179,10 @@ func (t *StreamTracker) Heartbeat(providerID string, memoryPressure float64, the
 
 // streamEligible checks whether a provider qualifies for streaming payment
 // based on real-time system metrics.
-func streamEligible(memoryPressure float64, thermalState string, hasWarmModel bool) bool {
+func streamEligible(memoryPressure float64, thermalState string, hasWarmModel, trusted bool) bool {
+	if !trusted {
+		return false
+	}
 	if !hasWarmModel {
 		return false
 	}
@@ -193,34 +196,25 @@ func streamEligible(memoryPressure float64, thermalState string, hasWarmModel bo
 }
 
 // FlushAll persists all pending accruals to the store and resets accumulators.
-// Called periodically (e.g. every 5 minutes) to batch writes.
+// Called periodically (e.g. every 5 minutes). The lock is held during store
+// writes so that Accrued is only zeroed after a successful persist — a failed
+// write retains the accrual for the next cycle instead of dropping earnings.
 func (t *StreamTracker) FlushAll() {
 	t.mu.Lock()
-	sessions := make([]*streamSession, 0, len(t.sessions))
-	for _, sess := range t.sessions {
-		if sess.Accrued > 0 {
-			sessions = append(sessions, sess)
-		}
-	}
-	// Snapshot and reset accruals under lock, flush outside lock.
-	type pending struct {
-		sess    *streamSession
-		amount  int64
-	}
-	toFlush := make([]pending, 0, len(sessions))
-	for _, sess := range sessions {
-		toFlush = append(toFlush, pending{sess: sess, amount: sess.Accrued})
-		sess.Flushed += sess.Accrued
-		sess.Accrued = 0
-	}
-	t.mu.Unlock()
+	defer t.mu.Unlock()
 
-	for _, p := range toFlush {
-		t.flushSession(p.sess, p.amount)
+	for _, sess := range t.sessions {
+		if sess.Accrued <= 0 {
+			continue
+		}
+		t.creditSession(sess, sess.Accrued)
 	}
 }
 
-func (t *StreamTracker) flushSession(sess *streamSession, amount int64) {
+// creditSession persists accrued earnings to the store. On success it moves
+// the amount from Accrued to Flushed; on failure the accrual is retained for
+// retry. Caller must hold t.mu.
+func (t *StreamTracker) creditSession(sess *streamSession, amount int64) {
 	ref := fmt.Sprintf("stream:%s:%d", sess.ProviderID, time.Now().UnixNano())
 
 	if err := t.store.CreditProviderAccount(&store.ProviderEarning{
@@ -232,7 +226,7 @@ func (t *StreamTracker) flushSession(sess *streamSession, amount int64) {
 		AmountMicroUSD: amount,
 		CreatedAt:      time.Now(),
 	}); err != nil {
-		t.logger.Error("failed to flush stream earnings",
+		t.logger.Error("failed to flush stream earnings (will retry)",
 			"provider_id", sess.ProviderID,
 			"account_id", sess.AccountID,
 			"amount_micro_usd", amount,
@@ -240,6 +234,9 @@ func (t *StreamTracker) flushSession(sess *streamSession, amount int64) {
 		)
 		return
 	}
+
+	sess.Accrued -= amount
+	sess.Flushed += amount
 
 	t.logger.Debug("stream earnings flushed",
 		"provider_id", sess.ProviderID,
@@ -252,20 +249,18 @@ func (t *StreamTracker) flushSession(sess *streamSession, amount int64) {
 // accrual. Called when a provider disconnects.
 func (t *StreamTracker) StopSession(providerID string) {
 	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	sess, ok := t.sessions[providerID]
 	if !ok {
-		t.mu.Unlock()
 		return
 	}
-	remaining := sess.Accrued
-	sess.Accrued = 0
-	sess.Flushed += remaining
-	delete(t.sessions, providerID)
-	t.mu.Unlock()
 
-	if remaining > 0 {
-		t.flushSession(sess, remaining)
+	if sess.Accrued > 0 {
+		t.creditSession(sess, sess.Accrued)
 	}
+
+	delete(t.sessions, providerID)
 
 	t.logger.Info("stream session stopped",
 		"provider_id", providerID,
@@ -282,14 +277,14 @@ func (t *StreamTracker) ActiveSessions() []StreamSessionInfo {
 	out := make([]StreamSessionInfo, 0, len(t.sessions))
 	for _, sess := range t.sessions {
 		out = append(out, StreamSessionInfo{
-			ProviderID:       sess.ProviderID,
-			AccountID:        sess.AccountID,
-			MemoryGB:         sess.MemoryGB,
-			BandwidthGBs:     sess.BandwidthGBs,
-			MonthlyRateUSD:   float64(sess.RatePerMin*43200) / 1_000_000,
-			AccruedMicroUSD:  sess.Accrued,
-			FlushedMicroUSD:  sess.Flushed,
-			LastAccrual:      sess.LastAccrual,
+			ProviderID:      sess.ProviderID,
+			AccountID:       sess.AccountID,
+			MemoryGB:        sess.MemoryGB,
+			BandwidthGBs:    sess.BandwidthGBs,
+			MonthlyRateUSD:  float64(sess.RatePerMin*43200) / 1_000_000,
+			AccruedMicroUSD: sess.Accrued,
+			FlushedMicroUSD: sess.Flushed,
+			LastAccrual:     sess.LastAccrual,
 		})
 	}
 	return out

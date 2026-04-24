@@ -291,7 +291,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			hbMsg := msg.Payload.(*protocol.HeartbeatMessage)
 			s.registry.Heartbeat(providerID, hbMsg)
 			hasWarmModel := len(hbMsg.WarmModels) > 0 || hbMsg.ActiveModel != nil
-			s.streamTracker.Heartbeat(providerID, hbMsg.SystemMetrics.MemoryPressure, hbMsg.SystemMetrics.ThermalState, hasWarmModel)
+			trusted := true
+			if provider != nil {
+				provider.Mu().Lock()
+				trusted = provider.Status != registry.StatusUntrusted
+				provider.Mu().Unlock()
+			}
+			s.streamTracker.Heartbeat(providerID, hbMsg.SystemMetrics.MemoryPressure, hbMsg.SystemMetrics.ThermalState, hasWarmModel, trusted)
 
 		case protocol.TypeInferenceAccepted:
 			acceptMsg := msg.Payload.(*protocol.InferenceAcceptedMessage)

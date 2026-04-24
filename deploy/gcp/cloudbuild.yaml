@@ -60,6 +60,20 @@ steps:
           --zone=${_ZONE} \
           --metadata=DINF_IMAGE_TAG=$SHORT_SHA
 
+        # Update the startup script metadata so the next VM reboot picks
+        # up any new env vars added to vm-startup.sh.
+        gcloud compute instances add-metadata ${_INSTANCE} \
+          --zone=${_ZONE} \
+          --metadata-from-file=startup-script=deploy/gcp/vm-startup.sh
+
+        # Re-fetch secrets from Secret Manager and regenerate the env
+        # file before restarting. Without this, new env vars added to
+        # refresh-env.sh only take effect on VM reboot, not on deploy.
+        gcloud compute scp deploy/gcp/refresh-env.sh ${_INSTANCE}:/tmp/refresh-env.sh \
+          --zone=${_ZONE} --tunnel-through-iap
+        gcloud compute ssh ${_INSTANCE} --zone=${_ZONE} --tunnel-through-iap -- \
+          "sudo bash /tmp/refresh-env.sh"
+
         gcloud compute ssh ${_INSTANCE} --zone=${_ZONE} --tunnel-through-iap -- \
           "sudo systemctl restart d-inference-coordinator"
 

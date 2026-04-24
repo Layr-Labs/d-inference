@@ -51,6 +51,8 @@ interface EarningsResponse {
   history_limit: number;
   available_balance_micro_usd: number;
   available_balance_usd: string;
+  withdrawable_balance_micro_usd: number;
+  withdrawable_balance_usd: string;
 }
 
 function Modal({
@@ -246,8 +248,10 @@ export default function EarningsContent() {
   }
 
   const totalEarned = data?.total_usd || "0.000000";
-  const availableBalance = data?.available_balance_usd || "0.000000";
-  const availableBalanceMicro = data?.available_balance_micro_usd || 0;
+  const withdrawableBalance = data?.withdrawable_balance_usd || data?.available_balance_usd || "0.000000";
+  const withdrawableBalanceMicro = data?.withdrawable_balance_micro_usd ?? data?.available_balance_micro_usd ?? 0;
+  const totalBalance = data?.available_balance_micro_usd || 0;
+  const creditsBalance = totalBalance - withdrawableBalanceMicro;
   const totalJobs = data?.count || 0;
   const recentCount = data?.recent_count ?? data?.earnings.length ?? 0;
 
@@ -256,7 +260,7 @@ export default function EarningsContent() {
   const rejected = stripeStatus?.status === "rejected";
   const pending = stripeStatus?.status === "pending";
   const minWithdrawUsd = (stripeStatus?.min_withdraw_micro_usd ?? 1_000_000) / 1_000_000;
-  const availableUsd = availableBalanceMicro / 1_000_000;
+  const availableUsd = withdrawableBalanceMicro / 1_000_000;
   const canWithdraw = ready && availableUsd >= minWithdrawUsd;
 
   return (
@@ -321,13 +325,19 @@ export default function EarningsContent() {
           )}
         </div>
 
-        {/* Available balance display */}
-        <div className="flex items-baseline gap-1 mb-4 mt-3">
+        {/* Withdrawable earnings display */}
+        <div className="flex items-baseline gap-1 mb-1 mt-3">
           <span className="text-3xl font-bold text-text-primary font-mono tracking-tight">
-            ${availableBalance}
+            ${Number(withdrawableBalance).toFixed(2)}
           </span>
-          <span className="text-sm text-text-tertiary font-mono">available</span>
+          <span className="text-sm text-text-tertiary font-mono">earnings</span>
         </div>
+        {creditsBalance > 0 && (
+          <p className="text-xs text-text-tertiary font-mono mb-4">
+            + ${(creditsBalance / 1_000_000).toFixed(2)} credits (non-withdrawable)
+          </p>
+        )}
+        {creditsBalance <= 0 && <div className="mb-4" />}
 
         {!stripeStatus?.has_account ? (
           <>
@@ -493,7 +503,7 @@ export default function EarningsContent() {
       <Modal open={withdrawOpen} onClose={() => !withdrawLoading && setWithdrawOpen(false)}>
         <StripeWithdrawModal
           status={stripeStatus}
-          balanceMicroUsd={availableBalanceMicro}
+          balanceMicroUsd={withdrawableBalanceMicro}
           amount={withdrawAmount}
           method={withdrawMethod}
           loading={withdrawLoading}

@@ -43,6 +43,8 @@ export interface Model {
 export interface BalanceResponse {
   balance_micro_usd: number;
   balance_usd: number;
+  withdrawable_micro_usd: number;
+  withdrawable_usd: number;
 }
 
 export interface UsageEntry {

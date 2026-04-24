@@ -252,7 +252,7 @@ export default function BillingContent() {
           <div className="relative overflow-hidden rounded-2xl border border-border-dim bg-bg-white p-6 sm:p-8 shadow-md">
             <div className="relative">
               <p className="text-xs font-mono text-text-tertiary uppercase tracking-widest mb-2">
-                Available Credits
+                Balance
               </p>
               {loading ? (
                 <div className="flex items-center gap-2 text-text-tertiary">
@@ -260,14 +260,20 @@ export default function BillingContent() {
                   <span className="text-sm">Loading...</span>
                 </div>
               ) : (
-                <div className="flex items-baseline gap-1 mb-4">
-                  <span className="text-4xl font-bold text-text-primary font-mono tracking-tight">
-                    ${Number(balance?.balance_usd ?? 0).toFixed(2)}
-                  </span>
-                  <span className="text-sm text-text-tertiary font-mono">
-                    USD
-                  </span>
-                </div>
+                <>
+                  <div className="flex items-baseline gap-1 mb-2">
+                    <span className="text-4xl font-bold text-text-primary font-mono tracking-tight">
+                      ${Number(balance?.balance_usd ?? 0).toFixed(2)}
+                    </span>
+                    <span className="text-sm text-text-tertiary font-mono">
+                      USD
+                    </span>
+                  </div>
+                  <div className="flex gap-4 mb-4 text-xs font-mono text-text-tertiary">
+                    <span>${(((balance?.balance_micro_usd ?? 0) - (balance?.withdrawable_micro_usd ?? 0)) / 1_000_000).toFixed(2)} credits</span>
+                    <span>${((balance?.withdrawable_micro_usd ?? 0) / 1_000_000).toFixed(2)} earnings</span>
+                  </div>
+                </>
               )}
 
               <button

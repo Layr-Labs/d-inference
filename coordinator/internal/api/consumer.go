@@ -164,6 +164,62 @@ func estimateRequestedMaxTokens(parsed map[string]any) int {
 	return 256
 }
 
+func parseProviderSerialAllowlist(parsed map[string]any) ([]string, bool, error) {
+	var rawValues []any
+	provided := false
+	for _, key := range []string{"provider_serial", "provider_serials"} {
+		v, ok := parsed[key]
+		if !ok {
+			continue
+		}
+		provided = true
+		switch x := v.(type) {
+		case string:
+			rawValues = append(rawValues, x)
+		case []any:
+			rawValues = append(rawValues, x...)
+		default:
+			return nil, true, fmt.Errorf("%s must be a string or array of strings", key)
+		}
+	}
+	if !provided {
+		return nil, false, nil
+	}
+
+	seen := make(map[string]struct{}, len(rawValues))
+	ids := make([]string, 0, len(rawValues))
+	for _, raw := range rawValues {
+		id, ok := raw.(string)
+		if !ok {
+			return nil, true, fmt.Errorf("provider_serials must contain only strings")
+		}
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, true, fmt.Errorf("provider_serials must include at least one provider serial")
+	}
+	return ids, true, nil
+}
+
+func stripProviderRoutingFields(parsed map[string]any) bool {
+	changed := false
+	for _, key := range []string{"provider_serial", "provider_serials"} {
+		if _, ok := parsed[key]; ok {
+			delete(parsed, key)
+			changed = true
+		}
+	}
+	return changed
+}
+
 // defaultMaxOutputTokens is the ceiling injected into requests that don't set
 // max_tokens. It bounds the worst-case cost of a single inference so the
 // pre-flight balance reservation covers the entire generation; without this
@@ -254,6 +310,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	allowedProviderSerials, hasProviderAllowlist, err := parseProviderSerialAllowlist(parsed)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+		return
+	}
+	if hasProviderAllowlist && stripProviderRoutingFields(parsed) {
+		rawBody, _ = json.Marshal(parsed)
+	}
+
 	isResponsesAPI := input != nil && len(messages) == 0
 	// If this is a Responses API request, tag it so the provider proxies
 	// to /v1/responses instead of /v1/chat/completions.
@@ -337,15 +402,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	for attempt := range maxDispatchAttempts {
 		requestID = uuid.New().String()
 		pr = &registry.PendingRequest{
-			RequestID:             requestID,
-			Model:                 model,
-			ConsumerKey:           consumerKey,
-			EstimatedPromptTokens: estimatedPromptTokens,
-			RequestedMaxTokens:    requestedMaxTokens,
-			AcceptedCh:            make(chan struct{}, 1),
-			ChunkCh:               make(chan string, chunkBufferSize),
-			CompleteCh:            make(chan protocol.UsageInfo, 1),
-			ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
+			RequestID:              requestID,
+			Model:                  model,
+			ConsumerKey:            consumerKey,
+			EstimatedPromptTokens:  estimatedPromptTokens,
+			RequestedMaxTokens:     requestedMaxTokens,
+			AllowedProviderSerials: allowedProviderSerials,
+			AcceptedCh:             make(chan struct{}, 1),
+			ChunkCh:                make(chan string, chunkBufferSize),
+			CompleteCh:             make(chan protocol.UsageInfo, 1),
+			ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
 		}
 
 		var decision registry.RoutingDecision
@@ -1471,6 +1537,15 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	allowedProviderSerials, hasProviderAllowlist, err := parseProviderSerialAllowlist(parsed)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+		return
+	}
+	if hasProviderAllowlist {
+		stripProviderRoutingFields(parsed)
+	}
+
 	// Completions and Anthropic messages both use the max_tokens field (never
 	// max_output_tokens, which is Responses API only). Inject a default if
 	// unset so the pre-flight reservation bounds the generation.
@@ -1506,15 +1581,16 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	requestID := uuid.New().String()
 	pr := &registry.PendingRequest{
-		RequestID:             requestID,
-		Model:                 model,
-		ConsumerKey:           consumerKey,
-		EstimatedPromptTokens: estimatedPromptTokens,
-		RequestedMaxTokens:    requestedMaxTokens,
-		ReservedMicroUSD:      reservedMicroUSD,
-		ChunkCh:               make(chan string, chunkBufferSize),
-		CompleteCh:            make(chan protocol.UsageInfo, 1),
-		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
+		RequestID:              requestID,
+		Model:                  model,
+		ConsumerKey:            consumerKey,
+		AllowedProviderSerials: allowedProviderSerials,
+		EstimatedPromptTokens:  estimatedPromptTokens,
+		RequestedMaxTokens:     requestedMaxTokens,
+		ReservedMicroUSD:       reservedMicroUSD,
+		ChunkCh:                make(chan string, chunkBufferSize),
+		CompleteCh:             make(chan protocol.UsageInfo, 1),
+		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
 	}
 
 	provider, decision := s.registry.ReserveProviderEx(model, pr)

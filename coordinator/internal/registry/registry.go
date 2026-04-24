@@ -59,6 +59,10 @@ type PendingRequest struct {
 	ProviderID  string
 	Model       string
 	ConsumerKey string
+	// AllowedProviderSerials optionally restricts routing to providers with
+	// one of these attested hardware serials. Empty means the request may
+	// route to any eligible provider.
+	AllowedProviderSerials []string
 	// EstimatedPromptTokens is a coordinator-side heuristic used only for
 	// routing and queue admission. It does not need tokenizer-perfect accuracy.
 	EstimatedPromptTokens int

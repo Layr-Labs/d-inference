@@ -226,6 +226,10 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	for _, id := range excludeIDs {
 		excludeSet[id] = struct{}{}
 	}
+	allowedSerials := make(map[string]struct{}, len(pr.AllowedProviderSerials))
+	for _, serial := range pr.AllowedProviderSerials {
+		allowedSerials[serial] = struct{}{}
+	}
 
 	// Two-pass selection: collect all eligible candidates first, then
 	// compute best + tie pool. The single-pass approach was order-
@@ -237,6 +241,11 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	candidateCount := 0
 	capacityRejections := 0
 	for _, p := range r.providers {
+		if len(allowedSerials) > 0 {
+			if !providerMatchesAllowedSerial(p, allowedSerials) {
+				continue
+			}
+		}
 		if _, excluded := excludeSet[p.ID]; excluded {
 			continue
 		}
@@ -300,6 +309,25 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	}
 	r.logRoutingDecision(model, pr, winner, candidateCount)
 	return winner, candidateCount, capacityRejections
+}
+
+func providerMatchesAllowedSerial(p *Provider, allowed map[string]struct{}) bool {
+	if p == nil || len(allowed) == 0 {
+		return true
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.AttestationResult != nil {
+		if _, ok := allowed[p.AttestationResult.SerialNumber]; ok && p.AttestationResult.SerialNumber != "" {
+			return true
+		}
+	}
+	if p.MDAResult != nil {
+		if _, ok := allowed[p.MDAResult.DeviceSerial]; ok && p.MDAResult.DeviceSerial != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // logRoutingDecision emits a structured debug-level record of the
@@ -654,9 +682,17 @@ func (r *Registry) drainQueuedRequestsForModels(models []string) {
 		return
 	}
 	for _, model := range models {
+		var skipped []*QueuedRequest
+		requeueSkipped := func() {
+			for i := len(skipped) - 1; i >= 0; i-- {
+				r.queue.RequeueFront(skipped[i])
+			}
+			skipped = nil
+		}
 		for {
 			req := r.queue.PopNextFresh(model)
 			if req == nil {
+				requeueSkipped()
 				break
 			}
 			if req.Pending == nil {
@@ -668,10 +704,11 @@ func (r *Registry) drainQueuedRequestsForModels(models []string) {
 			}
 			provider, decision := r.ReserveProviderEx(model, req.Pending)
 			if provider == nil {
-				r.queue.RequeueFront(req)
-				break
+				skipped = append(skipped, req)
+				continue
 			}
 			req.Decision = decision
+			requeueSkipped()
 
 			select {
 			case <-req.Done():

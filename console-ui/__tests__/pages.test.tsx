@@ -31,6 +31,7 @@ vi.mock("@/hooks/useAuth", () => ({
     user: null,
     login: vi.fn(),
     logout: vi.fn(),
+    getAccessToken: vi.fn().mockResolvedValue("mock-token"),
     email: null,
     walletAddress: null,
     displayName: null,
@@ -96,9 +97,56 @@ vi.mock("@/components/UsageChart", () => ({
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  fetchMock = vi.fn().mockResolvedValue(
-    new Response(JSON.stringify({ providers: [] }), { status: 200 })
-  );
+  fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/api/me/providers")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            providers: [],
+            latest_provider_version: "0.3.10",
+            min_provider_version: "0.3.10",
+            heartbeat_timeout_seconds: 90,
+            challenge_max_age_seconds: 360,
+          }),
+          { status: 200 }
+        )
+      );
+    }
+    if (url.includes("/api/me/summary")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            account_id: "acct-test",
+            available_balance_micro_usd: 0,
+            withdrawable_balance_micro_usd: 0,
+            payout_ready: false,
+            lifetime_micro_usd: 0,
+            lifetime_jobs: 0,
+            last_24h_micro_usd: 0,
+            last_24h_jobs: 0,
+            last_7d_micro_usd: 0,
+            last_7d_jobs: 0,
+            counts: {
+              total: 0,
+              online: 0,
+              serving: 0,
+              offline: 0,
+              untrusted: 0,
+              hardware: 0,
+              needs_attention: 0,
+            },
+            latest_provider_version: "0.3.10",
+            min_provider_version: "0.3.10",
+          }),
+          { status: 200 }
+        )
+      );
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify({ providers: [] }), { status: 200 })
+    );
+  });
   vi.stubGlobal("fetch", fetchMock);
 
   const store: Record<string, string> = {};
@@ -187,39 +235,30 @@ describe("LinkPage", () => {
 // =========================================================================
 
 describe("ProvidersPage", () => {
-  it("renders without crashing and shows network heading", async () => {
+  it("renders without crashing and shows dashboard heading", async () => {
     const ProvidersPage = (await import("@/app/providers/page")).default;
     render(<ProvidersPage />);
 
-    // Wait for loading to finish (it does a fetch in useEffect)
-    // The fetch mock returns { providers: [] } so it should render quickly
-    await screen.findByText("Network Providers");
-    expect(screen.getByText("Network Providers")).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Provider Dashboard" });
+    expect(screen.getByText(/Earnings, device health/)).toBeInTheDocument();
   });
 
-  it("shows summary stats", async () => {
+  it("shows provider summary stats", async () => {
     const ProvidersPage = (await import("@/app/providers/page")).default;
     render(<ProvidersPage />);
 
-    await screen.findByText("Network Providers");
-    expect(screen.getByText("Providers")).toBeInTheDocument();
-    expect(screen.getByText("Hardware Trust")).toBeInTheDocument();
-    expect(screen.getByText("Apple MDA")).toBeInTheDocument();
-    expect(screen.getByText("Total Memory")).toBeInTheDocument();
+    await screen.findByText("Devices online");
+    expect(screen.getByText("Needs attention")).toBeInTheDocument();
+    expect(screen.getByText("Available earnings")).toBeInTheDocument();
+    expect(screen.getByText("Lifetime earnings")).toBeInTheDocument();
   });
 
-  it("shows 'Become a Provider' button when no matching wallet", async () => {
+  it("shows onboarding actions when no devices are linked", async () => {
     const ProvidersPage = (await import("@/app/providers/page")).default;
     render(<ProvidersPage />);
 
-    await screen.findByText("Network Providers");
-    expect(screen.getByText("Become a Provider")).toBeInTheDocument();
-  });
-
-  it("shows empty state when no providers", async () => {
-    const ProvidersPage = (await import("@/app/providers/page")).default;
-    render(<ProvidersPage />);
-
-    await screen.findByText("No providers online");
+    await screen.findByText("No provider devices linked yet");
+    expect(screen.getByText("Set up a provider")).toBeInTheDocument();
+    expect(screen.getByText("Open calculator")).toBeInTheDocument();
   });
 });

@@ -66,7 +66,7 @@ export function Sidebar() {
         {[
           { href: "/", icon: MessageSquare, label: "Chat" },
           { href: "/stats", icon: Activity, label: "Stats" },
-          { href: "/providers", icon: Server, label: "Providers" },
+          { href: "/providers", icon: Server, label: "Provider Dashboard" },
           { href: "/earn", icon: Coins, label: "Earn" },
           { href: "/api-console", icon: Code, label: "API" },
         ].map(({ href, icon: Icon, label }) => {

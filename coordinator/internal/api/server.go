@@ -792,6 +792,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/provider/node-earnings", s.handleNodeEarnings)
 	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
 
+	// Account-scoped provider dashboard.
+	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.handleMyProviders))
+	s.mux.HandleFunc("GET /v1/me/summary", s.requirePrivyAuth(s.handleMySummary))
+
 	// ACME enrollment — generates per-device .mobileconfig for device-attest-01.
 	// No auth needed — security comes from Apple's attestation during ACME challenge.
 	s.mux.HandleFunc("POST /v1/enroll", s.handleEnroll)

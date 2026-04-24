@@ -47,6 +47,67 @@ function upstreamError(status: number, body = "error"): Response {
 }
 
 // =========================================================================
+// GET /api/me/providers
+// =========================================================================
+
+describe("GET /api/me/providers", () => {
+  it("proxies auth to coordinator /v1/me/providers", async () => {
+    upstreamFetch.mockResolvedValueOnce(
+      upstreamOk({ providers: [], latest_provider_version: "0.3.10" })
+    );
+
+    const { GET } = await import("@/app/api/me/providers/route");
+    const req = makeRequest("/api/me/providers", {
+      headers: {
+        authorization: "Bearer privy-token-123",
+        "x-coordinator-url": "https://attacker.example.com",
+      },
+    });
+    const res = await GET(req);
+
+    expect(res.status).toBe(200);
+    const [upstreamUrl, upstreamOpts] = upstreamFetch.mock.calls[0];
+    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/me/providers`);
+    expect(upstreamOpts.headers.Authorization).toBe("Bearer privy-token-123");
+  });
+
+  it("rejects missing auth", async () => {
+    const { GET } = await import("@/app/api/me/providers/route");
+    const req = makeRequest("/api/me/providers");
+    const res = await GET(req);
+
+    expect(res.status).toBe(401);
+    expect(upstreamFetch).not.toHaveBeenCalled();
+  });
+});
+
+// =========================================================================
+// GET /api/me/summary
+// =========================================================================
+
+describe("GET /api/me/summary", () => {
+  it("proxies auth to coordinator /v1/me/summary", async () => {
+    upstreamFetch.mockResolvedValueOnce(
+      upstreamOk({ account_id: "acct-1", counts: { total: 0 } })
+    );
+
+    const { GET } = await import("@/app/api/me/summary/route");
+    const req = makeRequest("/api/me/summary", {
+      headers: {
+        authorization: "Bearer privy-token-123",
+        "x-coordinator-url": "https://attacker.example.com",
+      },
+    });
+    const res = await GET(req);
+
+    expect(res.status).toBe(200);
+    const [upstreamUrl, upstreamOpts] = upstreamFetch.mock.calls[0];
+    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/me/summary`);
+    expect(upstreamOpts.headers.Authorization).toBe("Bearer privy-token-123");
+  });
+});
+
+// =========================================================================
 // GET /api/payments/balance
 // =========================================================================
 

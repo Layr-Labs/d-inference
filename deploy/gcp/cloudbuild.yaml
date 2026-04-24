@@ -17,7 +17,7 @@ timeout: 1800s
 substitutions:
   _INSTANCE: d-inference-dev
   _ZONE: us-central1-a
-  _IMAGE: us-central1-docker.pkg.dev/$PROJECT_ID/coordinator/coordinator
+  _IMAGE: us-central1-docker.pkg.dev/sepolia-ai/coordinator/coordinator
   _HEALTH_URL: https://api.dev.darkbloom.xyz/health
 
 options:

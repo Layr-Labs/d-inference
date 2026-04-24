@@ -159,12 +159,7 @@ type CheckoutSessionEvent struct {
 // Signature header format: t=<timestamp>,v1=<signature>[,v1=<signature>...].
 func (p *StripeProcessor) VerifyWebhookSignature(payload []byte, sigHeader string) (*WebhookEvent, error) {
 	if p.webhookSecret == "" {
-		// No webhook secret configured — parse without verification (dev mode)
-		var event WebhookEvent
-		if err := json.Unmarshal(payload, &event); err != nil {
-			return nil, fmt.Errorf("stripe: parse webhook: %w", err)
-		}
-		return &event, nil
+		return nil, errors.New("stripe: webhook secret not configured — refusing to verify")
 	}
 
 	// Parse the signature header

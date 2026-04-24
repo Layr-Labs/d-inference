@@ -2,10 +2,15 @@
 # Regenerate /etc/d-inference/env from Google Secret Manager.
 # Called by Cloud Build on every deploy so new env vars take effect
 # without a VM reboot. Also called by vm-startup.sh on boot.
+#
+# Safety: writes to a temp file first, validates that critical secrets
+# are non-empty, then atomically moves into place. A failed Secret
+# Manager fetch will never blank the existing env file.
 set -euo pipefail
 
 ENV_DIR="/etc/d-inference"
 ENV_FILE="${ENV_DIR}/env"
+ENV_TMP="${ENV_FILE}.tmp.$$"
 
 mkdir -p "$ENV_DIR"
 chmod 700 "$ENV_DIR"
@@ -14,7 +19,7 @@ fetch() {
   gcloud --quiet secrets versions access latest --secret="$1" 2>/dev/null || true
 }
 
-cat > "$ENV_FILE" <<EOF
+cat > "$ENV_TMP" <<EOF
 EIGENINFERENCE_PORT=8080
 EIGENINFERENCE_MIN_TRUST=hardware
 EIGENINFERENCE_BILLING_MOCK=false
@@ -53,5 +58,27 @@ DD_SITE=$(fetch eigeninference-dd-site)
 DD_ENV=development
 DD_SERVICE=d-inference-coordinator
 EOF
-chmod 600 "$ENV_FILE"
+
+# Validate critical secrets before overwriting the live env file.
+# A transient Secret Manager outage must never blank security-sensitive
+# values — that would disable webhook signature verification and allow
+# forged events to credit balances.
+CRITICAL_VARS="EIGENINFERENCE_ADMIN_KEY EIGENINFERENCE_DATABASE_URL EIGENINFERENCE_STRIPE_SECRET_KEY EIGENINFERENCE_STRIPE_WEBHOOK_SECRET EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET"
+MISSING=""
+for var in $CRITICAL_VARS; do
+  val=$(grep "^${var}=" "$ENV_TMP" | cut -d= -f2-)
+  if [ -z "$val" ]; then
+    MISSING="$MISSING $var"
+  fi
+done
+
+if [ -n "$MISSING" ]; then
+  echo "FATAL: critical secrets are empty:$MISSING"
+  echo "Keeping existing env file to avoid security downgrade."
+  rm -f "$ENV_TMP"
+  exit 1
+fi
+
+chmod 600 "$ENV_TMP"
+mv "$ENV_TMP" "$ENV_FILE"
 echo "env refreshed: $(wc -l < "$ENV_FILE") lines, $(grep -c STRIPE "$ENV_FILE") Stripe vars"

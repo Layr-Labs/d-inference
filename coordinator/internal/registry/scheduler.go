@@ -432,11 +432,6 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	return free >= required
 }
 
-func (r *Registry) buildCandidate(snap routingSnapshot, pr *PendingRequest) (*routingCandidate, bool) {
-	c, _, ok := r.buildCandidateWithReason(snap, pr)
-	return c, ok
-}
-
 // buildCandidateWithReason returns the candidate plus, on rejection,
 // the reason so callers can split metrics by failure mode.
 func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingRequest) (*routingCandidate, candidateRejection, bool) {

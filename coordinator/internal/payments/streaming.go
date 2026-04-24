@@ -51,6 +51,10 @@ func StreamRate(memoryGB int, bandwidthGBs float64) int64 {
 
 func memoryBase(memoryGB int) int64 {
 	switch {
+	case memoryGB >= 512:
+		return 22_000_000 // $22
+	case memoryGB >= 256:
+		return 17_000_000 // $17
 	case memoryGB >= 128:
 		return 12_000_000 // $12
 	case memoryGB >= 96:

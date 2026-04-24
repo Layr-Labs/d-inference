@@ -47,10 +47,16 @@ func TestStreamRate(t *testing.T) {
 		{"M2 Max 96GB", 96, 400, 16_000_000},  // $10 + $6
 		{"M3 Max 96GB", 96, 400, 16_000_000},  // $10 + $6
 
-		// 128GB+ tier ($12 base) + bandwidth bonus
-		{"M4 Max 128GB", 128, 546, 19_000_000},   // $12 + $7
+		// 128-255GB tier ($12 base) + bandwidth bonus
+		{"M4 Max 128GB", 128, 546, 19_000_000},    // $12 + $7
 		{"M2 Ultra 128GB", 128, 800, 20_000_000},  // $12 + $8
 		{"M3 Ultra 192GB", 192, 819, 20_000_000},  // $12 + $8
+
+		// 256GB tier ($17 base) + bandwidth bonus
+		{"M4 Ultra 256GB", 256, 800, 25_000_000},  // $17 + $8
+
+		// 512GB tier ($22 base) + bandwidth bonus
+		{"512GB Ultra", 512, 800, 30_000_000},  // $22 + $8
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -73,13 +79,14 @@ func TestStreamRate_Range(t *testing.T) {
 		{64, 150}, {64, 400}, {64, 546}, {64, 800},
 		{96, 400}, {96, 546}, {96, 800},
 		{128, 400}, {128, 546}, {128, 800},
-		{192, 800}, {256, 800},
+		{192, 800},
+		{256, 800}, {512, 800},
 	}
 	for _, c := range configs {
 		rate := StreamRate(c.mem, c.bw)
 		usd := float64(rate) / 1_000_000
-		if usd < 10.0 || usd > 20.0 {
-			t.Errorf("StreamRate(%d, %.0f) = $%.2f — out of $10-$20 range", c.mem, c.bw, usd)
+		if usd < 10.0 || usd > 30.0 {
+			t.Errorf("StreamRate(%d, %.0f) = $%.2f — out of $10-$30 range", c.mem, c.bw, usd)
 		}
 	}
 }

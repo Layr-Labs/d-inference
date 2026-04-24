@@ -295,6 +295,9 @@ type Store interface {
 	// ListProviders returns all stored provider records.
 	ListProviderRecords(ctx context.Context) ([]ProviderRecord, error)
 
+	// ListProvidersByAccount returns stored provider records linked to an account.
+	ListProvidersByAccount(ctx context.Context, accountID string) ([]ProviderRecord, error)
+
 	// UpdateProviderLastSeen updates the last_seen timestamp for a provider.
 	UpdateProviderLastSeen(ctx context.Context, id string) error
 

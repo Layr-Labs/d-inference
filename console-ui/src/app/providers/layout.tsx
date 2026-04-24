@@ -5,8 +5,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const TABS = [
-  { href: "/providers", label: "Overview" },
-  { href: "/providers/setup", label: "Become a Provider" },
+  { href: "/providers", label: "Dashboard" },
+  { href: "/providers/setup", label: "Setup" },
   { href: "/providers/earnings", label: "Earnings" },
 ];
 
@@ -19,7 +19,7 @@ export default function ProvidersLayout({
 
   return (
     <div className="flex flex-col h-full">
-      <TopBar title="Providers" />
+      <TopBar title="Provider Dashboard" />
       <div className="border-b border-border-dim bg-bg-primary">
         <div className="max-w-5xl mx-auto px-6">
           <nav className="flex gap-1">

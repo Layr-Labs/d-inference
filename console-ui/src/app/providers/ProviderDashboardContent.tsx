@@ -441,9 +441,8 @@ function MachineCard({ provider, ctx }: { provider: MyProvider; ctx: MyProviders
         <Stat label="Tokens" value={formatNumber(provider.lifetime_tokens_generated)} />
         <Stat label="Concurrency" value={`${provider.pending_requests} / ${provider.max_concurrency || 0}`} />
         <Stat
-          label="Decode speed"
-          value={provider.decode_tps ? `${provider.decode_tps.toFixed(1)} tok/s` : "not reported"}
-          sub={provider.prefill_tps ? `${provider.prefill_tps.toFixed(1)} prefill tok/s` : undefined}
+          label="Bandwidth"
+          value={provider.memory_bandwidth_gbs ? `${provider.memory_bandwidth_gbs} GB/s` : "not reported"}
         />
       </div>
 

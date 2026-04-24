@@ -220,7 +220,6 @@ type sealingResponseWriter struct {
 
 	mode        sealMode
 	statusCode  int
-	headerSent  bool
 	bodyBuf     bytes.Buffer // non-streaming: accumulates full response
 	sseScratch  bytes.Buffer // streaming: accumulates bytes until \n\n
 	wroteHeader bool         // true once original handler called WriteHeader

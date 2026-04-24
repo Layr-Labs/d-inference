@@ -215,20 +215,6 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	return p, decision
 }
 
-func (r *Registry) selectBestCandidateLocked(model string, pr *PendingRequest, excludeIDs ...string) *routingCandidate {
-	c, _ := r.selectBestCandidateLockedEx(model, pr, excludeIDs...)
-	return c
-}
-
-// selectBestCandidateLockedEx is the same selection as
-// selectBestCandidateLocked but additionally reports the number of
-// eligible candidates evaluated. Used to populate
-// RoutingDecision.CandidateCount for metrics/log output.
-func (r *Registry) selectBestCandidateLockedEx(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, int) {
-	c, _, count := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
-	return c, count
-}
-
 // selectBestCandidateLockedFull is the full-fidelity selection that
 // also reports how many providers were rejected by capacity-style
 // gates (memory). Capacity rejection count lets ReserveProviderEx

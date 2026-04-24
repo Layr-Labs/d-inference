@@ -71,10 +71,6 @@ func startBackend(t *testing.T, model string, port int) *backendProcess {
 	return startBackendWithOptions(t, model, port, false)
 }
 
-func startBackendWithBatching(t *testing.T, model string, port int) *backendProcess {
-	return startBackendWithOptions(t, model, port, true)
-}
-
 func startBackendWithOptions(t *testing.T, model string, port int, continuousBatching bool) *backendProcess {
 	t.Helper()
 	args := []string{"serve", model, "--port", strconv.Itoa(port)}

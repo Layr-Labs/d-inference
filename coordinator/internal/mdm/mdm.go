@@ -203,38 +203,6 @@ func (c *Client) SendDeviceAttestationCommand(udid string, nonce ...string) (str
 	return c.sendDeviceAttestationWithNonce(udid, nonceStr)
 }
 
-// sendDeviceAttestationStructured is the legacy structured API path (unused).
-func (c *Client) sendDeviceAttestationStructured(udid string) (string, error) {
-	body, _ := json.Marshal(map[string]interface{}{
-		"udid":         udid,
-		"request_type": "DeviceInformation",
-		"queries":      []string{"DevicePropertiesAttestation"},
-	})
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/v1/commands", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.SetBasicAuth("micromdm", c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("mdm send DeviceInformation command failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Payload struct {
-			CommandUUID string `json:"command_uuid"`
-		} `json:"payload"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("mdm DeviceInformation response decode failed: %w", err)
-	}
-
-	return result.Payload.CommandUUID, nil
-}
-
 // sendDeviceAttestationWithNonce sends a raw plist DeviceInformation command
 // with DeviceAttestationNonce. MicroMDM's structured API doesn't support this
 // field, so we bypass it with the raw command endpoint: POST /v1/commands/{udid}.
@@ -496,11 +464,6 @@ func (c *Client) VerifyProvider(serialNumber string, attestationSIP, attestation
 // parseSecurityInfoPlist extracts security fields from the MDM response plist.
 func parseSecurityInfoPlist(data []byte) *SecurityInfoResponse {
 	// MDM responses are Apple plist XML. Parse the relevant fields.
-	type PlistDict struct {
-		Keys   []string `xml:"key"`
-		Values []string `xml:"string"`
-		Bools  []bool   `xml:"true,omitempty"`
-	}
 
 	// Simple approach: look for known keys in the XML
 	result := &SecurityInfoResponse{}

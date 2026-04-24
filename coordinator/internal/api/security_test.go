@@ -29,16 +29,6 @@ func securityTestServer(t *testing.T) (*Server, *store.MemoryStore) {
 	return srv, st
 }
 
-// parseJSONResponse unmarshals response body into a map.
-func parseJSONResponse(t *testing.T, body []byte) map[string]any {
-	t.Helper()
-	var resp map[string]any
-	if err := json.Unmarshal(body, &resp); err != nil {
-		t.Fatalf("failed to parse JSON response: %v (body: %s)", err, string(body))
-	}
-	return resp
-}
-
 // connectProviderWS connects a provider WebSocket to the test server.
 func connectProviderWS(t *testing.T, ts *httptest.Server) *websocket.Conn {
 	t.Helper()

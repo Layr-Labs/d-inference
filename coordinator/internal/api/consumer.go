@@ -84,27 +84,6 @@ func (s *Server) sendProviderCancel(provider *registry.Provider, requestID strin
 	}
 }
 
-// chatCompletionRequest is the incoming OpenAI-compatible request body.
-// Consumers may send plain JSON or sender-sealed JSON (handled by
-// sealedTransport before this handler runs).
-type chatCompletionRequest struct {
-	Model       string                 `json:"model"`
-	Messages    []protocol.ChatMessage `json:"messages"`
-	Stream      bool                   `json:"stream"`
-	MaxTokens   *int                   `json:"max_tokens,omitempty"`
-	Temperature *float64               `json:"temperature,omitempty"`
-}
-
-// genericInferenceRequest captures any inference request body as raw JSON.
-// Used for /v1/completions and /v1/messages endpoints where we pass the
-// body through to the provider without parsing the endpoint-specific fields.
-type genericInferenceRequest struct {
-	Model  string `json:"model"`
-	Stream bool   `json:"stream"`
-	// RawBody is the complete request JSON, forwarded as-is to the provider.
-	RawBody json.RawMessage `json:"-"`
-}
-
 func intFromRequestValue(v any) (int, bool) {
 	switch x := v.(type) {
 	case int:

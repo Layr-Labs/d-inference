@@ -404,19 +404,14 @@ func emittedIdentity(mp *myProvider) string {
 	return "id:" + mp.ID
 }
 
-// attachEarnings populates the lifetime earnings fields. Lookup is keyed by
-// the SE public key (the stable hardware ID we record on every earning).
-// Wallet is omitted: account-linked machines pay into the account balance,
-// not a per-machine wallet.
 func (s *Server) attachEarnings(mp *myProvider) {
-	if mp.SEPublicKey == "" {
+	if mp.AccountID == "" {
 		return
 	}
-	summary, err := s.store.GetProviderEarningsSummary(mp.SEPublicKey)
+	summary, err := s.store.GetAccountEarningsSummary(mp.AccountID)
 	if err != nil {
-		// Log and continue; earnings shouldn't gate the dashboard.
-		s.logger.Debug("get provider earnings summary failed",
-			"provider_id", mp.ID, "error", err)
+		s.logger.Debug("get account earnings summary failed",
+			"provider_id", mp.ID, "account_id", mp.AccountID, "error", err)
 		return
 	}
 	mp.EarningsTotalMicroUSD = summary.TotalMicroUSD

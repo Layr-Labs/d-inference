@@ -1448,6 +1448,13 @@ enum Command {
         /// "enable" or "disable"
         action: String,
     },
+
+    /// Compute runtime hash for a directory (used by CI for release registration)
+    #[command(name = "hash-runtime")]
+    HashRuntime {
+        /// Path to the Python lib directory (e.g. /path/to/python/lib/python3.12)
+        path: String,
+    },
 }
 
 fn setup_logging(verbose: bool) {
@@ -1528,6 +1535,27 @@ async fn main() -> Result<()> {
         Command::Login { coordinator } => cmd_login(coordinator).await,
         Command::Logout => cmd_logout().await,
         Command::AutoUpdate { action } => cmd_autoupdate(&action).await,
+        Command::HashRuntime { path } => {
+            let lib_dir = std::path::Path::new(&path);
+            if !lib_dir.exists() {
+                eprintln!("error: directory does not exist: {path}");
+                std::process::exit(1);
+            }
+            crate::security::purge_pycache(lib_dir);
+            let mut files = Vec::new();
+            crate::security::collect_runtime_files(lib_dir, &mut files);
+            files.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+            match crate::security::hash_files_sorted(&files) {
+                Some(hash) => {
+                    println!("{hash}");
+                    Ok(())
+                }
+                None => {
+                    eprintln!("error: failed to hash runtime at {path}");
+                    std::process::exit(1);
+                }
+            }
+        }
     }
 }
 

@@ -314,30 +314,10 @@ jobs:
 
           PYTHON_LIB_DIR=$("$PYTHON_BIN" -c "import sysconfig; print(sysconfig.get_path('stdlib'))")
           SITE_PACKAGES_DIR=$("$PYTHON_BIN" -c "import site; print(site.getsitepackages()[0])")
-          RUNTIME_HASH=$("$PYTHON_BIN" -c "
-          import hashlib, os, sys
-          d = sys.argv[1]
-          files = []
-          for r, dirs, fs in os.walk(d):
-              dirs[:] = [name for name in dirs if name != '__pycache__']
-              for f in fs:
-                  if f.endswith('.pyc'):
-                      continue
-                  files.append(os.path.join(r, f))
-          files.sort()
-          print(f'Total files: {len(files)}', file=sys.stderr)
-          final = hashlib.sha256()
-          for path in files:
-              h = hashlib.sha256()
-              with open(path, 'rb') as fh:
-                  while True:
-                      chunk = fh.read(65536)
-                      if not chunk:
-                          break
-                      h.update(chunk)
-              final.update(h.digest())
-          print(final.hexdigest())
-          " "$PYTHON_LIB_DIR")
+          # Use the same Rust hashing as the provider binary to guarantee
+          # identical results. The provider binary was built in the previous step.
+          PROVIDER_BIN="provider/target/release/darkbloom"
+          RUNTIME_HASH=$("$PROVIDER_BIN" hash-runtime "$PYTHON_LIB_DIR")
           echo "Runtime hash: $RUNTIME_HASH"
           echo "RUNTIME_HASH=$RUNTIME_HASH" >> "$GITHUB_ENV"
 

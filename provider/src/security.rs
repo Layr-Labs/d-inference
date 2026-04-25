@@ -486,7 +486,7 @@ pub struct RuntimeHashes {
 /// A malicious `.pyc` could intercept inference data without modifying any `.py`.
 /// By purging before every hash check, we force Python to recompile from the
 /// verified `.py` source and ensure the hash matches CI's clean state.
-fn purge_pycache(dir: &std::path::Path) {
+pub fn purge_pycache(dir: &std::path::Path) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(_) => return,
@@ -506,8 +506,9 @@ fn purge_pycache(dir: &std::path::Path) {
 }
 
 /// Walk a Python runtime lib directory matching Python's os.walk behavior:
-/// skip __pycache__ directories, skip .pyc files, don't follow symlinks.
-fn collect_runtime_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+/// skip __pycache__ directories, skip .pyc files, don't follow symlinks
+/// to directories (but DO include symlinked files — os.walk lists them).
+pub fn collect_runtime_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(_) => return,
@@ -523,13 +524,15 @@ fn collect_runtime_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf
                 continue;
             }
             collect_runtime_files(&path, out);
-        } else if ft.is_file() {
+        } else if ft.is_symlink() && path.is_dir() {
+            // Symlink to directory — don't follow (matches os.walk followlinks=False)
+        } else {
+            // Regular file or symlink to file — include (matches os.walk)
             if path.extension().and_then(|e| e.to_str()) == Some("pyc") {
                 continue;
             }
             out.push(path);
         }
-        // Skip symlinks — matches os.walk(followlinks=False)
     }
 }
 

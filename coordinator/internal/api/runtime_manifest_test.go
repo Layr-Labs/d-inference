@@ -64,14 +64,14 @@ func TestSyncRuntimeManifestUsesLatestReleaseOnly(t *testing.T) {
 	if !manifest.PythonHashes["new-python"] {
 		t.Fatal("latest python hash missing from runtime manifest")
 	}
-	if manifest.PythonHashes["old-python"] {
-		t.Fatal("stale python hash should not remain in runtime manifest")
+	if !manifest.PythonHashes["old-python"] {
+		t.Fatal("old python hash should remain accepted so older providers still pass")
 	}
 	if !manifest.RuntimeHashes["new-runtime"] {
 		t.Fatal("latest runtime hash missing from runtime manifest")
 	}
-	if manifest.RuntimeHashes["old-runtime"] {
-		t.Fatal("stale runtime hash should not remain in runtime manifest")
+	if !manifest.RuntimeHashes["old-runtime"] {
+		t.Fatal("old runtime hash should remain accepted so older providers still pass")
 	}
 	if got := manifest.TemplateHashes["qwen3.5"]; got != "new-template" {
 		t.Fatalf("qwen3.5 template hash = %q, want %q", got, "new-template")
@@ -119,8 +119,14 @@ func TestSyncRuntimeManifestClearsStaleHashesWhenLatestReleaseHasNoRuntimeMetada
 	if srv.minProviderVersion != "" {
 		t.Fatalf("minProviderVersion should not be auto-set, got %q", srv.minProviderVersion)
 	}
-	if srv.knownRuntimeManifest != nil {
-		t.Fatal("knownRuntimeManifest should be cleared when latest release has no runtime metadata")
+	// With multi-version manifest, old release hashes are retained so older
+	// providers still pass — manifest is NOT cleared just because a new
+	// release lacks metadata.
+	if srv.knownRuntimeManifest == nil {
+		t.Fatal("manifest should retain old release hashes")
+	}
+	if !srv.knownRuntimeManifest.PythonHashes["old-python"] {
+		t.Fatal("old python hash should still be accepted")
 	}
 }
 

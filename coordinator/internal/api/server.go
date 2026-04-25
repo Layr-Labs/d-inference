@@ -27,6 +27,7 @@ import (
 	"net"
 	"net/http"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -463,23 +464,23 @@ func (s *Server) SyncRuntimeManifest() {
 	// env var. It is NOT auto-derived from the latest release — pushing a new release
 	// should not instantly knock all existing providers offline.
 
-	// Find the latest active release version for manifest hashes.
-	latestVersion := ""
-	for _, r := range releases {
-		if r.Active && semverGreater(r.Version, latestVersion) {
-			latestVersion = r.Version
-		}
-	}
-
 	manifest := &RuntimeManifest{
 		PythonHashes:   make(map[string]bool),
 		RuntimeHashes:  make(map[string]bool),
 		TemplateHashes: make(map[string]string),
 	}
 
+	// Sort releases ascending by version so newer releases' template hashes
+	// overwrite older ones (templates are keyed by name; binary/runtime hashes
+	// accumulate as a set).
+	sortedReleases := append([]store.Release(nil), releases...)
+	sort.SliceStable(sortedReleases, func(i, j int) bool {
+		return semverGreater(sortedReleases[j].Version, sortedReleases[i].Version)
+	})
+
 	hasAny := false
-	for _, r := range releases {
-		if !r.Active || r.Version != latestVersion {
+	for _, r := range sortedReleases {
+		if !r.Active {
 			continue
 		}
 		if r.PythonHash != "" {
@@ -505,7 +506,6 @@ func (s *Server) SyncRuntimeManifest() {
 	if hasAny {
 		s.knownRuntimeManifest = manifest
 		s.logger.Info("runtime manifest synced from releases",
-			"version", latestVersion,
 			"python_hashes", len(manifest.PythonHashes),
 			"runtime_hashes", len(manifest.RuntimeHashes),
 			"template_hashes", len(manifest.TemplateHashes),

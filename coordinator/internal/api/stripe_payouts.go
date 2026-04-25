@@ -281,15 +281,6 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check withdrawable balance — only earnings can be withdrawn.
-	withdrawable := s.store.GetWithdrawableBalance(user.AccountID)
-	if withdrawable < grossMicroUSD {
-		writeJSON(w, http.StatusBadRequest, errorResponse("insufficient_withdrawable",
-			fmt.Sprintf("withdrawable balance is $%.2f (total balance may be higher but includes non-withdrawable credits)",
-				float64(withdrawable)/1_000_000)))
-		return
-	}
-
 	// State machine:
 	//
 	//   pending     → row persisted, ledger debited, no Stripe call yet.
@@ -302,8 +293,13 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 	withdrawalID := uuid.New().String()
 	debitRef := "stripe_withdraw:" + withdrawalID
 
-	if err := s.billing.Ledger().Charge(user.AccountID, grossMicroUSD, debitRef); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("insufficient_funds", err.Error()))
+	// DebitWithdrawable atomically checks and subtracts from both
+	// balance_micro_usd and withdrawable_micro_usd. This prevents the
+	// inflation bug where Debit eats non-withdrawable credits and a
+	// subsequent refund via CreditWithdrawable restores the amount as
+	// withdrawable earnings.
+	if err := s.store.DebitWithdrawable(user.AccountID, grossMicroUSD, store.LedgerStripePayout, debitRef); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("insufficient_withdrawable", err.Error()))
 		return
 	}
 

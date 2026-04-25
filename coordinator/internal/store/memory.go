@@ -363,6 +363,34 @@ func (s *MemoryStore) CreditWithdrawable(accountID string, amountMicroUSD int64,
 	return nil
 }
 
+// DebitWithdrawable subtracts micro-USD from both the total balance and
+// the withdrawable balance. Returns error if withdrawable is insufficient.
+func (s *MemoryStore) DebitWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.withdrawable[accountID] < amountMicroUSD {
+		return fmt.Errorf("insufficient withdrawable balance: have %d, need %d micro-USD", s.withdrawable[accountID], amountMicroUSD)
+	}
+	if s.balances[accountID] < amountMicroUSD {
+		return fmt.Errorf("insufficient balance: have %d, need %d micro-USD", s.balances[accountID], amountMicroUSD)
+	}
+
+	s.balances[accountID] -= amountMicroUSD
+	s.withdrawable[accountID] -= amountMicroUSD
+	s.ledgerSeq++
+	s.ledgerEntries = append(s.ledgerEntries, LedgerEntry{
+		ID:             s.ledgerSeq,
+		AccountID:      accountID,
+		Type:           entryType,
+		AmountMicroUSD: -amountMicroUSD,
+		BalanceAfter:   s.balances[accountID],
+		Reference:      reference,
+		CreatedAt:      time.Now(),
+	})
+	return nil
+}
+
 // Debit subtracts micro-USD from an account. Returns error if insufficient funds.
 func (s *MemoryStore) Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
 	s.mu.Lock()

@@ -173,24 +173,38 @@ echo "→ [3/7] Verifying inference runtime..."
 if [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "import vllm_mlx" 2>/dev/null; then
     echo "  Python runtime ✓"
 else
-    echo "  Downloading Python runtime (~105 MB)..."
-    if curl -f#L "$COORD_URL/dl/eigeninference-python-runtime.tar.gz" -o "/tmp/eigeninference-python.tar.gz" 2>/dev/null; then
-        rm -rf "$INSTALL_DIR/python"
-        tar xzf /tmp/eigeninference-python.tar.gz -C "$INSTALL_DIR"
-        rm -f /tmp/eigeninference-python.tar.gz
+    R2_CDN="${R2_CDN:-__DARKBLOOM_R2_CDN_URL__}"
+    RUNTIME_INSTALLED=false
+
+    # Try R2 release artifacts first (the canonical source).
+    if [ -n "$VERSION" ] && curl -f#L "$R2_CDN/releases/v${VERSION}/eigeninference-python-macos-arm64.tar.gz" -o "/tmp/eigeninference-python.tar.gz" 2>/dev/null; then
         echo ""
+        echo "  Extracting Python runtime..."
+        rm -rf "$INSTALL_DIR/python"
+        mkdir -p "$INSTALL_DIR/python"
+        tar xzf /tmp/eigeninference-python.tar.gz -C "$INSTALL_DIR/python"
+        rm -f /tmp/eigeninference-python.tar.gz
+        RUNTIME_INSTALLED=true
         echo "  Python runtime installed ✓"
-    else
-        # Fallback to old URL
-        if curl -f#L "$COORD_URL/dl/dginf-python-runtime.tar.gz" -o "/tmp/eigeninference-python.tar.gz" 2>/dev/null; then
-            rm -rf "$INSTALL_DIR/python"
-            tar xzf /tmp/eigeninference-python.tar.gz -C "$INSTALL_DIR"
-            rm -f /tmp/eigeninference-python.tar.gz
-            echo ""
-            echo "  Python runtime installed ✓"
-        else
-            echo "  ⚠ Python runtime download failed — inference won't work without it"
+    fi
+
+    # If the full runtime tarball wasn't available but python binary exists
+    # (from the bundle), fetch just the site-packages.
+    if [ "$RUNTIME_INSTALLED" = false ] && [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
+        echo "  Downloading site-packages..."
+        SITE_DIR="$INSTALL_DIR/python/lib/python3.12/site-packages"
+        if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/eigeninference-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
+            rm -rf "$SITE_DIR"
+            mkdir -p "$SITE_DIR"
+            tar xzf /tmp/eigen-site-packages.tar.gz -C "$SITE_DIR"
+            rm -f /tmp/eigen-site-packages.tar.gz
+            RUNTIME_INSTALLED=true
+            echo "  Site-packages installed from R2 ✓"
         fi
+    fi
+
+    if [ "$RUNTIME_INSTALLED" = false ]; then
+        echo "  ⚠ Python runtime download failed — inference won't work without it"
     fi
 fi
 

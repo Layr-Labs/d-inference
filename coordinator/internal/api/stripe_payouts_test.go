@@ -936,6 +936,88 @@ func signedConnectRequest(t *testing.T, payload []byte, secret string) *http.Req
 	return req
 }
 
+// TestStripeWithdrawRejectsExceedingWithdrawableViaDebit verifies that the
+// DebitWithdrawable path rejects a withdrawal that exceeds the withdrawable
+// balance even when total balance is sufficient.
+func TestStripeWithdrawRejectsExceedingWithdrawableViaDebit(t *testing.T) {
+	srv, st := stripePayoutsTestServer(t, true, nil)
+	user := readyUser(t, st, "acct-debit-guard", "guard@example.com", false)
+
+	// $100 total but only $20 withdrawable.
+	st.Credit(user.AccountID, 80_000_000, store.LedgerStripeDeposit, "deposit")
+	st.CreditWithdrawable(user.AccountID, 20_000_000, store.LedgerPayout, "earnings")
+
+	// Try to withdraw $30 — total balance is $100 but withdrawable is only $20.
+	body := `{"amount_usd":"30.00","method":"standard"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeWithdraw(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400; body: %s", w.Code, w.Body.String())
+	}
+
+	// Balances should be untouched.
+	if bal := st.GetBalance(user.AccountID); bal != 100_000_000 {
+		t.Errorf("balance = %d, want 100_000_000 (unchanged)", bal)
+	}
+	if wd := st.GetWithdrawableBalance(user.AccountID); wd != 20_000_000 {
+		t.Errorf("withdrawable = %d, want 20_000_000 (unchanged)", wd)
+	}
+}
+
+// TestStripeWithdrawNoInflationOnFailedPayout verifies that a failed payout
+// followed by a refund does not inflate the withdrawable balance beyond its
+// original value. This was the core accounting bug: Debit ate non-withdrawable
+// credits, but CreditWithdrawable restored the amount as withdrawable earnings.
+func TestStripeWithdrawNoInflationOnFailedPayout(t *testing.T) {
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/transfers" && r.Method == http.MethodPost:
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`{"error":{"message":"boom","type":"invalid_request_error"}}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer fakeStripe.Close()
+
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := readyUser(t, st, "acct-inflate-1", "inflate@example.com", false)
+
+	// Seed: $100 total, $50 withdrawable (earned), $50 non-withdrawable (credits).
+	st.Credit(user.AccountID, 50_000_000, store.LedgerStripeDeposit, "deposit")
+	st.CreditWithdrawable(user.AccountID, 50_000_000, store.LedgerPayout, "earnings")
+
+	beforeBalance := st.GetBalance(user.AccountID)
+	beforeWithdrawable := st.GetWithdrawableBalance(user.AccountID)
+	if beforeBalance != 100_000_000 {
+		t.Fatalf("initial balance = %d, want 100_000_000", beforeBalance)
+	}
+	if beforeWithdrawable != 50_000_000 {
+		t.Fatalf("initial withdrawable = %d, want 50_000_000", beforeWithdrawable)
+	}
+
+	// Attempt a $10 withdrawal — transfer will fail, triggering refund.
+	body := `{"amount_usd":"10.00","method":"standard"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeWithdraw(w, req)
+
+	// Transfer fails → refund should restore original balances exactly.
+	afterBalance := st.GetBalance(user.AccountID)
+	afterWithdrawable := st.GetWithdrawableBalance(user.AccountID)
+
+	if afterBalance != beforeBalance {
+		t.Errorf("balance after failed withdrawal = %d, want %d (unchanged)", afterBalance, beforeBalance)
+	}
+	if afterWithdrawable != beforeWithdrawable {
+		t.Errorf("withdrawable after failed withdrawal = %d, want %d (unchanged) — inflation bug!", afterWithdrawable, beforeWithdrawable)
+	}
+}
+
 // silence unused-import linter when tests are pruned during iteration.
 var (
 	_ = io.Discard

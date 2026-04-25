@@ -425,14 +425,15 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// Withdrawable balance — tracks the withdrawable subset of balance_micro_usd.
 		`ALTER TABLE balances ADD COLUMN IF NOT EXISTS withdrawable_micro_usd BIGINT NOT NULL DEFAULT 0`,
 
-		// Backfill withdrawable from ledger history: sum all provider earnings
-		// and referral rewards. Idempotent — only updates rows where withdrawable
-		// is still 0 (first deploy) so it won't overwrite live values on restart.
-		`UPDATE balances b SET withdrawable_micro_usd = COALESCE((
+		// Backfill withdrawable from ledger history: sum earnings minus
+		// successful withdrawals. Idempotent — only updates rows where
+		// withdrawable is still 0 (first deploy) so it won't overwrite
+		// live values on restart.
+		`UPDATE balances b SET withdrawable_micro_usd = GREATEST(0, COALESCE((
 			SELECT SUM(amount_micro_usd) FROM ledger_entries
 			WHERE account_id = b.account_id
-			  AND entry_type IN ('payout', 'referral_reward')
-		), 0) WHERE b.withdrawable_micro_usd = 0`,
+			  AND entry_type IN ('payout', 'referral_reward', 'admin_reward', 'stripe_payout')
+		), 0)) WHERE b.withdrawable_micro_usd = 0`,
 	}
 
 	for _, m := range migrations {
@@ -848,6 +849,48 @@ func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType 
 	)
 
 	// Record ledger entry
+	_, err = tx.Exec(ctx,
+		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		accountID, string(entryType), -amountMicroUSD, balanceAfter, reference,
+	)
+	if err != nil {
+		return fmt.Errorf("store: insert ledger entry: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
+// DebitWithdrawable subtracts micro-USD from both the total balance and the
+// withdrawable balance atomically. Returns error if the withdrawable balance
+// is insufficient. This ensures withdrawal debits are symmetric with
+// CreditWithdrawable refunds — both touch the same columns.
+func (s *PostgresStore) DebitWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var balanceAfter int64
+	err = tx.QueryRow(ctx,
+		`UPDATE balances
+		 SET balance_micro_usd = balance_micro_usd - $2,
+		     withdrawable_micro_usd = withdrawable_micro_usd - $2,
+		     updated_at = NOW()
+		 WHERE account_id = $1
+		   AND balance_micro_usd >= $2
+		   AND withdrawable_micro_usd >= $2
+		 RETURNING balance_micro_usd`,
+		accountID, amountMicroUSD,
+	).Scan(&balanceAfter)
+	if err != nil {
+		return errors.New("insufficient withdrawable balance or account not found")
+	}
+
 	_, err = tx.Exec(ctx,
 		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
 		 VALUES ($1, $2, $3, $4, $5)`,

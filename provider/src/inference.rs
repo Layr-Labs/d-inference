@@ -492,27 +492,53 @@ try:
     from vllm_mlx.api.tool_calling import parse_tool_calls
     from vllm_mlx.api.utils import clean_output_text
     from vllm_mlx.api.models import ToolCall, FunctionCall
-    _cleaned_text, _tool_calls = parse_tool_calls(_output.text, _req)
-    if not _tool_calls and '{{"' in _output.text:
+
+    # Reasoning extraction: separate <think>...</think> from final content
+    # so OpenAI-compatible clients (OpenCode, etc.) get proper reasoning_content.
+    _reasoning_text = None
+    _model_text = _output.text
+    try:
+        from vllm_mlx.reasoning import get_parser
+        _name_lower = (_model_name or "").lower()
+        _parser_name = None
+        if "qwen" in _name_lower:
+            _parser_name = "qwen3"
+        elif "gemma" in _name_lower:
+            _parser_name = "gemma4"
+        elif "deepseek" in _name_lower or "trinity" in _name_lower:
+            _parser_name = "deepseek_r1"
+        if _parser_name:
+            _r_parser = get_parser(_parser_name)()
+            _r, _c = _r_parser.extract_reasoning(_model_text)
+            if _r is not None or _c is not None:
+                _reasoning_text = _r
+                _model_text = _c if _c is not None else ""
+    except Exception:
+        pass
+
+    _cleaned_text, _tool_calls = parse_tool_calls(_model_text, _req)
+    if not _tool_calls and '{{"' in _model_text:
         import re as _re
-        _fixed = _re.sub(r'\{\{(")', r'{\1', _output.text)
+        _fixed = _re.sub(r'\{\{(")', r'{\1', _model_text)
         _cleaned_text, _tool_calls = parse_tool_calls(_fixed, _req)
     _final_content = clean_output_text(_cleaned_text) if _cleaned_text else None
     if _response_format and not _tool_calls:
         from vllm_mlx.api.tool_calling import parse_json_output
         _, _parsed_json, _is_valid, _err = parse_json_output(
-            _cleaned_text or _output.text, _response_format
+            _cleaned_text or _model_text, _response_format
         )
         if _parsed_json is not None:
             _final_content = json.dumps(_parsed_json)
     _finish_reason = 'tool_calls' if _tool_calls else _output.finish_reason
+    _msg_kwargs = dict(content=_final_content, tool_calls=_tool_calls)
+    if _reasoning_text:
+        # AssistantMessage has a `reasoning` field that serializes as
+        # `reasoning_content` for client compatibility.
+        _msg_kwargs['reasoning'] = _reasoning_text
     _resp = ChatCompletionResponse(
         model=_model_name,
         choices=[ChatCompletionChoice(
-            message=AssistantMessage(
-                content=_final_content,
-                tool_calls=_tool_calls,
-            ),
+            message=AssistantMessage(**_msg_kwargs),
             finish_reason=_finish_reason,
         )],
         usage=Usage(
@@ -639,8 +665,33 @@ _SPECIAL_TOKENS = re.compile(r'<\|(?:im_start|im_end|endoftext|end_of_turn|eot_i
 _response_id = f'chatcmpl-{uuid.uuid4().hex[:8]}'
 _created = int(time.time())
 
+# Pick a reasoning parser based on model architecture so streaming chunks
+# carry proper {content, reasoning_content} fields per the OpenAI extension
+# (used by deepseek-r1, qwen3, gemma4 reasoning models, OpenCode, etc.).
+def _select_reasoning_parser(model_id):
+    try:
+        from vllm_mlx.reasoning import get_parser
+    except Exception:
+        return None
+    name = (model_id or "").lower()
+    parser_name = None
+    if "qwen" in name:
+        parser_name = "qwen3"
+    elif "gemma" in name:
+        parser_name = "gemma4"
+    elif "deepseek" in name or "trinity" in name:
+        parser_name = "deepseek_r1"
+    if parser_name is None:
+        return None
+    try:
+        return get_parser(parser_name)()
+    except Exception:
+        return None
+
+_reasoning_parser = _select_reasoning_parser(_model_name)
+
 class SyncStreamIterator:
-    def __init__(self, async_gen, sp, rid, ts, mn):
+    def __init__(self, async_gen, sp, rid, ts, mn, parser):
         import asyncio as _aio
         self._loop = _aio.new_event_loop()
         self._ait = async_gen.__aiter__()
@@ -651,6 +702,13 @@ class SyncStreamIterator:
         self._pt = 0
         self._ct = 0
         self._done = False
+        self._parser = parser
+        self._accum = ""
+        if parser is not None:
+            try:
+                parser.reset_state()
+            except Exception:
+                pass
 
     def __iter__(self):
         return self
@@ -669,27 +727,49 @@ class SyncStreamIterator:
             self._pt = _out.prompt_tokens
         if hasattr(_out, 'completion_tokens') and _out.completion_tokens:
             self._ct = _out.completion_tokens
-        _delta = _out.new_text
-        if _delta:
-            _content = self._sp.sub('', _delta)
-            if _content:
-                _finish = _out.finish_reason if _out.finished else None
-                return _json.dumps({
-                    'id': self._rid, 'object': 'chat.completion.chunk',
-                    'created': self._ts, 'model': self._mn,
-                    'choices': [{'index': 0, 'delta': {'content': _content}, 'finish_reason': _finish}],
-                })
-        if _out.finished:
-            return _json.dumps({
-                'id': self._rid, 'object': 'chat.completion.chunk',
-                'created': self._ts, 'model': self._mn,
-                'choices': [{'index': 0, 'delta': {}, 'finish_reason': _out.finish_reason or 'stop'}],
-            })
-        return ""
+        _delta = _out.new_text or ""
+        _finish = _out.finish_reason if _out.finished else None
+
+        _reasoning = None
+        _content = None
+        if self._parser is not None and _delta:
+            _prev = self._accum
+            self._accum = _prev + _delta
+            try:
+                _msg = self._parser.extract_reasoning_streaming(_prev, self._accum, _delta)
+            except Exception:
+                _msg = None
+            if _msg is None and not _out.finished:
+                return ""
+            if _msg is not None:
+                _reasoning = _msg.reasoning
+                _content = _msg.content
+        elif _delta:
+            _content = self._sp.sub('', _delta) or None
+
+        # Build OpenAI-compatible delta. Emit both `reasoning` and
+        # `reasoning_content` to match vllm-mlx's Pydantic serialization
+        # — DeepSeek/Qwen/OpenCode look for `reasoning_content`, while
+        # `reasoning` is the canonical vllm-mlx name.
+        _delta_obj = {}
+        if _reasoning:
+            _delta_obj['reasoning'] = _reasoning
+            _delta_obj['reasoning_content'] = _reasoning
+        if _content:
+            _delta_obj['content'] = _content
+
+        if not _delta_obj and not _out.finished:
+            return ""
+
+        return _json.dumps({
+            'id': self._rid, 'object': 'chat.completion.chunk',
+            'created': self._ts, 'model': self._mn,
+            'choices': [{'index': 0, 'delta': _delta_obj, 'finish_reason': _finish or (_out.finish_reason or 'stop' if _out.finished else None)}],
+        })
 
 _stream_iter = SyncStreamIterator(
     engine.stream_chat(**_chat_kwargs),
-    _SPECIAL_TOKENS, _response_id, _created, _model_name,
+    _SPECIAL_TOKENS, _response_id, _created, _model_name, _reasoning_parser,
 )
 "#,
                 )
@@ -748,43 +828,99 @@ _stream_iter = SyncStreamIterator(
     }
 }
 
-/// Thread-safe wrapper around InProcessEngine for use with tokio.
+/// Commands sent to the dedicated Python worker thread.
+enum EngineCommand {
+    Load(tokio::sync::oneshot::Sender<Result<()>>),
+    Generate(
+        serde_json::Value,
+        tokio::sync::oneshot::Sender<Result<InferenceResult>>,
+    ),
+    StreamGenerate(
+        serde_json::Value,
+        tokio::sync::mpsc::Sender<StreamToken>,
+        tokio::sync::oneshot::Sender<Result<(u64, u64)>>,
+    ),
+    Unload(tokio::sync::oneshot::Sender<Result<()>>),
+    IsLoaded(tokio::sync::oneshot::Sender<bool>),
+}
+
+/// Thread-safe wrapper around InProcessEngine.
 ///
-/// Since Python's GIL prevents true parallelism, inference calls
-/// are serialized through a Mutex. For vllm-mlx with continuous
-/// batching, the batching happens inside the Python engine.
+/// MLX 0.31.2+ binds GPU CommandEncoders to OS thread-local storage. If model
+/// loading and inference happen on different OS threads (e.g. via tokio's
+/// blocking pool reusing different threads), inference fails with
+/// "There is no Stream(gpu, N) in current thread".
+///
+/// This wrapper dedicates a single std::thread to ALL Python operations for
+/// a given engine. Load, generate, stream_generate, unload — every call
+/// dispatches a command to that thread via a channel. The Python interpreter
+/// only ever runs on one OS thread per engine, so MLX streams are consistent.
 pub struct SharedEngine {
-    inner: Arc<Mutex<InProcessEngine>>,
+    cmd_tx: std::sync::mpsc::Sender<EngineCommand>,
 }
 
 impl SharedEngine {
-    pub fn new(engine: InProcessEngine) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(engine)),
-        }
+    pub fn new(mut engine: InProcessEngine) -> Self {
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<EngineCommand>();
+        std::thread::Builder::new()
+            .name(format!("python-engine-{}", engine.model_id()))
+            .spawn(move || {
+                while let Ok(cmd) = cmd_rx.recv() {
+                    match cmd {
+                        EngineCommand::Load(reply) => {
+                            let _ = reply.send(engine.load());
+                        }
+                        EngineCommand::Generate(mut body, reply) => {
+                            let result = engine.generate(&body);
+                            crate::security::secure_zero_json_value(&mut body);
+                            let _ = reply.send(result);
+                        }
+                        EngineCommand::StreamGenerate(mut body, token_tx, reply) => {
+                            let result = engine.stream_generate(&body, |token| {
+                                if let Err(err) = token_tx.blocking_send(token) {
+                                    let mut t = err.0;
+                                    crate::security::secure_zero_string(std::mem::take(
+                                        &mut t.text,
+                                    ));
+                                    return Err(anyhow::anyhow!("stream receiver dropped"));
+                                }
+                                Ok(())
+                            });
+                            crate::security::secure_zero_json_value(&mut body);
+                            let _ = reply.send(result);
+                        }
+                        EngineCommand::Unload(reply) => {
+                            let _ = reply.send(engine.unload());
+                        }
+                        EngineCommand::IsLoaded(reply) => {
+                            let _ = reply.send(engine.is_loaded());
+                        }
+                    }
+                }
+            })
+            .expect("spawn python worker thread");
+        Self { cmd_tx }
     }
 
     /// Load the model (blocks until complete).
     pub async fn load(&self) -> Result<()> {
-        let engine = self.inner.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut e = engine.blocking_lock();
-            e.load()
-        })
-        .await?
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.cmd_tx
+            .send(EngineCommand::Load(tx))
+            .map_err(|_| anyhow::anyhow!("python worker thread is gone"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("worker dropped reply"))?
     }
 
     /// Run non-streaming inference. Takes the full request body JSON
     /// and returns a complete OpenAI-compatible response.
-    pub async fn generate(&self, mut request_body: serde_json::Value) -> Result<InferenceResult> {
-        let engine = self.inner.clone();
-        tokio::task::spawn_blocking(move || {
-            let e = engine.blocking_lock();
-            let result = e.generate(&request_body);
-            crate::security::secure_zero_json_value(&mut request_body);
-            result
-        })
-        .await?
+    pub async fn generate(&self, request_body: serde_json::Value) -> Result<InferenceResult> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.cmd_tx
+            .send(EngineCommand::Generate(request_body, tx))
+            .map_err(|_| anyhow::anyhow!("python worker thread is gone"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("worker dropped reply"))?
     }
 
     /// Streaming inference with a channel: sends each SSE chunk through
@@ -792,40 +928,40 @@ impl SharedEngine {
     /// immediately. Each chunk is a complete `data: {...}` SSE line.
     pub fn stream_generate_channel(
         &self,
-        mut request_body: serde_json::Value,
+        request_body: serde_json::Value,
         token_tx: tokio::sync::mpsc::Sender<StreamToken>,
     ) -> tokio::task::JoinHandle<Result<(u64, u64)>> {
-        let engine = self.inner.clone();
-        tokio::task::spawn_blocking(move || {
-            let e = engine.blocking_lock();
-            let result = e.stream_generate(&request_body, |token| {
-                if let Err(err) = token_tx.blocking_send(token) {
-                    let mut token = err.0;
-                    crate::security::secure_zero_string(std::mem::take(&mut token.text));
-                    return Err(anyhow::anyhow!("stream receiver dropped"));
-                }
-                Ok(())
-            });
-            crate::security::secure_zero_json_value(&mut request_body);
-            let (prompt_tokens, completion_tokens) = result?;
-            Ok((prompt_tokens, completion_tokens))
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        let send_result = self.cmd_tx.send(EngineCommand::StreamGenerate(
+            request_body,
+            token_tx,
+            reply_tx,
+        ));
+        tokio::spawn(async move {
+            send_result.map_err(|_| anyhow::anyhow!("python worker thread is gone"))?;
+            reply_rx
+                .await
+                .map_err(|_| anyhow::anyhow!("worker dropped reply"))?
         })
     }
 
     /// Unload the model so GPU memory can be reclaimed.
     pub async fn unload(&self) -> Result<()> {
-        let engine = self.inner.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut e = engine.blocking_lock();
-            e.unload()
-        })
-        .await?
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.cmd_tx
+            .send(EngineCommand::Unload(tx))
+            .map_err(|_| anyhow::anyhow!("python worker thread is gone"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("worker dropped reply"))?
     }
 
     /// Report whether the underlying engine is loaded.
     pub async fn is_loaded(&self) -> bool {
-        let engine = self.inner.lock().await;
-        engine.is_loaded()
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.cmd_tx.send(EngineCommand::IsLoaded(tx)).is_err() {
+            return false;
+        }
+        rx.await.unwrap_or(false)
     }
 }
 

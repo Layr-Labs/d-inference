@@ -315,10 +315,12 @@ jobs:
           PYTHON_LIB_DIR=$("$PYTHON_BIN" -c "import sysconfig; print(sysconfig.get_path('stdlib'))")
           SITE_PACKAGES_DIR=$("$PYTHON_BIN" -c "import site; print(site.getsitepackages()[0])")
           # Use the same Rust hashing as the provider binary to guarantee
-          # identical results. The build output links libpython via the
-          # build-time rpath; set DYLD_LIBRARY_PATH so it can load.
-          DYLD_LIBRARY_PATH="/tmp/eigeninference-build-python/lib:/tmp/eigeninference-python/lib" \
-          RUNTIME_HASH=$(provider/target/release/darkbloom hash-runtime "$PYTHON_LIB_DIR")
+          # identical results. The bundle copy was signed above and its
+          # libpython rpath points at @executable_path/../python/lib/ which
+          # doesn't exist in the bundle (site-packages stripped). Set
+          # DYLD_LIBRARY_PATH so the binary can load libpython.
+          RUNTIME_HASH=$(DYLD_LIBRARY_PATH="/tmp/eigeninference-python/lib:/tmp/eigeninference-build-python/lib" \
+            /tmp/eigeninference-bundle/bin/darkbloom hash-runtime "$PYTHON_LIB_DIR")
           echo "Runtime hash: $RUNTIME_HASH"
           echo "RUNTIME_HASH=$RUNTIME_HASH" >> "$GITHUB_ENV"
 

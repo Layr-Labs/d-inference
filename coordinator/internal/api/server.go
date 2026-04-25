@@ -79,9 +79,20 @@ func consumerKeyFromContext(ctx context.Context) string {
 	return ""
 }
 
-// LatestProviderVersion is the current version of the provider CLI.
-// Update this when uploading a new provider bundle.
+// LatestProviderVersion is the fallback version returned only when no
+// release has been registered in the store (e.g. in-memory dev setups).
+// Production reads the latest version from the releases table.
 var LatestProviderVersion = "0.3.10"
+
+// latestReleasedVersion returns the highest active release version from
+// the store, falling back to the hardcoded LatestProviderVersion when
+// no release record exists.
+func (s *Server) latestReleasedVersion() string {
+	if release := s.store.GetLatestRelease("macos-arm64"); release != nil {
+		return release.Version
+	}
+	return LatestProviderVersion
+}
 
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.

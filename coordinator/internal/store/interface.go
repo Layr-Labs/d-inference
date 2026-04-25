@@ -573,8 +573,10 @@ type ProviderEarning struct {
 // ProviderEarningsSummary captures lifetime payout aggregates independent of
 // any pagination applied to recent earnings history.
 type ProviderEarningsSummary struct {
-	Count         int64 `json:"count"`
-	TotalMicroUSD int64 `json:"total_micro_usd"`
+	Count            int64 `json:"count"`
+	TotalMicroUSD    int64 `json:"total_micro_usd"`
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
 }
 
 // ProviderPayout records a provider wallet payout event. This is separate from

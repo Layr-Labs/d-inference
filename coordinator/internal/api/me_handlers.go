@@ -210,7 +210,7 @@ func (s *Server) handleMySummary(w http.ResponseWriter, r *http.Request) {
 		Last7dMicroUSD:              last7dMoney,
 		Last7dJobs:                  last7dJobs,
 		Counts:                      counts,
-		LatestProviderVersion:       LatestProviderVersion,
+		LatestProviderVersion:       s.latestReleasedVersion(),
 		MinProviderVersion:          s.minProviderVersion,
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -271,25 +271,47 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 		return nil, fmt.Errorf("list providers by account: %w", err)
 	}
 
-	live := make(map[string]*registry.Provider)
+	// Index live providers by both session ID and stable identity (serial /
+	// SE key) so reconnected machines — whose session ID differs from the
+	// stored record's ID — still match their persisted state.
+	liveByID := make(map[string]*registry.Provider)
+	liveByIdentity := make(map[string]*registry.Provider)
 	s.registry.ForEachProvider(func(p *registry.Provider) {
 		p.Mu().Lock()
 		if p.AccountID == accountID {
-			live[p.ID] = p
+			liveByID[p.ID] = p
+			if p.AttestationResult != nil {
+				if p.AttestationResult.SerialNumber != "" {
+					liveByIdentity["serial:"+p.AttestationResult.SerialNumber] = p
+				}
+				if p.AttestationResult.PublicKey != "" {
+					liveByIdentity["sekey:"+p.AttestationResult.PublicKey] = p
+				}
+			}
 		}
 		p.Mu().Unlock()
 	})
 
 	deduped := dedupeRecordsByIdentity(records)
-	seen := make(map[string]bool, len(deduped))
+	seenIDs := make(map[string]bool, len(deduped))
+	seenLive := make(map[string]bool)
 	out := make([]myProvider, 0, len(deduped))
 	for i := range deduped {
-		mp := buildMyProvider(&deduped[i], live[deduped[i].ID])
+		// Prefer session-ID match; fall back to identity (serial/SE key)
+		// so reconnected machines correctly show as online.
+		live := liveByID[deduped[i].ID]
+		if live == nil {
+			live = liveByIdentity[recordIdentity(&deduped[i])]
+		}
+		mp := buildMyProvider(&deduped[i], live)
 		out = append(out, mp)
-		seen[deduped[i].ID] = true
+		seenIDs[deduped[i].ID] = true
+		if live != nil {
+			seenLive[live.ID] = true
+		}
 	}
-	for id, p := range live {
-		if seen[id] {
+	for id, p := range liveByID {
+		if seenIDs[id] || seenLive[id] {
 			continue
 		}
 		if liveMatchesEmittedIdentity(p, out) {
@@ -320,7 +342,7 @@ func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {
 
 	resp := myProvidersResponse{
 		Providers:             fleet,
-		LatestProviderVersion: LatestProviderVersion,
+		LatestProviderVersion: s.latestReleasedVersion(),
 		MinProviderVersion:    s.minProviderVersion,
 		HeartbeatTimeoutSec:   90,
 		ChallengeMaxAgeSec:    int((6 * time.Minute).Seconds()),
@@ -416,6 +438,18 @@ func (s *Server) attachEarnings(mp *myProvider) {
 	}
 	mp.EarningsTotalMicroUSD = summary.TotalMicroUSD
 	mp.EarningsCount = summary.Count
+	// Earnings table is the source of truth — every billed request is recorded
+	// here. Live lifetime counters in the providers table can drift
+	// (heartbeat-driven, lost on restart). Use earnings totals when they
+	// exceed the live counter so the dashboard never shows 0/483 for a
+	// machine that's served real work.
+	if summary.Count > mp.LifetimeRequestsServed {
+		mp.LifetimeRequestsServed = summary.Count
+	}
+	totalTokens := summary.PromptTokens + summary.CompletionTokens
+	if totalTokens > mp.LifetimeTokensGenerated {
+		mp.LifetimeTokensGenerated = totalTokens
+	}
 }
 
 func (s *Server) attachStoredReputation(ctx context.Context, mp *myProvider) {

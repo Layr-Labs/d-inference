@@ -442,7 +442,11 @@ function MachineCard({ provider, ctx }: { provider: MyProvider; ctx: MyProviders
         <Stat label="Concurrency" value={`${provider.pending_requests} / ${provider.max_concurrency || 0}`} />
         <Stat
           label="Bandwidth"
-          value={provider.memory_bandwidth_gbs ? `${provider.memory_bandwidth_gbs} GB/s` : "not reported"}
+          value={
+            provider.hardware?.memory_bandwidth_gbs
+              ? `${provider.hardware.memory_bandwidth_gbs} GB/s`
+              : "not reported"
+          }
         />
       </div>
 

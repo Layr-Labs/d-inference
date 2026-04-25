@@ -1202,6 +1202,8 @@ func (s *MemoryStore) GetProviderEarningsSummary(providerKey string) (ProviderEa
 		}
 		summary.Count++
 		summary.TotalMicroUSD += earning.AmountMicroUSD
+		summary.PromptTokens += int64(earning.PromptTokens)
+		summary.CompletionTokens += int64(earning.CompletionTokens)
 	}
 
 	return summary, nil
@@ -1219,6 +1221,8 @@ func (s *MemoryStore) GetAccountEarningsSummary(accountID string) (ProviderEarni
 		}
 		summary.Count++
 		summary.TotalMicroUSD += earning.AmountMicroUSD
+		summary.PromptTokens += int64(earning.PromptTokens)
+		summary.CompletionTokens += int64(earning.CompletionTokens)
 	}
 
 	return summary, nil

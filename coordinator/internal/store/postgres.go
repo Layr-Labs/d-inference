@@ -1986,11 +1986,14 @@ func (s *PostgresStore) GetProviderEarningsSummary(providerKey string) (Provider
 
 	var summary ProviderEarningsSummary
 	if err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*), COALESCE(SUM(amount_micro_usd), 0)
+		`SELECT COUNT(*),
+		        COALESCE(SUM(amount_micro_usd), 0),
+		        COALESCE(SUM(prompt_tokens), 0),
+		        COALESCE(SUM(completion_tokens), 0)
 		 FROM provider_earnings
 		 WHERE provider_key = $1`,
 		providerKey,
-	).Scan(&summary.Count, &summary.TotalMicroUSD); err != nil {
+	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens); err != nil {
 		return ProviderEarningsSummary{}, fmt.Errorf("store: query provider earnings summary: %w", err)
 	}
 
@@ -2004,11 +2007,14 @@ func (s *PostgresStore) GetAccountEarningsSummary(accountID string) (ProviderEar
 
 	var summary ProviderEarningsSummary
 	if err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*), COALESCE(SUM(amount_micro_usd), 0)
+		`SELECT COUNT(*),
+		        COALESCE(SUM(amount_micro_usd), 0),
+		        COALESCE(SUM(prompt_tokens), 0),
+		        COALESCE(SUM(completion_tokens), 0)
 		 FROM provider_earnings
 		 WHERE account_id = $1`,
 		accountID,
-	).Scan(&summary.Count, &summary.TotalMicroUSD); err != nil {
+	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens); err != nil {
 		return ProviderEarningsSummary{}, fmt.Errorf("store: query account earnings summary: %w", err)
 	}
 

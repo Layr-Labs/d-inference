@@ -505,6 +505,34 @@ fn purge_pycache(dir: &std::path::Path) {
     }
 }
 
+/// Walk a Python runtime lib directory matching Python's os.walk behavior:
+/// skip __pycache__ directories, skip .pyc files, don't follow symlinks.
+fn collect_runtime_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if ft.is_dir() {
+            if path.file_name().and_then(|n| n.to_str()) == Some("__pycache__") {
+                continue;
+            }
+            collect_runtime_files(&path, out);
+        } else if ft.is_file() {
+            if path.extension().and_then(|e| e.to_str()) == Some("pyc") {
+                continue;
+            }
+            out.push(path);
+        }
+        // Skip symlinks — matches os.walk(followlinks=False)
+    }
+}
+
 fn collect_files_recursive(
     dir: &std::path::Path,
     extension: &str,
@@ -561,43 +589,16 @@ pub fn compute_runtime_hashes(python_cmd: &str) -> RuntimeHashes {
         .filter(|lib_dir| lib_dir.exists())
         .and_then(|lib_dir| {
             purge_pycache(&lib_dir);
-            // Use the same Python hashing logic as CI (release.yml) to guarantee
-            // identical results. Rust's file walk differs from Python's os.walk
-            // in symlink handling and sort order, causing hash mismatches.
-            let script = format!(
-                r#"
-import hashlib, os, sys
-d = sys.argv[1]
-files = []
-for r, dirs, fs in os.walk(d):
-    dirs[:] = [name for name in dirs if name != '__pycache__']
-    for f in fs:
-        if f.endswith('.pyc'):
-            continue
-        files.append(os.path.join(r, f))
-files.sort()
-final = hashlib.sha256()
-for path in files:
-    h = hashlib.sha256()
-    with open(path, 'rb') as fh:
-        while True:
-            chunk = fh.read(65536)
-            if not chunk:
-                break
-            h.update(chunk)
-    final.update(h.digest())
-print(final.hexdigest())
-"#
-            );
-            std::process::Command::new(python_cmd)
-                .args(["-c", &script, &lib_dir.to_string_lossy()])
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .and_then(|o| {
-                    let h = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    if h.len() == 64 { Some(h) } else { None }
-                })
+            // SECURITY: hash in Rust, never by running the runtime being verified.
+            // A tampered Python runtime can modify stdlib (hashlib, os) to spoof
+            // its own hash — even with -I isolation. The algorithm matches CI's
+            // Python script: walk tree, skip __pycache__ and .pyc, sort full
+            // paths as strings, SHA-256 each file, SHA-256 the concatenated digests.
+            let mut files = Vec::new();
+            collect_runtime_files(&lib_dir, &mut files);
+            // Sort by string representation to match Python's list.sort() on path strings.
+            files.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+            hash_files_sorted(&files)
         });
 
     // Hash templates in ~/.darkbloom/templates/
@@ -1009,12 +1010,10 @@ mod tests {
             "should hash the mock python binary"
         );
 
-        // runtime_hash uses a Python subprocess (matching CI's hashing script).
-        // With a fake python binary the subprocess fails, so runtime_hash is None.
-        // On real machines with a working python_cmd, it produces a hash identical to CI.
+        // runtime_hash is computed in Rust (no Python subprocess needed).
         assert!(
-            hashes.runtime_hash.is_none(),
-            "fake python binary can't run the hashing script — expected None"
+            hashes.runtime_hash.is_some(),
+            "runtime hash should be computed from the runtime tree"
         );
         assert_eq!(
             hashes.template_hashes.get("chatml").map(String::as_str),
@@ -1031,9 +1030,8 @@ mod tests {
     #[test]
     fn test_runtime_hash_matches_python_reference() {
         // Create a temp directory with known files, compute the hash using
-        // our compute_runtime_hashes (which shells out to Python), and
-        // independently compute the expected hash using the same Python
-        // script inline. They MUST match — this is the CI parity guarantee.
+        // our Rust implementation, and independently compute the expected
+        // hash using the CI Python reference script. They MUST match.
         let tmp = std::env::temp_dir().join("eigeninference_test_hash_parity");
         let _ = std::fs::remove_dir_all(&tmp);
 
@@ -1118,6 +1116,285 @@ print(final.hexdigest())
             .unwrap();
         let hash2 = String::from_utf8_lossy(&output2.stdout).trim().to_string();
         assert_ne!(hash, hash2, "hash must change when a file is modified");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Helper: compute runtime hash using Rust (the function under test).
+    fn rust_runtime_hash(lib_dir: &std::path::Path) -> Option<String> {
+        purge_pycache(lib_dir);
+        let mut files = Vec::new();
+        collect_runtime_files(lib_dir, &mut files);
+        files.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+        hash_files_sorted(&files)
+    }
+
+    /// Helper: compute runtime hash using Python (the CI reference implementation).
+    fn python_runtime_hash(lib_dir: &std::path::Path) -> String {
+        let python = ["python3.12", "python3", "python"]
+            .iter()
+            .find(|cmd| {
+                std::process::Command::new(cmd)
+                    .args(["-c", "print('ok')"])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            })
+            .expect("no working python3 found");
+        let script = r#"
+import hashlib, os, sys
+d = sys.argv[1]
+files = []
+for r, dirs, fs in os.walk(d):
+    dirs[:] = [name for name in dirs if name != '__pycache__']
+    for f in fs:
+        if f.endswith('.pyc'):
+            continue
+        files.append(os.path.join(r, f))
+files.sort()
+final = hashlib.sha256()
+for path in files:
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        while True:
+            chunk = fh.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    final.update(h.digest())
+print(final.hexdigest())
+"#;
+        let output = std::process::Command::new(python)
+            .args(["-c", script, &lib_dir.to_string_lossy()])
+            .output()
+            .expect("python subprocess failed");
+        assert!(
+            output.status.success(),
+            "python hash script failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(hash.len(), 64, "expected 64-char hex hash, got: {hash}");
+        hash
+    }
+
+    #[test]
+    fn test_hash_parity_deeply_nested_packages() {
+        let tmp = std::env::temp_dir().join("eigen_hash_parity_deep");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        // Simulate realistic site-packages with deep nesting
+        let base = tmp.join("lib/python3.12");
+        let pkgs = [
+            "site-packages/vllm_mlx/__init__.py",
+            "site-packages/vllm_mlx/server.py",
+            "site-packages/vllm_mlx/api/__init__.py",
+            "site-packages/vllm_mlx/api/models.py",
+            "site-packages/vllm_mlx/api/tool_calling.py",
+            "site-packages/mlx_lm/__init__.py",
+            "site-packages/mlx_lm/models/__init__.py",
+            "site-packages/mlx_lm/models/llama.py",
+            "site-packages/mlx_lm/models/qwen2.py",
+            "site-packages/orjson/__init__.py",
+            "site-packages/orjson/_orjson.cpython-312-darwin.so",
+            "os.py",
+            "json/__init__.py",
+            "json/decoder.py",
+            "json/encoder.py",
+            "lib-dynload/_json.cpython-312-darwin.so",
+        ];
+        for p in &pkgs {
+            let path = base.join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, format!("# content of {p}\n")).unwrap();
+        }
+        // Add __pycache__ that should be excluded
+        let pycache = base.join("json/__pycache__");
+        std::fs::create_dir_all(&pycache).unwrap();
+        std::fs::write(pycache.join("__init__.cpython-312.pyc"), "bytecode").unwrap();
+
+        let rust_hash = rust_runtime_hash(&base).expect("Rust hash should succeed");
+        let py_hash = python_runtime_hash(&base);
+        assert_eq!(
+            rust_hash, py_hash,
+            "Rust and Python hashes MUST match for deeply nested package structure"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_hash_parity_binary_files() {
+        let tmp = std::env::temp_dir().join("eigen_hash_parity_binary");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let base = tmp.join("lib/python3.12");
+        std::fs::create_dir_all(base.join("lib-dynload")).unwrap();
+        std::fs::create_dir_all(base.join("site-packages/numpy")).unwrap();
+
+        // Write binary content (not valid UTF-8)
+        std::fs::write(
+            base.join("lib-dynload/_socket.cpython-312-darwin.so"),
+            &[0x00, 0xFF, 0xFE, 0xCA, 0xBE, 0xBA, 0xAD, 0xDE],
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("site-packages/numpy/__init__.py"),
+            "import numpy\n",
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("site-packages/numpy/_core.cpython-312-darwin.so"),
+            &(0..1024).map(|i| (i % 256) as u8).collect::<Vec<_>>(),
+        )
+        .unwrap();
+
+        let rust_hash = rust_runtime_hash(&base).expect("Rust hash should succeed");
+        let py_hash = python_runtime_hash(&base);
+        assert_eq!(
+            rust_hash, py_hash,
+            "Rust and Python hashes MUST match for binary .so files"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_hash_parity_empty_files_and_dirs() {
+        let tmp = std::env::temp_dir().join("eigen_hash_parity_empty");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let base = tmp.join("lib/python3.12");
+        std::fs::create_dir_all(base.join("site-packages/empty_pkg")).unwrap();
+        std::fs::create_dir_all(base.join("site-packages/another_pkg")).unwrap();
+
+        // Empty files
+        std::fs::write(base.join("site-packages/empty_pkg/__init__.py"), "").unwrap();
+        std::fs::write(base.join("site-packages/another_pkg/__init__.py"), "").unwrap();
+        // Empty directory (no files) — should not affect hash
+        std::fs::create_dir_all(base.join("site-packages/empty_pkg/subdir")).unwrap();
+
+        let rust_hash = rust_runtime_hash(&base).expect("Rust hash should succeed");
+        let py_hash = python_runtime_hash(&base);
+        assert_eq!(
+            rust_hash, py_hash,
+            "Rust and Python hashes MUST match with empty files and dirs"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_hash_parity_sort_order_edge_cases() {
+        let tmp = std::env::temp_dir().join("eigen_hash_parity_sort");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let base = tmp.join("lib/python3.12/site-packages");
+        // Names that test lexicographic sort edge cases
+        let names = [
+            "A/__init__.py",
+            "B/__init__.py",
+            "a/__init__.py",
+            "b/__init__.py",
+            "aa/__init__.py",
+            "Ab/__init__.py",
+            "_internal/__init__.py",
+            "_internal/core.py",
+            "zlib.py",
+            "zipfile.py",
+        ];
+        for n in &names {
+            let path = base.join(n);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, format!("# {n}\n")).unwrap();
+        }
+
+        let rust_hash =
+            rust_runtime_hash(&base.parent().unwrap()).expect("Rust hash should succeed");
+        let py_hash = python_runtime_hash(&base.parent().unwrap());
+        assert_eq!(
+            rust_hash, py_hash,
+            "Rust and Python hashes MUST match — sort order with mixed case/underscores"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_hash_parity_pyc_excluded() {
+        let tmp = std::env::temp_dir().join("eigen_hash_parity_pyc");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let base = tmp.join("lib/python3.12");
+        std::fs::create_dir_all(base.join("site-packages/pkg")).unwrap();
+        std::fs::write(base.join("site-packages/pkg/__init__.py"), "# init\n").unwrap();
+        // .pyc files outside __pycache__ should also be excluded
+        std::fs::write(base.join("site-packages/pkg/module.pyc"), "bytecode").unwrap();
+        // __pycache__ directory and contents should be excluded
+        std::fs::create_dir_all(base.join("site-packages/pkg/__pycache__")).unwrap();
+        std::fs::write(
+            base.join("site-packages/pkg/__pycache__/module.cpython-312.pyc"),
+            "bytecode",
+        )
+        .unwrap();
+
+        let rust_hash = rust_runtime_hash(&base).expect("Rust hash should succeed");
+        let py_hash = python_runtime_hash(&base);
+        assert_eq!(
+            rust_hash, py_hash,
+            "Rust and Python must both exclude .pyc files and __pycache__ dirs"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_hash_parity_large_file() {
+        let tmp = std::env::temp_dir().join("eigen_hash_parity_large");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let base = tmp.join("lib/python3.12/site-packages/big_pkg");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("__init__.py"), "# init\n").unwrap();
+        // File larger than the 65536-byte chunk size used in both implementations
+        let big_content: Vec<u8> = (0..200_000).map(|i| (i % 251) as u8).collect();
+        std::fs::write(base.join("weights.bin"), &big_content).unwrap();
+
+        let rust_hash =
+            rust_runtime_hash(&base.parent().unwrap()).expect("Rust hash should succeed");
+        let py_hash = python_runtime_hash(&base.parent().unwrap());
+        assert_eq!(
+            rust_hash, py_hash,
+            "Rust and Python hashes MUST match for files larger than chunk size"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_hash_parity_tamper_detected() {
+        let tmp = std::env::temp_dir().join("eigen_hash_parity_tamper");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let base = tmp.join("lib/python3.12/site-packages/pkg");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("__init__.py"), "# clean\n").unwrap();
+        std::fs::write(base.join("core.py"), "def run(): pass\n").unwrap();
+
+        let clean_rust = rust_runtime_hash(&base.parent().unwrap()).unwrap();
+        let clean_py = python_runtime_hash(&base.parent().unwrap());
+        assert_eq!(clean_rust, clean_py, "clean hashes must match");
+
+        // Tamper with a file
+        std::fs::write(base.join("core.py"), "def run(): exfiltrate_prompts()\n").unwrap();
+
+        let tampered_rust = rust_runtime_hash(&base.parent().unwrap()).unwrap();
+        let tampered_py = python_runtime_hash(&base.parent().unwrap());
+        assert_eq!(
+            tampered_rust, tampered_py,
+            "tampered hashes must still match each other"
+        );
+        assert_ne!(clean_rust, tampered_rust, "tampering must change the hash");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

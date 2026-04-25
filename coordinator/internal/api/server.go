@@ -1223,7 +1223,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 			"user_id", userID,
 		)
 
-		pathLabel := httpPathLabel(r.URL.Path)
+		pathLabel := httpPathLabel(route)
 		statusStr := strconvItoa(sw.status)
 
 		if s.metrics != nil {
@@ -1252,16 +1252,15 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// httpPathLabel maps a request URL to a stable label value. It strips query
-// strings and collapses any dynamic path segments that would otherwise create
-// unbounded label cardinality.
-func httpPathLabel(path string) string {
-	// TODO: if the surface area grows, normalize UUID-ish segments into ":id".
-	// For now our mux uses fixed paths so the path itself is a safe label.
-	if i := strings.IndexByte(path, '?'); i >= 0 {
-		path = path[:i]
+// httpPathLabel returns a bounded label for HTTP metrics.
+// We use the mux route pattern (e.g. "POST /v1/chat/completions")
+// instead of URL.Path so attacker-controlled unmatched paths cannot create
+// unbounded metric cardinality.
+func httpPathLabel(route string) string {
+	if route == "" {
+		return "unmatched"
 	}
-	return path
+	return route
 }
 
 // strconvItoa is a shim to avoid pulling strconv into every middleware file.

@@ -273,6 +273,9 @@ for _name in (
 
     fn try_detect_engine() -> Result<()> {
         Python::with_gil(|py| {
+            // Lock sys.path before any engine imports so provider-controlled
+            // site-packages cannot execute during detection.
+            Self::lock_python_path(py)?;
             if py.import("vllm_mlx").is_ok() {
                 tracing::info!("In-process engine: vllm-mlx detected");
                 return Ok(());
@@ -296,14 +299,6 @@ for _name in (
 
         Python::with_gil(|py| -> Result<()> {
             self.load_vllm_mlx(py)?;
-            // Lock sys.path to approved runtime roots. This is the primary
-            // defense — prevents loading code from provider-controlled paths.
-            // We do NOT block socket/subprocess/ctypes because vllm-mlx uses
-            // them internally (requests library, lazy model loading, etc.).
-            // The path lock + PYTHONNOUSERSITE + SIP is sufficient.
-            if let Err(e) = Self::lock_python_path(py) {
-                tracing::warn!("Python path lock failed (defense-in-depth): {e:#}");
-            }
             Ok(())
         })?;
 
@@ -432,6 +427,26 @@ try:
             _messages = [{'role': 'user', 'content': _input}]
         elif isinstance(_input, list):
             _messages = _input
+    if not _messages and _req.get('prompt'):
+        _prompt = _req['prompt']
+        if isinstance(_prompt, str):
+            _messages = [{'role': 'user', 'content': _prompt}]
+        elif isinstance(_prompt, list):
+            _messages = [{'role': 'user', 'content': p} for p in _prompt]
+    _endpoint = _req.get('endpoint', '')
+    if _endpoint == '/v1/messages':
+        if _req.get('system'):
+            _sys = _req['system']
+            _sys_text = _sys if isinstance(_sys, str) else ' '.join(
+                b.get('text', '') for b in _sys if isinstance(b, dict)
+            )
+            _messages = [{'role': 'system', 'content': _sys_text}] + list(_messages)
+        for _i, _m in enumerate(_messages):
+            if isinstance(_m.get('content'), list):
+                _messages[_i] = dict(_m)
+                _messages[_i]['content'] = ' '.join(
+                    b.get('text', '') for b in _m['content'] if isinstance(b, dict) and b.get('type') == 'text'
+                )
     _max_tokens = int(_req.get('max_tokens') or _req.get('max_output_tokens') or 256)
     _temperature = float(_req.get('temperature', 0.7))
     _top_p = float(_req.get('top_p', 0.9))

@@ -580,15 +580,13 @@ except Exception as _e:
                 locals.set_item("engine_key", &self.cache_key)?;
                 locals.set_item("request_json", &request_json)?;
 
-                // Set up a Python queue.SimpleQueue for real-time streaming.
-                // The worker thread initializes its own MLX default stream
-                // before running inference. MLX 0.31.2+ uses thread-local
-                // CommandEncoder storage, so each thread needs its own stream.
-                // Calling mx.default_stream(mx.gpu) on a new thread lazily
-                // creates one, and mx.eval() uses that thread's stream.
+                // Synchronous token-by-token streaming. All MLX operations run
+                // on the CURRENT thread (same as model loading) to avoid MLX
+                // 0.31.2+ thread-local stream errors. A SyncStreamIterator
+                // wraps the async generator so Rust can call next() per token.
                 let setup_code = CString::new(
                     r#"
-import builtins, json, uuid, time, queue, threading, asyncio, re, traceback as _tb
+import builtins, json, uuid, time, asyncio, re, traceback as _tb
 
 engine = builtins._eigeninference_vllm_engines[engine_key]
 _req = json.loads(request_json)
@@ -640,96 +638,93 @@ if _stop:
 _SPECIAL_TOKENS = re.compile(r'<\|(?:im_start|im_end|endoftext|end_of_turn|eot_id|end_header_id|start_header_id|finetune_right_pad_id)\|>')
 _response_id = f'chatcmpl-{uuid.uuid4().hex[:8]}'
 _created = int(time.time())
-_token_queue = queue.SimpleQueue()
 
-def _stream_worker(_q, _eng, _kwargs, _sp, _rid, _ts, _mn):
-    import asyncio as _aio, json as _json, mlx.core as _mx
-    # Initialize MLX stream context for this thread. default_stream()
-    # lazily creates a per-thread stream, and set_default_stream()
-    # registers it in this thread's TLS so mx.eval() works.
-    _mx.set_default_stream(_mx.default_stream(_mx.default_device()))
-    try:
-        async def _run():
-            _pt, _ct = 0, 0
-            async for _out in _eng.stream_chat(**_kwargs):
-                _delta = _out.new_text
-                if hasattr(_out, 'prompt_tokens') and _out.prompt_tokens:
-                    _pt = _out.prompt_tokens
-                if hasattr(_out, 'completion_tokens') and _out.completion_tokens:
-                    _ct = _out.completion_tokens
-                if _delta:
-                    _content = _sp.sub('', _delta)
-                    if _content:
-                        _finish = _out.finish_reason if _out.finished else None
-                        _q.put(_json.dumps({
-                            'id': _rid, 'object': 'chat.completion.chunk',
-                            'created': _ts, 'model': _mn,
-                            'choices': [{'index': 0, 'delta': {'content': _content}, 'finish_reason': _finish}],
-                        }))
-                elif _out.finished:
-                    _q.put(_json.dumps({
-                        'id': _rid, 'object': 'chat.completion.chunk',
-                        'created': _ts, 'model': _mn,
-                        'choices': [{'index': 0, 'delta': {}, 'finish_reason': _out.finish_reason or 'stop'}],
-                    }))
-            _q.put(('__DONE__', _pt, _ct))
-        _aio.run(_run())
-    except Exception as _e:
-        _q.put(('__ERROR__', str(_e)))
+class SyncStreamIterator:
+    def __init__(self, async_gen, sp, rid, ts, mn):
+        self._loop = asyncio.new_event_loop()
+        self._ait = async_gen.__aiter__()
+        self._sp = sp
+        self._rid = rid
+        self._ts = ts
+        self._mn = mn
+        self._pt = 0
+        self._ct = 0
+        self._done = False
 
-_stream_thread = threading.Thread(
-    target=_stream_worker,
-    args=(_token_queue, engine, _chat_kwargs, _SPECIAL_TOKENS, _response_id, _created, _model_name),
-    daemon=True,
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._done:
+            raise StopIteration
+        try:
+            _out = self._loop.run_until_complete(self._ait.__anext__())
+        except StopAsyncIteration:
+            self._done = True
+            self._loop.close()
+            raise StopIteration
+        if hasattr(_out, 'prompt_tokens') and _out.prompt_tokens:
+            self._pt = _out.prompt_tokens
+        if hasattr(_out, 'completion_tokens') and _out.completion_tokens:
+            self._ct = _out.completion_tokens
+        _delta = _out.new_text
+        if _delta:
+            _content = self._sp.sub('', _delta)
+            if _content:
+                _finish = _out.finish_reason if _out.finished else None
+                return json.dumps({
+                    'id': self._rid, 'object': 'chat.completion.chunk',
+                    'created': self._ts, 'model': self._mn,
+                    'choices': [{'index': 0, 'delta': {'content': _content}, 'finish_reason': _finish}],
+                })
+        if _out.finished:
+            return json.dumps({
+                'id': self._rid, 'object': 'chat.completion.chunk',
+                'created': self._ts, 'model': self._mn,
+                'choices': [{'index': 0, 'delta': {}, 'finish_reason': _out.finish_reason or 'stop'}],
+            })
+        return ""
+
+_stream_iter = SyncStreamIterator(
+    engine.stream_chat(**_chat_kwargs),
+    _SPECIAL_TOKENS, _response_id, _created, _model_name,
 )
-_stream_thread.start()
 "#,
                 )
                 .unwrap();
                 py.run(setup_code.as_c_str(), None, Some(&locals))
                     .context("vllm-mlx stream setup failed")?;
 
-                let token_queue = locals
-                    .get_item("_token_queue")?
-                    .ok_or_else(|| anyhow::anyhow!("no token queue"))?
+                let stream_iter = locals
+                    .get_item("_stream_iter")?
+                    .ok_or_else(|| anyhow::anyhow!("no stream iterator"))?
                     .clone()
                     .unbind();
 
-                // Release the GIL and poll the queue for real-time streaming.
                 let mut prompt_tokens = 0u64;
                 let mut completion_tokens = 0u64;
+                let sentinel = "__STREAM_DONE__";
+
                 loop {
-                    // Acquire GIL briefly to get one item from the queue.
-                    let item = Python::with_gil(|py| -> Result<Option<String>> {
-                        let queue = token_queue.bind(py);
-                        let item = queue
-                            .call_method1("get", (true, 120.0))
-                            .context("queue.get timeout")?;
+                    let item = py
+                        .import("builtins")?
+                        .getattr("next")?
+                        .call1((&stream_iter.bind(py), sentinel))?;
 
-                        if let Ok(tup) = item.extract::<(String, u64, u64)>() {
-                            if tup.0 == "__DONE__" {
-                                prompt_tokens = tup.1;
-                                completion_tokens = tup.2;
-                                return Ok(None);
-                            }
-                        }
-                        if let Ok(tup) = item.extract::<(String, String)>() {
-                            if tup.0 == "__ERROR__" {
-                                anyhow::bail!("stream error: {}", tup.1);
-                            }
-                        }
-                        Ok(Some(item.extract::<String>()?))
-                    })?;
+                    let val: String = item.extract().unwrap_or_default();
+                    if val == sentinel {
+                        let iter_ref = stream_iter.bind(py);
+                        prompt_tokens = iter_ref.getattr("_pt")?.extract().unwrap_or(0);
+                        completion_tokens = iter_ref.getattr("_ct")?.extract().unwrap_or(0);
+                        break;
+                    }
 
-                    match item {
-                        Some(chunk_json) => {
-                            let sse_line = format!("data: {}", chunk_json);
-                            on_token(StreamToken {
-                                text: sse_line,
-                                finish_reason: None,
-                            })?;
-                        }
-                        None => break,
+                    if !val.is_empty() {
+                        let sse_line = format!("data: {}", val);
+                        on_token(StreamToken {
+                            text: sse_line,
+                            finish_reason: None,
+                        })?;
                     }
                 }
 

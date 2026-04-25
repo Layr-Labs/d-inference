@@ -391,7 +391,7 @@ if [ -n "$MODEL" ]; then
             echo "  $MODEL_NAME downloaded ✓"
         else
             echo "  Tarball not available, downloading from R2..."
-            R2_BASE="${R2_CDN_URL:-__DARKBLOOM_R2_CDN_URL__}/$S3_NAME"
+            R2_BASE="${R2_MODELS_CDN_URL:-https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev}/$S3_NAME"
             for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json model.safetensors.index.json; do
                 curl -fsSL "$R2_BASE/$f" -o "$CACHE_DIR/$f" 2>/dev/null || true
             done

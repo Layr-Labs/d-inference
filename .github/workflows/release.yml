@@ -472,11 +472,12 @@ jobs:
           wait $UL1 $UL2 $UL3 $UL4
           echo "All bundle uploads complete"
 
-          # Compute template hashes while DMG notarizes
-          R2_CDN="${R2_CDN:-https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev}"
+          # Compute template hashes while DMG notarizes.
+          # Templates live on the models bucket, not the releases bucket.
+          MODELS_CDN="https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev"
           TEMPLATE_HASHES=""
           for name in qwen3.5 trinity gemma4 minimax; do
-            HASH=$(curl -fsSL "$R2_CDN/templates/${name}.jinja" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+            HASH=$(curl -fsSL "$MODELS_CDN/templates/${name}.jinja" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
             if [ -n "$HASH" ] && [ "$HASH" != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]; then
               [ -n "$TEMPLATE_HASHES" ] && TEMPLATE_HASHES+=","
               TEMPLATE_HASHES+="${name}=${HASH}"

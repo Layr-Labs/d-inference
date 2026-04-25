@@ -38,7 +38,20 @@ type PostgresStore struct {
 // NewPostgres creates a new PostgresStore connected to the given database URL.
 // It runs schema migrations on startup.
 func NewPostgres(ctx context.Context, connString string) (*PostgresStore, error) {
-	pool, err := pgxpool.New(ctx, connString)
+	cfg, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		return nil, fmt.Errorf("store: parse postgres config: %w", err)
+	}
+
+	if cfg.MaxConns < 20 {
+		cfg.MaxConns = 20
+	}
+	cfg.MinConns = 5
+	cfg.MaxConnLifetime = 30 * time.Minute
+	cfg.MaxConnIdleTime = 5 * time.Minute
+	cfg.HealthCheckPeriod = 30 * time.Second
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("store: connect to postgres: %w", err)
 	}

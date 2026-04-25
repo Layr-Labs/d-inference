@@ -855,16 +855,16 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 	withdrawableBalance := s.store.GetWithdrawableBalance(accountID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"account_id":                       accountID,
-		"earnings":                         earnings,
-		"total_micro_usd":                  summary.TotalMicroUSD,
-		"total_usd":                        fmt.Sprintf("%.6f", float64(summary.TotalMicroUSD)/1_000_000),
-		"count":                            summary.Count,
-		"recent_count":                     len(earnings),
-		"history_limit":                    limit,
-		"available_balance_micro_usd":      availableBalance,
-		"available_balance_usd":            fmt.Sprintf("%.6f", float64(availableBalance)/1_000_000),
-		"withdrawable_balance_micro_usd":   withdrawableBalance,
-		"withdrawable_balance_usd":         fmt.Sprintf("%.6f", float64(withdrawableBalance)/1_000_000),
+		"account_id":                     accountID,
+		"earnings":                       earnings,
+		"total_micro_usd":                summary.TotalMicroUSD,
+		"total_usd":                      fmt.Sprintf("%.6f", float64(summary.TotalMicroUSD)/1_000_000),
+		"count":                          summary.Count,
+		"recent_count":                   len(earnings),
+		"history_limit":                  limit,
+		"available_balance_micro_usd":    availableBalance,
+		"available_balance_usd":          fmt.Sprintf("%.6f", float64(availableBalance)/1_000_000),
+		"withdrawable_balance_micro_usd": withdrawableBalance,
+		"withdrawable_balance_usd":       fmt.Sprintf("%.6f", float64(withdrawableBalance)/1_000_000),
 	})
 }

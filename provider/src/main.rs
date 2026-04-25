@@ -493,6 +493,67 @@ fn download_model_from_cdn(s3_name: &str, cache_dir: &std::path::Path, display_n
 /// vllm-mlx calls `tokenizer.apply_chat_template()` which requires this field.
 /// If missing (common with custom quantizations or stripped configs), inject the
 /// standard ChatML template used by Qwen/Llama-family models.
+/// Pre-populate ~/.darkbloom/templates/ with all known templates so the
+/// provider's reported template hashes match the coordinator manifest.
+/// Without this, models with inline chat_template (e.g. tokenizer_config.json)
+/// short-circuit ensure_chat_template and ~/.darkbloom/templates/ stays empty
+/// — causing every attestation challenge to fail with "template:NAME missing".
+fn ensure_templates_cached(template_hashes: &std::collections::HashMap<String, String>) {
+    let templates_dir = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".darkbloom/templates");
+    let _ = std::fs::create_dir_all(&templates_dir);
+
+    for name in ["qwen3.5", "trinity", "gemma4", "minimax"] {
+        let cached = templates_dir.join(format!("{name}.jinja"));
+
+        // Skip if already cached and hash matches (or no manifest hash).
+        if cached.exists() {
+            if let Some(expected) = template_hashes.get(name) {
+                if let Some(actual) = security::hash_file(&cached) {
+                    if &actual == expected {
+                        continue;
+                    }
+                    tracing::warn!("Cached template {name} hash mismatch — re-downloading");
+                    let _ = std::fs::remove_file(&cached);
+                }
+            } else {
+                continue;
+            }
+        }
+
+        let url = format!("{}/templates/{name}.jinja", DEFAULT_R2_CDN_URL);
+        if let Ok(output) = std::process::Command::new("curl")
+            .args([
+                "-fsSL",
+                "--connect-timeout",
+                "5",
+                &url,
+                "-o",
+                &cached.to_string_lossy(),
+            ])
+            .output()
+        {
+            if output.status.success() {
+                if let Some(expected) = template_hashes.get(name) {
+                    if let Some(actual) = security::hash_file(&cached) {
+                        if &actual != expected {
+                            tracing::error!(
+                                "Template {name} downloaded but hash mismatch (expected {expected}, got {actual}) — deleting"
+                            );
+                            let _ = std::fs::remove_file(&cached);
+                            continue;
+                        }
+                    }
+                }
+                tracing::info!("Cached template {name} from CDN");
+            } else {
+                tracing::warn!("Failed to download template {name} from CDN");
+            }
+        }
+    }
+}
+
 fn ensure_chat_template(
     model_path: &str,
     template_hashes: &std::collections::HashMap<String, String>,
@@ -2593,6 +2654,11 @@ async fn cmd_serve(
     let manifest_template_hashes = fetch_runtime_manifest(&coordinator_http_base)
         .map(|(_, _, th)| th)
         .unwrap_or_default();
+
+    // Pre-populate ~/.darkbloom/templates/ with all manifest templates so
+    // attestation challenges report matching hashes even when models have
+    // inline chat_template fields (which makes ensure_chat_template skip).
+    ensure_templates_cached(&manifest_template_hashes);
 
     #[cfg(feature = "python")]
     let inprocess_engines: Option<SharedInprocessEngineMap> = if using_inprocess {

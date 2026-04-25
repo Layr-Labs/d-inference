@@ -581,9 +581,11 @@ except Exception as _e:
                 locals.set_item("request_json", &request_json)?;
 
                 // Set up a Python queue.SimpleQueue for real-time streaming.
-                // A Python thread runs the async generator and pushes each
-                // chunk to the queue. Rust releases the GIL and polls the
-                // queue, sending each chunk to the coordinator immediately.
+                // The worker thread initializes its own MLX default stream
+                // before running inference. MLX 0.31.2+ uses thread-local
+                // CommandEncoder storage, so each thread needs its own stream.
+                // Calling mx.default_stream(mx.gpu) on a new thread lazily
+                // creates one, and mx.eval() uses that thread's stream.
                 let setup_code = CString::new(
                     r#"
 import builtins, json, uuid, time, queue, threading, asyncio, re, traceback as _tb
@@ -641,7 +643,11 @@ _created = int(time.time())
 _token_queue = queue.SimpleQueue()
 
 def _stream_worker(_q, _eng, _kwargs, _sp, _rid, _ts, _mn):
-    import asyncio as _aio, json as _json
+    import asyncio as _aio, json as _json, mlx.core as _mx
+    # Initialize MLX stream context for this thread. default_stream()
+    # lazily creates a per-thread stream, and set_default_stream()
+    # registers it in this thread's TLS so mx.eval() works.
+    _mx.set_default_stream(_mx.default_stream(_mx.default_device()))
     try:
         async def _run():
             _pt, _ct = 0, 0

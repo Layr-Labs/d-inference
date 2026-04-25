@@ -142,7 +142,6 @@ jobs:
       - name: Build all components (parallel)
         env:
           DARKBLOOM_COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
-          DARKBLOOM_R2_CDN_URL: ${{ vars.R2_CDN }}
         run: |
           set -e
 

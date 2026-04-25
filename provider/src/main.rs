@@ -2637,7 +2637,7 @@ async fn cmd_serve(
                     };
 
                     match get_or_load_inprocess_engine(engines, &slot.model_id, &model_path).await {
-                        Ok(_) => {
+                        Ok((_engine, _freshly_loaded)) => {
                             slot.healthy = true;
                             tracing::info!("In-process engine ready for {}", slot.model_id);
                         }
@@ -3249,7 +3249,7 @@ async fn cmd_serve(
                                                 &slot_model_id,
                                                 &slot_model_path,
                                             ).await {
-                                                Ok(engine) => {
+                                                Ok((engine, freshly_loaded)) => {
                                                     inprocess_engine = Some(engine);
                                                     set_backend_state(BACKEND_RUNNING);
                                                     {
@@ -3259,14 +3259,16 @@ async fn cmd_serve(
                                                             s.restarting = false;
                                                         }
                                                     }
-                                                    if let Some(ref hash_arc) = rehash_handle {
-                                                        if let Some(new_hash) =
-                                                            models::compute_weight_hash(&slot_model_id)
-                                                        {
-                                                            *hash_arc.lock().unwrap() = Some(new_hash);
-                                                            tracing::info!(
-                                                                "Model weight hash refreshed after in-process load"
-                                                            );
+                                                    if freshly_loaded {
+                                                        if let Some(ref hash_arc) = rehash_handle {
+                                                            if let Some(new_hash) =
+                                                                models::compute_weight_hash(&slot_model_id)
+                                                            {
+                                                                *hash_arc.lock().unwrap() = Some(new_hash);
+                                                                tracing::info!(
+                                                                    "Model weight hash refreshed after in-process load"
+                                                                );
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -3743,13 +3745,13 @@ async fn get_or_load_inprocess_engine(
     engines: &SharedInprocessEngineMap,
     model_id: &str,
     model_path: &str,
-) -> anyhow::Result<std::sync::Arc<inference::SharedEngine>> {
+) -> anyhow::Result<(std::sync::Arc<inference::SharedEngine>, bool)> {
     if let Some(engine) = {
         let guard = engines.lock().await;
         guard.get(model_id).cloned()
     } {
         if engine.is_loaded().await {
-            return Ok(engine);
+            return Ok((engine, false));
         }
     }
 
@@ -3763,7 +3765,7 @@ async fn get_or_load_inprocess_engine(
         .entry(model_id.to_string())
         .or_insert_with(|| engine.clone())
         .clone();
-    Ok(entry)
+    Ok((entry, true))
 }
 
 #[cfg(feature = "python")]

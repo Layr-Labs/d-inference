@@ -1036,4 +1036,59 @@ if hasattr(builtins, '_eigeninference_original_import'):
             }
         }
     }
+
+    /// Integration test: load two models, then stream from a different OS thread.
+    /// This reproduces the "There is no Stream(gpu, N)" error that occurs when
+    /// PyO3's Python::with_gil runs on a different tokio blocking thread than
+    /// the one that loaded the model. The test verifies that the SyncStreamIterator
+    /// approach works correctly across threads.
+    #[test]
+    fn test_multi_model_stream_cross_thread() {
+        // Load two models on the CURRENT thread
+        let mut engine1 = InProcessEngine::new("mlx-community/Qwen3.5-0.8B-MLX-4bit".into());
+        let mut engine2 = InProcessEngine::new("mlx-community/Qwen3.5-4B-MLX-8bit".into());
+
+        if engine1.load().is_err() || engine2.load().is_err() {
+            // Skip if models not available or vllm-mlx not installed
+            return;
+        }
+
+        let body = serde_json::json!({
+            "messages": [{"role": "user", "content": "Say hi in one word"}],
+            "max_tokens": 10,
+            "stream": true,
+        });
+
+        // Stream model 1 on the current thread (warm up)
+        let mut tokens1 = Vec::new();
+        let r1 = engine1.stream_generate(&body, |tok| {
+            tokens1.push(tok.text);
+            Ok(())
+        });
+        assert!(r1.is_ok(), "model 1 stream on same thread failed: {:?}", r1);
+        assert!(!tokens1.is_empty(), "model 1 produced no tokens");
+
+        // Now stream model 2 from a DIFFERENT OS thread (simulates tokio spawn_blocking)
+        let body_clone = body.clone();
+        let result = std::thread::spawn(move || {
+            let mut tokens = Vec::new();
+            let r = engine2.stream_generate(&body_clone, |tok| {
+                tokens.push(tok.text);
+                Ok(())
+            });
+            (r, tokens)
+        })
+        .join()
+        .expect("thread panicked");
+
+        assert!(
+            result.0.is_ok(),
+            "model 2 stream on different thread failed: {:?}",
+            result.0
+        );
+        assert!(
+            !result.1.is_empty(),
+            "model 2 produced no tokens on different thread"
+        );
+    }
 }

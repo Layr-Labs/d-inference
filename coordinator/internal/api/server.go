@@ -230,6 +230,11 @@ func (s *Server) SetAdminKey(key string) {
 	s.adminKey = key
 }
 
+// SetMinProviderVersion sets the minimum provider version for routing.
+func (s *Server) SetMinProviderVersion(v string) {
+	s.minProviderVersion = strings.TrimSpace(v)
+}
+
 // SetBaseURL sets the coordinator's public URL (used to template install.sh).
 // Pass the canonical origin with no trailing slash, e.g. "https://api.darkbloom.dev".
 // If unset, the install.sh handler derives a URL from the request's Host header.
@@ -454,19 +459,16 @@ func (s *Server) SyncBinaryHashes() {
 func (s *Server) SyncRuntimeManifest() {
 	releases := s.store.ListReleases()
 
-	// Set minimum provider version to the latest active release version.
-	// This forces older providers to update before they can serve traffic.
+	// Minimum provider version is set manually via EIGENINFERENCE_MIN_PROVIDER_VERSION
+	// env var. It is NOT auto-derived from the latest release — pushing a new release
+	// should not instantly knock all existing providers offline.
+
+	// Find the latest active release version for manifest hashes.
 	latestVersion := ""
 	for _, r := range releases {
 		if r.Active && semverGreater(r.Version, latestVersion) {
 			latestVersion = r.Version
 		}
-	}
-	if latestVersion != "" {
-		s.minProviderVersion = latestVersion
-		s.logger.Info("minimum provider version set from latest release", "min_version", latestVersion)
-	} else {
-		s.minProviderVersion = ""
 	}
 
 	manifest := &RuntimeManifest{

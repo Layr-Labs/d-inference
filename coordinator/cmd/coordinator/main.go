@@ -229,6 +229,10 @@ func main() {
 		srv.SetBaseURL(baseURL)
 		logger.Info("base URL configured", "url", baseURL)
 	}
+	if minVer := os.Getenv("EIGENINFERENCE_MIN_PROVIDER_VERSION"); minVer != "" {
+		srv.SetMinProviderVersion(minVer)
+		logger.Info("minimum provider version configured", "min_version", minVer)
+	}
 
 	// R2 CDN URLs — substituted into install.sh at serve time. Each env has its
 	// own R2 bucket (prod: d-inf-app; dev: d-inf-app-dev). Dev can set only the

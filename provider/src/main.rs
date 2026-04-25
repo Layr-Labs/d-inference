@@ -6115,8 +6115,23 @@ async fn auto_update_check(coordinator_base_url: &str) -> Result<bool> {
 /// correct args from the last `start`, so we just stop and re-kickstart.
 fn auto_update_restart() -> Result<()> {
     if !service::is_loaded() {
-        // Not running as a launchd service — caller should just exit.
-        return Ok(());
+        let exe = std::env::current_exe().context("cannot find executable")?;
+        let args: Vec<String> = std::env::args().collect();
+        tracing::info!("Re-executing updated binary: {}", exe.display());
+        use std::ffi::CString;
+        let c_exe =
+            CString::new(exe.to_string_lossy().as_bytes()).context("invalid executable path")?;
+        let c_args: Vec<CString> = args
+            .iter()
+            .map(|a| CString::new(a.as_bytes()).unwrap_or_default())
+            .collect();
+        let c_arg_ptrs: Vec<*const libc::c_char> = c_args
+            .iter()
+            .map(|a| a.as_ptr())
+            .chain(std::iter::once(std::ptr::null()))
+            .collect();
+        unsafe { libc::execv(c_exe.as_ptr(), c_arg_ptrs.as_ptr()) };
+        anyhow::bail!("execv failed: {}", std::io::Error::last_os_error());
     }
 
     service::stop()?;

@@ -53,8 +53,8 @@ func TestSyncRuntimeManifestUsesLatestReleaseOnly(t *testing.T) {
 
 	srv.SyncRuntimeManifest()
 
-	if srv.minProviderVersion != "0.3.9" {
-		t.Fatalf("minProviderVersion = %q, want %q", srv.minProviderVersion, "0.3.9")
+	if srv.minProviderVersion != "" {
+		t.Fatalf("minProviderVersion should not be auto-set, got %q", srv.minProviderVersion)
 	}
 	if srv.knownRuntimeManifest == nil {
 		t.Fatal("knownRuntimeManifest = nil")
@@ -116,8 +116,8 @@ func TestSyncRuntimeManifestClearsStaleHashesWhenLatestReleaseHasNoRuntimeMetada
 
 	srv.SyncRuntimeManifest()
 
-	if srv.minProviderVersion != "0.3.9" {
-		t.Fatalf("minProviderVersion = %q, want %q", srv.minProviderVersion, "0.3.9")
+	if srv.minProviderVersion != "" {
+		t.Fatalf("minProviderVersion should not be auto-set, got %q", srv.minProviderVersion)
 	}
 	if srv.knownRuntimeManifest != nil {
 		t.Fatal("knownRuntimeManifest should be cleared when latest release has no runtime metadata")

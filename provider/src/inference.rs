@@ -641,7 +641,8 @@ _created = int(time.time())
 
 class SyncStreamIterator:
     def __init__(self, async_gen, sp, rid, ts, mn):
-        self._loop = asyncio.new_event_loop()
+        import asyncio as _aio
+        self._loop = _aio.new_event_loop()
         self._ait = async_gen.__aiter__()
         self._sp = sp
         self._rid = rid
@@ -655,6 +656,7 @@ class SyncStreamIterator:
         return self
 
     def __next__(self):
+        import json as _json
         if self._done:
             raise StopIteration
         try:
@@ -672,13 +674,13 @@ class SyncStreamIterator:
             _content = self._sp.sub('', _delta)
             if _content:
                 _finish = _out.finish_reason if _out.finished else None
-                return json.dumps({
+                return _json.dumps({
                     'id': self._rid, 'object': 'chat.completion.chunk',
                     'created': self._ts, 'model': self._mn,
                     'choices': [{'index': 0, 'delta': {'content': _content}, 'finish_reason': _finish}],
                 })
         if _out.finished:
-            return json.dumps({
+            return _json.dumps({
                 'id': self._rid, 'object': 'chat.completion.chunk',
                 'created': self._ts, 'model': self._mn,
                 'choices': [{'index': 0, 'delta': {}, 'finish_reason': _out.finish_reason or 'stop'}],

@@ -135,6 +135,94 @@ func TestStripeOnboardCreatesAccountAndPersistsID(t *testing.T) {
 	}
 }
 
+func TestStripeOnboardPassesCountryToStripe(t *testing.T) {
+	var mu sync.Mutex
+	var accountCreateBody url.Values
+
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		parsed, _ := url.ParseQuery(string(body))
+
+		switch {
+		case r.URL.Path == "/v1/accounts" && r.Method == http.MethodPost:
+			mu.Lock()
+			accountCreateBody = parsed
+			mu.Unlock()
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"id":"acct_gb_test","type":"express","charges_enabled":false,"payouts_enabled":false,"details_submitted":false}`))
+		case strings.HasPrefix(r.URL.Path, "/v1/account_links"):
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"url":"https://connect.stripe.com/setup/e/gb_test"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer fakeStripe.Close()
+
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := seedUser(t, st, "acct-country-1", "alice@example.com")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard",
+		strings.NewReader(`{"country":"GB"}`))
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeOnboard(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body.String())
+	}
+	mu.Lock()
+	got := accountCreateBody.Get("country")
+	mu.Unlock()
+	if got != "GB" {
+		t.Errorf("country sent to Stripe = %q, want GB", got)
+	}
+}
+
+func TestStripeOnboardDefaultsToUSWhenNoCountry(t *testing.T) {
+	var mu sync.Mutex
+	var accountCreateBody url.Values
+
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		parsed, _ := url.ParseQuery(string(body))
+
+		switch {
+		case r.URL.Path == "/v1/accounts" && r.Method == http.MethodPost:
+			mu.Lock()
+			accountCreateBody = parsed
+			mu.Unlock()
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"id":"acct_us_test","type":"express","charges_enabled":false,"payouts_enabled":false,"details_submitted":false}`))
+		case strings.HasPrefix(r.URL.Path, "/v1/account_links"):
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"url":"https://connect.stripe.com/setup/e/us_test"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer fakeStripe.Close()
+
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := seedUser(t, st, "acct-country-2", "bob@example.com")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/onboard",
+		strings.NewReader(`{}`))
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeOnboard(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body.String())
+	}
+	mu.Lock()
+	got := accountCreateBody.Get("country")
+	mu.Unlock()
+	if got != "US" {
+		t.Errorf("country sent to Stripe = %q, want US (platform default)", got)
+	}
+}
+
 func TestStripeOnboardReusesExistingAccount(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	user := seedUser(t, st, "acct-reuse-1", "bob@example.com")

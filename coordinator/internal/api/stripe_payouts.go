@@ -67,6 +67,7 @@ func (s *Server) handleStripeOnboard(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ReturnURL  string `json:"return_url,omitempty"`
 		RefreshURL string `json:"refresh_url,omitempty"`
+		Country    string `json:"country,omitempty"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
@@ -111,7 +112,8 @@ func (s *Server) handleStripeOnboard(w http.ResponseWriter, r *http.Request) {
 	stripeAcctID := user.StripeAccountID
 	if stripeAcctID == "" {
 		acct, err := s.billing.StripeConnect().CreateExpressAccount(billing.CreateExpressAccountParams{
-			Email: user.Email,
+			Email:   user.Email,
+			Country: strings.TrimSpace(req.Country),
 		})
 		if err != nil {
 			s.logger.Error("stripe connect: create account failed", "error", err)
@@ -495,7 +497,7 @@ func (s *Server) handleStripeConnectWebhook(w http.ResponseWriter, r *http.Reque
 		s.handlePayoutTerminal(event, envelope.Account, true)
 	case "payout.failed", "payout.canceled":
 		s.handlePayoutTerminal(event, envelope.Account, false)
-	case "transfer.failed":
+	case "transfer.reversed":
 		s.handleTransferFailed(event)
 	default:
 		// Ignore everything else — we just ack.

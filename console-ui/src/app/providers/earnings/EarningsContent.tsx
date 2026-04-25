@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { trackEvent } from "@/lib/google-analytics";
 import { useToastStore } from "@/hooks/useToast";
@@ -27,7 +27,11 @@ import {
   Clock,
   Zap,
   X,
+  ChevronDown,
+  Globe,
+  Search,
 } from "lucide-react";
+import { STRIPE_CONNECT_COUNTRIES } from "@/lib/stripe-countries";
 
 interface Earning {
   id: number;
@@ -97,6 +101,10 @@ export default function EarningsContent() {
   const [withdrawAmount, setWithdrawAmount] = useState("10");
   const [withdrawMethod, setWithdrawMethod] = useState<"standard" | "instant">("standard");
   const [withdrawLoading, setWithdrawLoading] = useState(false);
+  const [selectedCountry, setSelectedCountry] = useState("");
+  const [countryDropdownOpen, setCountryDropdownOpen] = useState(false);
+  const [countryFilter, setCountryFilter] = useState("");
+  const countryDropdownRef = useRef<HTMLDivElement>(null);
 
   const getAuthHeaders = useCallback(async () => {
     const accessToken = await getAccessToken().catch(() => null);
@@ -169,13 +177,24 @@ export default function EarningsContent() {
     }
   }, [authenticated, loadStripe, addToast]);
 
+  useEffect(() => {
+    if (!countryDropdownOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (countryDropdownRef.current && !countryDropdownRef.current.contains(e.target as Node)) {
+        setCountryDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [countryDropdownOpen]);
+
   const handleStripeOnboard = async () => {
     setStripeOnboardLoading(true);
     try {
       const returnURL = typeof window !== "undefined"
         ? `${window.location.origin}${window.location.pathname}?stripe_return=1`
         : undefined;
-      const resp = await startStripeOnboarding(returnURL);
+      const resp = await startStripeOnboarding(returnURL, selectedCountry || undefined);
       window.location.href = resp.url;
     } catch (e) {
       addToast(`Stripe onboarding failed: ${(e as Error).message}`);
@@ -248,7 +267,6 @@ export default function EarningsContent() {
   }
 
   const totalEarned = data?.total_usd || "0.000000";
-  const withdrawableBalance = data?.withdrawable_balance_usd || data?.available_balance_usd || "0.000000";
   const withdrawableBalanceMicro = data?.withdrawable_balance_micro_usd ?? data?.available_balance_micro_usd ?? 0;
   const totalBalance = data?.available_balance_micro_usd || 0;
   const creditsBalance = totalBalance - withdrawableBalanceMicro;
@@ -345,14 +363,87 @@ export default function EarningsContent() {
               Link a bank account or debit card via Stripe to withdraw your earnings.
               Stripe handles identity verification — onboarding takes about 2 minutes.
             </p>
+
+            {/* Country picker */}
+            <label className="block text-xs font-mono text-text-tertiary uppercase tracking-wider mb-2">
+              Your country
+            </label>
+            <div className="relative mb-4" ref={countryDropdownRef}>
+              <button
+                type="button"
+                onClick={() => { setCountryDropdownOpen(!countryDropdownOpen); setCountryFilter(""); }}
+                className="w-full flex items-center justify-between gap-2 bg-bg-primary border border-border-dim rounded-lg px-4 py-3 text-sm text-left transition-colors hover:border-teal/40 focus:outline-none focus:border-teal"
+              >
+                {selectedCountry ? (
+                  <span className="flex items-center gap-2 text-text-primary">
+                    <span>{STRIPE_CONNECT_COUNTRIES.find(c => c.code === selectedCountry)?.flag}</span>
+                    <span>{STRIPE_CONNECT_COUNTRIES.find(c => c.code === selectedCountry)?.name}</span>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-2 text-text-tertiary">
+                    <Globe size={14} />
+                    <span>Select your country</span>
+                  </span>
+                )}
+                <ChevronDown size={14} className={`text-text-tertiary transition-transform ${countryDropdownOpen ? "rotate-180" : ""}`} />
+              </button>
+
+              {countryDropdownOpen && (
+                <div className="absolute z-50 mt-1 w-full bg-bg-white border border-border-dim rounded-xl shadow-lg overflow-hidden">
+                  <div className="p-2 border-b border-border-dim">
+                    <div className="relative">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
+                      <input
+                        type="text"
+                        value={countryFilter}
+                        onChange={(e) => setCountryFilter(e.target.value)}
+                        placeholder="Search countries..."
+                        autoFocus
+                        className="w-full bg-bg-primary border border-border-dim rounded-lg pl-9 pr-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary outline-none focus:border-teal"
+                      />
+                    </div>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto">
+                    {STRIPE_CONNECT_COUNTRIES
+                      .filter(c => {
+                        const q = countryFilter.toLowerCase();
+                        return !q || c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q);
+                      })
+                      .map(c => (
+                        <button
+                          key={c.code}
+                          type="button"
+                          onClick={() => { setSelectedCountry(c.code); setCountryDropdownOpen(false); }}
+                          className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm text-left transition-colors ${
+                            selectedCountry === c.code
+                              ? "bg-teal/10 text-teal"
+                              : "text-text-secondary hover:bg-bg-hover"
+                          }`}
+                        >
+                          <span className="text-base">{c.flag}</span>
+                          <span className="flex-1">{c.name}</span>
+                          <span className="text-xs font-mono text-text-tertiary">{c.code}</span>
+                        </button>
+                      ))
+                    }
+                  </div>
+                </div>
+              )}
+            </div>
+
             <button
               onClick={handleStripeOnboard}
-              disabled={stripeOnboardLoading}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 transition-all"
+              disabled={stripeOnboardLoading || !selectedCountry}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             >
               {stripeOnboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
               {stripeOnboardLoading ? "Redirecting..." : "Link bank via Stripe"}
             </button>
+            {!selectedCountry && (
+              <p className="text-xs text-text-tertiary mt-2">
+                Select your country to continue. This determines your payout currency and KYC requirements.
+              </p>
+            )}
           </>
         ) : ready ? (
           <>

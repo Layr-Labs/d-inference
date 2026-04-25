@@ -51,6 +51,9 @@ coordinator/.env
 *.p12
 enclave_key.data
 
+# Database dumps (contain prod data)
+*.dump
+
 # Compiled binaries (coordinator)
 coordinator/eigeninference-coordinator
 coordinator/eigeninference-coordinator-linux

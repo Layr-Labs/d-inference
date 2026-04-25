@@ -211,11 +211,11 @@ export interface StripeOnboardResponse {
   status: string;
 }
 
-export async function startStripeOnboarding(returnURL?: string): Promise<StripeOnboardResponse> {
+export async function startStripeOnboarding(returnURL?: string, country?: string): Promise<StripeOnboardResponse> {
   const res = await fetch("/api/payments/stripe/onboard", {
     method: "POST",
     headers: proxyHeaders(),
-    body: JSON.stringify({ return_url: returnURL }),
+    body: JSON.stringify({ return_url: returnURL, ...(country ? { country } : {}) }),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));

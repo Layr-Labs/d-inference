@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"sort"
 	"time"
 
 	"github.com/eigeninference/coordinator/internal/registry"
@@ -79,23 +78,13 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		providers = []map[string]any{}
 	}
 
-	// Read historical stats from the persistent store (Postgres).
-	// The registry only has stats since last restart; the store has everything.
-	var storeRequests int64
-	var storePromptTokens int64
-	var storeCompletionTokens int64
-	for _, rec := range s.store.UsageRecords() {
-		storeRequests++
-		storePromptTokens += int64(rec.PromptTokens)
-		storeCompletionTokens += int64(rec.CompletionTokens)
+	// Read historical totals via SQL aggregation (no per-row wire transfer).
+	totals := s.store.UsageTotals()
+	if totals.Requests > totalRequests {
+		totalRequests = totals.Requests
 	}
-
-	// Use the larger of store vs registry (store has history, registry has current session)
-	if storeRequests > totalRequests {
-		totalRequests = storeRequests
-	}
-	totalPromptTokens := storePromptTokens
-	totalCompletionTokens := storeCompletionTokens
+	totalPromptTokens := totals.PromptTokens
+	totalCompletionTokens := totals.CompletionTokens
 	if totalTokensGen > totalCompletionTokens {
 		totalCompletionTokens = totalTokensGen
 	}
@@ -106,44 +95,15 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		avgTokens = float64(totalTokens) / float64(totalRequests)
 	}
 
-	// Build time series from usage records (last 30 minutes, 1-minute buckets).
+	// Build time series via SQL bucket aggregation (last 30 minutes).
 	now := time.Now()
 	cutoff := now.Add(-30 * time.Minute)
+	buckets := s.store.UsageTimeSeries(cutoff)
 
-	type tsBucket struct {
-		Requests         int64
-		PromptTokens     int64
-		CompletionTokens int64
-	}
-	buckets := make(map[int64]*tsBucket)
-
-	for _, rec := range s.store.UsageRecords() {
-		if rec.Timestamp.Before(cutoff) {
-			continue
-		}
-		minuteKey := rec.Timestamp.Truncate(time.Minute).Unix()
-		b, ok := buckets[minuteKey]
-		if !ok {
-			b = &tsBucket{}
-			buckets[minuteKey] = b
-		}
-		b.Requests++
-		b.PromptTokens += int64(rec.PromptTokens)
-		b.CompletionTokens += int64(rec.CompletionTokens)
-	}
-
-	// Sort bucket keys and build the output slice.
-	keys := make([]int64, 0, len(buckets))
-	for k := range buckets {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-
-	timeSeries := make([]map[string]any, 0, len(keys))
-	for _, k := range keys {
-		b := buckets[k]
+	timeSeries := make([]map[string]any, 0, len(buckets))
+	for _, b := range buckets {
 		timeSeries = append(timeSeries, map[string]any{
-			"timestamp":         time.Unix(k, 0).UTC().Format(time.RFC3339),
+			"timestamp":         b.Minute.UTC().Format(time.RFC3339),
 			"requests":          b.Requests,
 			"prompt_tokens":     b.PromptTokens,
 			"completion_tokens": b.CompletionTokens,

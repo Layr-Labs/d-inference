@@ -661,6 +661,54 @@ func (s *PostgresStore) RecordPayment(txHash, consumerAddr, providerAddr, amount
 	return nil
 }
 
+// UsageTotals returns aggregated lifetime totals from the usage table.
+// Uses SQL aggregation to avoid shipping every row over the wire.
+func (s *PostgresStore) UsageTotals() UsageTotals {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var t UsageTotals
+	_ = s.pool.QueryRow(ctx,
+		`SELECT COUNT(*),
+		        COALESCE(SUM(prompt_tokens), 0),
+		        COALESCE(SUM(completion_tokens), 0)
+		 FROM usage`,
+	).Scan(&t.Requests, &t.PromptTokens, &t.CompletionTokens)
+	return t
+}
+
+// UsageTimeSeries returns per-minute usage buckets at or after `since`.
+func (s *PostgresStore) UsageTimeSeries(since time.Time) []UsageBucket {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT date_trunc('minute', created_at) AS minute,
+		        COUNT(*),
+		        COALESCE(SUM(prompt_tokens), 0),
+		        COALESCE(SUM(completion_tokens), 0)
+		 FROM usage
+		 WHERE created_at >= $1
+		 GROUP BY minute
+		 ORDER BY minute ASC`,
+		since,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var buckets []UsageBucket
+	for rows.Next() {
+		var b UsageBucket
+		if err := rows.Scan(&b.Minute, &b.Requests, &b.PromptTokens, &b.CompletionTokens); err != nil {
+			continue
+		}
+		buckets = append(buckets, b)
+	}
+	return buckets
+}
+
 // UsageRecords returns all usage records from the database, ordered by creation time.
 func (s *PostgresStore) UsageRecords() []UsageRecord {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -921,9 +969,12 @@ func (s *PostgresStore) LedgerHistory(accountID string) []LedgerEntry {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Cap at 500 most-recent entries. Older history isn't shown on any
+	// dashboard and was responsible for sending tens of thousands of rows
+	// per request to high-volume accounts.
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, account_id, entry_type, amount_micro_usd, balance_after, reference, created_at
-		 FROM ledger_entries WHERE account_id = $1 ORDER BY created_at DESC`,
+		 FROM ledger_entries WHERE account_id = $1 ORDER BY created_at DESC LIMIT 500`,
 		accountID,
 	)
 	if err != nil {

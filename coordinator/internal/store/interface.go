@@ -48,6 +48,14 @@ type Store interface {
 	// UsageRecords returns all usage records.
 	UsageRecords() []UsageRecord
 
+	// UsageTotals returns aggregated lifetime totals across all usage records
+	// without transferring per-row data over the wire.
+	UsageTotals() UsageTotals
+
+	// UsageTimeSeries returns per-minute aggregates for the given time window.
+	// Buckets the rows by created_at truncated to the minute.
+	UsageTimeSeries(since time.Time) []UsageBucket
+
 	// UsageByConsumer returns usage records for a specific consumer key.
 	UsageByConsumer(consumerKey string) []UsageRecord
 
@@ -368,6 +376,21 @@ type UsageRecord struct {
 	RequestID        string    `json:"request_id,omitempty"`
 	CostMicroUSD     int64     `json:"cost_micro_usd,omitempty"`
 	CreatedAt        time.Time `json:"created_at,omitempty"`
+}
+
+// UsageTotals aggregates the entire usage table.
+type UsageTotals struct {
+	Requests         int64 `json:"requests"`
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+}
+
+// UsageBucket is a per-minute aggregation of usage rows.
+type UsageBucket struct {
+	Minute           time.Time `json:"minute"`
+	Requests         int64     `json:"requests"`
+	PromptTokens     int64     `json:"prompt_tokens"`
+	CompletionTokens int64     `json:"completion_tokens"`
 }
 
 // LedgerEntryType categorizes balance changes.

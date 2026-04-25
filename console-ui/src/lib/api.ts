@@ -333,6 +333,7 @@ export async function streamChat(
     fetchBody = JSON.stringify(requestBody);
   }
 
+  const requestStart = performance.now();
   const res = await fetch("/api/chat", {
     method: "POST",
     headers: fetchHeaders,
@@ -416,8 +417,7 @@ export async function streamChat(
   const decoder = new TextDecoder();
   let buffer = "";
 
-  // Metrics tracking
-  const requestStart = performance.now();
+  // Metrics tracking (requestStart set before fetch above)
   let firstTokenTime = 0;
   let lastTokenTime = 0;
   let tokenCount = 0;

@@ -59,6 +59,10 @@ type PendingRequest struct {
 	ProviderID  string
 	Model       string
 	ConsumerKey string
+	// IsResponsesAPI tracks requests received through /v1/responses so the
+	// coordinator can translate provider chat-completions output back into
+	// Responses API objects for SDK clients.
+	IsResponsesAPI bool
 	// AllowedProviderSerials optionally restricts routing to providers with
 	// one of these attested hardware serials. Empty means the request may
 	// route to any eligible provider.

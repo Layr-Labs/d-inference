@@ -930,6 +930,148 @@ func TestNormalizeCompleteChatResponseNullContent(t *testing.T) {
 	}
 }
 
+func TestResponsesRequestToChatCompletions(t *testing.T) {
+	req := map[string]any{
+		"model":             "mlx-community/gemma-4-26b-a4b-it-8bit",
+		"max_output_tokens": float64(64),
+		"input": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": "Reply exactly OK"},
+				},
+			},
+		},
+		"tools": []any{
+			map[string]any{
+				"type":        "function",
+				"name":        "get_current_weather",
+				"description": "Get weather",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"city": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+		"tool_choice": map[string]any{"type": "function", "name": "get_current_weather"},
+	}
+
+	got, err := responsesRequestToChatCompletions(req)
+	if err != nil {
+		t.Fatalf("responsesRequestToChatCompletions: %v", err)
+	}
+	if _, ok := got["input"]; ok {
+		t.Fatalf("input should not be forwarded to chat backend: %#v", got)
+	}
+	if got["max_tokens"] != 64 {
+		t.Fatalf("max_tokens = %v, want 64", got["max_tokens"])
+	}
+	messages := got["messages"].([]map[string]any)
+	if messages[0]["role"] != "user" || messages[0]["content"] != "Reply exactly OK" {
+		t.Fatalf("messages = %#v", messages)
+	}
+	tools := got["tools"].([]any)
+	firstTool := tools[0].(map[string]any)
+	fn := firstTool["function"].(map[string]any)
+	if firstTool["type"] != "function" || fn["name"] != "get_current_weather" {
+		t.Fatalf("tools = %#v", tools)
+	}
+	choiceFn := got["tool_choice"].(map[string]any)["function"].(map[string]any)
+	if choiceFn["name"] != "get_current_weather" {
+		t.Fatalf("tool_choice = %#v", got["tool_choice"])
+	}
+}
+
+func TestResponsesInputToolTranscriptToChatMessages(t *testing.T) {
+	input := []any{
+		map[string]any{
+			"role":    "user",
+			"content": []any{map[string]any{"type": "input_text", "text": "weather?"}},
+		},
+		map[string]any{
+			"type":      "function_call",
+			"call_id":   "call_123",
+			"name":      "get_current_weather",
+			"arguments": `{"city":"Paris"}`,
+		},
+		map[string]any{
+			"type":    "function_call_output",
+			"call_id": "call_123",
+			"output":  `{"temperature":21}`,
+		},
+	}
+
+	messages, err := responsesInputToChatMessages(input)
+	if err != nil {
+		t.Fatalf("responsesInputToChatMessages: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("len(messages) = %d, want 3: %#v", len(messages), messages)
+	}
+	if messages[1]["role"] != "assistant" {
+		t.Fatalf("second message = %#v", messages[1])
+	}
+	toolCalls := messages[1]["tool_calls"].([]map[string]any)
+	if toolCalls[0]["id"] != "call_123" {
+		t.Fatalf("tool_calls = %#v", toolCalls)
+	}
+	if messages[2]["role"] != "tool" || messages[2]["tool_call_id"] != "call_123" {
+		t.Fatalf("third message = %#v", messages[2])
+	}
+}
+
+func TestChatCompletionToResponses(t *testing.T) {
+	chat := map[string]any{
+		"id":      "chatcmpl-test",
+		"object":  "chat.completion",
+		"created": float64(123),
+		"model":   "local-path",
+		"choices": []any{
+			map[string]any{
+				"finish_reason": "tool_calls",
+				"message": map[string]any{
+					"role":      "assistant",
+					"content":   "",
+					"reasoning": "need weather",
+					"tool_calls": []any{
+						map[string]any{
+							"id":   "call_123",
+							"type": "function",
+							"function": map[string]any{
+								"name":      "get_current_weather",
+								"arguments": `{"city":"Paris"}`,
+							},
+						},
+					},
+				},
+			},
+		},
+		"usage": map[string]any{
+			"prompt_tokens":     float64(10),
+			"completion_tokens": float64(5),
+		},
+	}
+
+	got := chatCompletionToResponses(chat, "mlx-community/gemma-4-26b-a4b-it-8bit", "", "")
+	if got["object"] != "response" || got["model"] != "mlx-community/gemma-4-26b-a4b-it-8bit" {
+		t.Fatalf("response metadata = %#v", got)
+	}
+	output := got["output"].([]any)
+	if output[0].(map[string]any)["type"] != "reasoning" {
+		t.Fatalf("first output = %#v", output[0])
+	}
+	call := output[1].(map[string]any)
+	if call["type"] != "function_call" || call["call_id"] != "call_123" {
+		t.Fatalf("function call output = %#v", call)
+	}
+	usage := got["usage"].(map[string]any)
+	if usage["input_tokens"] != uint64(10) || usage["output_tokens"] != uint64(5) {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
 func TestExtractMessageWithNullFields(t *testing.T) {
 	// Simulates real vllm-mlx chunks where the first chunk has null content
 	// and subsequent chunks have actual content.

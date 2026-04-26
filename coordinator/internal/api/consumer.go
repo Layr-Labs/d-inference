@@ -274,6 +274,243 @@ func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool) bool {
 	return true
 }
 
+func copyJSONMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func responsesContentText(content any) string {
+	switch c := content.(type) {
+	case nil:
+		return ""
+	case string:
+		return c
+	case []any:
+		parts := make([]string, 0, len(c))
+		for _, part := range c {
+			switch p := part.(type) {
+			case string:
+				if p != "" {
+					parts = append(parts, p)
+				}
+			case map[string]any:
+				if text, _ := p["text"].(string); text != "" {
+					parts = append(parts, text)
+					continue
+				}
+				if p["type"] == "input_image" || p["type"] == "input_file" {
+					// Text models cannot consume binary Responses parts yet.
+					// Preserve the turn shape without leaking URLs or blobs.
+					parts = append(parts, fmt.Sprintf("[%s omitted]", p["type"]))
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		b, err := json.Marshal(c)
+		if err != nil {
+			return fmt.Sprint(c)
+		}
+		return string(b)
+	}
+}
+
+func responsesInputToChatMessages(input any) ([]map[string]any, error) {
+	switch v := input.(type) {
+	case string:
+		return []map[string]any{{"role": "user", "content": v}}, nil
+	case []any:
+		messages := make([]map[string]any, 0, len(v))
+		for _, raw := range v {
+			item, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if typ, _ := item["type"].(string); typ != "" {
+				switch typ {
+				case "message":
+					role, _ := item["role"].(string)
+					if role == "" {
+						role = "user"
+					}
+					if role == "developer" {
+						role = "system"
+					}
+					messages = append(messages, map[string]any{
+						"role":    role,
+						"content": responsesContentText(item["content"]),
+					})
+				case "function_call":
+					callID, _ := item["call_id"].(string)
+					if callID == "" {
+						callID, _ = item["id"].(string)
+					}
+					name, _ := item["name"].(string)
+					args, _ := item["arguments"].(string)
+					messages = append(messages, map[string]any{
+						"role":    "assistant",
+						"content": "",
+						"tool_calls": []map[string]any{{
+							"id":   callID,
+							"type": "function",
+							"function": map[string]any{
+								"name":      name,
+								"arguments": args,
+							},
+						}},
+					})
+				case "function_call_output":
+					callID, _ := item["call_id"].(string)
+					messages = append(messages, map[string]any{
+						"role":         "tool",
+						"tool_call_id": callID,
+						"content":      responsesContentText(item["output"]),
+					})
+				case "reasoning":
+					// Reasoning items are model-side metadata, not prompt text.
+					continue
+				default:
+					return nil, fmt.Errorf("unsupported Responses input item type %q", typ)
+				}
+				continue
+			}
+
+			role, _ := item["role"].(string)
+			if role == "" {
+				continue
+			}
+			if role == "developer" {
+				role = "system"
+			}
+			messages = append(messages, map[string]any{
+				"role":    role,
+				"content": responsesContentText(item["content"]),
+			})
+		}
+		if len(messages) == 0 {
+			return nil, fmt.Errorf("Responses input did not contain any chat-compatible messages")
+		}
+		return messages, nil
+	default:
+		return nil, fmt.Errorf("Responses input must be a string or array")
+	}
+}
+
+func responsesToolsToChatTools(raw any) ([]any, error) {
+	tools, ok := raw.([]any)
+	if !ok || len(tools) == 0 {
+		return nil, nil
+	}
+	out := make([]any, 0, len(tools))
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _ := tool["type"].(string)
+		if typ == "" || typ == "function" {
+			name, _ := tool["name"].(string)
+			if name == "" {
+				if fn, _ := tool["function"].(map[string]any); fn != nil {
+					out = append(out, tool)
+					continue
+				}
+				return nil, fmt.Errorf("function tool is missing name")
+			}
+			fn := map[string]any{"name": name}
+			if description, ok := tool["description"].(string); ok {
+				fn["description"] = description
+			}
+			if parameters, ok := tool["parameters"]; ok {
+				fn["parameters"] = parameters
+			}
+			out = append(out, map[string]any{
+				"type":     "function",
+				"function": fn,
+			})
+			continue
+		}
+		return nil, fmt.Errorf("unsupported Responses tool type %q", typ)
+	}
+	return out, nil
+}
+
+func responsesToolChoiceToChat(raw any) (any, error) {
+	choice, ok := raw.(map[string]any)
+	if !ok {
+		return raw, nil
+	}
+	typ, _ := choice["type"].(string)
+	if typ == "function" {
+		name, _ := choice["name"].(string)
+		if name == "" {
+			return nil, fmt.Errorf("function tool_choice is missing name")
+		}
+		return map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": name,
+			},
+		}, nil
+	}
+	return raw, nil
+}
+
+func responsesTextFormatToChatResponseFormat(raw any) any {
+	text, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	format, ok := text["format"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	switch format["type"] {
+	case "json_object":
+		return map[string]any{"type": "json_object"}
+	case "json_schema":
+		return map[string]any{
+			"type":        "json_schema",
+			"json_schema": format,
+		}
+	}
+	return nil
+}
+
+func responsesRequestToChatCompletions(parsed map[string]any) (map[string]any, error) {
+	messages, err := responsesInputToChatMessages(parsed["input"])
+	if err != nil {
+		return nil, err
+	}
+
+	out := copyJSONMap(parsed)
+	delete(out, "input")
+	delete(out, "endpoint")
+	delete(out, "max_output_tokens")
+	delete(out, "text")
+	out["messages"] = messages
+	if maxTokens := explicitMaxTokens(parsed); maxTokens > 0 {
+		out["max_tokens"] = maxTokens
+	}
+	if tools, err := responsesToolsToChatTools(parsed["tools"]); err != nil {
+		return nil, err
+	} else if len(tools) > 0 {
+		out["tools"] = tools
+	}
+	if choice, err := responsesToolChoiceToChat(parsed["tool_choice"]); err != nil {
+		return nil, err
+	} else if choice != nil {
+		out["tool_choice"] = choice
+	}
+	if responseFormat := responsesTextFormatToChatResponseFormat(parsed["text"]); responseFormat != nil {
+		out["response_format"] = responseFormat
+	}
+	return out, nil
+}
+
 // handleChatCompletions handles POST /v1/chat/completions.
 //
 // This is the main inference endpoint. It validates the request, finds an
@@ -323,12 +560,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isResponsesAPI := input != nil && len(messages) == 0
-	// If this is a Responses API request, tag it so the provider proxies
-	// to /v1/responses instead of /v1/chat/completions.
-	if isResponsesAPI {
-		parsed["endpoint"] = "/v1/responses"
-		rawBody, _ = json.Marshal(parsed)
-	}
 
 	// Bound the generation so the pre-flight reservation covers it. If the
 	// consumer didn't set max_tokens, inject defaultMaxOutputTokens into the
@@ -342,6 +573,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
+
+	if isResponsesAPI {
+		providerParsed, err := responsesRequestToChatCompletions(parsed)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+			return
+		}
+		rawBody, _ = json.Marshal(providerParsed)
+	}
 
 	// Pre-flight balance reservation — atomically debit the worst-case cost
 	// (prompt tokens already consumed + max_tokens we just bounded the
@@ -408,6 +648,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			RequestID:              requestID,
 			Model:                  model,
 			ConsumerKey:            consumerKey,
+			IsResponsesAPI:         isResponsesAPI,
 			EstimatedPromptTokens:  estimatedPromptTokens,
 			RequestedMaxTokens:     requestedMaxTokens,
 			AllowedProviderSerials: allowedProviderSerials,
@@ -855,6 +1096,11 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 // from the channel. This allows the dispatch loop to "peek" at the first
 // chunk for retry decisions without losing it.
 func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) {
+	if pr.IsResponsesAPI {
+		s.handleResponsesStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
+		return
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "streaming not supported"))
@@ -959,6 +1205,237 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	}
 }
 
+func writeResponsesSSE(w http.ResponseWriter, flusher http.Flusher, event map[string]any) {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(w, "data: %s\n\n", data)
+	flusher.Flush()
+}
+
+func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "streaming not supported"))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Inference-Job-ID", pr.RequestID)
+	w.WriteHeader(http.StatusOK)
+
+	responseID := "resp_" + strings.ReplaceAll(pr.RequestID, "-", "")
+	createdAt := time.Now().Unix()
+	writeResponsesSSE(w, flusher, map[string]any{
+		"type": "response.created",
+		"response": map[string]any{
+			"id":           responseID,
+			"created_at":   createdAt,
+			"model":        pr.Model,
+			"service_tier": nil,
+		},
+	})
+
+	chunks := make([]string, 0, 16)
+	if firstChunk != "" {
+		chunks = append(chunks, firstChunk)
+	}
+
+	timer := time.NewTimer(inferenceTimeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case chunk, ok := <-pr.ChunkCh:
+			if !ok {
+				var usage protocol.UsageInfo
+				select {
+				case u, ok := <-pr.CompleteCh:
+					if ok {
+						usage = u
+					}
+				default:
+				}
+				msg := extractMessage(chunks)
+				writeResponsesStreamOutput(w, flusher, pr, responseID, createdAt, msg, usage)
+				return
+			}
+			chunks = append(chunks, chunk)
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(inferenceTimeout)
+
+		case errMsg := <-pr.ErrorCh:
+			writeResponsesSSE(w, flusher, map[string]any{
+				"type":            "error",
+				"sequence_number": 0,
+				"error": map[string]any{
+					"type":    "provider_error",
+					"code":    "provider_error",
+					"message": errMsg.Error,
+					"param":   nil,
+				},
+			})
+			return
+
+		case <-timer.C:
+			writeResponsesSSE(w, flusher, map[string]any{
+				"type":            "error",
+				"sequence_number": 0,
+				"error": map[string]any{
+					"type":    "timeout",
+					"code":    "timeout",
+					"message": "request timed out",
+					"param":   nil,
+				},
+			})
+			return
+
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+func writeResponsesStreamOutput(w http.ResponseWriter, flusher http.Flusher, pr *registry.PendingRequest, responseID string, createdAt int64, msg extractedMessage, usage protocol.UsageInfo) {
+	outputIndex := 0
+	if msg.Reasoning != "" {
+		itemID := responseItemID("rs", pr.RequestID, outputIndex)
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": outputIndex,
+			"item": map[string]any{
+				"type":              "reasoning",
+				"id":                itemID,
+				"encrypted_content": nil,
+			},
+		})
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":          "response.reasoning_summary_part.added",
+			"item_id":       itemID,
+			"summary_index": 0,
+		})
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":          "response.reasoning_summary_text.delta",
+			"item_id":       itemID,
+			"summary_index": 0,
+			"delta":         msg.Reasoning,
+		})
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":          "response.reasoning_summary_part.done",
+			"item_id":       itemID,
+			"summary_index": 0,
+		})
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":         "response.output_item.done",
+			"output_index": outputIndex,
+			"item": map[string]any{
+				"type":              "reasoning",
+				"id":                itemID,
+				"encrypted_content": nil,
+			},
+		})
+		outputIndex++
+	}
+
+	if msg.Content != "" || len(msg.ToolCalls) == 0 {
+		itemID := responseItemID("msg", pr.RequestID, outputIndex)
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": outputIndex,
+			"item": map[string]any{
+				"type":  "message",
+				"id":    itemID,
+				"phase": nil,
+			},
+		})
+		if msg.Content != "" {
+			writeResponsesSSE(w, flusher, map[string]any{
+				"type":         "response.output_text.delta",
+				"item_id":      itemID,
+				"output_index": outputIndex,
+				"delta":        msg.Content,
+			})
+		}
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":         "response.output_item.done",
+			"output_index": outputIndex,
+			"item": map[string]any{
+				"type":  "message",
+				"id":    itemID,
+				"phase": nil,
+			},
+		})
+		outputIndex++
+	}
+
+	for _, tc := range msg.ToolCalls {
+		fn, _ := tc["function"].(map[string]any)
+		callID, _ := tc["id"].(string)
+		if callID == "" {
+			callID = responseItemID("call", pr.RequestID, outputIndex)
+		}
+		name, _ := fn["name"].(string)
+		args, _ := fn["arguments"].(string)
+		itemID := responseItemID("fc", pr.RequestID, outputIndex)
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": outputIndex,
+			"item": map[string]any{
+				"type":      "function_call",
+				"id":        itemID,
+				"call_id":   callID,
+				"name":      name,
+				"arguments": "",
+			},
+		})
+		if args != "" {
+			writeResponsesSSE(w, flusher, map[string]any{
+				"type":         "response.function_call_arguments.delta",
+				"item_id":      itemID,
+				"output_index": outputIndex,
+				"delta":        args,
+			})
+		}
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":         "response.output_item.done",
+			"output_index": outputIndex,
+			"item": map[string]any{
+				"type":      "function_call",
+				"id":        itemID,
+				"call_id":   callID,
+				"name":      name,
+				"arguments": args,
+				"status":    "completed",
+			},
+		})
+		outputIndex++
+	}
+
+	reasoningTokens := uint64(0)
+	if msg.Reasoning != "" {
+		reasoningTokens = uint64(usage.CompletionTokens)
+	}
+	writeResponsesSSE(w, flusher, map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"id":                 responseID,
+			"created_at":         createdAt,
+			"model":              pr.Model,
+			"incomplete_details": nil,
+			"usage":              responsesUsage(uint64(usage.PromptTokens), uint64(usage.CompletionTokens), reasoningTokens),
+			"service_tier":       nil,
+		},
+	})
+}
+
 // handleNonStreamingResponse is kept for callers that don't have a first chunk.
 func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest) {
 	s.handleNonStreamingResponseWithFirstChunk(w, r, pr, "")
@@ -999,6 +1476,11 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 							}
 							if objType == "chat.completion" {
 								normalizeCompleteChatResponse(obj, pr.Model)
+								if pr.IsResponsesAPI {
+									obj = chatCompletionToResponses(obj, pr.Model, pr.SESignature, pr.ResponseHash)
+									writeJSON(w, http.StatusOK, obj)
+									return
+								}
 							}
 							if pr.SESignature != "" {
 								obj["se_signature"] = pr.SESignature
@@ -1014,7 +1496,12 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				msg := extractMessage(chunks)
 				select {
 				case usage := <-pr.CompleteCh:
-					resp := buildNonStreamingResponse(pr.RequestID, pr.Model, msg, usage, pr.SESignature, pr.ResponseHash)
+					var resp map[string]any
+					if pr.IsResponsesAPI {
+						resp = buildResponsesResponse(pr.RequestID, pr.Model, msg, usage, pr.SESignature, pr.ResponseHash)
+					} else {
+						resp = buildNonStreamingResponse(pr.RequestID, pr.Model, msg, usage, pr.SESignature, pr.ResponseHash)
+					}
 					writeJSON(w, http.StatusOK, resp)
 				case <-ctx.Done():
 					writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
@@ -1346,6 +1833,174 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 	}
 	return msg
+}
+
+func responsesUsage(promptTokens, completionTokens uint64, reasoningTokens uint64) map[string]any {
+	return map[string]any{
+		"input_tokens": promptTokens,
+		"input_tokens_details": map[string]any{
+			"cached_tokens": 0,
+		},
+		"output_tokens": completionTokens,
+		"output_tokens_details": map[string]any{
+			"reasoning_tokens": reasoningTokens,
+		},
+	}
+}
+
+func responsesIncompleteDetails(finishReason string) any {
+	switch finishReason {
+	case "length":
+		return map[string]any{"reason": "max_output_tokens"}
+	case "content_filter":
+		return map[string]any{"reason": "content_filter"}
+	default:
+		return nil
+	}
+}
+
+func responseItemID(prefix, requestID string, index int) string {
+	return fmt.Sprintf("%s_%s_%d", prefix, strings.ReplaceAll(requestID, "-", ""), index)
+}
+
+func appendResponsesOutputItems(output []any, requestID string, msg extractedMessage) []any {
+	index := len(output)
+	if msg.Reasoning != "" {
+		output = append(output, map[string]any{
+			"type": "reasoning",
+			"id":   responseItemID("rs", requestID, index),
+			"summary": []map[string]any{{
+				"type": "summary_text",
+				"text": msg.Reasoning,
+			}},
+		})
+		index++
+	}
+	if msg.Content != "" || len(msg.ToolCalls) == 0 {
+		output = append(output, map[string]any{
+			"type": "message",
+			"role": "assistant",
+			"id":   responseItemID("msg", requestID, index),
+			"content": []map[string]any{{
+				"type":        "output_text",
+				"text":        msg.Content,
+				"annotations": []any{},
+			}},
+		})
+		index++
+	}
+	for _, tc := range msg.ToolCalls {
+		fn, _ := tc["function"].(map[string]any)
+		callID, _ := tc["id"].(string)
+		if callID == "" {
+			callID = responseItemID("call", requestID, index)
+		}
+		name, _ := fn["name"].(string)
+		args, _ := fn["arguments"].(string)
+		output = append(output, map[string]any{
+			"type":      "function_call",
+			"id":        responseItemID("fc", requestID, index),
+			"call_id":   callID,
+			"name":      name,
+			"arguments": args,
+		})
+		index++
+	}
+	return output
+}
+
+func buildResponsesResponse(requestID, model string, msg extractedMessage, usage protocol.UsageInfo, seSignature, responseHash string) map[string]any {
+	reasoningTokens := uint64(0)
+	if msg.Reasoning != "" {
+		reasoningTokens = uint64(usage.CompletionTokens)
+	}
+	resp := map[string]any{
+		"id":         "resp_" + strings.ReplaceAll(requestID, "-", ""),
+		"object":     "response",
+		"created_at": time.Now().Unix(),
+		"model":      model,
+		"output":     appendResponsesOutputItems(nil, requestID, msg),
+		"usage":      responsesUsage(uint64(usage.PromptTokens), uint64(usage.CompletionTokens), reasoningTokens),
+	}
+	if seSignature != "" {
+		resp["se_signature"] = seSignature
+		resp["response_hash"] = responseHash
+	}
+	return resp
+}
+
+func firstChoice(obj map[string]any) map[string]any {
+	choices, _ := obj["choices"].([]any)
+	if len(choices) == 0 {
+		return nil
+	}
+	choice, _ := choices[0].(map[string]any)
+	return choice
+}
+
+func stringFromMap(m map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if s, _ := m[key].(string); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func chatUsageToResponsesUsage(obj map[string]any, reasoning string) map[string]any {
+	usage, _ := obj["usage"].(map[string]any)
+	promptTokens, _ := intFromRequestValue(usage["prompt_tokens"])
+	completionTokens, _ := intFromRequestValue(usage["completion_tokens"])
+	reasoningTokens := 0
+	if reasoning != "" {
+		reasoningTokens = completionTokens
+	}
+	return responsesUsage(uint64(promptTokens), uint64(completionTokens), uint64(reasoningTokens))
+}
+
+func chatCompletionToResponses(obj map[string]any, requestedModel, seSignature, responseHash string) map[string]any {
+	requestID, _ := obj["id"].(string)
+	requestID = strings.TrimPrefix(requestID, "chatcmpl-")
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
+	created, ok := intFromRequestValue(obj["created"])
+	if !ok || created <= 0 {
+		created = int(time.Now().Unix())
+	}
+
+	msg := extractedMessage{}
+	finishReason := ""
+	if choice := firstChoice(obj); choice != nil {
+		finishReason, _ = choice["finish_reason"].(string)
+		if message, _ := choice["message"].(map[string]any); message != nil {
+			msg.Content = stringFromMap(message, "content")
+			msg.Reasoning = stringFromMap(message, "reasoning", "reasoning_content")
+			if rawToolCalls, _ := message["tool_calls"].([]any); len(rawToolCalls) > 0 {
+				msg.ToolCalls = make([]map[string]any, 0, len(rawToolCalls))
+				for _, rawTC := range rawToolCalls {
+					if tc, _ := rawTC.(map[string]any); tc != nil {
+						msg.ToolCalls = append(msg.ToolCalls, tc)
+					}
+				}
+			}
+		}
+	}
+
+	resp := map[string]any{
+		"id":                 "resp_" + strings.ReplaceAll(requestID, "-", ""),
+		"object":             "response",
+		"created_at":         created,
+		"model":              requestedModel,
+		"output":             appendResponsesOutputItems(nil, requestID, msg),
+		"incomplete_details": responsesIncompleteDetails(finishReason),
+		"usage":              chatUsageToResponsesUsage(obj, msg.Reasoning),
+	}
+	if seSignature != "" {
+		resp["se_signature"] = seSignature
+		resp["response_hash"] = responseHash
+	}
+	return resp
 }
 
 // buildNonStreamingResponse constructs a complete OpenAI-compatible chat

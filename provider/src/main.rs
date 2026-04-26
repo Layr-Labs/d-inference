@@ -396,6 +396,65 @@ fn curl_download(url: &str, dest: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+fn coordinator_http_base(coordinator_url: &str) -> String {
+    coordinator_url
+        .replace("wss://", "https://")
+        .replace("ws://", "http://")
+        .replace("/ws/provider", "")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn model_cache_dir(model_id: &str) -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".cache/huggingface/hub")
+        .join(format!("models--{}", model_id.replace('/', "--")))
+        .join("snapshots/main")
+}
+
+fn catalog_model_matches(model: &CatalogModel, selector: &str) -> bool {
+    model.id == selector || model.s3_name == selector || model.display_name == selector
+}
+
+fn download_catalog_model(model: &CatalogModel, coordinator_base_url: &str) -> Result<()> {
+    let cache_dir = model_cache_dir(&model.id);
+    std::fs::create_dir_all(&cache_dir)
+        .with_context(|| format!("failed to create {}", cache_dir.display()))?;
+
+    // Try pre-packaged tarball first (fastest). Some large models are stored
+    // only as individual R2 objects; those fall back to the shard-aware path.
+    let tarball_url = format!(
+        "{}/dl/models/{}.tar.gz",
+        coordinator_base_url, model.s3_name
+    );
+    let tar_status = std::process::Command::new("bash")
+        .args([
+            "-c",
+            &format!(
+                "set -o pipefail; curl -f#L '{}' | tar xz -C '{}'",
+                tarball_url,
+                cache_dir.display()
+            ),
+        ])
+        .status();
+
+    match tar_status {
+        Ok(s) if s.success() => {
+            println!("  ✓ {} downloaded", model.display_name);
+            Ok(())
+        }
+        _ => {
+            if download_model_from_cdn(&model.s3_name, &cache_dir, &model.display_name) {
+                println!("  ✓ {} downloaded", model.display_name);
+                Ok(())
+            } else {
+                anyhow::bail!("Failed to download {}", model.display_name)
+            }
+        }
+    }
+}
+
 /// Download a model from the CDN (R2) into the given cache directory.
 ///
 /// Handles text models (safetensors) from R2.
@@ -1472,6 +1531,10 @@ enum Command {
         #[arg(default_value = "list")]
         action: String,
 
+        /// Model ID to download without opening the interactive picker
+        #[arg(long)]
+        model: Option<String>,
+
         /// Coordinator URL to fetch model catalog
         #[arg(long, default_value = DEFAULT_COORDINATOR_HTTP_URL)]
         coordinator: String,
@@ -1618,8 +1681,9 @@ async fn main() -> Result<()> {
         Command::Status => cmd_status().await,
         Command::Models {
             action,
+            model,
             coordinator,
-        } => cmd_models(action, coordinator).await,
+        } => cmd_models(action, coordinator, model).await,
         Command::Earnings { coordinator } => cmd_earnings(coordinator).await,
         Command::Doctor { coordinator } => cmd_doctor(coordinator).await,
         Command::Start {
@@ -1967,52 +2031,15 @@ async fn cmd_install(
         }
 
         // Download all selected models
-        let base_url = coordinator_url
-            .replace("wss://", "https://")
-            .replace("ws://", "http://")
-            .replace("/ws/provider", "");
+        let base_url = coordinator_http_base(&coordinator_url);
 
         for model_id in &models_to_download {
-            let s3_name = catalog
-                .iter()
-                .find(|cm| cm.id == *model_id)
-                .map(|cm| cm.s3_name.as_str())
-                .unwrap_or_else(|| model_id.split('/').last().unwrap_or(model_id));
-
-            let display = catalog
-                .iter()
-                .find(|cm| cm.id == *model_id)
-                .map(|cm| cm.display_name.as_str())
-                .unwrap_or(model_id);
-
-            println!();
-            println!("  Downloading {}...", display);
-
-            let cache_dir = dirs::home_dir()
-                .unwrap_or_default()
-                .join(".cache/huggingface/hub")
-                .join(format!("models--{}", model_id.replace('/', "--")))
-                .join("snapshots/main");
-            std::fs::create_dir_all(&cache_dir)?;
-
-            // Try pre-packaged tarball first (fastest)
-            let tarball_url = format!("{}/dl/models/{}.tar.gz", base_url, s3_name);
-            let tar_status = std::process::Command::new("bash")
-                .args([
-                    "-c",
-                    &format!(
-                        "set -o pipefail; curl -f#L '{}' | tar xz -C '{}'",
-                        tarball_url,
-                        cache_dir.display()
-                    ),
-                ])
-                .status();
-
-            match tar_status {
-                Ok(s) if s.success() => println!("  ✓ {} downloaded", display),
-                _ => {
-                    download_model_from_cdn(s3_name, &cache_dir, display);
-                }
+            if let Some(model) = catalog.iter().find(|cm| cm.id == *model_id) {
+                println!();
+                println!("  Downloading {}...", model.display_name);
+                download_catalog_model(model, &base_url)?;
+            } else {
+                anyhow::bail!("model {model_id:?} is not in the supported catalog");
             }
         }
 
@@ -4784,7 +4811,11 @@ async fn cmd_status() -> Result<()> {
     Ok(())
 }
 
-async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
+async fn cmd_models(
+    action: String,
+    coordinator_url: String,
+    model_override: Option<String>,
+) -> Result<()> {
     let hw = hardware::detect()?;
     let downloaded = models::scan_models(&hw);
 
@@ -4858,7 +4889,26 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
     };
 
     match effective_action.as_str() {
-        "download" | "add" => {
+        "download" | "download-s3" | "add" => {
+            let base_url = coordinator_http_base(&coordinator_url);
+
+            if let Some(selector) = model_override {
+                let cm = catalog
+                    .iter()
+                    .find(|cm| catalog_model_matches(cm, &selector))
+                    .with_context(|| {
+                        format!("model {selector:?} is not in the supported catalog")
+                    })?;
+
+                if downloaded.iter().any(|m| m.id == cm.id) {
+                    println!("  ✓ {} already downloaded", cm.display_name);
+                    return Ok(());
+                }
+
+                println!("  Downloading {}...", cm.display_name);
+                return download_catalog_model(cm, &base_url);
+            }
+
             println!(
                 "Select models to download ({} GB available):",
                 hw.memory_available_gb
@@ -4907,44 +4957,11 @@ async fn cmd_models(action: String, coordinator_url: String) -> Result<()> {
                 .filter_map(|s| s.trim().parse::<usize>().ok())
                 .collect();
 
-            let base_url = coordinator_url
-                .replace("wss://", "https://")
-                .replace("ws://", "http://")
-                .trim_end_matches('/')
-                .to_string();
-
             for sel in selections {
                 if let Some((_, cm)) = downloadable.iter().find(|(i, _)| *i == sel) {
                     println!();
                     println!("  Downloading {}...", cm.display_name);
-
-                    let s3_name = &cm.s3_name;
-                    let cache_dir = dirs::home_dir()
-                        .unwrap_or_default()
-                        .join(".cache/huggingface/hub")
-                        .join(format!("models--{}", cm.id.replace('/', "--")))
-                        .join("snapshots/main");
-                    let _ = std::fs::create_dir_all(&cache_dir);
-
-                    // Try pre-packaged tarball from CDN first
-                    let tarball_url = format!("{}/dl/models/{}.tar.gz", base_url, s3_name);
-                    let tar_status = std::process::Command::new("bash")
-                        .args([
-                            "-c",
-                            &format!(
-                                "set -o pipefail; curl -f#L '{}' | tar xz -C '{}'",
-                                tarball_url,
-                                cache_dir.display()
-                            ),
-                        ])
-                        .status();
-
-                    match tar_status {
-                        Ok(s) if s.success() => println!("  ✓ {} downloaded", cm.display_name),
-                        _ => {
-                            download_model_from_cdn(s3_name, &cache_dir, &cm.display_name);
-                        }
-                    }
+                    download_catalog_model(cm, &base_url)?;
                 }
             }
         }
@@ -6606,6 +6623,40 @@ mod tests {
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, "qwen3.5-27b-claude-opus-8bit");
+    }
+
+    #[test]
+    fn test_catalog_model_matches_app_download_selector_forms() {
+        let model = CatalogModel {
+            id: "mlx-community/Qwen3.5-122B-A10B-8bit".into(),
+            s3_name: "Qwen3.5-122B-A10B-8bit".into(),
+            display_name: "Qwen3.5 122B".into(),
+            model_type: "text".into(),
+            size_gb: 122.0,
+            architecture: "122B MoE, 10B active".into(),
+            description: "Best quality".into(),
+            min_ram_gb: 128,
+        };
+
+        assert!(catalog_model_matches(
+            &model,
+            "mlx-community/Qwen3.5-122B-A10B-8bit"
+        ));
+        assert!(catalog_model_matches(&model, "Qwen3.5-122B-A10B-8bit"));
+        assert!(catalog_model_matches(&model, "Qwen3.5 122B"));
+        assert!(!catalog_model_matches(&model, "Qwen3.5-27B"));
+    }
+
+    #[test]
+    fn test_coordinator_http_base_normalizes_ws_provider_urls() {
+        assert_eq!(
+            coordinator_http_base("wss://api.darkbloom.dev/ws/provider"),
+            "https://api.darkbloom.dev"
+        );
+        assert_eq!(
+            coordinator_http_base("https://api.darkbloom.dev/"),
+            "https://api.darkbloom.dev"
+        );
     }
 
     #[test]

@@ -395,12 +395,29 @@ if [ -n "$MODEL" ]; then
             for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json model.safetensors.index.json; do
                 curl -fsSL "$R2_BASE/$f" -o "$CACHE_DIR/$f" 2>/dev/null || true
             done
-            # Download weight shards
-            for f in $(curl -fsSL "$R2_BASE/" 2>/dev/null | grep -o 'model-[0-9]*-of-[0-9]*.safetensors' || echo "model.safetensors"); do
+
+            DOWNLOAD_OK=true
+            if [ -s "$CACHE_DIR/model.safetensors.index.json" ]; then
+                SHARDS=$(PYTHONHOME="$INSTALL_DIR/python" "$CATALOG_PYTHON" -c 'import json, sys; data=json.load(open(sys.argv[1])); print("\n".join(sorted({v for v in data.get("weight_map", {}).values() if isinstance(v, str)})))' "$CACHE_DIR/model.safetensors.index.json" 2>/dev/null || true)
+                if [ -z "$SHARDS" ]; then
+                    echo "  Could not parse model shard index."
+                    DOWNLOAD_OK=false
+                fi
+            else
+                SHARDS="model.safetensors"
+            fi
+
+            for f in $SHARDS; do
                 echo "  Downloading $f..."
-                curl -f#L "$R2_BASE/$f" -o "$CACHE_DIR/$f" 2>/dev/null || true
+                curl -f#L "$R2_BASE/$f" -o "$CACHE_DIR/$f" || DOWNLOAD_OK=false
             done
-            echo "  $MODEL_NAME downloaded ✓"
+
+            if [ "$DOWNLOAD_OK" = true ]; then
+                echo "  $MODEL_NAME downloaded ✓"
+            else
+                echo "  ✗ Failed to download $MODEL_NAME"
+                exit 1
+            fi
         fi
     fi
 fi

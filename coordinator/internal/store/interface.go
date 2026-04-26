@@ -56,6 +56,14 @@ type Store interface {
 	// Buckets the rows by created_at truncated to the minute.
 	UsageTimeSeries(since time.Time) []UsageBucket
 
+	// Leaderboard returns the top N accounts ranked by the given metric
+	// over the given time window. Zero `since` means all-time.
+	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow
+
+	// NetworkTotals returns aggregated metrics across the network for the
+	// given window. Zero `since` means all-time.
+	NetworkTotals(since time.Time) NetworkTotalsRow
+
 	// UsageByConsumer returns usage records for a specific consumer key.
 	UsageByConsumer(consumerKey string) []UsageRecord
 
@@ -391,6 +399,33 @@ type UsageBucket struct {
 	Requests         int64     `json:"requests"`
 	PromptTokens     int64     `json:"prompt_tokens"`
 	CompletionTokens int64     `json:"completion_tokens"`
+}
+
+// LeaderboardMetric selects the ranking column for a leaderboard query.
+type LeaderboardMetric string
+
+const (
+	LeaderboardEarnings LeaderboardMetric = "earnings"
+	LeaderboardTokens   LeaderboardMetric = "tokens"
+	LeaderboardJobs     LeaderboardMetric = "jobs"
+)
+
+// LeaderboardRow is a single account's aggregate across provider_earnings.
+// Pseudonyms are computed at the API layer from AccountID, never returned
+// from the store directly.
+type LeaderboardRow struct {
+	AccountID        string `json:"account_id"`
+	EarningsMicroUSD int64  `json:"earnings_micro_usd"`
+	Tokens           int64  `json:"tokens"`
+	Jobs             int64  `json:"jobs"`
+}
+
+// NetworkTotalsRow holds aggregated network metrics for homepage stats.
+type NetworkTotalsRow struct {
+	EarningsMicroUSD int64 `json:"earnings_micro_usd"`
+	Tokens           int64 `json:"tokens"`
+	Jobs             int64 `json:"jobs"`
+	ActiveAccounts   int64 `json:"active_accounts"`
 }
 
 // LedgerEntryType categorizes balance changes.

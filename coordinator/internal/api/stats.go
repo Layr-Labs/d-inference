@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -8,7 +9,15 @@ import (
 )
 
 // handleStats returns aggregate platform statistics for the frontend dashboard.
+//
+// Cached for 60s — the underlying SQL aggregation runs in <5ms but this
+// endpoint is hit by every dashboard refresh and the homepage live ticker.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	const cacheKey = "stats:v1"
+	if cached, ok := s.readCache.Get(cacheKey); ok {
+		writeCachedJSON(w, http.StatusOK, cached)
+		return
+	}
 	var (
 		totalRequests    int64
 		totalTokensGen   int64
@@ -111,7 +120,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"total_requests":          totalRequests,
 		"total_prompt_tokens":     totalPromptTokens,
 		"total_completion_tokens": totalCompletionTokens,
@@ -126,5 +135,12 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"providers":               providers,
 		"models":                  models,
 		"time_series":             timeSeries,
-	})
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode stats"))
+		return
+	}
+	s.readCache.Set(cacheKey, body, time.Minute)
+	writeCachedJSON(w, http.StatusOK, body)
 }

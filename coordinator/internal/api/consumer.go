@@ -1346,28 +1346,40 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // If a release is registered in the store, uses that. Otherwise falls back
 // to the hardcoded LatestProviderVersion.
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	const cacheKey = "api_version:v1"
+	if cached, ok := s.readCache.Get(cacheKey); ok {
+		writeCachedJSON(w, http.StatusOK, cached)
+		return
+	}
+
+	var resp map[string]any
 	// Try release table first.
 	if release := s.store.GetLatestRelease("macos-arm64"); release != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
+		resp = map[string]any{
 			"version":      release.Version,
 			"download_url": release.URL,
 			"bundle_hash":  release.BundleHash,
 			"changelog":    release.Changelog,
-		})
+		}
+	} else {
+		// Fallback to hardcoded version + coordinator download.
+		scheme := "https"
+		if r.TLS == nil && !strings.Contains(r.Host, "darkbloom.dev") {
+			scheme = "http"
+		}
+		downloadURL := fmt.Sprintf("%s://%s/dl/eigeninference-bundle-macos-arm64.tar.gz", scheme, r.Host)
+		resp = map[string]any{
+			"version":      LatestProviderVersion,
+			"download_url": downloadURL,
+		}
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode version"))
 		return
 	}
-
-	// Fallback to hardcoded version + coordinator download.
-	scheme := "https"
-	if r.TLS == nil && !strings.Contains(r.Host, "darkbloom.dev") {
-		scheme = "http"
-	}
-	downloadURL := fmt.Sprintf("%s://%s/dl/eigeninference-bundle-macos-arm64.tar.gz", scheme, r.Host)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"version":      LatestProviderVersion,
-		"download_url": downloadURL,
-	})
+	s.readCache.Set(cacheKey, body, time.Minute)
+	writeCachedJSON(w, http.StatusOK, body)
 }
 
 // --- payment handlers ---

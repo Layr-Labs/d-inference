@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -707,6 +708,83 @@ func (s *PostgresStore) UsageTimeSeries(since time.Time) []UsageBucket {
 		buckets = append(buckets, b)
 	}
 	return buckets
+}
+
+// Leaderboard returns the top N accounts ranked by the given metric over the
+// given time window. Zero `since` means all-time. The ranking is computed in
+// SQL via aggregation on provider_earnings — no per-row wire transfer.
+func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+
+	orderBy := "earnings_micro_usd DESC"
+	switch metric {
+	case LeaderboardTokens:
+		orderBy = "tokens DESC"
+	case LeaderboardJobs:
+		orderBy = "jobs DESC"
+	}
+
+	// account_id != '' filters out unassigned earnings (e.g. legacy wallet-only).
+	q := `SELECT account_id,
+	             COALESCE(SUM(amount_micro_usd), 0)               AS earnings_micro_usd,
+	             COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens,
+	             COUNT(*)                                          AS jobs
+	      FROM provider_earnings
+	      WHERE account_id != ''`
+	args := []any{}
+	if !since.IsZero() {
+		q += ` AND created_at >= $1`
+		args = append(args, since)
+	}
+	q += `
+	      GROUP BY account_id
+	      ORDER BY ` + orderBy + `
+	      LIMIT $` + strconv.Itoa(len(args)+1)
+	args = append(args, limit)
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	out := make([]LeaderboardRow, 0, limit)
+	for rows.Next() {
+		var r LeaderboardRow
+		if err := rows.Scan(&r.AccountID, &r.EarningsMicroUSD, &r.Tokens, &r.Jobs); err != nil {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// NetworkTotals returns aggregated metrics across all earnings for the given
+// time window. Zero `since` means all-time.
+func (s *PostgresStore) NetworkTotals(since time.Time) NetworkTotalsRow {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	q := `SELECT COALESCE(SUM(amount_micro_usd), 0),
+	             COALESCE(SUM(prompt_tokens + completion_tokens), 0),
+	             COUNT(*),
+	             COUNT(DISTINCT account_id) FILTER (WHERE account_id != '')
+	      FROM provider_earnings`
+	args := []any{}
+	if !since.IsZero() {
+		q += ` WHERE created_at >= $1`
+		args = append(args, since)
+	}
+
+	var t NetworkTotalsRow
+	_ = s.pool.QueryRow(ctx, q, args...).
+		Scan(&t.EarningsMicroUSD, &t.Tokens, &t.Jobs, &t.ActiveAccounts)
+	return t
 }
 
 // UsageRecords returns all usage records from the database, ordered by creation time.

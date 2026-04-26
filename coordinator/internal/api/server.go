@@ -20,6 +20,7 @@ import (
 	"crypto/subtle"
 	"crypto/x509"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -177,6 +178,11 @@ type Server struct {
 	// telemetryLimiter throttles telemetry ingestion per submitter.
 	telemetryLimiter *telemetryLimiter
 
+	// readCache memoizes pre-serialized JSON for read-heavy aggregation
+	// endpoints (stats, leaderboard, model catalog, etc.). TTLs are
+	// per-key. Never nil.
+	readCache *ttlCache
+
 	// emitter writes coordinator-side telemetry events (panics, handler
 	// failures, attestation failures, etc.). Set via SetEmitter; nil before
 	// main.go wires it up.
@@ -226,6 +232,7 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 		knownRuntimeManifest: &RuntimeManifest{},
 		metrics:              NewMetrics(),
 		telemetryLimiter:     newTelemetryLimiter(),
+		readCache:            newTTLCache(),
 	}
 	s.registerDefaultGauges()
 	s.routes()
@@ -685,18 +692,29 @@ func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHas
 // handleRuntimeManifest returns the current runtime manifest as JSON.
 // No auth required — hashes are not secrets.
 func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
-	if s.knownRuntimeManifest == nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"configured": false,
-		})
+	const cacheKey = "runtime_manifest:v1"
+	if cached, ok := s.readCache.Get(cacheKey); ok {
+		writeCachedJSON(w, http.StatusOK, cached)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"configured":      true,
-		"python_hashes":   s.knownRuntimeManifest.PythonHashes,
-		"runtime_hashes":  s.knownRuntimeManifest.RuntimeHashes,
-		"template_hashes": s.knownRuntimeManifest.TemplateHashes,
-	})
+	var resp map[string]any
+	if s.knownRuntimeManifest == nil {
+		resp = map[string]any{"configured": false}
+	} else {
+		resp = map[string]any{
+			"configured":      true,
+			"python_hashes":   s.knownRuntimeManifest.PythonHashes,
+			"runtime_hashes":  s.knownRuntimeManifest.RuntimeHashes,
+			"template_hashes": s.knownRuntimeManifest.TemplateHashes,
+		}
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode manifest"))
+		return
+	}
+	s.readCache.Set(cacheKey, body, time.Minute)
+	writeCachedJSON(w, http.StatusOK, body)
 }
 
 // HandleMDMWebhook processes a MicroMDM webhook callback.
@@ -819,6 +837,11 @@ func (s *Server) routes() {
 
 	// Platform stats — no auth needed. Frontend dashboard uses this.
 	s.mux.HandleFunc("GET /v1/stats", s.handleStats)
+
+	// Public leaderboard + network totals — no auth, pseudonymized,
+	// 5-min/1-min cache.
+	s.mux.HandleFunc("GET /v1/leaderboard", s.handleLeaderboard)
+	s.mux.HandleFunc("GET /v1/network/totals", s.handleNetworkTotals)
 
 	// Provider version check — no auth needed. Providers call this to check for updates.
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)

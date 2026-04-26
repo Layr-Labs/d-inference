@@ -13,7 +13,8 @@ use tokio::sync::mpsc;
 /// Configuration for the telemetry client.
 #[derive(Debug, Clone)]
 pub struct TelemetryConfig {
-    /// Coordinator base URL (e.g. "https://inference-test.openinnovation.dev").
+    /// Coordinator base URL. HTTP(S) bases are used as-is; provider WebSocket
+    /// URLs are normalized to the coordinator's HTTPS ingest base.
     pub coordinator_url: String,
     /// Device-linked auth token for `Authorization: Bearer ...`. Optional —
     /// when absent, the client sends events anonymously and accepts stricter
@@ -154,10 +155,7 @@ async fn run_worker(mut rx: mpsc::Receiver<TelemetryEvent>, cfg: Arc<TelemetryCo
         .build()
         .expect("telemetry: failed to build HTTP client");
 
-    let endpoint = format!(
-        "{}/v1/telemetry/events",
-        cfg.coordinator_url.trim_end_matches('/')
-    );
+    let endpoint = telemetry_ingest_endpoint(&cfg.coordinator_url);
 
     let mut buffer: Vec<TelemetryEvent> = Vec::with_capacity(cfg.max_batch);
     let mut ticker = tokio::time::interval(cfg.flush_interval);
@@ -247,5 +245,46 @@ async fn drain_disk(http: &reqwest::Client, endpoint: &str, cfg: &TelemetryConfi
         for ev in batch.events {
             let _ = q.push(&ev);
         }
+    }
+}
+
+fn telemetry_ingest_endpoint(coordinator_url: &str) -> String {
+    let base = coordinator_url.trim_end_matches('/');
+    let base = if let Some(rest) = base.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = base.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else {
+        base.to_string()
+    };
+    let base = base
+        .strip_suffix("/ws/provider")
+        .unwrap_or(&base)
+        .trim_end_matches('/');
+    format!("{base}/v1/telemetry/events")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::telemetry_ingest_endpoint;
+
+    #[test]
+    fn telemetry_endpoint_uses_https_base_for_provider_wss_url() {
+        assert_eq!(
+            telemetry_ingest_endpoint("wss://api.darkbloom.dev/ws/provider"),
+            "https://api.darkbloom.dev/v1/telemetry/events"
+        );
+    }
+
+    #[test]
+    fn telemetry_endpoint_preserves_http_base_urls() {
+        assert_eq!(
+            telemetry_ingest_endpoint("http://localhost:8080"),
+            "http://localhost:8080/v1/telemetry/events"
+        );
+        assert_eq!(
+            telemetry_ingest_endpoint("https://api.darkbloom.dev/"),
+            "https://api.darkbloom.dev/v1/telemetry/events"
+        );
     }
 }

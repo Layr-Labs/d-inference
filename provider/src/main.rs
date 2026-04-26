@@ -3403,9 +3403,20 @@ async fn cmd_serve(
                                                     }
                                                 }
                                                 Err(e) => {
+                                                    let full_err = format!("{e:#}");
                                                     tracing::error!(
-                                                        "Failed to load in-process model {}: {e}",
+                                                        "Failed to load in-process model {}: {full_err}",
                                                         slot_model_id
+                                                    );
+                                                    telemetry::emit(
+                                                        telemetry::TelemetryEvent::new(
+                                                            telemetry::Source::Provider,
+                                                            telemetry::Severity::Error,
+                                                            telemetry::Kind::InferenceError,
+                                                            format!("in-process model load failed: {}", slot_model_id),
+                                                        )
+                                                        .with_field("model", slot_model_id.clone())
+                                                        .with_stack(full_err)
                                                     );
                                                     {
                                                         let mut slots = shared_slots.lock().unwrap();
@@ -3417,7 +3428,7 @@ async fn cmd_serve(
                                                     let _ = outbound_tx.send(
                                                         protocol::ProviderMessage::InferenceError {
                                                             request_id,
-                                                            error: format!("in-process model load failed: {e}"),
+                                                            error: "in-process model load failed".to_string(),
                                                             status_code: 503,
                                                         }
                                                     ).await;
@@ -3489,7 +3500,7 @@ async fn cmd_serve(
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    tracing::error!("Failed to reload {} on port {}: {e}", slot_model_id, slot_port);
+                                                    tracing::error!("Failed to reload {} on port {}: {e:#}", slot_model_id, slot_port);
                                                     {
                                                         let mut slots = shared_slots.lock().unwrap();
                                                         if let Some(s) = slots.iter_mut().find(|s| s.port == slot_port) {
@@ -3499,7 +3510,7 @@ async fn cmd_serve(
                                                     let _ = outbound_tx.send(
                                                         protocol::ProviderMessage::InferenceError {
                                                             request_id,
-                                                            error: format!("backend reload failed: {e}"),
+                                                            error: "backend reload failed".to_string(),
                                                             status_code: 503,
                                                         }
                                                     ).await;
@@ -4311,11 +4322,22 @@ async fn handle_inprocess_request(
             }
         }
         Err(e) => {
-            tracing::error!("In-process inference failed: {e:#}");
+            let full_err = format!("{e:#}");
+            tracing::error!("In-process inference failed: {full_err}");
+            telemetry::emit(
+                telemetry::TelemetryEvent::new(
+                    telemetry::Source::Provider,
+                    telemetry::Severity::Error,
+                    telemetry::Kind::InferenceError,
+                    "in-process inference failed",
+                )
+                .with_request_id(&request_id)
+                .with_stack(full_err),
+            );
             let _ = outbound_tx
                 .send(protocol::ProviderMessage::InferenceError {
                     request_id,
-                    error: e.to_string(),
+                    error: "in-process inference failed".to_string(),
                     status_code: 500,
                 })
                 .await;

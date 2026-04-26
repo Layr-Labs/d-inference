@@ -89,6 +89,14 @@ export function InviteCodeBanner() {
           </button>
         </div>
 
+        {/* Note */}
+        <div className="px-4 pb-2">
+          <p className="text-xs text-text-tertiary leading-relaxed">
+            Invite codes are not required to become a provider. They give you free credits for inference.
+            You can also <a href="/billing" className="text-accent-brand hover:underline">purchase credits</a> directly.
+          </p>
+        </div>
+
         {/* Expandable input */}
         {!expanded && !success && (
           <div className="px-4 pb-3">

@@ -71,7 +71,6 @@ function shortModelName(model: string): string {
 export default function ProviderDashboardContent() {
   const { ready, authenticated, login, getAccessToken } = useAuth();
   const [providersResp, setProvidersResp] = useState<MyProvidersResponse | null>(null);
-  const [summary, setSummary] = useState<MySummaryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,18 +89,10 @@ export default function ProviderDashboardContent() {
         process.env.NEXT_PUBLIC_COORDINATOR_URL ||
         "https://api.darkbloom.dev";
       const headers = { Authorization: `Bearer ${token}` };
-      const [pRes, sRes] = await Promise.all([
-        fetch(`${coordinatorUrl}/v1/me/providers`, { headers, cache: "no-store" }),
-        fetch(`${coordinatorUrl}/v1/me/summary`, { headers, cache: "no-store" }),
-      ]);
+      const pRes = await fetch(`${coordinatorUrl}/v1/me/providers`, { headers, cache: "no-store" });
       if (!pRes.ok) throw new Error(`providers: HTTP ${pRes.status}`);
-      if (!sRes.ok) throw new Error(`summary: HTTP ${sRes.status}`);
-      const [p, s] = await Promise.all([
-        pRes.json() as Promise<MyProvidersResponse>,
-        sRes.json() as Promise<MySummaryResponse>,
-      ]);
+      const p = await pRes.json() as MyProvidersResponse;
       setProvidersResp(p);
-      setSummary(s);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -170,7 +161,7 @@ export default function ProviderDashboardContent() {
         <div>
           <h1 className="text-2xl font-bold text-text-primary">Provider Dashboard</h1>
           <p className="text-sm text-text-tertiary mt-0.5">
-            Earnings, device health, routing readiness, and live capacity for your linked provider fleet.
+            Your linked provider machines.
           </p>
         </div>
         <button
@@ -182,16 +173,32 @@ export default function ProviderDashboardContent() {
         </button>
       </div>
 
-      {summary && <SummaryHeader summary={summary} />}
-      {summary && <PayoutBanner summary={summary} />}
+      <div className="rounded-lg border border-accent-brand/30 bg-accent-brand/5 p-4 flex items-start gap-3">
+        <Info size={18} className="text-accent-brand shrink-0 mt-0.5" />
+        <div>
+          <p className="text-sm font-medium text-text-primary">
+            We&apos;re rebuilding this page
+          </p>
+          <p className="text-sm text-text-secondary mt-1">
+            Detailed machine stats, health, and routing info are coming soon. In the meantime, visit the{" "}
+            <Link href="/earn" className="text-accent-brand hover:underline font-medium">
+              Earnings page
+            </Link>{" "}
+            to see your provider details and payouts.
+          </p>
+        </div>
+      </div>
 
       {providers.length === 0 ? (
         <OnboardingState />
       ) : (
-        <div className="space-y-4">
-          {providers.map((p) => (
-            <MachineCard key={p.id} provider={p} ctx={providersResp!} />
-          ))}
+        <div className="space-y-3">
+          <h2 className="text-lg font-semibold text-text-primary">Registered Machines</h2>
+          <div className="space-y-2">
+            {providers.map((p) => (
+              <SimpleMachineRow key={p.id} provider={p} />
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -355,6 +362,36 @@ function severityChip(sev: WarningSeverity) {
     default:
       return { color: "text-accent-brand bg-accent-brand/10", icon: Info };
   }
+}
+
+function SimpleMachineRow({ provider }: { provider: MyProvider }) {
+  const chipName = provider.hardware.chip_name || "Unknown chip";
+  const memoryGB = provider.hardware.memory_gb ?? 0;
+
+  return (
+    <div className="rounded-lg bg-bg-secondary p-4 flex items-center justify-between gap-3">
+      <div className="flex items-center gap-3 min-w-0">
+        <div className="w-9 h-9 rounded-lg bg-accent-brand/10 flex items-center justify-center shrink-0">
+          <Cpu size={18} className="text-accent-brand" />
+        </div>
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-text-primary truncate">{chipName}</h3>
+          <p className="text-xs text-text-tertiary truncate">
+            {memoryGB} GB
+            {provider.serial_number ? ` · ${maskSerial(provider.serial_number)}` : ""}
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <StatusPill status={provider.status} />
+        {provider.trust_level === "hardware" && (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-green/10 text-accent-green text-[10px] font-semibold uppercase tracking-wider">
+            <ShieldCheck size={10} /> Hardware
+          </span>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function MachineCard({ provider, ctx }: { provider: MyProvider; ctx: MyProvidersResponse }) {

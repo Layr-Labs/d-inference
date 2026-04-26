@@ -82,11 +82,14 @@ export function computeWarnings(
     p.version &&
     semverLess(p.version, ctx.min_provider_version)
   ) {
+    const isOffline = p.status === "offline" || p.status === "never_seen";
     out.push({
       id: "version_below_min",
       severity: "blocking",
       title: "Provider version below the minimum",
-      detail: `Running v${p.version}; the coordinator requires v${ctx.min_provider_version} or newer. Update with the install script before this machine can earn.`,
+      detail: isOffline
+        ? `Last seen on v${p.version}; the coordinator requires v${ctx.min_provider_version} or newer. Start the provider — if already updated, the version will refresh automatically.`
+        : `Running v${p.version}; the coordinator requires v${ctx.min_provider_version} or newer. Update with the install script before this machine can earn.`,
     });
   }
 
@@ -274,11 +277,16 @@ export function computeWarnings(
     semverLess(p.version, ctx.latest_provider_version) &&
     !out.some((w) => w.id === "version_below_min")
   ) {
+    const isOffline = p.status === "offline" || p.status === "never_seen";
     out.push({
       id: "outdated_version",
       severity: "info",
-      title: "Newer provider version available",
-      detail: `Running v${p.version}. Latest is v${ctx.latest_provider_version}. Update via the installer when convenient.`,
+      title: isOffline
+        ? "Version may be outdated"
+        : "Newer provider version available",
+      detail: isOffline
+        ? `Last seen on v${p.version}. Latest is v${ctx.latest_provider_version}. Start the provider to verify — if already updated, the version will refresh automatically.`
+        : `Running v${p.version}. Latest is v${ctx.latest_provider_version}. Update via the installer when convenient.`,
     });
   }
 

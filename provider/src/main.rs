@@ -102,7 +102,7 @@ fn default_model_type() -> String {
 
 /// Hardcoded fallback catalog used when the coordinator is unreachable.
 fn fallback_catalog() -> Vec<CatalogModel> {
-    vec![
+    filter_provider_catalog(vec![
         CatalogModel {
             id: "qwen3.5-27b-claude-opus-8bit".into(),
             s3_name: "qwen35-27b-claude-opus-8bit".into(),
@@ -153,7 +153,36 @@ fn fallback_catalog() -> Vec<CatalogModel> {
             description: "SOTA coding, 100 tok/s".into(),
             min_ram_gb: 256,
         },
+    ])
+}
+
+fn is_retired_provider_model(model: &CatalogModel) -> bool {
+    [
+        model.id.as_str(),
+        model.s3_name.as_str(),
+        model.display_name.as_str(),
     ]
+    .iter()
+    .any(|field| contains_retired_provider_model_token(field))
+}
+
+fn contains_retired_provider_model_token(value: &str) -> bool {
+    value
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| {
+            token == "cohere"
+                || token == "coherelabs"
+                || token == "flux"
+                || token.starts_with("flux")
+        })
+}
+
+fn filter_provider_catalog(models: Vec<CatalogModel>) -> Vec<CatalogModel> {
+    models
+        .into_iter()
+        .filter(|model| !is_retired_provider_model(model))
+        .collect()
 }
 
 /// Get available disk space in GB for the home directory.
@@ -1329,7 +1358,15 @@ async fn fetch_catalog(coordinator_url: &str) -> Vec<CatalogModel> {
                 models: Vec<CatalogModel>,
             }
             match resp.json::<CatalogResponse>().await {
-                Ok(cr) if !cr.models.is_empty() => cr.models,
+                Ok(cr) => {
+                    let models = filter_provider_catalog(cr.models);
+                    if !models.is_empty() {
+                        models
+                    } else {
+                        eprintln!("  ⚠ Empty catalog from coordinator, using defaults");
+                        fallback_catalog()
+                    }
+                }
                 _ => {
                     eprintln!("  ⚠ Empty catalog from coordinator, using defaults");
                     fallback_catalog()
@@ -6528,6 +6565,47 @@ mod tests {
         perms.set_mode(0o755);
         std::fs::set_permissions(&path, perms).expect("failed to chmod temp script");
         path
+    }
+
+    #[test]
+    fn test_filter_provider_catalog_removes_retired_flux_and_cohere_models() {
+        let models = vec![
+            CatalogModel {
+                id: "black-forest-labs/FLUX.1-schnell".into(),
+                s3_name: "flux-4b".into(),
+                display_name: "Flux 4B".into(),
+                model_type: "image".into(),
+                size_gb: 4.0,
+                architecture: "diffusion".into(),
+                description: "Retired image model".into(),
+                min_ram_gb: 32,
+            },
+            CatalogModel {
+                id: "cohere/command-audio-stt".into(),
+                s3_name: "cohere-stt".into(),
+                display_name: "Cohere STT".into(),
+                model_type: "transcription".into(),
+                size_gb: 8.0,
+                architecture: "speech".into(),
+                description: "Retired audio model".into(),
+                min_ram_gb: 16,
+            },
+            CatalogModel {
+                id: "qwen3.5-27b-claude-opus-8bit".into(),
+                s3_name: "qwen35-27b-claude-opus-8bit".into(),
+                display_name: "Qwen3.5 27B Claude Opus".into(),
+                model_type: "text".into(),
+                size_gb: 27.0,
+                architecture: "27B dense".into(),
+                description: "Frontier quality reasoning".into(),
+                min_ram_gb: 36,
+            },
+        ];
+
+        let filtered = filter_provider_catalog(models);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "qwen3.5-27b-claude-opus-8bit");
     }
 
     #[test]

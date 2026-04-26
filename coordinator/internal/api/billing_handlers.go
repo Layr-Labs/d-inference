@@ -644,7 +644,7 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	// Filter to active models only (and by type if specified)
 	var active []store.SupportedModel
 	for _, m := range allModels {
-		if !m.Active {
+		if !m.Active || IsRetiredProviderModel(m) {
 			continue
 		}
 		if typeFilter != "" && m.ModelType != typeFilter {

@@ -397,7 +397,7 @@ func (s *Server) SyncModelCatalog() {
 	models := s.store.ListSupportedModels()
 	entries := make([]registry.CatalogEntry, 0, len(models))
 	for _, m := range models {
-		if m.Active {
+		if m.Active && !IsRetiredProviderModel(m) {
 			entries = append(entries, registry.CatalogEntry{
 				ID:         m.ID,
 				WeightHash: m.WeightHash,

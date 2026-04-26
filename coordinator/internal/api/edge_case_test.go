@@ -633,6 +633,60 @@ func TestEdge_ModelsEndpointNoProviders(t *testing.T) {
 	// This verifies the endpoint doesn't crash with no providers
 }
 
+func TestEdge_ModelCatalogHidesRetiredProviderModels(t *testing.T) {
+	srv, st := testServer(t)
+
+	models := []store.SupportedModel{
+		{
+			ID:          "black-forest-labs/FLUX.1-schnell",
+			S3Name:      "flux-4b",
+			DisplayName: "Flux 4B",
+			ModelType:   "image",
+			Active:      true,
+		},
+		{
+			ID:          "cohere/command-audio-stt",
+			S3Name:      "cohere-stt",
+			DisplayName: "Cohere STT",
+			ModelType:   "transcription",
+			Active:      true,
+		},
+		{
+			ID:          "qwen3.5-27b-claude-opus-8bit",
+			S3Name:      "qwen35-27b-claude-opus-8bit",
+			DisplayName: "Qwen3.5 27B Claude Opus",
+			ModelType:   "text",
+			Active:      true,
+		},
+	}
+	for _, model := range models {
+		if err := st.SetSupportedModel(&model); err != nil {
+			t.Fatalf("SetSupportedModel(%q): %v", model.ID, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models/catalog", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("models catalog: status = %d, want 200", w.Code)
+	}
+
+	var resp struct {
+		Models []store.SupportedModel `json:"models"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Models) != 1 {
+		t.Fatalf("models len = %d, want 1: %#v", len(resp.Models), resp.Models)
+	}
+	if resp.Models[0].ID != "qwen3.5-27b-claude-opus-8bit" {
+		t.Fatalf("model = %q, want qwen text model", resp.Models[0].ID)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Release API edge cases
 // ---------------------------------------------------------------------------

@@ -1234,7 +1234,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	catalogModels := s.store.ListSupportedModels()
 	catalogByID := make(map[string]store.SupportedModel, len(catalogModels))
 	for _, cm := range catalogModels {
-		if cm.Active {
+		if cm.Active && !IsRetiredProviderModel(cm) {
 			catalogByID[cm.ID] = cm
 		}
 	}

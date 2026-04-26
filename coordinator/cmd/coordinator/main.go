@@ -556,11 +556,21 @@ func envInt(key string, fallback int) int {
 
 // seedModelCatalog ensures all hardcoded models exist in the catalog.
 // On first startup it populates everything; on subsequent starts it adds
-// any new models that were added to the code but not yet in the DB.
+// any new models that were added to the code but not yet in the DB and removes
+// catalog entries that should no longer be provider-selectable.
 func seedModelCatalog(st store.Store, logger *slog.Logger) {
 	existing := st.ListSupportedModels()
 	existingIDs := make(map[string]bool, len(existing))
+	removed := 0
 	for _, m := range existing {
+		if api.IsRetiredProviderModel(m) {
+			if err := st.DeleteSupportedModel(m.ID); err != nil {
+				logger.Warn("failed to remove retired model", "id", m.ID, "error", err)
+			} else {
+				removed++
+			}
+			continue
+		}
 		existingIDs[m.ID] = true
 	}
 
@@ -575,6 +585,9 @@ func seedModelCatalog(st store.Store, logger *slog.Logger) {
 
 	added := 0
 	for i := range models {
+		if api.IsRetiredProviderModel(models[i]) {
+			continue
+		}
 		if existingIDs[models[i].ID] {
 			continue
 		}
@@ -584,8 +597,8 @@ func seedModelCatalog(st store.Store, logger *slog.Logger) {
 			added++
 		}
 	}
-	if added > 0 {
-		logger.Info("new models added to catalog", "added", added, "total", len(existing)+added)
+	if added > 0 || removed > 0 {
+		logger.Info("model catalog reconciled", "added", added, "removed", removed, "total", len(existing)+added-removed)
 	} else {
 		logger.Info("model catalog loaded", "count", len(existing))
 	}

@@ -1,8 +1,6 @@
 package api
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,20 +9,6 @@ import (
 
 	"github.com/eigeninference/coordinator/internal/store"
 )
-
-// pseudonym returns a stable, opaque short ID for an account. Uses
-// SHA-256 of the account UUID truncated to 8 hex chars (~32 bits).
-// Collisions across the global account space are theoretically possible
-// at very high volumes (>~65k accounts) but the leaderboard only shows
-// the top N so collisions matter only inside that window — users can
-// disambiguate via context.
-func pseudonym(accountID string) string {
-	if accountID == "" {
-		return "anon"
-	}
-	sum := sha256.Sum256([]byte(accountID))
-	return "node-" + hex.EncodeToString(sum[:4])
-}
 
 // parseLeaderboardWindow returns the cutoff time for the requested
 // window. Empty string and "all" return zero time (all-time).

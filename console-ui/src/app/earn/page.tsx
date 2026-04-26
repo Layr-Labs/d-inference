@@ -332,7 +332,14 @@ export default function EarnPage() {
     setSelectedModelId(null);
   };
 
-  if (!selectedConfig || !result) return null;
+  if (!selectedConfig) return null;
+
+  let modelSelectorHint = "Auto-selected: most profitable for your hardware";
+  if (rankedModels.length === 0) {
+    modelSelectorHint = "No compatible catalog model for this memory configuration";
+  } else if (selectedModelId !== null) {
+    modelSelectorHint = "Manually selected — change hardware to reset";
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -514,9 +521,7 @@ export default function EarnPage() {
               <h3 className="text-sm font-medium text-text-primary">Model</h3>
             </div>
             <p className="text-xs text-text-tertiary mb-4">
-              {selectedModelId === null
-                ? "Auto-selected: most profitable for your hardware"
-                : "Manually selected — change hardware to reset"}
+              {modelSelectorHint}
             </p>
 
             <div className="rounded-lg border border-border-dim overflow-hidden">
@@ -590,223 +595,243 @@ export default function EarnPage() {
             )}
           </div>
 
-          {/* Inference Hours & Electricity */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-            {/* Inference hours slider */}
-            <div className="rounded-xl bg-bg-secondary p-5">
-              <label className="block text-xs font-medium text-text-tertiary uppercase tracking-wider mb-3">
-                <Zap size={12} className="inline mr-1.5 -mt-0.5" />
-                Inference Hours
-              </label>
-              <div className="flex items-baseline gap-2 mb-3">
-                <span className="text-2xl font-bold font-mono text-text-primary">
-                  {inferenceHours}
-                </span>
-                <span className="text-sm text-text-tertiary">
-                  hours of active inference per day
-                </span>
-              </div>
-              <input
-                type="range"
-                min={1}
-                max={24}
-                value={inferenceHours}
-                onChange={(e) => {
-                  setInferenceHours(parseInt(e.target.value));
-                }}
-                className="w-full accent-accent-brand"
-              />
-              <div className="flex justify-between text-xs text-text-tertiary mt-1">
-                <span>1 hr</span>
-                <span>12 hrs</span>
-                <span>24 hrs</span>
-              </div>
-            </div>
-
-            {/* Electricity cost */}
-            <div className="rounded-xl bg-bg-secondary p-5">
-              <label className="block text-xs font-medium text-text-tertiary uppercase tracking-wider mb-3">
-                <DollarSign size={12} className="inline mr-1.5 -mt-0.5" />
-                Electricity Cost
-              </label>
-              <div className="flex items-baseline gap-2">
-                <span className="text-text-secondary text-sm">$</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={elecCost}
-                  onChange={(e) => setElecCost(e.target.value)}
-                  className="w-24 bg-bg-tertiary rounded-lg px-3 py-2 text-sm font-mono text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-brand/50"
-                />
-                <span className="text-text-tertiary text-sm">/kWh</span>
-              </div>
-              <p className="text-xs text-text-tertiary mt-2">
-                US avg: $0.15 | EU avg: $0.25 | CA avg: $0.22
-              </p>
-            </div>
-          </div>
-
-          {/* Results */}
-          <div className="rounded-xl bg-bg-secondary p-6 mb-6">
-            <div className="flex items-center gap-2 mb-5">
-              <div className="w-8 h-8 rounded-lg bg-accent-green/10 border border-accent-green/20 flex items-center justify-center">
-                <TrendingUp size={14} className="text-accent-green" />
-              </div>
-              <div>
-                <h3 className="text-sm font-medium text-text-primary">
-                  Estimated Earnings
-                </h3>
-                <p className="text-xs text-text-tertiary">
-                  Serving{" "}
-                  <span className="font-mono text-text-secondary">
-                    {result.modelName}
-                  </span>{" "}
-                  at {inferenceHours} hrs/day
-                </p>
-              </div>
-            </div>
-
-            {/* Big number */}
-            <div className="text-center py-6 border-b border-border-dim mb-6">
-              <p className="text-xs uppercase tracking-wider text-text-tertiary mb-1">
-                Monthly net earnings
-              </p>
-              <p className="text-4xl font-bold font-mono text-accent-green">
-                {fmtUSDWhole(result.monthlyNet)}
-              </p>
-              <p className="text-sm text-text-tertiary mt-1">
-                {fmtUSDWhole(result.annualNet)} / year
-              </p>
-            </div>
-
-            {/* Detail grid */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div>
-                <p className="text-xs text-text-tertiary mb-0.5">
-                  Batched decode speed
-                </p>
-                <p className="text-sm font-mono text-text-primary">
-                  {result.decodeTokPerSec.toFixed(1)} tok/s
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-text-tertiary mb-0.5">
-                  Monthly revenue
-                </p>
-                <p className="text-sm font-mono text-text-primary">
-                  {fmtUSD(result.monthlyRevenue)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-text-tertiary mb-0.5">
-                  Monthly electricity
-                </p>
-                <p className="text-sm font-mono text-accent-red">
-                  -{fmtUSD(result.monthlyElec)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-text-tertiary mb-0.5">
-                  Electricity % of revenue
-                </p>
-                <p className="text-sm font-mono text-text-primary">
-                  {result.elecPercent.toFixed(1)}%
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-text-tertiary mb-0.5">
-                  Revenue per hour
-                </p>
-                <p className="text-sm font-mono text-text-primary">
-                  {fmtUSD(result.revenuePerHour, 4)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-text-tertiary mb-0.5">
-                  Electricity per hour
-                </p>
-                <p className="text-sm font-mono text-text-secondary">
-                  {fmtUSD(result.elecPerHour, 4)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-text-tertiary mb-0.5">
-                  Net per hour
-                </p>
-                <p className="text-sm font-mono text-accent-green">
-                  {fmtUSD(result.netPerHour, 4)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-text-tertiary mb-0.5 flex items-center gap-1">
-                  Provider share
-                  <span className="relative group">
-                    <Info size={12} className="text-text-tertiary cursor-help" />
-                    <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 w-48 px-2 py-1 text-[10px] text-text-secondary bg-bg-tertiary border border-border-primary rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-                      Payouts are currently processed manually. Automatic payouts coming soon.
+          {result ? (
+            <>
+              {/* Inference Hours & Electricity */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                {/* Inference hours slider */}
+                <div className="rounded-xl bg-bg-secondary p-5">
+                  <label className="block text-xs font-medium text-text-tertiary uppercase tracking-wider mb-3">
+                    <Zap size={12} className="inline mr-1.5 -mt-0.5" />
+                    Inference Hours
+                  </label>
+                  <div className="flex items-baseline gap-2 mb-3">
+                    <span className="text-2xl font-bold font-mono text-text-primary">
+                      {inferenceHours}
                     </span>
-                  </span>
-                </p>
-                <p className="text-sm font-mono text-text-primary">100%</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Calculation breakdown */}
-          <div className="rounded-xl bg-bg-secondary p-6 mb-6">
-            <h3 className="text-sm font-medium text-text-primary mb-3">
-              How this is calculated
-            </h3>
-            <div className="text-xs text-text-tertiary font-mono space-y-1 bg-bg-tertiary rounded-lg p-4 overflow-x-auto">
-                  <p>
-                    single_tok/s = ({selectedConfig.bandwidthGBs} GB/s / {result.activeParamsGB} GB) * 0.60 ={" "}
-                    {((selectedConfig.bandwidthGBs / result.activeParamsGB) * 0.6).toFixed(1)} tok/s
-                  </p>
-                  <p>
-                    batched_tok/s ={" "}
-                    {((selectedConfig.bandwidthGBs / result.activeParamsGB) * 0.6).toFixed(1)} * {result.batchSize} * {result.batchEff} ={" "}
-                    {result.decodeTokPerSec.toFixed(1)} tok/s
-                  </p>
-                  <p>
-                    tok/hr = {result.decodeTokPerSec.toFixed(1)} * 3600 ={" "}
-                    {(result.decodeTokPerSec * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                  </p>
-                  <p>
-                    revenue/hr = ({(result.decodeTokPerSec * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })} / 1M) * $
-                    {(result.outputPriceMicro / 1_000_000).toFixed(6)} = {fmtUSD(result.revenuePerHour, 4)}
-                  </p>
-                  <p>
-                    marginal_watts = {selectedConfig.inferWatts}W (inference) - {selectedConfig.idleWatts}W (idle) = {result.marginalWatts}W
-                  </p>
-                  <p>
-                    elec/hr = ({result.marginalWatts}W / 1000) * ${elecCostNum.toFixed(2)}/kWh = {fmtUSD(result.elecPerHour, 4)}
-                  </p>
-                  <p>
-                    net/hr = {fmtUSD(result.revenuePerHour, 4)} - {fmtUSD(result.elecPerHour, 4)} = {fmtUSD(result.netPerHour, 4)}
-                  </p>
-                  <p>
-                    monthly = {fmtUSD(result.netPerHour, 4)} * {inferenceHours} hrs/day * 30 days = {fmtUSD(result.monthlyNet)}
-                  </p>
-            </div>
-          </div>
-
-          {/* Comparisons */}
-          {comparisons.length > 0 && (
-            <div className="rounded-xl bg-bg-secondary p-6 mb-8">
-              <h3 className="text-sm font-medium text-text-primary mb-3">
-                Your Mac earns more idle than...
-              </h3>
-              <div className="space-y-2">
-                {comparisons.map((c) => (
-                  <div
-                    key={c}
-                    className="flex items-center gap-3 px-3 py-2 rounded-lg bg-bg-tertiary text-sm text-text-secondary"
-                  >
-                    {comparisonIcon(c)}
-                    <span>{c}</span>
+                    <span className="text-sm text-text-tertiary">
+                      hours of active inference per day
+                    </span>
                   </div>
-                ))}
+                  <input
+                    type="range"
+                    min={1}
+                    max={24}
+                    value={inferenceHours}
+                    onChange={(e) => {
+                      setInferenceHours(parseInt(e.target.value));
+                    }}
+                    className="w-full accent-accent-brand"
+                  />
+                  <div className="flex justify-between text-xs text-text-tertiary mt-1">
+                    <span>1 hr</span>
+                    <span>12 hrs</span>
+                    <span>24 hrs</span>
+                  </div>
+                </div>
+
+                {/* Electricity cost */}
+                <div className="rounded-xl bg-bg-secondary p-5">
+                  <label className="block text-xs font-medium text-text-tertiary uppercase tracking-wider mb-3">
+                    <DollarSign size={12} className="inline mr-1.5 -mt-0.5" />
+                    Electricity Cost
+                  </label>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-text-secondary text-sm">$</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={elecCost}
+                      onChange={(e) => setElecCost(e.target.value)}
+                      className="w-24 bg-bg-tertiary rounded-lg px-3 py-2 text-sm font-mono text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-brand/50"
+                    />
+                    <span className="text-text-tertiary text-sm">/kWh</span>
+                  </div>
+                  <p className="text-xs text-text-tertiary mt-2">
+                    US avg: $0.15 | EU avg: $0.25 | CA avg: $0.22
+                  </p>
+                </div>
+              </div>
+
+              {/* Results */}
+              <div className="rounded-xl bg-bg-secondary p-6 mb-6">
+                <div className="flex items-center gap-2 mb-5">
+                  <div className="w-8 h-8 rounded-lg bg-accent-green/10 border border-accent-green/20 flex items-center justify-center">
+                    <TrendingUp size={14} className="text-accent-green" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-medium text-text-primary">
+                      Estimated Earnings
+                    </h3>
+                    <p className="text-xs text-text-tertiary">
+                      Serving{" "}
+                      <span className="font-mono text-text-secondary">
+                        {result.modelName}
+                      </span>{" "}
+                      at {inferenceHours} hrs/day
+                    </p>
+                  </div>
+                </div>
+
+                {/* Big number */}
+                <div className="text-center py-6 border-b border-border-dim mb-6">
+                  <p className="text-xs uppercase tracking-wider text-text-tertiary mb-1">
+                    Monthly net earnings
+                  </p>
+                  <p className="text-4xl font-bold font-mono text-accent-green">
+                    {fmtUSDWhole(result.monthlyNet)}
+                  </p>
+                  <p className="text-sm text-text-tertiary mt-1">
+                    {fmtUSDWhole(result.annualNet)} / year
+                  </p>
+                </div>
+
+                {/* Detail grid */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5">
+                      Batched decode speed
+                    </p>
+                    <p className="text-sm font-mono text-text-primary">
+                      {result.decodeTokPerSec.toFixed(1)} tok/s
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5">
+                      Monthly revenue
+                    </p>
+                    <p className="text-sm font-mono text-text-primary">
+                      {fmtUSD(result.monthlyRevenue)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5">
+                      Monthly electricity
+                    </p>
+                    <p className="text-sm font-mono text-accent-red">
+                      -{fmtUSD(result.monthlyElec)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5">
+                      Electricity % of revenue
+                    </p>
+                    <p className="text-sm font-mono text-text-primary">
+                      {result.elecPercent.toFixed(1)}%
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5">
+                      Revenue per hour
+                    </p>
+                    <p className="text-sm font-mono text-text-primary">
+                      {fmtUSD(result.revenuePerHour, 4)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5">
+                      Electricity per hour
+                    </p>
+                    <p className="text-sm font-mono text-text-secondary">
+                      {fmtUSD(result.elecPerHour, 4)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5">
+                      Net per hour
+                    </p>
+                    <p className="text-sm font-mono text-accent-green">
+                      {fmtUSD(result.netPerHour, 4)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5 flex items-center gap-1">
+                      Provider share
+                      <span className="relative group">
+                        <Info size={12} className="text-text-tertiary cursor-help" />
+                        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 w-48 px-2 py-1 text-[10px] text-text-secondary bg-bg-tertiary border border-border-primary rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                          Payouts are currently processed manually. Automatic payouts coming soon.
+                        </span>
+                      </span>
+                    </p>
+                    <p className="text-sm font-mono text-text-primary">100%</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Calculation breakdown */}
+              <div className="rounded-xl bg-bg-secondary p-6 mb-6">
+                <h3 className="text-sm font-medium text-text-primary mb-3">
+                  How this is calculated
+                </h3>
+                <div className="text-xs text-text-tertiary font-mono space-y-1 bg-bg-tertiary rounded-lg p-4 overflow-x-auto">
+                      <p>
+                        single_tok/s = ({selectedConfig.bandwidthGBs} GB/s / {result.activeParamsGB} GB) * 0.60 ={" "}
+                        {((selectedConfig.bandwidthGBs / result.activeParamsGB) * 0.6).toFixed(1)} tok/s
+                      </p>
+                      <p>
+                        batched_tok/s ={" "}
+                        {((selectedConfig.bandwidthGBs / result.activeParamsGB) * 0.6).toFixed(1)} * {result.batchSize} * {result.batchEff} ={" "}
+                        {result.decodeTokPerSec.toFixed(1)} tok/s
+                      </p>
+                      <p>
+                        tok/hr = {result.decodeTokPerSec.toFixed(1)} * 3600 ={" "}
+                        {(result.decodeTokPerSec * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                      </p>
+                      <p>
+                        revenue/hr = ({(result.decodeTokPerSec * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })} / 1M) * $
+                        {(result.outputPriceMicro / 1_000_000).toFixed(6)} = {fmtUSD(result.revenuePerHour, 4)}
+                      </p>
+                      <p>
+                        marginal_watts = {selectedConfig.inferWatts}W (inference) - {selectedConfig.idleWatts}W (idle) = {result.marginalWatts}W
+                      </p>
+                      <p>
+                        elec/hr = ({result.marginalWatts}W / 1000) * ${elecCostNum.toFixed(2)}/kWh = {fmtUSD(result.elecPerHour, 4)}
+                      </p>
+                      <p>
+                        net/hr = {fmtUSD(result.revenuePerHour, 4)} - {fmtUSD(result.elecPerHour, 4)} = {fmtUSD(result.netPerHour, 4)}
+                      </p>
+                      <p>
+                        monthly = {fmtUSD(result.netPerHour, 4)} * {inferenceHours} hrs/day * 30 days = {fmtUSD(result.monthlyNet)}
+                      </p>
+                </div>
+              </div>
+
+              {/* Comparisons */}
+              {comparisons.length > 0 && (
+                <div className="rounded-xl bg-bg-secondary p-6 mb-8">
+                  <h3 className="text-sm font-medium text-text-primary mb-3">
+                    Your Mac earns more idle than...
+                  </h3>
+                  <div className="space-y-2">
+                    {comparisons.map((c) => (
+                      <div
+                        key={c}
+                        className="flex items-center gap-3 px-3 py-2 rounded-lg bg-bg-tertiary text-sm text-text-secondary"
+                      >
+                        {comparisonIcon(c)}
+                        <span>{c}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="rounded-xl bg-bg-secondary p-6 mb-6">
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 rounded-lg bg-accent-amber/10 border border-accent-amber/20 flex items-center justify-center shrink-0">
+                  <Info size={14} className="text-accent-amber" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-medium text-text-primary mb-1">
+                    No compatible model for this hardware
+                  </h3>
+                  <p className="text-sm text-text-tertiary">
+                    Current catalog models need at least 36 GB unified memory. Choose a Mac with more memory to estimate provider earnings.
+                  </p>
+                </div>
               </div>
             </div>
           )}

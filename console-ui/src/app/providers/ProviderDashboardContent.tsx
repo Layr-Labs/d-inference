@@ -382,14 +382,7 @@ function SimpleMachineRow({ provider }: { provider: MyProvider }) {
           </p>
         </div>
       </div>
-      <div className="flex items-center gap-2 shrink-0">
-        <StatusPill status={provider.status} />
-        {provider.trust_level === "hardware" && (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-green/10 text-accent-green text-[10px] font-semibold uppercase tracking-wider">
-            <ShieldCheck size={10} /> Hardware
-          </span>
-        )}
-      </div>
+      <div className="flex items-center gap-2 shrink-0" />
     </div>
   );
 }

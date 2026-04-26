@@ -505,7 +505,7 @@ try:
             _parser_name = "qwen3"
         elif "gemma" in _name_lower:
             _parser_name = "gemma4"
-        elif "deepseek" in _name_lower or "trinity" in _name_lower:
+        elif "deepseek" in _name_lower or "trinity" in _name_lower or "minimax" in _name_lower:
             _parser_name = "deepseek_r1"
         if _parser_name:
             _r_parser = get_parser(_parser_name)()
@@ -516,12 +516,29 @@ try:
     except Exception:
         pass
 
+    if _reasoning_text is None and isinstance(_model_text, str) and "<think>" in _model_text.lower():
+        import re as _re
+        _parts = [
+            _p.strip() for _p in _re.findall(r"(?is)<think>(.*?)</think>", _model_text)
+            if _p.strip()
+        ]
+        if _parts:
+            _reasoning_text = "\n\n".join(_parts)
+            _model_text = _re.sub(r"(?is)<think>.*?</think>\s*", "", _model_text).strip()
+        else:
+            _m = _re.search(r"(?is)<think>(.*)$", _model_text)
+            if _m:
+                _reasoning_text = _m.group(1).strip() or None
+                _model_text = _model_text[:_m.start()].strip()
+
     _cleaned_text, _tool_calls = parse_tool_calls(_model_text, _req)
     if not _tool_calls and '{{"' in _model_text:
         import re as _re
         _fixed = _re.sub(r'\{\{(")', r'{\1', _model_text)
         _cleaned_text, _tool_calls = parse_tool_calls(_fixed, _req)
-    _final_content = clean_output_text(_cleaned_text) if _cleaned_text else None
+    _final_content = clean_output_text(_cleaned_text) if _cleaned_text is not None else ""
+    if _final_content is None:
+        _final_content = ""
     if _response_format and not _tool_calls:
         from vllm_mlx.api.tool_calling import parse_json_output
         _, _parsed_json, _is_valid, _err = parse_json_output(
@@ -530,7 +547,9 @@ try:
         if _parsed_json is not None:
             _final_content = json.dumps(_parsed_json)
     _finish_reason = 'tool_calls' if _tool_calls else _output.finish_reason
-    _msg_kwargs = dict(content=_final_content, tool_calls=_tool_calls)
+    _msg_kwargs = dict(content=_final_content)
+    if _tool_calls:
+        _msg_kwargs['tool_calls'] = _tool_calls
     if _reasoning_text:
         # AssistantMessage has a `reasoning` field that serializes as
         # `reasoning_content` for client compatibility.
@@ -547,7 +566,7 @@ try:
             total_tokens=_output.prompt_tokens + _output.completion_tokens,
         ),
     )
-    _result_json = _resp.model_dump_json()
+    _result_json = _resp.model_dump_json(exclude_none=True)
     _result_prompt_tokens = _output.prompt_tokens
     _result_completion_tokens = _output.completion_tokens
 except Exception as _e:
@@ -679,7 +698,7 @@ def _select_reasoning_parser(model_id):
         parser_name = "qwen3"
     elif "gemma" in name:
         parser_name = "gemma4"
-    elif "deepseek" in name or "trinity" in name:
+    elif "deepseek" in name or "trinity" in name or "minimax" in name:
         parser_name = "deepseek_r1"
     if parser_name is None:
         return None

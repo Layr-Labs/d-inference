@@ -3530,21 +3530,26 @@ async fn cmd_serve(
                                     .unwrap_or("")
                                     .to_string();
 
-                                // Rewrite the model field to the local path the backend expects
+                                // The in-process engine is already loaded from the local
+                                // snapshot path. Keep the public catalog model in the
+                                // request body so OpenAI-compatible responses do not leak
+                                // provider filesystem paths.
                                 let mut body = body;
-                                if let Some(local_path) = model_to_path.get(&requested_model)
-                                    .or_else(|| {
-                                        model_to_path.iter()
-                                            .find(|(k, _)| k.contains(&requested_model) || requested_model.contains(k.as_str()))
-                                            .map(|(_, v)| v)
-                                    })
-                                {
-                                    if let Some(obj) = body.as_object_mut() {
-                                        obj.insert("model".to_string(), serde_json::json!(local_path));
-                                    }
-                                }
-
                                 if !is_inprocess {
+                                    // Legacy subprocess backends expect the local path as
+                                    // the model name, but private text routing currently
+                                    // refuses to proxy through them.
+                                    if let Some(local_path) = model_to_path.get(&requested_model)
+                                        .or_else(|| {
+                                            model_to_path.iter()
+                                                .find(|(k, _)| k.contains(&requested_model) || requested_model.contains(k.as_str()))
+                                                .map(|(_, v)| v)
+                                        })
+                                    {
+                                        if let Some(obj) = body.as_object_mut() {
+                                            obj.insert("model".to_string(), serde_json::json!(local_path));
+                                        }
+                                    }
                                     let _ = outbound_tx.send(
                                         protocol::ProviderMessage::InferenceError {
                                             request_id,

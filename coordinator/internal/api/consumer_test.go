@@ -565,6 +565,182 @@ func TestNonStreamingE2E(t *testing.T) {
 	<-providerDone
 }
 
+func TestChatCompletionsRetriesAcceptedProviderErrorBeforeFirstChunk(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	trustAllProviders := func() {
+		for _, id := range reg.ProviderIDs() {
+			reg.SetTrustLevel(id, registry.TrustHardware)
+			reg.RecordChallengeSuccess(id)
+		}
+	}
+	connectProvider := func(pubKey string) *websocket.Conn {
+		t.Helper()
+		wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+		conn, _, err := websocket.Dial(ctx, wsURL, nil)
+		if err != nil {
+			t.Fatalf("websocket dial: %v", err)
+		}
+		regMsg := protocol.RegisterMessage{
+			Type:                    protocol.TypeRegister,
+			Hardware:                protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
+			Models:                  []protocol.ModelInfo{{ID: "retry-model", ModelType: "test", Quantization: "4bit"}},
+			Backend:                 "inprocess-mlx",
+			PublicKey:               pubKey,
+			EncryptedResponseChunks: true,
+			PrivacyCapabilities:     testPrivacyCaps(),
+		}
+		regData, _ := json.Marshal(regMsg)
+		if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
+			t.Fatalf("write register: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+		trustAllProviders()
+		return conn
+	}
+
+	pubKey1 := testPublicKeyB64()
+	conn1 := connectProvider(pubKey1)
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+
+	firstGotRequest := make(chan protocol.InferenceRequestMessage, 1)
+	secondReady := make(chan struct{})
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		for {
+			_, data, err := conn1.Read(ctx)
+			if err != nil {
+				t.Errorf("first provider read: %v", err)
+				return
+			}
+			var raw map[string]any
+			if err := json.Unmarshal(data, &raw); err == nil && raw["type"] == protocol.TypeAttestationChallenge {
+				conn1.Write(ctx, websocket.MessageText, makeValidChallengeResponse(data, pubKey1))
+				continue
+			}
+			var inferReq protocol.InferenceRequestMessage
+			if err := json.Unmarshal(data, &inferReq); err != nil {
+				t.Errorf("first provider unmarshal inference: %v", err)
+				return
+			}
+			firstGotRequest <- inferReq
+			<-secondReady
+			accepted := protocol.InferenceAcceptedMessage{
+				Type:      protocol.TypeInferenceAccepted,
+				RequestID: inferReq.RequestID,
+			}
+			acceptedData, _ := json.Marshal(accepted)
+			if err := conn1.Write(ctx, websocket.MessageText, acceptedData); err != nil {
+				t.Errorf("first provider write accepted: %v", err)
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+			errMsg := protocol.InferenceErrorMessage{
+				Type:       protocol.TypeInferenceError,
+				RequestID:  inferReq.RequestID,
+				Error:      "in-process model load failed",
+				StatusCode: http.StatusServiceUnavailable,
+			}
+			errData, _ := json.Marshal(errMsg)
+			if err := conn1.Write(ctx, websocket.MessageText, errData); err != nil {
+				t.Errorf("first provider write error: %v", err)
+			}
+			return
+		}
+	}()
+
+	respCh := make(chan struct {
+		status int
+		body   []byte
+		err    error
+	}, 1)
+	go func() {
+		chatBody := `{"model":"retry-model","messages":[{"role":"user","content":"hi"}],"stream":false}`
+		httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(chatBody))
+		httpReq.Header.Set("Authorization", "Bearer test-key")
+		resp, err := http.DefaultClient.Do(httpReq)
+		if err != nil {
+			respCh <- struct {
+				status int
+				body   []byte
+				err    error
+			}{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		respCh <- struct {
+			status int
+			body   []byte
+			err    error
+		}{status: resp.StatusCode, body: body}
+	}()
+
+	<-firstGotRequest
+
+	pubKey2 := testPublicKeyB64()
+	conn2 := connectProvider(pubKey2)
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		for {
+			_, data, err := conn2.Read(ctx)
+			if err != nil {
+				t.Errorf("second provider read: %v", err)
+				return
+			}
+			var raw map[string]any
+			if err := json.Unmarshal(data, &raw); err == nil && raw["type"] == protocol.TypeAttestationChallenge {
+				conn2.Write(ctx, websocket.MessageText, makeValidChallengeResponse(data, pubKey2))
+				continue
+			}
+			var inferReq protocol.InferenceRequestMessage
+			if err := json.Unmarshal(data, &inferReq); err != nil {
+				t.Errorf("second provider unmarshal inference: %v", err)
+				return
+			}
+			writeEncryptedTestChunk(t, ctx, conn2, inferReq, pubKey2,
+				`data: {"id":"chatcmpl-2","choices":[{"delta":{"content":"retry ok"}}]}`+"\n\n")
+			complete := protocol.InferenceCompleteMessage{
+				Type:      protocol.TypeInferenceComplete,
+				RequestID: inferReq.RequestID,
+				Usage:     protocol.UsageInfo{PromptTokens: 4, CompletionTokens: 2},
+			}
+			completeData, _ := json.Marshal(complete)
+			if err := conn2.Write(ctx, websocket.MessageText, completeData); err != nil {
+				t.Errorf("second provider write complete: %v", err)
+			}
+			return
+		}
+	}()
+	close(secondReady)
+
+	got := <-respCh
+	if got.err != nil {
+		t.Fatalf("http request: %v", got.err)
+	}
+	if got.status != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", got.status, got.body)
+	}
+	if !strings.Contains(string(got.body), "retry ok") {
+		t.Fatalf("response did not come from retry provider: %s", got.body)
+	}
+	<-firstDone
+	<-secondDone
+}
+
 func TestExtractMessage(t *testing.T) {
 	chunks := []string{
 		"data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
@@ -690,6 +866,70 @@ func TestNormalizeSSEChunk(t *testing.T) {
 	}
 }
 
+func TestNormalizeCompleteChatResponse(t *testing.T) {
+	resp := map[string]any{
+		"id":     "chatcmpl-1",
+		"object": "chat.completion",
+		"model":  "/Users/provider/.cache/huggingface/hub/models--mlx-community--MiniMax-M2.5-8bit/snapshots/main",
+		"choices": []any{
+			map[string]any{
+				"index": 0,
+				"message": map[string]any{
+					"role":              "assistant",
+					"content":           "<think>work through it</think>\n\n4",
+					"reasoning_content": "existing reasoning",
+					"tool_calls":        nil,
+				},
+			},
+		},
+		"system_fingerprint": nil,
+	}
+
+	normalizeCompleteChatResponse(resp, "mlx-community/MiniMax-M2.5-8bit")
+
+	if resp["model"] != "mlx-community/MiniMax-M2.5-8bit" {
+		t.Fatalf("model = %v", resp["model"])
+	}
+	if _, ok := resp["system_fingerprint"]; ok {
+		t.Fatalf("system_fingerprint should be removed: %#v", resp)
+	}
+	message := resp["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	if message["content"] != "4" {
+		t.Fatalf("content = %q, want 4", message["content"])
+	}
+	if _, ok := message["reasoning_content"]; ok {
+		t.Fatalf("reasoning_content should be removed: %#v", message)
+	}
+	if _, ok := message["tool_calls"]; ok {
+		t.Fatalf("null tool_calls should be removed: %#v", message)
+	}
+	reasoning := message["reasoning"].(string)
+	if !strings.Contains(reasoning, "existing reasoning") || !strings.Contains(reasoning, "work through it") {
+		t.Fatalf("reasoning was not merged correctly: %q", reasoning)
+	}
+}
+
+func TestNormalizeCompleteChatResponseNullContent(t *testing.T) {
+	resp := map[string]any{
+		"object": "chat.completion",
+		"choices": []any{
+			map[string]any{
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": nil,
+				},
+			},
+		},
+	}
+
+	normalizeCompleteChatResponse(resp, "test-model")
+
+	message := resp["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	if message["content"] != "" {
+		t.Fatalf("content = %v, want empty string", message["content"])
+	}
+}
+
 func TestExtractMessageWithNullFields(t *testing.T) {
 	// Simulates real vllm-mlx chunks where the first chunk has null content
 	// and subsequent chunks have actual content.
@@ -702,6 +942,21 @@ func TestExtractMessageWithNullFields(t *testing.T) {
 	msg := extractMessage(chunks)
 	if msg.Content != "Hello world" {
 		t.Errorf("content = %q, want %q", msg.Content, "Hello world")
+	}
+}
+
+func TestExtractMessageWithReasoningContentAndThinkTags(t *testing.T) {
+	chunks := []string{
+		`data: {"choices":[{"delta":{"reasoning_content":"hidden"}}]}`,
+		`data: {"choices":[{"delta":{"content":"<think>more hidden</think>\n\n4"}}]}`,
+	}
+
+	msg := extractMessage(chunks)
+	if msg.Content != "4" {
+		t.Fatalf("content = %q, want 4", msg.Content)
+	}
+	if !strings.Contains(msg.Reasoning, "hidden") || !strings.Contains(msg.Reasoning, "more hidden") {
+		t.Fatalf("reasoning not preserved: %q", msg.Reasoning)
 	}
 }
 

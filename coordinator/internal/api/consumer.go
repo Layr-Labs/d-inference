@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -61,6 +62,8 @@ const (
 	// handler goroutine when a WebSocket is half-dead.
 	cancelWriteTimeout = 2 * time.Second
 )
+
+var thinkBlockPattern = regexp.MustCompile(`(?is)<think>(.*?)</think>\s*`)
 
 // sendProviderCancel sends a Cancel message for the given request to the
 // provider with a bounded timeout so a half-dead WebSocket doesn't hang the
@@ -658,37 +661,90 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					// Closed — check for error (same race as above).
 					select {
 					case errMsg := <-pr.ErrorCh:
+						excludeProviders[provider.ID] = struct{}{}
 						provider.RemovePending(requestID)
 						s.registry.SetProviderIdle(provider.ID)
-						refundReservation()
-						statusCode := errMsg.StatusCode
-						if statusCode == 0 {
-							statusCode = http.StatusBadGateway
+						lastErr = errMsg.Error
+						lastErrCode = errMsg.StatusCode
+						s.logger.Warn("provider failed after accepting request, retrying",
+							"request_id", requestID,
+							"provider_id", provider.ID,
+							"attempt", attempt+1,
+							"error", errMsg.Error,
+						)
+						s.emitRequest(r.Context(), protocol.SeverityWarn, protocol.KindInferenceError, requestID,
+							"provider failed after accepting request, retrying",
+							map[string]any{
+								"provider_id": provider.ID,
+								"attempt":     attempt + 1,
+								"reason":      "provider_error",
+								"status_code": errMsg.StatusCode,
+							})
+						if s.metrics != nil {
+							s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
 						}
-						writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
-						return
+						s.ddIncr("inference.dispatches", []string{"status:retry"})
+						provider = nil
+						pr = nil
+						continue
 					default:
 						committed = true
 					}
 				}
 			case errMsg := <-pr.ErrorCh:
 				chunkTimer.Stop()
+				excludeProviders[provider.ID] = struct{}{}
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
-				refundReservation()
-				statusCode := errMsg.StatusCode
-				if statusCode == 0 {
-					statusCode = http.StatusBadGateway
+				lastErr = errMsg.Error
+				lastErrCode = errMsg.StatusCode
+				s.logger.Warn("provider failed after accepting request, retrying",
+					"request_id", requestID,
+					"provider_id", provider.ID,
+					"attempt", attempt+1,
+					"error", errMsg.Error,
+				)
+				s.emitRequest(r.Context(), protocol.SeverityWarn, protocol.KindInferenceError, requestID,
+					"provider failed after accepting request, retrying",
+					map[string]any{
+						"provider_id": provider.ID,
+						"attempt":     attempt + 1,
+						"reason":      "provider_error",
+						"status_code": errMsg.StatusCode,
+					})
+				if s.metrics != nil {
+					s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
 				}
-				writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
-				return
+				s.ddIncr("inference.dispatches", []string{"status:retry"})
+				provider = nil
+				pr = nil
+				continue
 			case <-chunkTimer.C:
+				excludeProviders[provider.ID] = struct{}{}
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
 				s.sendProviderCancel(provider, requestID)
-				refundReservation()
-				writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider accepted but timed out"))
-				return
+				lastErr = "provider accepted but timed out before first chunk"
+				lastErrCode = http.StatusGatewayTimeout
+				s.logger.Warn("provider timed out after accepting request, retrying",
+					"request_id", requestID,
+					"provider_id", provider.ID,
+					"attempt", attempt+1,
+				)
+				s.emitRequest(r.Context(), protocol.SeverityWarn, protocol.KindInferenceError, requestID,
+					"provider accepted timeout",
+					map[string]any{
+						"provider_id": provider.ID,
+						"attempt":     attempt + 1,
+						"reason":      "accepted_timeout",
+					})
+				if s.metrics != nil {
+					s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+				}
+				s.ddIncr("inference.dispatches", []string{"status:timeout"})
+				provider = nil
+				pr = nil
+				continue
 			case <-r.Context().Done():
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
@@ -941,6 +997,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 							case <-pr.CompleteCh:
 							case <-ctx.Done():
 							}
+							if objType == "chat.completion" {
+								normalizeCompleteChatResponse(obj, pr.Model)
+							}
 							if pr.SESignature != "" {
 								obj["se_signature"] = pr.SESignature
 								obj["response_hash"] = pr.ResponseHash
@@ -977,6 +1036,102 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 			return
 		}
 	}
+}
+
+func normalizeCompleteChatResponse(obj map[string]any, requestedModel string) {
+	if requestedModel != "" {
+		obj["model"] = requestedModel
+	}
+	for _, key := range []string{"system_fingerprint"} {
+		if v, ok := obj[key]; ok && v == nil {
+			delete(obj, key)
+		}
+	}
+	choices, ok := obj["choices"].([]any)
+	if !ok {
+		return
+	}
+	for _, rawChoice := range choices {
+		choice, ok := rawChoice.(map[string]any)
+		if !ok {
+			continue
+		}
+		if message, ok := choice["message"].(map[string]any); ok {
+			normalizeCompleteMessage(message)
+		}
+		if delta, ok := choice["delta"].(map[string]any); ok {
+			normalizeCompleteMessage(delta)
+		}
+	}
+}
+
+func normalizeCompleteMessage(message map[string]any) {
+	var extractedReasoning string
+	if content, ok := message["content"]; !ok || content == nil {
+		message["content"] = ""
+	} else if contentText, ok := content.(string); ok {
+		cleaned, reasoning := stripThinkBlocks(contentText)
+		message["content"] = cleaned
+		extractedReasoning = reasoning
+	}
+
+	if rc, ok := message["reasoning_content"]; ok {
+		if rcText, ok := rc.(string); ok && rcText != "" {
+			mergeReasoningField(message, rcText)
+		}
+		delete(message, "reasoning_content")
+	}
+	if reasoning, ok := message["reasoning"]; ok && reasoning == nil {
+		delete(message, "reasoning")
+	}
+	if extractedReasoning != "" {
+		mergeReasoningField(message, extractedReasoning)
+	}
+	for _, key := range []string{"tool_calls", "refusal"} {
+		if v, ok := message[key]; ok && v == nil {
+			delete(message, key)
+		}
+	}
+}
+
+func mergeReasoningField(message map[string]any, reasoning string) {
+	reasoning = strings.TrimSpace(reasoning)
+	if reasoning == "" {
+		return
+	}
+	if existing, ok := message["reasoning"].(string); ok && strings.TrimSpace(existing) != "" {
+		if existing != reasoning && !strings.Contains(existing, reasoning) {
+			message["reasoning"] = existing + "\n\n" + reasoning
+		}
+		return
+	}
+	message["reasoning"] = reasoning
+}
+
+func stripThinkBlocks(text string) (string, string) {
+	matches := thinkBlockPattern.FindAllStringSubmatch(text, -1)
+	reasoningParts := make([]string, 0, len(matches)+1)
+	found := len(matches) > 0
+	for _, match := range matches {
+		if len(match) > 1 {
+			if part := strings.TrimSpace(match[1]); part != "" {
+				reasoningParts = append(reasoningParts, part)
+			}
+		}
+	}
+	cleaned := thinkBlockPattern.ReplaceAllString(text, "")
+	lower := strings.ToLower(cleaned)
+	if idx := strings.Index(lower, "<think>"); idx >= 0 {
+		found = true
+		if part := strings.TrimSpace(cleaned[idx+len("<think>"):]); part != "" {
+			reasoningParts = append(reasoningParts, part)
+		}
+		cleaned = cleaned[:idx]
+	}
+	if !found {
+		return text, ""
+	}
+	return strings.TrimSpace(cleaned), strings.Join(reasoningParts, "\n\n")
 }
 
 // normalizeSSEChunk fixes fields in SSE chunks to match the OpenAI spec.
@@ -1105,9 +1260,10 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 		var choices []struct {
 			Delta struct {
-				Content   string `json:"content"`
-				Reasoning string `json:"reasoning"`
-				ToolCalls []struct {
+				Content          string `json:"content"`
+				Reasoning        string `json:"reasoning"`
+				ReasoningContent string `json:"reasoning_content"`
+				ToolCalls        []struct {
 					Index    int    `json:"index"`
 					ID       string `json:"id,omitempty"`
 					Type     string `json:"type,omitempty"`
@@ -1118,8 +1274,9 @@ func extractMessage(chunks []string) extractedMessage {
 				} `json:"tool_calls,omitempty"`
 			} `json:"delta"`
 			Message struct {
-				Content   string `json:"content"`
-				Reasoning string `json:"reasoning"`
+				Content          string `json:"content"`
+				Reasoning        string `json:"reasoning"`
+				ReasoningContent string `json:"reasoning_content"`
 			} `json:"message"`
 			FinishReason *string `json:"finish_reason"`
 		}
@@ -1135,8 +1292,12 @@ func extractMessage(chunks []string) extractedMessage {
 			}
 			if c.Delta.Reasoning != "" {
 				reasoningBuilder.WriteString(c.Delta.Reasoning)
+			} else if c.Delta.ReasoningContent != "" {
+				reasoningBuilder.WriteString(c.Delta.ReasoningContent)
 			} else if c.Message.Reasoning != "" {
 				reasoningBuilder.WriteString(c.Message.Reasoning)
+			} else if c.Message.ReasoningContent != "" {
+				reasoningBuilder.WriteString(c.Message.ReasoningContent)
 			}
 			for _, tc := range c.Delta.ToolCalls {
 				existing, ok := toolCallMap[tc.Index]
@@ -1164,7 +1325,17 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 	}
 
-	msg := extractedMessage{Content: contentBuilder.String(), Reasoning: reasoningBuilder.String()}
+	content := contentBuilder.String()
+	reasoning := reasoningBuilder.String()
+	if cleaned, extractedReasoning := stripThinkBlocks(content); extractedReasoning != "" {
+		content = cleaned
+		if strings.TrimSpace(reasoning) != "" {
+			reasoning += "\n\n" + extractedReasoning
+		} else {
+			reasoning = extractedReasoning
+		}
+	}
+	msg := extractedMessage{Content: content, Reasoning: reasoning}
 	if len(toolCallMap) > 0 {
 		msg.ToolCalls = make([]map[string]any, 0, len(toolCallMap))
 		for i := range len(toolCallMap) {

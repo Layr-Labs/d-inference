@@ -163,9 +163,9 @@ type HeartbeatStats struct {
 }
 
 // InferenceAcceptedMessage signals the provider accepted the request and is
-// working on it (possibly reloading the backend). The coordinator should
-// commit to this provider and wait for chunks with the full inference timeout
-// instead of retrying.
+// working on it (possibly reloading the backend). The coordinator extends the
+// wait window to the full inference timeout, but can still retry if the
+// provider fails before sending the first chunk.
 type InferenceAcceptedMessage struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`

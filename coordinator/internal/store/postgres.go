@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -235,6 +236,14 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			output_price BIGINT NOT NULL,
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (account_id, model)
+		)`,
+		`CREATE TABLE IF NOT EXISTS provider_discounts (
+			account_id TEXT NOT NULL,
+			provider_key TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			discount_bps INT NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (account_id, provider_key, model)
 		)`,
 
 		// Users — Privy identity → internal account mapping
@@ -1342,6 +1351,95 @@ func (s *PostgresStore) DeleteModelPrice(accountID, model string) error {
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("no custom price for model %q", model)
+	}
+	return nil
+}
+
+func (s *PostgresStore) SetProviderDiscount(accountID, providerKey, model string, discountBPS int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	accountID = strings.TrimSpace(accountID)
+	providerKey = strings.TrimSpace(providerKey)
+	model = strings.TrimSpace(model)
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_discounts (account_id, provider_key, model, discount_bps, updated_at)
+		 VALUES ($1, $2, $3, $4, NOW())
+		 ON CONFLICT (account_id, provider_key, model) DO UPDATE SET
+		   discount_bps = $4, updated_at = NOW()`,
+		accountID, providerKey, model, discountBPS,
+	)
+	if err != nil {
+		return fmt.Errorf("store: set provider discount: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetProviderDiscount(accountID, providerKey, model string) (ProviderDiscount, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	accountID = strings.TrimSpace(accountID)
+	providerKey = strings.TrimSpace(providerKey)
+	model = strings.TrimSpace(model)
+
+	var d ProviderDiscount
+	err := s.pool.QueryRow(ctx,
+		`SELECT account_id, provider_key, model, discount_bps
+		   FROM provider_discounts
+		  WHERE account_id = $1 AND provider_key = $2 AND model = $3`,
+		accountID, providerKey, model,
+	).Scan(&d.AccountID, &d.ProviderKey, &d.Model, &d.DiscountBPS)
+	if err != nil {
+		return ProviderDiscount{}, false
+	}
+	return d, true
+}
+
+func (s *PostgresStore) ListProviderDiscounts(accountID string) []ProviderDiscount {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	accountID = strings.TrimSpace(accountID)
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT account_id, provider_key, model, discount_bps
+		   FROM provider_discounts
+		  WHERE account_id = $1
+		  ORDER BY provider_key, model`,
+		accountID,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var discounts []ProviderDiscount
+	for rows.Next() {
+		var d ProviderDiscount
+		if err := rows.Scan(&d.AccountID, &d.ProviderKey, &d.Model, &d.DiscountBPS); err != nil {
+			continue
+		}
+		discounts = append(discounts, d)
+	}
+	return discounts
+}
+
+func (s *PostgresStore) DeleteProviderDiscount(accountID, providerKey, model string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	accountID = strings.TrimSpace(accountID)
+	providerKey = strings.TrimSpace(providerKey)
+	model = strings.TrimSpace(model)
+
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM provider_discounts
+		  WHERE account_id = $1 AND provider_key = $2 AND model = $3`,
+		accountID, providerKey, model,
+	)
+	if err != nil {
+		return fmt.Errorf("store: delete provider discount: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no provider discount for selector")
 	}
 	return nil
 }

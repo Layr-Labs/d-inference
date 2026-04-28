@@ -6,6 +6,7 @@ import (
 
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/store"
 )
 
 func makeSchedulerProvider(t *testing.T, reg *Registry, id, model string, decodeTPS float64) *Provider {
@@ -45,6 +46,13 @@ func makeSchedulerProvider(t *testing.T, reg *Registry, id, model string, decode
 func setSchedulerProviderSerial(p *Provider, serial string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.AttestationResult = &attestation.VerificationResult{SerialNumber: serial}
+}
+
+func setSchedulerProviderAccountSerial(p *Provider, accountID, serial string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.AccountID = accountID
 	p.AttestationResult = &attestation.VerificationResult{SerialNumber: serial}
 }
 
@@ -113,6 +121,65 @@ func TestReserveProviderExReturnsCostBreakdown(t *testing.T) {
 	}
 }
 
+func TestReserveProviderCostRoutingUsesDiscountedPrice(t *testing.T) {
+	model := "cost-routing-model"
+	makeRegistry := func(t *testing.T) *Registry {
+		t.Helper()
+		st := store.NewMemory("")
+		if err := st.SetModelPrice("platform", model, 1_000_000, 1_000_000); err != nil {
+			t.Fatalf("SetModelPrice: %v", err)
+		}
+		if err := st.SetProviderDiscount("acct-slow", "SLOW-SERIAL", model, 8000); err != nil {
+			t.Fatalf("SetProviderDiscount: %v", err)
+		}
+		reg := New(testLogger())
+		reg.SetStore(st)
+		fast := makeSchedulerProvider(t, reg, "fast-expensive", model, 200)
+		slow := makeSchedulerProvider(t, reg, "slow-cheap", model, 40)
+		setSchedulerProviderAccountSerial(fast, "acct-fast", "FAST-SERIAL")
+		setSchedulerProviderAccountSerial(slow, "acct-slow", "SLOW-SERIAL")
+		return reg
+	}
+
+	perfReq := &PendingRequest{
+		RequestID:             "req-performance",
+		Model:                 model,
+		EstimatedPromptTokens: 1_000,
+		RequestedMaxTokens:    1_000,
+	}
+	perfProvider, perfDecision := makeRegistry(t).ReserveProviderEx(model, perfReq)
+	if perfProvider == nil {
+		t.Fatal("performance reservation returned nil")
+	}
+	if perfProvider.ID != "fast-expensive" {
+		t.Fatalf("performance selected %q, want fast-expensive", perfProvider.ID)
+	}
+	if perfDecision.RoutingPreference != "performance" {
+		t.Fatalf("performance decision preference = %q", perfDecision.RoutingPreference)
+	}
+
+	costReq := &PendingRequest{
+		RequestID:             "req-cost",
+		Model:                 model,
+		RoutingPreference:     "cost",
+		EstimatedPromptTokens: 1_000,
+		RequestedMaxTokens:    1_000,
+	}
+	costProvider, costDecision := makeRegistry(t).ReserveProviderEx(model, costReq)
+	if costProvider == nil {
+		t.Fatal("cost reservation returned nil")
+	}
+	if costProvider.ID != "slow-cheap" {
+		t.Fatalf("cost selected %q, want slow-cheap", costProvider.ID)
+	}
+	if costDecision.RoutingPreference != "cost" {
+		t.Fatalf("cost decision preference = %q", costDecision.RoutingPreference)
+	}
+	if costDecision.EstimatedPrice != 400 {
+		t.Fatalf("cost decision EstimatedPrice = %d, want 400", costDecision.EstimatedPrice)
+	}
+}
+
 func TestReserveProviderHonorsAllowedProviderSerials(t *testing.T) {
 	reg := New(testLogger())
 	model := "targeted-model"
@@ -178,6 +245,7 @@ func TestDrainQueuedRequestsPopulatesDecision(t *testing.T) {
 		Pending: &PendingRequest{
 			RequestID:             "queued-decision",
 			Model:                 model,
+			RoutingPreference:     "cost",
 			RequestedMaxTokens:    256,
 			EstimatedPromptTokens: 50,
 		},
@@ -204,6 +272,12 @@ func TestDrainQueuedRequestsPopulatesDecision(t *testing.T) {
 	}
 	if req.Decision.CostMs <= 0 {
 		t.Fatalf("Decision.CostMs=%f, want > 0", req.Decision.CostMs)
+	}
+	if req.Decision.RoutingPreference != "cost" {
+		t.Fatalf("Decision.RoutingPreference=%q, want cost", req.Decision.RoutingPreference)
+	}
+	if req.Pending.RoutingPreference != "cost" {
+		t.Fatalf("Pending.RoutingPreference=%q, want cost", req.Pending.RoutingPreference)
 	}
 	if req.Decision.CandidateCount != 1 {
 		t.Fatalf("Decision.CandidateCount=%d, want 1", req.Decision.CandidateCount)

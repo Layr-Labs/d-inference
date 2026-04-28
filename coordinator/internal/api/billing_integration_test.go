@@ -22,6 +22,7 @@ import (
 
 	"github.com/eigeninference/coordinator/internal/billing"
 	"github.com/eigeninference/coordinator/internal/payments"
+	providerpricing "github.com/eigeninference/coordinator/internal/pricing"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
@@ -204,6 +205,86 @@ func TestIntegration_ConsumerBillingCharge(t *testing.T) {
 	}
 	if usageEntries[0].CompletionTokens != usage.CompletionTokens {
 		t.Errorf("usage entry completion_tokens = %d, want %d", usageEntries[0].CompletionTokens, usage.CompletionTokens)
+	}
+}
+
+func TestIntegration_ProviderDiscountFinalBilling(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	const (
+		accountID = "acct-discounted-provider"
+		rawToken  = "discounted-provider-auth-token"
+		model     = "discounted-final-billing-model"
+	)
+	pubKey := testPublicKeyB64()
+	if err := st.CreateProviderToken(&store.ProviderToken{
+		TokenHash: sha256HexStr(rawToken),
+		AccountID: accountID,
+		Label:     "discounted-billing",
+		Active:    true,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("create provider token: %v", err)
+	}
+	if err := st.SetModelPrice("platform", model, 1_000_000, 1_000_000); err != nil {
+		t.Fatalf("SetModelPrice: %v", err)
+	}
+	if err := st.SetProviderDiscount(accountID, pubKey, model, 5000); err != nil {
+		t.Fatalf("SetProviderDiscount: %v", err)
+	}
+
+	conn := connectProviderWithToken(t, ctx, ts.URL,
+		[]protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+		pubKey, rawToken, "0xDiscountedProvider")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	for _, id := range srv.registry.ProviderIDs() {
+		srv.registry.SetTrustLevel(id, registry.TrustHardware)
+		srv.registry.RecordChallengeSuccess(id)
+	}
+
+	consumerID := "test-key"
+	initialConsumerBalance := ledger.Balance(consumerID)
+	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 1000}
+	providerDone := serveOneInference(ctx, t, conn, pubKey, usage)
+
+	status := sendInferenceRequest(t, ctx, ts.URL, model, "test-key")
+	if status != http.StatusOK {
+		t.Fatalf("inference status = %d, want 200", status)
+	}
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	expectedCost := providerpricing.CalculateCost(st, accountID, pubKey, model, usage.PromptTokens, usage.CompletionTokens)
+	if expectedCost != 1000 {
+		t.Fatalf("expected discounted cost = %d, want 1000", expectedCost)
+	}
+	if got := ledger.Balance(consumerID); got != initialConsumerBalance-expectedCost {
+		t.Fatalf("consumer balance = %d, want %d", got, initialConsumerBalance-expectedCost)
+	}
+	expectedPayout := payments.ProviderPayout(expectedCost)
+	if got := st.GetBalance(accountID); got != expectedPayout {
+		t.Fatalf("provider account balance = %d, want payout %d", got, expectedPayout)
+	}
+
+	earnings, err := st.GetAccountEarnings(accountID, 10)
+	if err != nil {
+		t.Fatalf("GetAccountEarnings: %v", err)
+	}
+	if len(earnings) != 1 {
+		t.Fatalf("earnings count = %d, want 1", len(earnings))
+	}
+	if earnings[0].ProviderKey != pubKey {
+		t.Fatalf("earning provider_key = %q, want registered pubkey", earnings[0].ProviderKey)
+	}
+	if earnings[0].AmountMicroUSD != expectedPayout {
+		t.Fatalf("earning amount = %d, want %d", earnings[0].AmountMicroUSD, expectedPayout)
 	}
 }
 

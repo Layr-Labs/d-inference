@@ -108,6 +108,40 @@ describe("GET /api/me/summary", () => {
 });
 
 // =========================================================================
+// POST /api/chat
+// =========================================================================
+
+describe("POST /api/chat", () => {
+  it("forwards routing preference header and query param to coordinator", async () => {
+    upstreamFetch.mockResolvedValueOnce(
+      new Response("ok", {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+      })
+    );
+
+    const { POST } = await import("@/app/api/chat/route");
+    const req = makeRequest("/api/chat?routing_preference=cost", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": "key123",
+        "x-darkbloom-routing-preference": "cost",
+      },
+      body: JSON.stringify({ model: "model-a", messages: [] }),
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const [upstreamUrl, upstreamOpts] = upstreamFetch.mock.calls[0];
+    expect(String(upstreamUrl)).toBe(`${DEFAULT_COORD}/v1/chat/completions?routing_preference=cost`);
+    expect(upstreamOpts.headers.Authorization).toBe("Bearer key123");
+    expect(upstreamOpts.headers["X-Darkbloom-Routing-Preference"]).toBe("cost");
+    expect(JSON.parse(upstreamOpts.body)).toEqual({ model: "model-a", messages: [] });
+  });
+});
+
+// =========================================================================
 // GET /api/payments/balance
 // =========================================================================
 

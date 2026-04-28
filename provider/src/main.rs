@@ -1547,6 +1547,33 @@ enum Command {
         coordinator: String,
     },
 
+    /// Show or edit provider pricing discounts
+    Pricing {
+        /// Action: show, set, or clear
+        #[arg(default_value = "show")]
+        action: String,
+
+        /// Coordinator API URL
+        #[arg(long, default_value = DEFAULT_COORDINATOR_HTTP_URL)]
+        coordinator: String,
+
+        /// Model ID for a model-specific discount
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Stable provider key for a machine-specific discount
+        #[arg(long)]
+        provider_key: Option<String>,
+
+        /// Apply the discount to this Mac using its hardware serial
+        #[arg(long)]
+        this_machine: bool,
+
+        /// Discount percentage, 0 through 90
+        #[arg(long)]
+        discount: Option<f64>,
+    },
+
     /// Diagnose issues: check SIP, Secure Enclave, MDM, models, connectivity
     Doctor {
         /// Coordinator URL to test connectivity
@@ -1685,6 +1712,24 @@ async fn main() -> Result<()> {
             coordinator,
         } => cmd_models(action, coordinator, model).await,
         Command::Earnings { coordinator } => cmd_earnings(coordinator).await,
+        Command::Pricing {
+            action,
+            coordinator,
+            model,
+            provider_key,
+            this_machine,
+            discount,
+        } => {
+            cmd_pricing(
+                action,
+                coordinator,
+                model,
+                provider_key,
+                this_machine,
+                discount,
+            )
+            .await
+        }
         Command::Doctor { coordinator } => cmd_doctor(coordinator).await,
         Command::Start {
             coordinator,
@@ -5121,6 +5166,161 @@ async fn cmd_earnings(coordinator_url: String) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_pricing(
+    action: String,
+    coordinator_url: String,
+    model: Option<String>,
+    provider_key: Option<String>,
+    this_machine: bool,
+    discount: Option<f64>,
+) -> Result<()> {
+    let token = load_auth_token().ok_or_else(|| {
+        anyhow::anyhow!("Not logged in. Run `darkbloom login` before editing provider pricing.")
+    })?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let base = coordinator_url.trim_end_matches('/');
+    let provider_key = resolve_pricing_provider_key(provider_key, this_machine)?;
+
+    match action.as_str() {
+        "show" | "list" => {
+            let resp = client
+                .get(format!("{base}/v1/pricing/me"))
+                .bearer_auth(&token)
+                .send()
+                .await?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                anyhow::bail!("Failed to fetch pricing (HTTP {status}): {body}");
+            }
+            let body: serde_json::Value = resp.json().await?;
+
+            println!("Darkbloom Provider Pricing");
+            println!();
+
+            if let Some(discounts) = body["discounts"].as_array() {
+                if discounts.is_empty() {
+                    println!("Discounts: none configured");
+                } else {
+                    println!("Discounts:");
+                    for d in discounts {
+                        let pct = d["discount_percent"].as_f64().unwrap_or(0.0);
+                        let scope = d["scope"].as_str().unwrap_or("account_global");
+                        let model = d["model"].as_str().unwrap_or("");
+                        let machine = d["provider_key"].as_str().unwrap_or("");
+                        let selector = match (machine.is_empty(), model.is_empty()) {
+                            (true, true) => "account default".to_string(),
+                            (true, false) => format!("account model {model}"),
+                            (false, true) => format!("machine {machine}"),
+                            (false, false) => format!("machine {machine} model {model}"),
+                        };
+                        println!("  {:>5.2}%  {:<14} {}", pct, scope, selector);
+                    }
+                }
+            }
+
+            if let Some(prices) = body["prices"].as_array() {
+                if !prices.is_empty() {
+                    println!();
+                    println!("Effective prices per 1M tokens:");
+                    for p in prices {
+                        let model = p["model"].as_str().unwrap_or("unknown");
+                        let input = p["input_usd"].as_str().unwrap_or("$0.0000");
+                        let output = p["output_usd"].as_str().unwrap_or("$0.0000");
+                        let discount = p["discount_percent"].as_f64().unwrap_or(0.0);
+                        println!(
+                            "  {:<36} in {:>9}  out {:>9}  discount {:>5.2}%",
+                            model, input, output, discount
+                        );
+                    }
+                }
+            }
+        }
+        "set" => {
+            let discount = discount.ok_or_else(|| {
+                anyhow::anyhow!("Missing --discount. Example: darkbloom pricing set --discount 10")
+            })?;
+            if !discount.is_finite() || !(0.0..=90.0).contains(&discount) {
+                anyhow::bail!("--discount must be between 0 and 90");
+            }
+            let mut payload = serde_json::json!({
+                "discount_percent": discount,
+            });
+            if let Some(obj) = payload.as_object_mut() {
+                if !provider_key.is_empty() {
+                    obj.insert("provider_key".to_string(), serde_json::json!(provider_key));
+                }
+                if let Some(model) = model.as_ref().filter(|m| !m.trim().is_empty()) {
+                    obj.insert("model".to_string(), serde_json::json!(model));
+                }
+            }
+
+            let resp = client
+                .put(format!("{base}/v1/pricing/discount"))
+                .bearer_auth(&token)
+                .json(&payload)
+                .send()
+                .await?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                anyhow::bail!("Failed to set discount (HTTP {status}): {body}");
+            }
+            let body: serde_json::Value = resp.json().await?;
+            let d = &body["discount"];
+            println!(
+                "Set {} discount to {:.2}%",
+                d["scope"].as_str().unwrap_or("provider"),
+                d["discount_percent"].as_f64().unwrap_or(discount)
+            );
+        }
+        "clear" | "delete" | "reset" => {
+            let mut payload = serde_json::json!({});
+            if let Some(obj) = payload.as_object_mut() {
+                if !provider_key.is_empty() {
+                    obj.insert("provider_key".to_string(), serde_json::json!(provider_key));
+                }
+                if let Some(model) = model.as_ref().filter(|m| !m.trim().is_empty()) {
+                    obj.insert("model".to_string(), serde_json::json!(model));
+                }
+            }
+            let resp = client
+                .delete(format!("{base}/v1/pricing/discount"))
+                .bearer_auth(&token)
+                .json(&payload)
+                .send()
+                .await?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                anyhow::bail!("Failed to clear discount (HTTP {status}): {body}");
+            }
+            println!("Cleared discount.");
+        }
+        _ => {
+            anyhow::bail!(
+                "Usage: darkbloom pricing [show|set|clear] [--discount N] [--model MODEL] [--this-machine]"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_pricing_provider_key(
+    provider_key: Option<String>,
+    this_machine: bool,
+) -> Result<String> {
+    match (provider_key, this_machine) {
+        (Some(_), true) => anyhow::bail!("use either --provider-key or --this-machine, not both"),
+        (Some(key), false) => Ok(key.trim().to_string()),
+        (None, true) => get_serial_number(),
+        (None, false) => Ok(String::new()),
+    }
+}
+
 async fn cmd_doctor(coordinator_url: String) -> Result<()> {
     println!("Darkbloom Doctor — System Diagnostics");
     println!();
@@ -6609,6 +6809,68 @@ mod tests {
         perms.set_mode(0o755);
         std::fs::set_permissions(&path, perms).expect("failed to chmod temp script");
         path
+    }
+
+    #[test]
+    fn test_pricing_cli_parses_account_model_discount() {
+        let cli = Cli::parse_from([
+            "darkbloom",
+            "pricing",
+            "set",
+            "--model",
+            "model-a",
+            "--discount",
+            "15",
+        ]);
+        match cli.command {
+            Command::Pricing {
+                action,
+                model,
+                discount,
+                this_machine,
+                ..
+            } => {
+                assert_eq!(action, "set");
+                assert_eq!(model.as_deref(), Some("model-a"));
+                assert_eq!(discount, Some(15.0));
+                assert!(!this_machine);
+            }
+            _ => panic!("expected pricing command"),
+        }
+    }
+
+    #[test]
+    fn test_pricing_cli_parses_this_machine_discount() {
+        let cli = Cli::parse_from([
+            "darkbloom",
+            "pricing",
+            "set",
+            "--this-machine",
+            "--discount",
+            "20",
+        ]);
+        match cli.command {
+            Command::Pricing {
+                action,
+                this_machine,
+                discount,
+                ..
+            } => {
+                assert_eq!(action, "set");
+                assert!(this_machine);
+                assert_eq!(discount, Some(20.0));
+            }
+            _ => panic!("expected pricing command"),
+        }
+    }
+
+    #[test]
+    fn test_pricing_provider_key_validation() {
+        assert_eq!(
+            resolve_pricing_provider_key(Some(" SERIAL-1 ".to_string()), false).unwrap(),
+            "SERIAL-1"
+        );
+        assert!(resolve_pricing_provider_key(Some("SERIAL-1".to_string()), true).is_err());
     }
 
     #[test]

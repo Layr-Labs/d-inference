@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"time"
 
+	providerpricing "github.com/eigeninference/coordinator/internal/pricing"
 	"github.com/eigeninference/coordinator/internal/protocol"
 )
 
@@ -81,6 +82,8 @@ type routingSnapshot struct {
 	totalMemoryGB      float64
 	modelSizeGB        float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
 	modelLoaded        bool    // true when the requested model is the currently-running slot
+	accountID          string
+	providerKey        string
 }
 
 type routingCandidate struct {
@@ -90,6 +93,7 @@ type routingCandidate struct {
 	effectiveQueue int
 	breakdown      costBreakdown
 	effectiveTPS   float64 // Phase 4 load-scaled TPS used in this candidate's cost
+	priceMicroUSD  int64
 }
 
 // candidateRejection enumerates why a provider that passed structural
@@ -136,6 +140,8 @@ type RoutingDecision struct {
 	CapacityRejections int     // candidates rejected by the free-memory admission gate
 	EffectiveTPS       float64 // load-scaled decode TPS used in cost (Phase 4)
 	StaticTPS          float64 // benchmarked decode TPS before load scaling
+	RoutingPreference  string  // "performance" or "cost"
+	EstimatedPrice     int64   // estimated request cost used for cost routing
 }
 
 // ReserveProvider selects a hardware-routable provider for the request and
@@ -159,6 +165,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	if pr.Model == "" {
 		pr.Model = model
 	}
+	pr.RoutingPreference = normalizeRoutingPreference(pr.RoutingPreference)
 	if pr.RequestedMaxTokens <= 0 {
 		pr.RequestedMaxTokens = defaultRequestedMaxTokens
 	}
@@ -170,6 +177,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	if selected == nil {
 		return nil, RoutingDecision{
 			Model:              model,
+			RoutingPreference:  pr.RoutingPreference,
 			CandidateCount:     candidateCount,
 			CapacityRejections: capacityRejections,
 		}
@@ -184,6 +192,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	if !r.providerCanAdmitLocked(p, model, pr) {
 		return nil, RoutingDecision{
 			Model:              model,
+			RoutingPreference:  pr.RoutingPreference,
 			CandidateCount:     candidateCount,
 			CapacityRejections: capacityRejections,
 		}
@@ -199,6 +208,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	decision := RoutingDecision{
 		ProviderID:         p.ID,
 		Model:              model,
+		RoutingPreference:  pr.RoutingPreference,
 		CostMs:             bd.Total,
 		StateMs:            bd.StateMs,
 		QueueMs:            bd.QueueMs,
@@ -211,6 +221,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		CapacityRejections: capacityRejections,
 		EffectiveTPS:       selected.effectiveTPS,
 		StaticTPS:          selected.snapshot.decodeTPS,
+		EstimatedPrice:     selected.priceMicroUSD,
 	}
 	return p, decision
 }
@@ -270,13 +281,13 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 
 	var best *routingCandidate
 	for _, c := range candidates {
-		if best == nil || c.costMs < best.costMs {
+		if best == nil || candidateLess(c, best, pr.RoutingPreference) {
 			best = c
 		}
 	}
 	nearTies := make([]*routingCandidate, 0, len(candidates))
 	for _, c := range candidates {
-		if math.Abs(c.costMs-best.costMs) <= nearTieCostWindowMs {
+		if nearTie(c, best, pr.RoutingPreference) {
 			nearTies = append(nearTies, c)
 		}
 	}
@@ -299,7 +310,7 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		for _, c := range nearTies {
 			if c.effectiveQueue == winner.effectiveQueue &&
 				c.snapshot.totalPending == winner.snapshot.totalPending &&
-				math.Abs(c.costMs-winner.costMs) <= nearTieCostWindowMs {
+				nearTie(c, winner, pr.RoutingPreference) {
 				equivalent = append(equivalent, c)
 			}
 		}
@@ -309,6 +320,31 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 	}
 	r.logRoutingDecision(model, pr, winner, candidateCount)
 	return winner, candidateCount, capacityRejections
+}
+
+func normalizeRoutingPreference(pref string) string {
+	switch pref {
+	case "cost":
+		return "cost"
+	default:
+		return "performance"
+	}
+}
+
+func candidateLess(a, b *routingCandidate, pref string) bool {
+	if pref == "cost" {
+		if a.priceMicroUSD != b.priceMicroUSD {
+			return a.priceMicroUSD < b.priceMicroUSD
+		}
+	}
+	return a.costMs < b.costMs
+}
+
+func nearTie(a, b *routingCandidate, pref string) bool {
+	if pref == "cost" && a.priceMicroUSD != b.priceMicroUSD {
+		return false
+	}
+	return math.Abs(a.costMs-b.costMs) <= nearTieCostWindowMs
 }
 
 func providerMatchesAllowedSerial(p *Provider, allowed map[string]struct{}) bool {
@@ -341,8 +377,10 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 	r.logger.Debug("routing_decision",
 		"request_id", pr.RequestID,
 		"model", model,
+		"routing_preference", pr.RoutingPreference,
 		"winner", winner.provider.ID,
 		"cost_ms", bd.Total,
+		"estimated_price_micro_usd", winner.priceMicroUSD,
 		"state_ms", bd.StateMs,
 		"queue_ms", bd.QueueMs,
 		"pending_ms", bd.PendingMs,
@@ -393,6 +431,8 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, pr *Pending
 		prefillTPS:    resolvedPrefillTPS(p),
 		totalMemoryGB: float64(p.Hardware.MemoryGB),
 		modelSizeGB:   r.catalogSizeGBLocked(model),
+		accountID:     p.AccountID,
+		providerKey:   pricingProviderKeyLocked(p),
 	}
 
 	for _, pr := range p.pendingReqs {
@@ -514,6 +554,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	thisReqMs := float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
 	healthMs := healthPenaltyMs(snap.systemMetrics, snap.gpuMemoryActiveGB, snap.totalMemoryGB)
 	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs
+	priceMicroUSD := providerpricing.CalculateCost(r.store, snap.accountID, snap.providerKey, snap.model, reqPrompt, reqMax)
 
 	return &routingCandidate{
 		provider:       snap.provider,
@@ -521,6 +562,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 		costMs:         cost,
 		effectiveQueue: effectiveQueue,
 		effectiveTPS:   effectiveTPS,
+		priceMicroUSD:  priceMicroUSD,
 		breakdown: costBreakdown{
 			StateMs:   statePenalty,
 			QueueMs:   queueMs,
@@ -630,6 +672,21 @@ func providerServesModelLocked(p *Provider, model string) bool {
 		}
 	}
 	return false
+}
+
+func pricingProviderKeyLocked(p *Provider) string {
+	if p.AttestationResult != nil {
+		if p.AttestationResult.SerialNumber != "" {
+			return p.AttestationResult.SerialNumber
+		}
+		if p.AttestationResult.PublicKey != "" {
+			return p.AttestationResult.PublicKey
+		}
+	}
+	if p.PublicKey != "" {
+		return p.PublicKey
+	}
+	return p.ID
 }
 
 func providerModelIDs(p *Provider) []string {

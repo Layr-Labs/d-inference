@@ -13,6 +13,12 @@ export async function POST(req: NextRequest) {
   const apiKey = req.headers.get("x-api-key") || "";
   const incomingCt = req.headers.get("content-type") || "application/json";
   const isSealed = incomingCt.toLowerCase().startsWith(SEALED_CT);
+  const routingPreference = req.headers.get("x-darkbloom-routing-preference") || "";
+  const upstreamUrl = new URL(`${coordUrl}/v1/chat/completions`);
+  const routingQuery = req.nextUrl.searchParams.get("routing_preference");
+  if (routingQuery) {
+    upstreamUrl.searchParams.set("routing_preference", routingQuery);
+  }
 
   // Forward the body bytes verbatim. For plaintext we keep the existing
   // JSON-roundtrip behavior (preserves the existing tests); for sealed we
@@ -30,11 +36,12 @@ export async function POST(req: NextRequest) {
     headers: {
       "Content-Type": isSealed ? SEALED_CT : "application/json",
       ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      ...(routingPreference ? { "X-Darkbloom-Routing-Preference": routingPreference } : {}),
     },
     body: isSealed ? bodyBytes : JSON.stringify(await req.json()),
   };
 
-  const upstream = await fetch(`${coordUrl}/v1/chat/completions`, fetchInit);
+  const upstream = await fetch(upstreamUrl, fetchInit);
 
   const respHeaders = new Headers();
   // Pass-through content type so sealed responses keep their advertised type.

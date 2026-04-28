@@ -36,6 +36,7 @@ import (
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/e2e"
 	"github.com/eigeninference/coordinator/internal/payments"
+	providerpricing "github.com/eigeninference/coordinator/internal/pricing"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/saferun"
@@ -960,17 +961,10 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	responseTime := time.Duration(msg.Usage.CompletionTokens) * time.Millisecond * 10
 	s.registry.RecordJobSuccess(providerID, responseTime)
 
-	// Calculate cost — check provider's custom price, then platform DB price,
-	// then hardcoded defaults.
-	providerWalletForPricing := ""
-	if p := s.registry.GetProvider(providerID); p != nil {
-		providerWalletForPricing = p.WalletAddress
-	}
-	customIn, customOut, hasCustom := s.store.GetModelPrice(providerWalletForPricing, pr.Model)
-	if !hasCustom {
-		customIn, customOut, hasCustom = s.store.GetModelPrice("platform", pr.Model)
-	}
-	totalCost := payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
+	// Calculate cost from the provider's linked account and stable machine
+	// identity so account/model and machine/model discounts apply consistently.
+	accountID, providerKey := s.providerPricingSubject(providerID)
+	totalCost := providerpricing.CalculateCost(s.store, accountID, providerKey, pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
 
 	// Clamp reported cost at the pre-flight reservation. The reservation
 	// uses platform-default and platform-override pricing; a provider that
@@ -1094,6 +1088,27 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		"cost_micro_usd", totalCost,
 		"provider_payout_micro_usd", providerPayout,
 	)
+}
+
+func (s *Server) providerPricingSubject(providerID string) (string, string) {
+	p := s.registry.GetProvider(providerID)
+	if p == nil {
+		return "", ""
+	}
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+
+	providerKey := p.ID
+	if p.AttestationResult != nil {
+		if p.AttestationResult.SerialNumber != "" {
+			providerKey = p.AttestationResult.SerialNumber
+		} else if p.AttestationResult.PublicKey != "" {
+			providerKey = p.AttestationResult.PublicKey
+		}
+	} else if p.PublicKey != "" {
+		providerKey = p.PublicKey
+	}
+	return p.AccountID, providerKey
 }
 
 func (s *Server) handleInferenceError(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage) {

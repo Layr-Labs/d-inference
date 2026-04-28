@@ -49,7 +49,8 @@ type MemoryStore struct {
 	billingSessions map[string]*BillingSession // sessionID → session
 
 	// Custom pricing
-	modelPrices map[string]ModelPrice // "accountID:model" → price
+	modelPrices       map[string]ModelPrice       // "accountID:model" → price
+	providerDiscounts map[string]ProviderDiscount // "accountID:providerKey:model" → discount
 
 	// Supported models (admin-managed catalog)
 	supportedModels map[string]*SupportedModel // modelID → model
@@ -114,6 +115,7 @@ func NewMemory(adminKey string) *MemoryStore {
 		referralCounts:                make(map[string]int),
 		billingSessions:               make(map[string]*BillingSession),
 		modelPrices:                   make(map[string]ModelPrice),
+		providerDiscounts:             make(map[string]ProviderDiscount),
 		supportedModels:               make(map[string]*SupportedModel),
 		usersByPrivyID:                make(map[string]*User),
 		usersByAccountID:              make(map[string]*User),
@@ -772,6 +774,64 @@ func (s *MemoryStore) DeleteModelPrice(accountID, model string) error {
 		return fmt.Errorf("no custom price for model %q", model)
 	}
 	delete(s.modelPrices, key)
+	return nil
+}
+
+func providerDiscountKey(accountID, providerKey, model string) string {
+	accountID = strings.TrimSpace(accountID)
+	providerKey = strings.TrimSpace(providerKey)
+	model = strings.TrimSpace(model)
+	return accountID + ":" + providerKey + ":" + model
+}
+
+func (s *MemoryStore) SetProviderDiscount(accountID, providerKey, model string, discountBPS int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	accountID = strings.TrimSpace(accountID)
+	providerKey = strings.TrimSpace(providerKey)
+	model = strings.TrimSpace(model)
+	key := providerDiscountKey(accountID, providerKey, model)
+	s.providerDiscounts[key] = ProviderDiscount{
+		AccountID:   accountID,
+		ProviderKey: providerKey,
+		Model:       model,
+		DiscountBPS: discountBPS,
+	}
+	return nil
+}
+
+func (s *MemoryStore) GetProviderDiscount(accountID, providerKey, model string) (ProviderDiscount, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	d, ok := s.providerDiscounts[providerDiscountKey(accountID, providerKey, model)]
+	return d, ok
+}
+
+func (s *MemoryStore) ListProviderDiscounts(accountID string) []ProviderDiscount {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	accountID = strings.TrimSpace(accountID)
+	discounts := make([]ProviderDiscount, 0)
+	for _, d := range s.providerDiscounts {
+		if d.AccountID == accountID {
+			discounts = append(discounts, d)
+		}
+	}
+	return discounts
+}
+
+func (s *MemoryStore) DeleteProviderDiscount(accountID, providerKey, model string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := providerDiscountKey(accountID, providerKey, model)
+	if _, ok := s.providerDiscounts[key]; !ok {
+		return fmt.Errorf("no provider discount for selector")
+	}
+	delete(s.providerDiscounts, key)
 	return nil
 }
 

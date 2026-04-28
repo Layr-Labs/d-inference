@@ -1,0 +1,298 @@
+{
+  "Metadata": {
+    "title": "Darkbloom — 검증된 Mac에서 실행되는 프라이빗 AI",
+    "description": "하드웨어 인증을 거친 Apple Silicon 제공자를 통한 프라이빗 AI 추론. 프롬프트는 암호화된 상태로 유지되고, 데이터는 계속 사용자 소유입니다."
+  },
+  "Shell": {
+    "loading": "로딩 중..."
+  },
+  "TopBar": {
+    "openSidebar": "사이드바 열기"
+  },
+  "Sidebar": {
+    "tagline": "Eigen Labs 프로젝트 · Research Preview",
+    "newChat": "새 채팅",
+    "disclaimer": "실험적인 Research Preview입니다. 평가용으로 있는 그대로 제공됩니다. 프로덕션 용도로 사용하지 마세요.",
+    "switchDark": "다크 모드로 전환",
+    "switchLight": "라이트 모드로 전환",
+    "signOut": "로그아웃",
+    "nav": {
+      "chat": "채팅",
+      "stats": "통계",
+      "providers": "제공자 대시보드",
+      "earn": "수익",
+      "api": "API",
+      "models": "모델",
+      "billing": "결제",
+      "settings": "설정"
+    },
+    "language": "언어",
+    "changeLanguage": "언어 변경"
+  },
+  "AnalyticsConsent": {
+    "body": "Darkbloom 제품 경험 개선을 위해 개인정보 보호 필터가 적용된 사용 분석을 허용합니다.",
+    "allow": "분석 허용",
+    "decline": "거부",
+    "storedIn": "<code>{key}</code>에 저장됨"
+  },
+  "ChatPage": {
+    "loading": "로딩 중...",
+    "signIn": "로그인",
+    "trustLine": "엔드투엔드 암호화 · Apple Silicon · 탈중앙화",
+    "guest": {
+      "title": "검증된 하드웨어에서의 프라이빗 추론.",
+      "subtitle": "프롬프트는 암호화된 상태로 유지되고, 데이터는 계속 사용자 소유입니다.",
+      "signInHint": "이메일로 로그인하여 시작하세요"
+    },
+    "empty": {
+      "subtitle": "검증된 하드웨어에서의 프라이빗 추론"
+    },
+    "suggestions": {
+      "quantum": {
+        "label": "양자 컴퓨팅 설명",
+        "prompt": "양자 컴퓨팅을 쉬운 말로 설명해 주세요"
+      },
+      "python": {
+        "label": "Python 스크립트 작성",
+        "prompt": "CSV를 읽고 요약 보고서를 생성하는 Python 스크립트를 작성해 주세요"
+      },
+      "frameworks": {
+        "label": "ML 프레임워크 비교",
+        "prompt": "연구 용도에서 PyTorch와 JAX를 비교해 주세요"
+      },
+      "zk": {
+        "label": "영지식 증명 설명",
+        "prompt": "영지식 증명이란 무엇이며 블록체인에서 어떻게 사용되나요?"
+      }
+    },
+    "errors": {
+      "stream": "오류: {error}",
+      "connection": "연결 오류: {error}"
+    }
+  },
+  "ChatInput": {
+    "selectModel": "모델 선택",
+    "signInToChat": "로그인하여 채팅 시작",
+    "placeholder": "메시지 보내기...",
+    "modelSelector": "모델 선택",
+    "send": "메시지 보내기",
+    "stop": "생성 중지"
+  },
+  "ChatMessage": {
+    "code": "코드",
+    "copy": "복사",
+    "copied": "복사됨",
+    "thinking": "생각 중",
+    "thinkingStreaming": "생각 중...",
+    "chars": "({count}자)",
+    "tokens": "토큰",
+    "live": "실시간",
+    "retry": "다시 시도",
+    "regenerate": "다시 생성"
+  },
+  "SettingsPage": {
+    "title": "설정",
+    "save": "설정 저장",
+    "saved": "저장됨",
+    "savedToast": "설정이 저장되었습니다",
+    "coordinator": {
+      "title": "코디네이터 URL",
+      "description": "추론 요청을 인증된 제공자에게 라우팅하는 Darkbloom 코디네이터의 기본 URL입니다.",
+      "test": "연결 테스트",
+      "connected": "연결됨 — {count, plural, one {#개 제공자} other {#개 제공자}} 온라인"
+    },
+    "language": {
+      "title": "언어",
+      "description": "Darkbloom은 저장된 환경설정, 브라우저 언어, 대략적인 국가 신호를 바탕으로 언어를 자동 선택합니다. 여기에서 재정의할 수 있습니다.",
+      "detected": "현재 언어: {locale}"
+    },
+    "encryption": {
+      "title": "코디네이터로 보내는 요청 암호화",
+      "description": "활성화하면 프롬프트가 이 브라우저를 떠나기 전에 코디네이터의 장기 X25519 공개 키(NaCl Box)로 봉인됩니다. 코디네이터는 TEE 내부에서 복호화하고, 제공자를 선택한 뒤, 제공자의 Secure Enclave 키로 다시 봉인합니다. 코디네이터 앞단에 있는 요소(CDN, 프록시, 네트워크 관찰자)는 TLS 터널 너머에서 암호문만 볼 수 있습니다. 선택 사항이며 기본적으로 꺼져 있습니다 — 평문 API 클라이언트는 계속 작동합니다.",
+      "checkbox": "각 요청을 코디네이터 공개 키로 봉인",
+      "fetching": "코디네이터 키 가져오는 중...",
+      "unavailable": "이 코디네이터에는 발신자 암호화가 설정되어 있지 않습니다.",
+      "keyInfo": "코디네이터 키 kid={kid}",
+      "enabledToast": "코디네이터 암호화가 활성화되었습니다",
+      "disabledToast": "코디네이터 암호화가 비활성화되었습니다"
+    },
+    "analytics": {
+      "title": "분석",
+      "description": "Darkbloom이 제품 사용량 측정을 위해 개인정보 보호 필터가 적용된 Google Analytics를 로드할 수 있는지 제어합니다. 캠페인 측정을 보존하는 데 쓰이는 작은 어트리뷰션 허용 목록을 제외하고, 분석 이벤트가 전송되기 전에 쿼리 매개변수가 정리됩니다.",
+      "allow": "분석 허용",
+      "decline": "분석 거부",
+      "current": "현재 선택:",
+      "enabledToast": "분석이 활성화되었습니다",
+      "disabledToast": "분석이 비활성화되었습니다"
+    },
+    "about": {
+      "title": "Darkbloom 소개",
+      "p1": "Darkbloom은 탈중앙화 프라이빗 추론 네트워크입니다. 요청은 Secure Enclave 검증, SIP 적용, Hardened Runtime 보호를 갖춘 하드웨어 인증 Apple Silicon 제공자에게 라우팅됩니다.",
+      "p2": "제공자 신뢰는 코디네이터와의 MDM(Mobile Device Management) 교차 확인을 통해 독립적으로 검증됩니다."
+    }
+  },
+  "ModelsPage": {
+    "title": "모델",
+    "heading": "사용 가능한 모델",
+    "description": "Darkbloom 네트워크의 하드웨어 인증 제공자가 서비스하는 모델입니다.",
+    "loading": "모델 로딩 중...",
+    "empty": "사용 가능한 모델이 없습니다. 설정에서 코디네이터 연결을 확인하세요.",
+    "hardware": "하드웨어",
+    "none": "없음",
+    "perMillionTokens": "100만 토큰당",
+    "cheaper": "{percent}% 저렴",
+    "vs": "vs {competitor}",
+    "providers": "{count, plural, one {#개 제공자} other {#개 제공자}}",
+    "attested": "인증됨"
+  },
+  "StatsPage": {
+    "title": "네트워크 통계",
+    "heading": "네트워크 통계",
+    "description": "Darkbloom 탈중앙화 추론 네트워크의 실시간 지표",
+    "failedFetch": "통계를 가져오지 못했습니다",
+    "failedLoad": "플랫폼 통계를 로드하지 못했습니다",
+    "retry": "다시 시도",
+    "live": "실시간",
+    "hardware": "하드웨어",
+    "none": "없음",
+    "lastMinutes": "최근 {count}분",
+    "activityPlaceholder": "활동이 여기에 표시됩니다",
+    "tokensPerMinute": "토큰 / 분",
+    "input": "입력",
+    "output": "출력",
+    "tokenPlaceholder": "토큰 흐름이 여기에 표시됩니다",
+    "tokenTooltip": "{input} 입력 / {output} 출력",
+    "memory": "메모리",
+    "gpu": "GPU",
+    "cpu": "CPU",
+    "bandwidth": "대역폭",
+    "requests": "요청",
+    "tokens": "토큰",
+    "serving": "서비스 중:",
+    "tokensServed": "서비스한 토큰",
+    "tokensInOut": "{input} 입력 / {output} 출력",
+    "nodesOnline": "온라인 노드",
+    "allHardwareAttested": "모두 하드웨어 인증됨",
+    "hardwareAttestedCount": "{count}개 하드웨어 인증됨",
+    "gbBandwidth": "GB/s 대역폭",
+    "combinedThroughput": "통합 메모리 처리량",
+    "gpuCores": "GPU 코어",
+    "cpuCores": "CPU 코어",
+    "pECores": "P + E 코어",
+    "unifiedRam": "통합 RAM",
+    "avgTokReq": "평균 토큰/요청",
+    "models": "모델",
+    "requestsPerMinute": "요청 / 분",
+    "tokenDistribution": "토큰 분포",
+    "inputPercent": "{value} 입력({percent}%)",
+    "outputPercent": "{value} 출력({percent}%)",
+    "activeModels": "활성 모델",
+    "nodes": "{count, plural, one {노드} other {노드}}",
+    "networkNodes": "네트워크 노드",
+    "autoRefresh": "10초마다 자동 새로고침"
+  },
+  "ApiConsolePage": {
+    "title": "API 콘솔",
+    "auth": "인증",
+    "request": "요청",
+    "response": "응답",
+    "requiresAuth": "<code>Authorization: Bearer &lt;api_key&gt;</code> 헤더 필요",
+    "noApiKey": "생성된 API 키 없음",
+    "noKey": "생성된 키 없음",
+    "intro": "<strong>Darkbloom API</strong> — OpenAI 호환. 기본 URL만 바꾸고 기존 코드는 그대로 유지하세요. 모든 요청은 엔드투엔드로 암호화되며 하드웨어 인증 Apple Silicon에서 처리됩니다.",
+    "endpointReference": "엔드포인트 참조",
+    "endpointDescription": "각 엔드포인트를 펼쳐 요청/응답 형식과 참고 사항을 확인하세요.",
+    "baseUrl": "기본 URL",
+    "baseUrlDescription": "모든 엔드포인트는 이 기본 URL을 기준으로 하는 상대 경로입니다. 제공자 인증 및 가격 엔드포인트는 인증 없이 공개적으로 접근할 수 있습니다.",
+    "apiKey": "API 키",
+    "hideKey": "키 숨기기",
+    "showKey": "키 표시",
+    "copyKey": "키 복사",
+    "regenerate": "다시 생성",
+    "generate": "생성",
+    "keyHelp": "인증이 필요한 모든 요청의 <code>Authorization: Bearer</code> 헤더에 이 키를 사용하세요.",
+    "quickStart": "빠른 시작",
+    "quickStartDescription": "OpenAI SDK 또는 Vercel AI SDK를 설치하세요. Darkbloom API는 완전한 OpenAI 호환입니다 — 기본 URL만 변경하면 됩니다.",
+    "availableModels": "사용 가능한 모델",
+    "modelId": "모델 ID",
+    "type": "유형",
+    "architecture": "아키텍처",
+    "modelsHelp": "모델 사용 가능 여부는 온라인 제공자에 따라 달라집니다. 실시간 사용 가능 여부는 <code>/v1/models</code>에서 확인하세요.",
+    "chatCompletions": "Chat Completions",
+    "chatDescription": "지원되는 모든 모델로 채팅 완성을 스트리밍합니다. 시스템 메시지, 다중 턴 대화, 사고/추론 출력을 지원합니다.",
+    "listModels": "모델 목록",
+    "listModelsDescription": "사용 가능한 모델, 제공자 수, 인증 상태를 확인합니다."
+  },
+  "LinkPage": {
+    "title": "기기 연결",
+    "description": "Mac을 Darkbloom 계정에 연결하여 컴퓨트 제공 수익을 받으세요."
+  },
+  "DeviceLinkForm": {
+    "loading": "로딩 중...",
+    "missingToken": "인증 토큰을 가져오지 못했습니다. 다시 로그인하세요.",
+    "failed": "기기 연결 실패",
+    "networkError": "네트워크 오류입니다. 연결을 확인하세요.",
+    "successTitle": "기기가 연결되었습니다!",
+    "successBody": "제공자가 이제 계정에 연결되었습니다. 수익은 자동으로 적립됩니다.",
+    "successClose": "이 페이지를 닫아도 됩니다.",
+    "signInPrompt": "기기를 연결하려면 Darkbloom 계정에 로그인하세요.",
+    "signIn": "로그인",
+    "signedInAs": "로그인 계정",
+    "yourAccount": "내 계정",
+    "codeLabel": "터미널에 표시된 코드를 입력하세요",
+    "linking": "연결 중...",
+    "linkDevice": "기기 연결",
+    "run": "실행",
+    "runSuffix": "Mac에서 실행하여 코드를 받으세요."
+  },
+  "ProvidersLayout": {
+    "title": "제공자 대시보드",
+    "dashboard": "대시보드",
+    "setup": "설정",
+    "earnings": "수익"
+  },
+  "BillingPage": {
+    "title": "결제",
+    "balance": "잔액",
+    "loading": "로딩 중...",
+    "credits": "{amount} 크레딧",
+    "earnings": "{amount} 수익",
+    "buyCredits": "크레딧 구매",
+    "inviteCode": "초대 코드",
+    "redeem": "사용",
+    "inviteCredited": "{amount}이(가) 계정에 적립되었습니다",
+    "totalSpent": "총 사용액",
+    "totalTokens": "총 토큰",
+    "requests": "요청",
+    "usageHistory": "사용 내역",
+    "noUsage": "아직 사용 내역이 없습니다. 채팅을 시작하면 여기에 요청이 표시됩니다.",
+    "time": "시간",
+    "model": "모델",
+    "tokens": "토큰",
+    "cost": "비용",
+    "creditsDescription": "크레딧은 추론 요청 결제에 사용됩니다.",
+    "amountUsd": "금액(USD)",
+    "maxDeposit": "최대 입금액은 $20입니다",
+    "redirecting": "리디렉션 중...",
+    "continue": "계속",
+    "stripePowered": "Powered by Stripe. 안전한 카드 결제."
+  },
+  "EarnPage": {
+    "title": "수익 계산기",
+    "heading": "제공자 수익 계산기",
+    "loading": "로딩 중...",
+    "signIn": "로그인",
+    "estimatedEarnings": "예상 수익"
+  },
+  "Common": {
+    "auth": "인증",
+    "request": "요청",
+    "response": "응답",
+    "notes": "참고",
+    "copied": "복사됨",
+    "copy": "복사",
+    "loading": "로딩 중...",
+    "refresh": "새로고침",
+    "error": "오류"
+  }
+}

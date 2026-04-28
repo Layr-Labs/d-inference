@@ -1,0 +1,298 @@
+{
+  "Metadata": {
+    "title": "Darkbloom — AI riêng tư trên Macs đã xác minh",
+    "description": "Inference AI riêng tư thông qua các nhà cung cấp Apple Silicon được hardware-attested. Prompts của bạn luôn được mã hóa, dữ liệu của bạn vẫn thuộc về bạn."
+  },
+  "Shell": {
+    "loading": "Đang tải..."
+  },
+  "TopBar": {
+    "openSidebar": "Mở sidebar"
+  },
+  "Sidebar": {
+    "tagline": "Một dự án của Eigen Labs · Research Preview",
+    "newChat": "Chat mới",
+    "disclaimer": "Research preview thử nghiệm. Được cung cấp nguyên trạng để đánh giá. Không dùng cho production.",
+    "switchDark": "Chuyển sang chế độ tối",
+    "switchLight": "Chuyển sang chế độ sáng",
+    "signOut": "Đăng xuất",
+    "nav": {
+      "chat": "Chat",
+      "stats": "Thống kê",
+      "providers": "Provider Dashboard",
+      "earn": "Kiếm tiền",
+      "api": "API",
+      "models": "Models",
+      "billing": "Billing",
+      "settings": "Cài đặt"
+    },
+    "language": "Ngôn ngữ",
+    "changeLanguage": "Đổi ngôn ngữ"
+  },
+  "AnalyticsConsent": {
+    "body": "Cho phép usage analytics đã lọc quyền riêng tư để giúp cải thiện trải nghiệm sản phẩm Darkbloom.",
+    "allow": "Cho phép analytics",
+    "decline": "Từ chối",
+    "storedIn": "Được lưu trong <code>{key}</code>"
+  },
+  "ChatPage": {
+    "loading": "Đang tải...",
+    "signIn": "Đăng nhập",
+    "trustLine": "End-to-end encrypted · Apple Silicon · Decentralized",
+    "guest": {
+      "title": "Inference riêng tư trên hardware đã xác minh.",
+      "subtitle": "Prompts của bạn luôn được mã hóa, dữ liệu của bạn vẫn thuộc về bạn.",
+      "signInHint": "Đăng nhập bằng email của bạn để bắt đầu"
+    },
+    "empty": {
+      "subtitle": "Inference riêng tư trên hardware đã xác minh"
+    },
+    "suggestions": {
+      "quantum": {
+        "label": "Giải thích quantum computing",
+        "prompt": "Giải thích quantum computing bằng ngôn ngữ đơn giản"
+      },
+      "python": {
+        "label": "Viết script Python",
+        "prompt": "Viết script Python đọc CSV và tạo báo cáo tóm tắt"
+      },
+      "frameworks": {
+        "label": "So sánh ML frameworks",
+        "prompt": "So sánh PyTorch và JAX cho các use case nghiên cứu"
+      },
+      "zk": {
+        "label": "Giải thích zero-knowledge proofs",
+        "prompt": "Zero-knowledge proofs là gì và chúng được dùng trong blockchain như thế nào?"
+      }
+    },
+    "errors": {
+      "stream": "Lỗi: {error}",
+      "connection": "Lỗi kết nối: {error}"
+    }
+  },
+  "ChatInput": {
+    "selectModel": "Chọn model",
+    "signInToChat": "Đăng nhập để bắt đầu chat",
+    "placeholder": "Gửi tin nhắn...",
+    "modelSelector": "Chọn model",
+    "send": "Gửi tin nhắn",
+    "stop": "Dừng generation"
+  },
+  "ChatMessage": {
+    "code": "mã",
+    "copy": "Sao chép",
+    "copied": "Đã sao chép",
+    "thinking": "Đang suy nghĩ",
+    "thinkingStreaming": "Đang suy nghĩ...",
+    "chars": "({count} ký tự)",
+    "tokens": "tokens",
+    "live": "live",
+    "retry": "Thử lại",
+    "regenerate": "Generate lại"
+  },
+  "SettingsPage": {
+    "title": "Cài đặt",
+    "save": "Lưu Cài đặt",
+    "saved": "Đã lưu",
+    "savedToast": "Đã lưu cài đặt",
+    "coordinator": {
+      "title": "Coordinator URL",
+      "description": "Base URL của Darkbloom coordinator định tuyến các inference requests của bạn tới attested providers.",
+      "test": "Kiểm tra Kết nối",
+      "connected": "Đã kết nối — {count, plural, one {# provider} other {# providers}} online"
+    },
+    "language": {
+      "title": "Ngôn ngữ",
+      "description": "Darkbloom tự động chọn ngôn ngữ từ tùy chọn đã lưu, ngôn ngữ browser và tín hiệu quốc gia thô. Bạn có thể override tại đây.",
+      "detected": "Ngôn ngữ hiện tại: {locale}"
+    },
+    "encryption": {
+      "title": "Encrypt requests tới coordinator",
+      "description": "Khi bật, prompts của bạn được seal tới public key X25519 dài hạn của coordinator (NaCl Box) trước khi rời browser này. coordinator decrypt bên trong TEE, chọn provider, rồi re-seal tới Secure Enclave key của provider. Mọi thứ đứng trước coordinator (CDN, proxies, network observers) chỉ thấy ciphertext bên ngoài TLS tunnel. Tùy chọn và mặc định off — plaintext API clients vẫn hoạt động.",
+      "checkbox": "Seal từng request tới public key của coordinator",
+      "fetching": "đang lấy coordinator key...",
+      "unavailable": "Coordinator này chưa cấu hình sender encryption.",
+      "keyInfo": "coordinator key kid={kid}",
+      "enabledToast": "Encryption tới coordinator đã bật",
+      "disabledToast": "Encryption tới coordinator đã tắt"
+    },
+    "analytics": {
+      "title": "Analytics",
+      "description": "Kiểm soát việc Darkbloom có thể load Google Analytics đã lọc quyền riêng tư để đo lường mức sử dụng sản phẩm hay không. Query parameters được sanitize trước khi analytics events được gửi, ngoại trừ attribution allowlist nhỏ dùng để duy trì campaign measurement.",
+      "allow": "Cho phép analytics",
+      "decline": "Từ chối analytics",
+      "current": "Lựa chọn hiện tại:",
+      "enabledToast": "Analytics đã bật",
+      "disabledToast": "Analytics đã tắt"
+    },
+    "about": {
+      "title": "Về Darkbloom",
+      "p1": "Darkbloom là một decentralized private inference network. Requests của bạn được định tuyến tới hardware-attested Apple Silicon providers với Secure Enclave verification, SIP enforcement và Hardened Runtime protection.",
+      "p2": "Provider trust được xác minh độc lập thông qua MDM (Mobile Device Management) bằng cách cross-check với coordinator."
+    }
+  },
+  "ModelsPage": {
+    "title": "Models",
+    "heading": "Models Khả dụng",
+    "description": "Models được phục vụ bởi hardware-attested providers trên mạng Darkbloom.",
+    "loading": "Đang tải models...",
+    "empty": "Không có model nào khả dụng. Kiểm tra kết nối coordinator trong Settings.",
+    "hardware": "Hardware",
+    "none": "Không có",
+    "perMillionTokens": "mỗi 1M tokens",
+    "cheaper": "rẻ hơn {percent}%",
+    "vs": "vs {competitor}",
+    "providers": "{count, plural, one {# provider} other {# providers}}",
+    "attested": "Attested"
+  },
+  "StatsPage": {
+    "title": "Network Stats",
+    "heading": "Thống kê Network",
+    "description": "Metrics live từ Darkbloom decentralized inference network",
+    "failedFetch": "Không fetch được stats",
+    "failedLoad": "Không tải được platform stats",
+    "retry": "Thử lại",
+    "live": "Live",
+    "hardware": "Hardware",
+    "none": "Không có",
+    "lastMinutes": "{count} min gần đây",
+    "activityPlaceholder": "Activity sẽ xuất hiện ở đây",
+    "tokensPerMinute": "Tokens / Minute",
+    "input": "Input",
+    "output": "Output",
+    "tokenPlaceholder": "Token flow sẽ xuất hiện ở đây",
+    "tokenTooltip": "{input} in / {output} out",
+    "memory": "Memory",
+    "gpu": "GPU",
+    "cpu": "CPU",
+    "bandwidth": "Bandwidth",
+    "requests": "Requests",
+    "tokens": "Tokens",
+    "serving": "Serving:",
+    "tokensServed": "Tokens Served",
+    "tokensInOut": "{input} in / {output} out",
+    "nodesOnline": "Nodes Online",
+    "allHardwareAttested": "tất cả đều hardware-attested",
+    "hardwareAttestedCount": "{count} hardware-attested",
+    "gbBandwidth": "GB/s Bandwidth",
+    "combinedThroughput": "combined memory throughput",
+    "gpuCores": "GPU Cores",
+    "cpuCores": "CPU Cores",
+    "pECores": "P + E cores",
+    "unifiedRam": "Unified RAM",
+    "avgTokReq": "Avg Tok/Req",
+    "models": "Models",
+    "requestsPerMinute": "Requests / Minute",
+    "tokenDistribution": "Token Distribution",
+    "inputPercent": "{value} in ({percent}%)",
+    "outputPercent": "{value} out ({percent}%)",
+    "activeModels": "Active Models",
+    "nodes": "{count, plural, one {node} other {nodes}}",
+    "networkNodes": "Network Nodes",
+    "autoRefresh": "Auto-refresh mỗi 10 seconds"
+  },
+  "ApiConsolePage": {
+    "title": "API Console",
+    "auth": "Auth",
+    "request": "Request",
+    "response": "Response",
+    "requiresAuth": "Yêu cầu header <code>Authorization: Bearer &lt;api_key&gt;</code>",
+    "noApiKey": "Chưa generate API key",
+    "noKey": "Chưa generate key",
+    "intro": "<strong>Darkbloom API</strong> — OpenAI-compatible. Đổi base URL của bạn, giữ nguyên code hiện có. Mọi request đều end-to-end encrypted và được xử lý trên hardware-attested Apple Silicon.",
+    "endpointReference": "Endpoint Reference",
+    "endpointDescription": "Expand từng endpoint để xem định dạng request/response và notes.",
+    "baseUrl": "Base URL",
+    "baseUrlDescription": "Tất cả endpoints đều relative với base URL này. Provider attestation và pricing endpoints có thể truy cập công khai mà không cần authentication.",
+    "apiKey": "API Key",
+    "hideKey": "Ẩn key",
+    "showKey": "Hiện key",
+    "copyKey": "Sao chép key",
+    "regenerate": "Generate lại",
+    "generate": "Generate",
+    "keyHelp": "Dùng key này trong header <code>Authorization: Bearer</code> cho mọi authenticated requests.",
+    "quickStart": "Quick Start",
+    "quickStartDescription": "Install OpenAI SDK hoặc Vercel AI SDK. Darkbloom API hoàn toàn OpenAI-compatible — chỉ cần đổi base URL.",
+    "availableModels": "Models Khả dụng",
+    "modelId": "Model ID",
+    "type": "Type",
+    "architecture": "Architecture",
+    "modelsHelp": "Model availability phụ thuộc vào providers online. Kiểm tra <code>/v1/models</code> để biết availability real-time.",
+    "chatCompletions": "Chat Completions",
+    "chatDescription": "Stream chat completions với bất kỳ model được hỗ trợ nào. Hỗ trợ system messages, multi-turn conversations và thinking/reasoning output.",
+    "listModels": "Liệt kê Models",
+    "listModelsDescription": "Kiểm tra models khả dụng, số lượng provider và attestation status."
+  },
+  "LinkPage": {
+    "title": "Link Device của bạn",
+    "description": "Kết nối Mac của bạn với tài khoản Darkbloom để nhận earnings khi cung cấp compute."
+  },
+  "DeviceLinkForm": {
+    "loading": "Đang tải...",
+    "missingToken": "Không lấy được auth token. Vui lòng log in lại.",
+    "failed": "Không link được device",
+    "networkError": "Network error. Vui lòng kiểm tra kết nối.",
+    "successTitle": "Device Linked!",
+    "successBody": "Provider của bạn hiện đã kết nối với tài khoản. Earnings sẽ được tự động credit.",
+    "successClose": "Bạn có thể đóng trang này.",
+    "signInPrompt": "Đăng nhập vào tài khoản Darkbloom để link device của bạn.",
+    "signIn": "Đăng nhập",
+    "signedInAs": "Đã đăng nhập là",
+    "yourAccount": "tài khoản của bạn",
+    "codeLabel": "Nhập code hiển thị trong terminal của bạn",
+    "linking": "Đang link...",
+    "linkDevice": "Link Device",
+    "run": "Chạy",
+    "runSuffix": "trên Mac của bạn để lấy code."
+  },
+  "ProvidersLayout": {
+    "title": "Provider Dashboard",
+    "dashboard": "Dashboard",
+    "setup": "Setup",
+    "earnings": "Earnings"
+  },
+  "BillingPage": {
+    "title": "Billing",
+    "balance": "Balance",
+    "loading": "Đang tải...",
+    "credits": "{amount} credits",
+    "earnings": "{amount} earnings",
+    "buyCredits": "Mua Credits",
+    "inviteCode": "Invite Code",
+    "redeem": "Redeem",
+    "inviteCredited": "{amount} đã được credit vào tài khoản của bạn",
+    "totalSpent": "Tổng Đã Chi",
+    "totalTokens": "Tổng Tokens",
+    "requests": "Requests",
+    "usageHistory": "Usage History",
+    "noUsage": "Chưa có usage history. Bắt đầu chat để xem requests ở đây.",
+    "time": "Time",
+    "model": "Model",
+    "tokens": "Tokens",
+    "cost": "Cost",
+    "creditsDescription": "Credits được dùng để thanh toán cho inference requests.",
+    "amountUsd": "Amount (USD)",
+    "maxDeposit": "Maximum deposit là $20",
+    "redirecting": "Redirecting...",
+    "continue": "Tiếp tục",
+    "stripePowered": "Powered by Stripe. Thanh toán thẻ an toàn."
+  },
+  "EarnPage": {
+    "title": "Earnings Calculator",
+    "heading": "Provider Earnings Calculator",
+    "loading": "Đang tải...",
+    "signIn": "Đăng nhập",
+    "estimatedEarnings": "Estimated Earnings"
+  },
+  "Common": {
+    "auth": "Auth",
+    "request": "Request",
+    "response": "Response",
+    "notes": "Notes",
+    "copied": "Đã sao chép",
+    "copy": "Sao chép",
+    "loading": "Đang tải...",
+    "refresh": "Refresh",
+    "error": "Lỗi"
+  }
+}

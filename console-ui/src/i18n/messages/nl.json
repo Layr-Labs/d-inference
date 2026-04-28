@@ -1,0 +1,298 @@
+{
+  "Metadata": {
+    "title": "Darkbloom — Private AI op geverifieerde Macs",
+    "description": "Private AI-inferentie via hardware-geattesteerde Apple Silicon-providers. Je prompts blijven versleuteld, je data blijft van jou."
+  },
+  "Shell": {
+    "loading": "Laden..."
+  },
+  "TopBar": {
+    "openSidebar": "Zijbalk openen"
+  },
+  "Sidebar": {
+    "tagline": "Een Eigen Labs-project · Onderzoekspreview",
+    "newChat": "Nieuwe chat",
+    "disclaimer": "Experimentele onderzoekspreview. Wordt as-is geleverd voor evaluatie. Niet voor productiegebruik.",
+    "switchDark": "Overschakelen naar donkere modus",
+    "switchLight": "Overschakelen naar lichte modus",
+    "signOut": "Uitloggen",
+    "nav": {
+      "chat": "Chat",
+      "stats": "Statistieken",
+      "providers": "Providerdashboard",
+      "earn": "Verdienen",
+      "api": "API",
+      "models": "Modellen",
+      "billing": "Facturering",
+      "settings": "Instellingen"
+    },
+    "language": "Taal",
+    "changeLanguage": "Taal wijzigen"
+  },
+  "AnalyticsConsent": {
+    "body": "Sta privacy-gefilterde gebruiksanalyses toe om de productervaring van Darkbloom te helpen verbeteren.",
+    "allow": "Analyses toestaan",
+    "decline": "Weigeren",
+    "storedIn": "Opgeslagen in <code>{key}</code>"
+  },
+  "ChatPage": {
+    "loading": "Laden...",
+    "signIn": "Inloggen",
+    "trustLine": "End-to-end versleuteld · Apple Silicon · Gedecentraliseerd",
+    "guest": {
+      "title": "Private inferentie op geverifieerde hardware.",
+      "subtitle": "Je prompts blijven versleuteld, je data blijft van jou.",
+      "signInHint": "Log in met je e-mailadres om te beginnen"
+    },
+    "empty": {
+      "subtitle": "Private inferentie op geverifieerde hardware"
+    },
+    "suggestions": {
+      "quantum": {
+        "label": "Quantumcomputing uitleggen",
+        "prompt": "Leg quantumcomputing uit in eenvoudige termen"
+      },
+      "python": {
+        "label": "Een Python-script schrijven",
+        "prompt": "Schrijf een Python-script dat een CSV leest en een samenvattend rapport genereert"
+      },
+      "frameworks": {
+        "label": "ML-frameworks vergelijken",
+        "prompt": "Vergelijk PyTorch en JAX voor onderzoeksuse-cases"
+      },
+      "zk": {
+        "label": "Zero-knowledge proofs uitleggen",
+        "prompt": "Wat zijn zero-knowledge proofs en hoe worden ze gebruikt in blockchain?"
+      }
+    },
+    "errors": {
+      "stream": "Fout: {error}",
+      "connection": "Verbindingsfout: {error}"
+    }
+  },
+  "ChatInput": {
+    "selectModel": "Model selecteren",
+    "signInToChat": "Log in om te chatten",
+    "placeholder": "Stuur een bericht...",
+    "modelSelector": "Model selecteren",
+    "send": "Bericht sturen",
+    "stop": "Generatie stoppen"
+  },
+  "ChatMessage": {
+    "code": "code",
+    "copy": "Kopiëren",
+    "copied": "Gekopieerd",
+    "thinking": "Denken",
+    "thinkingStreaming": "Denken...",
+    "chars": "({count} tekens)",
+    "tokens": "tokens",
+    "live": "live",
+    "retry": "Opnieuw proberen",
+    "regenerate": "Opnieuw genereren"
+  },
+  "SettingsPage": {
+    "title": "Instellingen",
+    "save": "Instellingen opslaan",
+    "saved": "Opgeslagen",
+    "savedToast": "Instellingen opgeslagen",
+    "coordinator": {
+      "title": "Coordinator-URL",
+      "description": "De basis-URL van de Darkbloom-coordinator die je inferentieverzoeken routeert naar geattesteerde providers.",
+      "test": "Verbinding testen",
+      "connected": "Verbonden — {count, plural, one {# provider} other {# providers}} online"
+    },
+    "language": {
+      "title": "Taal",
+      "description": "Darkbloom kiest automatisch een taal op basis van je opgeslagen voorkeur, browsertaal en een grove landindicator. Je kunt dit hier overschrijven.",
+      "detected": "Huidige taal: {locale}"
+    },
+    "encryption": {
+      "title": "Verzoeken naar coordinator versleutelen",
+      "description": "Wanneer ingeschakeld worden je prompts verzegeld met de langlevende openbare X25519-sleutel van de coordinator (NaCl Box) voordat ze deze browser verlaten. De coordinator ontsleutelt binnen zijn TEE, kiest een provider en verzegelt opnieuw met de Secure Enclave-sleutel van de provider. Alles vóór de coordinator (CDN, proxies, netwerkobservatoren) ziet alleen ciphertext voorbij de TLS-tunnel. Optioneel en standaard uitgeschakeld — plaintext API-clients blijven werken.",
+      "checkbox": "Elk verzoek verzegelen met de openbare sleutel van de coordinator",
+      "fetching": "coordinator-sleutel ophalen...",
+      "unavailable": "Deze coordinator heeft afzenderversleuteling niet geconfigureerd.",
+      "keyInfo": "coordinator-sleutel kid={kid}",
+      "enabledToast": "Versleuteling naar coordinator ingeschakeld",
+      "disabledToast": "Versleuteling naar coordinator uitgeschakeld"
+    },
+    "analytics": {
+      "title": "Analyses",
+      "description": "Bepaal of Darkbloom privacy-gefilterde Google Analytics mag laden om productgebruik te meten. Queryparameters worden opgeschoond voordat analyse-events worden verzonden, behalve de kleine attributie-allowlist die wordt gebruikt om campagnemeting te behouden.",
+      "allow": "Analyses toestaan",
+      "decline": "Analyses weigeren",
+      "current": "Huidige keuze:",
+      "enabledToast": "Analyses ingeschakeld",
+      "disabledToast": "Analyses uitgeschakeld"
+    },
+    "about": {
+      "title": "Over Darkbloom",
+      "p1": "Darkbloom is een gedecentraliseerd netwerk voor private inferentie. Je verzoeken worden gerouteerd naar hardware-geattesteerde Apple Silicon-providers met Secure Enclave-verificatie, SIP-handhaving en Hardened Runtime-bescherming.",
+      "p2": "Providervertrouwen wordt onafhankelijk geverifieerd via MDM (Mobile Device Management)-kruiscontroles met de coordinator."
+    }
+  },
+  "ModelsPage": {
+    "title": "Modellen",
+    "heading": "Beschikbare modellen",
+    "description": "Modellen die worden geserveerd door hardware-geattesteerde providers op het Darkbloom-netwerk.",
+    "loading": "Modellen laden...",
+    "empty": "Geen modellen beschikbaar. Controleer je coordinatorverbinding in Instellingen.",
+    "hardware": "Hardware",
+    "none": "Geen",
+    "perMillionTokens": "per 1M tokens",
+    "cheaper": "{percent}% goedkoper",
+    "vs": "vs {competitor}",
+    "providers": "{count, plural, one {# provider} other {# providers}}",
+    "attested": "Geattesteerd"
+  },
+  "StatsPage": {
+    "title": "Netwerkstatistieken",
+    "heading": "Netwerkstatistieken",
+    "description": "Live statistieken van het gedecentraliseerde Darkbloom-inferentienetwerk",
+    "failedFetch": "Statistieken ophalen mislukt",
+    "failedLoad": "Platformstatistieken laden mislukt",
+    "retry": "Opnieuw proberen",
+    "live": "Live",
+    "hardware": "Hardware",
+    "none": "Geen",
+    "lastMinutes": "Laatste {count} min",
+    "activityPlaceholder": "Activiteit verschijnt hier",
+    "tokensPerMinute": "Tokens / minuut",
+    "input": "Invoer",
+    "output": "Uitvoer",
+    "tokenPlaceholder": "Tokenstroom verschijnt hier",
+    "tokenTooltip": "{input} in / {output} uit",
+    "memory": "Geheugen",
+    "gpu": "GPU",
+    "cpu": "CPU",
+    "bandwidth": "Bandbreedte",
+    "requests": "Verzoeken",
+    "tokens": "Tokens",
+    "serving": "Serveert:",
+    "tokensServed": "Geserveerde tokens",
+    "tokensInOut": "{input} in / {output} uit",
+    "nodesOnline": "Nodes online",
+    "allHardwareAttested": "allemaal hardware-geattesteerd",
+    "hardwareAttestedCount": "{count} hardware-geattesteerd",
+    "gbBandwidth": "GB/s bandbreedte",
+    "combinedThroughput": "gecombineerde geheugendoorvoer",
+    "gpuCores": "GPU-cores",
+    "cpuCores": "CPU-cores",
+    "pECores": "P + E-cores",
+    "unifiedRam": "Unified RAM",
+    "avgTokReq": "Gem. Tok/Verz.",
+    "models": "Modellen",
+    "requestsPerMinute": "Verzoeken / minuut",
+    "tokenDistribution": "Tokendistributie",
+    "inputPercent": "{value} in ({percent}%)",
+    "outputPercent": "{value} uit ({percent}%)",
+    "activeModels": "Actieve modellen",
+    "nodes": "{count, plural, one {node} other {nodes}}",
+    "networkNodes": "Netwerknodes",
+    "autoRefresh": "Vernieuwt automatisch elke 10 seconden"
+  },
+  "ApiConsolePage": {
+    "title": "API-console",
+    "auth": "Auth",
+    "request": "Verzoek",
+    "response": "Reactie",
+    "requiresAuth": "Vereist de header <code>Authorization: Bearer &lt;api_key&gt;</code>",
+    "noApiKey": "Geen API-sleutel gegenereerd",
+    "noKey": "Geen sleutel gegenereerd",
+    "intro": "<strong>Darkbloom API</strong> — OpenAI-compatibel. Verwissel je basis-URL en behoud je bestaande code. Elk verzoek is end-to-end versleuteld en wordt verwerkt op hardware-geattesteerd Apple Silicon.",
+    "endpointReference": "Endpointreferentie",
+    "endpointDescription": "Vouw elk endpoint uit om verzoek-/reactieformaat en opmerkingen te zien.",
+    "baseUrl": "Basis-URL",
+    "baseUrlDescription": "Alle endpoints zijn relatief aan deze basis-URL. Providerattestatie- en prijsendpoints zijn openbaar toegankelijk zonder authenticatie.",
+    "apiKey": "API-sleutel",
+    "hideKey": "Sleutel verbergen",
+    "showKey": "Sleutel tonen",
+    "copyKey": "Sleutel kopiëren",
+    "regenerate": "Opnieuw genereren",
+    "generate": "Genereren",
+    "keyHelp": "Gebruik deze sleutel in de header <code>Authorization: Bearer</code> voor alle geauthenticeerde verzoeken.",
+    "quickStart": "Snelstart",
+    "quickStartDescription": "Installeer de OpenAI SDK of Vercel AI SDK. De Darkbloom API is volledig OpenAI-compatibel — wijzig alleen de basis-URL.",
+    "availableModels": "Beschikbare modellen",
+    "modelId": "Model-ID",
+    "type": "Type",
+    "architecture": "Architectuur",
+    "modelsHelp": "Modelbeschikbaarheid hangt af van online providers. Controleer <code>/v1/models</code> voor realtime beschikbaarheid.",
+    "chatCompletions": "Chat Completions",
+    "chatDescription": "Stream chat completions met elk ondersteund model. Ondersteunt systeemberichten, gesprekken met meerdere beurten en denk-/redeneringsoutput.",
+    "listModels": "Modellen weergeven",
+    "listModelsDescription": "Controleer beschikbare modellen, provideraantallen en attestatiestatus."
+  },
+  "LinkPage": {
+    "title": "Je apparaat koppelen",
+    "description": "Verbind je Mac met je Darkbloom-account om inkomsten te ontvangen voor het leveren van compute."
+  },
+  "DeviceLinkForm": {
+    "loading": "Laden...",
+    "missingToken": "Authenticatietoken ophalen mislukt. Log opnieuw in.",
+    "failed": "Apparaat koppelen mislukt",
+    "networkError": "Netwerkfout. Controleer je verbinding.",
+    "successTitle": "Apparaat gekoppeld!",
+    "successBody": "Je provider is nu verbonden met je account. Inkomsten worden automatisch bijgeschreven.",
+    "successClose": "Je kunt deze pagina sluiten.",
+    "signInPrompt": "Log in op je Darkbloom-account om je apparaat te koppelen.",
+    "signIn": "Inloggen",
+    "signedInAs": "Ingelogd als",
+    "yourAccount": "je account",
+    "codeLabel": "Voer de code in die in je terminal wordt getoond",
+    "linking": "Koppelen...",
+    "linkDevice": "Apparaat koppelen",
+    "run": "Voer uit",
+    "runSuffix": "op je Mac om een code te krijgen."
+  },
+  "ProvidersLayout": {
+    "title": "Providerdashboard",
+    "dashboard": "Dashboard",
+    "setup": "Instellen",
+    "earnings": "Inkomsten"
+  },
+  "BillingPage": {
+    "title": "Facturering",
+    "balance": "Saldo",
+    "loading": "Laden...",
+    "credits": "{amount} credits",
+    "earnings": "{amount} inkomsten",
+    "buyCredits": "Credits kopen",
+    "inviteCode": "Uitnodigingscode",
+    "redeem": "Inwisselen",
+    "inviteCredited": "{amount} bijgeschreven op je account",
+    "totalSpent": "Totaal besteed",
+    "totalTokens": "Totaal tokens",
+    "requests": "Verzoeken",
+    "usageHistory": "Gebruiksgeschiedenis",
+    "noUsage": "Nog geen gebruiksgeschiedenis. Start een chat om verzoeken hier te zien.",
+    "time": "Tijd",
+    "model": "Model",
+    "tokens": "Tokens",
+    "cost": "Kosten",
+    "creditsDescription": "Credits worden gebruikt om inferentieverzoeken te betalen.",
+    "amountUsd": "Bedrag (USD)",
+    "maxDeposit": "Maximale storting is $20",
+    "redirecting": "Doorsturen...",
+    "continue": "Doorgaan",
+    "stripePowered": "Mogelijk gemaakt door Stripe. Veilige kaartbetaling."
+  },
+  "EarnPage": {
+    "title": "Inkomstencalculator",
+    "heading": "Providerinkomstencalculator",
+    "loading": "Laden...",
+    "signIn": "Inloggen",
+    "estimatedEarnings": "Geschatte inkomsten"
+  },
+  "Common": {
+    "auth": "Auth",
+    "request": "Verzoek",
+    "response": "Reactie",
+    "notes": "Opmerkingen",
+    "copied": "Gekopieerd",
+    "copy": "Kopiëren",
+    "loading": "Laden...",
+    "refresh": "Vernieuwen",
+    "error": "Fout"
+  }
+}

@@ -1,0 +1,298 @@
+{
+  "Metadata": {
+    "title": "Darkbloom — Private AI on Verified Macs",
+    "description": "Private AI inference through hardware-attested Apple Silicon providers. Your prompts stay encrypted, your data stays yours."
+  },
+  "Shell": {
+    "loading": "Loading..."
+  },
+  "TopBar": {
+    "openSidebar": "Open sidebar"
+  },
+  "Sidebar": {
+    "tagline": "An Eigen Labs project · Research Preview",
+    "newChat": "New chat",
+    "disclaimer": "Experimental research preview. Provided as-is for evaluation. Not for production use.",
+    "switchDark": "Switch to dark mode",
+    "switchLight": "Switch to light mode",
+    "signOut": "Sign out",
+    "nav": {
+      "chat": "Chat",
+      "stats": "Stats",
+      "providers": "Provider Dashboard",
+      "earn": "Earn",
+      "api": "API",
+      "models": "Models",
+      "billing": "Billing",
+      "settings": "Settings"
+    },
+    "language": "Language",
+    "changeLanguage": "Change language"
+  },
+  "AnalyticsConsent": {
+    "body": "Allow privacy-filtered usage analytics to help improve Darkbloom's product experience.",
+    "allow": "Allow analytics",
+    "decline": "Decline",
+    "storedIn": "Stored in <code>{key}</code>"
+  },
+  "ChatPage": {
+    "loading": "Loading...",
+    "signIn": "Sign In",
+    "trustLine": "End-to-end encrypted · Apple Silicon · Decentralized",
+    "guest": {
+      "title": "Private inference on verified hardware.",
+      "subtitle": "Your prompts stay encrypted, your data stays yours.",
+      "signInHint": "Sign in with your email to get started"
+    },
+    "empty": {
+      "subtitle": "Private inference on verified hardware"
+    },
+    "suggestions": {
+      "quantum": {
+        "label": "Explain quantum computing",
+        "prompt": "Explain quantum computing in simple terms"
+      },
+      "python": {
+        "label": "Write a Python script",
+        "prompt": "Write a Python script that reads a CSV and generates a summary report"
+      },
+      "frameworks": {
+        "label": "Compare ML frameworks",
+        "prompt": "Compare PyTorch and JAX for research use cases"
+      },
+      "zk": {
+        "label": "Explain zero-knowledge proofs",
+        "prompt": "What are zero-knowledge proofs and how are they used in blockchain?"
+      }
+    },
+    "errors": {
+      "stream": "Error: {error}",
+      "connection": "Connection error: {error}"
+    }
+  },
+  "ChatInput": {
+    "selectModel": "Select model",
+    "signInToChat": "Sign in to start chatting",
+    "placeholder": "Send a message...",
+    "modelSelector": "Select model",
+    "send": "Send message",
+    "stop": "Stop generation"
+  },
+  "ChatMessage": {
+    "code": "code",
+    "copy": "Copy",
+    "copied": "Copied",
+    "thinking": "Thinking",
+    "thinkingStreaming": "Thinking...",
+    "chars": "({count} chars)",
+    "tokens": "tokens",
+    "live": "live",
+    "retry": "Retry",
+    "regenerate": "Regenerate"
+  },
+  "SettingsPage": {
+    "title": "Settings",
+    "save": "Save Settings",
+    "saved": "Saved",
+    "savedToast": "Settings saved",
+    "coordinator": {
+      "title": "Coordinator URL",
+      "description": "The base URL of the Darkbloom coordinator that routes your inference requests to attested providers.",
+      "test": "Test Connection",
+      "connected": "Connected — {count, plural, one {# provider} other {# providers}} online"
+    },
+    "language": {
+      "title": "Language",
+      "description": "Darkbloom automatically chooses a language from your saved preference, browser language, and coarse country signal. You can override it here.",
+      "detected": "Current language: {locale}"
+    },
+    "encryption": {
+      "title": "Encrypt requests to coordinator",
+      "description": "When enabled, your prompts are sealed to the coordinator's long-lived X25519 public key (NaCl Box) before leaving this browser. The coordinator decrypts inside its TEE, picks a provider, and re-seals to the provider's Secure Enclave key. Anything in front of the coordinator (CDN, proxies, network observers) sees only ciphertext beyond the TLS tunnel. Optional and off by default — plaintext API clients keep working.",
+      "checkbox": "Seal each request to the coordinator's public key",
+      "fetching": "fetching coordinator key...",
+      "unavailable": "This coordinator has not configured sender encryption.",
+      "keyInfo": "coordinator key kid={kid}",
+      "enabledToast": "Encryption to coordinator enabled",
+      "disabledToast": "Encryption to coordinator disabled"
+    },
+    "analytics": {
+      "title": "Analytics",
+      "description": "Control whether Darkbloom can load privacy-filtered Google Analytics to measure product usage. Query parameters are sanitized before analytics events are sent, except for the small attribution allowlist used to preserve campaign measurement.",
+      "allow": "Allow analytics",
+      "decline": "Decline analytics",
+      "current": "Current choice:",
+      "enabledToast": "Analytics enabled",
+      "disabledToast": "Analytics disabled"
+    },
+    "about": {
+      "title": "About Darkbloom",
+      "p1": "Darkbloom is a decentralized private inference network. Your requests are routed to hardware-attested Apple Silicon providers with Secure Enclave verification, SIP enforcement, and Hardened Runtime protection.",
+      "p2": "Provider trust is independently verified through MDM (Mobile Device Management) cross-checking with the coordinator."
+    }
+  },
+  "ModelsPage": {
+    "title": "Models",
+    "heading": "Available Models",
+    "description": "Models served by hardware-attested providers on the Darkbloom network.",
+    "loading": "Loading models...",
+    "empty": "No models available. Check your coordinator connection in Settings.",
+    "hardware": "Hardware",
+    "none": "None",
+    "perMillionTokens": "per 1M tokens",
+    "cheaper": "{percent}% cheaper",
+    "vs": "vs {competitor}",
+    "providers": "{count, plural, one {# provider} other {# providers}}",
+    "attested": "Attested"
+  },
+  "StatsPage": {
+    "title": "Network Stats",
+    "heading": "Network Statistics",
+    "description": "Live metrics from the Darkbloom decentralized inference network",
+    "failedFetch": "Failed to fetch stats",
+    "failedLoad": "Failed to load platform stats",
+    "retry": "Retry",
+    "live": "Live",
+    "hardware": "Hardware",
+    "none": "None",
+    "lastMinutes": "Last {count} min",
+    "activityPlaceholder": "Activity will appear here",
+    "tokensPerMinute": "Tokens / Minute",
+    "input": "Input",
+    "output": "Output",
+    "tokenPlaceholder": "Token flow will appear here",
+    "tokenTooltip": "{input} in / {output} out",
+    "memory": "Memory",
+    "gpu": "GPU",
+    "cpu": "CPU",
+    "bandwidth": "Bandwidth",
+    "requests": "Requests",
+    "tokens": "Tokens",
+    "serving": "Serving:",
+    "tokensServed": "Tokens Served",
+    "tokensInOut": "{input} in / {output} out",
+    "nodesOnline": "Nodes Online",
+    "allHardwareAttested": "all hardware-attested",
+    "hardwareAttestedCount": "{count} hardware-attested",
+    "gbBandwidth": "GB/s Bandwidth",
+    "combinedThroughput": "combined memory throughput",
+    "gpuCores": "GPU Cores",
+    "cpuCores": "CPU Cores",
+    "pECores": "P + E cores",
+    "unifiedRam": "Unified RAM",
+    "avgTokReq": "Avg Tok/Req",
+    "models": "Models",
+    "requestsPerMinute": "Requests / Minute",
+    "tokenDistribution": "Token Distribution",
+    "inputPercent": "{value} in ({percent}%)",
+    "outputPercent": "{value} out ({percent}%)",
+    "activeModels": "Active Models",
+    "nodes": "{count, plural, one {node} other {nodes}}",
+    "networkNodes": "Network Nodes",
+    "autoRefresh": "Auto-refreshes every 10 seconds"
+  },
+  "ApiConsolePage": {
+    "title": "API Console",
+    "auth": "Auth",
+    "request": "Request",
+    "response": "Response",
+    "requiresAuth": "Requires <code>Authorization: Bearer &lt;api_key&gt;</code> header",
+    "noApiKey": "No API key generated",
+    "noKey": "No key generated",
+    "intro": "<strong>Darkbloom API</strong> — OpenAI-compatible. Swap your base URL, keep your existing code. Every request is end-to-end encrypted and processed on hardware-attested Apple Silicon.",
+    "endpointReference": "Endpoint Reference",
+    "endpointDescription": "Expand each endpoint to see request/response format and notes.",
+    "baseUrl": "Base URL",
+    "baseUrlDescription": "All endpoints are relative to this base URL. Provider attestation and pricing endpoints are publicly accessible without authentication.",
+    "apiKey": "API Key",
+    "hideKey": "Hide key",
+    "showKey": "Show key",
+    "copyKey": "Copy key",
+    "regenerate": "Regenerate",
+    "generate": "Generate",
+    "keyHelp": "Use this key in the <code>Authorization: Bearer</code> header for all authenticated requests.",
+    "quickStart": "Quick Start",
+    "quickStartDescription": "Install the OpenAI SDK or Vercel AI SDK. The Darkbloom API is fully OpenAI-compatible — just change the base URL.",
+    "availableModels": "Available Models",
+    "modelId": "Model ID",
+    "type": "Type",
+    "architecture": "Architecture",
+    "modelsHelp": "Model availability depends on online providers. Check <code>/v1/models</code> for real-time availability.",
+    "chatCompletions": "Chat Completions",
+    "chatDescription": "Stream chat completions with any supported model. Supports system messages, multi-turn conversations, and thinking/reasoning output.",
+    "listModels": "List Models",
+    "listModelsDescription": "Check available models, provider counts, and attestation status."
+  },
+  "LinkPage": {
+    "title": "Link Your Device",
+    "description": "Connect your Mac to your Darkbloom account to receive earnings for providing compute."
+  },
+  "DeviceLinkForm": {
+    "loading": "Loading...",
+    "missingToken": "Failed to get auth token. Please log in again.",
+    "failed": "Failed to link device",
+    "networkError": "Network error. Please check your connection.",
+    "successTitle": "Device Linked!",
+    "successBody": "Your provider is now connected to your account. Earnings will be credited automatically.",
+    "successClose": "You can close this page.",
+    "signInPrompt": "Sign in to your Darkbloom account to link your device.",
+    "signIn": "Sign In",
+    "signedInAs": "Signed in as",
+    "yourAccount": "your account",
+    "codeLabel": "Enter the code shown in your terminal",
+    "linking": "Linking...",
+    "linkDevice": "Link Device",
+    "run": "Run",
+    "runSuffix": "on your Mac to get a code."
+  },
+  "ProvidersLayout": {
+    "title": "Provider Dashboard",
+    "dashboard": "Dashboard",
+    "setup": "Setup",
+    "earnings": "Earnings"
+  },
+  "BillingPage": {
+    "title": "Billing",
+    "balance": "Balance",
+    "loading": "Loading...",
+    "credits": "{amount} credits",
+    "earnings": "{amount} earnings",
+    "buyCredits": "Buy Credits",
+    "inviteCode": "Invite Code",
+    "redeem": "Redeem",
+    "inviteCredited": "{amount} credited to your account",
+    "totalSpent": "Total Spent",
+    "totalTokens": "Total Tokens",
+    "requests": "Requests",
+    "usageHistory": "Usage History",
+    "noUsage": "No usage history yet. Start a chat to see requests here.",
+    "time": "Time",
+    "model": "Model",
+    "tokens": "Tokens",
+    "cost": "Cost",
+    "creditsDescription": "Credits are used to pay for inference requests.",
+    "amountUsd": "Amount (USD)",
+    "maxDeposit": "Maximum deposit is $20",
+    "redirecting": "Redirecting...",
+    "continue": "Continue",
+    "stripePowered": "Powered by Stripe. Secure card payment."
+  },
+  "EarnPage": {
+    "title": "Earnings Calculator",
+    "heading": "Provider Earnings Calculator",
+    "loading": "Loading...",
+    "signIn": "Sign In",
+    "estimatedEarnings": "Estimated Earnings"
+  },
+  "Common": {
+    "auth": "Auth",
+    "request": "Request",
+    "response": "Response",
+    "notes": "Notes",
+    "copied": "Copied",
+    "copy": "Copy",
+    "loading": "Loading...",
+    "refresh": "Refresh",
+    "error": "Error"
+  }
+}

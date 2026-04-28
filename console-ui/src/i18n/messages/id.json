@@ -1,0 +1,298 @@
+{
+  "Metadata": {
+    "title": "Darkbloom — AI privat di Macs terverifikasi",
+    "description": "Inference AI privat melalui penyedia Apple Silicon yang hardware-attested. Prompt Anda tetap terenkripsi, data Anda tetap milik Anda."
+  },
+  "Shell": {
+    "loading": "Memuat..."
+  },
+  "TopBar": {
+    "openSidebar": "Buka sidebar"
+  },
+  "Sidebar": {
+    "tagline": "Proyek Eigen Labs · Research Preview",
+    "newChat": "Chat baru",
+    "disclaimer": "Research preview eksperimental. Disediakan apa adanya untuk evaluasi. Bukan untuk penggunaan produksi.",
+    "switchDark": "Beralih ke mode gelap",
+    "switchLight": "Beralih ke mode terang",
+    "signOut": "Keluar",
+    "nav": {
+      "chat": "Chat",
+      "stats": "Statistik",
+      "providers": "Provider Dashboard",
+      "earn": "Dapatkan",
+      "api": "API",
+      "models": "Models",
+      "billing": "Billing",
+      "settings": "Pengaturan"
+    },
+    "language": "Bahasa",
+    "changeLanguage": "Ubah bahasa"
+  },
+  "AnalyticsConsent": {
+    "body": "Izinkan analytics penggunaan yang difilter untuk privasi guna membantu meningkatkan pengalaman produk Darkbloom.",
+    "allow": "Izinkan analytics",
+    "decline": "Tolak",
+    "storedIn": "Disimpan di <code>{key}</code>"
+  },
+  "ChatPage": {
+    "loading": "Memuat...",
+    "signIn": "Masuk",
+    "trustLine": "End-to-end encrypted · Apple Silicon · Decentralized",
+    "guest": {
+      "title": "Inference privat di hardware terverifikasi.",
+      "subtitle": "Prompt Anda tetap terenkripsi, data Anda tetap milik Anda.",
+      "signInHint": "Masuk dengan email Anda untuk mulai"
+    },
+    "empty": {
+      "subtitle": "Inference privat di hardware terverifikasi"
+    },
+    "suggestions": {
+      "quantum": {
+        "label": "Jelaskan quantum computing",
+        "prompt": "Jelaskan quantum computing dengan istilah sederhana"
+      },
+      "python": {
+        "label": "Tulis script Python",
+        "prompt": "Tulis script Python yang membaca CSV dan menghasilkan laporan ringkasan"
+      },
+      "frameworks": {
+        "label": "Bandingkan ML frameworks",
+        "prompt": "Bandingkan PyTorch dan JAX untuk use case riset"
+      },
+      "zk": {
+        "label": "Jelaskan zero-knowledge proofs",
+        "prompt": "Apa itu zero-knowledge proofs dan bagaimana digunakan di blockchain?"
+      }
+    },
+    "errors": {
+      "stream": "Error: {error}",
+      "connection": "Error koneksi: {error}"
+    }
+  },
+  "ChatInput": {
+    "selectModel": "Pilih model",
+    "signInToChat": "Masuk untuk mulai chat",
+    "placeholder": "Kirim pesan...",
+    "modelSelector": "Pilih model",
+    "send": "Kirim pesan",
+    "stop": "Hentikan generation"
+  },
+  "ChatMessage": {
+    "code": "kode",
+    "copy": "Salin",
+    "copied": "Disalin",
+    "thinking": "Berpikir",
+    "thinkingStreaming": "Berpikir...",
+    "chars": "({count} karakter)",
+    "tokens": "tokens",
+    "live": "live",
+    "retry": "Coba lagi",
+    "regenerate": "Generate ulang"
+  },
+  "SettingsPage": {
+    "title": "Pengaturan",
+    "save": "Simpan Pengaturan",
+    "saved": "Tersimpan",
+    "savedToast": "Pengaturan tersimpan",
+    "coordinator": {
+      "title": "Coordinator URL",
+      "description": "Base URL coordinator Darkbloom yang merutekan request inference Anda ke attested providers.",
+      "test": "Uji Koneksi",
+      "connected": "Terhubung — {count, plural, one {# provider} other {# providers}} online"
+    },
+    "language": {
+      "title": "Bahasa",
+      "description": "Darkbloom otomatis memilih bahasa dari preferensi tersimpan, bahasa browser, dan sinyal negara kasar. Anda dapat menggantinya di sini.",
+      "detected": "Bahasa saat ini: {locale}"
+    },
+    "encryption": {
+      "title": "Encrypt requests ke coordinator",
+      "description": "Saat diaktifkan, prompt Anda disegel ke public key X25519 jangka panjang milik coordinator (NaCl Box) sebelum meninggalkan browser ini. coordinator mendekripsi di dalam TEE, memilih provider, lalu menyegel ulang ke Secure Enclave key milik provider. Apa pun di depan coordinator (CDN, proxies, network observers) hanya melihat ciphertext di luar TLS tunnel. Opsional dan default-nya off — plaintext API clients tetap berfungsi.",
+      "checkbox": "Seal setiap request ke public key coordinator",
+      "fetching": "mengambil coordinator key...",
+      "unavailable": "Coordinator ini belum mengonfigurasi sender encryption.",
+      "keyInfo": "coordinator key kid={kid}",
+      "enabledToast": "Encryption ke coordinator diaktifkan",
+      "disabledToast": "Encryption ke coordinator dinonaktifkan"
+    },
+    "analytics": {
+      "title": "Analytics",
+      "description": "Kontrol apakah Darkbloom dapat memuat Google Analytics yang difilter untuk privasi guna mengukur penggunaan produk. Query parameters disanitasi sebelum analytics events dikirim, kecuali attribution allowlist kecil yang digunakan untuk mempertahankan pengukuran campaign.",
+      "allow": "Izinkan analytics",
+      "decline": "Tolak analytics",
+      "current": "Pilihan saat ini:",
+      "enabledToast": "Analytics diaktifkan",
+      "disabledToast": "Analytics dinonaktifkan"
+    },
+    "about": {
+      "title": "Tentang Darkbloom",
+      "p1": "Darkbloom adalah decentralized private inference network. Request Anda dirutekan ke hardware-attested Apple Silicon providers dengan Secure Enclave verification, SIP enforcement, dan Hardened Runtime protection.",
+      "p2": "Provider trust diverifikasi secara independen melalui MDM (Mobile Device Management) dengan cross-check ke coordinator."
+    }
+  },
+  "ModelsPage": {
+    "title": "Models",
+    "heading": "Models Tersedia",
+    "description": "Models yang disajikan oleh hardware-attested providers di jaringan Darkbloom.",
+    "loading": "Memuat models...",
+    "empty": "Tidak ada model tersedia. Periksa koneksi coordinator Anda di Settings.",
+    "hardware": "Hardware",
+    "none": "Tidak ada",
+    "perMillionTokens": "per 1M tokens",
+    "cheaper": "{percent}% lebih murah",
+    "vs": "vs {competitor}",
+    "providers": "{count, plural, one {# provider} other {# providers}}",
+    "attested": "Attested"
+  },
+  "StatsPage": {
+    "title": "Network Stats",
+    "heading": "Statistik Network",
+    "description": "Metrics live dari Darkbloom decentralized inference network",
+    "failedFetch": "Gagal mengambil stats",
+    "failedLoad": "Gagal memuat platform stats",
+    "retry": "Coba lagi",
+    "live": "Live",
+    "hardware": "Hardware",
+    "none": "Tidak ada",
+    "lastMinutes": "{count} min terakhir",
+    "activityPlaceholder": "Activity akan muncul di sini",
+    "tokensPerMinute": "Tokens / Minute",
+    "input": "Input",
+    "output": "Output",
+    "tokenPlaceholder": "Token flow akan muncul di sini",
+    "tokenTooltip": "{input} in / {output} out",
+    "memory": "Memory",
+    "gpu": "GPU",
+    "cpu": "CPU",
+    "bandwidth": "Bandwidth",
+    "requests": "Requests",
+    "tokens": "Tokens",
+    "serving": "Serving:",
+    "tokensServed": "Tokens Served",
+    "tokensInOut": "{input} in / {output} out",
+    "nodesOnline": "Nodes Online",
+    "allHardwareAttested": "semua hardware-attested",
+    "hardwareAttestedCount": "{count} hardware-attested",
+    "gbBandwidth": "GB/s Bandwidth",
+    "combinedThroughput": "combined memory throughput",
+    "gpuCores": "GPU Cores",
+    "cpuCores": "CPU Cores",
+    "pECores": "P + E cores",
+    "unifiedRam": "Unified RAM",
+    "avgTokReq": "Avg Tok/Req",
+    "models": "Models",
+    "requestsPerMinute": "Requests / Minute",
+    "tokenDistribution": "Token Distribution",
+    "inputPercent": "{value} in ({percent}%)",
+    "outputPercent": "{value} out ({percent}%)",
+    "activeModels": "Active Models",
+    "nodes": "{count, plural, one {node} other {nodes}}",
+    "networkNodes": "Network Nodes",
+    "autoRefresh": "Auto-refresh setiap 10 seconds"
+  },
+  "ApiConsolePage": {
+    "title": "API Console",
+    "auth": "Auth",
+    "request": "Request",
+    "response": "Response",
+    "requiresAuth": "Memerlukan header <code>Authorization: Bearer &lt;api_key&gt;</code>",
+    "noApiKey": "Belum ada API key yang di-generate",
+    "noKey": "Belum ada key yang di-generate",
+    "intro": "<strong>Darkbloom API</strong> — OpenAI-compatible. Ganti base URL Anda, pertahankan code yang sudah ada. Setiap request end-to-end encrypted dan diproses di hardware-attested Apple Silicon.",
+    "endpointReference": "Endpoint Reference",
+    "endpointDescription": "Expand setiap endpoint untuk melihat format request/response dan notes.",
+    "baseUrl": "Base URL",
+    "baseUrlDescription": "Semua endpoints relatif terhadap base URL ini. Endpoint provider attestation dan pricing dapat diakses publik tanpa authentication.",
+    "apiKey": "API Key",
+    "hideKey": "Sembunyikan key",
+    "showKey": "Tampilkan key",
+    "copyKey": "Salin key",
+    "regenerate": "Generate ulang",
+    "generate": "Generate",
+    "keyHelp": "Gunakan key ini di header <code>Authorization: Bearer</code> untuk semua authenticated requests.",
+    "quickStart": "Quick Start",
+    "quickStartDescription": "Install OpenAI SDK atau Vercel AI SDK. Darkbloom API sepenuhnya OpenAI-compatible — cukup ubah base URL.",
+    "availableModels": "Models Tersedia",
+    "modelId": "Model ID",
+    "type": "Type",
+    "architecture": "Architecture",
+    "modelsHelp": "Ketersediaan model bergantung pada provider online. Periksa <code>/v1/models</code> untuk ketersediaan real-time.",
+    "chatCompletions": "Chat Completions",
+    "chatDescription": "Stream chat completions dengan model apa pun yang didukung. Mendukung system messages, multi-turn conversations, dan thinking/reasoning output.",
+    "listModels": "Daftar Models",
+    "listModelsDescription": "Periksa models tersedia, jumlah provider, dan status attestation."
+  },
+  "LinkPage": {
+    "title": "Link Device Anda",
+    "description": "Hubungkan Mac Anda ke akun Darkbloom Anda untuk menerima earnings karena menyediakan compute."
+  },
+  "DeviceLinkForm": {
+    "loading": "Memuat...",
+    "missingToken": "Gagal mendapatkan auth token. Silakan log in lagi.",
+    "failed": "Gagal link device",
+    "networkError": "Network error. Periksa koneksi Anda.",
+    "successTitle": "Device Linked!",
+    "successBody": "Provider Anda sekarang terhubung ke akun Anda. Earnings akan dikreditkan otomatis.",
+    "successClose": "Anda dapat menutup halaman ini.",
+    "signInPrompt": "Masuk ke akun Darkbloom Anda untuk link device Anda.",
+    "signIn": "Masuk",
+    "signedInAs": "Masuk sebagai",
+    "yourAccount": "akun Anda",
+    "codeLabel": "Masukkan code yang ditampilkan di terminal Anda",
+    "linking": "Linking...",
+    "linkDevice": "Link Device",
+    "run": "Jalankan",
+    "runSuffix": "di Mac Anda untuk mendapatkan code."
+  },
+  "ProvidersLayout": {
+    "title": "Provider Dashboard",
+    "dashboard": "Dashboard",
+    "setup": "Setup",
+    "earnings": "Earnings"
+  },
+  "BillingPage": {
+    "title": "Billing",
+    "balance": "Balance",
+    "loading": "Memuat...",
+    "credits": "{amount} credits",
+    "earnings": "{amount} earnings",
+    "buyCredits": "Beli Credits",
+    "inviteCode": "Invite Code",
+    "redeem": "Redeem",
+    "inviteCredited": "{amount} dikreditkan ke akun Anda",
+    "totalSpent": "Total Terpakai",
+    "totalTokens": "Total Tokens",
+    "requests": "Requests",
+    "usageHistory": "Usage History",
+    "noUsage": "Belum ada usage history. Mulai chat untuk melihat requests di sini.",
+    "time": "Time",
+    "model": "Model",
+    "tokens": "Tokens",
+    "cost": "Cost",
+    "creditsDescription": "Credits digunakan untuk membayar request inference.",
+    "amountUsd": "Amount (USD)",
+    "maxDeposit": "Maximum deposit adalah $20",
+    "redirecting": "Redirecting...",
+    "continue": "Lanjutkan",
+    "stripePowered": "Powered by Stripe. Pembayaran kartu aman."
+  },
+  "EarnPage": {
+    "title": "Earnings Calculator",
+    "heading": "Provider Earnings Calculator",
+    "loading": "Memuat...",
+    "signIn": "Masuk",
+    "estimatedEarnings": "Estimated Earnings"
+  },
+  "Common": {
+    "auth": "Auth",
+    "request": "Request",
+    "response": "Response",
+    "notes": "Notes",
+    "copied": "Disalin",
+    "copy": "Salin",
+    "loading": "Memuat...",
+    "refresh": "Refresh",
+    "error": "Error"
+  }
+}

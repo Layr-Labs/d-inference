@@ -35,6 +35,7 @@ import {
   ArrowDownToLine,
 } from "lucide-react";
 import { UsageChart } from "@/components/UsageChart";
+import { useTranslations } from "next-intl";
 
 function Modal({
   open,
@@ -64,6 +65,7 @@ function Modal({
 }
 
 export default function BillingContent() {
+  const t = useTranslations("BillingPage");
   const addToast = useToastStore((s) => s.addToast);
   const { email } = useAuth();
   const [balance, setBalance] = useState<BalanceResponse | null>(null);
@@ -218,7 +220,7 @@ export default function BillingContent() {
         surface: "billing_page",
         credited_usd: result.credited_usd,
       });
-      setInviteSuccess(`$${result.credited_usd} credited to your account`);
+      setInviteSuccess(t("inviteCredited", { amount: `$${result.credited_usd}` }));
       setInviteCode("");
       loadData();
     } catch (e) {
@@ -244,7 +246,7 @@ export default function BillingContent() {
 
   return (
     <div className="flex flex-col h-full">
-      <TopBar title="Billing" />
+      <TopBar title={t("title")} />
 
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto px-3 sm:px-6 py-6 sm:py-8 space-y-8">
@@ -252,12 +254,12 @@ export default function BillingContent() {
           <div className="relative overflow-hidden rounded-2xl border border-border-dim bg-bg-white p-6 sm:p-8 shadow-md">
             <div className="relative">
               <p className="text-xs font-mono text-text-tertiary uppercase tracking-widest mb-2">
-                Balance
+                {t("balance")}
               </p>
               {loading ? (
                 <div className="flex items-center gap-2 text-text-tertiary">
                   <Loader2 size={16} className="animate-spin" />
-                  <span className="text-sm">Loading...</span>
+                  <span className="text-sm">{t("loading")}</span>
                 </div>
               ) : (
                 <>
@@ -270,8 +272,8 @@ export default function BillingContent() {
                     </span>
                   </div>
                   <div className="flex gap-4 mb-4 text-xs font-mono text-text-tertiary">
-                    <span>${(((balance?.balance_micro_usd ?? 0) - (balance?.withdrawable_micro_usd ?? 0)) / 1_000_000).toFixed(2)} credits</span>
-                    <span>${((balance?.withdrawable_micro_usd ?? 0) / 1_000_000).toFixed(2)} earnings</span>
+                    <span>{t("credits", { amount: `$${(((balance?.balance_micro_usd ?? 0) - (balance?.withdrawable_micro_usd ?? 0)) / 1_000_000).toFixed(2)}` })}</span>
+                    <span>{t("earnings", { amount: `$${((balance?.withdrawable_micro_usd ?? 0) / 1_000_000).toFixed(2)}` })}</span>
                   </div>
                 </>
               )}
@@ -281,7 +283,7 @@ export default function BillingContent() {
                 className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-coral border-2 border-ink text-white text-sm font-bold hover:opacity-90 transition-all"
               >
                 <CreditCard size={14} />
-                Buy Credits
+                {t("buyCredits")}
               </button>
             </div>
           </div>
@@ -290,7 +292,7 @@ export default function BillingContent() {
           <div className="rounded-2xl border border-border-dim bg-bg-white p-6 shadow-md">
             <div className="flex items-center gap-2 mb-4">
               <Ticket size={16} className="text-gold" />
-              <h3 className="text-sm font-semibold text-text-primary">Invite Code</h3>
+              <h3 className="text-sm font-semibold text-text-primary">{t("inviteCode")}</h3>
             </div>
             <div className="flex gap-3">
               <input
@@ -316,7 +318,7 @@ export default function BillingContent() {
                 ) : (
                   <Ticket size={14} />
                 )}
-                Redeem
+                {t("redeem")}
               </button>
             </div>
             {inviteSuccess && (
@@ -346,19 +348,19 @@ export default function BillingContent() {
             {[
               {
                 icon: DollarSign,
-                label: "Total Spent",
+                label: t("totalSpent"),
                 value: `$${(totalSpent / 1_000_000).toFixed(4)}`,
                 color: "text-coral",
               },
               {
                 icon: TrendingUp,
-                label: "Total Tokens",
+                label: t("totalTokens"),
                 value: totalTokens.toLocaleString(),
                 color: "text-teal",
               },
               {
                 icon: Clock,
-                label: "Requests",
+                label: t("requests"),
                 value: usage.length.toString(),
                 color: "text-gold",
               },
@@ -388,13 +390,13 @@ export default function BillingContent() {
             <div className="px-5 py-4 border-b border-border-subtle flex items-center gap-2">
               <Clock size={14} className="text-text-tertiary" />
               <h3 className="text-sm font-semibold text-text-primary">
-                Usage History
+                {t("usageHistory")}
               </h3>
             </div>
 
             {usage.length === 0 ? (
               <div className="px-5 py-12 text-center text-sm text-text-tertiary">
-                No usage history yet. Start a chat to see requests here.
+                {t("noUsage")}
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -402,10 +404,10 @@ export default function BillingContent() {
                   <thead>
                     <tr className="border-b border-border-subtle">
                       {[
-                        { key: "timestamp", label: "Time" },
-                        { key: "model", label: "Model" },
-                        { key: "tokens", label: "Tokens" },
-                        { key: "cost_micro_usd", label: "Cost" },
+                        { key: "timestamp", label: t("time") },
+                        { key: "model", label: t("model") },
+                        { key: "tokens", label: t("tokens") },
+                        { key: "cost_micro_usd", label: t("cost") },
                       ].map(({ key, label }) => (
                         <th
                           key={key}
@@ -467,14 +469,14 @@ export default function BillingContent() {
       <Modal open={buyOpen} onClose={() => setBuyOpen(false)}>
         <div className="px-6 pb-6">
           <h3 className="text-2xl font-semibold text-ink mb-2">
-            Buy Credits
+            {t("buyCredits")}
           </h3>
           <p className="text-sm text-text-secondary mb-4">
-            Credits are used to pay for inference requests.
+            {t("creditsDescription")}
           </p>
 
           <label className="block text-xs font-mono text-text-tertiary uppercase tracking-wider mb-2">
-            Amount (USD)
+            {t("amountUsd")}
           </label>
           <div className="flex items-center gap-2 mb-4">
             <span className="text-text-tertiary text-lg">$</span>
@@ -489,7 +491,7 @@ export default function BillingContent() {
             />
           </div>
           {parseFloat(buyAmount) > 20 && (
-            <p className="text-xs text-red-500 mb-2">Maximum deposit is $20</p>
+            <p className="text-xs text-red-500 mb-2">{t("maxDeposit")}</p>
           )}
           <div className="flex gap-2 mb-6">
             {[5, 10, 15, 20].map((amt) => (
@@ -515,10 +517,10 @@ export default function BillingContent() {
                        transition-all flex items-center justify-center gap-2"
           >
             {actionLoading && <Loader2 size={14} className="animate-spin" />}
-            {actionLoading ? "Redirecting..." : "Continue"}
+            {actionLoading ? t("redirecting") : t("continue")}
           </button>
           <p className="mt-4 text-xs text-text-tertiary text-center">
-            Powered by Stripe. Secure card payment.
+            {t("stripePowered")}
           </p>
         </div>
       </Modal>

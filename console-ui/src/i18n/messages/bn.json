@@ -1,0 +1,298 @@
+{
+  "Metadata": {
+    "title": "Darkbloom — যাচাইকৃত Macs-এ ব্যক্তিগত AI",
+    "description": "hardware-attested Apple Silicon providers-এর মাধ্যমে ব্যক্তিগত AI inference. আপনার prompts এনক্রিপ্টেড থাকে, আপনার data আপনারই থাকে."
+  },
+  "Shell": {
+    "loading": "লোড হচ্ছে..."
+  },
+  "TopBar": {
+    "openSidebar": "সাইডবার খুলুন"
+  },
+  "Sidebar": {
+    "tagline": "একটি Eigen Labs প্রকল্প · Research Preview",
+    "newChat": "নতুন chat",
+    "disclaimer": "পরীক্ষামূলক research preview. মূল্যায়নের জন্য as-is দেওয়া হয়েছে. production ব্যবহারের জন্য নয়.",
+    "switchDark": "ডার্ক মোডে যান",
+    "switchLight": "লাইট মোডে যান",
+    "signOut": "সাইন আউট",
+    "nav": {
+      "chat": "Chat",
+      "stats": "পরিসংখ্যান",
+      "providers": "Provider Dashboard",
+      "earn": "আয় করুন",
+      "api": "API",
+      "models": "Models",
+      "billing": "Billing",
+      "settings": "সেটিংস"
+    },
+    "language": "ভাষা",
+    "changeLanguage": "ভাষা পরিবর্তন করুন"
+  },
+  "AnalyticsConsent": {
+    "body": "Darkbloom-এর product experience উন্নত করতে privacy-filtered usage analytics অনুমতি দিন.",
+    "allow": "analytics অনুমতি দিন",
+    "decline": "অস্বীকার করুন",
+    "storedIn": "<code>{key}</code>-এ সংরক্ষিত"
+  },
+  "ChatPage": {
+    "loading": "লোড হচ্ছে...",
+    "signIn": "সাইন ইন",
+    "trustLine": "End-to-end encrypted · Apple Silicon · Decentralized",
+    "guest": {
+      "title": "যাচাইকৃত hardware-এ ব্যক্তিগত inference.",
+      "subtitle": "আপনার prompts এনক্রিপ্টেড থাকে, আপনার data আপনারই থাকে.",
+      "signInHint": "শুরু করতে আপনার email দিয়ে সাইন ইন করুন"
+    },
+    "empty": {
+      "subtitle": "যাচাইকৃত hardware-এ ব্যক্তিগত inference"
+    },
+    "suggestions": {
+      "quantum": {
+        "label": "quantum computing ব্যাখ্যা করুন",
+        "prompt": "সহজ ভাষায় quantum computing ব্যাখ্যা করুন"
+      },
+      "python": {
+        "label": "একটি Python script লিখুন",
+        "prompt": "একটি Python script লিখুন যা CSV পড়ে এবং একটি summary report তৈরি করে"
+      },
+      "frameworks": {
+        "label": "ML frameworks তুলনা করুন",
+        "prompt": "research use cases-এর জন্য PyTorch এবং JAX তুলনা করুন"
+      },
+      "zk": {
+        "label": "zero-knowledge proofs ব্যাখ্যা করুন",
+        "prompt": "zero-knowledge proofs কী এবং blockchain-এ এগুলো কীভাবে ব্যবহৃত হয়?"
+      }
+    },
+    "errors": {
+      "stream": "ত্রুটি: {error}",
+      "connection": "কানেকশন ত্রুটি: {error}"
+    }
+  },
+  "ChatInput": {
+    "selectModel": "model নির্বাচন করুন",
+    "signInToChat": "chat শুরু করতে সাইন ইন করুন",
+    "placeholder": "একটি বার্তা পাঠান...",
+    "modelSelector": "model নির্বাচন করুন",
+    "send": "বার্তা পাঠান",
+    "stop": "generation বন্ধ করুন"
+  },
+  "ChatMessage": {
+    "code": "কোড",
+    "copy": "কপি করুন",
+    "copied": "কপি হয়েছে",
+    "thinking": "ভাবছে",
+    "thinkingStreaming": "ভাবছে...",
+    "chars": "({count} অক্ষর)",
+    "tokens": "tokens",
+    "live": "live",
+    "retry": "আবার চেষ্টা করুন",
+    "regenerate": "আবার generate করুন"
+  },
+  "SettingsPage": {
+    "title": "সেটিংস",
+    "save": "সেটিংস সংরক্ষণ করুন",
+    "saved": "সংরক্ষিত",
+    "savedToast": "সেটিংস সংরক্ষিত হয়েছে",
+    "coordinator": {
+      "title": "Coordinator URL",
+      "description": "Darkbloom coordinator-এর base URL, যা আপনার inference requests attested providers-এ route করে.",
+      "test": "কানেকশন পরীক্ষা করুন",
+      "connected": "সংযুক্ত — {count, plural, one {# provider} other {# providers}} online"
+    },
+    "language": {
+      "title": "ভাষা",
+      "description": "Darkbloom আপনার সংরক্ষিত preference, browser language, এবং coarse country signal থেকে স্বয়ংক্রিয়ভাবে ভাষা বেছে নেয়. আপনি এখানে এটি override করতে পারেন.",
+      "detected": "বর্তমান ভাষা: {locale}"
+    },
+    "encryption": {
+      "title": "requests coordinator-এ encrypt করুন",
+      "description": "সক্ষম হলে, আপনার prompts এই browser ছাড়ার আগে coordinator-এর long-lived X25519 public key (NaCl Box)-এ seal করা হয়. coordinator তার TEE-এর ভিতরে decrypt করে, provider বেছে নেয়, এবং provider-এর Secure Enclave key-তে আবার seal করে. coordinator-এর সামনে থাকা সবকিছু (CDN, proxies, network observers) TLS tunnel-এর বাইরে শুধু ciphertext দেখে. ঐচ্ছিক এবং default-ভাবে off — plaintext API clients কাজ করতে থাকে.",
+      "checkbox": "প্রতিটি request coordinator-এর public key-তে seal করুন",
+      "fetching": "coordinator key আনা হচ্ছে...",
+      "unavailable": "এই coordinator sender encryption configure করেনি.",
+      "keyInfo": "coordinator key kid={kid}",
+      "enabledToast": "coordinator-এ encryption সক্ষম হয়েছে",
+      "disabledToast": "coordinator-এ encryption অক্ষম হয়েছে"
+    },
+    "analytics": {
+      "title": "Analytics",
+      "description": "product usage মাপতে Darkbloom privacy-filtered Google Analytics load করতে পারবে কি না তা নিয়ন্ত্রণ করুন. analytics events পাঠানোর আগে query parameters sanitize করা হয়, campaign measurement বজায় রাখতে ব্যবহৃত ছোট attribution allowlist ছাড়া.",
+      "allow": "analytics অনুমতি দিন",
+      "decline": "analytics অস্বীকার করুন",
+      "current": "বর্তমান নির্বাচন:",
+      "enabledToast": "Analytics সক্ষম",
+      "disabledToast": "Analytics অক্ষম"
+    },
+    "about": {
+      "title": "Darkbloom সম্পর্কে",
+      "p1": "Darkbloom একটি decentralized private inference network. আপনার requests hardware-attested Apple Silicon providers-এ route করা হয়, Secure Enclave verification, SIP enforcement, এবং Hardened Runtime protection সহ.",
+      "p2": "Provider trust MDM (Mobile Device Management)-এর মাধ্যমে coordinator-এর সঙ্গে cross-check করে স্বাধীনভাবে verify করা হয়."
+    }
+  },
+  "ModelsPage": {
+    "title": "Models",
+    "heading": "উপলভ্য Models",
+    "description": "Darkbloom network-এ hardware-attested providers দ্বারা served models.",
+    "loading": "models লোড হচ্ছে...",
+    "empty": "কোনো model উপলভ্য নেই. Settings-এ আপনার coordinator connection পরীক্ষা করুন.",
+    "hardware": "Hardware",
+    "none": "কোনোটিই নয়",
+    "perMillionTokens": "প্রতি 1M tokens",
+    "cheaper": "{percent}% সস্তা",
+    "vs": "vs {competitor}",
+    "providers": "{count, plural, one {# provider} other {# providers}}",
+    "attested": "Attested"
+  },
+  "StatsPage": {
+    "title": "Network Stats",
+    "heading": "Network Statistics",
+    "description": "Darkbloom decentralized inference network থেকে live metrics",
+    "failedFetch": "stats fetch করতে ব্যর্থ",
+    "failedLoad": "platform stats লোড করতে ব্যর্থ",
+    "retry": "আবার চেষ্টা করুন",
+    "live": "Live",
+    "hardware": "Hardware",
+    "none": "কোনোটিই নয়",
+    "lastMinutes": "শেষ {count} min",
+    "activityPlaceholder": "activity এখানে দেখা যাবে",
+    "tokensPerMinute": "Tokens / Minute",
+    "input": "Input",
+    "output": "Output",
+    "tokenPlaceholder": "Token flow এখানে দেখা যাবে",
+    "tokenTooltip": "{input} in / {output} out",
+    "memory": "Memory",
+    "gpu": "GPU",
+    "cpu": "CPU",
+    "bandwidth": "Bandwidth",
+    "requests": "Requests",
+    "tokens": "Tokens",
+    "serving": "Serving:",
+    "tokensServed": "Tokens Served",
+    "tokensInOut": "{input} in / {output} out",
+    "nodesOnline": "Nodes Online",
+    "allHardwareAttested": "সব hardware-attested",
+    "hardwareAttestedCount": "{count} hardware-attested",
+    "gbBandwidth": "GB/s Bandwidth",
+    "combinedThroughput": "combined memory throughput",
+    "gpuCores": "GPU Cores",
+    "cpuCores": "CPU Cores",
+    "pECores": "P + E cores",
+    "unifiedRam": "Unified RAM",
+    "avgTokReq": "Avg Tok/Req",
+    "models": "Models",
+    "requestsPerMinute": "Requests / Minute",
+    "tokenDistribution": "Token Distribution",
+    "inputPercent": "{value} in ({percent}%)",
+    "outputPercent": "{value} out ({percent}%)",
+    "activeModels": "Active Models",
+    "nodes": "{count, plural, one {node} other {nodes}}",
+    "networkNodes": "Network Nodes",
+    "autoRefresh": "প্রতি 10 seconds-এ auto-refresh হয়"
+  },
+  "ApiConsolePage": {
+    "title": "API Console",
+    "auth": "Auth",
+    "request": "Request",
+    "response": "Response",
+    "requiresAuth": "<code>Authorization: Bearer &lt;api_key&gt;</code> header প্রয়োজন",
+    "noApiKey": "কোনো API key generate হয়নি",
+    "noKey": "কোনো key generate হয়নি",
+    "intro": "<strong>Darkbloom API</strong> — OpenAI-compatible. আপনার base URL বদলান, বিদ্যমান code রাখুন. প্রতিটি request end-to-end encrypted এবং hardware-attested Apple Silicon-এ processed.",
+    "endpointReference": "Endpoint Reference",
+    "endpointDescription": "request/response format এবং notes দেখতে প্রতিটি endpoint expand করুন.",
+    "baseUrl": "Base URL",
+    "baseUrlDescription": "সব endpoints এই base URL-এর relative. Provider attestation এবং pricing endpoints authentication ছাড়াই publicly accessible.",
+    "apiKey": "API Key",
+    "hideKey": "key লুকান",
+    "showKey": "key দেখান",
+    "copyKey": "key কপি করুন",
+    "regenerate": "আবার generate করুন",
+    "generate": "Generate করুন",
+    "keyHelp": "সব authenticated requests-এর জন্য এই key <code>Authorization: Bearer</code> header-এ ব্যবহার করুন.",
+    "quickStart": "Quick Start",
+    "quickStartDescription": "OpenAI SDK বা Vercel AI SDK install করুন. Darkbloom API পুরোপুরি OpenAI-compatible — শুধু base URL বদলান.",
+    "availableModels": "উপলভ্য Models",
+    "modelId": "Model ID",
+    "type": "Type",
+    "architecture": "Architecture",
+    "modelsHelp": "Model availability online providers-এর উপর নির্ভর করে. real-time availability-এর জন্য <code>/v1/models</code> দেখুন.",
+    "chatCompletions": "Chat Completions",
+    "chatDescription": "যেকোনো supported model দিয়ে chat completions stream করুন. system messages, multi-turn conversations, এবং thinking/reasoning output support করে.",
+    "listModels": "Models তালিকাভুক্ত করুন",
+    "listModelsDescription": "উপলভ্য models, provider counts, এবং attestation status পরীক্ষা করুন."
+  },
+  "LinkPage": {
+    "title": "আপনার Device Link করুন",
+    "description": "compute প্রদান করার earnings পেতে আপনার Mac আপনার Darkbloom account-এর সঙ্গে connect করুন."
+  },
+  "DeviceLinkForm": {
+    "loading": "লোড হচ্ছে...",
+    "missingToken": "auth token পেতে ব্যর্থ. অনুগ্রহ করে আবার log in করুন.",
+    "failed": "device link করতে ব্যর্থ",
+    "networkError": "Network error. অনুগ্রহ করে আপনার connection পরীক্ষা করুন.",
+    "successTitle": "Device Linked!",
+    "successBody": "আপনার provider এখন আপনার account-এর সঙ্গে connected. Earnings স্বয়ংক্রিয়ভাবে credit হবে.",
+    "successClose": "আপনি এই page বন্ধ করতে পারেন.",
+    "signInPrompt": "আপনার device link করতে আপনার Darkbloom account-এ sign in করুন.",
+    "signIn": "সাইন ইন",
+    "signedInAs": "সাইন ইন করেছেন",
+    "yourAccount": "আপনার account",
+    "codeLabel": "আপনার terminal-এ দেখানো code লিখুন",
+    "linking": "Link হচ্ছে...",
+    "linkDevice": "Device Link করুন",
+    "run": "চালান",
+    "runSuffix": "code পেতে আপনার Mac-এ."
+  },
+  "ProvidersLayout": {
+    "title": "Provider Dashboard",
+    "dashboard": "Dashboard",
+    "setup": "Setup",
+    "earnings": "Earnings"
+  },
+  "BillingPage": {
+    "title": "Billing",
+    "balance": "Balance",
+    "loading": "লোড হচ্ছে...",
+    "credits": "{amount} credits",
+    "earnings": "{amount} earnings",
+    "buyCredits": "Credits কিনুন",
+    "inviteCode": "Invite Code",
+    "redeem": "Redeem",
+    "inviteCredited": "{amount} আপনার account-এ credit হয়েছে",
+    "totalSpent": "মোট খরচ",
+    "totalTokens": "মোট Tokens",
+    "requests": "Requests",
+    "usageHistory": "Usage History",
+    "noUsage": "এখনও কোনো usage history নেই. requests এখানে দেখতে chat শুরু করুন.",
+    "time": "Time",
+    "model": "Model",
+    "tokens": "Tokens",
+    "cost": "Cost",
+    "creditsDescription": "Credits inference requests-এর জন্য payment করতে ব্যবহৃত হয়.",
+    "amountUsd": "Amount (USD)",
+    "maxDeposit": "Maximum deposit $20",
+    "redirecting": "Redirecting...",
+    "continue": "চালিয়ে যান",
+    "stripePowered": "Powered by Stripe. নিরাপদ card payment."
+  },
+  "EarnPage": {
+    "title": "Earnings Calculator",
+    "heading": "Provider Earnings Calculator",
+    "loading": "লোড হচ্ছে...",
+    "signIn": "সাইন ইন",
+    "estimatedEarnings": "Estimated Earnings"
+  },
+  "Common": {
+    "auth": "Auth",
+    "request": "Request",
+    "response": "Response",
+    "notes": "Notes",
+    "copied": "কপি হয়েছে",
+    "copy": "কপি করুন",
+    "loading": "লোড হচ্ছে...",
+    "refresh": "Refresh",
+    "error": "ত্রুটি"
+  }
+}

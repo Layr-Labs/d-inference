@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { Send, Square, ChevronDown, LogIn } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { trackEvent } from "@/lib/google-analytics";
+import { useTranslations } from "next-intl";
 
 interface ChatInputProps {
   onSend: (content: string) => void;
@@ -18,6 +19,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { selectedModel, models, setSelectedModel } = useStore();
   const [modelOpen, setModelOpen] = useState(false);
+  const t = useTranslations("ChatInput");
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
@@ -57,7 +59,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
   const selectedModelObj = chatModels.find((m) => m.id === selectedModel);
   const displayModel = selectedModelObj?.display_name
     || selectedModel?.split("/").pop()
-    || "Select model";
+    || t("selectModel");
 
   if (!authenticated) {
     return (
@@ -74,7 +76,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                        py-4 text-text-tertiary hover:text-text-secondary hover:border-border-subtle cursor-pointer transition-all"
           >
             <LogIn size={16} />
-            <span className="text-sm font-medium">Sign in to start chatting</span>
+            <span className="text-sm font-medium">{t("signInToChat")}</span>
           </button>
         </div>
       </div>
@@ -92,7 +94,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Send a message..."
+            placeholder={t("placeholder")}
             rows={1}
             className="w-full bg-transparent px-4 pt-4 pb-1 text-text-primary placeholder:text-text-tertiary text-[15px] resize-none outline-none"
           />
@@ -108,6 +110,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                     setModelOpen(!modelOpen);
                   }}
                   className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-text-tertiary hover:text-text-secondary hover:bg-bg-hover border-2 border-transparent hover:border-border-subtle transition-all"
+                  title={t("modelSelector")}
                 >
                   <span className="w-1.5 h-1.5 rounded-full bg-teal shrink-0" />
                   <span className="font-mono truncate max-w-[120px] sm:max-w-none">{displayModel}</span>
@@ -156,6 +159,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
               {isStreaming ? (
                 <button
                   onClick={onStop}
+                  title={t("stop")}
                   className="flex items-center justify-center w-9 h-9 rounded-xl bg-accent-red/20 hover:bg-accent-red/30 text-accent-red border-2 border-accent-red transition-colors"
                 >
                   <Square size={16} />
@@ -164,6 +168,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                 <button
                   onClick={handleSend}
                   disabled={!input.trim() || isStreaming}
+                  title={t("send")}
                   className="flex items-center justify-center w-9 h-9 rounded-xl bg-coral border-2 border-ink text-white
                              disabled:opacity-30 disabled:border-border-subtle
                              hover:opacity-90

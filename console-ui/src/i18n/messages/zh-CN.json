@@ -1,0 +1,298 @@
+{
+  "Metadata": {
+    "title": "Darkbloom — 在已验证 Mac 上运行的私密 AI",
+    "description": "通过经过硬件认证的 Apple Silicon 提供者进行私密 AI 推理。你的提示词保持加密，你的数据仍归你所有。"
+  },
+  "Shell": {
+    "loading": "加载中..."
+  },
+  "TopBar": {
+    "openSidebar": "打开侧边栏"
+  },
+  "Sidebar": {
+    "tagline": "Eigen Labs 项目 · Research Preview",
+    "newChat": "新建聊天",
+    "disclaimer": "实验性 Research Preview。按原样提供用于评估。不适用于生产环境。",
+    "switchDark": "切换到深色模式",
+    "switchLight": "切换到浅色模式",
+    "signOut": "退出登录",
+    "nav": {
+      "chat": "聊天",
+      "stats": "统计",
+      "providers": "提供者仪表板",
+      "earn": "收益",
+      "api": "API",
+      "models": "模型",
+      "billing": "账单",
+      "settings": "设置"
+    },
+    "language": "语言",
+    "changeLanguage": "更改语言"
+  },
+  "AnalyticsConsent": {
+    "body": "允许经过隐私过滤的使用分析，以帮助改进 Darkbloom 的产品体验。",
+    "allow": "允许分析",
+    "decline": "拒绝",
+    "storedIn": "已存储在 <code>{key}</code>"
+  },
+  "ChatPage": {
+    "loading": "加载中...",
+    "signIn": "登录",
+    "trustLine": "端到端加密 · Apple Silicon · 去中心化",
+    "guest": {
+      "title": "在已验证硬件上进行私密推理。",
+      "subtitle": "你的提示词保持加密，你的数据仍归你所有。",
+      "signInHint": "使用邮箱登录即可开始"
+    },
+    "empty": {
+      "subtitle": "在已验证硬件上进行私密推理"
+    },
+    "suggestions": {
+      "quantum": {
+        "label": "解释量子计算",
+        "prompt": "用简单的术语解释量子计算"
+      },
+      "python": {
+        "label": "编写 Python 脚本",
+        "prompt": "编写一个 Python 脚本，读取 CSV 并生成摘要报告"
+      },
+      "frameworks": {
+        "label": "比较 ML 框架",
+        "prompt": "比较 PyTorch 和 JAX 在研究场景中的用途"
+      },
+      "zk": {
+        "label": "解释零知识证明",
+        "prompt": "什么是零知识证明，它们如何用于区块链？"
+      }
+    },
+    "errors": {
+      "stream": "错误：{error}",
+      "connection": "连接错误：{error}"
+    }
+  },
+  "ChatInput": {
+    "selectModel": "选择模型",
+    "signInToChat": "登录以开始聊天",
+    "placeholder": "发送消息...",
+    "modelSelector": "选择模型",
+    "send": "发送消息",
+    "stop": "停止生成"
+  },
+  "ChatMessage": {
+    "code": "代码",
+    "copy": "复制",
+    "copied": "已复制",
+    "thinking": "思考中",
+    "thinkingStreaming": "思考中...",
+    "chars": "（{count} 个字符）",
+    "tokens": "tokens",
+    "live": "实时",
+    "retry": "重试",
+    "regenerate": "重新生成"
+  },
+  "SettingsPage": {
+    "title": "设置",
+    "save": "保存设置",
+    "saved": "已保存",
+    "savedToast": "设置已保存",
+    "coordinator": {
+      "title": "协调器 URL",
+      "description": "Darkbloom 协调器的基础 URL，用于将你的推理请求路由到已认证的提供者。",
+      "test": "测试连接",
+      "connected": "已连接 — {count, plural, one {# 个提供者} other {# 个提供者}}在线"
+    },
+    "language": {
+      "title": "语言",
+      "description": "Darkbloom 会根据你保存的偏好、浏览器语言和粗略的国家信号自动选择语言。你可以在这里覆盖它。",
+      "detected": "当前语言：{locale}"
+    },
+    "encryption": {
+      "title": "加密发送到协调器的请求",
+      "description": "启用后，你的提示词会在离开此浏览器之前，被密封到协调器的长期 X25519 公钥（NaCl Box）。协调器会在其 TEE 内解密，选择一个提供者，然后重新密封到该提供者的 Secure Enclave 密钥。位于协调器前面的任何组件（CDN、代理、网络观察者）在 TLS 隧道之外只能看到密文。此功能可选且默认关闭 — 明文 API 客户端仍可继续工作。",
+      "checkbox": "将每个请求密封到协调器的公钥",
+      "fetching": "正在获取协调器密钥...",
+      "unavailable": "此协调器未配置发送者加密。",
+      "keyInfo": "协调器密钥 kid={kid}",
+      "enabledToast": "已启用到协调器的加密",
+      "disabledToast": "已禁用到协调器的加密"
+    },
+    "analytics": {
+      "title": "分析",
+      "description": "控制 Darkbloom 是否可以加载经过隐私过滤的 Google Analytics 来衡量产品使用情况。发送分析事件之前会清理查询参数，但用于保留广告活动衡量的小型归因允许列表除外。",
+      "allow": "允许分析",
+      "decline": "拒绝分析",
+      "current": "当前选择：",
+      "enabledToast": "分析已启用",
+      "disabledToast": "分析已禁用"
+    },
+    "about": {
+      "title": "关于 Darkbloom",
+      "p1": "Darkbloom 是一个去中心化的私密推理网络。你的请求会被路由到经过硬件认证的 Apple Silicon 提供者，并具备 Secure Enclave 验证、SIP 强制执行和 Hardened Runtime 保护。",
+      "p2": "提供者信任通过 MDM（Mobile Device Management）与协调器交叉检查来独立验证。"
+    }
+  },
+  "ModelsPage": {
+    "title": "模型",
+    "heading": "可用模型",
+    "description": "Darkbloom 网络上由经过硬件认证的提供者服务的模型。",
+    "loading": "正在加载模型...",
+    "empty": "没有可用模型。请在设置中检查你的协调器连接。",
+    "hardware": "硬件",
+    "none": "无",
+    "perMillionTokens": "每 100 万 tokens",
+    "cheaper": "便宜 {percent}%",
+    "vs": "vs {competitor}",
+    "providers": "{count, plural, one {# 个提供者} other {# 个提供者}}",
+    "attested": "已认证"
+  },
+  "StatsPage": {
+    "title": "网络统计",
+    "heading": "网络统计信息",
+    "description": "来自 Darkbloom 去中心化推理网络的实时指标",
+    "failedFetch": "获取统计信息失败",
+    "failedLoad": "加载平台统计信息失败",
+    "retry": "重试",
+    "live": "实时",
+    "hardware": "硬件",
+    "none": "无",
+    "lastMinutes": "过去 {count} 分钟",
+    "activityPlaceholder": "活动将显示在这里",
+    "tokensPerMinute": "Tokens / 分钟",
+    "input": "输入",
+    "output": "输出",
+    "tokenPlaceholder": "Token 流将显示在这里",
+    "tokenTooltip": "{input} 输入 / {output} 输出",
+    "memory": "内存",
+    "gpu": "GPU",
+    "cpu": "CPU",
+    "bandwidth": "带宽",
+    "requests": "请求",
+    "tokens": "Tokens",
+    "serving": "正在服务：",
+    "tokensServed": "已服务 Tokens",
+    "tokensInOut": "{input} 输入 / {output} 输出",
+    "nodesOnline": "在线节点",
+    "allHardwareAttested": "全部经过硬件认证",
+    "hardwareAttestedCount": "{count} 个经过硬件认证",
+    "gbBandwidth": "GB/s 带宽",
+    "combinedThroughput": "合计内存吞吐量",
+    "gpuCores": "GPU 核心",
+    "cpuCores": "CPU 核心",
+    "pECores": "P + E 核心",
+    "unifiedRam": "统一内存",
+    "avgTokReq": "平均 Tok/请求",
+    "models": "模型",
+    "requestsPerMinute": "请求 / 分钟",
+    "tokenDistribution": "Token 分布",
+    "inputPercent": "{value} 输入（{percent}%）",
+    "outputPercent": "{value} 输出（{percent}%）",
+    "activeModels": "活跃模型",
+    "nodes": "{count, plural, one {节点} other {节点}}",
+    "networkNodes": "网络节点",
+    "autoRefresh": "每 10 秒自动刷新"
+  },
+  "ApiConsolePage": {
+    "title": "API 控制台",
+    "auth": "认证",
+    "request": "请求",
+    "response": "响应",
+    "requiresAuth": "需要 <code>Authorization: Bearer &lt;api_key&gt;</code> 标头",
+    "noApiKey": "未生成 API 密钥",
+    "noKey": "未生成密钥",
+    "intro": "<strong>Darkbloom API</strong> — OpenAI 兼容。更换基础 URL，保留现有代码。每个请求都会端到端加密，并在经过硬件认证的 Apple Silicon 上处理。",
+    "endpointReference": "端点参考",
+    "endpointDescription": "展开每个端点以查看请求/响应格式和说明。",
+    "baseUrl": "基础 URL",
+    "baseUrlDescription": "所有端点都相对于此基础 URL。提供者认证和定价端点无需身份验证即可公开访问。",
+    "apiKey": "API 密钥",
+    "hideKey": "隐藏密钥",
+    "showKey": "显示密钥",
+    "copyKey": "复制密钥",
+    "regenerate": "重新生成",
+    "generate": "生成",
+    "keyHelp": "在所有需要认证的请求中，将此密钥用于 <code>Authorization: Bearer</code> 标头。",
+    "quickStart": "快速开始",
+    "quickStartDescription": "安装 OpenAI SDK 或 Vercel AI SDK。Darkbloom API 完全兼容 OpenAI — 只需更改基础 URL。",
+    "availableModels": "可用模型",
+    "modelId": "模型 ID",
+    "type": "类型",
+    "architecture": "架构",
+    "modelsHelp": "模型可用性取决于在线提供者。查看 <code>/v1/models</code> 获取实时可用性。",
+    "chatCompletions": "Chat Completions",
+    "chatDescription": "使用任何受支持的模型流式传输聊天补全。支持系统消息、多轮对话以及思考/推理输出。",
+    "listModels": "列出模型",
+    "listModelsDescription": "检查可用模型、提供者数量和认证状态。"
+  },
+  "LinkPage": {
+    "title": "链接你的设备",
+    "description": "将你的 Mac 连接到 Darkbloom 账户，以通过提供计算资源获得收益。"
+  },
+  "DeviceLinkForm": {
+    "loading": "加载中...",
+    "missingToken": "无法获取认证令牌。请重新登录。",
+    "failed": "链接设备失败",
+    "networkError": "网络错误。请检查你的连接。",
+    "successTitle": "设备已链接！",
+    "successBody": "你的提供者现已连接到你的账户。收益将自动入账。",
+    "successClose": "你可以关闭此页面。",
+    "signInPrompt": "登录你的 Darkbloom 账户以链接设备。",
+    "signIn": "登录",
+    "signedInAs": "登录身份",
+    "yourAccount": "你的账户",
+    "codeLabel": "输入终端中显示的代码",
+    "linking": "正在链接...",
+    "linkDevice": "链接设备",
+    "run": "运行",
+    "runSuffix": "在你的 Mac 上运行以获取代码。"
+  },
+  "ProvidersLayout": {
+    "title": "提供者仪表板",
+    "dashboard": "仪表板",
+    "setup": "设置",
+    "earnings": "收益"
+  },
+  "BillingPage": {
+    "title": "账单",
+    "balance": "余额",
+    "loading": "加载中...",
+    "credits": "{amount} 积分",
+    "earnings": "{amount} 收益",
+    "buyCredits": "购买积分",
+    "inviteCode": "邀请码",
+    "redeem": "兑换",
+    "inviteCredited": "{amount} 已计入你的账户",
+    "totalSpent": "总支出",
+    "totalTokens": "总 Tokens",
+    "requests": "请求",
+    "usageHistory": "使用历史",
+    "noUsage": "还没有使用历史。开始聊天后，请求会显示在这里。",
+    "time": "时间",
+    "model": "模型",
+    "tokens": "Tokens",
+    "cost": "费用",
+    "creditsDescription": "积分用于支付推理请求。",
+    "amountUsd": "金额（USD）",
+    "maxDeposit": "最高充值金额为 $20",
+    "redirecting": "正在重定向...",
+    "continue": "继续",
+    "stripePowered": "Powered by Stripe。安全的银行卡支付。"
+  },
+  "EarnPage": {
+    "title": "收益计算器",
+    "heading": "提供者收益计算器",
+    "loading": "加载中...",
+    "signIn": "登录",
+    "estimatedEarnings": "预计收益"
+  },
+  "Common": {
+    "auth": "认证",
+    "request": "请求",
+    "response": "响应",
+    "notes": "说明",
+    "copied": "已复制",
+    "copy": "复制",
+    "loading": "加载中...",
+    "refresh": "刷新",
+    "error": "错误"
+  }
+}

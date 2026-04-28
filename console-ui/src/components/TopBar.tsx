@@ -5,10 +5,12 @@ import { useStore } from "@/lib/store";
 import { Menu } from "lucide-react";
 import { E2ELockIndicator } from "./E2ELockIndicator";
 import { TrustExplainerModal } from "./TrustExplainerModal";
+import { useTranslations } from "next-intl";
 
 export function TopBar({ title }: { title?: string }) {
   const { sidebarOpen, setSidebarOpen, chats, activeChatId } = useStore();
   const [showExplainer, setShowExplainer] = useState(false);
+  const t = useTranslations("TopBar");
 
   const activeChat = chats.find((c) => c.id === activeChatId);
   // Get trust metadata from the last assistant message with trust info
@@ -22,6 +24,7 @@ export function TopBar({ title }: { title?: string }) {
         {!sidebarOpen && (
           <button
             onClick={() => setSidebarOpen(true)}
+            title={t("openSidebar")}
             className="p-2 rounded-lg hover:bg-bg-hover text-text-tertiary hover:text-text-primary transition-colors border-2 border-transparent hover:border-border-subtle"
           >
             <Menu size={18} />

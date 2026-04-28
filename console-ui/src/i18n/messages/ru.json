@@ -1,0 +1,298 @@
+{
+  "Metadata": {
+    "title": "Darkbloom — частный AI на проверенных Mac",
+    "description": "Частный AI-инференс через аппаратно аттестованных провайдеров Apple Silicon. Ваши промпты остаются зашифрованными, ваши данные остаются вашими."
+  },
+  "Shell": {
+    "loading": "Загрузка..."
+  },
+  "TopBar": {
+    "openSidebar": "Открыть боковую панель"
+  },
+  "Sidebar": {
+    "tagline": "Проект Eigen Labs · исследовательская версия",
+    "newChat": "Новый чат",
+    "disclaimer": "Экспериментальная исследовательская версия. Предоставляется как есть для оценки. Не для использования в production.",
+    "switchDark": "Переключиться на темную тему",
+    "switchLight": "Переключиться на светлую тему",
+    "signOut": "Выйти",
+    "nav": {
+      "chat": "Чат",
+      "stats": "Статистика",
+      "providers": "Панель провайдера",
+      "earn": "Заработок",
+      "api": "API",
+      "models": "Модели",
+      "billing": "Биллинг",
+      "settings": "Настройки"
+    },
+    "language": "Язык",
+    "changeLanguage": "Изменить язык"
+  },
+  "AnalyticsConsent": {
+    "body": "Разрешите аналитику использования с фильтрацией приватности, чтобы помочь улучшить продуктовый опыт Darkbloom.",
+    "allow": "Разрешить аналитику",
+    "decline": "Отклонить",
+    "storedIn": "Сохранено в <code>{key}</code>"
+  },
+  "ChatPage": {
+    "loading": "Загрузка...",
+    "signIn": "Войти",
+    "trustLine": "Сквозное шифрование · Apple Silicon · Децентрализовано",
+    "guest": {
+      "title": "Частный инференс на проверенном оборудовании.",
+      "subtitle": "Ваши промпты остаются зашифрованными, ваши данные остаются вашими.",
+      "signInHint": "Войдите с помощью email, чтобы начать"
+    },
+    "empty": {
+      "subtitle": "Частный инференс на проверенном оборудовании"
+    },
+    "suggestions": {
+      "quantum": {
+        "label": "Объяснить квантовые вычисления",
+        "prompt": "Объясни квантовые вычисления простыми словами"
+      },
+      "python": {
+        "label": "Написать Python-скрипт",
+        "prompt": "Напиши Python-скрипт, который читает CSV и создает сводный отчет"
+      },
+      "frameworks": {
+        "label": "Сравнить ML-фреймворки",
+        "prompt": "Сравни PyTorch и JAX для исследовательских сценариев"
+      },
+      "zk": {
+        "label": "Объяснить zero-knowledge proofs",
+        "prompt": "Что такое zero-knowledge proofs и как они используются в blockchain?"
+      }
+    },
+    "errors": {
+      "stream": "Ошибка: {error}",
+      "connection": "Ошибка подключения: {error}"
+    }
+  },
+  "ChatInput": {
+    "selectModel": "Выбрать модель",
+    "signInToChat": "Войдите, чтобы начать чат",
+    "placeholder": "Отправьте сообщение...",
+    "modelSelector": "Выбрать модель",
+    "send": "Отправить сообщение",
+    "stop": "Остановить генерацию"
+  },
+  "ChatMessage": {
+    "code": "код",
+    "copy": "Копировать",
+    "copied": "Скопировано",
+    "thinking": "Думает",
+    "thinkingStreaming": "Думает...",
+    "chars": "({count} симв.)",
+    "tokens": "токены",
+    "live": "вживую",
+    "retry": "Повторить",
+    "regenerate": "Сгенерировать заново"
+  },
+  "SettingsPage": {
+    "title": "Настройки",
+    "save": "Сохранить настройки",
+    "saved": "Сохранено",
+    "savedToast": "Настройки сохранены",
+    "coordinator": {
+      "title": "Coordinator URL",
+      "description": "Базовый URL coordinator Darkbloom, который маршрутизирует ваши запросы инференса к аттестованным провайдерам.",
+      "test": "Проверить подключение",
+      "connected": "Подключено — {count, plural, one {# провайдер} other {# провайдеров}} онлайн"
+    },
+    "language": {
+      "title": "Язык",
+      "description": "Darkbloom автоматически выбирает язык на основе сохраненных предпочтений, языка браузера и приблизительного сигнала страны. Здесь можно переопределить выбор.",
+      "detected": "Текущий язык: {locale}"
+    },
+    "encryption": {
+      "title": "Шифровать запросы к coordinator",
+      "description": "Когда включено, ваши промпты запечатываются для долгоживущего X25519 public key (NaCl Box) coordinator перед выходом из браузера. Coordinator расшифровывает внутри своего TEE, выбирает провайдера и повторно запечатывает для ключа Secure Enclave провайдера. Все перед coordinator (CDN, прокси, сетевые наблюдатели) видит только шифртекст за пределами TLS-туннеля. Опционально и по умолчанию выключено — plaintext API-клиенты продолжают работать.",
+      "checkbox": "Запечатывать каждый запрос для public key coordinator",
+      "fetching": "получение ключа coordinator...",
+      "unavailable": "Этот coordinator не настроил sender encryption.",
+      "keyInfo": "ключ coordinator kid={kid}",
+      "enabledToast": "Шифрование к coordinator включено",
+      "disabledToast": "Шифрование к coordinator отключено"
+    },
+    "analytics": {
+      "title": "Аналитика",
+      "description": "Управляйте тем, может ли Darkbloom загружать Google Analytics с фильтрацией приватности для измерения использования продукта. Параметры запроса очищаются перед отправкой событий аналитики, кроме небольшого allowlist атрибуции для сохранения измерения кампаний.",
+      "allow": "Разрешить аналитику",
+      "decline": "Отклонить аналитику",
+      "current": "Текущий выбор:",
+      "enabledToast": "Аналитика включена",
+      "disabledToast": "Аналитика отключена"
+    },
+    "about": {
+      "title": "О Darkbloom",
+      "p1": "Darkbloom — децентрализованная сеть частного инференса. Ваши запросы маршрутизируются к аппаратно аттестованным провайдерам Apple Silicon с проверкой Secure Enclave, SIP enforcement и защитой Hardened Runtime.",
+      "p2": "Доверие к провайдеру независимо проверяется через MDM (Mobile Device Management) с перекрестной проверкой coordinator."
+    }
+  },
+  "ModelsPage": {
+    "title": "Модели",
+    "heading": "Доступные модели",
+    "description": "Модели, обслуживаемые аппаратно аттестованными провайдерами в сети Darkbloom.",
+    "loading": "Загрузка моделей...",
+    "empty": "Нет доступных моделей. Проверьте подключение coordinator в настройках.",
+    "hardware": "Оборудование",
+    "none": "Нет",
+    "perMillionTokens": "за 1M токенов",
+    "cheaper": "на {percent}% дешевле",
+    "vs": "против {competitor}",
+    "providers": "{count, plural, one {# провайдер} other {# провайдеров}}",
+    "attested": "Аттестовано"
+  },
+  "StatsPage": {
+    "title": "Статистика сети",
+    "heading": "Сетевая статистика",
+    "description": "Живые метрики децентрализованной сети инференса Darkbloom",
+    "failedFetch": "Не удалось получить статистику",
+    "failedLoad": "Не удалось загрузить статистику платформы",
+    "retry": "Повторить",
+    "live": "Live",
+    "hardware": "Оборудование",
+    "none": "Нет",
+    "lastMinutes": "Последние {count} мин",
+    "activityPlaceholder": "Активность появится здесь",
+    "tokensPerMinute": "Токены / минута",
+    "input": "Ввод",
+    "output": "Вывод",
+    "tokenPlaceholder": "Поток токенов появится здесь",
+    "tokenTooltip": "{input} вход / {output} выход",
+    "memory": "Память",
+    "gpu": "GPU",
+    "cpu": "CPU",
+    "bandwidth": "Пропускная способность",
+    "requests": "Запросы",
+    "tokens": "Токены",
+    "serving": "Обслуживает:",
+    "tokensServed": "Обслужено токенов",
+    "tokensInOut": "{input} вход / {output} выход",
+    "nodesOnline": "Узлы онлайн",
+    "allHardwareAttested": "все аппаратно аттестованы",
+    "hardwareAttestedCount": "{count} аппаратно аттестовано",
+    "gbBandwidth": "Пропускная способность GB/s",
+    "combinedThroughput": "совокупная пропускная способность памяти",
+    "gpuCores": "Ядра GPU",
+    "cpuCores": "Ядра CPU",
+    "pECores": "Ядра P + E",
+    "unifiedRam": "Unified RAM",
+    "avgTokReq": "Сред. Tok/Req",
+    "models": "Модели",
+    "requestsPerMinute": "Запросы / минута",
+    "tokenDistribution": "Распределение токенов",
+    "inputPercent": "{value} вход ({percent}%)",
+    "outputPercent": "{value} выход ({percent}%)",
+    "activeModels": "Активные модели",
+    "nodes": "{count, plural, one {node} other {nodes}}",
+    "networkNodes": "Узлы сети",
+    "autoRefresh": "Автообновление каждые 10 секунд"
+  },
+  "ApiConsolePage": {
+    "title": "API-консоль",
+    "auth": "Auth",
+    "request": "Запрос",
+    "response": "Ответ",
+    "requiresAuth": "Требуется header <code>Authorization: Bearer &lt;api_key&gt;</code>",
+    "noApiKey": "API key не создан",
+    "noKey": "Ключ не создан",
+    "intro": "<strong>Darkbloom API</strong> — OpenAI-compatible. Замените base URL и сохраните существующий код. Каждый запрос сквозно шифруется и обрабатывается на аппаратно аттестованном Apple Silicon.",
+    "endpointReference": "Справочник endpointов",
+    "endpointDescription": "Разверните каждый endpoint, чтобы увидеть формат запроса/ответа и примечания.",
+    "baseUrl": "Base URL",
+    "baseUrlDescription": "Все endpointы относительны к этому base URL. Endpointы аттестации провайдера и цен доступны публично без аутентификации.",
+    "apiKey": "API Key",
+    "hideKey": "Скрыть ключ",
+    "showKey": "Показать ключ",
+    "copyKey": "Копировать ключ",
+    "regenerate": "Сгенерировать заново",
+    "generate": "Сгенерировать",
+    "keyHelp": "Используйте этот ключ в header <code>Authorization: Bearer</code> для всех аутентифицированных запросов.",
+    "quickStart": "Быстрый старт",
+    "quickStartDescription": "Установите OpenAI SDK или Vercel AI SDK. Darkbloom API полностью OpenAI-compatible — просто измените base URL.",
+    "availableModels": "Доступные модели",
+    "modelId": "Model ID",
+    "type": "Тип",
+    "architecture": "Архитектура",
+    "modelsHelp": "Доступность моделей зависит от онлайн-провайдеров. Проверьте <code>/v1/models</code> для доступности в реальном времени.",
+    "chatCompletions": "Chat Completions",
+    "chatDescription": "Стримьте chat completions с любой поддерживаемой моделью. Поддерживает system messages, многоходовые диалоги и вывод thinking/reasoning.",
+    "listModels": "Список моделей",
+    "listModelsDescription": "Проверьте доступные модели, количество провайдеров и статус аттестации."
+  },
+  "LinkPage": {
+    "title": "Свяжите устройство",
+    "description": "Подключите ваш Mac к аккаунту Darkbloom, чтобы получать заработок за предоставление compute."
+  },
+  "DeviceLinkForm": {
+    "loading": "Загрузка...",
+    "missingToken": "Не удалось получить auth token. Войдите еще раз.",
+    "failed": "Не удалось связать устройство",
+    "networkError": "Ошибка сети. Проверьте подключение.",
+    "successTitle": "Устройство связано!",
+    "successBody": "Ваш провайдер теперь подключен к аккаунту. Заработок будет начисляться автоматически.",
+    "successClose": "Эту страницу можно закрыть.",
+    "signInPrompt": "Войдите в аккаунт Darkbloom, чтобы связать устройство.",
+    "signIn": "Войти",
+    "signedInAs": "Вход выполнен как",
+    "yourAccount": "ваш аккаунт",
+    "codeLabel": "Введите код, показанный в терминале",
+    "linking": "Связывание...",
+    "linkDevice": "Связать устройство",
+    "run": "Запустите",
+    "runSuffix": "на вашем Mac, чтобы получить код."
+  },
+  "ProvidersLayout": {
+    "title": "Панель провайдера",
+    "dashboard": "Панель",
+    "setup": "Настройка",
+    "earnings": "Заработок"
+  },
+  "BillingPage": {
+    "title": "Биллинг",
+    "balance": "Баланс",
+    "loading": "Загрузка...",
+    "credits": "{amount} кредитов",
+    "earnings": "{amount} заработка",
+    "buyCredits": "Купить кредиты",
+    "inviteCode": "Инвайт-код",
+    "redeem": "Активировать",
+    "inviteCredited": "{amount} зачислено на ваш аккаунт",
+    "totalSpent": "Всего потрачено",
+    "totalTokens": "Всего токенов",
+    "requests": "Запросы",
+    "usageHistory": "История использования",
+    "noUsage": "Истории использования пока нет. Начните чат, чтобы увидеть запросы здесь.",
+    "time": "Время",
+    "model": "Модель",
+    "tokens": "Токены",
+    "cost": "Стоимость",
+    "creditsDescription": "Кредиты используются для оплаты запросов инференса.",
+    "amountUsd": "Сумма (USD)",
+    "maxDeposit": "Максимальный депозит — $20",
+    "redirecting": "Перенаправление...",
+    "continue": "Продолжить",
+    "stripePowered": "Работает на Stripe. Безопасная оплата картой."
+  },
+  "EarnPage": {
+    "title": "Калькулятор заработка",
+    "heading": "Калькулятор заработка провайдера",
+    "loading": "Загрузка...",
+    "signIn": "Войти",
+    "estimatedEarnings": "Оценочный заработок"
+  },
+  "Common": {
+    "auth": "Auth",
+    "request": "Запрос",
+    "response": "Ответ",
+    "notes": "Примечания",
+    "copied": "Скопировано",
+    "copy": "Копировать",
+    "loading": "Загрузка...",
+    "refresh": "Обновить",
+    "error": "Ошибка"
+  }
+}

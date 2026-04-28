@@ -1,13 +1,15 @@
 "use client";
 
 import { useAuth } from "@/hooks/useAuth";
-import { usePathname } from "next/navigation";
+import { usePathname } from "@/i18n/navigation";
 import { Sidebar } from "./Sidebar";
 import { Toasts } from "./Toasts";
+import { useTranslations } from "next-intl";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { ready } = useAuth();
   const pathname = usePathname();
+  const t = useTranslations("Shell");
 
   // Device-linking page — no shell
   if (pathname === "/link") {
@@ -22,7 +24,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <h1 className="text-3xl text-ink tracking-tight" style={{ fontFamily: "'Louize', Georgia, serif" }}>
             Darkbloom
           </h1>
-          <p className="mt-2 text-sm text-text-tertiary">Loading...</p>
+          <p className="mt-2 text-sm text-text-tertiary">{t("loading")}</p>
         </div>
       </div>
     );

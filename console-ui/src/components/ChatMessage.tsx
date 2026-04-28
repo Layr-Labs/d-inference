@@ -7,6 +7,7 @@ import { VerificationPanel } from "./VerificationPanel";
 import type { Message } from "@/lib/store";
 import { Copy, Check, ChevronRight, Brain, Gauge, Clock, Hash, Sparkles, RotateCcw } from "lucide-react";
 import { useState, useCallback } from "react";
+import { useTranslations } from "next-intl";
 
 function CodeBlock({
   children,
@@ -16,6 +17,7 @@ function CodeBlock({
   className?: string;
 }) {
   const [copied, setCopied] = useState(false);
+  const t = useTranslations("ChatMessage");
   const language = className?.replace("language-", "") || "";
   const code = String(children).replace(/\n$/, "");
 
@@ -33,14 +35,14 @@ function CodeBlock({
         <div className="code-dot code-dot-y" />
         <div className="code-dot code-dot-g" />
         <span className="ml-2 text-xs text-white/30 font-sans uppercase tracking-wider">
-          {language || "code"}
+          {language || t("code")}
         </span>
         <button
           onClick={copyCode}
           className="ml-auto flex items-center gap-1.5 text-xs font-mono text-white/30 hover:text-white/60 transition-colors"
         >
           {copied ? <Check size={12} /> : <Copy size={12} />}
-          {copied ? "Copied" : "Copy"}
+          {copied ? t("copied") : t("copy")}
         </button>
       </div>
       <pre className="!mt-0 !rounded-t-none">
@@ -58,6 +60,7 @@ function ThinkingBlock({
   streaming?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const t = useTranslations("ChatMessage");
 
   return (
     <div className="mb-3">
@@ -76,12 +79,14 @@ function ThinkingBlock({
         <Brain size={14} className="text-gold" />
         <span className="text-xs font-semibold">
           {streaming && !thinking.length
-            ? "Thinking..."
-            : `Thinking${streaming ? "..." : ""}`}
+            ? t("thinkingStreaming")
+            : streaming
+              ? t("thinkingStreaming")
+              : t("thinking")}
         </span>
         {!expanded && thinking.length > 0 && (
           <span className="text-xs text-text-tertiary ml-1">
-            ({thinking.length} chars)
+            {t("chars", { count: thinking.length })}
           </span>
         )}
       </button>
@@ -114,6 +119,7 @@ function StreamMetrics({
   tokenCount?: number;
   streaming?: boolean;
 }) {
+  const t = useTranslations("ChatMessage");
   if (!tps && !ttft) return null;
 
   return (
@@ -157,13 +163,13 @@ function StreamMetrics({
         <span className="tabular-nums font-semibold">
           {tokenCount || 0}
         </span>
-        <span className="text-text-tertiary">tokens</span>
+        <span className="text-text-tertiary">{t("tokens")}</span>
       </span>
 
       {streaming && (
         <span className="ml-auto flex items-center gap-1.5 text-teal">
           <span className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse" />
-          <span className="text-xs font-semibold">live</span>
+          <span className="text-xs font-semibold">{t("live")}</span>
         </span>
       )}
     </div>
@@ -248,6 +254,7 @@ function parseThinkFromContent(content: string, existingThinking?: string): { th
 
 export function ChatMessage({ message, onRetry }: { message: Message; onRetry?: () => void }) {
   const isUser = message.role === "user";
+  const t = useTranslations("ChatMessage");
 
   const parsed = !isUser && !message.streaming
     ? parseThinkFromContent(message.content, message.thinking)
@@ -346,7 +353,7 @@ export function ChatMessage({ message, onRetry }: { message: Message; onRetry?: 
                            }`}
               >
                 <RotateCcw size={12} />
-                {message.error ? "Retry" : "Regenerate"}
+                {message.error ? t("retry") : t("regenerate")}
               </button>
             )}
           </div>

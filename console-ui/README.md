@@ -20,7 +20,7 @@ Client-side variables used by the app:
 - `NEXT_PUBLIC_SOLANA_RPC_URL` - Solana RPC endpoint
 - `NEXT_PUBLIC_GA_MEASUREMENT_ID` - optional public Google Analytics 4 measurement ID
 
-Analytics stays disabled unless `NEXT_PUBLIC_GA_MEASUREMENT_ID` is set **and** consent is granted. When a measurement ID is configured, the app shows a small in-app prompt so users can allow or decline privacy-filtered usage analytics. Consent is persisted in `localStorage` under `darkbloom_ga_consent` (`granted` or `denied`), and a declined choice keeps analytics disabled until the user explicitly changes it later from Settings.
+Analytics stays disabled unless `NEXT_PUBLIC_GA_MEASUREMENT_ID` is set **and** consent is granted. When a measurement ID is configured, the app shows a small in-app prompt so users can allow or decline privacy-filtered usage analytics. Consent is persisted in `localStorage` under `darkbloom_ga_consent` (`granted` or `denied`) and mirrored to a `.darkbloom.dev` cookie so the landing page and console share the same choice. A declined choice keeps analytics disabled until the user explicitly changes it later from Settings.
 
 ### Google Analytics setup
 

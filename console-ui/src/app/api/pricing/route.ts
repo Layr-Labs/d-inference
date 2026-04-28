@@ -1,9 +1,9 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 
-const DEFAULT_COORD = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://inference-test.openinnovation.dev";
+const COORD_URL = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
 
-export async function GET(req: NextRequest) {
-  const coordUrl = req.headers.get("x-coordinator-url") || DEFAULT_COORD;
+export async function GET() {
+  const coordUrl = COORD_URL;
 
   const res = await fetch(`${coordUrl}/v1/pricing`);
   if (!res.ok) {

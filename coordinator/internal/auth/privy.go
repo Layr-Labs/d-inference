@@ -1,4 +1,4 @@
-// Package auth provides Privy-based authentication for the EigenInference coordinator.
+// Package auth provides Privy-based authentication for the Darkbloom coordinator.
 //
 // Privy issues ES256 (ECDSA P-256) JWTs to authenticated users. The coordinator
 // verifies these tokens using the app's verification key from the Privy dashboard.
@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -44,7 +45,7 @@ type Config struct {
 // NewPrivyAuth creates a new Privy authenticator.
 func NewPrivyAuth(cfg Config, st store.Store, logger *slog.Logger) (*PrivyAuth, error) {
 	if cfg.AppID == "" || cfg.VerificationKey == "" {
-		return nil, fmt.Errorf("privy: app_id and verification_key are required")
+		return nil, errors.New("privy: app_id and verification_key are required")
 	}
 
 	// Parse the PEM-encoded ES256 verification key.
@@ -52,7 +53,7 @@ func NewPrivyAuth(cfg Config, st store.Store, logger *slog.Logger) (*PrivyAuth, 
 	keyPEM := strings.ReplaceAll(cfg.VerificationKey, `\n`, "\n")
 	block, _ := pem.Decode([]byte(keyPEM))
 	if block == nil {
-		return nil, fmt.Errorf("privy: failed to decode verification key PEM")
+		return nil, errors.New("privy: failed to decode verification key PEM")
 	}
 
 	pubKey, err := x509.ParsePKIXPublicKey(block.Bytes)
@@ -62,7 +63,7 @@ func NewPrivyAuth(cfg Config, st store.Store, logger *slog.Logger) (*PrivyAuth, 
 
 	ecKey, ok := pubKey.(*ecdsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("privy: verification key is not an ECDSA key")
+		return nil, errors.New("privy: verification key is not an ECDSA key")
 	}
 
 	return &PrivyAuth{
@@ -99,7 +100,7 @@ func (p *PrivyAuth) VerifyToken(tokenStr string) (string, error) {
 
 	claims, ok := token.Claims.(*PrivyClaims)
 	if !ok || claims.Subject == "" {
-		return "", fmt.Errorf("privy: invalid token claims")
+		return "", errors.New("privy: invalid token claims")
 	}
 
 	return claims.Subject, nil // subject is the Privy DID (e.g. "did:privy:abc123")
@@ -172,16 +173,16 @@ type privyUserDetails struct {
 // fetchUserDetails calls Privy's REST API to get the user's email and wallet.
 func (p *PrivyAuth) fetchUserDetails(privyUserID string) (*privyUserDetails, error) {
 	if p.appSecret == "" {
-		return nil, fmt.Errorf("privy: app_secret required for REST API calls")
+		return nil, errors.New("privy: app_secret required for REST API calls")
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), "GET",
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 		"https://auth.privy.io/api/v1/users/"+privyUserID, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.SetBasicAuth(p.appID, p.appSecret)
-	req.Header.Set("privy-app-id", p.appID)
+	req.Header.Set("Privy-App-Id", p.appID)
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -220,17 +221,17 @@ func (p *PrivyAuth) fetchUserDetails(privyUserID string) (*privyUserDetails, err
 // This is used by the admin CLI to authenticate without a browser.
 func (p *PrivyAuth) InitEmailOTP(email string) error {
 	if p.appSecret == "" {
-		return fmt.Errorf("privy: app_secret required for OTP init")
+		return errors.New("privy: app_secret required for OTP init")
 	}
 
 	body := fmt.Sprintf(`{"email":"%s"}`, email)
-	req, err := http.NewRequestWithContext(context.Background(), "POST",
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		"https://auth.privy.io/api/v1/auth/email/init", strings.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.SetBasicAuth(p.appID, p.appSecret)
-	req.Header.Set("privy-app-id", p.appID)
+	req.Header.Set("Privy-App-Id", p.appID)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := p.httpClient.Do(req)
@@ -250,17 +251,17 @@ func (p *PrivyAuth) InitEmailOTP(email string) error {
 // VerifyEmailOTP verifies the OTP code and returns a Privy access token.
 func (p *PrivyAuth) VerifyEmailOTP(email, code string) (string, error) {
 	if p.appSecret == "" {
-		return "", fmt.Errorf("privy: app_secret required for OTP verify")
+		return "", errors.New("privy: app_secret required for OTP verify")
 	}
 
 	body := fmt.Sprintf(`{"email":"%s","code":"%s"}`, email, code)
-	req, err := http.NewRequestWithContext(context.Background(), "POST",
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		"https://auth.privy.io/api/v1/auth/email/authenticate", strings.NewReader(body))
 	if err != nil {
 		return "", err
 	}
 	req.SetBasicAuth(p.appID, p.appSecret)
-	req.Header.Set("privy-app-id", p.appID)
+	req.Header.Set("Privy-App-Id", p.appID)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := p.httpClient.Do(req)
@@ -285,7 +286,7 @@ func (p *PrivyAuth) VerifyEmailOTP(email, code string) (string, error) {
 	}
 
 	if result.Token == "" {
-		return "", fmt.Errorf("privy: no token in OTP response")
+		return "", errors.New("privy: no token in OTP response")
 	}
 
 	return result.Token, nil

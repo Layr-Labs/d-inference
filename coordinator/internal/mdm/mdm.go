@@ -117,7 +117,7 @@ type VerificationResult struct {
 // LookupDevice checks if a device with the given serial number is enrolled.
 func (c *Client) LookupDevice(serialNumber string) (*DeviceInfo, error) {
 	body, _ := json.Marshal(map[string]string{"serial_number": serialNumber})
-	req, err := http.NewRequest("POST", c.baseURL+"/v1/devices", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/v1/devices", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +130,7 @@ func (c *Client) LookupDevice(serialNumber string) (*DeviceInfo, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("mdm device lookup returned %d", resp.StatusCode)
 	}
 
@@ -157,7 +157,7 @@ func (c *Client) SendSecurityInfoCommand(udid string) (string, error) {
 		"udid":         udid,
 		"request_type": "SecurityInfo",
 	})
-	req, err := http.NewRequest("POST", c.baseURL+"/v1/commands", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/v1/commands", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -203,38 +203,6 @@ func (c *Client) SendDeviceAttestationCommand(udid string, nonce ...string) (str
 	return c.sendDeviceAttestationWithNonce(udid, nonceStr)
 }
 
-// sendDeviceAttestationStructured is the legacy structured API path (unused).
-func (c *Client) sendDeviceAttestationStructured(udid string) (string, error) {
-	body, _ := json.Marshal(map[string]interface{}{
-		"udid":         udid,
-		"request_type": "DeviceInformation",
-		"queries":      []string{"DevicePropertiesAttestation"},
-	})
-	req, err := http.NewRequest("POST", c.baseURL+"/v1/commands", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.SetBasicAuth("micromdm", c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("mdm send DeviceInformation command failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Payload struct {
-			CommandUUID string `json:"command_uuid"`
-		} `json:"payload"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("mdm DeviceInformation response decode failed: %w", err)
-	}
-
-	return result.Payload.CommandUUID, nil
-}
-
 // sendDeviceAttestationWithNonce sends a raw plist DeviceInformation command
 // with DeviceAttestationNonce. MicroMDM's structured API doesn't support this
 // field, so we bypass it with the raw command endpoint: POST /v1/commands/{udid}.
@@ -267,7 +235,7 @@ func (c *Client) sendDeviceAttestationWithNonce(udid, nonce string) (string, err
 </dict>
 </plist>`, nonceXML, cmdUUID)
 
-	req, err := http.NewRequest("POST", c.baseURL+"/v1/commands/"+udid, bytes.NewReader([]byte(plist)))
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/v1/commands/"+udid, bytes.NewReader([]byte(plist)))
 	if err != nil {
 		return "", err
 	}
@@ -286,7 +254,7 @@ func (c *Client) sendDeviceAttestationWithNonce(udid, nonce string) (string, err
 	}
 
 	// Push to trigger device check-in
-	pushReq, err := http.NewRequest("GET", c.baseURL+"/push/"+udid, nil)
+	pushReq, err := http.NewRequest(http.MethodGet, c.baseURL+"/push/"+udid, nil)
 	if err != nil {
 		return cmdUUID, nil // command queued, push failed
 	}
@@ -496,19 +464,11 @@ func (c *Client) VerifyProvider(serialNumber string, attestationSIP, attestation
 // parseSecurityInfoPlist extracts security fields from the MDM response plist.
 func parseSecurityInfoPlist(data []byte) *SecurityInfoResponse {
 	// MDM responses are Apple plist XML. Parse the relevant fields.
-	type PlistDict struct {
-		Keys   []string `xml:"key"`
-		Values []string `xml:"string"`
-		Bools  []bool   `xml:"true,omitempty"`
-	}
 
 	// Simple approach: look for known keys in the XML
 	result := &SecurityInfoResponse{}
-	found := false
+	found := bytes.Contains(data, []byte("SecurityInfo"))
 
-	if bytes.Contains(data, []byte("SecurityInfo")) {
-		found = true
-	}
 	if bytes.Contains(data, []byte("<key>SystemIntegrityProtectionEnabled</key>")) {
 		result.SystemIntegrityProtectionEnabled = bytes.Contains(data, []byte("<key>SystemIntegrityProtectionEnabled</key>\n\t\t<true/>")) ||
 			bytes.Contains(data, []byte("<key>SystemIntegrityProtectionEnabled</key>\r\n\t\t<true/>")) ||

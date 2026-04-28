@@ -1,6 +1,6 @@
 /// ConfigManager — Reads and writes the same provider.toml that the Rust CLI uses.
 ///
-/// The config file lives at `~/Library/Application Support/eigeninference/provider.toml`
+/// The config file lives at `~/Library/Application Support/darkbloom/provider.toml`
 /// (macOS `dirs::config_dir()` equivalent). Both the app and CLI read/write this
 /// file, ensuring a single source of truth for all provider configuration.
 ///
@@ -16,7 +16,7 @@
 ///   enabled_models = []
 ///
 ///   [coordinator]
-///   url = "wss://inference-test.openinnovation.dev/ws/provider"
+///   url = "wss://api.darkbloom.dev/ws/provider"
 ///   heartbeat_interval_secs = 30
 
 import Foundation
@@ -34,13 +34,13 @@ struct ProviderConfig: Equatable {
     var heartbeatIntervalSecs: Int
 
     static let `default` = ProviderConfig(
-        providerName: "eigeninference-provider",
+        providerName: "darkbloom",
         memoryReserveGB: 4,
         backendPort: 8100,
         backendModel: nil,
         continuousBatching: true,
         enabledModels: [],
-        coordinatorURL: "wss://inference-test.openinnovation.dev/ws/provider",
+        coordinatorURL: "wss://api.darkbloom.dev/ws/provider",
         heartbeatIntervalSecs: 30
     )
 }
@@ -51,14 +51,22 @@ enum ConfigManager {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first!
-        return appSupport
-            .appendingPathComponent("eigeninference")
-            .appendingPathComponent("provider.toml")
+
+        let newPath = appSupport.appendingPathComponent("darkbloom").appendingPathComponent("provider.toml")
+        let legacyPath = appSupport.appendingPathComponent("eigeninference").appendingPathComponent("provider.toml")
+
+        if FileManager.default.fileExists(atPath: newPath.path) {
+            return newPath
+        }
+        if FileManager.default.fileExists(atPath: legacyPath.path) {
+            return legacyPath
+        }
+        return newPath
     }
 
-    static var eigeninferenceDir: URL {
+    static var darkbloomDir: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".eigeninference")
+            .appendingPathComponent(".darkbloom")
     }
 
     static func load() -> ProviderConfig {

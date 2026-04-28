@@ -189,8 +189,8 @@ func TestEdge_VeryLongModelName(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdge_UnicodeMessages(t *testing.T) {
-	ts, cleanup, providerDone := setupE2ETest(t, "unicode-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage) {
-		sendChunk(ctx, conn, inferReq.RequestID,
+	ts, cleanup, providerDone := setupE2ETest(t, "unicode-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"你好世界 🌍"},"finish_reason":"stop"}]}`+"\n\n")
 		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 3})
 	})
@@ -218,8 +218,8 @@ func TestEdge_UnicodeMessages(t *testing.T) {
 }
 
 func TestEdge_HTMLInjectionInMessages(t *testing.T) {
-	ts, cleanup, providerDone := setupE2ETest(t, "html-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage) {
-		sendChunk(ctx, conn, inferReq.RequestID,
+	ts, cleanup, providerDone := setupE2ETest(t, "html-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"safe response"},"finish_reason":"stop"}]}`+"\n\n")
 		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 2})
 	})
@@ -378,7 +378,7 @@ func TestEdge_ProviderVeryLargeRegistration(t *testing.T) {
 
 	// Register with many models
 	var models []protocol.ModelInfo
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		models = append(models, protocol.ModelInfo{
 			ID:           fmt.Sprintf("model-%d", i),
 			ModelType:    "chat",
@@ -454,13 +454,13 @@ func TestEdge_CatalogChangeDuringActiveProvider(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdge_ProviderSendsEmptyChunks(t *testing.T) {
-	ts, cleanup, providerDone := setupE2ETest(t, "empty-chunk-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage) {
+	ts, cleanup, providerDone := setupE2ETest(t, "empty-chunk-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
 		// Send chunks with empty content
-		sendChunk(ctx, conn, inferReq.RequestID,
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`+"\n\n")
-		sendChunk(ctx, conn, inferReq.RequestID,
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":""},"finish_reason":null}]}`+"\n\n")
-		sendChunk(ctx, conn, inferReq.RequestID,
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"actual content"},"finish_reason":"stop"}]}`+"\n\n")
 		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 1})
 	})
@@ -492,8 +492,8 @@ func TestEdge_ProviderSendsVeryLargeChunk(t *testing.T) {
 	// Simulate a provider sending a very large content chunk (100KB).
 	largeContent := strings.Repeat("x", 100*1024)
 
-	ts, cleanup, providerDone := setupE2ETest(t, "large-chunk-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage) {
-		sendChunk(ctx, conn, inferReq.RequestID,
+	ts, cleanup, providerDone := setupE2ETest(t, "large-chunk-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			fmt.Sprintf(`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":%q},"finish_reason":"stop"}]}`, largeContent)+"\n\n")
 		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 25000})
 	})
@@ -565,7 +565,7 @@ func TestEdge_ConcurrentRequestsSameProvider(t *testing.T) {
 	var wg sync.WaitGroup
 	results := make([]int, numRequests)
 
-	for i := 0; i < numRequests; i++ {
+	for i := range numRequests {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -631,6 +631,60 @@ func TestEdge_ModelsEndpointNoProviders(t *testing.T) {
 	// With no providers connected, the models list will be empty
 	// (models endpoint shows available models from live providers)
 	// This verifies the endpoint doesn't crash with no providers
+}
+
+func TestEdge_ModelCatalogHidesRetiredProviderModels(t *testing.T) {
+	srv, st := testServer(t)
+
+	models := []store.SupportedModel{
+		{
+			ID:          "black-forest-labs/FLUX.1-schnell",
+			S3Name:      "flux-4b",
+			DisplayName: "Flux 4B",
+			ModelType:   "image",
+			Active:      true,
+		},
+		{
+			ID:          "cohere/command-audio-stt",
+			S3Name:      "cohere-stt",
+			DisplayName: "Cohere STT",
+			ModelType:   "transcription",
+			Active:      true,
+		},
+		{
+			ID:          "qwen3.5-27b-claude-opus-8bit",
+			S3Name:      "qwen35-27b-claude-opus-8bit",
+			DisplayName: "Qwen3.5 27B Claude Opus",
+			ModelType:   "text",
+			Active:      true,
+		},
+	}
+	for _, model := range models {
+		if err := st.SetSupportedModel(&model); err != nil {
+			t.Fatalf("SetSupportedModel(%q): %v", model.ID, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models/catalog", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("models catalog: status = %d, want 200", w.Code)
+	}
+
+	var resp struct {
+		Models []store.SupportedModel `json:"models"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Models) != 1 {
+		t.Fatalf("models len = %d, want 1: %#v", len(resp.Models), resp.Models)
+	}
+	if resp.Models[0].ID != "qwen3.5-27b-claude-opus-8bit" {
+		t.Fatalf("model = %q, want qwen text model", resp.Models[0].ID)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -824,7 +878,7 @@ func TestEdge_ProviderDisconnectMidStream(t *testing.T) {
 				json.Unmarshal(data, &req)
 
 				// Send one chunk then disconnect abruptly
-				sendChunk(ctx, conn, req.RequestID,
+				sendChunk(t, ctx, conn, req, pubKey,
 					`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`+"\n\n")
 				time.Sleep(50 * time.Millisecond)
 				conn.Close(websocket.StatusAbnormalClosure, "simulated crash")
@@ -861,9 +915,9 @@ func TestEdge_ProviderDisconnectMidStream(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEdge_NonStreamingResponse(t *testing.T) {
-	ts, cleanup, providerDone := setupE2ETest(t, "nonstream-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage) {
+	ts, cleanup, providerDone := setupE2ETest(t, "nonstream-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
 		// Provider sends a non-streaming response (single chunk with full content + complete)
-		sendChunk(ctx, conn, inferReq.RequestID,
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
 			`data: {"id":"chatcmpl-ns","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"The answer is 42."},"finish_reason":"stop"}]}`+"\n\n")
 		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 6})
 	})
@@ -956,6 +1010,6 @@ func TestEdge_ProviderInvalidPublicKey(t *testing.T) {
 	// but requests to it should fail gracefully
 }
 
-// suppress unused import warnings
+// suppress unused import warnings.
 var _ = rand.Read
 var _ = base64.StdEncoding

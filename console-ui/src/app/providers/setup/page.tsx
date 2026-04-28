@@ -62,26 +62,26 @@ const STEPS = [
   {
     icon: Terminal,
     title: "Install the Provider CLI",
-    description: "One command to download and install the EigenInference provider on your Mac.",
-    command: "curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash",
+    description: "One command to download and install the Darkbloom provider on your Mac.",
+    command: "curl -fsSL https://api.darkbloom.dev/install.sh | bash",
   },
   {
     icon: Shield,
     title: "Link Your Account",
-    description: "Link this machine to your EigenInference account. You'll get a code to enter on the web to verify ownership.",
-    command: "eigeninference-provider login",
+    description: "Link this machine to your Darkbloom account. You'll get a code to enter on the web to verify ownership.",
+    command: "darkbloom login",
   },
   {
     icon: Play,
     title: "Start the Provider",
     description: "Launch the provider. It will show an interactive picker to select models based on your hardware, download them, and start serving.",
-    command: "eigeninference-provider start",
+    command: "darkbloom start",
   },
   {
     icon: CheckCircle2,
     title: "Check Status",
     description: "Verify your provider is online and serving. Hardware attestation via Secure Enclave happens automatically.",
-    command: "eigeninference-provider status",
+    command: "darkbloom status",
   },
 ];
 
@@ -115,7 +115,7 @@ const FAQ = [
   },
   {
     question: "What models can I serve?",
-    answer: "The interactive model picker shows all supported models that fit your hardware. Models include text (Qwen3.5 27B, Trinity Mini), image (FLUX Klein), and transcription (Cohere Transcribe). The provider downloads selected models automatically.",
+    answer: "The interactive model picker shows all supported models that fit your hardware. Models include text models like Qwen3.5 27B, Gemma 4 26B, and MiniMax M2.5 239B. The provider downloads selected models automatically.",
   },
   {
     question: "What is hardware attestation?",
@@ -141,14 +141,14 @@ export default function ProviderSetupPage() {
           Pilot Program
         </div>
         <h1 className="text-3xl font-bold text-text-primary tracking-tight mb-3">
-          Become an EigenInference Provider
+          Become a Darkbloom Provider
         </h1>
         <p className="text-base text-text-secondary max-w-xl mx-auto leading-relaxed">
           Earn by serving AI inference from your Apple Silicon hardware.
           Your Mac becomes part of a decentralized, hardware-attested inference network.
         </p>
         <p className="text-xs text-text-tertiary max-w-md mx-auto mt-3 leading-relaxed">
-          EigenInference is an experimental research project in active development.
+          Darkbloom is an experimental research project in active development.
           Provider participation is part of our pilot program and the system may change as we iterate.
         </p>
       </div>

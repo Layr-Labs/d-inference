@@ -28,25 +28,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ENTITLEMENTS="$SCRIPT_DIR/entitlements.plist"
 
-# Create minimal entitlements (explicitly NO get-task-allow)
-cat > "$ENTITLEMENTS" << 'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <!-- Explicitly do NOT include com.apple.security.get-task-allow -->
-    <!-- This is what prevents debugger attachment under Hardened Runtime -->
-
-    <!-- Allow outbound network connections (for coordinator WebSocket) -->
-    <key>com.apple.security.network.client</key>
-    <true/>
-
-    <!-- Allow localhost server (for local-only mode) -->
-    <key>com.apple.security.network.server</key>
-    <true/>
-</dict>
-</plist>
-PLIST
+# Use the canonical entitlements file. The release workflow already signs with
+# `scripts/entitlements.plist`; overwriting it here silently drops required
+# entitlements and makes local validation diverge from the shipped artifacts.
+if [ ! -f "$ENTITLEMENTS" ]; then
+    echo "ERROR: $ENTITLEMENTS missing — keep it under source control."
+    exit 1
+fi
 
 echo "=== EigenInference Hardened Runtime Signing ==="
 echo "Identity: $IDENTITY"
@@ -54,9 +42,9 @@ echo "Entitlements: $ENTITLEMENTS"
 echo ""
 
 # Sign provider binary
-PROVIDER_BIN="$PROJECT_DIR/provider/target/release/eigeninference-provider"
+PROVIDER_BIN="$PROJECT_DIR/provider/target/release/darkbloom"
 if [ -f "$PROVIDER_BIN" ]; then
-    echo "Signing eigeninference-provider..."
+    echo "Signing darkbloom..."
     codesign --force --options runtime \
         --entitlements "$ENTITLEMENTS" \
         --sign "$IDENTITY" \
@@ -67,7 +55,7 @@ if [ -f "$PROVIDER_BIN" ]; then
     codesign --display --verbose=2 "$PROVIDER_BIN" 2>&1 | grep -i "runtime\|flags"
     echo ""
 else
-    echo "WARNING: eigeninference-provider binary not found at $PROVIDER_BIN"
+    echo "WARNING: darkbloom binary not found at $PROVIDER_BIN"
     echo "  Build first with: cd provider && cargo build --release"
     echo ""
 fi

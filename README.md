@@ -1,8 +1,8 @@
-# EigenInference
+# Darkbloom
 
-> **Research project** -- EigenInference is an experimental prototype exploring decentralized private inference on Apple Silicon. Expect rough edges, breaking changes, and downtime.
+> **Research project** -- Darkbloom is an experimental prototype exploring decentralized private inference on Apple Silicon. Expect rough edges, breaking changes, and downtime.
 
-Private AI inference on a decentralized network of hardware-verified Apple Silicon Macs. Your prompts are encrypted end-to-end -- nobody sees your data, not even us.
+AI compute today flows through three layers of markup — GPU manufacturers to hyperscalers to API providers to end users. Meanwhile, over 100 million Apple Silicon Macs sit idle most of each day with 64–512 GB of unified memory and up to 819 GB/s memory bandwidth, capable of running models with up to 500 billion parameters at interactive speeds. Darkbloom connects this idle capacity directly to demand. The core technical challenge is that the machine owner has root access and physical custody — they should not be able to see user prompts or model responses. We solve this by eliminating every software path through which inference data could be observed: the inference engine runs in-process (no subprocess, no local server, no IPC), debuggers are denied at the kernel level (PT_DENY_ATTACH), memory-reading APIs are blocked by Hardened Runtime, and these protections are provably immutable for the process lifetime because disabling SIP requires a reboot that terminates the process. A four-layer attestation architecture — Secure Enclave signatures, MDM-based independent verification, Apple Managed Device Attestation with Apple-signed certificate chains, and periodic challenge-response — verifies that each machine's security posture has not been tampered with. The result: the only remaining attack is physically probing memory chips soldered into the SoC package, the same residual threat model accepted by Apple's Private Cloud Compute for Siri and Apple Intelligence. The API is OpenAI-compatible. Operators keep 95% of revenue.
 
 ## How It Works
 
@@ -11,18 +11,18 @@ Consumer (SDK / Web UI / curl)
     |
     |  HTTPS, OpenAI-compatible API
     v
-Coordinator (Go, EigenCloud TEE)
+Coordinator (Go, Confidential VM)
     |
     |  WebSocket (outbound from provider)
     v
 Provider (Rust, hardened process)
     |
-    |  vllm-mlx / Draw Things / Cohere STT
+    |  vllm-mlx
     v
 Apple Silicon GPU (Metal)
 ```
 
-Providers connect outbound over WebSocket -- no port forwarding needed. The coordinator never sees plaintext prompts; requests are encrypted with the provider's X25519 public key before leaving the consumer.
+Providers connect outbound over WebSocket -- no port forwarding needed. The coordinator encrypts each request with the provider's X25519 public key before forwarding it. Only the hardened provider process can decrypt it.
 
 ## Models
 
@@ -32,25 +32,11 @@ Models are selected from a curated catalog. The coordinator only routes requests
 
 | Model | Architecture | Size | Min RAM | Notes |
 |-------|-------------|------|---------|-------|
+| Gemma 4 26B 8-bit | 26B MoE, 4B active | 28 GB | 36 GB | Google's latest MoE, fast multimodal |
 | Qwen3.5 27B Claude Opus 8-bit | 27B dense | 27 GB | 36 GB | Frontier-quality reasoning, Claude Opus distilled |
 | Trinity Mini 8-bit | 27B Adaptive MoE | 26 GB | 48 GB | Fast agentic inference |
 | Qwen3.5 122B MoE 8-bit | 122B MoE, 10B active | 122 GB | 128 GB | Best quality reasoning |
 | MiniMax M2.5 8-bit | 239B MoE, 11B active | 243 GB | 256 GB | SOTA coding, ~100 tok/s |
-
-### Image
-
-| Model | Architecture | Size | Min RAM |
-|-------|-------------|------|---------|
-| FLUX.2 Klein 4B | 4B diffusion | 8.1 GB | 16 GB |
-| FLUX.2 Klein 9B | 9B diffusion | 13 GB | 24 GB |
-
-Image generation uses Draw Things with Metal FlashAttention. Adaptive batching sizes batches based on available system memory.
-
-### Speech-to-Text
-
-| Model | Architecture | Size | Min RAM |
-|-------|-------------|------|---------|
-| Cohere Transcribe 03-2026 | 2B conformer | 4.2 GB | 8 GB |
 
 ## Use the API
 
@@ -60,7 +46,7 @@ OpenAI-compatible. Works with any OpenAI SDK by changing the base URL.
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="https://inference-test.openinnovation.dev/v1",
+    base_url="https://api.darkbloom.dev/v1",
     api_key="eigeninference-..."
 )
 
@@ -69,18 +55,6 @@ response = client.chat.completions.create(
     model="qwen3.5-27b-claude-opus-8bit",
     messages=[{"role": "user", "content": "Hello"}],
     stream=True
-)
-
-# Image generation
-image = client.images.generate(
-    model="flux_2_klein_4b_q8p.ckpt",
-    prompt="A cat astronaut on Mars"
-)
-
-# Audio transcription
-transcript = client.audio.transcriptions.create(
-    model="CohereLabs/cohere-transcribe-03-2026",
-    file=open("audio.mp3", "rb")
 )
 ```
 
@@ -99,22 +73,22 @@ Earn by serving inference on your idle Mac.
 ### Install
 
 ```bash
-curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash
+curl -fsSL https://api.darkbloom.dev/install.sh | bash
 ```
 
-Zero prerequisites. The installer bundles the provider binary, Python 3.12 runtime, vllm-mlx, ffmpeg, and Secure Enclave tooling. You pick a model from the catalog, link your account, and you're serving within minutes.
+Zero prerequisites. The installer bundles the provider binary, Python 3.12 runtime, vllm-mlx, and Secure Enclave tooling. You pick a model from the catalog, link your account, and you're serving within minutes.
 
 ### Provider CLI
 
 ```bash
-eigeninference-provider serve          # Start serving (foreground)
-eigeninference-provider start          # Background daemon
-eigeninference-provider stop           # Stop daemon
-eigeninference-provider status         # Hardware and connection info
-eigeninference-provider doctor         # Diagnose issues
-eigeninference-provider models list    # Downloaded models
-eigeninference-provider earnings       # Earnings and usage
-eigeninference-provider update         # Check for updates
+darkbloom serve          # Start serving (foreground)
+darkbloom start          # Background daemon
+darkbloom stop           # Stop daemon
+darkbloom status         # Hardware and connection info
+darkbloom doctor         # Diagnose issues
+darkbloom models list    # Downloaded models
+darkbloom earnings       # Earnings and usage
+darkbloom update         # Check for updates
 ```
 
 ### macOS Menu Bar App
@@ -144,18 +118,18 @@ end = "08:00"
 
 ## Security
 
-EigenInference prevents anyone -- including providers -- from reading consumer prompts.
+Darkbloom prevents anyone -- including providers -- from reading consumer prompts.
 
 | Layer | What It Does |
 |-------|-------------|
-| E2E encryption | Prompts encrypted with provider's X25519 key; coordinator never sees plaintext |
+| E2E encryption | Coordinator encrypts requests with provider's X25519 key before forwarding; only the hardened provider process decrypts |
 | Hardened Runtime + SIP | Blocks debugger attachment, memory reads, code injection |
 | Secure Enclave attestation | Hardware-bound P-256 identity, signed attestation blobs |
 | Binary hash verification | Coordinator verifies the provider runs a blessed binary |
 | Challenge-response | SIP/SecureBoot re-verified every 5 minutes |
 | MDM SecurityInfo | Apple MDM cross-checks hardware integrity (SIP, Secure Boot, FileVault) |
 | MDA certificate chain | Optional Apple Enterprise Attestation Root CA verification |
-| RDMA detection | Refuses to serve if Thunderbolt 5 DMA is enabled |
+| RDMA detection | Enables hypervisor and runs inside it |
 
 Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 
@@ -170,13 +144,12 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 
 | Type | Rate |
 |------|------|
+| Text (Gemma 4 26B) | $0.065 / 1M input, $0.20 / 1M output |
 | Text (Qwen3.5 27B) | $0.10 / 1M input, $0.78 / 1M output |
 | Text (Qwen3.5 122B) | $0.13 / 1M input, $1.04 / 1M output |
 | Text (MiniMax M2.5) | $0.06 / 1M input, $0.50 / 1M output |
-| Image (FLUX.2 Klein 4B) | $0.0015 / image |
-| Audio (Cohere Transcribe) | $0.001 / minute |
 
-5% platform fee. Providers keep 95%.
+0% platform fee. Providers keep 100%.
 
 ## Architecture
 
@@ -184,10 +157,9 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 |-----------|----------|------|
 | Coordinator (`coordinator/`) | Go | Control plane: routing, attestation, billing, API |
 | Provider (`provider/`) | Rust | Inference agent: security, attestation, WebSocket client |
-| Console (`console-ui/`) | Next.js 15 | Web dashboard: chat, billing, provider verification |
+| Console (`console-ui/`) | Next.js 16 | Web dashboard: chat, billing, provider verification |
 | macOS App (`app/EigenInference/`) | Swift | Menu bar app: status, scheduling, earnings |
 | Secure Enclave (`enclave/`) | Swift | Hardware-bound P-256 identity |
-| Image Bridge (`image-bridge/`) | Python | Draw Things gRPC integration for FLUX models |
 | Landing (`landing/`) | HTML | Static landing page |
 
 ## Development
@@ -204,11 +176,14 @@ cd app/EigenInference && swift build -c release
 
 # Console UI
 cd console-ui && npm install && npm run dev
-
-# Image Bridge tests
-cd image-bridge && python3 -m pytest tests/
 ```
 
 ## License
 
 Proprietary. All rights reserved.
+
+## Disclaimer
+🚧 Darkbloom is under active development and has not been audited. Darkblom is rapidly being upgraded, features may be added, removed or otherwise improved or modified and interfaces will have breaking changes. Darkbloom should be used only for testing purposes and not in production. Darkbloom is provided "as is" and Eigen Labs, Inc. does not guarantee its functionality or provide support for its use in production. 🚧
+
+## Security Bugs
+Please report security vulnerabilities to security@eigenlabs.org. Do NOT report security bugs via Github Issues.

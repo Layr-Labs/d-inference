@@ -11,6 +11,7 @@ import (
 
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/store"
 )
 
 func testLogger() *slog.Logger {
@@ -39,8 +40,31 @@ func testRegisterMessage() *protocol.RegisterMessage {
 				Quantization: "4bit",
 			},
 		},
-		Backend: "vllm_mlx",
+		Backend:                 "inprocess-mlx",
+		PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities: &protocol.PrivacyCapabilities{
+			TextBackendInprocess:    true,
+			TextProxyDisabled:       true,
+			PythonRuntimeLocked:     true,
+			DangerousModulesBlocked: true,
+			SIPEnabled:              true,
+			AntiDebugEnabled:        true,
+			CoreDumpsDisabled:       true,
+			EnvScrubbed:             true,
+		},
 	}
+}
+
+// testMakeTextRoutable sets the fields required for a provider to be routable
+// for text models: trust level, challenge freshness, manifest verification,
+// and coordinator-verified SIP.
+func testMakeTextRoutable(p *Provider) {
+	p.TrustLevel = TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
+	p.RuntimeManifestChecked = true
+	p.ChallengeVerifiedSIP = true
 }
 
 func TestRegisterAndGetProvider(t *testing.T) {
@@ -72,6 +96,73 @@ func TestRegisterAndGetProvider(t *testing.T) {
 	}
 }
 
+func TestProviderMissingPrivacyCapsExcludedFromTextRouting(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	msg.PrivacyCapabilities = nil
+	p := reg.Register("p-nocaps", nil, msg)
+	p.ChallengeVerifiedSIP = true
+	reg.SetTrustLevel(p.ID, TrustHardware)
+	reg.RecordChallengeSuccess(p.ID)
+
+	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if found != nil {
+		t.Fatal("provider without privacy capabilities should not be routable for text models")
+	}
+
+	models := reg.ListModels()
+	for _, m := range models {
+		if m.ID == "mlx-community/Qwen3.5-9B-Instruct-4bit" {
+			t.Fatal("text model from provider without privacy capabilities should not appear in model list")
+		}
+	}
+}
+
+func TestProviderWithoutManifestCheckExcludedFromTextRouting(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p-nomanifest", nil, msg)
+	p.TrustLevel = TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
+	p.RuntimeManifestChecked = false
+
+	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if found != nil {
+		t.Fatal("provider without manifest verification should not be routable for text models")
+	}
+}
+
+func TestProviderWithoutChallengeVerifiedSIPExcluded(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p-nosip", nil, msg)
+	p.TrustLevel = TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.RuntimeManifestChecked = true
+	p.ChallengeVerifiedSIP = false
+
+	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if found != nil {
+		t.Fatal("provider without coordinator-verified SIP should not be routable for text")
+	}
+}
+
+func TestProviderPartialPrivacyCapsExcluded(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	msg.PrivacyCapabilities.DangerousModulesBlocked = false
+	p := reg.Register("p-partial", nil, msg)
+	p.ChallengeVerifiedSIP = true
+	reg.SetTrustLevel(p.ID, TrustHardware)
+	reg.RecordChallengeSuccess(p.ID)
+
+	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if found != nil {
+		t.Fatal("provider with incomplete privacy capabilities should not be routable for text")
+	}
+}
+
 func TestHeartbeat(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
@@ -91,6 +182,61 @@ func TestHeartbeat(t *testing.T) {
 	}
 	if p.Stats.TokensGenerated != 1000 {
 		t.Errorf("tokens_generated = %d, want 1000", p.Stats.TokensGenerated)
+	}
+}
+
+func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+
+	reg.RestoreProviderState(p, &store.ProviderRecord{
+		ID:                         "persisted-p1",
+		TrustLevel:                 string(TrustHardware),
+		Attested:                   true,
+		LifetimeRequestsServed:     100,
+		LifetimeTokensGenerated:    2000,
+		LastSessionRequestsServed:  100,
+		LastSessionTokensGenerated: 2000,
+	})
+
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
+		Type:   protocol.TypeHeartbeat,
+		Status: "idle",
+		Stats:  protocol.HeartbeatStats{RequestsServed: 100, TokensGenerated: 2000},
+	})
+
+	if p.Stats.RequestsServed != 100 {
+		t.Fatalf("requests_served after coordinator restart = %d, want 100", p.Stats.RequestsServed)
+	}
+	if p.Stats.TokensGenerated != 2000 {
+		t.Fatalf("tokens_generated after coordinator restart = %d, want 2000", p.Stats.TokensGenerated)
+	}
+
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
+		Type:   protocol.TypeHeartbeat,
+		Status: "idle",
+		Stats:  protocol.HeartbeatStats{RequestsServed: 105, TokensGenerated: 2300},
+	})
+
+	if p.Stats.RequestsServed != 105 {
+		t.Fatalf("requests_served after new work = %d, want 105", p.Stats.RequestsServed)
+	}
+	if p.Stats.TokensGenerated != 2300 {
+		t.Fatalf("tokens_generated after new work = %d, want 2300", p.Stats.TokensGenerated)
+	}
+
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
+		Type:   protocol.TypeHeartbeat,
+		Status: "idle",
+		Stats:  protocol.HeartbeatStats{RequestsServed: 2, TokensGenerated: 40},
+	})
+
+	if p.Stats.RequestsServed != 107 {
+		t.Fatalf("requests_served after provider restart = %d, want 107", p.Stats.RequestsServed)
+	}
+	if p.Stats.TokensGenerated != 2340 {
+		t.Fatalf("tokens_generated after provider restart = %d, want 2340", p.Stats.TokensGenerated)
 	}
 }
 
@@ -129,8 +275,7 @@ func TestFindProvider(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	p1 := reg.Register("p1", nil, msg)
-	p1.TrustLevel = TrustHardware
-	p1.LastChallengeVerified = time.Now()
+	testMakeTextRoutable(p1)
 
 	p := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if p == nil {
@@ -159,11 +304,10 @@ func TestFindProviderSkipsAtMaxConcurrency(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	p1 := reg.Register("p1", nil, msg)
-	p1.TrustLevel = TrustHardware
-	p1.LastChallengeVerified = time.Now()
+	testMakeTextRoutable(p1)
 
 	// Fill up the provider to max concurrency by adding pending requests.
-	for i := 0; i < MaxConcurrentRequests; i++ {
+	for i := range DefaultMaxConcurrent {
 		p1.AddPending(&PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
 	}
 
@@ -189,13 +333,11 @@ func TestFindProviderScoreBased(t *testing.T) {
 	// p2 has higher decode_tps, so it should be preferred.
 	p1 := reg.Register("p1", nil, msg)
 	p1.DecodeTPS = 50.0
-	p1.TrustLevel = TrustHardware
-	p1.LastChallengeVerified = time.Now()
+	testMakeTextRoutable(p1)
 
 	p2 := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 100.0
-	p2.TrustLevel = TrustHardware
-	p2.LastChallengeVerified = time.Now()
+	testMakeTextRoutable(p2)
 
 	// First call should pick p2 (higher score).
 	first := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -225,6 +367,7 @@ func TestSetProviderIdle(t *testing.T) {
 	p1 := reg.Register("p1", nil, msg)
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
+	p1.ChallengeVerifiedSIP = true
 
 	// Mark as serving.
 	reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -245,9 +388,11 @@ func TestListModels(t *testing.T) {
 	p1 := reg.Register("p1", nil, msg)
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
+	p1.ChallengeVerifiedSIP = true
 	p2 := reg.Register("p2", nil, msg)
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now()
+	p2.ChallengeVerifiedSIP = true
 
 	models := reg.ListModels()
 	if len(models) != 1 {
@@ -272,6 +417,7 @@ func TestListModelsWithAttestedProvider(t *testing.T) {
 	p1 := reg.Register("p1", nil, msg)
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
+	p1.ChallengeVerifiedSIP = true
 	p1.Attested = true
 	p1.AttestationResult = &attestation.VerificationResult{
 		Valid:                  true,
@@ -283,6 +429,7 @@ func TestListModelsWithAttestedProvider(t *testing.T) {
 	p2 := reg.Register("p2", nil, msg)
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now()
+	p2.ChallengeVerifiedSIP = true
 
 	models := reg.ListModels()
 	if len(models) != 1 {
@@ -377,6 +524,7 @@ func TestTrustLevels(t *testing.T) {
 	// Set hardware trust
 	p.TrustLevel = TrustHardware
 	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
 	if p.TrustLevel != TrustHardware {
 		t.Errorf("trust level = %q, want %q", p.TrustLevel, TrustHardware)
 	}
@@ -389,6 +537,7 @@ func TestListModelsWithTrustLevel(t *testing.T) {
 	p1 := reg.Register("p1", nil, msg)
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
+	p1.ChallengeVerifiedSIP = true
 	p1.Attested = true
 	p1.AttestationResult = &attestation.VerificationResult{
 		Valid:                  true,
@@ -499,12 +648,17 @@ func TestRecordChallengeSuccess(t *testing.T) {
 	if p.LastChallengeVerified.IsZero() {
 		t.Error("last_challenge_verified should be set")
 	}
+	if !p.ChallengeVerifiedSIP {
+		t.Error("recording challenge success should mark SIP as challenge verified")
+	}
 }
 
 func TestRecordChallengeFailure(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	p := reg.Register("p1", nil, msg)
+	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
 
 	count := reg.RecordChallengeFailure("p1")
 	if count != 1 {
@@ -512,6 +666,12 @@ func TestRecordChallengeFailure(t *testing.T) {
 	}
 	if p.FailedChallenges != 1 {
 		t.Errorf("failed_challenges = %d, want 1", p.FailedChallenges)
+	}
+	if !p.LastChallengeVerified.IsZero() {
+		t.Error("challenge failure should clear last_challenge_verified")
+	}
+	if p.ChallengeVerifiedSIP {
+		t.Error("challenge failure should clear SIP verification")
 	}
 
 	count = reg.RecordChallengeFailure("p1")
@@ -526,7 +686,7 @@ func TestChallengeFailureThreshold(t *testing.T) {
 	reg.Register("p1", nil, msg)
 
 	// Record failures up to the threshold
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		reg.RecordChallengeFailure("p1")
 	}
 
@@ -548,13 +708,15 @@ func TestScoringHigherDecodeTPS(t *testing.T) {
 	p1.DecodeTPS = 50.0
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
+	p1.ChallengeVerifiedSIP = true
 
 	p2 := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 200.0
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now()
+	p2.ChallengeVerifiedSIP = true
 
-	// p2 should be selected (higher decode_tps).
+	// p2 has 4x higher decode TPS → should be selected.
 	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if selected == nil {
 		t.Fatal("FindProvider returned nil")
@@ -578,6 +740,7 @@ func TestScoringTrustedPreferred(t *testing.T) {
 	p2.DecodeTPS = 100.0
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now()
+	p2.ChallengeVerifiedSIP = true
 
 	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if selected == nil {
@@ -597,11 +760,13 @@ func TestScoringIdlePreferredOverBusy(t *testing.T) {
 	p1.DecodeTPS = 100.0
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
+	p1.ChallengeVerifiedSIP = true
 
 	p2 := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 100.0
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now()
+	p2.ChallengeVerifiedSIP = true
 
 	// Give p1 pending requests so it has load.
 	p1.AddPending(&PendingRequest{RequestID: "busy-1"})
@@ -626,11 +791,13 @@ func TestScoringWarmModelPreferred(t *testing.T) {
 	p1.DecodeTPS = 100.0
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
+	p1.ChallengeVerifiedSIP = true
 
 	p2 := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 100.0
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now()
+	p2.ChallengeVerifiedSIP = true
 	p2.WarmModels = []string{"mlx-community/Qwen3.5-9B-Instruct-4bit"}
 
 	selected := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -759,6 +926,7 @@ func TestSetProviderIdleDrainsQueue(t *testing.T) {
 	p := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
 
 	// Mark provider as serving.
 	reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -851,6 +1019,7 @@ func TestFindProviderPrefersHealthy(t *testing.T) {
 	p1.DecodeTPS = 100.0
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
+	p1.ChallengeVerifiedSIP = true
 	p1.SystemMetrics = protocol.SystemMetrics{
 		MemoryPressure: 0.85,
 		CPUUsage:       0.7,
@@ -861,6 +1030,7 @@ func TestFindProviderPrefersHealthy(t *testing.T) {
 	p2.DecodeTPS = 100.0
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now()
+	p2.ChallengeVerifiedSIP = true
 	p2.SystemMetrics = protocol.SystemMetrics{
 		MemoryPressure: 0.1,
 		CPUUsage:       0.05,
@@ -956,7 +1126,7 @@ func TestFindProviderSkipsZeroLastChallenge(t *testing.T) {
 }
 
 // TestFindProviderSkipsStaleChallenge verifies that a provider whose last
-// challenge verification is older than the staleness threshold (3m30s) is
+// challenge verification is older than the staleness threshold (6m) is
 // excluded from routing. This prevents routing to a provider that might
 // have rebooted with SIP disabled after passing an earlier challenge.
 func TestFindProviderSkipsStaleChallenge(t *testing.T) {
@@ -964,12 +1134,12 @@ func TestFindProviderSkipsStaleChallenge(t *testing.T) {
 	msg := testRegisterMessage()
 	p := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
-	// Set LastChallengeVerified to 4 minutes ago (beyond 3m30s threshold).
-	p.LastChallengeVerified = time.Now().Add(-4 * time.Minute)
+	// Set LastChallengeVerified to 7 minutes ago (beyond 6m threshold).
+	p.LastChallengeVerified = time.Now().Add(-7 * time.Minute)
 
 	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
-		t.Error("FindProvider should skip provider with stale LastChallengeVerified (4m ago)")
+		t.Error("FindProvider should skip provider with stale LastChallengeVerified (7m ago)")
 	}
 }
 
@@ -982,6 +1152,7 @@ func TestFindProviderAcceptsRecentChallenge(t *testing.T) {
 	// 1 minute ago — well within the 3m30s window.
 	p := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
+	p.ChallengeVerifiedSIP = true
 	p.LastChallengeVerified = time.Now().Add(-1 * time.Minute)
 
 	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -994,32 +1165,34 @@ func TestFindProviderAcceptsRecentChallenge(t *testing.T) {
 }
 
 // TestFindProviderChallengeBoundaryJustInside verifies that a provider
-// exactly at 3 minutes (inside the 3m30s window) is still accepted.
+// at 5 minutes (inside the 6-minute window) is still accepted.
 func TestFindProviderChallengeBoundaryJustInside(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	p := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
-	p.LastChallengeVerified = time.Now().Add(-3 * time.Minute)
+	p.ChallengeVerifiedSIP = true
+	p.LastChallengeVerified = time.Now().Add(-5 * time.Minute)
 
 	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found == nil {
-		t.Error("FindProvider should accept provider at exactly 3m (within 3m30s threshold)")
+		t.Error("FindProvider should accept provider at 5m (within 6m threshold)")
 	}
 }
 
 // TestFindProviderChallengeBoundaryJustOutside verifies that a provider
-// just beyond 3m30s is rejected.
+// just beyond 6 minutes is rejected.
 func TestFindProviderChallengeBoundaryJustOutside(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	p := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
-	p.LastChallengeVerified = time.Now().Add(-3*time.Minute - 31*time.Second)
+	p.ChallengeVerifiedSIP = true
+	p.LastChallengeVerified = time.Now().Add(-6*time.Minute - 1*time.Second)
 
 	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found != nil {
-		t.Error("FindProvider should reject provider at 3m31s (beyond 3m30s threshold)")
+		t.Error("FindProvider should reject provider at 6m1s (beyond 6m threshold)")
 	}
 }
 
@@ -1033,6 +1206,7 @@ func TestFindProviderMixedChallengeState(t *testing.T) {
 	// p1: verified 1 minute ago — should be routable.
 	p1 := reg.Register("p1", nil, msg)
 	p1.TrustLevel = TrustHardware
+	p1.ChallengeVerifiedSIP = true
 	p1.DecodeTPS = 50.0
 	p1.LastChallengeVerified = time.Now().Add(-1 * time.Minute)
 
@@ -1041,11 +1215,11 @@ func TestFindProviderMixedChallengeState(t *testing.T) {
 	p2.TrustLevel = TrustHardware
 	p2.DecodeTPS = 200.0 // Higher score, but should still be skipped.
 
-	// p3: verified 5 minutes ago — stale, should be skipped.
+	// p3: verified 7 minutes ago — stale, should be skipped.
 	p3 := reg.Register("p3", nil, msg)
 	p3.TrustLevel = TrustHardware
 	p3.DecodeTPS = 200.0
-	p3.LastChallengeVerified = time.Now().Add(-5 * time.Minute)
+	p3.LastChallengeVerified = time.Now().Add(-7 * time.Minute)
 
 	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
 	if found == nil {
@@ -1091,7 +1265,8 @@ func TestChallengeSuccessEnablesRouting(t *testing.T) {
 		t.Error("provider should not be routable before passing a challenge")
 	}
 
-	// Simulate passing the immediate challenge.
+	// Simulate passing the immediate challenge (sets LastChallengeVerified + SIP).
+	p.ChallengeVerifiedSIP = true
 	reg.RecordChallengeSuccess("p1")
 
 	// After challenge: routable.
@@ -1113,6 +1288,7 @@ func TestChallengeExpirationRemovesRoutability(t *testing.T) {
 	p := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
 
 	// Should be routable now.
 	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -1121,8 +1297,8 @@ func TestChallengeExpirationRemovesRoutability(t *testing.T) {
 	}
 	reg.SetProviderIdle("p1")
 
-	// Backdate the challenge to simulate time passing.
-	p.LastChallengeVerified = time.Now().Add(-4 * time.Minute)
+	// Backdate the challenge to simulate time passing beyond 6m threshold.
+	p.LastChallengeVerified = time.Now().Add(-7 * time.Minute)
 
 	// Should no longer be routable.
 	found = reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -1144,6 +1320,7 @@ func TestProviderEviction(t *testing.T) {
 	p := reg.Register("evict-me", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
 
 	// Verify provider is present and routable before eviction.
 	if reg.GetProvider("evict-me") == nil {
@@ -1193,6 +1370,7 @@ func TestHeartbeatMetricsAffectScoring(t *testing.T) {
 	pA.DecodeTPS = 100.0
 	pA.TrustLevel = TrustHardware
 	pA.LastChallengeVerified = time.Now()
+	pA.ChallengeVerifiedSIP = true
 	pA.SystemMetrics = protocol.SystemMetrics{
 		MemoryPressure: 0.1,
 		CPUUsage:       0.1,
@@ -1203,6 +1381,7 @@ func TestHeartbeatMetricsAffectScoring(t *testing.T) {
 	pB.DecodeTPS = 100.0
 	pB.TrustLevel = TrustHardware
 	pB.LastChallengeVerified = time.Now()
+	pB.ChallengeVerifiedSIP = true
 	pB.SystemMetrics = protocol.SystemMetrics{
 		MemoryPressure: 0.85,
 		CPUUsage:       0.8,
@@ -1217,7 +1396,7 @@ func TestHeartbeatMetricsAffectScoring(t *testing.T) {
 	}
 
 	// Call FindProvider 10 times; healthy should be selected every time.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		selected := reg.FindProvider(model)
 		if selected == nil {
 			t.Fatalf("FindProvider returned nil on iteration %d", i)
@@ -1241,49 +1420,64 @@ func TestWarmModelBonusRouting(t *testing.T) {
 	pA.DecodeTPS = 100.0
 	pA.TrustLevel = TrustHardware
 	pA.LastChallengeVerified = time.Now()
+	pA.ChallengeVerifiedSIP = true
 
 	// Provider B: warm (model already loaded).
 	pB := reg.Register("warm", nil, msg)
 	pB.DecodeTPS = 100.0
 	pB.TrustLevel = TrustHardware
 	pB.LastChallengeVerified = time.Now()
+	pB.ChallengeVerifiedSIP = true
 	pB.WarmModels = []string{model}
 
-	// Verify scoring: warm provider should have 1.5x bonus.
+	// Verify scoring: warm IDLE provider should have 1.5x bonus.
 	coldScore := ScoreProvider(pA, model)
 	warmScore := ScoreProvider(pB, model)
 	if warmScore <= coldScore {
-		t.Errorf("warm score (%f) should be greater than cold score (%f)", warmScore, coldScore)
+		t.Errorf("warm idle score (%f) should be greater than cold idle score (%f)", warmScore, coldScore)
 	}
-	// The ratio should be approximately 1.5x (both have identical stats otherwise).
 	ratio := warmScore / coldScore
 	if ratio < 1.45 || ratio > 1.55 {
 		t.Errorf("warm/cold score ratio = %f, expected ~1.5", ratio)
 	}
 
-	// FindProvider should always pick the warm provider.
-	for i := 0; i < 5; i++ {
-		selected := reg.FindProvider(model)
-		if selected == nil {
-			t.Fatalf("FindProvider returned nil on iteration %d", i)
-		}
-		if selected.ID != "warm" {
-			t.Errorf("iteration %d: expected warm provider, got %q", i, selected.ID)
-		}
-		reg.SetProviderIdle(selected.ID)
+	// First request should go to warm provider (idle + warm bonus).
+	selected := reg.FindProvider(model)
+	if selected == nil {
+		t.Fatal("FindProvider returned nil")
 	}
+	if selected.ID != "warm" {
+		t.Errorf("first request: expected warm provider, got %q", selected.ID)
+	}
+	// Simulate real flow: add a pending request so provider is busy.
+	selected.AddPending(&PendingRequest{RequestID: "req-1"})
+
+	// Second request: warm provider has pending=1, loses warm bonus.
+	// Cold idle provider should win: cold score (1.0) > warm busy score (0.75 with load).
+	selected2 := reg.FindProvider(model)
+	if selected2 == nil {
+		t.Fatal("FindProvider returned nil for second request")
+	}
+	if selected2.ID != "cold" {
+		t.Errorf("second request: expected cold provider (warm is busy), got %q", selected2.ID)
+	}
+
+	// Release both providers.
+	pB.RemovePending("req-1")
+	reg.SetProviderIdle("warm")
+	reg.SetProviderIdle("cold")
 
 	// Also test CurrentModel as an alternative warm signal.
 	pA.WarmModels = nil
 	pB.WarmModels = nil
 	pB.CurrentModel = model
 
-	selected := reg.FindProvider(model)
-	if selected == nil {
+	selected3 := reg.FindProvider(model)
+	if selected3 == nil {
 		t.Fatal("FindProvider returned nil for CurrentModel test")
 	}
-	if selected.ID != "warm" {
-		t.Errorf("CurrentModel test: expected warm provider, got %q", selected.ID)
+	if selected3.ID != "warm" {
+		t.Errorf("CurrentModel test: expected warm provider, got %q", selected3.ID)
 	}
 }
 
@@ -1322,6 +1516,7 @@ func TestThermalCriticalBlocksRouting(t *testing.T) {
 	pReg.DecodeTPS = 100.0
 	pReg.TrustLevel = TrustHardware
 	pReg.LastChallengeVerified = time.Now()
+	pReg.ChallengeVerifiedSIP = true
 	pReg.SystemMetrics = protocol.SystemMetrics{
 		MemoryPressure: 0.1,
 		CPUUsage:       0.1,
@@ -1346,6 +1541,7 @@ func TestThermalCriticalBlocksRouting(t *testing.T) {
 	pHealthy.DecodeTPS = 100.0
 	pHealthy.TrustLevel = TrustHardware
 	pHealthy.LastChallengeVerified = time.Now()
+	pHealthy.ChallengeVerifiedSIP = true
 	pHealthy.SystemMetrics = protocol.SystemMetrics{
 		MemoryPressure: 0.1,
 		CPUUsage:       0.1,
@@ -1378,12 +1574,13 @@ func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 	model := msg.Models[0].ID
 
 	// Register 5 providers with different stats.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		id := fmt.Sprintf("provider-%d", i)
 		p := reg.Register(id, nil, msg)
 		p.DecodeTPS = float64(50 + i*25)
 		p.TrustLevel = TrustHardware
 		p.LastChallengeVerified = time.Now()
+		p.ChallengeVerifiedSIP = true
 		p.SystemMetrics = protocol.SystemMetrics{
 			MemoryPressure: float64(i) * 0.1,
 			CPUUsage:       float64(i) * 0.05,
@@ -1400,7 +1597,7 @@ func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		thermalStates := []string{"nominal", "fair", "serious", "nominal"}
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			// Phase A: FindProvider + SetProviderIdle
 			p := reg.FindProvider(model)
 			if p != nil {
@@ -1430,7 +1627,7 @@ func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			id := fmt.Sprintf("provider-%d", i%5)
 			if i%3 == 0 {
 				reg.RecordJobFailure(id)
@@ -1444,7 +1641,7 @@ func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			id := fmt.Sprintf("provider-%d", i%5)
 			p := reg.GetProvider(id)
 			if p != nil {
@@ -1466,7 +1663,7 @@ func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			_ = reg.ProviderCount()
 			reg.ForEachProvider(func(p *Provider) {
 				_ = p.PendingCount()
@@ -1478,7 +1675,7 @@ func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			ids := reg.ProviderIDs()
 			for _, id := range ids {
 				_ = reg.GetProvider(id)
@@ -1677,5 +1874,514 @@ func TestCatalogWeightHash(t *testing.T) {
 	}
 	if h := reg.CatalogWeightHash("model-c"); h != "" {
 		t.Errorf("expected empty hash for unknown model, got %q", h)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic capacity-based routing tests
+// ---------------------------------------------------------------------------
+
+// TestMaxConcurrencyDefault verifies that providers without BackendCapacity
+// fall back to DefaultMaxConcurrent (4).
+func TestMaxConcurrencyDefault(t *testing.T) {
+	p := &Provider{
+		pendingReqs: make(map[string]*PendingRequest),
+	}
+	if got := p.MaxConcurrency(); got != DefaultMaxConcurrent {
+		t.Errorf("MaxConcurrency() = %d, want %d (default)", got, DefaultMaxConcurrent)
+	}
+}
+
+// TestMaxConcurrencyWithCapacity verifies hardware-based dynamic concurrency.
+func TestMaxConcurrencyWithCapacity(t *testing.T) {
+	cases := []struct {
+		memGB    float64
+		expected int
+	}{
+		// Phase 2 tier values (lowered from 4/8/16/24/32). See
+		// maxConcurrency() in registry.go for the rationale.
+		{16, 2},
+		{24, 2},
+		{36, 4},
+		{48, 4},
+		{64, 6},
+		{96, 6},
+		{128, 8},
+		{192, 12},
+		{256, 12},
+	}
+
+	for _, tc := range cases {
+		p := &Provider{
+			pendingReqs: make(map[string]*PendingRequest),
+			BackendCapacity: &protocol.BackendCapacity{
+				TotalMemoryGB: tc.memGB,
+			},
+		}
+		got := p.MaxConcurrency()
+		if got != tc.expected {
+			t.Errorf("MaxConcurrency() with %.0f GB = %d, want %d", tc.memGB, got, tc.expected)
+		}
+	}
+}
+
+// TestScoreProviderDynamicLoad verifies that a provider with high memory and
+// dynamic max concurrency still gets a good score with 4 pending requests
+// (which would be load=1.0 under the old hardcoded limit of 4).
+func TestScoreProviderDynamicLoad(t *testing.T) {
+	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
+
+	// Provider A: 128GB, 4 pending requests.
+	// Old code: load=4/4=1.0, score=0.
+	// New code: MaxConcurrency=24, load=4/24=0.17, high score.
+	pA := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 128},
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 128,
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+	pA.AddPending(&PendingRequest{RequestID: "r1"})
+	pA.AddPending(&PendingRequest{RequestID: "r2"})
+	pA.AddPending(&PendingRequest{RequestID: "r3"})
+	pA.AddPending(&PendingRequest{RequestID: "r4"})
+
+	score := ScoreProvider(pA, model)
+	if score <= 0 {
+		t.Errorf("128GB provider with 4 pending should have positive score, got %f", score)
+	}
+
+	// Provider B: no backend capacity (old-style), same 4 pending.
+	// load = 4/4 = 1.0, so (1-load)=0 => score=0.
+	pB := &Provider{
+		Hardware:        protocol.Hardware{MemoryGB: 128},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+	pB.AddPending(&PendingRequest{RequestID: "r1"})
+	pB.AddPending(&PendingRequest{RequestID: "r2"})
+	pB.AddPending(&PendingRequest{RequestID: "r3"})
+	pB.AddPending(&PendingRequest{RequestID: "r4"})
+
+	scoreB := ScoreProvider(pB, model)
+	if scoreB != 0 {
+		t.Errorf("old-style provider with 4 pending should have score=0, got %f", scoreB)
+	}
+
+	// The new provider should score significantly higher.
+	if score <= scoreB {
+		t.Errorf("128GB dynamic provider score (%f) should be > old-style score (%f)", score, scoreB)
+	}
+}
+
+// TestScoreProviderGPUMemoryFactor verifies GPU utilization affects scoring.
+func TestScoreProviderGPUMemoryFactor(t *testing.T) {
+	model := "test-model"
+
+	lowGPU := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 64},
+		BackendCapacity: &protocol.BackendCapacity{
+			GPUMemoryActiveGB: 32, // 50% utilization
+			TotalMemoryGB:     64,
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+
+	highGPU := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 64},
+		BackendCapacity: &protocol.BackendCapacity{
+			GPUMemoryActiveGB: 57.6, // 90% utilization
+			TotalMemoryGB:     64,
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+
+	lowScore := ScoreProvider(lowGPU, model)
+	highScore := ScoreProvider(highGPU, model)
+
+	if highScore >= lowScore {
+		t.Errorf("90%% GPU provider score (%f) should be less than 50%% GPU score (%f)", highScore, lowScore)
+	}
+}
+
+// TestScoreProviderColdStartPenalty verifies that a provider whose requested
+// model's slot has state "idle_shutdown" scores much lower.
+func TestScoreProviderColdStartPenalty(t *testing.T) {
+	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
+
+	hotProvider := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 64},
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 64,
+			Slots: []protocol.BackendSlotCapacity{
+				{Model: model, State: "running"},
+			},
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		WarmModels:      []string{model},
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+
+	coldProvider := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 64},
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 64,
+			Slots: []protocol.BackendSlotCapacity{
+				{Model: model, State: "idle_shutdown"},
+			},
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		WarmModels:      []string{model},
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+
+	hotScore := ScoreProvider(hotProvider, model)
+	coldScore := ScoreProvider(coldProvider, model)
+
+	if coldScore >= hotScore {
+		t.Errorf("cold-start score (%f) should be less than hot score (%f)", coldScore, hotScore)
+	}
+
+	// The penalty should be severe (0.1x vs 1.5x warm bonus)
+	ratio := hotScore / coldScore
+	if ratio < 10 {
+		t.Errorf("hot/cold score ratio = %f, expected >= 10 (warm 1.5x vs cold 0.1x)", ratio)
+	}
+}
+
+// TestFindProviderDynamicConcurrency verifies that with dynamic concurrency,
+// a provider with 5 pending requests on a 96 GB box is still eligible
+// (Phase 2 cap for 96 GB = 6).
+func TestFindProviderDynamicConcurrency(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+	p.TrustLevel = TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
+	p.DecodeTPS = 100.0
+	// 96 GB → cap=6 under Phase 2.
+	p.mu.Lock()
+	p.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 96,
+	}
+	p.mu.Unlock()
+
+	// 5 pending is below the new cap of 6.
+	for i := range 5 {
+		p.AddPending(&PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
+	}
+
+	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if found == nil {
+		t.Error("FindProvider should return provider with 5/6 capacity used (Phase 2 cap)")
+	}
+}
+
+// TestHeartbeatBackendCapacity verifies that BackendCapacity from heartbeats
+// is stored on the Provider struct.
+func TestHeartbeatBackendCapacity(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	reg.Register("p1", nil, msg)
+
+	cap := &protocol.BackendCapacity{
+		Slots: []protocol.BackendSlotCapacity{
+			{
+				Model:              "mlx-community/Qwen3.5-9B-Instruct-4bit",
+				State:              "running",
+				NumRunning:         3,
+				NumWaiting:         1,
+				ActiveTokens:       5000,
+				MaxTokensPotential: 12000,
+			},
+		},
+		GPUMemoryActiveGB: 45.2,
+		GPUMemoryPeakGB:   52.1,
+		GPUMemoryCacheGB:  8.3,
+		TotalMemoryGB:     64,
+	}
+
+	hb := &protocol.HeartbeatMessage{
+		Type:            protocol.TypeHeartbeat,
+		Status:          "serving",
+		Stats:           protocol.HeartbeatStats{},
+		BackendCapacity: cap,
+	}
+	reg.Heartbeat("p1", hb)
+
+	p := reg.GetProvider("p1")
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.BackendCapacity == nil {
+		t.Fatal("BackendCapacity should be set after heartbeat")
+	}
+	if len(p.BackendCapacity.Slots) != 1 {
+		t.Fatalf("expected 1 slot, got %d", len(p.BackendCapacity.Slots))
+	}
+	if p.BackendCapacity.Slots[0].NumRunning != 3 {
+		t.Errorf("num_running = %d, want 3", p.BackendCapacity.Slots[0].NumRunning)
+	}
+	if p.BackendCapacity.GPUMemoryActiveGB != 45.2 {
+		t.Errorf("gpu_memory_active_gb = %f, want 45.2", p.BackendCapacity.GPUMemoryActiveGB)
+	}
+	if p.BackendCapacity.TotalMemoryGB != 64 {
+		t.Errorf("total_memory_gb = %f, want 64", p.BackendCapacity.TotalMemoryGB)
+	}
+}
+
+// TestBackwardCompatNoCapacity verifies that heartbeats WITHOUT BackendCapacity
+// (simulating old providers) work correctly with default limits.
+func TestBackwardCompatNoCapacity(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+	p.TrustLevel = TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
+	p.DecodeTPS = 100.0
+
+	// Send heartbeat without BackendCapacity (old provider).
+	hb := &protocol.HeartbeatMessage{
+		Type:   protocol.TypeHeartbeat,
+		Status: "idle",
+		Stats:  protocol.HeartbeatStats{},
+	}
+	reg.Heartbeat("p1", hb)
+
+	// BackendCapacity should remain nil.
+	if p.BackendCapacity != nil {
+		t.Error("BackendCapacity should be nil for old providers")
+	}
+
+	// MaxConcurrency should return the default.
+	if p.MaxConcurrency() != DefaultMaxConcurrent {
+		t.Errorf("MaxConcurrency() = %d, want %d (default)", p.MaxConcurrency(), DefaultMaxConcurrent)
+	}
+
+	// Provider should be routable with default limits.
+	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if found == nil {
+		t.Error("old provider without BackendCapacity should still be routable")
+	}
+}
+
+// TestSetProviderIdleDynamicCap verifies that SetProviderIdle drains queued
+// requests using dynamic concurrency limits. A provider with max=8 and
+// pending=5 should still try to drain after completing a request.
+func TestSetProviderIdleDynamicCap(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+	p.TrustLevel = TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
+	p.DecodeTPS = 100.0
+
+	// 96 GB → cap=6 under Phase 2.
+	p.mu.Lock()
+	p.BackendCapacity = &protocol.BackendCapacity{TotalMemoryGB: 96}
+	p.mu.Unlock()
+
+	// 5 pending (under cap of 6).
+	for i := range 5 {
+		p.AddPending(&PendingRequest{RequestID: fmt.Sprintf("req-%d", i)})
+	}
+
+	// Queue a request
+	qr := &QueuedRequest{
+		RequestID:  "req-queued",
+		Model:      "mlx-community/Qwen3.5-9B-Instruct-4bit",
+		ResponseCh: make(chan *Provider, 1),
+	}
+	reg.Queue().Enqueue(qr)
+
+	// Complete one pending → 4/6, queue should drain.
+	p.RemovePending("req-0")
+
+	reg.SetProviderIdle(p.ID)
+
+	select {
+	case assigned := <-qr.ResponseCh:
+		if assigned == nil {
+			t.Fatal("expected non-nil provider from queue drain")
+		}
+		if assigned.ID != "p1" {
+			t.Errorf("assigned provider = %q, want p1", assigned.ID)
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("timed out waiting for queue drain — dynamic cap may not be working")
+	}
+}
+
+// TestScoreProviderCrashedPenalty verifies that a provider whose backend
+// slot is in "crashed" state scores even lower than "idle_shutdown".
+func TestScoreProviderCrashedPenalty(t *testing.T) {
+	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
+
+	hotProvider := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 64},
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 64,
+			Slots: []protocol.BackendSlotCapacity{
+				{Model: model, State: "running"},
+			},
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		WarmModels:      []string{model},
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+
+	idleProvider := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 64},
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 64,
+			Slots: []protocol.BackendSlotCapacity{
+				{Model: model, State: "idle_shutdown"},
+			},
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		WarmModels:      []string{model},
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+
+	crashedProvider := &Provider{
+		Hardware: protocol.Hardware{MemoryGB: 64},
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 64,
+			Slots: []protocol.BackendSlotCapacity{
+				{Model: model, State: "crashed"},
+			},
+		},
+		DecodeTPS:       100.0,
+		TrustLevel:      TrustHardware,
+		RuntimeVerified: true,
+		Reputation:      NewReputation(),
+		WarmModels:      []string{model},
+		pendingReqs:     make(map[string]*PendingRequest),
+	}
+
+	hotScore := ScoreProvider(hotProvider, model)
+	idleScore := ScoreProvider(idleProvider, model)
+	crashedScore := ScoreProvider(crashedProvider, model)
+
+	// Crashed should score lower than idle_shutdown, which scores lower than hot.
+	if crashedScore >= idleScore {
+		t.Errorf("crashed score (%f) should be less than idle_shutdown score (%f)", crashedScore, idleScore)
+	}
+	if idleScore >= hotScore {
+		t.Errorf("idle_shutdown score (%f) should be less than hot score (%f)", idleScore, hotScore)
+	}
+
+	// Crashed penalty should be 0.05x vs idle_shutdown's 0.1x
+	ratio := idleScore / crashedScore
+	if ratio < 1.9 || ratio > 2.1 {
+		t.Errorf("idle/crashed score ratio = %f, expected ~2.0 (0.1x vs 0.05x)", ratio)
+	}
+}
+
+// TestFindProviderPrefersCrashedLast verifies that when the only provider
+// has a crashed slot for the requested model, it is still returned (with
+// low score) rather than returning nil.
+func TestFindProviderPrefersCrashedLast(t *testing.T) {
+	reg := New(testLogger())
+	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
+	msg := testRegisterMessage()
+
+	// Register two providers: one crashed, one hot.
+	crashed := reg.Register("crashed-provider", nil, msg)
+	crashed.TrustLevel = TrustHardware
+	crashed.LastChallengeVerified = time.Now()
+	crashed.ChallengeVerifiedSIP = true
+	crashed.DecodeTPS = 100.0
+	crashed.RuntimeVerified = true
+	crashed.mu.Lock()
+	crashed.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{
+			{Model: model, State: "crashed"},
+		},
+	}
+	crashed.mu.Unlock()
+
+	hot := reg.Register("hot-provider", nil, msg)
+	hot.TrustLevel = TrustHardware
+	hot.LastChallengeVerified = time.Now()
+	hot.ChallengeVerifiedSIP = true
+	hot.DecodeTPS = 100.0
+	hot.RuntimeVerified = true
+	hot.mu.Lock()
+	hot.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{
+			{Model: model, State: "running"},
+		},
+	}
+	hot.mu.Unlock()
+
+	// FindProvider should strongly prefer the hot provider.
+	found := reg.FindProvider(model)
+	if found == nil {
+		t.Fatal("FindProvider returned nil when providers are available")
+	}
+	if found.ID != "hot-provider" {
+		t.Errorf("expected hot-provider, got %q", found.ID)
+	}
+}
+
+// TestFindProviderCrashedOnlyStillRoutes verifies that when a single
+// registered provider has a crashed backend, it is still returned (the
+// provider can attempt a reload) rather than returning nil.
+func TestFindProviderCrashedOnlyStillRoutes(t *testing.T) {
+	reg := New(testLogger())
+	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
+	msg := testRegisterMessage()
+
+	p := reg.Register("only-provider", nil, msg)
+	p.TrustLevel = TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
+	p.DecodeTPS = 100.0
+	p.RuntimeVerified = true
+	p.mu.Lock()
+	p.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{
+			{Model: model, State: "crashed"},
+		},
+	}
+	p.mu.Unlock()
+
+	found := reg.FindProvider(model)
+	if found == nil {
+		t.Error("FindProvider should still route to a crashed-only provider (it can attempt reload)")
 	}
 }

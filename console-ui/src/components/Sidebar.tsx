@@ -15,7 +15,6 @@ import {
   Code,
   Activity,
   Coins,
-  ImageIcon,
   LogOut,
   Sun,
   Moon,
@@ -43,20 +42,16 @@ export function Sidebar() {
   const isChatActive = pathname === "/";
 
   return (
-    <aside className="sidebar-animate fixed inset-0 z-50 w-full sm:static sm:w-[260px] h-screen flex flex-col bg-bg-secondary sm:border-r-[3px] sm:border-border-default shrink-0">
+    <aside className="sidebar-animate fixed inset-0 z-50 w-full sm:static sm:w-[260px] h-screen flex flex-col bg-bg-secondary sm:border-r sm:border-border-default shrink-0">
       {/* Brand header */}
       <div className="px-5 pt-5 pb-4 flex items-center justify-between">
         <Link href="/" className="group">
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl text-ink tracking-tight font-display">
-              Eigen<span className="text-coral">Inference</span>
-            </h1>
-          </div>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="px-2 py-0.5 rounded-full bg-gold-light border-[1.5px] border-ink text-ink text-[10px] font-bold uppercase tracking-wide font-display">
-              Research Preview
-            </span>
-          </div>
+          <h1 className="text-2xl text-ink tracking-tight" style={{ fontFamily: "'Louize', Georgia, serif" }}>
+            Darkbloom
+          </h1>
+          <p className="text-[10px] font-mono text-text-tertiary tracking-wide uppercase mt-1">
+            An Eigen Labs project · Research Preview
+          </p>
         </Link>
         <button
           onClick={() => setSidebarOpen(false)}
@@ -70,8 +65,8 @@ export function Sidebar() {
       <nav className="px-3 space-y-1">
         {[
           { href: "/", icon: MessageSquare, label: "Chat" },
-          { href: "/images", icon: ImageIcon, label: "Images" },
-          { href: "/providers", icon: Server, label: "Providers" },
+          { href: "/stats", icon: Activity, label: "Stats" },
+          { href: "/providers", icon: Server, label: "Provider Dashboard" },
           { href: "/earn", icon: Coins, label: "Earn" },
           { href: "/api-console", icon: Code, label: "API" },
         ].map(({ href, icon: Icon, label }) => {
@@ -104,10 +99,9 @@ export function Sidebar() {
             <button
               onClick={() => createChat()}
               className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg
-                         bg-coral text-white border-[3px] border-ink
+                         bg-coral text-white border border-border-dim
                          text-sm font-bold transition-all
-                         hover:translate-x-[-1px] hover:translate-y-[-1px]
-                         hover:shadow-[3px_3px_0_var(--ink)]"
+                         hover:opacity-90"
             >
               <Plus size={16} />
               New chat
@@ -150,9 +144,8 @@ export function Sidebar() {
       {!isChatActive && <div className="flex-1" />}
 
       {/* Secondary navigation */}
-      <nav className="px-3 pt-3 squiggly-border-top space-y-1">
+      <nav className="px-3 pt-3 border-t border-border-dim space-y-1">
         {[
-          { href: "/stats", icon: Activity, label: "Network" },
           { href: "/models", icon: Cpu, label: "Models" },
           { href: "/billing", icon: CreditCard, label: "Billing" },
           { href: "/settings", icon: Settings, label: "Settings" },
@@ -174,14 +167,14 @@ export function Sidebar() {
       </nav>
 
       {/* Research disclaimer */}
-      <div className="px-4 py-2 squiggly-border-top">
+      <div className="px-4 py-2 border-t border-border-dim">
         <p className="text-[10px] text-text-tertiary leading-relaxed">
           Experimental research preview. Provided as-is for evaluation. Not for production use.
         </p>
       </div>
 
       {/* User footer */}
-      <div className="px-3 py-3 squiggly-border-top">
+      <div className="px-3 py-3 border-t border-border-dim">
         <div className="flex items-center gap-2">
           <div className="flex-1 min-w-0">
             {displayName && (

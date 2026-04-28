@@ -73,13 +73,13 @@ struct GuideAvatarView: View {
             // Speech bubble
             VStack(alignment: .leading, spacing: 4) {
                 Text(message)
-                    .font(.body)
+                    .font(.bodyWarm)
                     .fontWeight(.medium)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if let detail {
                     Text(detail)
-                        .font(.callout)
+                        .font(.captionWarm)
                         .foregroundColor(.warmInkLight)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -165,7 +165,7 @@ enum GuideMessages {
         } else {
             return (
                 "Let's check your security settings.",
-                "EigenInference needs a few macOS security features to protect the prompts being processed."
+                "Darkbloom needs a few macOS security features to protect the prompts being processed."
             )
         }
     }
@@ -228,15 +228,3 @@ enum GuideMessages {
     )
 }
 
-// MARK: - Preview
-
-#Preview {
-    VStack(spacing: 20) {
-        GuideAvatarView(mood: .greeting, message: "Hey! Let's get you set up.", detail: "This takes about 2 minutes.")
-        GuideAvatarView(mood: .excited, message: "Security checks passed!", detail: "Your Mac is ready.")
-        GuideAvatarView(mood: .concerned, message: "SIP is disabled.", detail: "You'll need to enable it in Recovery Mode.")
-        GuideAvatarView(mood: .celebrating, message: "You're all set!", detail: "Start earning now.")
-    }
-    .padding(20)
-    .frame(width: 500)
-}

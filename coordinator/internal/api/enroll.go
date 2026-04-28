@@ -43,7 +43,14 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		"serial_number", req.SerialNumber,
 	)
 
-	profile := generateCombinedProfile(req.SerialNumber)
+	// Derive base URL from the incoming request (respects reverse proxy headers)
+	scheme := "https"
+	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") == "" {
+		scheme = "http"
+	}
+	baseURL := fmt.Sprintf("%s://%s", scheme, r.Host)
+
+	profile := generateCombinedProfile(req.SerialNumber, baseURL)
 
 	w.Header().Set("Content-Type", "application/x-apple-aspen-config")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="EigenInference-Enroll-%s.mobileconfig"`, req.SerialNumber))
@@ -56,9 +63,25 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 //  2. MDM — enrolls with MicroMDM (SecurityInfo verification)
 //  3. ACME — device-attest-01 (SE key binding via Apple attestation)
 //
-// AccessRights=1041: profile inspection (1) + device lock/passcode (16) + security queries (1024).
-// This is read-only MDM — no app management or device wipe capabilities.
-func generateCombinedProfile(serialNumber string) string {
+// AccessRights=1041: profile inspection (1) + device info queries (16) + security queries (1024).
+// This is strictly read-only MDM — no device control or personal data access.
+//
+// Apple MDM AccessRights bitmask reference:
+//
+//	Bit 0  (1)    — Inspect installed config profiles          ✓ REQUESTED
+//	Bit 1  (2)    — Install/remove config profiles             ✗ NOT requested
+//	Bit 2  (4)    — Device lock and passcode removal           ✗ NOT requested
+//	Bit 3  (8)    — Device erase (remote wipe)                 ✗ NOT requested
+//	Bit 4  (16)   — Query device information (name, serial)    ✓ REQUESTED
+//	Bit 5  (32)   — Query network information                  ✗ NOT requested
+//	Bit 6  (64)   — Inspect installed provisioning profiles    ✗ NOT requested
+//	Bit 7  (128)  — Install/remove provisioning profiles       ✗ NOT requested
+//	Bit 8  (256)  — Inspect installed applications             ✗ NOT requested
+//	Bit 9  (512)  — Restriction-related queries                ✗ NOT requested
+//	Bit 10 (1024) — Security-related queries (SIP, SecureBoot) ✓ REQUESTED
+//	Bit 11 (2048) — Change device settings                     ✗ NOT requested
+//	Bit 12 (4096) — App management                             ✗ NOT requested
+func generateCombinedProfile(serialNumber, baseURL string) string {
 	acmePayloadUUID := uuid.New().String()
 	profileUUID := uuid.New().String()
 
@@ -98,14 +121,14 @@ func generateCombinedProfile(serialNumber string) string {
           </array>
         </array>
         <key>URL</key>
-        <string>https://inference-test.openinnovation.dev/scep</string>
+        <string>%s/scep</string>
       </dict>
       <key>PayloadDescription</key>
       <string>Configures SCEP for MDM enrollment</string>
       <key>PayloadDisplayName</key>
       <string>SCEP</string>
       <key>PayloadIdentifier</key>
-      <string>io.eigeninference.enroll.scep</string>
+      <string>io.darkbloom.enroll.scep</string>
       <key>PayloadOrganization</key>
       <string>EigenInference</string>
       <key>PayloadType</key>
@@ -120,15 +143,15 @@ func generateCombinedProfile(serialNumber string) string {
       <key>AccessRights</key>
       <integer>1041</integer>
       <key>CheckInURL</key>
-      <string>https://inference-test.openinnovation.dev/mdm/checkin</string>
+      <string>%s/mdm/checkin</string>
       <key>CheckOutWhenRemoved</key>
       <true/>
       <key>IdentityCertificateUUID</key>
       <string>D01D95F9-762E-4538-A9B3-4D949D55577C</string>
       <key>PayloadDescription</key>
-      <string>Enrolls with the EigenInference coordinator for security verification</string>
+      <string>Enrolls with the Darkbloom coordinator for security verification</string>
       <key>PayloadIdentifier</key>
-      <string>io.eigeninference.enroll.mdm</string>
+      <string>io.darkbloom.enroll.mdm</string>
       <key>PayloadOrganization</key>
       <string>EigenInference</string>
       <key>PayloadType</key>
@@ -143,7 +166,7 @@ func generateCombinedProfile(serialNumber string) string {
         <string>com.apple.mdm.bootstraptoken</string>
       </array>
       <key>ServerURL</key>
-      <string>https://inference-test.openinnovation.dev/mdm/connect</string>
+      <string>%s/mdm/connect</string>
       <key>SignMessage</key>
       <true/>
       <key>Topic</key>
@@ -156,7 +179,7 @@ func generateCombinedProfile(serialNumber string) string {
       <key>PayloadVersion</key>
       <integer>1</integer>
       <key>PayloadIdentifier</key>
-      <string>io.eigeninference.enroll.acme.%s</string>
+      <string>io.darkbloom.enroll.acme.%s</string>
       <key>PayloadUUID</key>
       <string>%s</string>
       <key>PayloadDisplayName</key>
@@ -166,7 +189,7 @@ func generateCombinedProfile(serialNumber string) string {
       <key>PayloadOrganization</key>
       <string>EigenInference</string>
       <key>DirectoryURL</key>
-      <string>https://inference-test.openinnovation.dev/acme/dginf-acme/directory</string>
+      <string>%s/acme/eigeninference-acme/directory</string>
       <key>ClientIdentifier</key>
       <string>%s</string>
       <key>KeySize</key>
@@ -184,7 +207,7 @@ func generateCombinedProfile(serialNumber string) string {
         <array>
           <array>
             <string>O</string>
-            <string>EigenInference Provider</string>
+            <string>Darkbloom Provider</string>
           </array>
         </array>
         <array>
@@ -197,11 +220,11 @@ func generateCombinedProfile(serialNumber string) string {
     </dict>
   </array>
   <key>PayloadDescription</key>
-  <string>EigenInference provider enrollment and device attestation. Grants read-only security verification (SIP, SecureBoot) and generates an Apple-attested Secure Enclave key.</string>
+  <string>Darkbloom provider enrollment and device attestation. Grants read-only security verification (SIP, SecureBoot) and generates an Apple-attested Secure Enclave key.</string>
   <key>PayloadDisplayName</key>
-  <string>EigenInference Provider Enrollment</string>
+  <string>Darkbloom Provider Enrollment</string>
   <key>PayloadIdentifier</key>
-  <string>io.eigeninference.enroll.%s</string>
+  <string>io.darkbloom.enroll.%s</string>
   <key>PayloadOrganization</key>
   <string>EigenInference</string>
   <key>PayloadType</key>
@@ -211,5 +234,5 @@ func generateCombinedProfile(serialNumber string) string {
   <key>PayloadVersion</key>
   <integer>1</integer>
 </dict>
-</plist>`, serialNumber, acmePayloadUUID, serialNumber, serialNumber, serialNumber, serialNumber, profileUUID)
+</plist>`, baseURL, baseURL, baseURL, serialNumber, acmePayloadUUID, serialNumber, baseURL, serialNumber, serialNumber, serialNumber, profileUUID)
 }

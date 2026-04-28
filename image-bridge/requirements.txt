@@ -1,7 +1,0 @@
-fastapi>=0.104.0
-uvicorn>=0.24.0
-Pillow>=10.0.0
-numpy>=1.24.0
-grpcio>=1.60.0
-flatbuffers>=24.0.0
-protobuf>=4.25.0

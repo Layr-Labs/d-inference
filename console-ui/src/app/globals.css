@@ -2,117 +2,128 @@
 
 button, a, [role="button"], summary { cursor: pointer; }
 
-/* ─── Light mode (default) — Warm landing-page palette ─── */
+/* ==================== BRAND FONTS (EigenCloud Brand Book v1.0) ==================== */
+@font-face { font-family: 'ABC Repro'; src: url('/fonts/ABCRepro-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'ABC Repro'; src: url('/fonts/ABCRepro-Medium.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: 'ABC Repro'; src: url('/fonts/ABCRepro-Bold.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: 'ABC Repro Mono'; src: url('/fonts/ABCReproMono-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'IBM Plex Mono'; src: url('/fonts/IBMPlexMono-Regular.ttf') format('truetype'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'IBM Plex Mono'; src: url('/fonts/IBMPlexMono-Medium.ttf') format('truetype'); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Louize'; src: url('/fonts/Louize-Regular.otf') format('opentype'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Louize'; src: url('/fonts/Louize-Italic.otf') format('opentype'); font-weight: 400; font-style: italic; font-display: swap; }
+
+/* ─── Light mode (default) — EigenCloud brand palette ─── */
 :root {
   /* Backgrounds */
-  --bg-primary:     #FFF8E7;
-  --bg-secondary:   #FFF3D4;
-  --bg-tertiary:    #FFEED0;
-  --bg-elevated:    #FFE6B8;
-  --bg-hover:       #FFECC8;
+  --bg-primary:     #F2F2F2;
+  --bg-secondary:   #E8E8E8;
+  --bg-tertiary:    #DEDEDE;
+  --bg-elevated:    #D8DCE5;
+  --bg-hover:       #E0E0E4;
   --bg-white:       #FFFFFF;
 
   /* Ink / Text */
-  --ink:            #3B2C35;
-  --ink-light:      #6B5B65;
-  --ink-faint:      #9B8B95;
-  --text-primary:   #3B2C35;
-  --text-secondary: #6B5B65;
-  --text-tertiary:  #9B8B95;
+  --ink:            #000000;
+  --ink-light:      #666F7C;
+  --ink-faint:      #ACB1BC;
+  --text-primary:   #000000;
+  --text-secondary: #666F7C;
+  --text-tertiary:  #ACB1BC;
 
   /* Borders */
-  --border-dim:     #E8D9C8;
-  --border-subtle:  #D4C0AB;
-  --border-default: #3B2C35;
+  --border-dim:     #D8DCE5;
+  --border-subtle:  #ACB1BC;
+  --border-default: #D8DCE5;
 
-  /* Brand accents */
-  --coral:          #F4845F;
-  --coral-light:    #FBBDA4;
+  /* Brand accents — eigen-blue primary */
+  --coral:          #1A0C6D;
+  --coral-light:    rgba(26, 12, 109, 0.06);
   --teal:           #2D9E7A;
-  --teal-light:     #A8E6CF;
+  --teal-light:     #D1FAE5;
   --teal-dark:      #1B6B50;
-  --blue:           #5B8DEF;
-  --blue-light:     #BDD4FF;
-  --purple:         #9B72CF;
-  --purple-light:   #D8C5F0;
-  --gold:           #E8A838;
-  --gold-light:     #FFE0A0;
-  --pink:           #F4A2C4;
-  --pink-light:     #FDDDE6;
+  --blue:           #95BFFF;
+  --blue-light:     #DBEAFE;
+  --purple:         #7C3AED;
+  --purple-light:   #DDD6FE;
+  --gold:           #D97706;
+  --gold-light:     #FEF3C7;
+  --pink:           #EC4899;
+  --pink-light:     #FCE7F3;
 
-  /* Semantic accents (mapped to landing palette) */
-  --accent-brand:       #F4845F;
-  --accent-brand-dim:   #FBBDA4;
-  --accent-brand-hover: #E06B45;
+  /* Semantic accents */
+  --accent-brand:       #1A0C6D;
+  --accent-brand-dim:   rgba(26, 12, 109, 0.06);
+  --accent-brand-hover: #130952;
   --accent-green:       #2D9E7A;
-  --accent-green-dim:   #A8E6CF;
-  --accent-amber:       #E8A838;
-  --accent-amber-dim:   #FFE0A0;
-  --accent-red:         #E05252;
-  --accent-red-dim:     #FECACA;
-  --danger:             #E05252;
+  --accent-green-dim:   #D1FAE5;
+  --accent-amber:       #D97706;
+  --accent-amber-dim:   #FEF3C7;
+  --accent-red:         #DC2626;
+  --accent-red-dim:     #FEE2E2;
+  --danger:             #DC2626;
 
-  /* Shadows — flat/hard style like landing page */
-  --shadow-sm:      3px 3px 0 rgba(59, 44, 53, 0.08);
-  --shadow-md:      4px 4px 0 rgba(59, 44, 53, 0.10);
-  --shadow-lg:      6px 6px 0 rgba(59, 44, 53, 0.12);
-  --shadow-xl:      8px 8px 0 rgba(59, 44, 53, 0.15);
+  /* Shadows — subtle, professional */
+  --shadow-sm:      0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md:      0 2px 4px rgba(0, 0, 0, 0.06);
+  --shadow-lg:      0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-xl:      0 8px 24px rgba(0, 0, 0, 0.10);
 
-  /* Fonts */
-  --font-display: var(--font-caveat), 'Caveat', cursive;
-  --font-sans: var(--font-nunito), 'Nunito', -apple-system, sans-serif;
-  --font-mono: var(--font-jetbrains), 'SF Mono', 'Fira Code', monospace;
+  /* Fonts — EigenCloud Brand Book */
+  --font-display: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-sans: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'ABC Repro Mono', 'IBM Plex Mono', monospace;
+  --font-logo: 'Louize', Georgia, serif;
 }
 
-/* ─── Dark mode — Warm dark tones ─── */
+/* ─── Dark mode — Cool professional dark ─── */
 .dark {
-  --bg-primary:     #1A1512;
-  --bg-secondary:   #231E1A;
-  --bg-tertiary:    #2D2622;
-  --bg-elevated:    #3A322C;
-  --bg-hover:       #443B34;
-  --bg-white:       #2D2622;
+  --bg-primary:     #0F0F14;
+  --bg-secondary:   #16161F;
+  --bg-tertiary:    #1E1E2A;
+  --bg-elevated:    #262636;
+  --bg-hover:       #2A2A3C;
+  --bg-white:       #1E1E2A;
 
-  --ink:            #F5EDE6;
-  --ink-light:      #B8A99C;
-  --ink-faint:      #8A7B6E;
-  --text-primary:   #F5EDE6;
-  --text-secondary: #B8A99C;
-  --text-tertiary:  #8A7B6E;
+  --ink:            #E8E8EC;
+  --ink-light:      #9CA3AF;
+  --ink-faint:      #6B7280;
+  --text-primary:   #E8E8EC;
+  --text-secondary: #9CA3AF;
+  --text-tertiary:  #6B7280;
 
-  --border-dim:     #3A322C;
-  --border-subtle:  #4A4038;
-  --border-default: #6B5B50;
+  --border-dim:     #262636;
+  --border-subtle:  #363648;
+  --border-default: #363648;
 
-  --coral:          #F4945F;
-  --coral-light:    #5C3828;
-  --teal:           #3DB88E;
-  --teal-light:     #1B4035;
-  --teal-dark:      #5EDAA8;
-  --blue:           #7AA4F5;
-  --blue-light:     #2A3A5A;
-  --purple:         #B08EE0;
-  --purple-light:   #3A2A50;
-  --gold:           #F0B848;
-  --gold-light:     #4A3A1A;
-  --pink:           #F4A8C8;
-  --pink-light:     #4A2838;
+  --coral:          #818CF8;
+  --coral-light:    rgba(129, 140, 248, 0.10);
+  --teal:           #34D399;
+  --teal-light:     rgba(52, 211, 153, 0.12);
+  --teal-dark:      #6EE7B7;
+  --blue:           #93C5FD;
+  --blue-light:     rgba(147, 197, 253, 0.12);
+  --purple:         #A78BFA;
+  --purple-light:   rgba(167, 139, 250, 0.12);
+  --gold:           #FBBF24;
+  --gold-light:     rgba(251, 191, 36, 0.12);
+  --pink:           #F472B6;
+  --pink-light:     rgba(244, 114, 182, 0.12);
 
-  --accent-brand:       #F4945F;
-  --accent-brand-dim:   #3A2818;
-  --accent-brand-hover: #F4845F;
-  --accent-green:       #3DB88E;
-  --accent-green-dim:   #1B4035;
-  --accent-amber:       #F0B848;
-  --accent-amber-dim:   #4A3A1A;
-  --accent-red:         #F07070;
-  --accent-red-dim:     #4A1A1A;
-  --danger:             #F07070;
+  --accent-brand:       #818CF8;
+  --accent-brand-dim:   rgba(129, 140, 248, 0.10);
+  --accent-brand-hover: #6366F1;
+  --accent-green:       #34D399;
+  --accent-green-dim:   rgba(52, 211, 153, 0.12);
+  --accent-amber:       #FBBF24;
+  --accent-amber-dim:   rgba(251, 191, 36, 0.12);
+  --accent-red:         #F87171;
+  --accent-red-dim:     rgba(248, 113, 113, 0.12);
+  --danger:             #F87171;
 
-  --shadow-sm:      3px 3px 0 rgba(0, 0, 0, 0.20);
-  --shadow-md:      4px 4px 0 rgba(0, 0, 0, 0.25);
-  --shadow-lg:      6px 6px 0 rgba(0, 0, 0, 0.30);
-  --shadow-xl:      8px 8px 0 rgba(0, 0, 0, 0.35);
+  --shadow-sm:      0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-md:      0 2px 6px rgba(0, 0, 0, 0.35);
+  --shadow-lg:      0 4px 12px rgba(0, 0, 0, 0.40);
+  --shadow-xl:      0 8px 24px rgba(0, 0, 0, 0.50);
 }
 
 /* ─── Tailwind theme bridge ─── */
@@ -159,9 +170,10 @@ button, a, [role="button"], summary { cursor: pointer; }
   --shadow-md: var(--shadow-md);
   --shadow-lg: var(--shadow-lg);
   --shadow-xl: var(--shadow-xl);
-  --font-sans: var(--font-nunito), 'Nunito', -apple-system, sans-serif;
-  --font-display: var(--font-caveat), 'Caveat', cursive;
-  --font-mono: var(--font-jetbrains), 'SF Mono', 'Fira Code', monospace;
+  --font-sans: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'ABC Repro Mono', 'IBM Plex Mono', monospace;
+  --font-logo: 'Louize', Georgia, serif;
 }
 
 /* ─── Scrollbars ─── */
@@ -182,38 +194,19 @@ body {
   background: var(--bg-primary);
   color: var(--text-primary);
   font-family: var(--font-sans);
-  line-height: 1.7;
-  letter-spacing: 0.01em;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Paper grain texture — matches landing page */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  opacity: 0.04;
-  pointer-events: none;
-  z-index: 9999;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-
-/* ─── Headings use display font ─── */
+/* ─── Typography — Brand Book rules ─── */
+/* Headlines: Bold, tracking -2%, leading 100% */
 h1, h2, h3 {
-  font-family: var(--font-display);
+  font-family: var(--font-sans);
   font-weight: 700;
-  line-height: 1.2;
-}
-
-/* ─── Squiggly border (used for dividers) ─── */
-.squiggly-border-bottom {
-  border-bottom: 2px solid var(--ink);
-  border-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='4'%3E%3Cpath d='M0 2 Q20 0,40 2 Q60 4,80 2 Q100 0,120 2 Q140 4,160 2 Q180 0,200 2 Q220 4,240 2 Q260 0,280 2 Q300 4,320 2 Q340 0,360 2 Q380 4,400 2' fill='none' stroke='%233B2C35' stroke-width='2'/%3E%3C/svg%3E") 2 stretch;
-}
-
-.squiggly-border-top {
-  border-top: 2px solid var(--ink);
-  border-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='4'%3E%3Cpath d='M0 2 Q20 0,40 2 Q60 4,80 2 Q100 0,120 2 Q140 4,160 2 Q180 0,200 2 Q220 4,240 2 Q260 0,280 2 Q300 4,320 2 Q340 0,360 2 Q380 4,400 2' fill='none' stroke='%233B2C35' stroke-width='2'/%3E%3C/svg%3E") 2 stretch;
+  letter-spacing: -0.02em;
+  line-height: 1.0;
 }
 
 /* ─── Trust badge glow ─── */
@@ -235,16 +228,16 @@ h1, h2, h3 {
 .streaming-cursor::after {
   content: '\25CA';
   animation: cursor-blink 0.8s steps(1) infinite;
-  color: var(--coral);
+  color: var(--accent-brand);
   font-size: 0.85em;
   margin-left: 1px;
 }
 
 /* ─── Markdown prose ─── */
 .prose pre {
-  background: var(--ink) !important;
-  border: 3px solid var(--ink);
-  border-radius: 0 0 12px 12px;
+  background: #000 !important;
+  border: 1px solid var(--border-dim);
+  border-radius: 0 0 10px 10px;
   padding: 1rem;
   overflow-x: auto;
   font-family: var(--font-mono);
@@ -259,7 +252,7 @@ h1, h2, h3 {
   background: var(--bg-tertiary);
   padding: 0.15em 0.4em;
   border-radius: 4px;
-  color: var(--coral);
+  color: var(--accent-brand);
 }
 
 .prose pre code {
@@ -285,20 +278,19 @@ h1, h2, h3 {
 .prose h1, .prose h2, .prose h3 {
   margin-top: 1em;
   margin-bottom: 0.5em;
-  font-family: var(--font-display);
   font-weight: 700;
   color: var(--text-primary);
 }
 
 .prose a {
-  color: var(--coral);
+  color: var(--accent-brand);
   text-decoration: underline;
-  text-decoration-color: var(--coral-light);
+  text-decoration-color: var(--border-subtle);
   text-underline-offset: 2px;
 }
 
 .prose blockquote {
-  border-left: 3px solid var(--coral-light);
+  border-left: 2px solid var(--border-subtle);
   padding-left: 1em;
   color: var(--text-secondary);
   margin: 0.5em 0;
@@ -310,7 +302,7 @@ h1, h2, h3 {
 }
 
 .prose th, .prose td {
-  border: 2px solid var(--border-dim);
+  border: 1px solid var(--border-dim);
   padding: 0.5em 0.75em;
   text-align: left;
 }
@@ -348,53 +340,44 @@ h1, h2, h3 {
   animation: fade-in 0.3s ease-out;
 }
 
-@keyframes float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-4px); }
-}
-
-.float-gentle {
-  animation: float 6s ease-in-out infinite;
-}
-
-/* ─── Syntax highlighting (warm terminal theme) ─── */
+/* ─── Syntax highlighting ─── */
 .hljs {
   background: transparent !important;
   color: rgba(255,255,255,0.88) !important;
 }
 
-.hljs-keyword { color: var(--coral-light); }
-.hljs-string { color: var(--gold-light); }
-.hljs-number { color: var(--teal-light); }
+.hljs-keyword { color: #c4b5fd; }
+.hljs-string { color: #86efac; }
+.hljs-number { color: #93c5fd; }
 .hljs-comment { color: rgba(255,255,255,0.3); font-style: italic; }
-.hljs-function { color: var(--blue-light); }
-.hljs-built_in { color: var(--gold); }
-.hljs-attr { color: var(--gold); }
-.hljs-title { color: var(--blue-light); }
+.hljs-function { color: #93c5fd; }
+.hljs-built_in { color: #fbbf24; }
+.hljs-attr { color: #fbbf24; }
+.hljs-title { color: #93c5fd; }
 
 /* ─── Focus ring utility ─── */
 .focus-ring:focus-visible {
-  outline: 2px solid var(--coral);
+  outline: 2px solid var(--accent-brand);
   outline-offset: 2px;
 }
 
-/* ─── Code block header (landing-page terminal style) ─── */
+/* ─── Code block header ─── */
 .code-header {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  background: var(--ink);
-  border: 3px solid var(--ink);
+  background: #000;
+  border: 1px solid var(--border-dim);
   border-bottom: 1px solid rgba(255,255,255,0.06);
-  border-radius: 12px 12px 0 0;
+  border-radius: 10px 10px 0 0;
 }
 
 .code-dot {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
 }
-.code-dot-r { background: var(--coral); }
-.code-dot-y { background: var(--gold); }
-.code-dot-g { background: var(--teal); }
+.code-dot-r { background: #FF5F57; }
+.code-dot-y { background: #FEBC2E; }
+.code-dot-g { background: #27C93F; }

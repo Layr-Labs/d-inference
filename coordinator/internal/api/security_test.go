@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/billing"
-	"github.com/eigeninference/coordinator/internal/payments"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
@@ -29,36 +27,6 @@ func securityTestServer(t *testing.T) (*Server, *store.MemoryStore) {
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
 	return srv, st
-}
-
-// securityTestServerWithBilling creates a Server with mock billing configured.
-func securityTestServerWithBilling(t *testing.T) (*Server, *store.MemoryStore) {
-	t.Helper()
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
-
-	ledger := payments.NewLedger(st)
-	billingSvc := billing.NewService(st, ledger, logger, billing.Config{
-		SolanaRPCURL:             "http://localhost:8899",
-		SolanaCoordinatorAddress: "CoordAddress1111111111111111111111111111111",
-		SolanaUSDCMint:           "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-		SolanaMnemonic:           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-		MockMode:                 true,
-	})
-	srv.SetBilling(billingSvc)
-	return srv, st
-}
-
-// parseJSONResponse unmarshals response body into a map.
-func parseJSONResponse(t *testing.T, body []byte) map[string]any {
-	t.Helper()
-	var resp map[string]any
-	if err := json.Unmarshal(body, &resp); err != nil {
-		t.Fatalf("failed to parse JSON response: %v (body: %s)", err, string(body))
-	}
-	return resp
 }
 
 // connectProviderWS connects a provider WebSocket to the test server.
@@ -89,7 +57,7 @@ func registerProvider(t *testing.T, conn *websocket.Conn, models []protocol.Mode
 			MemoryGB:     64,
 		},
 		Models:    models,
-		Backend:   "test",
+		Backend:   "inprocess-mlx",
 		PublicKey: publicKey,
 	}
 	data, _ := json.Marshal(regMsg)
@@ -122,7 +90,7 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 
 		// Connection should still be alive — send a valid register to prove it.
 		registerProvider(t, conn, []protocol.ModelInfo{
-			{ID: "test-model", SizeBytes: 1000, ModelType: "test", Quantization: "4bit"},
+			{ID: "test-model", SizeBytes: 1000, ModelType: "chat", Quantization: "4bit"},
 		}, "")
 
 		if srv.registry.ProviderCount() != 1 {
@@ -145,7 +113,7 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 		// Connection should still be alive.
 		time.Sleep(100 * time.Millisecond)
 		registerProvider(t, conn, []protocol.ModelInfo{
-			{ID: "empty-test", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+			{ID: "empty-test", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 		}, "")
 	})
 
@@ -175,7 +143,7 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 		conn2 := connectProviderWS(t, ts)
 		defer conn2.Close(websocket.StatusNormalClosure, "")
 		registerProvider(t, conn2, []protocol.ModelInfo{
-			{ID: "after-garbage", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+			{ID: "after-garbage", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 		}, "")
 	})
 
@@ -188,7 +156,7 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 
 		// First register so the provider is known.
 		registerProvider(t, conn, []protocol.ModelInfo{
-			{ID: "unknown-type-test", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+			{ID: "unknown-type-test", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 		}, "")
 
 		// Send valid JSON with unknown type — should be logged and ignored.
@@ -243,7 +211,7 @@ func TestSecurity_OversizedRequestBody(t *testing.T) {
 
 	// Pre-fill queue for "test" model so the request returns 503 immediately
 	// instead of blocking for 30s waiting for a provider.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		_ = srv.registry.Queue().Enqueue(&registry.QueuedRequest{
 			RequestID:  fmt.Sprintf("oversized-filler-%d", i),
 			Model:      "test",
@@ -351,23 +319,7 @@ func TestSecurity_AuthBypass(t *testing.T) {
 			method:     http.MethodPost,
 			authHeader: "Bearer invalid-key",
 			body:       `{"user_code":"ABCD-1234"}`,
-			wantStatus: http.StatusUnauthorized,
-		},
-		{
-			name:       "withdraw_no_auth",
-			path:       "/v1/billing/withdraw/solana",
-			method:     http.MethodPost,
-			authHeader: "",
-			body:       `{"wallet_address":"x","amount_usd":"1.00"}`,
-			wantStatus: http.StatusUnauthorized,
-		},
-		{
-			name:       "withdraw_invalid_bearer",
-			path:       "/v1/billing/withdraw/solana",
-			method:     http.MethodPost,
-			authHeader: "Bearer fake-key-12345",
-			body:       `{"wallet_address":"x","amount_usd":"1.00"}`,
-			wantStatus: http.StatusUnauthorized,
+			wantStatus: http.StatusForbidden,
 		},
 		{
 			name:       "models_no_auth",
@@ -442,7 +394,7 @@ func TestSecurity_ChallengeNonceReplay(t *testing.T) {
 
 	// Register with a public key so challenges verify key consistency.
 	registerProvider(t, conn, []protocol.ModelInfo{
-		{ID: "nonce-test-model", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+		{ID: "nonce-test-model", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 	}, "dGVzdC1wdWJsaWMta2V5LWJhc2U2NA==")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -549,7 +501,7 @@ func TestSecurity_ProviderImpersonation(t *testing.T) {
 	connA := connectProviderWS(t, ts)
 	defer connA.Close(websocket.StatusNormalClosure, "")
 	registerProvider(t, connA, []protocol.ModelInfo{
-		{ID: "model-a", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+		{ID: "model-a", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 	}, sharedPubKey)
 
 	if srv.registry.ProviderCount() != 1 {
@@ -560,7 +512,7 @@ func TestSecurity_ProviderImpersonation(t *testing.T) {
 	connB := connectProviderWS(t, ts)
 	defer connB.Close(websocket.StatusNormalClosure, "")
 	registerProvider(t, connB, []protocol.ModelInfo{
-		{ID: "model-b", SizeBytes: 500, ModelType: "test", Quantization: "4bit"},
+		{ID: "model-b", SizeBytes: 500, ModelType: "chat", Quantization: "4bit"},
 	}, sharedPubKey)
 
 	// Both connections should be tracked as separate providers (different
@@ -598,7 +550,7 @@ func TestSecurity_DeviceCodeBruteForce(t *testing.T) {
 
 	// Try 100 random user codes — all should fail with 404.
 	userCtx := withUser(context.Background(), "brute-force-acct", "brute@test.com")
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		randomCode := fmt.Sprintf("%04d-%04d", i, i+1000)
 		body := fmt.Sprintf(`{"user_code":"%s"}`, randomCode)
 		req := httptest.NewRequest(http.MethodPost, "/v1/device/approve", strings.NewReader(body))
@@ -636,85 +588,7 @@ func TestSecurity_DeviceCodeBruteForce(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: Withdrawal to Foreign Wallet
-// ---------------------------------------------------------------------------
-
-func TestSecurity_WithdrawalToForeignWallet(t *testing.T) {
-	srv, _ := securityTestServerWithBilling(t)
-
-	user := &store.User{
-		AccountID:           "withdraw-test-acct",
-		PrivyUserID:         "did:privy:withdraw-test",
-		SolanaWalletAddress: "UserWalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-	}
-
-	// Seed some balance so insufficient_funds doesn't mask the wallet check.
-	srv.billing.Ledger().Deposit(user.AccountID, 100_000_000) // $100
-
-	t.Run("foreign_wallet_rejected", func(t *testing.T) {
-		body := `{"wallet_address":"ForeignWalletBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB","amount_usd":"5.00"}`
-		req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/solana", strings.NewReader(body))
-		req = withPrivyUser(req, user)
-		w := httptest.NewRecorder()
-
-		srv.handleSolanaWithdraw(w, req)
-
-		if w.Code != http.StatusForbidden {
-			t.Errorf("withdraw to foreign wallet: status %d, want 403, body: %s", w.Code, w.Body.String())
-		}
-
-		resp := parseJSONResponse(t, w.Body.Bytes())
-		errObj, _ := resp["error"].(map[string]any)
-		if errObj == nil || errObj["type"] != "wallet_mismatch" {
-			t.Errorf("expected wallet_mismatch error, got: %v", errObj)
-		}
-	})
-
-	t.Run("empty_wallet_auto_populates", func(t *testing.T) {
-		// When wallet_address is empty, it auto-populates from the user's account.
-		body := `{"wallet_address":"","amount_usd":"1.00"}`
-		req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/solana", strings.NewReader(body))
-		req = withPrivyUser(req, user)
-		w := httptest.NewRecorder()
-
-		srv.handleSolanaWithdraw(w, req)
-
-		// Mock mode doesn't have a real Solana client — we expect it to fail
-		// at the Solana send step (502), not at the wallet validation step (403).
-		// The important thing is it did NOT return 403 (wallet mismatch) or
-		// 400 (missing wallet), meaning it auto-populated correctly.
-		if w.Code == http.StatusForbidden {
-			t.Errorf("empty wallet should auto-populate, not return 403")
-		}
-		if w.Code == http.StatusBadRequest {
-			resp := parseJSONResponse(t, w.Body.Bytes())
-			errObj, _ := resp["error"].(map[string]any)
-			if errObj != nil && strings.Contains(fmt.Sprint(errObj["message"]), "wallet_address") {
-				t.Errorf("empty wallet should auto-populate from user's account, got: %v", errObj)
-			}
-		}
-		t.Logf("empty wallet auto-populate: status %d", w.Code)
-	})
-
-	t.Run("own_wallet_accepted", func(t *testing.T) {
-		// Withdrawing to your own linked wallet should pass the wallet check.
-		body := fmt.Sprintf(`{"wallet_address":"%s","amount_usd":"1.00"}`, user.SolanaWalletAddress)
-		req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/solana", strings.NewReader(body))
-		req = withPrivyUser(req, user)
-		w := httptest.NewRecorder()
-
-		srv.handleSolanaWithdraw(w, req)
-
-		// Should not be 403 (wallet mismatch).
-		if w.Code == http.StatusForbidden {
-			t.Errorf("withdraw to own wallet should not return 403: %s", w.Body.String())
-		}
-		t.Logf("own wallet withdrawal: status %d", w.Code)
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Test 8: SQL Injection
+// Test 7: SQL Injection (was Test 8 pre-migration)
 // ---------------------------------------------------------------------------
 
 func TestSecurity_SQLInjection(t *testing.T) {
@@ -747,7 +621,7 @@ func TestSecurity_SQLInjection(t *testing.T) {
 		// Pre-fill the request queue for each injection model name so
 		// Enqueue returns ErrQueueFull immediately (avoids 30s queue wait).
 		for _, payload := range injectionPayloads {
-			for i := 0; i < 10; i++ {
+			for i := range 10 {
 				_ = srv.registry.Queue().Enqueue(&registry.QueuedRequest{
 					RequestID:  fmt.Sprintf("filler-%s-%d", payload, i),
 					Model:      payload,
@@ -813,7 +687,7 @@ func TestSecurity_HeaderInjection(t *testing.T) {
 		// Model name containing newlines should not inject HTTP headers.
 		// Pre-fill queue so it returns 503 immediately instead of blocking 30s.
 		injectedModel := "test\r\nX-Injected: true\r\n"
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			_ = srv.registry.Queue().Enqueue(&registry.QueuedRequest{
 				RequestID:  fmt.Sprintf("header-inj-filler-%d", i),
 				Model:      injectedModel,
@@ -885,7 +759,7 @@ func TestSecurity_ConcurrentAuthAttempts(t *testing.T) {
 		var wg sync.WaitGroup
 		results := make([]int, 50)
 
-		for i := 0; i < 50; i++ {
+		for i := range 50 {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
@@ -909,7 +783,7 @@ func TestSecurity_ConcurrentAuthAttempts(t *testing.T) {
 	t.Run("concurrent_valid_auth", func(t *testing.T) {
 		// Pre-fill queue for "test" model so requests return 503 immediately
 		// instead of blocking for 30s waiting for a provider.
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			_ = srv.registry.Queue().Enqueue(&registry.QueuedRequest{
 				RequestID:  fmt.Sprintf("concurrent-valid-filler-%d", i),
 				Model:      "test",
@@ -920,7 +794,7 @@ func TestSecurity_ConcurrentAuthAttempts(t *testing.T) {
 		var wg sync.WaitGroup
 		results := make([]int, 50)
 
-		for i := 0; i < 50; i++ {
+		for i := range 50 {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
@@ -963,7 +837,7 @@ func TestSecurity_ConcurrentAuthAttempts(t *testing.T) {
 		}
 
 		var wg sync.WaitGroup
-		for i := 0; i < 50; i++ {
+		for i := range 50 {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()

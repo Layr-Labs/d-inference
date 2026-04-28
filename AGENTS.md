@@ -83,7 +83,7 @@ app/EigenInference/            SwiftUI macOS menu bar app
 
 enclave/              Swift Secure Enclave helper + bridge binary
 ├── Sources/EigenInferenceEnclave/      enclave key + attestation library + FFI bridge
-├── Sources/EigenInferenceEnclaveCLI/   `eigeninference-enclave` CLI (attest, sign, derive-e2e-key, info)
+├── Sources/EigenInferenceEnclaveCLI/   `eigeninference-enclave` CLI (attest, sign, info)
 ├── Tests/EigenInferenceEnclaveTests/
 └── include/eigeninference_enclave.h
 
@@ -118,7 +118,7 @@ docs/                 architecture, deploy runbooks, MDM/ACME notes, image/video
 - Coordinator auth is split between Privy JWTs, API keys, and device-code login (RFC 8628) for provider machines.
 - Billing logic is split between `coordinator/internal/payments` (ledger + pricing) and `coordinator/internal/billing` (Stripe, Solana USDC, referrals). Coordinator wallet derived from BIP39 mnemonic via SLIP-0010.
 - Providers can serve text models, transcription, and optional image models. Image generation goes through the separate `image-bridge/` process and uploads PNGs back to the coordinator over HTTP.
-- The macOS app is a real operational client, not just a wrapper. It manages installation, onboarding, launchd integration, diagnostics, and subprocess supervision for `eigeninference-provider`.
+- The macOS app is a real operational client, not just a wrapper. It manages installation, onboarding, launchd integration, diagnostics, and subprocess supervision for `darkbloom`.
 
 ## Building And Testing
 
@@ -188,29 +188,36 @@ Canonical runbook: `docs/coordinator-deploy-runbook.md`
 
 Current release-sensitive pieces:
 
-- Coordinator deploy target in the runbook is AWS EC2 `34.197.17.112` (`inference-test.openinnovation.dev`).
+- Prod coordinator runs on EigenCloud (TEE) as app `d-inference` at `api.darkbloom.dev`. Build target: `coordinator/Dockerfile`. Dev coordinator runs on Google Cloud (see `docs/dev-environment.md`).
 - Provider bundle creation lives in `scripts/build-bundle.sh`.
 - App bundle + DMG creation lives in `scripts/bundle-app.sh`.
 - Installer flow lives in `scripts/install.sh`.
 - Provider update checks use `LatestProviderVersion` in `coordinator/internal/api/server.go`, so bundle uploads and version bumps need to stay coordinated.
 - CI release workflow (`release.yml`) signs binaries with Developer ID Application cert, notarizes with Apple, computes SHA-256 hashes after signing.
 
-Quick coordinator deploy:
+Quick coordinator deploy (prod, EigenCloud):
 
 ```bash
-cd coordinator && \
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o eigeninference-coordinator-linux ./cmd/coordinator && \
-scp -i ~/.ssh/eigeninference-infra eigeninference-coordinator-linux ubuntu@34.197.17.112:/tmp/eigeninference-coordinator && \
-ssh -i ~/.ssh/eigeninference-infra ubuntu@34.197.17.112 \
-  'sudo systemctl stop eigeninference-coordinator && \
-   sudo mv /tmp/eigeninference-coordinator /usr/local/bin/eigeninference-coordinator && \
-   sudo chmod +x /usr/local/bin/eigeninference-coordinator && \
-   sudo systemctl start eigeninference-coordinator'
+# EigenCloud builds from the repo via coordinator/Dockerfile and blue-green deploys.
+git push origin master
+ecloud compute app deploy d-inference
+curl https://api.darkbloom.dev/health
+ecloud compute app logs d-inference
 ```
+
+Dev coordinator deploy (Google Cloud): see `docs/dev-environment.md`.
 
 ## Important Sync Points
 
 - Protocol changes must be mirrored in both `provider/src/protocol.rs` and `coordinator/internal/protocol/messages.go`.
+- Telemetry wire types live in three places and MUST stay aligned:
+  - `coordinator/internal/protocol/telemetry.go` (canonical),
+  - `provider/src/telemetry/event.rs` (Rust mirror),
+  - `console-ui/src/lib/telemetry-types.ts` (TS mirror).
+  Symmetry tests in each language pin enum casing and optional-field omission.
+  Field allowlist additions need parallel updates in
+  `coordinator/internal/api/telemetry_handlers.go`,
+  `provider/src/telemetry/layer.rs`, and the TS set above.
 - If you change provider bundle semantics, keep `scripts/build-bundle.sh`, `scripts/install.sh`, the app launcher code, and `LatestProviderVersion` in sync.
 - If you change install paths or process invocation, update both the CLI/install flow and the Swift app's `CLIRunner` / `ProviderManager`.
 - Image generation changes often span three places: coordinator consumer/provider handlers, provider proxying, and `image-bridge/`.

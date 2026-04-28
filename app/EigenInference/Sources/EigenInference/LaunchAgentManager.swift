@@ -1,10 +1,10 @@
 /// LaunchAgentManager — Install/remove a launchd LaunchAgent for app auto-launch on login.
 ///
-/// Creates a plist at ~/Library/LaunchAgents/com.eigeninference.app.plist that opens
-/// the EigenInference app on login. This is separate from the provider service plist
+/// Creates a plist at ~/Library/LaunchAgents/com.darkbloom.app.plist that opens
+/// the Darkbloom app on login. This is separate from the provider service plist
 /// which is managed by the CLI's `start`/`stop`.
 ///
-/// Only installed when the user explicitly toggles "Start EigenInference when you
+/// Only installed when the user explicitly toggles "Start Darkbloom when you
 /// log in" in Settings. Opening the app does NOT auto-start the provider;
 /// the user must click "Go Online" to begin serving.
 
@@ -12,7 +12,7 @@ import Foundation
 
 enum LaunchAgentManager {
 
-    private static let plistName = "com.eigeninference.app.plist"
+    private static let plistName = "com.darkbloom.app.plist"
 
     private static var plistPath: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -24,7 +24,7 @@ enum LaunchAgentManager {
     private static var legacyPlistPath: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents")
-            .appendingPathComponent("io.eigeninference.app.plist")
+            .appendingPathComponent("io.darkbloom.app.plist")
     }
 
     /// Whether the LaunchAgent is currently installed.
@@ -33,7 +33,7 @@ enum LaunchAgentManager {
             || FileManager.default.fileExists(atPath: legacyPlistPath.path)
     }
 
-    /// Install the LaunchAgent to start EigenInference on login.
+    /// Install the LaunchAgent to start DarkBloom on login.
     static func install() throws {
         // Remove legacy plist if it exists
         if FileManager.default.fileExists(atPath: legacyPlistPath.path) {
@@ -64,16 +64,16 @@ enum LaunchAgentManager {
             ? ["/usr/bin/open", bundlePath]
             : [ProcessInfo.processInfo.arguments[0]]
 
-        // Ensure ~/.eigeninference/ directory exists for log files
+        // Ensure ~/.darkbloom/ directory exists for log files
         let appDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".eigeninference")
+            .appendingPathComponent(".darkbloom")
         try FileManager.default.createDirectory(
             at: appDir,
             withIntermediateDirectories: true
         )
 
         let plist: [String: Any] = [
-            "Label": "com.eigeninference.app",
+            "Label": "com.darkbloom.app",
             "ProgramArguments": programArgs,
             "RunAtLoad": true,
             "KeepAlive": false,

@@ -6,8 +6,8 @@ export default function LinkPage() {
   return (
     <div className="min-h-screen bg-bg-primary flex items-center justify-center p-4">
       <div className="w-full max-w-md">
-        {/* Floating icon */}
-        <div className="float-gentle mb-6 text-center">
+        {/* Icon */}
+        <div className="mb-6 text-center">
           <svg width="72" height="72" viewBox="0 0 64 64" fill="none" className="mx-auto">
             <circle cx="32" cy="32" r="28" fill="var(--coral-light)" stroke="var(--ink)" strokeWidth="3"/>
             <rect x="18" y="22" width="28" height="18" rx="3" fill="var(--bg-white)" stroke="var(--ink)" strokeWidth="2.5"/>
@@ -18,11 +18,11 @@ export default function LinkPage() {
         </div>
 
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-display text-ink">
-            Link Your <span className="text-coral">Device</span>
+          <h1 className="text-3xl font-semibold text-ink">
+            Link Your Device
           </h1>
           <p className="text-text-secondary mt-2">
-            Connect your Mac to your EigenInference account to receive
+            Connect your Mac to your Darkbloom account to receive
             earnings for providing compute.
           </p>
         </div>

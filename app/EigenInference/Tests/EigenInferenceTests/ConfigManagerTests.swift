@@ -10,7 +10,7 @@ struct ConfigDefaultTests {
     @Test("default config has expected coordinator URL")
     func defaultCoordinatorURL() {
         let config = ProviderConfig.default
-        #expect(config.coordinatorURL.contains("inference-test.openinnovation.dev"))
+        #expect(config.coordinatorURL.contains("api.darkbloom.dev"))
     }
 
     @Test("default config has expected backend port")
@@ -95,7 +95,7 @@ struct ConfigParsingTests {
         #expect(config.providerName == "partial")
         // Missing sections should get defaults
         #expect(config.backendPort == 8100)
-        #expect(config.coordinatorURL.contains("inference-test.openinnovation.dev"))
+        #expect(config.coordinatorURL.contains("api.darkbloom.dev"))
     }
 
     @Test("parses empty string — returns all defaults")

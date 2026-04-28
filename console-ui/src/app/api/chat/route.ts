@@ -4,29 +4,65 @@ export const runtime = "nodejs";
 // Disable body parsing and response buffering for streaming
 export const dynamic = "force-dynamic";
 
+const SEALED_CT = "application/eigeninference-sealed+json";
+
+const COORD_URL = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
+
 export async function POST(req: NextRequest) {
-  const defaultCoord = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://inference-test.openinnovation.dev";
-  const coordUrl = req.headers.get("x-coordinator-url") || defaultCoord;
+  const coordUrl = COORD_URL;
   const apiKey = req.headers.get("x-api-key") || "";
+  const incomingCt = req.headers.get("content-type") || "application/json";
+  const isSealed = incomingCt.toLowerCase().startsWith(SEALED_CT);
 
-  const body = await req.json();
+  // Forward the body bytes verbatim. For plaintext we keep the existing
+  // JSON-roundtrip behavior (preserves the existing tests); for sealed we
+  // must not touch the bytes — JSON.parse + stringify would reformat them.
+  const bodyBytes = isSealed
+    ? new Uint8Array(await req.arrayBuffer())
+    : (() => {
+        // small allocation for plaintext path; stay byte-clean here too so
+        // we don't accidentally drop fields some sender added.
+        return undefined;
+      })();
 
-  const upstream = await fetch(`${coordUrl}/v1/chat/completions`, {
+  const fetchInit: RequestInit = {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
+      "Content-Type": isSealed ? SEALED_CT : "application/json",
       ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
     },
-    body: JSON.stringify(body),
-  });
+    body: isSealed ? bodyBytes : JSON.stringify(await req.json()),
+  };
+
+  const upstream = await fetch(`${coordUrl}/v1/chat/completions`, fetchInit);
 
   const respHeaders = new Headers();
-  respHeaders.set("Content-Type", "text/event-stream");
-  respHeaders.set("Cache-Control", "no-cache, no-transform");
-  respHeaders.set("Connection", "keep-alive");
-  respHeaders.set("X-Accel-Buffering", "no");
+  // Pass-through content type so sealed responses keep their advertised type.
+  const upstreamCt = upstream.headers.get("content-type") || "";
+  if (upstreamCt.startsWith("text/event-stream")) {
+    respHeaders.set("Content-Type", "text/event-stream");
+    respHeaders.set("Cache-Control", "no-cache, no-transform");
+    respHeaders.set("Connection", "keep-alive");
+    respHeaders.set("X-Accel-Buffering", "no");
+  } else if (upstreamCt) {
+    respHeaders.set("Content-Type", upstreamCt);
+  }
 
-  for (const h of ["x-provider-attested", "x-provider-trust-level", "x-provider-secure-enclave", "x-provider-mda-verified", "x-provider-chip", "x-provider-serial", "x-provider-model", "x-request-id"]) {
+  const passthroughHeaders = [
+    "x-provider-attested",
+    "x-provider-trust-level",
+    "x-provider-secure-enclave",
+    "x-provider-mda-verified",
+    "x-provider-chip",
+    "x-provider-serial",
+    "x-provider-model",
+    "x-request-id",
+    "x-attestation-se-public-key",
+    "x-attestation-device-serial",
+    "x-eigen-sealed",
+    "x-eigen-sealed-kid",
+  ];
+  for (const h of passthroughHeaders) {
     const v = upstream.headers.get(h);
     if (v) respHeaders.set(h, v);
   }

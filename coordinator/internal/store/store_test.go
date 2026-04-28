@@ -184,13 +184,13 @@ func TestSupportedModels(t *testing.T) {
 
 	// Add models
 	m1 := &SupportedModel{
-		ID:           "CohereLabs/cohere-transcribe-03-2026",
-		S3Name:       "cohere-transcribe-03-2026",
-		DisplayName:  "Cohere Transcribe",
-		ModelType:    "transcription",
-		SizeGB:       4.2,
-		Architecture: "2B conformer",
-		Description:  "Best-in-class STT",
+		ID:           "mlx-community/Qwen2.5-0.5B-MLX-4bit",
+		S3Name:       "Qwen2.5-0.5B-MLX-4bit",
+		DisplayName:  "Qwen2.5 0.5B",
+		ModelType:    "text",
+		SizeGB:       0.5,
+		Architecture: "0.5B dense",
+		Description:  "Lightweight chat model",
 		MinRAMGB:     8,
 		Active:       true,
 	}
@@ -358,7 +358,7 @@ func TestDeviceCodeExpiry(t *testing.T) {
 func TestProviderToken(t *testing.T) {
 	s := NewMemory("")
 
-	rawToken := "eigeninference-provider-token-abc123"
+	rawToken := "darkbloom-token-abc123"
 	tokenHash := sha256Hex(rawToken)
 
 	pt := &ProviderToken{
@@ -447,7 +447,7 @@ func TestProviderEarnings_GetByProviderKey(t *testing.T) {
 	s := NewMemory("")
 
 	// Record earnings for two different nodes.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		key := "key-A"
 		if i%2 == 0 {
 			key = "key-B"
@@ -492,7 +492,7 @@ func TestProviderEarnings_NewestFirst(t *testing.T) {
 	s := NewMemory("")
 
 	// Record in chronological order.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		_ = s.RecordProviderEarning(&ProviderEarning{
 			AccountID: "acct-1", ProviderID: "prov-1", ProviderKey: "key-1",
 			JobID: string(rune('a' + i)), Model: "test-model",
@@ -505,7 +505,7 @@ func TestProviderEarnings_NewestFirst(t *testing.T) {
 		t.Fatalf("expected 5 earnings, got %d", len(earnings))
 	}
 	// Newest first means highest ID first.
-	for i := 0; i < len(earnings)-1; i++ {
+	for i := range len(earnings) - 1 {
 		if earnings[i].ID < earnings[i+1].ID {
 			t.Errorf("earnings not in newest-first order: ID %d before ID %d", earnings[i].ID, earnings[i+1].ID)
 		}
@@ -516,7 +516,7 @@ func TestProviderEarnings_LimitRespected(t *testing.T) {
 	s := NewMemory("")
 
 	// Record 10 earnings.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		_ = s.RecordProviderEarning(&ProviderEarning{
 			AccountID: "acct-1", ProviderID: "prov-1", ProviderKey: "key-1",
 			JobID: string(rune('a' + i)), Model: "test-model",
@@ -576,6 +576,139 @@ func TestProviderEarnings_DifferentAccounts(t *testing.T) {
 	}
 	if e2[0].AmountMicroUSD != 2000 {
 		t.Errorf("expected amount 2000, got %d", e2[0].AmountMicroUSD)
+	}
+}
+
+func TestProviderPayouts_RecordListAndSettle(t *testing.T) {
+	s := NewMemory("")
+
+	p1 := &ProviderPayout{
+		ProviderAddress: "0xProvider1",
+		AmountMicroUSD:  900_000,
+		Model:           "qwen3.5-9b",
+		JobID:           "job-1",
+	}
+	p2 := &ProviderPayout{
+		ProviderAddress: "0xProvider2",
+		AmountMicroUSD:  450_000,
+		Model:           "llama-3",
+		JobID:           "job-2",
+	}
+	for _, payout := range []*ProviderPayout{p1, p2} {
+		if err := s.RecordProviderPayout(payout); err != nil {
+			t.Fatalf("RecordProviderPayout: %v", err)
+		}
+	}
+
+	payouts, err := s.ListProviderPayouts()
+	if err != nil {
+		t.Fatalf("ListProviderPayouts: %v", err)
+	}
+	if len(payouts) != 2 {
+		t.Fatalf("provider payouts = %d, want 2", len(payouts))
+	}
+	if payouts[0].ID != 1 || payouts[1].ID != 2 {
+		t.Fatalf("provider payout IDs = %d, %d, want 1, 2", payouts[0].ID, payouts[1].ID)
+	}
+	if payouts[0].Settled {
+		t.Fatal("first payout should start unsettled")
+	}
+
+	if err := s.SettleProviderPayout(payouts[0].ID); err != nil {
+		t.Fatalf("SettleProviderPayout: %v", err)
+	}
+
+	payouts, err = s.ListProviderPayouts()
+	if err != nil {
+		t.Fatalf("ListProviderPayouts after settle: %v", err)
+	}
+	if !payouts[0].Settled {
+		t.Fatal("first payout should be settled")
+	}
+	if payouts[1].Settled {
+		t.Fatal("second payout should remain unsettled")
+	}
+
+	if err := s.SettleProviderPayout(payouts[0].ID); err == nil {
+		t.Fatal("expected error settling same payout twice")
+	}
+}
+
+func TestCreditProviderAccountAtomic(t *testing.T) {
+	s := NewMemory("")
+
+	earning := &ProviderEarning{
+		AccountID:        "acct-linked",
+		ProviderID:       "prov-1",
+		ProviderKey:      "key-1",
+		JobID:            "job-atomic",
+		Model:            "qwen3.5-9b",
+		AmountMicroUSD:   123_000,
+		PromptTokens:     10,
+		CompletionTokens: 20,
+	}
+	if err := s.CreditProviderAccount(earning); err != nil {
+		t.Fatalf("CreditProviderAccount: %v", err)
+	}
+
+	if bal := s.GetBalance("acct-linked"); bal != 123_000 {
+		t.Fatalf("balance = %d, want 123000", bal)
+	}
+
+	history := s.LedgerHistory("acct-linked")
+	if len(history) != 1 {
+		t.Fatalf("ledger history = %d, want 1", len(history))
+	}
+	if history[0].Type != LedgerPayout {
+		t.Fatalf("ledger entry type = %q, want payout", history[0].Type)
+	}
+
+	earnings, err := s.GetAccountEarnings("acct-linked", 10)
+	if err != nil {
+		t.Fatalf("GetAccountEarnings: %v", err)
+	}
+	if len(earnings) != 1 {
+		t.Fatalf("earnings = %d, want 1", len(earnings))
+	}
+	if earnings[0].JobID != "job-atomic" {
+		t.Fatalf("earning job_id = %q, want job-atomic", earnings[0].JobID)
+	}
+}
+
+func TestCreditProviderWalletAtomic(t *testing.T) {
+	s := NewMemory("")
+
+	payout := &ProviderPayout{
+		ProviderAddress: "0xatomicwallet",
+		AmountMicroUSD:  456_000,
+		Model:           "llama-3",
+		JobID:           "job-wallet",
+	}
+	if err := s.CreditProviderWallet(payout); err != nil {
+		t.Fatalf("CreditProviderWallet: %v", err)
+	}
+
+	if bal := s.GetBalance("0xatomicwallet"); bal != 456_000 {
+		t.Fatalf("wallet balance = %d, want 456000", bal)
+	}
+
+	history := s.LedgerHistory("0xatomicwallet")
+	if len(history) != 1 {
+		t.Fatalf("ledger history = %d, want 1", len(history))
+	}
+	if history[0].Type != LedgerPayout {
+		t.Fatalf("ledger entry type = %q, want payout", history[0].Type)
+	}
+
+	payouts, err := s.ListProviderPayouts()
+	if err != nil {
+		t.Fatalf("ListProviderPayouts: %v", err)
+	}
+	if len(payouts) != 1 {
+		t.Fatalf("provider payouts = %d, want 1", len(payouts))
+	}
+	if payouts[0].JobID != "job-wallet" {
+		t.Fatalf("payout job_id = %q, want job-wallet", payouts[0].JobID)
 	}
 }
 
@@ -659,5 +792,39 @@ func TestReleases(t *testing.T) {
 	// Validation: empty version.
 	if err := s.SetRelease(&Release{Platform: "macos-arm64"}); err == nil {
 		t.Error("expected error for empty version")
+	}
+}
+
+func TestGetLatestReleasePrefersHigherSemverOverNewerTimestamp(t *testing.T) {
+	s := NewMemory("")
+
+	if err := s.SetRelease(&Release{
+		Version:    "0.3.9",
+		Platform:   "macos-arm64",
+		BinaryHash: "higher-semver",
+		BundleHash: "bundle-higher-semver",
+		URL:        "https://r2.example.com/releases/v0.3.9/bundle.tar.gz",
+		CreatedAt:  time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("SetRelease 0.3.9: %v", err)
+	}
+
+	if err := s.SetRelease(&Release{
+		Version:    "0.3.8",
+		Platform:   "macos-arm64",
+		BinaryHash: "newer-timestamp",
+		BundleHash: "bundle-newer-timestamp",
+		URL:        "https://r2.example.com/releases/v0.3.8/bundle.tar.gz",
+		CreatedAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("SetRelease 0.3.8: %v", err)
+	}
+
+	latest := s.GetLatestRelease("macos-arm64")
+	if latest == nil {
+		t.Fatal("expected non-nil latest release")
+	}
+	if latest.Version != "0.3.9" {
+		t.Fatalf("latest version = %q, want %q", latest.Version, "0.3.9")
 	}
 }

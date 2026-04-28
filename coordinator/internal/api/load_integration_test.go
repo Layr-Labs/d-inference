@@ -60,25 +60,17 @@ func runProviderLoop(ctx context.Context, t *testing.T, conn *websocket.Conn, pu
 			}
 
 		case protocol.TypeInferenceRequest:
-			reqID, _ := raw["request_id"].(string)
+			var inferReq protocol.InferenceRequestMessage
+			json.Unmarshal(data, &inferReq)
 
-			// Send two chunks to simulate streaming.
 			for _, word := range []string{responseContent, " done"} {
-				chunk := protocol.InferenceResponseChunkMessage{
-					Type:      protocol.TypeInferenceResponseChunk,
-					RequestID: reqID,
-					Data:      `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"` + word + `"}}]}` + "\n\n",
-				}
-				chunkData, _ := json.Marshal(chunk)
-				if wErr := conn.Write(ctx, websocket.MessageText, chunkData); wErr != nil {
-					return served
-				}
+				sseData := `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"` + word + `"}}]}` + "\n\n"
+				writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey, sseData)
 			}
 
-			// Send complete with usage.
 			complete := protocol.InferenceCompleteMessage{
 				Type:      protocol.TypeInferenceComplete,
-				RequestID: reqID,
+				RequestID: inferReq.RequestID,
 				Usage:     protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 5},
 			}
 			completeData, _ := json.Marshal(complete)
@@ -121,7 +113,7 @@ func sendConcurrentRequests(t *testing.T, url, apiKey, model string, count, maxI
 	sem := make(chan struct{}, maxInflight)
 	var wg sync.WaitGroup
 	wg.Add(count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		sem <- struct{}{} // acquire semaphore slot
 		go func(idx int) {
 			defer wg.Done()
@@ -174,10 +166,12 @@ func connectAndPrepareProvider(t *testing.T, ctx context.Context, tsURL string, 
 			ChipName:     "Apple M3 Max",
 			MemoryGB:     64,
 		},
-		Models:    models,
-		Backend:   "test",
-		PublicKey: pubKey,
-		DecodeTPS: decodeTPS,
+		Models:                  models,
+		Backend:                 "inprocess-mlx",
+		PublicKey:               pubKey,
+		EncryptedResponseChunks: true,
+		DecodeTPS:               decodeTPS,
+		PrivacyCapabilities:     testPrivacyCaps(),
 	}
 	regData, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
@@ -224,7 +218,7 @@ func TestLoad_SingleProviderBurst(t *testing.T) {
 	const numRequests = 20
 	start := time.Now()
 
-	for i := 0; i < numRequests; i++ {
+	for i := range numRequests {
 		code, _, err := sendRequest(ctx, ts.URL, "test-key", model)
 		if err != nil {
 			t.Fatalf("request %d: %v", i, err)
@@ -267,7 +261,7 @@ func TestLoad_SingleProviderConcurrent(t *testing.T) {
 	defer providerCancel()
 	go runProviderLoop(providerCtx, t, conn, pubKey, "concurrent")
 
-	// MaxConcurrentRequests = 4, so with 20 concurrent requests the remaining
+	// DefaultMaxConcurrent = 4, so with 20 concurrent requests the remaining
 	// 16 will queue. The queue supports up to 200 slots (setupLoadTestServer).
 	const numRequests = 20
 	results := sendConcurrentRequests(t, ts.URL, "test-key", model, numRequests, numRequests, 25*time.Second)
@@ -409,7 +403,7 @@ func TestLoad_ProviderFailureMidLoad(t *testing.T) {
 
 	// Send first 10 requests sequentially.
 	const firstBatch = 10
-	for i := 0; i < firstBatch; i++ {
+	for i := range firstBatch {
 		code, _, err := sendRequest(ctx, ts.URL, "test-key", model)
 		if err != nil {
 			t.Fatalf("batch1 request %d: %v", i, err)
@@ -426,7 +420,7 @@ func TestLoad_ProviderFailureMidLoad(t *testing.T) {
 
 	// Send remaining 10 requests — all should go to provider 2.
 	const secondBatch = 10
-	for i := 0; i < secondBatch; i++ {
+	for i := range secondBatch {
 		code, _, err := sendRequest(ctx, ts.URL, "test-key", model)
 		if err != nil {
 			t.Fatalf("batch2 request %d: %v", i, err)
@@ -468,7 +462,7 @@ func TestLoad_ConcurrentBillingUnderLoad(t *testing.T) {
 		t.Fatalf("credit consumer: %v", err)
 	}
 
-	// Send 50 requests with a concurrency limit. MaxConcurrentRequests=4, so
+	// Send 50 requests with a concurrency limit. DefaultMaxConcurrent=4, so
 	// we allow up to 50 in flight (the queue can hold 200) and they'll be
 	// served 4 at a time by the single provider.
 	const numRequests = 50
@@ -534,7 +528,7 @@ func TestLoad_RaceSafety(t *testing.T) {
 	defer providerCancel()
 
 	// Connect 5 providers.
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		pk := testPublicKeyB64()
 		conn := connectAndPrepareProvider(t, ctx, ts.URL, reg, model, pk, float64(50+i*50))
 		defer conn.Close(websocket.StatusNormalClosure, "done")
@@ -546,7 +540,7 @@ func TestLoad_RaceSafety(t *testing.T) {
 	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
 	defer heartbeatCancel()
 	var heartbeatWg sync.WaitGroup
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		heartbeatWg.Add(1)
 		go func(idx int) {
 			defer heartbeatWg.Done()

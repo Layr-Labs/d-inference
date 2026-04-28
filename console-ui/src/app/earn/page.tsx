@@ -2,6 +2,9 @@
 
 import { useState, useMemo } from "react";
 import { TopBar } from "@/components/TopBar";
+import { useAuth } from "@/hooks/useAuth";
+import { trackEvent } from "@/lib/google-analytics";
+import Link from "next/link";
 import {
   Cpu,
   Zap,
@@ -12,6 +15,9 @@ import {
   ParkingCircle,
   Info,
   Crown,
+  ArrowRight,
+  Mail,
+  Terminal,
 } from "lucide-react";
 
 /* ─── Hardware database ─── */
@@ -43,6 +49,9 @@ const MAC_CONFIGS: MacConfig[] = [
   { macType: "MacBook Pro", chip: "M4",       ramOptions: [16, 24, 32],              bandwidthGBs: 120, idleWatts: 10, inferWatts: 20 },
   { macType: "MacBook Pro", chip: "M4 Pro",   ramOptions: [24, 48],                  bandwidthGBs: 273, idleWatts: 12, inferWatts: 30 },
   { macType: "MacBook Pro", chip: "M4 Max",   ramOptions: [36, 48, 64, 128],         bandwidthGBs: 546, idleWatts: 20, inferWatts: 50 },
+  { macType: "MacBook Pro", chip: "M5",       ramOptions: [16, 24, 32],              bandwidthGBs: 153, idleWatts: 10, inferWatts: 20 },
+  { macType: "MacBook Pro", chip: "M5 Pro",   ramOptions: [24, 48],                  bandwidthGBs: 307, idleWatts: 12, inferWatts: 30 },
+  { macType: "MacBook Pro", chip: "M5 Max",   ramOptions: [36, 48, 64, 128],         bandwidthGBs: 614, idleWatts: 20, inferWatts: 50 },
 
   // --- Mac Mini ---
   { macType: "Mac Mini", chip: "M1",          ramOptions: [8, 16],                   bandwidthGBs: 68,  idleWatts: 5,  inferWatts: 10 },
@@ -58,6 +67,7 @@ const MAC_CONFIGS: MacConfig[] = [
   { macType: "Mac Studio", chip: "M2 Ultra",  ramOptions: [64, 128, 192],            bandwidthGBs: 800, idleWatts: 35, inferWatts: 100 },
   { macType: "Mac Studio", chip: "M3 Ultra",  ramOptions: [96, 256, 512],             bandwidthGBs: 819, idleWatts: 35, inferWatts: 110 },
   { macType: "Mac Studio", chip: "M4 Max",    ramOptions: [36, 48, 64, 128],         bandwidthGBs: 546, idleWatts: 25, inferWatts: 65 },
+  { macType: "Mac Studio", chip: "M5 Max",    ramOptions: [36, 48, 64, 128],         bandwidthGBs: 614, idleWatts: 25, inferWatts: 65 },
 
   // --- Mac Pro ---
   { macType: "Mac Pro", chip: "M2 Ultra",     ramOptions: [64, 128, 192],            bandwidthGBs: 800, idleWatts: 40, inferWatts: 120 },
@@ -71,31 +81,19 @@ const MAC_TYPES = ["MacBook Air", "MacBook Pro", "Mac Mini", "Mac Studio", "Mac 
 interface CatalogModel {
   id: string;
   name: string;
-  type: "text" | "image" | "transcription";
   minRAMGB: number;
   demandNote: string; // demand expectation shown as infotip
-  // Text model params
-  activeParamsGB?: number;
-  modelSizeGB?: number;
-  outputPriceMicro?: number;
-  // Image model params
-  baseImagesPerHour?: number;
-  imagePriceMicro?: number;
-  referenceBandwidth?: number;
-  // Transcription params
-  baseAudioMinPerHour?: number;
-  pricePerMinMicro?: number;
+  activeParamsGB: number;
+  modelSizeGB: number;
+  outputPriceMicro: number;
 }
 
 const CATALOG_MODELS: CatalogModel[] = [
-  { id: "cohere-transcribe", name: "Cohere Transcribe", type: "transcription", minRAMGB: 8, baseAudioMinPerHour: 1800, pricePerMinMicro: 1_000, demandNote: "Lower demand — most users need text inference. STT requests are bursty and less frequent." },
-  { id: "flux-4b", name: "FLUX.2 Klein 4B", type: "image", minRAMGB: 16, baseImagesPerHour: 450, imagePriceMicro: 1_500, referenceBandwidth: 100, demandNote: "Moderate demand — image generation is growing but still niche vs text." },
-  { id: "flux-9b", name: "FLUX.2 Klein 9B", type: "image", minRAMGB: 24, baseImagesPerHour: 300, imagePriceMicro: 2_500, referenceBandwidth: 150, demandNote: "Moderate demand — higher quality images attract more requests than 4B." },
-  { id: "qwen-27b", name: "Qwen3.5 27B Claude Opus", type: "text", minRAMGB: 36, activeParamsGB: 27, modelSizeGB: 27, outputPriceMicro: 780_000, demandNote: "High demand — text/chat inference is the primary workload on the network." },
-  { id: "trinity-mini", name: "Trinity Mini", type: "text", minRAMGB: 48, activeParamsGB: 3, modelSizeGB: 26, outputPriceMicro: 75_000, demandNote: "High demand — fast MoE model popular for agentic and coding tasks." },
-  { id: "gemma-4-26b", name: "Gemma 4 26B", type: "text", minRAMGB: 36, activeParamsGB: 4, modelSizeGB: 28, outputPriceMicro: 200_000, demandNote: "High demand — Google's latest MoE, strong quality at fast speed." },
-  { id: "qwen-122b", name: "Qwen3.5 122B", type: "text", minRAMGB: 128, activeParamsGB: 10, modelSizeGB: 122, outputPriceMicro: 1_040_000, demandNote: "High demand — premium quality attracts users willing to pay more per token." },
-  { id: "minimax-m2.5", name: "MiniMax M2.5", type: "text", minRAMGB: 256, activeParamsGB: 11, modelSizeGB: 243, outputPriceMicro: 500_000, demandNote: "High demand — SOTA coding model, attracts power users and enterprises." },
+  { id: "qwen-27b", name: "Qwen3.5 27B Claude Opus", minRAMGB: 36, activeParamsGB: 27, modelSizeGB: 27, outputPriceMicro: 780_000, demandNote: "High demand — text/chat inference is the primary workload on the network." },
+  { id: "trinity-mini", name: "Trinity Mini", minRAMGB: 48, activeParamsGB: 3, modelSizeGB: 26, outputPriceMicro: 75_000, demandNote: "High demand — fast MoE model popular for agentic and coding tasks." },
+  { id: "gemma-4-26b", name: "Gemma 4 26B", minRAMGB: 36, activeParamsGB: 4, modelSizeGB: 28, outputPriceMicro: 200_000, demandNote: "High demand — Google's latest MoE, strong quality at fast speed." },
+  { id: "qwen-122b", name: "Qwen3.5 122B", minRAMGB: 128, activeParamsGB: 10, modelSizeGB: 122, outputPriceMicro: 1_040_000, demandNote: "High demand — premium quality attracts users willing to pay more per token." },
+  { id: "minimax-m2.5", name: "MiniMax M2.5", minRAMGB: 256, activeParamsGB: 11, modelSizeGB: 243, outputPriceMicro: 500_000, demandNote: "High demand — SOTA coding model, attracts power users and enterprises." },
 ];
 
 /* ─── Earnings calculation ─── */
@@ -103,9 +101,7 @@ const CATALOG_MODELS: CatalogModel[] = [
 interface ModelEarnings {
   modelId: string;
   modelName: string;
-  modelType: "text" | "image" | "transcription";
-  decodeTokPerSec: number | null;
-  throughputLabel: string | null;
+  decodeTokPerSec: number;
   revenuePerHour: number;
   elecPerHour: number;
   netPerHour: number;
@@ -115,12 +111,10 @@ interface ModelEarnings {
   annualNet: number;
   elecPercent: number;
   // Formula breakdown fields
-  batchSize: number | null;
-  batchEff: number | null;
-  activeParamsGB: number | null;
-  outputPriceMicro: number | null;
-  scaledImagesPerHour: number | null;
-  scaledAudioMinPerHour: number | null;
+  batchSize: number;
+  batchEff: number;
+  activeParamsGB: number;
+  outputPriceMicro: number;
   marginalWatts: number;
   // Catalog reference for formula display
   catalogModel: CatalogModel;
@@ -133,38 +127,14 @@ function calculateModelEarnings(
   hoursPerDay: number,
   elecCostPerKWh: number
 ): ModelEarnings {
-  let revenuePerHour: number;
-  let decodeTokPerSec: number | null = null;
-  let throughputLabel: string | null = null;
-  let batchSize: number | null = null;
-  let batchEff: number | null = null;
-  let activeParamsGB: number | null = null;
-  let outputPriceMicro: number | null = null;
-  let scaledImagesPerHour: number | null = null;
-  let scaledAudioMinPerHour: number | null = null;
-
-  if (model.type === "text") {
-    const freeRAM = ramGB - model.modelSizeGB!;
-    batchSize = Math.max(1, Math.min(16, Math.floor(freeRAM / 2)));
-    batchEff = batchSize <= 4 ? 0.80 : batchSize <= 8 ? 0.85 : 0.90;
-    activeParamsGB = model.activeParamsGB!;
-    outputPriceMicro = model.outputPriceMicro!;
-    const singleTokPerSec = (config.bandwidthGBs / activeParamsGB) * 0.60;
-    const batchedTokPerSec = singleTokPerSec * batchSize * batchEff;
-    decodeTokPerSec = batchedTokPerSec;
-    const tokPerHour = batchedTokPerSec * 3600;
-    revenuePerHour = (tokPerHour / 1_000_000) * (outputPriceMicro / 1_000_000) * 0.95;
-  } else if (model.type === "image") {
-    const scaled = model.baseImagesPerHour! * (config.bandwidthGBs / model.referenceBandwidth!);
-    scaledImagesPerHour = scaled;
-    revenuePerHour = scaled * (model.imagePriceMicro! / 1_000_000) * 0.95;
-    throughputLabel = `${Math.round(scaled).toLocaleString()} images/hr`;
-  } else {
-    const scaled = model.baseAudioMinPerHour! * (config.bandwidthGBs / 100);
-    scaledAudioMinPerHour = scaled;
-    revenuePerHour = scaled * (model.pricePerMinMicro! / 1_000_000) * 0.95;
-    throughputLabel = `${Math.round(scaled).toLocaleString()} audio-min/hr`;
-  }
+  const freeRAM = ramGB - model.modelSizeGB;
+  const batchSize = Math.max(1, Math.min(16, Math.floor(freeRAM / 2)));
+  const batchEff = batchSize <= 4 ? 0.80 : batchSize <= 8 ? 0.85 : 0.90;
+  const { activeParamsGB, outputPriceMicro } = model;
+  const singleTokPerSec = (config.bandwidthGBs / activeParamsGB) * 0.60;
+  const decodeTokPerSec = singleTokPerSec * batchSize * batchEff;
+  const tokPerHour = decodeTokPerSec * 3600;
+  const revenuePerHour = (tokPerHour / 1_000_000) * (outputPriceMicro / 1_000_000);
 
   const marginalWatts = config.inferWatts - config.idleWatts;
   const elecPerHour = (marginalWatts / 1000) * elecCostPerKWh;
@@ -180,9 +150,7 @@ function calculateModelEarnings(
   return {
     modelId: model.id,
     modelName: model.name,
-    modelType: model.type,
     decodeTokPerSec,
-    throughputLabel,
     revenuePerHour,
     elecPerHour,
     netPerHour,
@@ -195,8 +163,6 @@ function calculateModelEarnings(
     batchEff,
     activeParamsGB,
     outputPriceMicro,
-    scaledImagesPerHour,
-    scaledAudioMinPerHour,
     marginalWatts,
     catalogModel: model,
   };
@@ -248,22 +214,6 @@ function fmtUSDWhole(n: number): string {
   return "$" + n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 }
 
-/* ─── Model type badge ─── */
-
-function ModelTypeBadge({ type }: { type: "text" | "image" | "transcription" }) {
-  const config = {
-    text: { label: "text", bg: "bg-blue-500/10", text: "text-blue-400", border: "border-blue-500/20" },
-    image: { label: "image", bg: "bg-purple-500/10", text: "text-purple-400", border: "border-purple-500/20" },
-    transcription: { label: "stt", bg: "bg-orange-500/10", text: "text-orange-400", border: "border-orange-500/20" },
-  }[type];
-
-  return (
-    <span className={`px-2 py-0.5 rounded text-xs font-mono ${config.bg} ${config.text} border ${config.border}`}>
-      {config.label}
-    </span>
-  );
-}
-
 /* ─── Selector pill button ─── */
 
 function PillButton({
@@ -292,12 +242,13 @@ function PillButton({
 /* ─── Page component ─── */
 
 export default function EarnPage() {
+  const { ready, authenticated, login } = useAuth();
+
   // Default: MacBook Pro -> M4 Max -> 48GB
   const [selectedMacType, setSelectedMacType] = useState("MacBook Pro");
   const [selectedChip, setSelectedChip] = useState("M4 Max");
   const [selectedRAM, setSelectedRAM] = useState(48);
   const [inferenceHours, setInferenceHours] = useState(18);
-  const [hoursManuallySet, setHoursManuallySet] = useState(false);
   const [elecCost, setElecCost] = useState("0.15");
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
 
@@ -333,16 +284,12 @@ export default function EarnPage() {
     ? selectedRAM
     : availableRAM[availableRAM.length - 1] ?? 8;
 
-  // Default inference hours per model type
-  const defaultHoursForType = (type: string) =>
-    type === "text" ? 18 : type === "image" ? 12 : 1;
-
-  // Calculate earnings for ALL eligible models, each using its own default hours
+  // Calculate earnings for ALL eligible models
   const rankedModels = useMemo(() => {
     if (!selectedConfig) return [];
     const eligible = CATALOG_MODELS.filter((m) => m.minRAMGB <= effectiveRAM);
     const results = eligible.map((m) =>
-      calculateModelEarnings(m, selectedConfig, effectiveRAM, defaultHoursForType(m.type), elecCostNum)
+      calculateModelEarnings(m, selectedConfig, effectiveRAM, 18, elecCostNum)
     );
     results.sort((a, b) => b.monthlyNet - a.monthlyNet);
     return results;
@@ -364,17 +311,6 @@ export default function EarnPage() {
     return calculateModelEarnings(selectedCatalogModel, selectedConfig, effectiveRAM, inferenceHours, elecCostNum);
   }, [selectedConfig, selectedCatalogModel, effectiveRAM, inferenceHours, elecCostNum]);
 
-  // Auto-set inference hours based on model type (unless user manually adjusted)
-  const selectedModelType = result?.modelType;
-  const prevModelTypeRef = useState<string | null>(null);
-  if (selectedModelType && selectedModelType !== prevModelTypeRef[0] && !hoursManuallySet) {
-    prevModelTypeRef[1](selectedModelType);
-    const defaultHours = defaultHoursForType(selectedModelType);
-    if (inferenceHours !== defaultHours) {
-      setInferenceHours(defaultHours);
-    }
-  }
-
   const comparisons = useMemo(
     () => (result ? getComparisons(result.monthlyNet) : []),
     [result]
@@ -384,22 +320,26 @@ export default function EarnPage() {
   const handleMacTypeSelect = (macType: string) => {
     setSelectedMacType(macType);
     setSelectedModelId(null);
-    setHoursManuallySet(false);
   };
 
   const handleChipSelect = (chip: string) => {
     setSelectedChip(chip);
     setSelectedModelId(null);
-    setHoursManuallySet(false);
   };
 
   const handleRAMSelect = (ram: number) => {
     setSelectedRAM(ram);
     setSelectedModelId(null);
-    setHoursManuallySet(false);
   };
 
-  if (!selectedConfig || !result) return null;
+  if (!selectedConfig) return null;
+
+  let modelSelectorHint = "Auto-selected: most profitable for your hardware";
+  if (rankedModels.length === 0) {
+    modelSelectorHint = "No compatible catalog model for this memory configuration";
+  } else if (selectedModelId !== null) {
+    modelSelectorHint = "Manually selected — change hardware to reset";
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -414,8 +354,76 @@ export default function EarnPage() {
             </h2>
             <p className="text-sm text-text-tertiary">
               Estimate how much your Apple Silicon Mac can earn serving inference
-              on the EigenInference network.
+              on the Darkbloom network.
             </p>
+          </div>
+
+          {/* Setup Provider CTA */}
+          <div className="rounded-xl bg-bg-secondary p-6 mb-6">
+            {!authenticated ? (
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-accent-brand/10 flex items-center justify-center shrink-0">
+                    <Terminal size={20} className="text-accent-brand" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-text-primary mb-0.5">
+                      Ready to start earning?
+                    </h3>
+                    <p className="text-sm text-text-secondary">
+                      Sign in to set up your provider node and start earning from your Mac.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    trackEvent("login_cta_clicked", {
+                      source: "earn_page_setup_provider_cta",
+                    });
+                    login();
+                  }}
+                  disabled={!ready}
+                  className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg
+                             bg-coral text-white font-medium text-sm
+                             hover:opacity-90
+                             disabled:opacity-40 disabled:cursor-not-allowed
+                             transition-all shrink-0"
+                >
+                  <Mail size={14} />
+                  {!ready ? "Loading..." : "Sign In"}
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-accent-green/10 flex items-center justify-center shrink-0">
+                    <Cpu size={20} className="text-accent-green" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-text-primary mb-0.5">
+                      Turn your Mac into a provider
+                    </h3>
+                    <p className="text-sm text-text-secondary">
+                      Set up your Apple Silicon Mac to serve inference and earn from the Darkbloom network.
+                    </p>
+                  </div>
+                </div>
+                <Link
+                  href="/providers/setup"
+                  onClick={() => {
+                    trackEvent("provider_setup_clicked", {
+                      source: "earn_page_setup_provider_cta",
+                    });
+                  }}
+                  className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg
+                             bg-accent-brand text-white font-medium text-sm
+                             hover:bg-accent-brand-hover
+                             transition-colors shrink-0"
+                >
+                  Setup Provider <ArrowRight size={14} />
+                </Link>
+              </div>
+            )}
           </div>
 
           {/* Hardware selector */}
@@ -513,9 +521,7 @@ export default function EarnPage() {
               <h3 className="text-sm font-medium text-text-primary">Model</h3>
             </div>
             <p className="text-xs text-text-tertiary mb-4">
-              {selectedModelId === null
-                ? "Auto-selected: most profitable for your hardware"
-                : "Manually selected — change hardware to reset"}
+              {modelSelectorHint}
             </p>
 
             <div className="rounded-lg border border-border-dim overflow-hidden">
@@ -554,9 +560,6 @@ export default function EarnPage() {
                         {m.modelName}
                       </span>
 
-                      {/* Type badge */}
-                      <ModelTypeBadge type={m.modelType} />
-
                       {/* Monthly net */}
                       <span className={`text-sm font-mono tabular-nums whitespace-nowrap ${
                         m.monthlyNet >= 0 ? "text-accent-green" : "text-accent-red"
@@ -592,272 +595,243 @@ export default function EarnPage() {
             )}
           </div>
 
-          {/* Inference Hours & Electricity */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-            {/* Inference hours slider */}
-            <div className="rounded-xl bg-bg-secondary p-5">
-              <label className="block text-xs font-medium text-text-tertiary uppercase tracking-wider mb-3">
-                <Zap size={12} className="inline mr-1.5 -mt-0.5" />
-                Inference Hours
-              </label>
-              <div className="flex items-baseline gap-2 mb-3">
-                <span className="text-2xl font-bold font-mono text-text-primary">
-                  {inferenceHours}
-                </span>
-                <span className="text-sm text-text-tertiary">
-                  hours of active inference per day
-                </span>
-              </div>
-              <input
-                type="range"
-                min={1}
-                max={24}
-                value={inferenceHours}
-                onChange={(e) => {
-                  setInferenceHours(parseInt(e.target.value));
-                  setHoursManuallySet(true);
-                }}
-                className="w-full accent-accent-brand"
-              />
-              <div className="flex justify-between text-xs text-text-tertiary mt-1">
-                <span>1 hr</span>
-                <span>12 hrs</span>
-                <span>24 hrs</span>
-              </div>
-            </div>
+          {result ? (
+            <>
+              {/* Inference Hours & Electricity */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                {/* Inference hours slider */}
+                <div className="rounded-xl bg-bg-secondary p-5">
+                  <label className="block text-xs font-medium text-text-tertiary uppercase tracking-wider mb-3">
+                    <Zap size={12} className="inline mr-1.5 -mt-0.5" />
+                    Inference Hours
+                  </label>
+                  <div className="flex items-baseline gap-2 mb-3">
+                    <span className="text-2xl font-bold font-mono text-text-primary">
+                      {inferenceHours}
+                    </span>
+                    <span className="text-sm text-text-tertiary">
+                      hours of active inference per day
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={1}
+                    max={24}
+                    value={inferenceHours}
+                    onChange={(e) => {
+                      setInferenceHours(parseInt(e.target.value));
+                    }}
+                    className="w-full accent-accent-brand"
+                  />
+                  <div className="flex justify-between text-xs text-text-tertiary mt-1">
+                    <span>1 hr</span>
+                    <span>12 hrs</span>
+                    <span>24 hrs</span>
+                  </div>
+                </div>
 
-            {/* Electricity cost */}
-            <div className="rounded-xl bg-bg-secondary p-5">
-              <label className="block text-xs font-medium text-text-tertiary uppercase tracking-wider mb-3">
-                <DollarSign size={12} className="inline mr-1.5 -mt-0.5" />
-                Electricity Cost
-              </label>
-              <div className="flex items-baseline gap-2">
-                <span className="text-text-secondary text-sm">$</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={elecCost}
-                  onChange={(e) => setElecCost(e.target.value)}
-                  className="w-24 bg-bg-tertiary rounded-lg px-3 py-2 text-sm font-mono text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-brand/50"
-                />
-                <span className="text-text-tertiary text-sm">/kWh</span>
-              </div>
-              <p className="text-xs text-text-tertiary mt-2">
-                US avg: $0.15 | EU avg: $0.25 | CA avg: $0.22
-              </p>
-            </div>
-          </div>
-
-          {/* Results */}
-          <div className="rounded-xl bg-bg-secondary p-6 mb-6">
-            <div className="flex items-center gap-2 mb-5">
-              <div className="w-8 h-8 rounded-lg bg-accent-green/10 border border-accent-green/20 flex items-center justify-center">
-                <TrendingUp size={14} className="text-accent-green" />
-              </div>
-              <div>
-                <h3 className="text-sm font-medium text-text-primary">
-                  Estimated Earnings
-                </h3>
-                <p className="text-xs text-text-tertiary">
-                  Serving{" "}
-                  <span className="font-mono text-text-secondary">
-                    {result.modelName}
-                  </span>{" "}
-                  at {inferenceHours} hrs/day
-                </p>
-              </div>
-            </div>
-
-            {/* Big number */}
-            <div className="text-center py-6 border-b border-border-dim mb-6">
-              <p className="text-xs uppercase tracking-wider text-text-tertiary mb-1">
-                Monthly net earnings
-              </p>
-              <p className="text-4xl font-bold font-mono text-accent-green">
-                {fmtUSDWhole(result.monthlyNet)}
-              </p>
-              <p className="text-sm text-text-tertiary mt-1">
-                {fmtUSDWhole(result.annualNet)} / year
-              </p>
-            </div>
-
-            {/* Detail grid */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              {(result.decodeTokPerSec !== null || result.throughputLabel !== null) && (
-                <div>
-                  <p className="text-xs text-text-tertiary mb-0.5">
-                    {result.decodeTokPerSec !== null ? "Batched decode speed" : "Throughput"}
-                  </p>
-                  <p className="text-sm font-mono text-text-primary">
-                    {result.decodeTokPerSec !== null
-                      ? `${result.decodeTokPerSec.toFixed(1)} tok/s`
-                      : result.throughputLabel}
+                {/* Electricity cost */}
+                <div className="rounded-xl bg-bg-secondary p-5">
+                  <label className="block text-xs font-medium text-text-tertiary uppercase tracking-wider mb-3">
+                    <DollarSign size={12} className="inline mr-1.5 -mt-0.5" />
+                    Electricity Cost
+                  </label>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-text-secondary text-sm">$</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={elecCost}
+                      onChange={(e) => setElecCost(e.target.value)}
+                      className="w-24 bg-bg-tertiary rounded-lg px-3 py-2 text-sm font-mono text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-brand/50"
+                    />
+                    <span className="text-text-tertiary text-sm">/kWh</span>
+                  </div>
+                  <p className="text-xs text-text-tertiary mt-2">
+                    US avg: $0.15 | EU avg: $0.25 | CA avg: $0.22
                   </p>
                 </div>
-              )}
-              <div>
-                <p className="text-xs text-text-tertiary mb-0.5">
-                  Monthly revenue
-                </p>
-                <p className="text-sm font-mono text-text-primary">
-                  {fmtUSD(result.monthlyRevenue)}
-                </p>
               </div>
-              <div>
-                <p className="text-xs text-text-tertiary mb-0.5">
-                  Monthly electricity
-                </p>
-                <p className="text-sm font-mono text-accent-red">
-                  -{fmtUSD(result.monthlyElec)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-text-tertiary mb-0.5">
-                  Electricity % of revenue
-                </p>
-                <p className="text-sm font-mono text-text-primary">
-                  {result.elecPercent.toFixed(1)}%
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-text-tertiary mb-0.5">
-                  Revenue per hour
-                </p>
-                <p className="text-sm font-mono text-text-primary">
-                  {fmtUSD(result.revenuePerHour, 4)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-text-tertiary mb-0.5">
-                  Electricity per hour
-                </p>
-                <p className="text-sm font-mono text-text-secondary">
-                  {fmtUSD(result.elecPerHour, 4)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-text-tertiary mb-0.5">
-                  Net per hour
-                </p>
-                <p className="text-sm font-mono text-accent-green">
-                  {fmtUSD(result.netPerHour, 4)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-text-tertiary mb-0.5">
-                  Provider share
-                </p>
-                <p className="text-sm font-mono text-text-primary">95%</p>
-              </div>
-            </div>
-          </div>
 
-          {/* Calculation breakdown */}
-          <div className="rounded-xl bg-bg-secondary p-6 mb-6">
-            <h3 className="text-sm font-medium text-text-primary mb-3">
-              How this is calculated
-            </h3>
-            <div className="text-xs text-text-tertiary font-mono space-y-1 bg-bg-tertiary rounded-lg p-4 overflow-x-auto">
-              {result.modelType === "transcription" ? (
-                <>
-                  <p>
-                    scaled_audio_min/hr = {result.catalogModel.baseAudioMinPerHour!.toLocaleString()} * ({selectedConfig.bandwidthGBs} GB/s / 100 GB/s) = {Math.round(result.scaledAudioMinPerHour!).toLocaleString()}
-                  </p>
-                  <p>
-                    revenue/hr = {Math.round(result.scaledAudioMinPerHour!).toLocaleString()} min * $
-                    {(result.catalogModel.pricePerMinMicro! / 1_000_000).toFixed(4)}
-                    /min * 0.95 = {fmtUSD(result.revenuePerHour, 4)}
-                  </p>
-                  <p>
-                    marginal_watts = {selectedConfig.inferWatts}W (inference) - {selectedConfig.idleWatts}W (idle) = {result.marginalWatts}W
-                  </p>
-                  <p>
-                    elec/hr = ({result.marginalWatts}W / 1000) * ${elecCostNum.toFixed(2)}/kWh = {fmtUSD(result.elecPerHour, 4)}
-                  </p>
-                  <p>
-                    net/hr = {fmtUSD(result.revenuePerHour, 4)} - {fmtUSD(result.elecPerHour, 4)} = {fmtUSD(result.netPerHour, 4)}
-                  </p>
-                  <p>
-                    monthly = {fmtUSD(result.netPerHour, 4)} * {inferenceHours} hrs/day * 30 days = {fmtUSD(result.monthlyNet)}
-                  </p>
-                </>
-              ) : result.modelType === "image" ? (
-                <>
-                  <p>
-                    scaled_images/hr = {result.catalogModel.baseImagesPerHour!} * ({selectedConfig.bandwidthGBs} GB/s / {result.catalogModel.referenceBandwidth!} GB/s) = {Math.round(result.scaledImagesPerHour!)}
-                  </p>
-                  <p>
-                    revenue/hr = {Math.round(result.scaledImagesPerHour!)} images/hr * $
-                    {(result.catalogModel.imagePriceMicro! / 1_000_000).toFixed(4)}
-                    /image * 0.95 = {fmtUSD(result.revenuePerHour, 4)}
-                  </p>
-                  <p>
-                    marginal_watts = {selectedConfig.inferWatts}W (inference) - {selectedConfig.idleWatts}W (idle) = {result.marginalWatts}W
-                  </p>
-                  <p>
-                    elec/hr = ({result.marginalWatts}W / 1000) * ${elecCostNum.toFixed(2)}/kWh = {fmtUSD(result.elecPerHour, 4)}
-                  </p>
-                  <p>
-                    net/hr = {fmtUSD(result.revenuePerHour, 4)} - {fmtUSD(result.elecPerHour, 4)} = {fmtUSD(result.netPerHour, 4)}
-                  </p>
-                  <p>
-                    monthly = {fmtUSD(result.netPerHour, 4)} * {inferenceHours} hrs/day * 30 days = {fmtUSD(result.monthlyNet)}
-                  </p>
-                </>
-              ) : (
-                <>
-                  <p>
-                    single_tok/s = ({selectedConfig.bandwidthGBs} GB/s / {result.activeParamsGB} GB) * 0.60 ={" "}
-                    {((selectedConfig.bandwidthGBs / result.activeParamsGB!) * 0.6).toFixed(1)} tok/s
-                  </p>
-                  <p>
-                    batched_tok/s ={" "}
-                    {((selectedConfig.bandwidthGBs / result.activeParamsGB!) * 0.6).toFixed(1)} * {result.batchSize} * {result.batchEff} ={" "}
-                    {result.decodeTokPerSec?.toFixed(1)} tok/s
-                  </p>
-                  <p>
-                    tok/hr = {result.decodeTokPerSec?.toFixed(1)} * 3600 ={" "}
-                    {((result.decodeTokPerSec ?? 0) * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                  </p>
-                  <p>
-                    revenue/hr = ({((result.decodeTokPerSec ?? 0) * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })} / 1M) * $
-                    {((result.outputPriceMicro ?? 0) / 1_000_000).toFixed(6)} * 0.95 = {fmtUSD(result.revenuePerHour, 4)}
-                  </p>
-                  <p>
-                    marginal_watts = {selectedConfig.inferWatts}W (inference) - {selectedConfig.idleWatts}W (idle) = {result.marginalWatts}W
-                  </p>
-                  <p>
-                    elec/hr = ({result.marginalWatts}W / 1000) * ${elecCostNum.toFixed(2)}/kWh = {fmtUSD(result.elecPerHour, 4)}
-                  </p>
-                  <p>
-                    net/hr = {fmtUSD(result.revenuePerHour, 4)} - {fmtUSD(result.elecPerHour, 4)} = {fmtUSD(result.netPerHour, 4)}
-                  </p>
-                  <p>
-                    monthly = {fmtUSD(result.netPerHour, 4)} * {inferenceHours} hrs/day * 30 days = {fmtUSD(result.monthlyNet)}
-                  </p>
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* Comparisons */}
-          {comparisons.length > 0 && (
-            <div className="rounded-xl bg-bg-secondary p-6 mb-8">
-              <h3 className="text-sm font-medium text-text-primary mb-3">
-                Your Mac earns more idle than...
-              </h3>
-              <div className="space-y-2">
-                {comparisons.map((c) => (
-                  <div
-                    key={c}
-                    className="flex items-center gap-3 px-3 py-2 rounded-lg bg-bg-tertiary text-sm text-text-secondary"
-                  >
-                    {comparisonIcon(c)}
-                    <span>{c}</span>
+              {/* Results */}
+              <div className="rounded-xl bg-bg-secondary p-6 mb-6">
+                <div className="flex items-center gap-2 mb-5">
+                  <div className="w-8 h-8 rounded-lg bg-accent-green/10 border border-accent-green/20 flex items-center justify-center">
+                    <TrendingUp size={14} className="text-accent-green" />
                   </div>
-                ))}
+                  <div>
+                    <h3 className="text-sm font-medium text-text-primary">
+                      Estimated Earnings
+                    </h3>
+                    <p className="text-xs text-text-tertiary">
+                      Serving{" "}
+                      <span className="font-mono text-text-secondary">
+                        {result.modelName}
+                      </span>{" "}
+                      at {inferenceHours} hrs/day
+                    </p>
+                  </div>
+                </div>
+
+                {/* Big number */}
+                <div className="text-center py-6 border-b border-border-dim mb-6">
+                  <p className="text-xs uppercase tracking-wider text-text-tertiary mb-1">
+                    Monthly net earnings
+                  </p>
+                  <p className="text-4xl font-bold font-mono text-accent-green">
+                    {fmtUSDWhole(result.monthlyNet)}
+                  </p>
+                  <p className="text-sm text-text-tertiary mt-1">
+                    {fmtUSDWhole(result.annualNet)} / year
+                  </p>
+                </div>
+
+                {/* Detail grid */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5">
+                      Batched decode speed
+                    </p>
+                    <p className="text-sm font-mono text-text-primary">
+                      {result.decodeTokPerSec.toFixed(1)} tok/s
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5">
+                      Monthly revenue
+                    </p>
+                    <p className="text-sm font-mono text-text-primary">
+                      {fmtUSD(result.monthlyRevenue)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5">
+                      Monthly electricity
+                    </p>
+                    <p className="text-sm font-mono text-accent-red">
+                      -{fmtUSD(result.monthlyElec)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5">
+                      Electricity % of revenue
+                    </p>
+                    <p className="text-sm font-mono text-text-primary">
+                      {result.elecPercent.toFixed(1)}%
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5">
+                      Revenue per hour
+                    </p>
+                    <p className="text-sm font-mono text-text-primary">
+                      {fmtUSD(result.revenuePerHour, 4)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5">
+                      Electricity per hour
+                    </p>
+                    <p className="text-sm font-mono text-text-secondary">
+                      {fmtUSD(result.elecPerHour, 4)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5">
+                      Net per hour
+                    </p>
+                    <p className="text-sm font-mono text-accent-green">
+                      {fmtUSD(result.netPerHour, 4)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-text-tertiary mb-0.5 flex items-center gap-1">
+                      Provider share
+                      <span className="relative group">
+                        <Info size={12} className="text-text-tertiary cursor-help" />
+                        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 w-48 px-2 py-1 text-[10px] text-text-secondary bg-bg-tertiary border border-border-primary rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                          Payouts are currently processed manually. Automatic payouts coming soon.
+                        </span>
+                      </span>
+                    </p>
+                    <p className="text-sm font-mono text-text-primary">100%</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Calculation breakdown */}
+              <div className="rounded-xl bg-bg-secondary p-6 mb-6">
+                <h3 className="text-sm font-medium text-text-primary mb-3">
+                  How this is calculated
+                </h3>
+                <div className="text-xs text-text-tertiary font-mono space-y-1 bg-bg-tertiary rounded-lg p-4 overflow-x-auto">
+                      <p>
+                        single_tok/s = ({selectedConfig.bandwidthGBs} GB/s / {result.activeParamsGB} GB) * 0.60 ={" "}
+                        {((selectedConfig.bandwidthGBs / result.activeParamsGB) * 0.6).toFixed(1)} tok/s
+                      </p>
+                      <p>
+                        batched_tok/s ={" "}
+                        {((selectedConfig.bandwidthGBs / result.activeParamsGB) * 0.6).toFixed(1)} * {result.batchSize} * {result.batchEff} ={" "}
+                        {result.decodeTokPerSec.toFixed(1)} tok/s
+                      </p>
+                      <p>
+                        tok/hr = {result.decodeTokPerSec.toFixed(1)} * 3600 ={" "}
+                        {(result.decodeTokPerSec * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                      </p>
+                      <p>
+                        revenue/hr = ({(result.decodeTokPerSec * 3600).toLocaleString(undefined, { maximumFractionDigits: 0 })} / 1M) * $
+                        {(result.outputPriceMicro / 1_000_000).toFixed(6)} = {fmtUSD(result.revenuePerHour, 4)}
+                      </p>
+                      <p>
+                        marginal_watts = {selectedConfig.inferWatts}W (inference) - {selectedConfig.idleWatts}W (idle) = {result.marginalWatts}W
+                      </p>
+                      <p>
+                        elec/hr = ({result.marginalWatts}W / 1000) * ${elecCostNum.toFixed(2)}/kWh = {fmtUSD(result.elecPerHour, 4)}
+                      </p>
+                      <p>
+                        net/hr = {fmtUSD(result.revenuePerHour, 4)} - {fmtUSD(result.elecPerHour, 4)} = {fmtUSD(result.netPerHour, 4)}
+                      </p>
+                      <p>
+                        monthly = {fmtUSD(result.netPerHour, 4)} * {inferenceHours} hrs/day * 30 days = {fmtUSD(result.monthlyNet)}
+                      </p>
+                </div>
+              </div>
+
+              {/* Comparisons */}
+              {comparisons.length > 0 && (
+                <div className="rounded-xl bg-bg-secondary p-6 mb-8">
+                  <h3 className="text-sm font-medium text-text-primary mb-3">
+                    Your Mac earns more idle than...
+                  </h3>
+                  <div className="space-y-2">
+                    {comparisons.map((c) => (
+                      <div
+                        key={c}
+                        className="flex items-center gap-3 px-3 py-2 rounded-lg bg-bg-tertiary text-sm text-text-secondary"
+                      >
+                        {comparisonIcon(c)}
+                        <span>{c}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="rounded-xl bg-bg-secondary p-6 mb-6">
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 rounded-lg bg-accent-amber/10 border border-accent-amber/20 flex items-center justify-center shrink-0">
+                  <Info size={14} className="text-accent-amber" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-medium text-text-primary mb-1">
+                    No compatible model for this hardware
+                  </h3>
+                  <p className="text-sm text-text-tertiary">
+                    Current catalog models need at least 36 GB unified memory. Choose a Mac with more memory to estimate provider earnings.
+                  </p>
+                </div>
               </div>
             </div>
           )}
@@ -871,7 +845,7 @@ export default function EarnPage() {
               When your Mac is idle (no inference requests), it consumes minimal power — you don&apos;t lose significant money waiting for requests. The electricity costs shown only apply during active inference.
             </p>
             <p className="text-xs text-text-tertiary">
-              Text models typically see the highest and most consistent demand. Image generation and transcription requests are bursty — high volume during peaks, quiet otherwise.
+              Models with higher demand and more active users tend to produce more consistent earnings.
             </p>
           </div>
         </div>

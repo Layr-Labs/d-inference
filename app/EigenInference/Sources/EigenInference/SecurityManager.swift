@@ -84,7 +84,7 @@ final class SecurityManager: ObservableObject {
         SecureEnclave.isAvailable
     }
 
-    /// Check if this Mac is enrolled in EigenInference MDM.
+    /// Check if this Mac is enrolled in Darkbloom MDM.
     ///
     /// Uses the same 3-method approach as security.rs:
     ///   1. Marker file at /var/db/ConfigurationProfiles/Settings/.profilesAreInstalled
@@ -100,7 +100,8 @@ final class SecurityManager: ObservableObject {
         // Method 2: profiles list
         let profiles = await CLIRunner.shell("profiles list 2>&1")
         let combined = (profiles.stdout + profiles.stderr).lowercased()
-        if combined.contains("micromdm") || combined.contains("eigeninference") ||
+        if combined.contains("micromdm") || combined.contains("darkbloom") ||
+           combined.contains("eigeninference") ||
            combined.contains("com.github.micromdm") {
             return true
         }
@@ -128,19 +129,19 @@ final class SecurityManager: ObservableObject {
         return false
     }
 
-    /// Check if the eigeninference-provider binary is available.
+    /// Check if the darkbloom binary is available.
     private func checkBinary() async -> Bool {
         CLIRunner.resolveBinaryPath() != nil
     }
 
     /// Check if the E2E encryption key is available.
-    /// With SE-derived keys, check for the KeyAgreement handle file.
-    /// Falls back to checking the legacy node_key file.
+    /// This exercises the real provider key path rather than inferring from
+    /// file presence, so it catches keychain/entitlement failures too.
     private func checkNodeKey() async -> Bool {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let seKeyPath = "\(home)/.eigeninference/enclave_e2e_ka.data"
-        let legacyKeyPath = "\(home)/.eigeninference/node_key"
-        return FileManager.default.fileExists(atPath: seKeyPath) ||
-               FileManager.default.fileExists(atPath: legacyKeyPath)
+        guard CLIRunner.resolveBinaryPath() != nil else {
+            return false
+        }
+        let result = try? await CLIRunner.run(["key-status"])
+        return result?.success == true
     }
 }

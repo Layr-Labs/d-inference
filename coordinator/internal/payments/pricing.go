@@ -1,6 +1,6 @@
 package payments
 
-// Pricing model for EigenInference.
+// Pricing model for Darkbloom.
 //
 // Prices are set at 50% of the cheapest major competitor for each model type.
 // Users accept higher latency and lower reliability in exchange for the discount.
@@ -16,9 +16,6 @@ package payments
 //   Gemma 4 26B (MoE, 4B active)       $0.065      $0.200       OpenRouter $0.40
 //   Qwen3.5 122B (MoE, 10B active)     $0.130      $1.040       OpenRouter $2.08
 //   MiniMax M2.5 (239B MoE, 11B act)   $0.060      $0.500       OpenRouter $1.00
-//   Cohere Transcribe (2B STT)         $0.001/audio-minute      AssemblyAI $0.002
-//   FLUX.2 Klein 4B (image)            $0.0015/image            Together $0.003
-//   FLUX.2 Klein 9B (image)            $0.0025/image            fal.ai $0.005
 
 // Default pricing for unknown models (micro-USD per 1M tokens).
 // Falls back to a mid-range rate comparable to a 7B model.
@@ -28,7 +25,7 @@ const defaultOutputPricePerMillion int64 = 200_000 // $0.20 per 1M output tokens
 // Minimum charge per inference request in micro-USD ($0.0001).
 const minimumChargeMicroUSD int64 = 100
 
-// Platform fee percentage — EigenInference retains 5% as a routing fee, provider receives 95%.
+// Platform fee percentage — Darkbloom retains 5% as a routing fee, provider receives 95%.
 const platformFeePercent int64 = 5
 
 // modelPricing stores input and output prices per model (micro-USD per 1M tokens).
@@ -44,19 +41,6 @@ var modelPricing = map[string]modelPrice{
 	"mlx-community/gemma-4-26b-a4b-it-8bit": {input: 65_000, output: 200_000},    // $0.065 / $0.20 (50% of OpenRouter)
 	"mlx-community/Qwen3.5-122B-A10B-8bit":  {input: 130_000, output: 1_040_000}, // $0.13 / $1.04
 	"mlx-community/MiniMax-M2.5-8bit":       {input: 60_000, output: 500_000},    // $0.06 / $0.50
-}
-
-// transcriptionPricing stores per-audio-minute prices in micro-USD.
-var transcriptionPricing = map[string]int64{
-	"CohereLabs/cohere-transcribe-03-2026": 1_000, // $0.001 per audio-minute (50% of AssemblyAI Nano $0.002)
-}
-
-const defaultTranscriptionPricePerMinute int64 = 1_000
-
-// imagePricing stores per-image prices in micro-USD.
-var imagePricing = map[string]int64{
-	"flux_2_klein_4b_q8p.ckpt": 1_500, // $0.0015 per image (50% of Together.ai $0.003)
-	"flux_2_klein_9b_q8p.ckpt": 2_500, // $0.0025 per image (50% of fal.ai $0.005)
 }
 
 // MinimumCharge returns the minimum charge per inference request in micro-USD.
@@ -128,53 +112,7 @@ func DefaultPrices() map[string][2]int64 {
 	return result
 }
 
-// DefaultTranscriptionPrices returns per-minute pricing for STT models.
-func DefaultTranscriptionPrices() map[string]int64 {
-	result := make(map[string]int64, len(transcriptionPricing))
-	for model, price := range transcriptionPricing {
-		result[model] = price
-	}
-	return result
-}
-
-// DefaultImagePrices returns per-image pricing for image models.
-func DefaultImagePrices() map[string]int64 {
-	result := make(map[string]int64, len(imagePricing))
-	for model, price := range imagePricing {
-		result[model] = price
-	}
-	return result
-}
-
-// ImagePricePerImage returns the per-image price in micro-USD for the given model.
-func ImagePricePerImage(model string) int64 {
-	if p, ok := imagePricing[model]; ok {
-		return p
-	}
-	return 1_500 // default to cheapest model price
-}
-
-// TranscriptionPricePerMinute returns the per-audio-minute price in micro-USD.
-func TranscriptionPricePerMinute(model string) int64 {
-	if p, ok := transcriptionPricing[model]; ok {
-		return p
-	}
-	return defaultTranscriptionPricePerMinute
-}
-
-// CalculateImageCost returns the total cost in micro-USD for an image generation
-// job. Pricing is per-image based on the model's per-image price.
-func CalculateImageCost(model string, width, height, count int) int64 {
-	pricePerImage := ImagePricePerImage(model)
-
-	totalCost := pricePerImage * int64(count)
-	if totalCost < minimumChargeMicroUSD {
-		totalCost = minimumChargeMicroUSD
-	}
-	return totalCost
-}
-
-// PlatformFee returns EigenInference's routing fee (5%).
+// PlatformFee returns Darkbloom's routing fee (5%).
 func PlatformFee(totalCost int64) int64 {
 	return totalCost * platformFeePercent / 100
 }

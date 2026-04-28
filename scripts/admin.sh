@@ -12,10 +12,10 @@ set -euo pipefail
 #   ./scripts/admin.sh models list              # List model catalog
 #   ./scripts/admin.sh raw GET /v1/admin/releases  # Raw API call
 #
-# The admin token is stored at ~/.eigeninference/admin_token and reused until it expires.
+# The admin token is stored at ~/.darkbloom/admin_token and reused until it expires.
 
-COORDINATOR_URL="${EIGENINFERENCE_COORDINATOR_URL:-https://inference-test.openinnovation.dev}"
-TOKEN_FILE="$HOME/.eigeninference/admin_token"
+COORDINATOR_URL="${EIGENINFERENCE_COORDINATOR_URL:-https://api.darkbloom.dev}"
+TOKEN_FILE="$HOME/.darkbloom/admin_token"
 
 # ─── Auth helpers ───────────────────────────────────────────
 
@@ -163,7 +163,7 @@ case "${1:-help}" in
         echo "  raw <METHOD> <path> [body]     Raw API call with auth"
         echo ""
         echo "Environment:"
-        echo "  EIGENINFERENCE_COORDINATOR_URL   Coordinator URL (default: https://inference-test.openinnovation.dev)"
+        echo "  EIGENINFERENCE_COORDINATOR_URL   Coordinator URL (default: https://api.darkbloom.dev)"
         echo "  EIGENINFERENCE_ADMIN_KEY         Admin key (pre-prod shortcut, skips Privy login)"
         ;;
     *)

@@ -1,9 +1,13 @@
-//! Local-only HTTP server for the EigenInference provider.
+//! Legacy local-only HTTP text proxy for the Darkbloom provider.
 //!
-//! When running in local-only mode (`eigeninference-provider serve --local`), this
-//! module provides an HTTP server that proxies OpenAI-compatible requests
-//! to the local inference backend. This is useful for development and
-//! testing without a coordinator.
+//! This module exists only as an explicit debug escape hatch. It forwards
+//! plaintext OpenAI-compatible text requests to a local backend and therefore
+//! does not satisfy the single-process privacy invariants required for the
+//! default private text path.
+//!
+//! Production/release workflows must not rely on this module. It is
+//! quarantined behind an explicit environment variable and is intended only
+//! for local debugging.
 //!
 //! Endpoints:
 //!   - GET /health — proxied to the backend's /health
@@ -29,6 +33,31 @@ use std::sync::Arc;
 pub struct AppState {
     pub backend_url: String,
     pub client: reqwest::Client,
+}
+
+fn legacy_text_proxy_enabled() -> bool {
+    std::env::var("EIGENINFERENCE_ALLOW_LEGACY_TEXT_PROXY")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+pub fn ensure_legacy_text_proxy_allowed() -> Result<()> {
+    if !cfg!(debug_assertions) {
+        anyhow::bail!(
+            "legacy local HTTP text proxy is disabled in release builds; use the coordinator/private-text path instead"
+        );
+    }
+    if !legacy_text_proxy_enabled() {
+        anyhow::bail!(
+            "legacy local HTTP text proxy is quarantined; set EIGENINFERENCE_ALLOW_LEGACY_TEXT_PROXY=1 only for local debugging"
+        );
+    }
+    Ok(())
 }
 
 /// Create the axum router for local-only mode.
@@ -196,8 +225,9 @@ async fn proxy_streaming_response(resp: reqwest::Response) -> Response {
 
 /// Start the local HTTP server.
 pub async fn start_server(port: u16, backend_url: String) -> Result<()> {
+    ensure_legacy_text_proxy_allowed()?;
     let app = create_router(backend_url);
-    let addr = format!("0.0.0.0:{port}");
+    let addr = format!("127.0.0.1:{port}");
 
     tracing::info!("Local API server listening on {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -213,7 +243,13 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
+    use std::sync::{Mutex, OnceLock};
     use tower::ServiceExt;
+
+    fn legacy_proxy_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     /// Start a mock backend returning fixed responses.
     async fn start_mock_backend() -> u16 {
@@ -269,6 +305,43 @@ mod tests {
             .header("content-type", "application/json")
             .body(body)
             .unwrap()
+    }
+
+    #[test]
+    fn test_ensure_legacy_text_proxy_allowed_requires_escape_hatch() {
+        let _guard = legacy_proxy_env_lock().lock().unwrap();
+        unsafe {
+            std::env::remove_var("EIGENINFERENCE_ALLOW_LEGACY_TEXT_PROXY");
+        }
+
+        let err = ensure_legacy_text_proxy_allowed()
+            .expect_err("legacy proxy should stay quarantined by default");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("quarantined") || msg.contains("release builds"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_ensure_legacy_text_proxy_allowed_accepts_debug_escape_hatch() {
+        let _guard = legacy_proxy_env_lock().lock().unwrap();
+        unsafe {
+            std::env::set_var("EIGENINFERENCE_ALLOW_LEGACY_TEXT_PROXY", "1");
+        }
+
+        if cfg!(debug_assertions) {
+            ensure_legacy_text_proxy_allowed()
+                .expect("debug builds should allow the explicit legacy proxy escape hatch");
+        } else {
+            let err = ensure_legacy_text_proxy_allowed()
+                .expect_err("release builds should still reject the legacy proxy");
+            assert!(err.to_string().contains("release builds"));
+        }
+
+        unsafe {
+            std::env::remove_var("EIGENINFERENCE_ALLOW_LEGACY_TEXT_PROXY");
+        }
     }
 
     fn get_request(uri: &str) -> Request<Body> {

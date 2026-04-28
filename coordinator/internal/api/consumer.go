@@ -1,29 +1,27 @@
 package api
 
-// Consumer-facing API handlers for the EigenInference coordinator.
+// Consumer-facing API handlers for the Darkbloom coordinator.
 //
 // This file implements the OpenAI-compatible HTTP endpoints that consumers
 // use to send inference requests. The coordinator acts as a trusted routing
 // layer between consumers and providers.
 //
 // Trust model:
-//   The coordinator runs in a GCP Confidential VM with AMD SEV-SNP, providing
-//   hardware-encrypted memory. Consumer traffic arrives over HTTPS/TLS.
-//   The coordinator can read requests for routing purposes but never logs
-//   prompt content. When forwarding to a provider, the coordinator sends
-//   plain JSON over the WebSocket (the provider is attested via Secure Enclave
-//   challenge-response). Future: the coordinator may encrypt request bodies
-//   with the provider's X25519 public key before forwarding.
+//   The coordinator runs in a Confidential VM, providing hardware-encrypted
+//   memory. Consumers may additionally sender-seal requests to the
+//   coordinator's X25519 key. The coordinator decrypts for routing purposes
+//   but never logs prompt content, then re-encrypts each request to the
+//   selected provider's X25519 public key before forwarding over the
+//   WebSocket. Providers are attested via Secure Enclave challenge-response.
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"path/filepath"
-	"strconv"
+	"regexp"
 	"strings"
 	"time"
 
@@ -58,27 +56,459 @@ const (
 	// firstChunkTimeout is how long to wait for the first chunk from a provider
 	// before considering the attempt failed and retrying.
 	firstChunkTimeout = 10 * time.Second
+
+	// cancelWriteTimeout bounds how long a cancel write to the provider can
+	// block. Using context.Background() unbounded here risks hanging the HTTP
+	// handler goroutine when a WebSocket is half-dead.
+	cancelWriteTimeout = 2 * time.Second
 )
 
-// chatCompletionRequest is the incoming OpenAI-compatible request body.
-// The consumer sends plain JSON — no encryption fields are needed because
-// TLS to the Confidential VM is the trust boundary.
-type chatCompletionRequest struct {
-	Model       string                 `json:"model"`
-	Messages    []protocol.ChatMessage `json:"messages"`
-	Stream      bool                   `json:"stream"`
-	MaxTokens   *int                   `json:"max_tokens,omitempty"`
-	Temperature *float64               `json:"temperature,omitempty"`
+var thinkBlockPattern = regexp.MustCompile(`(?is)<think>(.*?)</think>\s*`)
+
+// sendProviderCancel sends a Cancel message for the given request to the
+// provider with a bounded timeout so a half-dead WebSocket doesn't hang the
+// caller. Errors are logged at debug level because a disconnect race is the
+// expected case — the provider may already be gone.
+func (s *Server) sendProviderCancel(provider *registry.Provider, requestID string) {
+	if provider == nil || provider.Conn == nil {
+		return
+	}
+	cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
+	cancelData, err := json.Marshal(cancelMsg)
+	if err != nil {
+		s.logger.Error("failed to marshal cancel message", "request_id", requestID, "error", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cancelWriteTimeout)
+	defer cancel()
+	if err := provider.Conn.Write(ctx, websocket.MessageText, cancelData); err != nil {
+		s.logger.Debug("failed to send cancel (provider may have disconnected)",
+			"request_id", requestID, "error", err)
+	}
 }
 
-// genericInferenceRequest captures any inference request body as raw JSON.
-// Used for /v1/completions and /v1/messages endpoints where we pass the
-// body through to the provider without parsing the endpoint-specific fields.
-type genericInferenceRequest struct {
-	Model  string `json:"model"`
-	Stream bool   `json:"stream"`
-	// RawBody is the complete request JSON, forwarded as-is to the provider.
-	RawBody json.RawMessage `json:"-"`
+func intFromRequestValue(v any) (int, bool) {
+	switch x := v.(type) {
+	case int:
+		return x, true
+	case int32:
+		return int(x), true
+	case int64:
+		return int(x), true
+	case float64:
+		return int(x), true
+	case json.Number:
+		n, err := x.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
+func approximateTokenCount(v any) int {
+	if v == nil {
+		return 0
+	}
+	switch x := v.(type) {
+	case string:
+		if x == "" {
+			return 0
+		}
+		tokens := len(x) / 4
+		if tokens < 1 {
+			tokens = 1
+		}
+		return tokens
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return 0
+		}
+		tokens := len(b) / 4
+		if tokens < 1 {
+			tokens = 1
+		}
+		return tokens
+	}
+}
+
+func estimatePromptTokens(parsed map[string]any) int {
+	total := 0
+	if v, ok := parsed["messages"]; ok {
+		total += approximateTokenCount(v)
+	}
+	if v, ok := parsed["input"]; ok {
+		total += approximateTokenCount(v)
+	}
+	if v, ok := parsed["prompt"]; ok {
+		total += approximateTokenCount(v)
+	}
+	if total == 0 {
+		total = approximateTokenCount(parsed)
+	}
+	return total
+}
+
+func estimateRequestedMaxTokens(parsed map[string]any) int {
+	for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
+		if n, ok := intFromRequestValue(parsed[key]); ok && n > 0 {
+			if copies, ok := intFromRequestValue(parsed["n"]); ok && copies > 1 {
+				return n * copies
+			}
+			return n
+		}
+	}
+	if copies, ok := intFromRequestValue(parsed["n"]); ok && copies > 1 {
+		return 256 * copies
+	}
+	return 256
+}
+
+func parseProviderSerialAllowlist(parsed map[string]any) ([]string, bool, error) {
+	var rawValues []any
+	provided := false
+	for _, key := range []string{"provider_serial", "provider_serials"} {
+		v, ok := parsed[key]
+		if !ok {
+			continue
+		}
+		provided = true
+		switch x := v.(type) {
+		case string:
+			rawValues = append(rawValues, x)
+		case []any:
+			rawValues = append(rawValues, x...)
+		default:
+			return nil, true, fmt.Errorf("%s must be a string or array of strings", key)
+		}
+	}
+	if !provided {
+		return nil, false, nil
+	}
+
+	seen := make(map[string]struct{}, len(rawValues))
+	ids := make([]string, 0, len(rawValues))
+	for _, raw := range rawValues {
+		id, ok := raw.(string)
+		if !ok {
+			return nil, true, fmt.Errorf("provider_serials must contain only strings")
+		}
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, true, fmt.Errorf("provider_serials must include at least one provider serial")
+	}
+	return ids, true, nil
+}
+
+func stripProviderRoutingFields(parsed map[string]any) bool {
+	changed := false
+	for _, key := range []string{"provider_serial", "provider_serials"} {
+		if _, ok := parsed[key]; ok {
+			delete(parsed, key)
+			changed = true
+		}
+	}
+	return changed
+}
+
+// defaultMaxOutputTokens is the ceiling injected into requests that don't set
+// max_tokens. It bounds the worst-case cost of a single inference so the
+// pre-flight balance reservation covers the entire generation; without this
+// cap a consumer could stream output exceeding their reservation and the
+// post-inference charge would fail silently (see GitHub issue #33). Consumers
+// who need longer generations must set max_tokens explicitly and carry the
+// balance to cover it.
+const defaultMaxOutputTokens = 8192
+
+// explicitMaxTokens returns the consumer-specified max output tokens from any
+// of the recognized field names, or 0 if none were set.
+func explicitMaxTokens(parsed map[string]any) int {
+	for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
+		if n, ok := intFromRequestValue(parsed[key]); ok && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// reservationCost is the pre-flight worst-case cost for a text inference
+// request. It mirrors the platform-price branch of handleComplete's billing
+// so the reservation covers any platform-level custom price for the model;
+// without this, a platform override above the built-in default would leave
+// the reservation short and the post-inference clamp would silently
+// undercharge. Provider-specific custom prices are not known until dispatch
+// commits to a provider, so a provider that sets a custom price above the
+// platform rate accepts revenue capped at the reservation.
+func (s *Server) reservationCost(model string, promptTokens, maxTokens int) int64 {
+	customIn, customOut, hasCustom := s.store.GetModelPrice("platform", model)
+	return payments.CalculateCostWithOverrides(model, promptTokens, maxTokens, customIn, customOut, hasCustom)
+}
+
+// ensureMaxTokensBound injects defaultMaxOutputTokens into parsed when the
+// consumer didn't specify any max-tokens field, so the outgoing request to
+// the provider is bounded by the amount we reserve upfront. The injected
+// field name depends on the API flavor: Responses API uses max_output_tokens,
+// everything else uses max_tokens. Returns true when an injection occurred,
+// so the caller can re-marshal the outgoing body if needed.
+func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool) bool {
+	if explicitMaxTokens(parsed) > 0 {
+		return false
+	}
+	if isResponsesAPI {
+		parsed["max_output_tokens"] = defaultMaxOutputTokens
+	} else {
+		parsed["max_tokens"] = defaultMaxOutputTokens
+	}
+	return true
+}
+
+func copyJSONMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func responsesContentText(content any) string {
+	switch c := content.(type) {
+	case nil:
+		return ""
+	case string:
+		return c
+	case []any:
+		parts := make([]string, 0, len(c))
+		for _, part := range c {
+			switch p := part.(type) {
+			case string:
+				if p != "" {
+					parts = append(parts, p)
+				}
+			case map[string]any:
+				if text, _ := p["text"].(string); text != "" {
+					parts = append(parts, text)
+					continue
+				}
+				if p["type"] == "input_image" || p["type"] == "input_file" {
+					// Text models cannot consume binary Responses parts yet.
+					// Preserve the turn shape without leaking URLs or blobs.
+					parts = append(parts, fmt.Sprintf("[%s omitted]", p["type"]))
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		b, err := json.Marshal(c)
+		if err != nil {
+			return fmt.Sprint(c)
+		}
+		return string(b)
+	}
+}
+
+func responsesInputToChatMessages(input any) ([]map[string]any, error) {
+	switch v := input.(type) {
+	case string:
+		return []map[string]any{{"role": "user", "content": v}}, nil
+	case []any:
+		messages := make([]map[string]any, 0, len(v))
+		for _, raw := range v {
+			item, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if typ, _ := item["type"].(string); typ != "" {
+				switch typ {
+				case "message":
+					role, _ := item["role"].(string)
+					if role == "" {
+						role = "user"
+					}
+					if role == "developer" {
+						role = "system"
+					}
+					messages = append(messages, map[string]any{
+						"role":    role,
+						"content": responsesContentText(item["content"]),
+					})
+				case "function_call":
+					callID, _ := item["call_id"].(string)
+					if callID == "" {
+						callID, _ = item["id"].(string)
+					}
+					name, _ := item["name"].(string)
+					args, _ := item["arguments"].(string)
+					messages = append(messages, map[string]any{
+						"role":    "assistant",
+						"content": "",
+						"tool_calls": []map[string]any{{
+							"id":   callID,
+							"type": "function",
+							"function": map[string]any{
+								"name":      name,
+								"arguments": args,
+							},
+						}},
+					})
+				case "function_call_output":
+					callID, _ := item["call_id"].(string)
+					messages = append(messages, map[string]any{
+						"role":         "tool",
+						"tool_call_id": callID,
+						"content":      responsesContentText(item["output"]),
+					})
+				case "reasoning":
+					// Reasoning items are model-side metadata, not prompt text.
+					continue
+				default:
+					return nil, fmt.Errorf("unsupported Responses input item type %q", typ)
+				}
+				continue
+			}
+
+			role, _ := item["role"].(string)
+			if role == "" {
+				continue
+			}
+			if role == "developer" {
+				role = "system"
+			}
+			messages = append(messages, map[string]any{
+				"role":    role,
+				"content": responsesContentText(item["content"]),
+			})
+		}
+		if len(messages) == 0 {
+			return nil, fmt.Errorf("Responses input did not contain any chat-compatible messages")
+		}
+		return messages, nil
+	default:
+		return nil, fmt.Errorf("Responses input must be a string or array")
+	}
+}
+
+func responsesToolsToChatTools(raw any) ([]any, error) {
+	tools, ok := raw.([]any)
+	if !ok || len(tools) == 0 {
+		return nil, nil
+	}
+	out := make([]any, 0, len(tools))
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _ := tool["type"].(string)
+		if typ == "" || typ == "function" {
+			name, _ := tool["name"].(string)
+			if name == "" {
+				if fn, _ := tool["function"].(map[string]any); fn != nil {
+					out = append(out, tool)
+					continue
+				}
+				return nil, fmt.Errorf("function tool is missing name")
+			}
+			fn := map[string]any{"name": name}
+			if description, ok := tool["description"].(string); ok {
+				fn["description"] = description
+			}
+			if parameters, ok := tool["parameters"]; ok {
+				fn["parameters"] = parameters
+			}
+			out = append(out, map[string]any{
+				"type":     "function",
+				"function": fn,
+			})
+			continue
+		}
+		return nil, fmt.Errorf("unsupported Responses tool type %q", typ)
+	}
+	return out, nil
+}
+
+func responsesToolChoiceToChat(raw any) (any, error) {
+	choice, ok := raw.(map[string]any)
+	if !ok {
+		return raw, nil
+	}
+	typ, _ := choice["type"].(string)
+	if typ == "function" {
+		name, _ := choice["name"].(string)
+		if name == "" {
+			return nil, fmt.Errorf("function tool_choice is missing name")
+		}
+		return map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": name,
+			},
+		}, nil
+	}
+	return raw, nil
+}
+
+func responsesTextFormatToChatResponseFormat(raw any) any {
+	text, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	format, ok := text["format"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	switch format["type"] {
+	case "json_object":
+		return map[string]any{"type": "json_object"}
+	case "json_schema":
+		return map[string]any{
+			"type":        "json_schema",
+			"json_schema": format,
+		}
+	}
+	return nil
+}
+
+func responsesRequestToChatCompletions(parsed map[string]any) (map[string]any, error) {
+	messages, err := responsesInputToChatMessages(parsed["input"])
+	if err != nil {
+		return nil, err
+	}
+
+	out := copyJSONMap(parsed)
+	delete(out, "input")
+	delete(out, "endpoint")
+	delete(out, "max_output_tokens")
+	delete(out, "text")
+	out["messages"] = messages
+	if maxTokens := explicitMaxTokens(parsed); maxTokens > 0 {
+		out["max_tokens"] = maxTokens
+	}
+	if tools, err := responsesToolsToChatTools(parsed["tools"]); err != nil {
+		return nil, err
+	} else if len(tools) > 0 {
+		out["tools"] = tools
+	}
+	if choice, err := responsesToolChoiceToChat(parsed["tool_choice"]); err != nil {
+		return nil, err
+	} else if choice != nil {
+		out["tool_choice"] = choice
+	}
+	if responseFormat := responsesTextFormatToChatResponseFormat(parsed["text"]); responseFormat != nil {
+		out["response_format"] = responseFormat
+	}
+	return out, nil
 }
 
 // handleChatCompletions handles POST /v1/chat/completions.
@@ -111,26 +541,60 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Accept either chat completions format (messages) or Responses API
+	// format (input). The provider's backend handles both natively.
 	messages, _ := parsed["messages"].([]any)
-	if len(messages) == 0 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "messages is required and must be non-empty"))
+	input := parsed["input"]
+	if len(messages) == 0 && input == nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "messages or input is required"))
 		return
 	}
 
-	stream, _ := parsed["stream"].(bool)
+	allowedProviderSerials, hasProviderAllowlist, err := parseProviderSerialAllowlist(parsed)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+		return
+	}
+	if hasProviderAllowlist && stripProviderRoutingFields(parsed) {
+		rawBody, _ = json.Marshal(parsed)
+	}
 
-	// Pre-flight balance reservation — atomically debit the minimum charge
-	// before routing to a provider. This prevents concurrent requests from
-	// all passing a balance > 0 check and then failing to charge after inference.
-	// The reservation is refunded if the request fails, or adjusted to the
-	// actual cost after inference completes.
+	isResponsesAPI := input != nil && len(messages) == 0
+
+	// Bound the generation so the pre-flight reservation covers it. If the
+	// consumer didn't set max_tokens, inject defaultMaxOutputTokens into the
+	// outgoing body. Without this bound the provider could return more tokens
+	// than we reserved for, and the silent post-inference charge failure would
+	// hand the consumer free inference (GitHub issue #33).
+	if ensureMaxTokensBound(parsed, isResponsesAPI) {
+		rawBody, _ = json.Marshal(parsed)
+	}
+
+	stream, _ := parsed["stream"].(bool)
+	estimatedPromptTokens := estimatePromptTokens(parsed)
+	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
+
+	if isResponsesAPI {
+		providerParsed, err := responsesRequestToChatCompletions(parsed)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+			return
+		}
+		rawBody, _ = json.Marshal(providerParsed)
+	}
+
+	// Pre-flight balance reservation — atomically debit the worst-case cost
+	// (prompt tokens already consumed + max_tokens we just bounded the
+	// generation to) before routing to a provider. The post-inference charge
+	// refunds any unused portion. Reserving only the minimum charge let
+	// consumers receive streamed output far exceeding their actual balance.
 	var reservedMicroUSD int64
 	if s.billing != nil {
 		consumerKey := consumerKeyFromContext(r.Context())
-		reservedMicroUSD = payments.MinimumCharge()
+		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
 		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-				"your balance is too low — add funds at /billing before making requests"))
+				"your balance is too low for this request — add funds at /billing or lower max_tokens"))
 			return
 		}
 	}
@@ -168,23 +632,64 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	consumerKey := consumerKeyFromContext(r.Context())
 
-	for attempt := 0; attempt < maxDispatchAttempts; attempt++ {
-		provider = s.registry.FindProvider(model)
+	// Track providers that failed during retry so we don't dispatch to them again.
+	excludeProviders := make(map[string]struct{})
+	excludeList := func() []string {
+		ids := make([]string, 0, len(excludeProviders))
+		for id := range excludeProviders {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+
+	for attempt := range maxDispatchAttempts {
+		requestID = uuid.New().String()
+		pr = &registry.PendingRequest{
+			RequestID:              requestID,
+			Model:                  model,
+			ConsumerKey:            consumerKey,
+			IsResponsesAPI:         isResponsesAPI,
+			EstimatedPromptTokens:  estimatedPromptTokens,
+			RequestedMaxTokens:     requestedMaxTokens,
+			AllowedProviderSerials: allowedProviderSerials,
+			AcceptedCh:             make(chan struct{}, 1),
+			ChunkCh:                make(chan string, chunkBufferSize),
+			CompleteCh:             make(chan protocol.UsageInfo, 1),
+			ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
+		}
+
+		var decision registry.RoutingDecision
+		provider, decision = s.registry.ReserveProviderEx(model, pr, excludeList()...)
 		if provider == nil {
+			// On retry attempts, don't queue — if the only available
+			// providers already failed, waiting 120s for one of them
+			// to come back won't help. Break and return the last error.
+			if attempt > 0 {
+				outcome := "no_provider"
+				if decision.CapacityRejections > 0 && decision.CandidateCount == 0 {
+					// Every fitting candidate was rejected by the
+					// admission gate (memory). Surface as over_capacity
+					// so dashboards distinguish "no provider" from
+					// "fleet over-subscribed for this model size".
+					outcome = "over_capacity"
+				}
+				s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:" + outcome})
+				break
+			}
 			// No idle provider — try queueing.
 			queuedReq := &registry.QueuedRequest{
-				RequestID:  uuid.New().String(),
+				RequestID:  requestID,
 				Model:      model,
+				Pending:    pr,
 				ResponseCh: make(chan *registry.Provider, 1),
 			}
 			if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
-				if attempt == 0 {
-					refundReservation()
-					writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider available for model %q and queue is full", model)))
-					return
-				}
-				break // retried but no provider now
+				s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:over_capacity"})
+				refundReservation()
+				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider available for model %q and queue is full", model)))
+				return
 			}
+			s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:queued"})
 
 			s.logger.Info("request queued, waiting for provider",
 				"model", model,
@@ -192,20 +697,30 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			)
 
 			var err error
-			provider, err = s.registry.Queue().WaitForProvider(queuedReq)
+			provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 			if err != nil {
-				if attempt == 0 {
+				if errors.Is(err, context.Canceled) {
 					refundReservation()
-					writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider became available for model %q (queue timeout)", model)))
 					return
 				}
-				break
+				refundReservation()
+				s.ddIncr("request_queue.timeout", []string{"model:" + model})
+				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider became available for model %q (queue timeout)", model)))
+				return
 			}
+			decision = queuedReq.Decision
+		}
+		s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:selected"})
+		s.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
+		s.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model})
+		if decision.EffectiveTPS > 0 {
+			s.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
 		}
 
 		// E2E encryption — must be done per provider (different keys).
 		if provider.PublicKey == "" {
 			s.registry.SetProviderIdle(provider.ID)
+			excludeProviders[provider.ID] = struct{}{}
 			lastErr = "no provider with E2E encryption"
 			continue
 		}
@@ -213,6 +728,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
 		if err != nil {
 			s.registry.SetProviderIdle(provider.ID)
+			excludeProviders[provider.ID] = struct{}{}
 			lastErr = "provider public key invalid"
 			continue
 		}
@@ -231,7 +747,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		requestID = uuid.New().String()
 		wireMsg := map[string]any{
 			"type":       protocol.TypeInferenceRequest,
 			"request_id": requestID,
@@ -241,19 +756,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		pr = &registry.PendingRequest{
-			RequestID:   requestID,
-			ProviderID:  provider.ID,
-			Model:       model,
-			ConsumerKey: consumerKey,
-			AcceptedCh:  make(chan struct{}, 1),
-			ChunkCh:     make(chan string, chunkBufferSize),
-			CompleteCh:  make(chan protocol.UsageInfo, 1),
-			ErrorCh:     make(chan protocol.InferenceErrorMessage, 1),
-		}
 		pr.SessionPrivKey = &sessionKeys.PrivateKey
 		pr.ReservedMicroUSD = reservedMicroUSD
-		provider.AddPending(pr)
 
 		data, err := json.Marshal(wireMsg)
 		if err != nil {
@@ -265,12 +769,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
 			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
+			excludeProviders[provider.ID] = struct{}{}
 			s.logger.Error("failed to send inference request", "request_id", requestID, "error", err)
 			lastErr = "failed to send request to provider"
 			continue
 		}
 
 		s.logger.Info("inference request dispatched",
+			"trace_id", requestIDFromContext(r.Context()),
 			"request_id", requestID,
 			"model", model,
 			"provider_id", provider.ID,
@@ -297,6 +803,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				// so both can be ready simultaneously.
 				select {
 				case errMsg := <-pr.ErrorCh:
+					excludeProviders[provider.ID] = struct{}{}
 					provider.RemovePending(requestID)
 					s.registry.SetProviderIdle(provider.ID)
 					lastErr = errMsg.Error
@@ -311,6 +818,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 		case errMsg := <-pr.ErrorCh:
 			timer.Stop()
+			excludeProviders[provider.ID] = struct{}{}
 			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
 			lastErr = errMsg.Error
@@ -321,15 +829,35 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"attempt", attempt+1,
 				"error", errMsg.Error,
 			)
+			s.emitRequest(r.Context(), protocol.SeverityWarn, protocol.KindInferenceError, requestID,
+				"provider failed, retrying",
+				map[string]any{
+					"provider_id": provider.ID,
+					"attempt":     attempt + 1,
+					"reason":      "provider_error",
+					"status_code": errMsg.StatusCode,
+				})
+			if s.metrics != nil {
+				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
+			}
+			s.ddIncr("inference.dispatches", []string{"status:retry"})
 			provider = nil
 			pr = nil
 			continue
 		case <-timer.C:
+			excludeProviders[provider.ID] = struct{}{}
+			// Order matters: RemovePending must precede sendProviderCancel.
+			// Each retry attempt generates a fresh requestID (line 301), so
+			// the original provider would otherwise keep generating into
+			// this requestID and could send InferenceComplete after the
+			// retry has already been billed — double-charge. Removing the
+			// pending entry first means any late chunk/Complete from the
+			// original provider hits handleChunk/handleComplete with an
+			// unknown request_id and is silently dropped, so only the
+			// retry's Complete reaches the ledger.
 			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
-			cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
-			cancelData, _ := json.Marshal(cancelMsg)
-			_ = provider.Conn.Write(context.Background(), websocket.MessageText, cancelData)
+			s.sendProviderCancel(provider, requestID)
 			lastErr = "timeout waiting for first response"
 			lastErrCode = http.StatusGatewayTimeout
 			s.logger.Warn("provider timeout, retrying",
@@ -337,12 +865,24 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"provider_id", provider.ID,
 				"attempt", attempt+1,
 			)
+			s.emitRequest(r.Context(), protocol.SeverityWarn, protocol.KindInferenceError, requestID,
+				"provider first-chunk timeout",
+				map[string]any{
+					"provider_id": provider.ID,
+					"attempt":     attempt + 1,
+					"reason":      "first_chunk_timeout",
+				})
+			if s.metrics != nil {
+				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+			}
+			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			provider = nil
 			pr = nil
 			continue
 		case <-r.Context().Done():
 			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
+			s.sendProviderCancel(provider, requestID)
 			refundReservation()
 			return
 		}
@@ -362,42 +902,94 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					// Closed — check for error (same race as above).
 					select {
 					case errMsg := <-pr.ErrorCh:
+						excludeProviders[provider.ID] = struct{}{}
 						provider.RemovePending(requestID)
 						s.registry.SetProviderIdle(provider.ID)
-						refundReservation()
-						statusCode := errMsg.StatusCode
-						if statusCode == 0 {
-							statusCode = http.StatusBadGateway
+						lastErr = errMsg.Error
+						lastErrCode = errMsg.StatusCode
+						s.logger.Warn("provider failed after accepting request, retrying",
+							"request_id", requestID,
+							"provider_id", provider.ID,
+							"attempt", attempt+1,
+							"error", errMsg.Error,
+						)
+						s.emitRequest(r.Context(), protocol.SeverityWarn, protocol.KindInferenceError, requestID,
+							"provider failed after accepting request, retrying",
+							map[string]any{
+								"provider_id": provider.ID,
+								"attempt":     attempt + 1,
+								"reason":      "provider_error",
+								"status_code": errMsg.StatusCode,
+							})
+						if s.metrics != nil {
+							s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
 						}
-						writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
-						return
+						s.ddIncr("inference.dispatches", []string{"status:retry"})
+						provider = nil
+						pr = nil
+						continue
 					default:
 						committed = true
 					}
 				}
 			case errMsg := <-pr.ErrorCh:
 				chunkTimer.Stop()
+				excludeProviders[provider.ID] = struct{}{}
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
-				refundReservation()
-				statusCode := errMsg.StatusCode
-				if statusCode == 0 {
-					statusCode = http.StatusBadGateway
+				lastErr = errMsg.Error
+				lastErrCode = errMsg.StatusCode
+				s.logger.Warn("provider failed after accepting request, retrying",
+					"request_id", requestID,
+					"provider_id", provider.ID,
+					"attempt", attempt+1,
+					"error", errMsg.Error,
+				)
+				s.emitRequest(r.Context(), protocol.SeverityWarn, protocol.KindInferenceError, requestID,
+					"provider failed after accepting request, retrying",
+					map[string]any{
+						"provider_id": provider.ID,
+						"attempt":     attempt + 1,
+						"reason":      "provider_error",
+						"status_code": errMsg.StatusCode,
+					})
+				if s.metrics != nil {
+					s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
 				}
-				writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
-				return
+				s.ddIncr("inference.dispatches", []string{"status:retry"})
+				provider = nil
+				pr = nil
+				continue
 			case <-chunkTimer.C:
+				excludeProviders[provider.ID] = struct{}{}
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
-				cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
-				cancelData, _ := json.Marshal(cancelMsg)
-				_ = provider.Conn.Write(context.Background(), websocket.MessageText, cancelData)
-				refundReservation()
-				writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider accepted but timed out"))
-				return
+				s.sendProviderCancel(provider, requestID)
+				lastErr = "provider accepted but timed out before first chunk"
+				lastErrCode = http.StatusGatewayTimeout
+				s.logger.Warn("provider timed out after accepting request, retrying",
+					"request_id", requestID,
+					"provider_id", provider.ID,
+					"attempt", attempt+1,
+				)
+				s.emitRequest(r.Context(), protocol.SeverityWarn, protocol.KindInferenceError, requestID,
+					"provider accepted timeout",
+					map[string]any{
+						"provider_id": provider.ID,
+						"attempt":     attempt + 1,
+						"reason":      "accepted_timeout",
+					})
+				if s.metrics != nil {
+					s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+				}
+				s.ddIncr("inference.dispatches", []string{"status:timeout"})
+				provider = nil
+				pr = nil
+				continue
 			case <-r.Context().Done():
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
+				s.sendProviderCancel(provider, requestID)
 				refundReservation()
 				return
 			}
@@ -412,10 +1004,26 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if statusCode == 0 {
 			statusCode = http.StatusServiceUnavailable
 		}
+		s.emitRequest(r.Context(), protocol.SeverityError, protocol.KindInferenceError, requestID,
+			fmt.Sprintf("inference failed after %d attempt(s)", maxDispatchAttempts),
+			map[string]any{
+				"reason":      "dispatch_exhausted",
+				"attempt":     maxDispatchAttempts,
+				"status_code": statusCode,
+				"last_error":  lastErr,
+			})
+		if s.metrics != nil {
+			s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "failure"})
+		}
+		s.ddIncr("inference.dispatches", []string{"status:failure"})
 		writeJSON(w, statusCode, errorResponse("provider_error",
 			fmt.Sprintf("inference failed after %d attempt(s): %s", maxDispatchAttempts, lastErr)))
 		return
 	}
+	if s.metrics != nil {
+		s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "success"})
+	}
+	s.ddIncr("inference.dispatches", []string{"status:success"})
 
 	// Write provider attestation headers now that we're committed.
 	provider.Mu().Lock()
@@ -431,7 +1039,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	machineModel := provider.Hardware.MachineModel
 
 	if pubKey != "" {
-		w.Header().Set("X-Provider-Public-Key", pubKey)
+		w.Header().Set("X-Provider-Encrypted", "true")
 	}
 	if attested {
 		w.Header().Set("X-Provider-Attested", "true")
@@ -439,7 +1047,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Provider-Attested", "false")
 	}
 	w.Header().Set("X-Provider-Trust-Level", string(trustLevel))
-	w.Header().Set("X-Provider-ID", providerID)
+	w.Header().Set("X-Provider-Id", providerID)
 	w.Header().Set("X-Provider-Chip", chipName)
 	w.Header().Set("X-Provider-Model", machineModel)
 	if attestResult != nil {
@@ -451,7 +1059,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if mdaVerified {
-		w.Header().Set("X-Provider-MDA-Verified", "true")
+		w.Header().Set("X-Provider-Mda-Verified", "true")
+	}
+	// SE public key for attestation receipt verification.
+	// Consumers can use this to verify SE signatures on response hashes.
+	if attestResult != nil && attestResult.PublicKey != "" {
+		w.Header().Set("X-Attestation-Se-Public-Key", attestResult.PublicKey)
+		w.Header().Set("X-Attestation-Device-Serial", attestResult.SerialNumber)
 	}
 
 	// When this function returns (consumer disconnect, timeout, or completion),
@@ -459,410 +1073,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
-
-		cancelMsg := protocol.CancelMessage{
-			Type:      protocol.TypeCancel,
-			RequestID: requestID,
-		}
-		cancelData, _ := json.Marshal(cancelMsg)
-		if err := provider.Conn.Write(context.Background(), websocket.MessageText, cancelData); err != nil {
-			s.logger.Debug("failed to send cancel (provider may have disconnected)", "request_id", requestID, "error", err)
-		} else {
-			s.logger.Info("sent cancel to provider", "request_id", requestID)
-		}
+		s.sendProviderCancel(provider, requestID)
 	}()
 
 	if stream {
 		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
 	} else {
 		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
-	}
-}
-
-// handleTranscriptions handles POST /v1/audio/transcriptions.
-//
-// This is the OpenAI-compatible audio transcription endpoint. It accepts
-// multipart/form-data with an audio file and routes it to an STT-capable
-// provider.
-func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
-	// Parse multipart form (max 25MB audio)
-	if err := r.ParseMultipartForm(25 << 20); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid multipart form: "+err.Error()))
-		return
-	}
-
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "file field is required"))
-		return
-	}
-	defer file.Close()
-
-	model := r.FormValue("model")
-	if model == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
-		return
-	}
-
-	if !s.registry.IsModelInCatalog(model) {
-		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
-			fmt.Sprintf("model %q is not available — see /v1/models for supported models", model)))
-		return
-	}
-
-	language := r.FormValue("language")
-
-	// Read the audio file into memory
-	audioBytes, err := io.ReadAll(file)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "failed to read audio file"))
-		return
-	}
-
-	// Determine audio format from filename extension
-	ext := strings.TrimPrefix(filepath.Ext(header.Filename), ".")
-	if ext == "" {
-		ext = "wav"
-	}
-
-	// Find a provider that serves the requested STT model.
-	provider := s.registry.FindProviderWithTrust(model, "")
-	if provider == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-			fmt.Sprintf("no provider available for STT model %q", model)))
-		return
-	}
-
-	// Build the transcription request.
-	requestID := uuid.New().String()
-	consumerKey := consumerKeyFromContext(r.Context())
-
-	transcriptionBody := protocol.TranscriptionRequestBody{
-		Model:  model,
-		Audio:  base64.StdEncoding.EncodeToString(audioBytes),
-		Format: ext,
-	}
-	if language != "" {
-		transcriptionBody.Language = &language
-	}
-
-	bodyJSON, _ := json.Marshal(transcriptionBody)
-
-	// E2E encryption is mandatory for audio data. Providers without a public
-	// key cannot receive transcription requests.
-	if provider.PublicKey == "" {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
-			"no provider with E2E encryption available for this model — audio data requires encryption"))
-		return
-	}
-
-	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"provider public key invalid"))
-		return
-	}
-
-	sessionKeys, err := e2e.GenerateSessionKeys()
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"failed to generate session keys"))
-		return
-	}
-
-	encrypted, err := e2e.Encrypt(bodyJSON, providerPubKey, sessionKeys)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"failed to encrypt transcription request"))
-		return
-	}
-
-	wireMsg := map[string]any{
-		"type":       protocol.TypeTranscriptionRequest,
-		"request_id": requestID,
-		"encrypted_body": map[string]string{
-			"ephemeral_public_key": encrypted.EphemeralPublicKey,
-			"ciphertext":           encrypted.Ciphertext,
-		},
-	}
-
-	s.logger.Debug("transcription request encrypted for provider",
-		"request_id", requestID,
-		"provider_id", provider.ID,
-	)
-
-	// Create pending request with transcription channel.
-	pr := &registry.PendingRequest{
-		RequestID:       requestID,
-		ProviderID:      provider.ID,
-		Model:           model,
-		ConsumerKey:     consumerKey,
-		ChunkCh:         make(chan string, 1),
-		CompleteCh:      make(chan protocol.UsageInfo, 1),
-		ErrorCh:         make(chan protocol.InferenceErrorMessage, 1),
-		TranscriptionCh: make(chan *protocol.TranscriptionCompleteMessage, 1),
-	}
-	if sessionKeys != nil {
-		pr.SessionPrivKey = &sessionKeys.PrivateKey
-	}
-	provider.AddPending(pr)
-
-	// Send the request to the provider.
-	data, err := json.Marshal(wireMsg)
-	if err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal request"))
-		return
-	}
-	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		s.logger.Error("failed to send transcription request", "request_id", requestID, "error", err)
-		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
-		return
-	}
-
-	s.logger.Info("transcription request dispatched",
-		"request_id", requestID,
-		"model", model,
-		"provider_id", provider.ID,
-		"audio_size", len(audioBytes),
-		"format", ext,
-	)
-
-	// Cleanup on return.
-	defer func() {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-	}()
-
-	// Wait for the transcription result.
-	ctx, cancel := context.WithTimeout(r.Context(), inferenceTimeout)
-	defer cancel()
-
-	select {
-	case result := <-pr.TranscriptionCh:
-		// Build OpenAI-compatible transcription response.
-		resp := map[string]any{
-			"text": result.Text,
-		}
-		if len(result.Segments) > 0 {
-			resp["segments"] = result.Segments
-		}
-		if result.Language != "" {
-			resp["language"] = result.Language
-		}
-		resp["duration"] = result.Usage.AudioSeconds
-		writeJSON(w, http.StatusOK, resp)
-
-	case errMsg := <-pr.ErrorCh:
-		statusCode := errMsg.StatusCode
-		if statusCode == 0 {
-			statusCode = http.StatusBadGateway
-		}
-		writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
-
-	case <-ctx.Done():
-		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "transcription request timed out"))
-	}
-}
-
-// handleImageGenerations handles POST /v1/images/generations.
-//
-// This is the OpenAI-compatible image generation endpoint. It accepts a JSON
-// body with model, prompt, size, etc. and routes it to an image-capable provider.
-func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) {
-	var req protocol.ImageGenerationRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
-		return
-	}
-
-	if req.Model == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required"))
-		return
-	}
-	if req.Prompt == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "prompt is required"))
-		return
-	}
-	if req.N == 0 {
-		req.N = 1
-	}
-	if req.N < 0 || req.N > 4 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "n must be between 1 and 4"))
-		return
-	}
-	if !s.registry.IsModelInCatalog(req.Model) {
-		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
-			fmt.Sprintf("model %q is not available — see /v1/models for supported models", req.Model)))
-		return
-	}
-	if req.Steps != nil && *req.Steps <= 0 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "steps must be positive"))
-		return
-	}
-	if req.Size == "" {
-		req.Size = "1024x1024"
-	}
-
-	// Validate image dimensions — cap at 2048x2048 to keep responses under transport limits.
-	sizeParts := strings.SplitN(req.Size, "x", 2)
-	if len(sizeParts) != 2 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "size must be WxH (e.g. 1024x1024)"))
-		return
-	}
-	imgW, _ := strconv.Atoi(sizeParts[0])
-	imgH, _ := strconv.Atoi(sizeParts[1])
-	if imgW <= 0 || imgH <= 0 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "size dimensions must be positive"))
-		return
-	}
-	if imgW > 2048 || imgH > 2048 {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "maximum image dimension is 2048x2048"))
-		return
-	}
-
-	// Find a hardware-trusted provider that serves the requested image model.
-	provider := s.registry.FindProvider(req.Model)
-	if provider == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-			fmt.Sprintf("no provider available for image model %q", req.Model)))
-		return
-	}
-
-	requestID := uuid.New().String()
-	consumerKey := consumerKeyFromContext(r.Context())
-
-	bodyJSON, _ := json.Marshal(req)
-
-	// E2E encryption — prompts are sensitive.
-	if provider.PublicKey == "" {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
-			"no provider with E2E encryption available for this model"))
-		return
-	}
-
-	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"provider public key invalid"))
-		return
-	}
-
-	sessionKeys, err := e2e.GenerateSessionKeys()
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"failed to generate session keys"))
-		return
-	}
-
-	encrypted, err := e2e.Encrypt(bodyJSON, providerPubKey, sessionKeys)
-	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error",
-			"failed to encrypt image generation request"))
-		return
-	}
-
-	// Build the upload URL for the provider to POST generated images to.
-	// Always use HTTPS — the coordinator runs behind nginx which terminates TLS,
-	// so r.TLS is always nil, but the public URL must be HTTPS to avoid
-	// HTTP→HTTPS 301 redirects that convert POST to GET (405 error).
-	uploadURL := fmt.Sprintf("https://%s/v1/provider/image-upload?request_id=%s", r.Host, requestID)
-
-	wireMsg := map[string]any{
-		"type":       protocol.TypeImageGenerationRequest,
-		"request_id": requestID,
-		"upload_url": uploadURL,
-		"encrypted_body": map[string]string{
-			"ephemeral_public_key": encrypted.EphemeralPublicKey,
-			"ciphertext":           encrypted.Ciphertext,
-		},
-	}
-
-	// Create pending request with image generation channel.
-	pr := &registry.PendingRequest{
-		RequestID:         requestID,
-		ProviderID:        provider.ID,
-		Model:             req.Model,
-		ConsumerKey:       consumerKey,
-		ChunkCh:           make(chan string, 1),
-		CompleteCh:        make(chan protocol.UsageInfo, 1),
-		ErrorCh:           make(chan protocol.InferenceErrorMessage, 1),
-		ImageGenerationCh: make(chan *protocol.ImageGenerationCompleteMessage, 1),
-	}
-	if sessionKeys != nil {
-		pr.SessionPrivKey = &sessionKeys.PrivateKey
-	}
-	provider.AddPending(pr)
-
-	// Send the request to the provider.
-	data, err := json.Marshal(wireMsg)
-	if err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal request"))
-		return
-	}
-	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		s.logger.Error("failed to send image generation request", "request_id", requestID, "error", err)
-		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
-		return
-	}
-
-	s.logger.Info("image generation request dispatched",
-		"request_id", requestID,
-		"model", req.Model,
-		"provider_id", provider.ID,
-		"size", req.Size,
-		"n", req.N,
-	)
-
-	// Cleanup on return.
-	defer func() {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-	}()
-
-	// Wait for the image generation result.
-	ctx, cancel := context.WithTimeout(r.Context(), inferenceTimeout)
-	defer cancel()
-
-	select {
-	case <-pr.ImageGenerationCh:
-		// Retrieve images uploaded by the provider via HTTP.
-		uploadedImages := s.getUploadedImages(requestID)
-		imageData := make([]map[string]string, len(uploadedImages))
-		for i, imgBytes := range uploadedImages {
-			imageData[i] = map[string]string{
-				"b64_json": base64.StdEncoding.EncodeToString(imgBytes),
-			}
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"created": time.Now().Unix(),
-			"data":    imageData,
-		})
-
-	case errMsg := <-pr.ErrorCh:
-		statusCode := errMsg.StatusCode
-		if statusCode == 0 {
-			statusCode = http.StatusBadGateway
-		}
-		writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
-
-	case <-ctx.Done():
-		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "image generation request timed out"))
 	}
 }
 
@@ -879,6 +1096,11 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 // from the channel. This allows the dispatch loop to "peek" at the first
 // chunk for retry decisions without losing it.
 func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) {
+	if pr.IsResponsesAPI {
+		s.handleResponsesStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
+		return
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "streaming not supported"))
@@ -888,13 +1110,27 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Request-ID", pr.RequestID)
+	// X-Request-ID is set by the logging middleware to the trace ID. The
+	// internal pr.RequestID is the per-attempt provider job UUID and may
+	// change across retries — exposing it as X-Request-ID would diverge
+	// from the access log. Surface the provider job UUID under its own
+	// header for callers who need to correlate to provider-side logs.
+	w.Header().Set("X-Inference-Job-ID", pr.RequestID)
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	// Detect Responses API format to skip appending chat-completions-style
+	// termination events (SE signature chunk + [DONE]).
+	sawResponsesAPI := false
+
 	// Write the first chunk that was already consumed during dispatch.
 	if firstChunk != "" {
-		firstChunk = normalizeSSEChunk(firstChunk)
+		if strings.Contains(firstChunk, `"response.created"`) || strings.Contains(firstChunk, `"response.output_text.delta"`) {
+			sawResponsesAPI = true
+		}
+		if !sawResponsesAPI {
+			firstChunk = normalizeSSEChunk(firstChunk)
+		}
 		fmt.Fprintf(w, "%s\n\n", firstChunk)
 		flusher.Flush()
 	}
@@ -909,23 +1145,33 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 		case chunk, ok := <-pr.ChunkCh:
 			if !ok {
 				// Channel closed — inference complete.
-				// Include SE signature as final event before [DONE].
-				// Wrap in a valid OpenAI-compatible chunk structure so
-				// strict parsers (Vercel AI SDK, etc.) don't reject it.
-				if pr.SESignature != "" {
-					sigEvent, _ := json.Marshal(map[string]any{
-						"choices":       []any{},
-						"se_signature":  pr.SESignature,
-						"response_hash": pr.ResponseHash,
-					})
-					fmt.Fprintf(w, "data: %s\n\n", sigEvent)
+				// For Responses API streams, the provider already sent
+				// "response.completed" as the terminal event. Adding
+				// extra chunks would break SDK parsers.
+				if !sawResponsesAPI {
+					// Chat completions format: append SE signature + [DONE].
+					if pr.SESignature != "" {
+						sigEvent, _ := json.Marshal(map[string]any{
+							"choices":       []any{},
+							"se_signature":  pr.SESignature,
+							"response_hash": pr.ResponseHash,
+						})
+						fmt.Fprintf(w, "data: %s\n\n", sigEvent)
+						flusher.Flush()
+					}
+					fmt.Fprint(w, "data: [DONE]\n\n")
 					flusher.Flush()
 				}
-				fmt.Fprint(w, "data: [DONE]\n\n")
-				flusher.Flush()
 				return
 			}
-			chunk = normalizeSSEChunk(chunk)
+			if !sawResponsesAPI {
+				if strings.Contains(chunk, `"response.created"`) || strings.Contains(chunk, `"response.output_text.delta"`) {
+					sawResponsesAPI = true
+				}
+			}
+			if !sawResponsesAPI {
+				chunk = normalizeSSEChunk(chunk)
+			}
 			fmt.Fprintf(w, "%s\n\n", chunk)
 			flusher.Flush()
 
@@ -959,6 +1205,237 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	}
 }
 
+func writeResponsesSSE(w http.ResponseWriter, flusher http.Flusher, event map[string]any) {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(w, "data: %s\n\n", data)
+	flusher.Flush()
+}
+
+func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunk string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "streaming not supported"))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Inference-Job-ID", pr.RequestID)
+	w.WriteHeader(http.StatusOK)
+
+	responseID := "resp_" + strings.ReplaceAll(pr.RequestID, "-", "")
+	createdAt := time.Now().Unix()
+	writeResponsesSSE(w, flusher, map[string]any{
+		"type": "response.created",
+		"response": map[string]any{
+			"id":           responseID,
+			"created_at":   createdAt,
+			"model":        pr.Model,
+			"service_tier": nil,
+		},
+	})
+
+	chunks := make([]string, 0, 16)
+	if firstChunk != "" {
+		chunks = append(chunks, firstChunk)
+	}
+
+	timer := time.NewTimer(inferenceTimeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case chunk, ok := <-pr.ChunkCh:
+			if !ok {
+				var usage protocol.UsageInfo
+				select {
+				case u, ok := <-pr.CompleteCh:
+					if ok {
+						usage = u
+					}
+				default:
+				}
+				msg := extractMessage(chunks)
+				writeResponsesStreamOutput(w, flusher, pr, responseID, createdAt, msg, usage)
+				return
+			}
+			chunks = append(chunks, chunk)
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(inferenceTimeout)
+
+		case errMsg := <-pr.ErrorCh:
+			writeResponsesSSE(w, flusher, map[string]any{
+				"type":            "error",
+				"sequence_number": 0,
+				"error": map[string]any{
+					"type":    "provider_error",
+					"code":    "provider_error",
+					"message": errMsg.Error,
+					"param":   nil,
+				},
+			})
+			return
+
+		case <-timer.C:
+			writeResponsesSSE(w, flusher, map[string]any{
+				"type":            "error",
+				"sequence_number": 0,
+				"error": map[string]any{
+					"type":    "timeout",
+					"code":    "timeout",
+					"message": "request timed out",
+					"param":   nil,
+				},
+			})
+			return
+
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+func writeResponsesStreamOutput(w http.ResponseWriter, flusher http.Flusher, pr *registry.PendingRequest, responseID string, createdAt int64, msg extractedMessage, usage protocol.UsageInfo) {
+	outputIndex := 0
+	if msg.Reasoning != "" {
+		itemID := responseItemID("rs", pr.RequestID, outputIndex)
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": outputIndex,
+			"item": map[string]any{
+				"type":              "reasoning",
+				"id":                itemID,
+				"encrypted_content": nil,
+			},
+		})
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":          "response.reasoning_summary_part.added",
+			"item_id":       itemID,
+			"summary_index": 0,
+		})
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":          "response.reasoning_summary_text.delta",
+			"item_id":       itemID,
+			"summary_index": 0,
+			"delta":         msg.Reasoning,
+		})
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":          "response.reasoning_summary_part.done",
+			"item_id":       itemID,
+			"summary_index": 0,
+		})
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":         "response.output_item.done",
+			"output_index": outputIndex,
+			"item": map[string]any{
+				"type":              "reasoning",
+				"id":                itemID,
+				"encrypted_content": nil,
+			},
+		})
+		outputIndex++
+	}
+
+	if msg.Content != "" || len(msg.ToolCalls) == 0 {
+		itemID := responseItemID("msg", pr.RequestID, outputIndex)
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": outputIndex,
+			"item": map[string]any{
+				"type":  "message",
+				"id":    itemID,
+				"phase": nil,
+			},
+		})
+		if msg.Content != "" {
+			writeResponsesSSE(w, flusher, map[string]any{
+				"type":         "response.output_text.delta",
+				"item_id":      itemID,
+				"output_index": outputIndex,
+				"delta":        msg.Content,
+			})
+		}
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":         "response.output_item.done",
+			"output_index": outputIndex,
+			"item": map[string]any{
+				"type":  "message",
+				"id":    itemID,
+				"phase": nil,
+			},
+		})
+		outputIndex++
+	}
+
+	for _, tc := range msg.ToolCalls {
+		fn, _ := tc["function"].(map[string]any)
+		callID, _ := tc["id"].(string)
+		if callID == "" {
+			callID = responseItemID("call", pr.RequestID, outputIndex)
+		}
+		name, _ := fn["name"].(string)
+		args, _ := fn["arguments"].(string)
+		itemID := responseItemID("fc", pr.RequestID, outputIndex)
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": outputIndex,
+			"item": map[string]any{
+				"type":      "function_call",
+				"id":        itemID,
+				"call_id":   callID,
+				"name":      name,
+				"arguments": "",
+			},
+		})
+		if args != "" {
+			writeResponsesSSE(w, flusher, map[string]any{
+				"type":         "response.function_call_arguments.delta",
+				"item_id":      itemID,
+				"output_index": outputIndex,
+				"delta":        args,
+			})
+		}
+		writeResponsesSSE(w, flusher, map[string]any{
+			"type":         "response.output_item.done",
+			"output_index": outputIndex,
+			"item": map[string]any{
+				"type":      "function_call",
+				"id":        itemID,
+				"call_id":   callID,
+				"name":      name,
+				"arguments": args,
+				"status":    "completed",
+			},
+		})
+		outputIndex++
+	}
+
+	reasoningTokens := uint64(0)
+	if msg.Reasoning != "" {
+		reasoningTokens = uint64(usage.CompletionTokens)
+	}
+	writeResponsesSSE(w, flusher, map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"id":                 responseID,
+			"created_at":         createdAt,
+			"model":              pr.Model,
+			"incomplete_details": nil,
+			"usage":              responsesUsage(uint64(usage.PromptTokens), uint64(usage.CompletionTokens), reasoningTokens),
+			"service_tier":       nil,
+		},
+	})
+}
+
 // handleNonStreamingResponse is kept for callers that don't have a first chunk.
 func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest) {
 	s.handleNonStreamingResponseWithFirstChunk(w, r, pr, "")
@@ -980,10 +1457,51 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if !ok {
+				// The provider forwards the raw backend response as a single
+				// chunk. Detect complete responses (object=chat.completion
+				// or object=response) and pass through directly — this is
+				// format-agnostic and works for chat completions, Responses
+				// API, or any future endpoint without parsing.
+				if len(chunks) == 1 {
+					raw := strings.TrimPrefix(chunks[0], "data: ")
+					var obj map[string]any
+					if err := json.Unmarshal([]byte(raw), &obj); err == nil {
+						objType, _ := obj["object"].(string)
+						// Complete responses have object=chat.completion or
+						// object=response. Delta chunks have object=chat.completion.chunk.
+						if objType == "chat.completion" || objType == "response" {
+							select {
+							case <-pr.CompleteCh:
+							case <-ctx.Done():
+							}
+							if objType == "chat.completion" {
+								normalizeCompleteChatResponse(obj, pr.Model)
+								if pr.IsResponsesAPI {
+									obj = chatCompletionToResponses(obj, pr.Model, pr.SESignature, pr.ResponseHash)
+									writeJSON(w, http.StatusOK, obj)
+									return
+								}
+							}
+							if pr.SESignature != "" {
+								obj["se_signature"] = pr.SESignature
+								obj["response_hash"] = pr.ResponseHash
+							}
+							writeJSON(w, http.StatusOK, obj)
+							return
+						}
+					}
+				}
+
+				// Fallback: SSE delta chunks — reconstruct into response.
 				msg := extractMessage(chunks)
 				select {
 				case usage := <-pr.CompleteCh:
-					resp := buildNonStreamingResponse(pr.RequestID, pr.Model, msg, usage, pr.SESignature, pr.ResponseHash)
+					var resp map[string]any
+					if pr.IsResponsesAPI {
+						resp = buildResponsesResponse(pr.RequestID, pr.Model, msg, usage, pr.SESignature, pr.ResponseHash)
+					} else {
+						resp = buildNonStreamingResponse(pr.RequestID, pr.Model, msg, usage, pr.SESignature, pr.ResponseHash)
+					}
 					writeJSON(w, http.StatusOK, resp)
 				case <-ctx.Done():
 					writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
@@ -1005,6 +1523,102 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 			return
 		}
 	}
+}
+
+func normalizeCompleteChatResponse(obj map[string]any, requestedModel string) {
+	if requestedModel != "" {
+		obj["model"] = requestedModel
+	}
+	for _, key := range []string{"system_fingerprint"} {
+		if v, ok := obj[key]; ok && v == nil {
+			delete(obj, key)
+		}
+	}
+	choices, ok := obj["choices"].([]any)
+	if !ok {
+		return
+	}
+	for _, rawChoice := range choices {
+		choice, ok := rawChoice.(map[string]any)
+		if !ok {
+			continue
+		}
+		if message, ok := choice["message"].(map[string]any); ok {
+			normalizeCompleteMessage(message)
+		}
+		if delta, ok := choice["delta"].(map[string]any); ok {
+			normalizeCompleteMessage(delta)
+		}
+	}
+}
+
+func normalizeCompleteMessage(message map[string]any) {
+	var extractedReasoning string
+	if content, ok := message["content"]; !ok || content == nil {
+		message["content"] = ""
+	} else if contentText, ok := content.(string); ok {
+		cleaned, reasoning := stripThinkBlocks(contentText)
+		message["content"] = cleaned
+		extractedReasoning = reasoning
+	}
+
+	if rc, ok := message["reasoning_content"]; ok {
+		if rcText, ok := rc.(string); ok && rcText != "" {
+			mergeReasoningField(message, rcText)
+		}
+		delete(message, "reasoning_content")
+	}
+	if reasoning, ok := message["reasoning"]; ok && reasoning == nil {
+		delete(message, "reasoning")
+	}
+	if extractedReasoning != "" {
+		mergeReasoningField(message, extractedReasoning)
+	}
+	for _, key := range []string{"tool_calls", "refusal"} {
+		if v, ok := message[key]; ok && v == nil {
+			delete(message, key)
+		}
+	}
+}
+
+func mergeReasoningField(message map[string]any, reasoning string) {
+	reasoning = strings.TrimSpace(reasoning)
+	if reasoning == "" {
+		return
+	}
+	if existing, ok := message["reasoning"].(string); ok && strings.TrimSpace(existing) != "" {
+		if existing != reasoning && !strings.Contains(existing, reasoning) {
+			message["reasoning"] = existing + "\n\n" + reasoning
+		}
+		return
+	}
+	message["reasoning"] = reasoning
+}
+
+func stripThinkBlocks(text string) (string, string) {
+	matches := thinkBlockPattern.FindAllStringSubmatch(text, -1)
+	reasoningParts := make([]string, 0, len(matches)+1)
+	found := len(matches) > 0
+	for _, match := range matches {
+		if len(match) > 1 {
+			if part := strings.TrimSpace(match[1]); part != "" {
+				reasoningParts = append(reasoningParts, part)
+			}
+		}
+	}
+	cleaned := thinkBlockPattern.ReplaceAllString(text, "")
+	lower := strings.ToLower(cleaned)
+	if idx := strings.Index(lower, "<think>"); idx >= 0 {
+		found = true
+		if part := strings.TrimSpace(cleaned[idx+len("<think>"):]); part != "" {
+			reasoningParts = append(reasoningParts, part)
+		}
+		cleaned = cleaned[:idx]
+	}
+	if !found {
+		return text, ""
+	}
+	return strings.TrimSpace(cleaned), strings.Join(reasoningParts, "\n\n")
 }
 
 // normalizeSSEChunk fixes fields in SSE chunks to match the OpenAI spec.
@@ -1133,9 +1747,10 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 		var choices []struct {
 			Delta struct {
-				Content   string `json:"content"`
-				Reasoning string `json:"reasoning"`
-				ToolCalls []struct {
+				Content          string `json:"content"`
+				Reasoning        string `json:"reasoning"`
+				ReasoningContent string `json:"reasoning_content"`
+				ToolCalls        []struct {
 					Index    int    `json:"index"`
 					ID       string `json:"id,omitempty"`
 					Type     string `json:"type,omitempty"`
@@ -1145,6 +1760,11 @@ func extractMessage(chunks []string) extractedMessage {
 					} `json:"function,omitempty"`
 				} `json:"tool_calls,omitempty"`
 			} `json:"delta"`
+			Message struct {
+				Content          string `json:"content"`
+				Reasoning        string `json:"reasoning"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"message"`
 			FinishReason *string `json:"finish_reason"`
 		}
 		if err := json.Unmarshal(choicesRaw, &choices); err != nil {
@@ -1152,8 +1772,20 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 
 		for _, c := range choices {
-			contentBuilder.WriteString(c.Delta.Content)
-			reasoningBuilder.WriteString(c.Delta.Reasoning)
+			if c.Delta.Content != "" {
+				contentBuilder.WriteString(c.Delta.Content)
+			} else if c.Message.Content != "" {
+				contentBuilder.WriteString(c.Message.Content)
+			}
+			if c.Delta.Reasoning != "" {
+				reasoningBuilder.WriteString(c.Delta.Reasoning)
+			} else if c.Delta.ReasoningContent != "" {
+				reasoningBuilder.WriteString(c.Delta.ReasoningContent)
+			} else if c.Message.Reasoning != "" {
+				reasoningBuilder.WriteString(c.Message.Reasoning)
+			} else if c.Message.ReasoningContent != "" {
+				reasoningBuilder.WriteString(c.Message.ReasoningContent)
+			}
 			for _, tc := range c.Delta.ToolCalls {
 				existing, ok := toolCallMap[tc.Index]
 				if !ok {
@@ -1180,10 +1812,20 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 	}
 
-	msg := extractedMessage{Content: contentBuilder.String(), Reasoning: reasoningBuilder.String()}
+	content := contentBuilder.String()
+	reasoning := reasoningBuilder.String()
+	if cleaned, extractedReasoning := stripThinkBlocks(content); extractedReasoning != "" {
+		content = cleaned
+		if strings.TrimSpace(reasoning) != "" {
+			reasoning += "\n\n" + extractedReasoning
+		} else {
+			reasoning = extractedReasoning
+		}
+	}
+	msg := extractedMessage{Content: content, Reasoning: reasoning}
 	if len(toolCallMap) > 0 {
 		msg.ToolCalls = make([]map[string]any, 0, len(toolCallMap))
-		for i := 0; i < len(toolCallMap); i++ {
+		for i := range len(toolCallMap) {
 			if tc, ok := toolCallMap[i]; ok {
 				delete(tc, "index")
 				msg.ToolCalls = append(msg.ToolCalls, tc)
@@ -1191,6 +1833,174 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 	}
 	return msg
+}
+
+func responsesUsage(promptTokens, completionTokens uint64, reasoningTokens uint64) map[string]any {
+	return map[string]any{
+		"input_tokens": promptTokens,
+		"input_tokens_details": map[string]any{
+			"cached_tokens": 0,
+		},
+		"output_tokens": completionTokens,
+		"output_tokens_details": map[string]any{
+			"reasoning_tokens": reasoningTokens,
+		},
+	}
+}
+
+func responsesIncompleteDetails(finishReason string) any {
+	switch finishReason {
+	case "length":
+		return map[string]any{"reason": "max_output_tokens"}
+	case "content_filter":
+		return map[string]any{"reason": "content_filter"}
+	default:
+		return nil
+	}
+}
+
+func responseItemID(prefix, requestID string, index int) string {
+	return fmt.Sprintf("%s_%s_%d", prefix, strings.ReplaceAll(requestID, "-", ""), index)
+}
+
+func appendResponsesOutputItems(output []any, requestID string, msg extractedMessage) []any {
+	index := len(output)
+	if msg.Reasoning != "" {
+		output = append(output, map[string]any{
+			"type": "reasoning",
+			"id":   responseItemID("rs", requestID, index),
+			"summary": []map[string]any{{
+				"type": "summary_text",
+				"text": msg.Reasoning,
+			}},
+		})
+		index++
+	}
+	if msg.Content != "" || len(msg.ToolCalls) == 0 {
+		output = append(output, map[string]any{
+			"type": "message",
+			"role": "assistant",
+			"id":   responseItemID("msg", requestID, index),
+			"content": []map[string]any{{
+				"type":        "output_text",
+				"text":        msg.Content,
+				"annotations": []any{},
+			}},
+		})
+		index++
+	}
+	for _, tc := range msg.ToolCalls {
+		fn, _ := tc["function"].(map[string]any)
+		callID, _ := tc["id"].(string)
+		if callID == "" {
+			callID = responseItemID("call", requestID, index)
+		}
+		name, _ := fn["name"].(string)
+		args, _ := fn["arguments"].(string)
+		output = append(output, map[string]any{
+			"type":      "function_call",
+			"id":        responseItemID("fc", requestID, index),
+			"call_id":   callID,
+			"name":      name,
+			"arguments": args,
+		})
+		index++
+	}
+	return output
+}
+
+func buildResponsesResponse(requestID, model string, msg extractedMessage, usage protocol.UsageInfo, seSignature, responseHash string) map[string]any {
+	reasoningTokens := uint64(0)
+	if msg.Reasoning != "" {
+		reasoningTokens = uint64(usage.CompletionTokens)
+	}
+	resp := map[string]any{
+		"id":         "resp_" + strings.ReplaceAll(requestID, "-", ""),
+		"object":     "response",
+		"created_at": time.Now().Unix(),
+		"model":      model,
+		"output":     appendResponsesOutputItems(nil, requestID, msg),
+		"usage":      responsesUsage(uint64(usage.PromptTokens), uint64(usage.CompletionTokens), reasoningTokens),
+	}
+	if seSignature != "" {
+		resp["se_signature"] = seSignature
+		resp["response_hash"] = responseHash
+	}
+	return resp
+}
+
+func firstChoice(obj map[string]any) map[string]any {
+	choices, _ := obj["choices"].([]any)
+	if len(choices) == 0 {
+		return nil
+	}
+	choice, _ := choices[0].(map[string]any)
+	return choice
+}
+
+func stringFromMap(m map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if s, _ := m[key].(string); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func chatUsageToResponsesUsage(obj map[string]any, reasoning string) map[string]any {
+	usage, _ := obj["usage"].(map[string]any)
+	promptTokens, _ := intFromRequestValue(usage["prompt_tokens"])
+	completionTokens, _ := intFromRequestValue(usage["completion_tokens"])
+	reasoningTokens := 0
+	if reasoning != "" {
+		reasoningTokens = completionTokens
+	}
+	return responsesUsage(uint64(promptTokens), uint64(completionTokens), uint64(reasoningTokens))
+}
+
+func chatCompletionToResponses(obj map[string]any, requestedModel, seSignature, responseHash string) map[string]any {
+	requestID, _ := obj["id"].(string)
+	requestID = strings.TrimPrefix(requestID, "chatcmpl-")
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
+	created, ok := intFromRequestValue(obj["created"])
+	if !ok || created <= 0 {
+		created = int(time.Now().Unix())
+	}
+
+	msg := extractedMessage{}
+	finishReason := ""
+	if choice := firstChoice(obj); choice != nil {
+		finishReason, _ = choice["finish_reason"].(string)
+		if message, _ := choice["message"].(map[string]any); message != nil {
+			msg.Content = stringFromMap(message, "content")
+			msg.Reasoning = stringFromMap(message, "reasoning", "reasoning_content")
+			if rawToolCalls, _ := message["tool_calls"].([]any); len(rawToolCalls) > 0 {
+				msg.ToolCalls = make([]map[string]any, 0, len(rawToolCalls))
+				for _, rawTC := range rawToolCalls {
+					if tc, _ := rawTC.(map[string]any); tc != nil {
+						msg.ToolCalls = append(msg.ToolCalls, tc)
+					}
+				}
+			}
+		}
+	}
+
+	resp := map[string]any{
+		"id":                 "resp_" + strings.ReplaceAll(requestID, "-", ""),
+		"object":             "response",
+		"created_at":         created,
+		"model":              requestedModel,
+		"output":             appendResponsesOutputItems(nil, requestID, msg),
+		"incomplete_details": responsesIncompleteDetails(finishReason),
+		"usage":              chatUsageToResponsesUsage(obj, msg.Reasoning),
+	}
+	if seSignature != "" {
+		resp["se_signature"] = seSignature
+		resp["response_hash"] = responseHash
+	}
+	return resp
 }
 
 // buildNonStreamingResponse constructs a complete OpenAI-compatible chat
@@ -1250,7 +2060,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	catalogModels := s.store.ListSupportedModels()
 	catalogByID := make(map[string]store.SupportedModel, len(catalogModels))
 	for _, cm := range catalogModels {
-		if cm.Active {
+		if cm.Active && !IsRetiredProviderModel(cm) {
 			catalogByID[cm.ID] = cm
 		}
 	}
@@ -1315,6 +2125,38 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleRevokeKey handles DELETE /v1/auth/keys — revokes an API key.
+// The caller must own the key (same account). Requires Privy auth so a
+// compromised API key cannot revoke legitimate keys.
+func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("auth_error", "authentication required"))
+		return
+	}
+
+	var body struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", "provide {\"key\": \"eigeninference-...\"}"))
+		return
+	}
+
+	owner := s.store.GetKeyAccount(body.Key)
+	if owner != user.AccountID {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "you can only revoke your own keys"))
+		return
+	}
+
+	if !s.store.RevokeKey(body.Key) {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "key not found or already revoked"))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked"})
+}
+
 // handleHealth handles GET /health.
 // Returns the coordinator's status and the number of connected providers.
 // This endpoint does not require authentication.
@@ -1330,28 +2172,40 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // If a release is registered in the store, uses that. Otherwise falls back
 // to the hardcoded LatestProviderVersion.
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	const cacheKey = "api_version:v1"
+	if cached, ok := s.readCache.Get(cacheKey); ok {
+		writeCachedJSON(w, http.StatusOK, cached)
+		return
+	}
+
+	var resp map[string]any
 	// Try release table first.
 	if release := s.store.GetLatestRelease("macos-arm64"); release != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
+		resp = map[string]any{
 			"version":      release.Version,
 			"download_url": release.URL,
 			"bundle_hash":  release.BundleHash,
 			"changelog":    release.Changelog,
-		})
+		}
+	} else {
+		// Fallback to hardcoded version + coordinator download.
+		scheme := "https"
+		if r.TLS == nil && !strings.Contains(r.Host, "darkbloom.dev") {
+			scheme = "http"
+		}
+		downloadURL := fmt.Sprintf("%s://%s/dl/eigeninference-bundle-macos-arm64.tar.gz", scheme, r.Host)
+		resp = map[string]any{
+			"version":      LatestProviderVersion,
+			"download_url": downloadURL,
+		}
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode version"))
 		return
 	}
-
-	// Fallback to hardcoded version + coordinator download.
-	scheme := "https"
-	if r.TLS == nil && !strings.Contains(r.Host, "openinnovation.dev") {
-		scheme = "http"
-	}
-	downloadURL := fmt.Sprintf("%s://%s/dl/eigeninference-bundle-macos-arm64.tar.gz", scheme, r.Host)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"version":      LatestProviderVersion,
-		"download_url": downloadURL,
-	})
+	s.readCache.Set(cacheKey, body, time.Minute)
+	writeCachedJSON(w, http.StatusOK, body)
 }
 
 // --- payment handlers ---
@@ -1361,10 +2215,13 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleBalance(w http.ResponseWriter, r *http.Request) {
 	consumerKey := consumerKeyFromContext(r.Context())
 	balance := s.ledger.Balance(consumerKey)
+	withdrawable := s.store.GetWithdrawableBalance(consumerKey)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"balance_micro_usd": balance,
-		"balance_usd":       fmt.Sprintf("%.6f", float64(balance)/1_000_000),
+		"balance_micro_usd":      balance,
+		"balance_usd":            fmt.Sprintf("%.6f", float64(balance)/1_000_000),
+		"withdrawable_micro_usd": withdrawable,
+		"withdrawable_usd":       fmt.Sprintf("%.6f", float64(withdrawable)/1_000_000),
 	})
 }
 
@@ -1377,23 +2234,22 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	entries := s.ledger.Usage(consumerKey)
 
 	// If in-memory usage is empty (coordinator restarted), build from
-	// persisted ledger entries so the billing page isn't blank.
+	// the persisted usage table which has full request details.
 	if len(entries) == 0 {
-		accountID := s.resolveAccountID(r)
-		if accountID != "" {
-			ledgerEntries := s.store.LedgerHistory(accountID)
-			for _, le := range ledgerEntries {
-				if le.Type == store.LedgerCharge && le.Reference != "" && !strings.HasPrefix(le.Reference, "reserve:") {
-					entries = append(entries, payments.UsageEntry{
-						JobID:            le.Reference,
-						Model:            "",
-						CostMicroUSD:     -le.AmountMicroUSD, // charges are negative
-						PromptTokens:     0,
-						CompletionTokens: 0,
-						Timestamp:        le.CreatedAt,
-					})
-				}
+		usageRecords := s.store.UsageByConsumer(consumerKey)
+		for _, u := range usageRecords {
+			jobID := u.RequestID
+			if jobID == "" {
+				jobID = u.ProviderID
 			}
+			entries = append(entries, payments.UsageEntry{
+				JobID:            jobID,
+				Model:            u.Model,
+				PromptTokens:     u.PromptTokens,
+				CompletionTokens: u.CompletionTokens,
+				CostMicroUSD:     u.CostMicroUSD,
+				Timestamp:        u.CreatedAt,
+			})
 		}
 	}
 
@@ -1433,6 +2289,27 @@ func (s *Server) handleProviderEarnings(w http.ResponseWriter, r *http.Request) 
 			totalJobs++
 		}
 	}
+
+	// If no explicit payout records exist (for example, legacy rows created
+	// before provider_payouts was introduced), reconstruct from persisted
+	// ledger entries with payout type and the wallet as account ID.
+	if len(walletPayouts) == 0 {
+		ledgerEntries := s.store.LedgerHistory(wallet)
+		for _, le := range ledgerEntries {
+			if le.Type == store.LedgerPayout && le.Reference != "" {
+				walletPayouts = append(walletPayouts, payments.Payout{
+					ProviderAddress: wallet,
+					AmountMicroUSD:  le.AmountMicroUSD,
+					JobID:           le.Reference,
+					Timestamp:       le.CreatedAt,
+					Settled:         true,
+				})
+				totalEarned += le.AmountMicroUSD
+				totalJobs++
+			}
+		}
+	}
+
 	if walletPayouts == nil {
 		walletPayouts = []payments.Payout{}
 	}
@@ -1498,36 +2375,103 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	allowedProviderSerials, hasProviderAllowlist, err := parseProviderSerialAllowlist(parsed)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+		return
+	}
+	if hasProviderAllowlist {
+		stripProviderRoutingFields(parsed)
+	}
+
+	// Completions and Anthropic messages both use the max_tokens field (never
+	// max_output_tokens, which is Responses API only). Inject a default if
+	// unset so the pre-flight reservation bounds the generation.
+	ensureMaxTokensBound(parsed, false)
+
 	stream, _ := parsed["stream"].(bool)
+	estimatedPromptTokens := estimatePromptTokens(parsed)
+	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 
 	// Inject the endpoint so the provider knows which local path to forward to.
 	parsed["endpoint"] = endpoint
 
-	provider := s.registry.FindProvider(model)
-	if provider == nil {
-		queuedReq := &registry.QueuedRequest{
-			RequestID:  uuid.New().String(),
-			Model:      model,
-			ResponseCh: make(chan *registry.Provider, 1),
-		}
-		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-				fmt.Sprintf("no provider available for model %q", model)))
+	// Pre-flight balance reservation — same worst-case-cost reservation as
+	// handleChatCompletions. Before this fix the completions and Anthropic
+	// paths routed without ANY reservation; the silent post-inference charge
+	// meant a consumer could receive full responses with a zero balance.
+	consumerKey := consumerKeyFromContext(r.Context())
+	var reservedMicroUSD int64
+	if s.billing != nil {
+		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
+		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
+			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
+				"your balance is too low for this request — add funds at /billing or lower max_tokens"))
 			return
 		}
-		provider, err = s.registry.Queue().WaitForProvider(queuedReq)
-		if err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-				fmt.Sprintf("no provider became available for model %q", model)))
-			return
+	}
+	// Refund the reservation on any early failure before dispatch.
+	refundReservation := func() {
+		if reservedMicroUSD > 0 {
+			_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "reservation_refund")
 		}
 	}
 
 	requestID := uuid.New().String()
+	pr := &registry.PendingRequest{
+		RequestID:              requestID,
+		Model:                  model,
+		ConsumerKey:            consumerKey,
+		AllowedProviderSerials: allowedProviderSerials,
+		EstimatedPromptTokens:  estimatedPromptTokens,
+		RequestedMaxTokens:     requestedMaxTokens,
+		ReservedMicroUSD:       reservedMicroUSD,
+		ChunkCh:                make(chan string, chunkBufferSize),
+		CompleteCh:             make(chan protocol.UsageInfo, 1),
+		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
+	}
+
+	provider, decision := s.registry.ReserveProviderEx(model, pr)
+	if provider == nil {
+		queuedReq := &registry.QueuedRequest{
+			RequestID:  requestID,
+			Model:      model,
+			Pending:    pr,
+			ResponseCh: make(chan *registry.Provider, 1),
+		}
+		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
+			refundReservation()
+			s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:over_capacity"})
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
+				fmt.Sprintf("no provider available for model %q", model)))
+			return
+		}
+		s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:queued"})
+		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				refundReservation()
+				return
+			}
+			refundReservation()
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
+				fmt.Sprintf("no provider became available for model %q", model)))
+			return
+		}
+		decision = queuedReq.Decision
+	}
+	s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:selected"})
+	s.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
+	s.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model})
+	if decision.EffectiveTPS > 0 {
+		s.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
+	}
+
 	inferenceBody, _ := json.Marshal(parsed)
 
 	if provider.PublicKey == "" {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
 			"no provider with E2E encryption available"))
 		return
@@ -1536,6 +2480,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
 	if err != nil {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "provider public key invalid"))
 		return
 	}
@@ -1543,6 +2488,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	sessionKeys, err := e2e.GenerateSessionKeys()
 	if err != nil {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to generate session keys"))
 		return
 	}
@@ -1550,6 +2496,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	encrypted, err := e2e.Encrypt(inferenceBody, providerPubKey, sessionKeys)
 	if err != nil {
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to encrypt request"))
 		return
 	}
@@ -1563,23 +2510,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		},
 	}
 
-	consumerKey := consumerKeyFromContext(r.Context())
-	pr := &registry.PendingRequest{
-		RequestID:   requestID,
-		ProviderID:  provider.ID,
-		Model:       model,
-		ConsumerKey: consumerKey,
-		ChunkCh:     make(chan string, chunkBufferSize),
-		CompleteCh:  make(chan protocol.UsageInfo, 1),
-		ErrorCh:     make(chan protocol.InferenceErrorMessage, 1),
-	}
 	pr.SessionPrivKey = &sessionKeys.PrivateKey
-	provider.AddPending(pr)
 
 	data, _ := json.Marshal(wireMsg)
 	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
 		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
 		return
 	}
@@ -1591,6 +2528,16 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		"endpoint", endpoint,
 		"stream", stream,
 	)
+
+	// When this function returns (consumer disconnect, timeout, or
+	// completion), tell the provider to stop generating. Without this the
+	// provider keeps producing tokens into a buffered channel until the
+	// buffer fills, wasting GPU cycles.
+	defer func() {
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+		s.sendProviderCancel(provider, requestID)
+	}()
 
 	if stream {
 		s.handleStreamingResponse(w, r, pr)

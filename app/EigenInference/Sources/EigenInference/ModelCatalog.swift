@@ -11,7 +11,7 @@ enum ModelCatalog {
     struct Entry: Identifiable {
         let id: String
         let name: String
-        let modelType: String   // "text", "image", "transcription"
+        let modelType: String   // "text"
         let sizeGB: Double
         let architecture: String
         let description: String
@@ -23,16 +23,8 @@ enum ModelCatalog {
         }
     }
 
-    /// Known models from the EigenInference catalog, ordered by min RAM tier.
+    /// Known models from the Darkbloom catalog, ordered by min RAM tier.
     static let models: [Entry] = [
-        // Transcription
-        Entry(id: "CohereLabs/cohere-transcribe-03-2026", name: "Cohere Transcribe", modelType: "transcription", sizeGB: 4.2, architecture: "2B conformer", description: "Best-in-class STT", minRAMGB: 8),
-
-        // Image generation
-        Entry(id: "flux_2_klein_4b_q8p.ckpt", name: "FLUX.2 Klein 4B", modelType: "image", sizeGB: 8.1, architecture: "4B diffusion", description: "Fast image gen", minRAMGB: 16),
-        Entry(id: "flux_2_klein_9b_q8p.ckpt", name: "FLUX.2 Klein 9B", modelType: "image", sizeGB: 13.0, architecture: "9B diffusion", description: "Higher quality image gen", minRAMGB: 24),
-
-        // Text generation
         Entry(id: "qwen3.5-27b-claude-opus-8bit", name: "Qwen3.5 27B Claude Opus", modelType: "text", sizeGB: 27.0, architecture: "27B dense, Claude Opus distilled", description: "Frontier quality reasoning", minRAMGB: 36),
         Entry(id: "mlx-community/Trinity-Mini-8bit", name: "Trinity Mini", modelType: "text", sizeGB: 26.0, architecture: "27B Adaptive MoE", description: "Fast agentic inference", minRAMGB: 48),
         Entry(id: "mlx-community/Qwen3.5-122B-A10B-8bit", name: "Qwen3.5 122B", modelType: "text", sizeGB: 122.0, architecture: "122B MoE, 10B active", description: "Best quality", minRAMGB: 128),
@@ -44,9 +36,7 @@ enum ModelCatalog {
         if ramGB >= 256 { return models.first { $0.id.contains("MiniMax") } }
         if ramGB >= 128 { return models.first { $0.id.contains("Qwen3.5-122B") } }
         if ramGB >= 36  { return models.first { $0.id.contains("qwen3.5-27b-claude-opus") } }
-        if ramGB >= 24  { return models.first { $0.id.contains("flux_2_klein_9b") } }
-        if ramGB >= 16  { return models.first { $0.id.contains("flux_2_klein_4b") } }
-        return models.first { $0.id.contains("cohere-transcribe") }
+        return nil
     }
 
     /// Returns all models that fit in the given RAM but aren't the default.

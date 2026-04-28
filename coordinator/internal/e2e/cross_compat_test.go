@@ -77,7 +77,7 @@ func TestCrossLanguageEncryption(t *testing.T) {
 		// Encrypt the same plaintext multiple times with different sessions.
 		// Each should produce different ciphertext but all should decrypt correctly.
 		plaintext := []byte("determinism check — same input, different nonces")
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			testCrossDecrypt(t, binaryPath, plaintext)
 		}
 	})

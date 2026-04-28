@@ -84,8 +84,12 @@ func TestChargeNoAccount(t *testing.T) {
 func TestCreditProvider(t *testing.T) {
 	l := newTestLedger()
 
-	l.CreditProvider("0xProvider1", 900_000, "qwen3.5-9b", "job-123")
-	l.CreditProvider("0xProvider2", 450_000, "llama3-8b", "job-456")
+	if err := l.CreditProvider("0xProvider1", 900_000, "qwen3.5-9b", "job-123"); err != nil {
+		t.Fatalf("CreditProvider(1): %v", err)
+	}
+	if err := l.CreditProvider("0xProvider2", 450_000, "llama3-8b", "job-456"); err != nil {
+		t.Fatalf("CreditProvider(2): %v", err)
+	}
 
 	payouts := l.PendingPayouts()
 	if len(payouts) != 2 {
@@ -107,8 +111,12 @@ func TestCreditProvider(t *testing.T) {
 func TestSettlePayout(t *testing.T) {
 	l := newTestLedger()
 
-	l.CreditProvider("0xProvider1", 900_000, "qwen3.5-9b", "job-123")
-	l.CreditProvider("0xProvider2", 450_000, "llama3-8b", "job-456")
+	if err := l.CreditProvider("0xProvider1", 900_000, "qwen3.5-9b", "job-123"); err != nil {
+		t.Fatalf("CreditProvider(1): %v", err)
+	}
+	if err := l.CreditProvider("0xProvider2", 450_000, "llama3-8b", "job-456"); err != nil {
+		t.Fatalf("CreditProvider(2): %v", err)
+	}
 
 	if err := l.SettlePayout(0); err != nil {
 		t.Fatalf("SettlePayout(0): %v", err)
@@ -130,7 +138,9 @@ func TestSettlePayout(t *testing.T) {
 
 func TestSettlePayoutAlreadySettled(t *testing.T) {
 	l := newTestLedger()
-	l.CreditProvider("0xProvider1", 900_000, "qwen3.5-9b", "job-123")
+	if err := l.CreditProvider("0xProvider1", 900_000, "qwen3.5-9b", "job-123"); err != nil {
+		t.Fatalf("CreditProvider: %v", err)
+	}
 
 	if err := l.SettlePayout(0); err != nil {
 		t.Fatalf("first SettlePayout: %v", err)
@@ -148,6 +158,27 @@ func TestSettlePayoutOutOfRange(t *testing.T) {
 	}
 	if err := l.SettlePayout(-1); err == nil {
 		t.Fatal("expected error for negative index")
+	}
+}
+
+func TestPayoutsPersistAcrossLedgerInstances(t *testing.T) {
+	st := store.NewMemory("")
+	l1 := NewLedger(st)
+
+	if err := l1.CreditProvider("0xProvider1", 900_000, "qwen3.5-9b", "job-123"); err != nil {
+		t.Fatalf("CreditProvider: %v", err)
+	}
+
+	l2 := NewLedger(st)
+	payouts := l2.PendingPayouts()
+	if len(payouts) != 1 {
+		t.Fatalf("pending payouts = %d, want 1", len(payouts))
+	}
+	if payouts[0].JobID != "job-123" {
+		t.Fatalf("payout job_id = %q, want job-123", payouts[0].JobID)
+	}
+	if payouts[0].ProviderAddress != "0xProvider1" {
+		t.Fatalf("provider address = %q, want 0xProvider1", payouts[0].ProviderAddress)
 	}
 }
 

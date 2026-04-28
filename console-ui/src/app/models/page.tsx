@@ -20,9 +20,6 @@ const competitorPricing: Record<string, { output: number; name: string; competit
   "mlx-community/gemma-4-26b-a4b-it-8bit": { output: 400_000, name: "Gemma 4 26B", competitor: "OpenRouter" },
   "mlx-community/Qwen3.5-122B-A10B-8bit": { output: 2_080_000, name: "Qwen3.5 122B", competitor: "OpenRouter" },
   "mlx-community/MiniMax-M2.5-8bit": { output: 1_000_000, name: "MiniMax M2.5", competitor: "OpenRouter" },
-  "flux_2_klein_4b_q8p.ckpt": { output: 3_000, name: "FLUX.2 Klein 4B", competitor: "Together.ai", unit: "per image" },
-  "flux_2_klein_9b_q8p.ckpt": { output: 5_000, name: "FLUX.2 Klein 9B", competitor: "fal.ai", unit: "per image" },
-  "CohereLabs/cohere-transcribe-03-2026": { output: 2_000, name: "Cohere Transcribe", competitor: "AssemblyAI", unit: "per audio-min" },
 };
 
 // Build a unified pricing lookup from the coordinator's response
@@ -31,12 +28,6 @@ function buildPricingLookup(pricing: PricingResponse | null): Record<string, { i
   const lookup: Record<string, { input: number; output: number; unit?: string }> = {};
   for (const p of pricing.prices) {
     lookup[p.model] = { input: p.input_price, output: p.output_price };
-  }
-  for (const p of pricing.transcription_prices) {
-    lookup[p.model] = { input: 0, output: p.price_per_minute, unit: "per audio-min" };
-  }
-  for (const p of pricing.image_prices) {
-    lookup[p.model] = { input: 0, output: p.price_per_image, unit: "per image" };
   }
   return lookup;
 }
@@ -104,11 +95,11 @@ export default function ModelsPage() {
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-5xl mx-auto px-3 sm:px-6 py-6 sm:py-8">
           <div className="mb-6">
-            <h2 className="text-2xl font-display text-ink mb-1">
+            <h2 className="text-2xl font-semibold text-ink mb-1">
               Available Models
             </h2>
             <p className="text-sm text-text-tertiary">
-              Models served by hardware-attested providers on the EigenInference network.
+              Models served by hardware-attested providers on the Darkbloom network.
             </p>
           </div>
 
@@ -139,7 +130,7 @@ export default function ModelsPage() {
                 return (
                   <div
                     key={model.id}
-                    className="group rounded-xl bg-bg-white border-[3px] border-ink p-5 hover:translate-x-[-2px] hover:translate-y-[-2px] hover:shadow-[4px_4px_0_var(--ink)] transition-all"
+                    className="group rounded-xl bg-bg-white border border-border-dim p-5 hover:shadow-sm transition-all"
                   >
                     {/* Header */}
                     <div className="flex items-start justify-between mb-3">
@@ -232,20 +223,20 @@ export default function ModelsPage() {
           {/* Pricing comparison table */}
           <div className="mt-12 mb-8">
             <div className="mb-4">
-              <h2 className="text-2xl font-display text-ink mb-1">
+              <h2 className="text-2xl font-semibold text-ink mb-1">
                 Pricing vs Competitors
               </h2>
               <p className="text-sm text-text-tertiary">
-                EigenInference runs on idle Apple Silicon hardware — 50% cheaper than centralized providers.
+                Darkbloom runs on idle Apple Silicon hardware — 50% cheaper than centralized providers.
               </p>
             </div>
 
-            <div className="rounded-xl bg-bg-white border-[3px] border-ink overflow-hidden shadow-md">
+            <div className="rounded-xl bg-bg-white border border-border-dim overflow-hidden shadow-md">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border-dim">
                     <th className="text-left px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wider">Model</th>
-                    <th className="text-right px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wider">EigenInference</th>
+                    <th>Darkbloom</th>
                     <th className="text-right px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wider">Competitor</th>
                     <th className="text-right px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wider">Savings</th>
                   </tr>
@@ -286,7 +277,7 @@ export default function ModelsPage() {
                 </tbody>
               </table>
               <div className="px-4 py-2 text-xs text-text-tertiary bg-bg-tertiary/50">
-                Competitor prices from OpenRouter, Together.ai, fal.ai, and AssemblyAI as of April 2026.
+                Competitor prices from OpenRouter as of April 2026.
               </div>
             </div>
           </div>

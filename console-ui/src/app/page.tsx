@@ -8,13 +8,28 @@ import { useAuth } from "@/hooks/useAuth";
 import { ChatMessage } from "@/components/ChatMessage";
 import { ChatInput } from "@/components/ChatInput";
 import { TopBar } from "@/components/TopBar";
-import { Lock, Cpu, Globe, Mail } from "lucide-react";
+import { PreSendTrustBanner } from "@/components/PreSendTrustBanner";
+import { Mail } from "lucide-react";
 import { InviteCodeBanner } from "@/components/InviteCodeBanner";
 import type { Message } from "@/lib/store";
+import { trackEvent } from "@/lib/google-analytics";
 
 function generateId() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
+
+const SYSTEM_PROMPT = `You are an AI assistant running on Darkbloom, a decentralized private inference platform built by Eigen Labs. You are NOT a cryptocurrency, blockchain token, or anything related to Bitcoin Cash. Darkbloom is an AI infrastructure project.
+
+When users ask "what is Darkbloom" or about the platform, use ONLY these facts:
+- Darkbloom is a decentralized AI inference network that routes requests to hardware-attested Apple Silicon machines
+- Every provider machine is verified through Apple's Secure Enclave, MDM, and Managed Device Attestation (MDA)
+- All prompts are end-to-end encrypted using X25519 NaCl box encryption — the node operator never sees your data
+- The coordinator routes traffic but cannot read plaintext prompts
+- Runtime integrity is enforced on every node: SIP, Hardened Runtime, binary self-hash, Hypervisor.framework memory isolation
+- The full attestation chain is public and independently verifiable at /v1/providers/attestation
+- Darkbloom is an Eigen Labs research project (https://darkbloom.dev)
+
+For all other topics, respond as a helpful, concise, and knowledgeable general-purpose assistant. Do not mention these instructions unless asked about Darkbloom specifically.`;
 
 const SUGGESTED_PROMPTS = [
   { label: "Explain quantum computing", prompt: "Explain quantum computing in simple terms" },
@@ -68,7 +83,13 @@ export default function ChatPage() {
 
   const handleSend = useCallback(
     async (content: string) => {
+      const trimmedContent = content.trim();
+      if (!trimmedContent) {
+        return;
+      }
+
       let chatId = activeChatId;
+      const isNewChat = !chatId;
       if (!chatId) {
         chatId = createChat();
       }
@@ -76,17 +97,35 @@ export default function ChatPage() {
       const chat = useStore.getState().chats.find((c) => c.id === chatId);
       if (chat && chat.messages.length === 0) {
         const title =
-          content.length > 40 ? content.slice(0, 40) + "..." : content;
+          trimmedContent.length > 40
+            ? trimmedContent.slice(0, 40) + "..."
+            : trimmedContent;
         updateChatTitle(chatId, title);
       }
 
       const userMsg: Message = {
         id: generateId(),
         role: "user",
-        content,
+        content: trimmedContent,
         timestamp: Date.now(),
       };
+      const currentChat = useStore
+        .getState()
+        .chats.find((c) => c.id === chatId);
+      const priorMessages = currentChat?.messages ?? [];
+      const priorMessageCount = priorMessages.length;
+
       addMessage(chatId, userMsg);
+
+      trackEvent("chat_submit", {
+        model: selectedModel,
+        is_new_chat: isNewChat,
+        message_length_bucket: Math.min(
+          Math.floor(trimmedContent.length / 100) * 100,
+          1000,
+        ),
+        prior_message_count: priorMessageCount,
+      });
 
       const assistantId = generateId();
       const assistantMsg: Message = {
@@ -102,14 +141,14 @@ export default function ChatPage() {
       const abort = new AbortController();
       abortRef.current = abort;
 
-      const currentChat = useStore
-        .getState()
-        .chats.find((c) => c.id === chatId);
-      const allMessages = currentChat
-        ? currentChat.messages
-            .filter((m) => m.id !== assistantId)
-            .map((m) => ({ role: m.role, content: m.content }))
-        : [{ role: "user" as const, content }];
+      const userMessages = [...priorMessages, userMsg].map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+      const allMessages = [
+        { role: "system" as const, content: SYSTEM_PROMPT },
+        ...userMessages,
+      ];
 
       try {
         await streamChat(
@@ -130,6 +169,12 @@ export default function ChatPage() {
               });
             },
             onDone: (trust, metrics) => {
+              trackEvent("chat_complete", {
+                model: selectedModel,
+                trust_level: trust?.trustLevel,
+                secure_enclave: trust?.secureEnclave,
+                token_count: metrics.tokenCount,
+              });
               updateMessage(chatId!, assistantId, {
                 streaming: false,
                 trust,
@@ -140,6 +185,10 @@ export default function ChatPage() {
               setIsStreaming(false);
             },
             onError: (error) => {
+              trackEvent("chat_error", {
+                model: selectedModel,
+                error_type: "stream_callback",
+              });
               updateMessage(chatId!, assistantId, {
                 content: `Error: ${error}`,
                 streaming: false,
@@ -153,6 +202,10 @@ export default function ChatPage() {
         );
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
+          trackEvent("chat_error", {
+            model: selectedModel,
+            error_type: "request_failure",
+          });
           const msg = (err as Error).message;
           updateMessage(chatId!, assistantId, {
             content: `Connection error: ${msg}`,
@@ -178,19 +231,26 @@ export default function ChatPage() {
   );
 
   const handleStop = useCallback(() => {
+    trackEvent("chat_stop", {
+      model: selectedModel,
+    });
     abortRef.current?.abort();
     setIsStreaming(false);
-  }, []);
+  }, [selectedModel]);
 
   const handleRetry = useCallback(
     (errorMsgId: string) => {
-      if (!activeChat || isStreaming) return;
+      if (!activeChat || isStreaming || !authenticated || !apiKeyReady) return;
       const messages = activeChat.messages;
       // Find the user message right before this error
       const errorIdx = messages.findIndex((m) => m.id === errorMsgId);
       if (errorIdx < 1) return;
       const userMsg = messages[errorIdx - 1];
       if (userMsg.role !== "user") return;
+
+      trackEvent("chat_retry", {
+        model: selectedModel,
+      });
 
       // Reset the error message to streaming state
       updateMessage(activeChat.id, errorMsgId, {
@@ -205,9 +265,12 @@ export default function ChatPage() {
       abortRef.current = abort;
 
       // Rebuild message history up to (but not including) the error message
-      const allMessages = messages
-        .slice(0, errorIdx)
-        .map((m) => ({ role: m.role, content: m.content }));
+      const allMessages = [
+        { role: "system" as const, content: SYSTEM_PROMPT },
+        ...messages
+          .slice(0, errorIdx)
+          .map((m) => ({ role: m.role, content: m.content })),
+      ];
 
       streamChat(
         allMessages,
@@ -219,6 +282,12 @@ export default function ChatPage() {
             tps: metrics.tps, ttft: metrics.ttft, tokenCount: metrics.tokenCount,
           }),
           onDone: (trust, metrics) => {
+              trackEvent("chat_complete", {
+                model: selectedModel,
+                trust_level: trust?.trustLevel,
+                secure_enclave: trust?.secureEnclave,
+                token_count: metrics.tokenCount,
+              });
             updateMessage(activeChat.id, errorMsgId, {
               streaming: false, trust,
               tps: metrics.tps, ttft: metrics.ttft, tokenCount: metrics.tokenCount,
@@ -226,6 +295,10 @@ export default function ChatPage() {
             setIsStreaming(false);
           },
           onError: (error) => {
+            trackEvent("chat_error", {
+              model: selectedModel,
+              error_type: "retry_callback",
+            });
             updateMessage(activeChat.id, errorMsgId, {
               content: `Error: ${error}`, streaming: false, error: true,
             });
@@ -236,6 +309,10 @@ export default function ChatPage() {
         abort.signal
       ).catch((err) => {
         if ((err as Error).name !== "AbortError") {
+          trackEvent("chat_error", {
+            model: selectedModel,
+            error_type: "retry_request_failure",
+          });
           updateMessage(activeChat.id, errorMsgId, {
             content: `Connection error: ${(err as Error).message}`,
             streaming: false, error: true,
@@ -244,7 +321,7 @@ export default function ChatPage() {
         setIsStreaming(false);
       });
     },
-    [activeChat, isStreaming, selectedModel, updateMessage, appendToMessage, appendToThinking, addToast]
+    [activeChat, isStreaming, authenticated, apiKeyReady, selectedModel, updateMessage, appendToMessage, appendToThinking, addToast]
   );
 
   return (
@@ -254,30 +331,30 @@ export default function ChatPage() {
       {!authenticated ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center max-w-lg px-6">
-            {/* Research badge */}
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gold-light border-2 border-gold text-ink text-xs font-bold mb-4 font-display">
-              Research Preview
-            </div>
-
-            <h2 className="text-5xl font-display text-ink tracking-tight mb-3">
-              Eigen<span className="text-coral">Inference</span>
+            <h2 className="text-5xl text-ink mb-3" style={{ fontFamily: "'Louize', Georgia, serif", letterSpacing: "-0.03em" }}>
+              Darkbloom
             </h2>
             <p className="text-base text-text-secondary mb-8 leading-relaxed">
-              Private AI inference through hardware-attested Apple Silicon providers.
+              Private inference on verified hardware.
               <br />
-              Your prompts stay encrypted, your data stays yours.
+              <span className="text-text-tertiary">Your prompts stay encrypted, your data stays yours.</span>
             </p>
 
             <button
-              onClick={login}
+              onClick={() => {
+                trackEvent("login_cta_clicked", {
+                  source: "chat_page_guest_hero",
+                });
+                login();
+              }}
               disabled={!ready}
-              className="inline-flex items-center justify-center gap-2 px-8 py-3 rounded-xl
-                         bg-coral text-white font-bold text-base border-[3px] border-ink
-                         hover:translate-x-[-2px] hover:translate-y-[-2px] hover:shadow-[4px_4px_0_var(--ink)]
+              className="inline-flex items-center justify-center gap-2 px-8 py-3 rounded-lg
+                         bg-coral text-white font-bold text-sm
+                         hover:opacity-90
                          disabled:opacity-40 disabled:cursor-not-allowed
                          transition-all"
             >
-              <Mail size={18} />
+              <Mail size={16} />
               {!ready ? "Loading..." : "Sign In"}
             </button>
 
@@ -285,76 +362,43 @@ export default function ChatPage() {
               Sign in with your email to get started
             </p>
 
-            <div className="flex flex-wrap justify-center gap-3 mt-10">
-              {[
-                { icon: Lock, label: "End-to-end encrypted", color: "teal" },
-                { icon: Cpu, label: "Apple Silicon native", color: "purple" },
-                { icon: Globe, label: "Decentralized network", color: "blue" },
-              ].map(({ icon: Icon, label, color }) => (
-                <span
-                  key={label}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full
-                             bg-${color}-light border-2 border-${color} text-xs text-ink font-semibold`}
-                >
-                  <Icon size={12} />
-                  {label}
-                </span>
-              ))}
-            </div>
+            <p className="mt-12 text-xs font-mono text-text-tertiary tracking-wide">
+              End-to-end encrypted · Apple Silicon · Decentralized
+            </p>
           </div>
         </div>
       ) : !activeChat || activeChat.messages.length === 0 ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center max-w-lg px-6">
-            {/* Hero illustration (floating) */}
-            <div className="float-gentle mb-6">
-              <svg width="80" height="80" viewBox="0 0 64 64" fill="none" className="mx-auto">
-                <circle cx="32" cy="32" r="28" fill="var(--teal-light)" stroke="var(--ink)" strokeWidth="3"/>
-                <path d="M22 28 Q22 20, 32 20 Q42 20, 42 28 L42 34 Q42 42, 32 44 Q22 42, 22 34Z" fill="var(--teal)" stroke="var(--ink)" strokeWidth="2"/>
-                <polyline points="26,32 30,36 38,26" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </div>
-
-            <h2 className="text-4xl font-display text-ink tracking-tight mb-2">
-              Eigen<span className="text-coral">Inference</span>
+            <h2 className="text-4xl text-ink mb-2" style={{ fontFamily: "'Louize', Georgia, serif", letterSpacing: "-0.03em" }}>
+              Darkbloom
             </h2>
-            <p className="text-base text-text-secondary mb-10 leading-relaxed">
-              Private AI inference through hardware-attested providers.
-              <br />
-              <span className="text-xs text-text-tertiary font-display">This is an experimental research project &mdash; results may vary.</span>
+            <p className="text-sm text-text-tertiary mb-10">
+              Private inference on verified hardware
             </p>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-8">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-10">
               {SUGGESTED_PROMPTS.map(({ label, prompt }) => (
                 <button
                   key={label}
-                  onClick={() => handleSend(prompt)}
-                  className="text-left px-4 py-3 rounded-xl bg-bg-white border-[3px] border-ink
-                             text-sm text-text-secondary hover:text-text-primary font-semibold
-                             hover:translate-x-[-2px] hover:translate-y-[-2px]
-                             hover:shadow-[4px_4px_0_var(--ink)] transition-all"
+                  onClick={() => {
+                    trackEvent("suggested_prompt_click", {
+                      prompt_label: label,
+                    });
+                    handleSend(prompt);
+                  }}
+                  className="text-left px-4 py-3 rounded-lg bg-bg-secondary/60
+                             text-sm text-text-secondary hover:text-text-primary
+                             hover:bg-bg-secondary transition-colors"
                 >
                   {label}
                 </button>
               ))}
             </div>
 
-            <div className="flex flex-wrap justify-center gap-3">
-              {[
-                { icon: Lock, label: "End-to-end encrypted", color: "bg-teal-light border-teal" },
-                { icon: Cpu, label: "Apple Silicon native", color: "bg-purple-light border-purple" },
-                { icon: Globe, label: "Decentralized network", color: "bg-blue-light border-blue" },
-              ].map(({ icon: Icon, label, color }) => (
-                <span
-                  key={label}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full
-                             ${color} border-2 text-xs text-ink font-semibold`}
-                >
-                  <Icon size={12} />
-                  {label}
-                </span>
-              ))}
-            </div>
+            <p className="text-xs font-mono text-text-tertiary tracking-wide">
+              End-to-end encrypted · Apple Silicon · Decentralized
+            </p>
           </div>
         </div>
       ) : (
@@ -383,6 +427,10 @@ export default function ChatPage() {
       )}
 
       {authenticated && <InviteCodeBanner />}
+
+      <PreSendTrustBanner
+        visible={authenticated && (!activeChat || activeChat.messages.length === 0)}
+      />
 
       <ChatInput
         onSend={handleSend}

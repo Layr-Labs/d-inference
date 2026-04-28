@@ -79,7 +79,7 @@ OpenAI-compatible client library and CLI. Drop-in replacement for existing OpenA
 
 ```python
 from eigeninference import EigenInference
-client = EigenInference(base_url="https://coordinator.eigeninference.io", api_key="eigeninference-...")
+client = EigenInference(base_url="https://coordinator.darkbloom.io", api_key="eigeninference-...")
 response = client.chat.completions.create(
     model="mlx-community/Qwen2.5-7B-Instruct-4bit",
     messages=[{"role": "user", "content": "Hello"}],
@@ -171,7 +171,7 @@ EigenInference uses Apple MDM (MicroMDM) to independently verify provider securi
   - `FDE_Enabled`: FileVault disk encryption
   - `IsRecoveryLockEnabled`: Recovery Mode lock status
 - **Push notifications:** APNs for on-demand attestation queries
-- **Infrastructure:** MicroMDM + SCEP + step-ca on AWS
+- **Infrastructure:** MicroMDM + SCEP + step-ca co-located in the coordinator container on EigenCloud (prod). Dev runs on Google Cloud with MDM disabled.
 
 ### Apple Device Attestation (MDA)
 

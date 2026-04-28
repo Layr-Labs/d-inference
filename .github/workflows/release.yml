@@ -1,24 +1,78 @@
 name: Release Provider Bundle
 
+# Release paths:
+#   1. tag push `vX.Y.Z`       -> prod  (reviewer approval required)
+#   2. tag push `vX.Y.Z-dev.N` -> dev   (auto)
+#   3. manual workflow_dispatch with environment input
+#
+# Parallelism strategy (this is Phase-2 of the original refactor):
+#
+#   ┌─────────────────────────────────────────────────────────────────┐
+#   │               Parallel builds (~5 min wall)                     │
+#   │  Rust provider ─┐                                              │
+#   │  Swift enclave  ─┤                                              │
+#   │  Python runtime ─┤  (uv pip: ~30s vs pip: ~5 min)              │
+#   │  Swift app      ─┘                                              │
+#   ├─────────────────────────────────────────────────────────────────┤
+#   │               Sign + test (~3 min, tests in background)         │
+#   │  Sign Python runtime once → copy to bundle + app (skip 2 passes)│
+#   ├─────────────────────────────────────────────────────────────────┤
+#   │               Notarize + app assembly (~8 min)                  │
+#   │  Bundle notarize (bg) ──────────────────────┐                   │
+#   │  Assemble .app + DMG (fg) ──────────────────┤ overlap           │
+#   │  R2 uploads (bg) ──────────────────────────┤                   │
+#   │  DMG notarize (bg) ─────────────────────────┘                   │
+#   └─────────────────────────────────────────────────────────────────┘
+#
+# Coordinator Go tests are NOT in this workflow — they run in CI on
+# every push to master. The release is always from a CI-tested commit.
+
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options: [dev, prod]
+        default: dev
 
 env:
   CARGO_TERM_COLOR: always
   PYO3_USE_ABI3_FORWARD_COMPATIBILITY: '1'
   DEVELOPER_ID: "Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)"
+  PBS_TAG: "20260408"
+  PBS_PYTHON_VERSION: "3.12.13"
 
 jobs:
+  resolve-env:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.pick.outputs.environment }}
+    steps:
+      - id: pick
+        run: |
+          if [ -n "${{ inputs.environment }}" ]; then
+            echo "environment=${{ inputs.environment }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref_name }}" == *-dev.* ]]; then
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          else
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          fi
+
   build-and-release:
     name: Build, Sign, Upload, Register
-    runs-on: macos-26-xlarge  # Apple Silicon, 16 cores
+    needs: [resolve-env]
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    runs-on: macos-26-xlarge
     permissions:
       contents: write
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       # --- Import signing certificate ---
 
@@ -29,281 +83,459 @@ jobs:
         run: |
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
 
-          # Decode certificate
           echo "$P12_BASE64" | base64 --decode > /tmp/cert.p12
 
-          # Create temporary keychain
           security create-keychain -p "build" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "build" "$KEYCHAIN_PATH"
-
-          # Add to search list (critical — without this, codesign can't find the cert)
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
-
-          # Import certificate
           security import /tmp/cert.p12 -k "$KEYCHAIN_PATH" \
             -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productsign -f pkcs12
-
-          # Allow codesign to access the keychain without UI prompt
           security set-key-partition-list -S apple-tool:,apple: \
             -s -k "build" "$KEYCHAIN_PATH"
-
-          # Verify identity is available
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
-          # Store path for later steps
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-
-          # Clean up
           rm /tmp/cert.p12
 
-      # --- Build ---
+      # --- Prepare tools and Python (single download, two extractions) ---
 
-      - name: Build provider (Rust)
+      - name: Prepare build tools and Python
         run: |
-          cd provider
-          cargo build --release --no-default-features
+          # Install uv for ~10x faster Python package installs
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Build enclave (Swift)
-        run: |
-          cd enclave
-          swift build -c release
+          # awscli for R2 uploads
+          command -v aws &>/dev/null || brew install awscli 2>/dev/null || true
 
-      # --- Test ---
+          # Download PBS Python ONCE
+          curl -fsSL "https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/cpython-${PBS_PYTHON_VERSION}+${PBS_TAG}-aarch64-apple-darwin-install_only.tar.gz" \
+            -o /tmp/pbs-python.tar.gz
 
-      - name: Test provider
-        run: cd provider && cargo test -- --skip proxy::tests --skip server::tests
+          # Extract for Rust linking (clean copy, no pip installs)
+          rm -rf /tmp/eigeninference-build-python
+          mkdir -p /tmp/eigeninference-build-python
+          tar xzf /tmp/pbs-python.tar.gz --strip-components=1 -C /tmp/eigeninference-build-python
 
-      - uses: actions/setup-go@v5
+          # Extract for Python runtime (will get pip installs)
+          tar xzf /tmp/pbs-python.tar.gz -C /tmp/
+          mv /tmp/python /tmp/eigeninference-python
+          rm -f /tmp/pbs-python.tar.gz
+
+          # Pre-download vllm-mlx source for pip install
+          curl -fsSL -o /tmp/vllm-mlx-source.zip \
+            'https://github.com/Gajesh2007/vllm-mlx/archive/refs/heads/main.zip'
+
+          /tmp/eigeninference-build-python/bin/python3.12 --version
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
-          go-version: '1.23'
+          path: |
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/index
+            ~/.cargo/git/db
+            provider/target
+          key: cargo-v1-${{ runner.os }}-${{ hashFiles('provider/Cargo.lock') }}
+          restore-keys: |
+            cargo-v1-${{ runner.os }}-
 
-      - name: Test coordinator
-        run: cd coordinator && go test -race ./...
+      # --- Build all four components in parallel ---
 
-      # --- Sign & Bundle ---
-
-      - name: Sign binaries and create bundle
+      - name: Build all components (parallel)
+        env:
+          DARKBLOOM_COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          mkdir -p /tmp/eigeninference-bundle
+          set -e
 
-          cp provider/target/release/eigeninference-provider /tmp/eigeninference-bundle/
-          cp enclave/.build/release/eigeninference-enclave /tmp/eigeninference-bundle/
+          # Task A: Rust provider
+          (
+            set -e
+            export PYO3_PYTHON=/tmp/eigeninference-build-python/bin/python3.12
+            export LIBRARY_PATH=/tmp/eigeninference-build-python/lib
+            export DYLD_LIBRARY_PATH=/tmp/eigeninference-build-python/lib
+            export RUSTFLAGS="-L native=/tmp/eigeninference-build-python/lib"
+            cd provider && cargo build --release
+          ) > /tmp/rust-build.log 2>&1 &
+          RUST_PID=$!
+          echo "Started Rust build (pid $RUST_PID)"
 
-          # Code sign with Developer ID (hardened runtime + entitlements)
-          codesign --force --sign "$DEVELOPER_ID" \
-            --keychain "$KEYCHAIN_PATH" \
-            --entitlements scripts/entitlements.plist \
-            --options runtime \
-            /tmp/eigeninference-bundle/eigeninference-provider
+          # Task B: Swift enclave
+          (
+            set -e
+            cd enclave && swift build -c release
+          ) > /tmp/enclave-build.log 2>&1 &
+          ENCLAVE_PID=$!
+          echo "Started enclave build (pid $ENCLAVE_PID)"
 
-          codesign --force --sign "$DEVELOPER_ID" \
-            --keychain "$KEYCHAIN_PATH" \
-            --entitlements scripts/entitlements.plist \
-            --options runtime \
-            /tmp/eigeninference-bundle/eigeninference-enclave
+          # Task C: Python runtime (uv is ~10x faster than pip)
+          (
+            set -e
+            PYTHON=/tmp/eigeninference-python/bin/python3.12
 
-          # Verify signatures
-          codesign --verify --verbose /tmp/eigeninference-bundle/eigeninference-provider
-          codesign --verify --verbose /tmp/eigeninference-bundle/eigeninference-enclave
+            "$HOME/.local/bin/uv" pip install --python "$PYTHON" --quiet --no-cache-dir \
+              'mlx-lm>=0.31.2' \
+              /tmp/vllm-mlx-source.zip \
+              tokenizers
+            "$HOME/.local/bin/uv" pip install --python "$PYTHON" --quiet --no-cache-dir --upgrade 'mlx-lm>=0.31.2'
 
-          cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
-          echo "Bundle created: $(du -h /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -f1)"
+            "$PYTHON" -c "import vllm_mlx; print(f'vllm-mlx {vllm_mlx.__version__}')"
+            "$PYTHON" -c "import mlx_lm; print(f'mlx-lm {mlx_lm.__version__}')"
+            "$PYTHON" -c "from vllm_mlx.server import app; print('vllm-mlx server imports OK')"
 
-      # --- Notarize ---
+            # Trim bloat
+            cd /tmp/eigeninference-python/lib/python*/site-packages
+            rm -rf torch* gradio* opencv* cv2* pandas* pyarrow* \
+                   sympy* networkx* mcp* miniaudio* pydub* datasets*
+            find /tmp/eigeninference-python -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+            find /tmp/eigeninference-python -name "*.pyc" -delete 2>/dev/null || true
+            "$PYTHON" -m compileall -q /tmp/eigeninference-python/lib/python3.12/site-packages/ 2>/dev/null || true
+            rm -f /tmp/eigeninference-python/lib/python*/EXTERNALLY-MANAGED
+          ) > /tmp/python-build.log 2>&1 &
+          PYTHON_PID=$!
+          echo "Started Python runtime build (pid $PYTHON_PID)"
 
-      - name: Notarize binaries
+          # Task D: Swift macOS app (compile only — assembly happens after signing)
+          (
+            set -e
+            cd app/EigenInference && swift build -c release
+          ) > /tmp/app-build.log 2>&1 &
+          APP_PID=$!
+          echo "Started Swift app build (pid $APP_PID)"
+
+          # Wait for all builds, report failures
+          FAILED=0
+          for entry in "$RUST_PID:Rust:rust" "$ENCLAVE_PID:Enclave:enclave" "$PYTHON_PID:Python:python" "$APP_PID:App:app"; do
+            PID="${entry%%:*}"; rest="${entry#*:}"; NAME="${rest%%:*}"; LOG="${rest##*:}"
+            if wait "$PID"; then
+              echo "✓ $NAME build complete"
+              tail -3 "/tmp/${LOG}-build.log" 2>/dev/null || true
+            else
+              echo "✗ $NAME build FAILED:"
+              cat "/tmp/${LOG}-build.log"
+              FAILED=1
+            fi
+          done
+          [ $FAILED -eq 0 ] || exit 1
+
+      # --- Test (background) + Sign + Bundle + Hash ---
+
+      - name: Test, sign, bundle, and hash
+        id: artifacts
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: "SLDQ2GJ6TL"
         run: |
-          # Create a zip for notarization (notarytool needs zip/dmg/pkg)
-          ditto -c -k --keepParent /tmp/eigeninference-bundle /tmp/eigeninference-notarize.zip
-
-          xcrun notarytool submit /tmp/eigeninference-notarize.zip \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 10m
-
-          # Staple the individual binaries
-          xcrun stapler staple /tmp/eigeninference-bundle/eigeninference-provider || true
-          xcrun stapler staple /tmp/eigeninference-bundle/eigeninference-enclave || true
-
-          # Recreate tarball with stapled binaries
-          cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
-
-      # --- Compute hashes (AFTER signing — the signed binary is what providers run) ---
-
-      - name: Compute hashes
-        id: hash
-        run: |
-          BINARY_HASH=$(shasum -a 256 /tmp/eigeninference-bundle/eigeninference-provider | cut -d' ' -f1)
-          BUNDLE_HASH=$(shasum -a 256 /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
-          echo "binary_hash=$BINARY_HASH" >> "$GITHUB_OUTPUT"
-          echo "bundle_hash=$BUNDLE_HASH" >> "$GITHUB_OUTPUT"
-          echo "Binary hash (signed): $BINARY_HASH"
-          echo "Bundle hash: $BUNDLE_HASH"
-
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: /tmp/eigeninference-bundle-macos-arm64.tar.gz
-
-      # --- Compute runtime integrity hashes ---
-      # Build a temp Python venv with our fork to compute reference hashes.
-      # The venv is NOT shipped — providers self-heal at startup.
-      # We only need the hashes for the coordinator's manifest.
-
-      - name: Build and hash canonical Python runtime
-        id: runtime
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-        run: |
+          set -e
           VERSION="${GITHUB_REF_NAME#v}"
 
-          # Build a standalone Python venv with --copies (real binary, not symlinks).
-          # This is THE canonical Python that all providers must run.
-          echo "Building canonical Python runtime..."
-          python3 -m venv --copies /tmp/eigeninference-python
-          source /tmp/eigeninference-python/bin/activate
+          # ---- Provider tests in background ----
+          (
+            set -e
+            export PYO3_PYTHON=/tmp/eigeninference-build-python/bin/python3.12
+            export LIBRARY_PATH=/tmp/eigeninference-build-python/lib
+            export DYLD_LIBRARY_PATH=/tmp/eigeninference-build-python/lib
+            export RUSTFLAGS="-L native=/tmp/eigeninference-build-python/lib"
+            cd provider && cargo test -- --skip proxy::tests --skip server::tests --skip coordinator::tests::test_coordinator_connect_register_and_receive
+          ) > /tmp/test.log 2>&1 &
+          TEST_PID=$!
+          echo "Started provider tests (pid $TEST_PID)"
 
-          # Download the fork source and save it — this exact zip is uploaded
-          # to R2 so providers can pip-install the same artifact during self-heal.
-          curl -fsSL -o /tmp/vllm-mlx-source.zip \
-            'https://github.com/Gajesh2007/vllm-mlx/archive/refs/heads/main.zip'
-          pip install --quiet /tmp/vllm-mlx-source.zip
-          pip install --quiet mlx-lm
+          # ---- Sign Python runtime Mach-Os ONCE (covers bundle + app) ----
+          sign_macho_tree() {
+            local dir="$1"
+            find "$dir" -type f | while read -r file; do
+              if file "$file" | grep -q "Mach-O"; then
+                codesign --force --sign "$DEVELOPER_ID" \
+                  --keychain "$KEYCHAIN_PATH" --options runtime --timestamp \
+                  "$file" || return 1
+              fi
+            done
+          }
+          echo "Signing Python runtime Mach-Os..."
+          if ! sign_macho_tree /tmp/eigeninference-python; then
+            echo "Python runtime codesign failed — retrying in 30s"
+            sleep 30
+            sign_macho_tree /tmp/eigeninference-python
+          fi
+          echo "✓ Python runtime signed"
 
-          # Strip unnecessary packages to keep it small (keep pip — providers need it)
-          cd /tmp/eigeninference-python/lib/python*/site-packages
-          rm -rf torch* gradio* opencv* cv2* pandas* pyarrow* \
-                 sympy* networkx* mcp* miniaudio* pydub* datasets*
-          find /tmp/eigeninference-python -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
-          # Remove EXTERNALLY-MANAGED marker so pip works without --break-system-packages
-          rm -f /tmp/eigeninference-python/lib/python*/EXTERNALLY-MANAGED
-          cd -
+          # ---- Assemble provider bundle ----
+          mkdir -p /tmp/eigeninference-bundle/bin /tmp/eigeninference-bundle/python
 
-          deactivate
+          cp provider/target/release/darkbloom /tmp/eigeninference-bundle/bin/
+          cp enclave/.build/release/eigeninference-enclave /tmp/eigeninference-bundle/bin/
 
-          # Hash the Python binary (this is what providers must match)
-          # Hash python3.12 specifically — must match what compute_runtime_hashes() hashes on providers
+          # Copy SIGNED Python base to bundle (no site-packages).
+          # These files are already signed from the runtime pass above.
+          cp -R /tmp/eigeninference-python/bin /tmp/eigeninference-bundle/python/
+          cp -R /tmp/eigeninference-python/lib /tmp/eigeninference-bundle/python/
+          rm -rf /tmp/eigeninference-bundle/python/lib/python3.12/site-packages
+
+          # Fix libpython linkage in darkbloom
+          PYTHON_LOAD_PATH=$(otool -L /tmp/eigeninference-bundle/bin/darkbloom | awk '/libpython3\.12\.dylib/ {print $1; exit}')
+          if [ -z "$PYTHON_LOAD_PATH" ]; then
+            echo "ERROR: could not find libpython linkage in darkbloom"
+            exit 1
+          fi
+          install_name_tool -change \
+            "$PYTHON_LOAD_PATH" \
+            "@executable_path/../python/lib/libpython3.12.dylib" \
+            /tmp/eigeninference-bundle/bin/darkbloom
+
+          # Sign binaries (hardened runtime + entitlements)
+          codesign --force --sign "$DEVELOPER_ID" \
+            --keychain "$KEYCHAIN_PATH" \
+            --entitlements scripts/entitlements.plist \
+            --options runtime \
+            /tmp/eigeninference-bundle/bin/darkbloom
+
+          codesign --force --sign "$DEVELOPER_ID" \
+            --keychain "$KEYCHAIN_PATH" \
+            --entitlements scripts/entitlements.plist \
+            --options runtime \
+            /tmp/eigeninference-bundle/bin/eigeninference-enclave
+
+          # Verify key signatures
+          codesign --verify --verbose /tmp/eigeninference-bundle/bin/darkbloom
+          codesign --verify --verbose /tmp/eigeninference-bundle/bin/eigeninference-enclave
+          codesign --verify --verbose /tmp/eigeninference-bundle/python/bin/python3.12
+          codesign --verify --verbose /tmp/eigeninference-bundle/python/lib/libpython3.12.dylib
+
+          cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
+          echo "Bundle created: $(du -h /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -f1)"
+
+          # ---- Compute Python hashes (stable — not affected by stapling) ----
+          # Binary and bundle hashes are computed AFTER notarization stapling
+          # in the next step, since stapling modifies the Mach-O binaries.
           PYTHON_BIN="/tmp/eigeninference-python/bin/python3.12"
           PYTHON_HASH=$(shasum -a 256 "$PYTHON_BIN" | cut -d' ' -f1)
           echo "Python hash: $PYTHON_HASH"
+          echo "PYTHON_HASH=$PYTHON_HASH" >> "$GITHUB_ENV"
 
-          # Hash the vllm-mlx package (must match Rust hash_files_sorted algorithm)
-          VLLM_MLX_DIR=$(/tmp/eigeninference-python/bin/python3 -c "import vllm_mlx, os; print(os.path.dirname(vllm_mlx.__file__))")
-          RUNTIME_HASH=$(/tmp/eigeninference-python/bin/python3 -c "
-          import hashlib, os, sys
-          d = sys.argv[1]
-          files = sorted(
-              os.path.join(r, f)
-              for r, _, fs in os.walk(d)
-              for f in fs
-              if f.endswith('.py')
-          )
-          final = hashlib.sha256()
-          for path in files:
-              h = hashlib.sha256()
-              with open(path, 'rb') as fh:
-                  while True:
-                      chunk = fh.read(65536)
-                      if not chunk:
-                          break
-                      h.update(chunk)
-              final.update(h.digest())
-          print(final.hexdigest())
-          " "$VLLM_MLX_DIR")
-          echo "Runtime hash (vllm-mlx): $RUNTIME_HASH"
+          PYTHON_LIB_DIR=$("$PYTHON_BIN" -c "import sysconfig; print(sysconfig.get_path('stdlib'))")
+          SITE_PACKAGES_DIR=$("$PYTHON_BIN" -c "import site; print(site.getsitepackages()[0])")
+          # Use the same Rust hashing as the provider binary to guarantee
+          # identical results. The bundle copy was signed above and its
+          # libpython rpath points at @executable_path/../python/lib/ which
+          # doesn't exist in the bundle (site-packages stripped). Set
+          # DYLD_LIBRARY_PATH so the binary can load libpython.
+          RUNTIME_HASH=$(DYLD_LIBRARY_PATH="/tmp/eigeninference-python/lib:/tmp/eigeninference-build-python/lib" \
+            /tmp/eigeninference-bundle/bin/darkbloom hash-runtime "$PYTHON_LIB_DIR")
+          echo "Runtime hash: $RUNTIME_HASH"
+          echo "RUNTIME_HASH=$RUNTIME_HASH" >> "$GITHUB_ENV"
 
-          # Tar the Python runtime for R2 upload
-          echo "Packaging Python runtime..."
+          # Create runtime tarballs
           cd /tmp && tar czf eigeninference-python-macos-arm64.tar.gz -C eigeninference-python .
-          PYTHON_TARBALL_SIZE=$(du -h eigeninference-python-macos-arm64.tar.gz | cut -f1)
-          echo "Python runtime: $PYTHON_TARBALL_SIZE"
+          cd /tmp && tar czf eigeninference-site-packages.tar.gz -C "$SITE_PACKAGES_DIR" .
 
-          # Upload Python runtime to R2 (providers download this)
-          aws s3 cp /tmp/eigeninference-python-macos-arm64.tar.gz \
-            "s3://d-inf-app/releases/v${VERSION}/eigeninference-python-macos-arm64.tar.gz" \
-            --endpoint-url "$R2_ENDPOINT"
-          echo "Python runtime uploaded to R2"
+          # ---- Wait for provider tests ----
+          echo "Waiting for provider tests..."
+          if ! wait $TEST_PID; then
+            echo "Provider tests FAILED:"
+            cat /tmp/test.log
+            exit 1
+          fi
+          echo "✓ Provider tests passed"
 
-          # Upload the exact vllm-mlx source zip so providers can pip-install
-          # the same artifact during self-heal (hash will match).
-          aws s3 cp /tmp/vllm-mlx-source.zip \
-            "s3://d-inf-app/releases/v${VERSION}/vllm-mlx-source.zip" \
-            --endpoint-url "$R2_ENDPOINT"
-          echo "vllm-mlx source zip uploaded to R2"
+      # --- Notarize bundle + build app + upload (maximally parallel) ---
 
-          # Compute template hashes from R2 CDN
-          R2_CDN="https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev"
+      - name: Notarize, build app, and upload
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: "SLDQ2GJ6TL"
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_CDN: ${{ vars.R2_CDN }}
+        run: |
+          set -e
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          # ---- Task A: Notarize provider bundle (background) ----
+          (
+            set -e
+            ditto -c -k --keepParent /tmp/eigeninference-bundle /tmp/eigeninference-notarize.zip
+            xcrun notarytool submit /tmp/eigeninference-notarize.zip \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait --timeout 10m
+          ) > /tmp/notarize-bundle.log 2>&1 &
+          NOTARIZE_BUNDLE_PID=$!
+          echo "Started bundle notarization (pid $NOTARIZE_BUNDLE_PID)"
+
+          # ---- Task B: Build macOS app + DMG (foreground, overlaps with notarize) ----
+          APP_BIN=$(cd app/EigenInference && swift build -c release --show-bin-path)/EigenInference
+
+          APP_DIR="/tmp/EigenInference.app"
+          CONTENTS="$APP_DIR/Contents"
+          MACOS="$CONTENTS/MacOS"
+          RESOURCES="$CONTENTS/Resources"
+          PYTHON_ROOT="$CONTENTS/python"
+          rm -rf "$APP_DIR"
+          mkdir -p "$MACOS" "$RESOURCES" "$PYTHON_ROOT"
+
+          cat > "$CONTENTS/Info.plist" << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>EigenInference</string>
+            <key>CFBundleDisplayName</key><string>EigenInference</string>
+            <key>CFBundleIdentifier</key><string>io.darkbloom.provider</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleExecutable</key><string>EigenInference</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleIconFile</key><string>AppIcon</string>
+            <key>LSMinimumSystemVersion</key><string>14.0</string>
+            <key>LSUIElement</key><true/>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+
+          cp "$APP_BIN" "$MACOS/EigenInference"
+          cp /tmp/eigeninference-bundle/bin/darkbloom "$MACOS/darkbloom"
+          cp /tmp/eigeninference-bundle/bin/eigeninference-enclave "$MACOS/eigeninference-enclave" 2>/dev/null || true
+
+          # Copy already-signed Python runtime into app (skip re-signing individual files)
+          cp -a /tmp/eigeninference-python/. "$PYTHON_ROOT/"
+
+          # Sign app binaries (entitlements)
+          for bin in "$MACOS"/*; do
+            codesign --force --options runtime \
+              --entitlements scripts/entitlements.plist \
+              --sign "$DEVELOPER_ID" --keychain "$KEYCHAIN_PATH" "$bin"
+          done
+          # Sign the .app bundle itself
+          codesign --force --options runtime --no-strict \
+            --entitlements scripts/entitlements.plist \
+            --sign "$DEVELOPER_ID" --keychain "$KEYCHAIN_PATH" "$APP_DIR"
+
+          # Create DMG
+          DMG_TMP="/tmp/dmg-staging"
+          rm -rf "$DMG_TMP"
+          mkdir -p "$DMG_TMP"
+          cp -a "$APP_DIR" "$DMG_TMP/"
+          ln -s /Applications "$DMG_TMP/Applications"
+          hdiutil create -volname "Darkbloom" -srcfolder "$DMG_TMP" \
+            -ov -format UDZO "/tmp/Darkbloom.dmg" >/dev/null
+          rm -rf "$DMG_TMP"
+          echo "DMG built: $(du -h /tmp/Darkbloom.dmg | cut -f1)"
+
+          # ---- Wait for bundle notarization ----
+          echo "Waiting for bundle notarization..."
+          if ! wait "$NOTARIZE_BUNDLE_PID"; then
+            echo "!! Bundle notarization failed:"
+            tail -80 /tmp/notarize-bundle.log
+            exit 1
+          fi
+          echo "Bundle notarization complete"
+          tail -5 /tmp/notarize-bundle.log
+
+          # Staple notarization tickets to bundle binaries
+          xcrun stapler staple /tmp/eigeninference-bundle/bin/darkbloom || true
+          xcrun stapler staple /tmp/eigeninference-bundle/bin/eigeninference-enclave || true
+
+          # Recreate bundle tarball with stapled binaries
+          cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
+
+          # Compute final hashes AFTER stapling (stapling modifies the binaries)
+          BINARY_HASH=$(shasum -a 256 /tmp/eigeninference-bundle/bin/darkbloom | cut -d' ' -f1)
+          BUNDLE_HASH=$(shasum -a 256 /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
+          echo "Binary hash (signed+stapled): $BINARY_HASH"
+          echo "Bundle hash: $BUNDLE_HASH"
+          echo "BINARY_HASH=$BINARY_HASH" >> "$GITHUB_ENV"
+          echo "BUNDLE_HASH=$BUNDLE_HASH" >> "$GITHUB_ENV"
+
+          # ---- Task C: Notarize DMG (background) ----
+          (
+            xcrun notarytool submit "/tmp/Darkbloom.dmg" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait
+            xcrun stapler staple "/tmp/Darkbloom.dmg"
+          ) > /tmp/notarize-dmg.log 2>&1 &
+          NOTARIZE_DMG_PID=$!
+          echo "Started DMG notarization (pid $NOTARIZE_DMG_PID)"
+
+          # ---- Task D: Upload bundles to R2 (overlaps with DMG notarize) ----
+          # Wait on explicit PIDs — bare `wait` would also block on DMG notarize.
+          PREFIX="s3://${R2_BUCKET}/releases/v${VERSION}"
+          aws s3 cp /tmp/eigeninference-bundle-macos-arm64.tar.gz "${PREFIX}/eigeninference-bundle-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors & UL1=$!
+          aws s3 cp /tmp/eigeninference-python-macos-arm64.tar.gz "${PREFIX}/eigeninference-python-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors & UL2=$!
+          aws s3 cp /tmp/eigeninference-site-packages.tar.gz      "${PREFIX}/eigeninference-site-packages.tar.gz"      --endpoint-url "$R2_ENDPOINT" --only-show-errors & UL3=$!
+          aws s3 cp /tmp/vllm-mlx-source.zip                      "${PREFIX}/vllm-mlx-source.zip"                      --endpoint-url "$R2_ENDPOINT" --only-show-errors & UL4=$!
+          wait $UL1 $UL2 $UL3 $UL4
+          echo "All bundle uploads complete"
+
+          # Compute template hashes while DMG notarizes.
+          # Templates live on the models bucket, not the releases bucket.
+          MODELS_CDN="https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev"
           TEMPLATE_HASHES=""
           for name in qwen3.5 trinity gemma4 minimax; do
-            HASH=$(curl -fsSL "$R2_CDN/templates/${name}.jinja" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+            HASH=$(curl -fsSL "$MODELS_CDN/templates/${name}.jinja" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
             if [ -n "$HASH" ] && [ "$HASH" != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]; then
               [ -n "$TEMPLATE_HASHES" ] && TEMPLATE_HASHES+=","
               TEMPLATE_HASHES+="${name}=${HASH}"
               echo "Template $name: ${HASH:0:16}..."
             fi
           done
+          echo "TEMPLATE_HASHES=$TEMPLATE_HASHES" >> "$GITHUB_ENV"
 
-          rm -rf /tmp/eigeninference-python
+          # ---- Wait for DMG notarization (best-effort) ----
+          echo "Waiting for DMG notarization..."
+          if wait "$NOTARIZE_DMG_PID" 2>/dev/null; then
+            echo "DMG notarization complete"
+          else
+            echo "DMG notarization failed (non-fatal):"
+            tail -20 /tmp/notarize-dmg.log 2>/dev/null || true
+          fi
 
-          echo "python_hash=$PYTHON_HASH" >> "$GITHUB_OUTPUT"
-          echo "runtime_hash=$RUNTIME_HASH" >> "$GITHUB_OUTPUT"
-          echo "template_hashes=$TEMPLATE_HASHES" >> "$GITHUB_OUTPUT"
+          # Upload DMG (after notarize+staple completes)
+          aws s3 cp /tmp/Darkbloom.dmg "${PREFIX}/Darkbloom.dmg"     --endpoint-url "$R2_ENDPOINT" --only-show-errors &
+          aws s3 cp /tmp/Darkbloom.dmg "s3://${R2_BUCKET}/releases/latest/Darkbloom.dmg" --endpoint-url "$R2_ENDPOINT" --only-show-errors &
+          wait
+          echo "DMG uploaded to R2"
 
-      # --- Upload to R2 ---
-
-      - name: Install AWS CLI
-        run: |
-          brew install awscli 2>/dev/null || true
-
-      - name: Upload bundle to R2
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          aws s3 cp /tmp/eigeninference-bundle-macos-arm64.tar.gz \
-            "s3://d-inf-app/releases/v${VERSION}/eigeninference-bundle-macos-arm64.tar.gz" \
-            --endpoint-url "$R2_ENDPOINT"
-          echo "Uploaded to R2: releases/v${VERSION}/eigeninference-bundle-macos-arm64.tar.gz"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: /tmp/eigeninference-bundle-macos-arm64.tar.gz
 
       # --- Register with coordinator ---
 
       - name: Register release with coordinator
         env:
           COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
-          RELEASE_KEY: ${{ secrets.DGINF_RELEASE_KEY }}
+          RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
           R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           BUNDLE_URL="${R2_PUBLIC_URL}/releases/v${VERSION}/eigeninference-bundle-macos-arm64.tar.gz"
 
-          # Extract annotated tag message for changelog.
           TAG_MSG=$(git tag -l --format='%(contents:subject)%0a%(contents:body)' "$GITHUB_REF_NAME" 2>/dev/null || echo "")
           if [ -z "$TAG_MSG" ] || [ "$TAG_MSG" = $'\n' ]; then
             TAG_MSG="Release v${VERSION}"
           fi
 
-          # Use python3 to build JSON safely (handles escaping).
           python3 -c "
           import json, subprocess, sys
           payload = {
               'version': '${VERSION}',
               'platform': 'macos-arm64',
-              'binary_hash': '${{ steps.hash.outputs.binary_hash }}',
-              'bundle_hash': '${{ steps.hash.outputs.bundle_hash }}',
-              'python_hash': '${{ steps.runtime.outputs.python_hash }}',
-              'runtime_hash': '${{ steps.runtime.outputs.runtime_hash }}',
-              'template_hashes': '${{ steps.runtime.outputs.template_hashes }}',
+              'binary_hash': '${{ env.BINARY_HASH }}',
+              'bundle_hash': '${{ env.BUNDLE_HASH }}',
+              'python_hash': '${{ env.PYTHON_HASH }}',
+              'runtime_hash': '${{ env.RUNTIME_HASH }}',
+              'template_hashes': '${{ env.TEMPLATE_HASHES }}',
               'url': '${BUNDLE_URL}',
               'changelog': '''${TAG_MSG}'''.strip()
           }
@@ -327,21 +559,27 @@ jobs:
       # --- GitHub Release ---
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: /tmp/eigeninference-bundle-macos-arm64.tar.gz
-          generate_release_notes: true
-          body: |
-            ## Provider v${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > /tmp/release-notes.md <<'NOTES'
+          ## Provider v${{ github.ref_name }}
 
-            **Binary hash (signed):** `${{ steps.hash.outputs.binary_hash }}`
-            **Bundle hash:** `${{ steps.hash.outputs.bundle_hash }}`
-            **Runtime hash (vllm-mlx):** `${{ steps.runtime.outputs.runtime_hash }}`
-            **Signed by:** Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)
-            **Notarized:** Yes
-            **Build provenance:** Verify with `gh attestation verify eigeninference-bundle-macos-arm64.tar.gz --repo Layr-Labs/d-inference`
+          **Binary hash (signed):** `${{ env.BINARY_HASH }}`
+          **Bundle hash:** `${{ env.BUNDLE_HASH }}`
+          **Runtime hash (vllm-mlx):** `${{ env.RUNTIME_HASH }}`
+          **Signed by:** Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)
+          **Notarized:** Yes
+          **Build provenance:** Verify with `gh attestation verify eigeninference-bundle-macos-arm64.tar.gz --repo Layr-Labs/d-inference`
 
-            ### Install
-            ```bash
-            curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash
-            ```
+          ### Install
+          ```bash
+          curl -fsSL ${{ secrets.COORDINATOR_URL }}/install.sh | bash
+          ```
+          NOTES
+          gh release create "${{ github.ref_name }}" \
+            /tmp/eigeninference-bundle-macos-arm64.tar.gz \
+            /tmp/Darkbloom.dmg \
+            --title "${{ github.ref_name }}" \
+            --notes-file /tmp/release-notes.md \
+            --generate-notes

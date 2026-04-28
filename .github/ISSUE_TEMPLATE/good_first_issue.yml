@@ -1,0 +1,62 @@
+name: Good first issue (maintainers)
+description: Template for maintainers to file well-scoped tasks for new contributors
+title: "[good-first-issue] "
+labels: ["good first issue", "help wanted"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when filing an issue that's intentionally scoped for someone new to the codebase.
+        The goal is enough context that a contributor can pick it up without prior conversation.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - coordinator (Go)
+        - provider (Rust)
+        - console-ui (Next.js)
+        - image-bridge (Python)
+        - app (macOS Swift)
+        - enclave (Swift Secure Enclave helper)
+        - infra / deploy / CI
+        - docs
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What part of the system this touches and why the change is wanted.
+    validations:
+      required: true
+
+  - type: textarea
+    id: task
+    attributes:
+      label: What to do
+      description: Concrete steps. Reference specific files and functions where possible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How we'll know this is done (tests, behavior, docs updated, etc.).
+    validations:
+      required: true
+
+  - type: textarea
+    id: pointers
+    attributes:
+      label: Pointers
+      description: Files, functions, prior PRs, related docs — anything that gives the contributor a head start.
+
+  - type: input
+    id: difficulty
+    attributes:
+      label: Estimated difficulty
+      placeholder: small / medium / large

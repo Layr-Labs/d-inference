@@ -1,6 +1,6 @@
 package api
 
-// Billing integration tests for EigenInference coordinator.
+// Billing integration tests for Darkbloom coordinator.
 //
 // These tests exercise the full billing flow end-to-end: consumer balance
 // checking, inference charging, referral reward distribution, device auth
@@ -60,7 +60,7 @@ func billingTestServer(t *testing.T) (*Server, *store.MemoryStore, *payments.Led
 func setupProviderForBilling(t *testing.T, ctx context.Context, ts *httptest.Server, reg *registry.Registry, model string) (*websocket.Conn, string, string) {
 	t.Helper()
 	pubKey := testPublicKeyB64()
-	models := []protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}}
+	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
 	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
 
@@ -105,13 +105,8 @@ func serveOneInference(ctx context.Context, t *testing.T, conn *websocket.Conn, 
 				var inferReq protocol.InferenceRequestMessage
 				json.Unmarshal(data, &inferReq)
 
-				chunk := protocol.InferenceResponseChunkMessage{
-					Type:      protocol.TypeInferenceResponseChunk,
-					RequestID: inferReq.RequestID,
-					Data:      `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"ok"}}]}` + "\n\n",
-				}
-				chunkData, _ := json.Marshal(chunk)
-				conn.Write(ctx, websocket.MessageText, chunkData)
+				writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
+					`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"ok"}}]}`+"\n\n")
 
 				complete := protocol.InferenceCompleteMessage{
 					Type:      protocol.TypeInferenceComplete,
@@ -251,6 +246,117 @@ func TestIntegration_ConsumerInsufficientBalance(t *testing.T) {
 	// No usage should be recorded (request was rejected before routing).
 	if len(ledger.Usage(consumerID)) != 0 {
 		t.Errorf("no usage should be recorded for rejected request")
+	}
+}
+
+// TestIntegration_StreamingReservationBlocksExploit is the regression test for
+// GitHub issue #33 ("Free inference via streaming"). A consumer whose balance
+// exceeds the old MinimumCharge reservation ($0.0001) but is below the full
+// cost of max_tokens × output-price must be rejected with 402 BEFORE any
+// chunk is streamed — not after delivery with a silently-failed charge.
+func TestIntegration_StreamingReservationBlocksExploit(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("exploit-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+
+	ledger := srv.ledger
+	billingSvc := billing.NewService(st, ledger, logger, billing.Config{MockMode: true})
+	srv.SetBilling(billingSvc)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	consumerID := "exploit-key"
+
+	// Seed the consumer with 1000 μUSD ($0.001) — well above the old
+	// MinimumCharge of 100 μUSD but below the reservation required for a
+	// streaming 4096-token request on default pricing
+	// (CalculateCost of ~4096 × 200 μUSD/1M ≈ 819 μUSD is close, so use
+	// max_tokens=8192 to make the gap unambiguous: reservation ≈ 1638 μUSD).
+	const seedBalance int64 = 1000
+	if err := st.Credit(consumerID, seedBalance, store.LedgerDeposit, "test-seed"); err != nil {
+		t.Fatalf("seed balance: %v", err)
+	}
+
+	// Register a provider so the rejection can't be blamed on routing.
+	model := "exploit-test-model"
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Streaming request explicitly requesting 8192 max_tokens. Even with
+	// default pricing this exceeds the seeded balance, so the coordinator
+	// must reject at the pre-flight reservation stage.
+	chatBody := `{"model":"` + model + `","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":8192}`
+	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(chatBody))
+	httpReq.Header.Set("Authorization", "Bearer "+consumerID)
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("http request: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusPaymentRequired {
+		t.Fatalf("streaming request with under-funded balance: status = %d, want 402; body = %s",
+			resp.StatusCode, body)
+	}
+
+	// The rejection must happen before the reservation is debited: balance
+	// remains unchanged, no usage was recorded, and no chunks were delivered.
+	if got := ledger.Balance(consumerID); got != seedBalance {
+		t.Errorf("balance after rejected request = %d, want %d (no charge should occur)",
+			got, seedBalance)
+	}
+	if n := len(ledger.Usage(consumerID)); n != 0 {
+		t.Errorf("usage entries after rejected request = %d, want 0", n)
+	}
+	if strings.Contains(string(body), "data:") {
+		t.Errorf("response body should not contain SSE chunks; got: %s", body)
+	}
+}
+
+// TestIntegration_ReservationRefundedOnCompletion verifies that the pre-flight
+// reservation (now based on max_tokens, not MinimumCharge) is refunded down
+// to the actual cost after the provider reports usage. This guards against
+// the reservation silently over-charging consumers for bounded generations.
+func TestIntegration_ReservationRefundedOnCompletion(t *testing.T) {
+	srv, _, ledger := billingTestServer(t)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	consumerID := "test-key"
+	initialBalance := ledger.Balance(consumerID)
+
+	model := "refund-test-model"
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Short generation — completion_tokens (10) is far below the reservation
+	// based on default max_tokens=8192.
+	usage := protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 10}
+	providerDone := serveOneInference(ctx, t, conn, pubKey, usage)
+
+	status := sendInferenceRequest(t, ctx, ts.URL, model, consumerID)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	// Consumer should be charged exactly the actual cost, not the reservation.
+	expectedCost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
+	if got := ledger.Balance(consumerID); got != initialBalance-expectedCost {
+		t.Errorf("balance = %d, want %d (initial %d minus cost %d); reservation refund failed",
+			got, initialBalance-expectedCost, initialBalance, expectedCost)
 	}
 }
 
@@ -453,7 +559,7 @@ func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	// Step 5: Connect a provider via WebSocket using the auth token.
 	pubKey := testPublicKeyB64()
 	model := "device-auth-model"
-	models := []protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}}
+	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 	conn := connectProviderWithToken(t, ctx, ts.URL, models, pubKey, tokenResult.Token, "0xDeviceTestWallet")
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
@@ -557,14 +663,14 @@ func TestIntegration_MultiNodeSameAccount(t *testing.T) {
 	model2 := "multi-node-model-b"
 
 	conn1 := connectProviderWithToken(t, ctx, ts.URL,
-		[]protocol.ModelInfo{{ID: model1, ModelType: "test", Quantization: "4bit"}},
+		[]protocol.ModelInfo{{ID: model1, ModelType: "chat", Quantization: "4bit"}},
 		pubKey1, rawToken, "0xMultiNode1")
 	defer conn1.Close(websocket.StatusNormalClosure, "")
 
 	time.Sleep(200 * time.Millisecond)
 
 	conn2 := connectProviderWithToken(t, ctx, ts.URL,
-		[]protocol.ModelInfo{{ID: model2, ModelType: "test", Quantization: "4bit"}},
+		[]protocol.ModelInfo{{ID: model2, ModelType: "chat", Quantization: "4bit"}},
 		pubKey2, rawToken, "0xMultiNode2")
 	defer conn2.Close(websocket.StatusNormalClosure, "")
 

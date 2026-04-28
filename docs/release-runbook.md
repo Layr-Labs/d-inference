@@ -47,7 +47,7 @@ git push origin master --tags
 
 The `.github/workflows/release.yml` workflow:
 
-1. Builds `eigeninference-provider` (Rust, `--no-default-features`)
+1. Builds `darkbloom` (Rust, `--no-default-features`)
 2. Builds `eigeninference-enclave` (Swift)
 3. Runs all tests (provider + coordinator)
 4. Creates code-signed bundle tarball
@@ -66,7 +66,7 @@ The `.github/workflows/release.yml` workflow:
 gh release view v0.2.1
 
 # Check a fresh install works
-curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash
+curl -fsSL https://api.darkbloom.dev/install.sh | bash
 ```
 
 ## Manual Release (fallback)
@@ -89,12 +89,12 @@ swift build -c release
 
 ```bash
 mkdir -p /tmp/eigeninference-bundle
-cp provider/target/release/eigeninference-provider /tmp/eigeninference-bundle/
+cp provider/target/release/darkbloom /tmp/eigeninference-bundle/
 cp enclave/.build/release/eigeninference-enclave /tmp/eigeninference-bundle/
 
 # Code sign
 codesign --force --sign - --entitlements scripts/entitlements.plist \
-  --options runtime /tmp/eigeninference-bundle/eigeninference-provider
+  --options runtime /tmp/eigeninference-bundle/darkbloom
 codesign --force --sign - --entitlements scripts/entitlements.plist \
   --options runtime /tmp/eigeninference-bundle/eigeninference-enclave
 
@@ -104,7 +104,7 @@ cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bu
 ### 3. Compute hashes
 
 ```bash
-BINARY_HASH=$(shasum -a 256 provider/target/release/eigeninference-provider | cut -d' ' -f1)
+BINARY_HASH=$(shasum -a 256 provider/target/release/darkbloom | cut -d' ' -f1)
 BUNDLE_HASH=$(shasum -a 256 /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
 echo "Binary: $BINARY_HASH"
 echo "Bundle: $BUNDLE_HASH"
@@ -125,7 +125,7 @@ aws s3 cp /tmp/eigeninference-bundle-macos-arm64.tar.gz \
 VERSION="0.2.1"
 R2_PUBLIC_URL="https://pub-XXXX.r2.dev"
 
-curl -X POST https://inference-test.openinnovation.dev/v1/releases \
+curl -X POST https://api.darkbloom.dev/v1/releases \
   -H "Authorization: Bearer $EIGENINFERENCE_RELEASE_KEY" \
   -H "Content-Type: application/json" \
   -d "{
@@ -155,7 +155,7 @@ Or using the admin script with the full bundle script:
 
 ```bash
 ./scripts/admin.sh releases latest
-# or: curl https://inference-test.openinnovation.dev/v1/releases/latest?platform=macos-arm64
+# or: curl https://api.darkbloom.dev/v1/releases/latest?platform=macos-arm64
 ```
 
 ### Deactivate an old version
@@ -209,7 +209,7 @@ To rollback to a previous version, deactivate the bad version. The old version i
 
 ## How Binary Verification Works
 
-1. **At build time**: SHA-256 of `eigeninference-provider` binary is computed
+1. **At build time**: SHA-256 of `darkbloom` binary is computed
 2. **At release registration**: hash stored in coordinator's release table
 3. **At startup**: `SyncBinaryHashes()` loads all active release hashes into `knownBinaryHashes`
 4. **At provider registration**: attestation blob contains `binaryHash` → checked against known set

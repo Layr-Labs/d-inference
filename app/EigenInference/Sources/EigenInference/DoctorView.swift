@@ -1,4 +1,4 @@
-/// DoctorView — Displays results from `eigeninference-provider doctor`.
+/// DoctorView — Displays results from `darkbloom doctor`.
 ///
 /// Runs the 8-point diagnostic check and shows each result with
 /// a status icon and detail text. Provides remediation hints.
@@ -51,7 +51,7 @@ struct DoctorView: View {
 
                     DisclosureGroup("Raw Output") {
                         Text(rawOutput)
-                            .font(.system(.caption, design: .monospaced))
+                            .font(.monoWarm)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(8)
                             .background(Color.warmBgSecondary)
@@ -73,8 +73,8 @@ struct DoctorView: View {
     private func checkRow(_ check: DiagnosticCheck) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: check.passed ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .foregroundColor(check.passed ? .tealAccent : .warmError)
-                .font(.title3)
+                .foregroundColor(check.passed ? .adaptiveTealAccent : .adaptiveError)
+                .font(.system(size: 18, weight: .semibold, design: .rounded))
                 .frame(width: 24)
 
             VStack(alignment: .leading, spacing: 4) {
@@ -82,20 +82,20 @@ struct DoctorView: View {
                     .fontWeight(.medium)
 
                 Text(check.detail)
-                    .font(.caption)
+                    .font(.captionWarm)
                     .foregroundColor(.warmInkLight)
 
                 if !check.passed, let hint = check.remediation {
                     Text(hint)
-                        .font(.caption)
-                        .foregroundColor(.gold)
+                        .font(.captionWarm)
+                        .foregroundColor(.adaptiveGold)
                 }
             }
 
             Spacer()
         }
         .padding(10)
-        .background(check.passed ? Color.tealAccent.opacity(0.05) : Color.warmError.opacity(0.05))
+        .background(check.passed ? Color.adaptiveTealAccent.opacity(0.05) : Color.adaptiveError.opacity(0.05))
         .cornerRadius(8)
     }
 
@@ -194,7 +194,7 @@ struct DoctorView: View {
         case 2: return "Reboot into Recovery Mode and run 'csrutil enable'."
         case 3: return "Secure Enclave requires Apple Silicon hardware."
         case 4: return "Run the setup wizard to enroll in MDM."
-        case 5: return "Run 'eigeninference-provider install' to set up the inference runtime."
+        case 5: return "Run 'darkbloom install' to set up the inference runtime."
         case 6: return "Download a model from the Model tab in Settings."
         case 7: return "The node key is auto-generated on first run."
         case 8: return "Check your internet connection and coordinator URL."

@@ -1,6 +1,6 @@
 /// IdleDetector — Monitors user keyboard/mouse activity.
 ///
-/// EigenInference should only serve inference when the user isn't actively using
+/// Darkbloom should only serve inference when the user isn't actively using
 /// their Mac. This class polls the system's idle time (seconds since last
 /// keyboard/mouse event) on a 10-second interval and publishes whether
 /// the user is idle.

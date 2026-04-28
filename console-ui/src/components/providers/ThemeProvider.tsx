@@ -1,6 +1,11 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState } from "react";
+import { migrateStorage } from "@/lib/migrate-storage";
+
+// Migrate old eigeninference_* localStorage keys to darkbloom_* before any
+// component reads them. Module-scope call ensures it runs once on bundle load.
+migrateStorage();
 
 type Theme = "light" | "dark";
 
@@ -20,7 +25,7 @@ export function useTheme() {
   return useContext(ThemeContext);
 }
 
-const STORAGE_KEY = "eigeninference-theme";
+const STORAGE_KEY = "darkbloom-theme";
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setThemeState] = useState<Theme>("light");

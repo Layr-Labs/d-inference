@@ -74,7 +74,7 @@ func (s *Server) handleDeviceCode(w http.ResponseWriter, r *http.Request) {
 		verificationURI = strings.TrimRight(s.consoleURL, "/") + "/link"
 	} else {
 		scheme := "https"
-		if r.TLS == nil && !strings.Contains(r.Host, "openinnovation.dev") {
+		if r.TLS == nil && !strings.Contains(r.Host, "darkbloom.dev") {
 			scheme = "http"
 		}
 		verificationURI = fmt.Sprintf("%s://%s/link", scheme, r.Host)
@@ -138,7 +138,7 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 		pt := &store.ProviderToken{
 			TokenHash: tokenHash,
 			AccountID: dc.AccountID,
-			Label:     fmt.Sprintf("device-%s", dc.UserCode),
+			Label:     "device-" + dc.UserCode,
 			Active:    true,
 		}
 		if err := s.store.CreateProviderToken(pt); err != nil {
@@ -190,7 +190,7 @@ func (s *Server) handleDeviceApprove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if time.Now().After(dc.ExpiresAt) {
-		writeJSON(w, http.StatusGone, errorResponse("expired_code", "this code has expired — run 'eigeninference-provider login' again"))
+		writeJSON(w, http.StatusGone, errorResponse("expired_code", "this code has expired — run 'darkbloom login' again"))
 		return
 	}
 

@@ -1,7 +1,7 @@
 //! Provider wallet for earnings and payouts.
 //!
 //! Generates an Ethereum-compatible wallet (secp256k1 private key) and stores
-//! it at ~/.eigeninference/wallet_key (mode 0600). The wallet address is used for
+//! it at ~/.darkbloom/wallet_key (mode 0600). The wallet address is used for
 //! receiving provider payouts from the coordinator's payment ledger.
 //!
 //! The wallet key is intentionally stored as a readable file — it represents
@@ -109,7 +109,7 @@ fn address_from_private_key(key_hex: &str) -> Result<String> {
 fn wallet_file_path() -> std::path::PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".eigeninference/wallet_key")
+        .join(".darkbloom/wallet_key")
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

@@ -66,6 +66,8 @@ impl VllmMlxBackend {
         } else {
             args.push("--port".to_string());
             args.push(self.port.to_string());
+            args.push("--host".to_string());
+            args.push("127.0.0.1".to_string());
         }
 
         if self.continuous_batching {

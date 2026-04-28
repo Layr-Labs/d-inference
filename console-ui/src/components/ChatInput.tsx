@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, Square, ChevronDown, Mic, Loader2, LogIn } from "lucide-react";
+import { Send, Square, ChevronDown, LogIn } from "lucide-react";
 import { useStore } from "@/lib/store";
-import { transcribeAudio } from "@/lib/api";
+import { trackEvent } from "@/lib/google-analytics";
 
 interface ChatInputProps {
   onSend: (content: string) => void;
@@ -18,12 +18,6 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { selectedModel, models, setSelectedModel } = useStore();
   const [modelOpen, setModelOpen] = useState(false);
-
-  // Voice recording state
-  const [recording, setRecording] = useState(false);
-  const [transcribing, setTranscribing] = useState(false);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
@@ -58,71 +52,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
     return () => document.removeEventListener("click", handler);
   }, [modelOpen]);
 
-  // Find a transcription model from the model list
-  const sttModel = models.find(
-    (m) => m.model_type === "stt" || m.model_type === "transcription"
-  );
-
-  const startRecording = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-          ? "audio/webm;codecs=opus"
-          : "audio/webm",
-      });
-      chunksRef.current = [];
-
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
-
-      mediaRecorder.onstop = async () => {
-        // Stop all tracks to release the mic
-        stream.getTracks().forEach((t) => t.stop());
-
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        if (blob.size === 0) return;
-
-        setTranscribing(true);
-        try {
-          const result = await transcribeAudio(
-            blob,
-            sttModel?.id || "CohereLabs/cohere-transcribe-03-2026"
-          );
-          const text = result?.text?.trim();
-          if (text) {
-            setInput((prev) => (prev ? prev + " " + text : text));
-            // Focus textarea so user sees the text and can edit/send
-            setTimeout(() => textareaRef.current?.focus(), 100);
-          }
-        } catch (err) {
-          console.error("Transcription failed:", err);
-        } finally {
-          setTranscribing(false);
-        }
-      };
-
-      mediaRecorderRef.current = mediaRecorder;
-      mediaRecorder.start();
-      setRecording(true);
-    } catch (err) {
-      console.error("Microphone access denied:", err);
-    }
-  }, [sttModel]);
-
-  const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current && recording) {
-      mediaRecorderRef.current.stop();
-      mediaRecorderRef.current = null;
-      setRecording(false);
-    }
-  }, [recording]);
-
-  // Filter to text models only — image/STT models have their own pages
-  const chatModels = models.filter(
-    (m) => m.model_type !== "stt" && m.model_type !== "transcription" && m.model_type !== "image"
-  );
+  const chatModels = models;
 
   const selectedModelObj = chatModels.find((m) => m.id === selectedModel);
   const displayModel = selectedModelObj?.display_name
@@ -134,8 +64,13 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
       <div className="bg-bg-primary/80 backdrop-blur-sm">
         <div className="max-w-4xl mx-auto px-3 sm:px-6 py-3 sm:py-4">
           <button
-            onClick={onLogin}
-            className="w-full flex items-center justify-center gap-2 bg-bg-tertiary rounded-2xl border-[3px] border-border-dim
+            onClick={() => {
+              trackEvent("login_cta_clicked", {
+                source: "chat_input",
+              });
+              onLogin?.();
+            }}
+            className="w-full flex items-center justify-center gap-2 bg-bg-tertiary rounded-2xl border border-border-dim
                        py-4 text-text-tertiary hover:text-text-secondary hover:border-border-subtle cursor-pointer transition-all"
           >
             <LogIn size={16} />
@@ -149,15 +84,15 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
   return (
     <div className="bg-bg-primary/80 backdrop-blur-sm">
       <div className="max-w-4xl mx-auto px-3 sm:px-6 py-3 sm:py-4">
-        <div className="relative flex flex-col gap-2 bg-bg-white rounded-2xl border-[3px] border-ink
-                        shadow-md focus-within:shadow-lg focus-within:translate-x-[-1px] focus-within:translate-y-[-1px] transition-all">
+        <div className="relative flex flex-col gap-2 bg-bg-white rounded-2xl border border-border-dim
+                        shadow-md focus-within:shadow-lg transition-all">
           {/* Textarea */}
           <textarea
             ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={recording ? "Listening..." : "Send a message..."}
+            placeholder="Send a message..."
             rows={1}
             className="w-full bg-transparent px-4 pt-4 pb-1 text-text-primary placeholder:text-text-tertiary text-[15px] resize-none outline-none"
           />
@@ -180,7 +115,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                 </button>
 
                 {modelOpen && chatModels.length > 0 && (
-                  <div className="absolute bottom-full left-0 mb-1 w-[calc(100vw-3rem)] sm:w-80 bg-bg-white border-[3px] border-ink rounded-xl shadow-lg overflow-hidden z-50">
+                  <div className="absolute bottom-full left-0 mb-1 w-[calc(100vw-3rem)] sm:w-80 bg-bg-white border border-border-dim rounded-xl shadow-lg overflow-hidden z-50">
                     {chatModels.map((m) => {
                       const name = m.display_name || m.id.split("/").pop() || m.id;
                       return (
@@ -189,6 +124,10 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                           onClick={() => {
                             setSelectedModel(m.id);
                             setModelOpen(false);
+                            trackEvent("chat_model_selected", {
+                              model: m.id,
+                              quantization: m.quantization || "unknown",
+                            });
                           }}
                           className={`w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-bg-hover transition-colors ${
                             selectedModel === m.id
@@ -212,30 +151,8 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
               </div>
             </div>
 
-            {/* Right: Mic + Send / Stop */}
+            {/* Right: Send / Stop */}
             <div className="flex items-center gap-1.5">
-              {/* Mic button — only shown when a transcription model is available */}
-              {sttModel && (
-                <button
-                  onClick={recording ? stopRecording : startRecording}
-                  disabled={transcribing || isStreaming}
-                  className={`flex items-center justify-center w-9 h-9 rounded-xl border-2 transition-all
-                    ${recording
-                      ? "bg-accent-red/20 border-accent-red text-accent-red animate-pulse"
-                      : "bg-transparent border-transparent text-text-tertiary hover:text-text-secondary hover:bg-bg-hover hover:border-border-subtle"
-                    }
-                    disabled:opacity-30`}
-                  title={recording ? "Stop recording" : "Voice input"}
-                >
-                  {transcribing ? (
-                    <Loader2 size={16} className="animate-spin" />
-                  ) : (
-                    <Mic size={16} />
-                  )}
-                </button>
-              )}
-
-              {/* Send / Stop */}
               {isStreaming ? (
                 <button
                   onClick={onStop}
@@ -249,7 +166,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                   disabled={!input.trim() || isStreaming}
                   className="flex items-center justify-center w-9 h-9 rounded-xl bg-coral border-2 border-ink text-white
                              disabled:opacity-30 disabled:border-border-subtle
-                             hover:translate-x-[-1px] hover:translate-y-[-1px] hover:shadow-[2px_2px_0_var(--ink)]
+                             hover:opacity-90
                              transition-all"
                 >
                   <Send size={16} />

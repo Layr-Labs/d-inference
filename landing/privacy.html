@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — Darkbloom</title>
+  <meta name="description" content="Darkbloom Privacy Policy" />
+  <style>
+    @font-face { font-family: 'ABC Repro'; src: url('fonts/ABCRepro-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+    @font-face { font-family: 'ABC Repro'; src: url('fonts/ABCRepro-Bold.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: swap; }
+    @font-face { font-family: 'ABC Repro Mono'; src: url('fonts/ABCReproMono-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+    @font-face { font-family: 'IBM Plex Mono'; src: url('fonts/IBMPlexMono-Regular.ttf') format('truetype'); font-weight: 400; font-style: normal; font-display: swap; }
+    @font-face { font-family: 'Louize'; src: url('fonts/Louize-Regular.otf') format('opentype'); font-weight: 400; font-style: normal; font-display: swap; }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --off-white:   #F2F2F2;
+      --white:       #FFFFFF;
+      --black:       #000000;
+      --eigen-blue:  #1A0C6D;
+      --grey-01:     #D8DCE5;
+      --grey-02:     #ACB1BC;
+      --grey-03:     #666F7C;
+      --font-sans:   'ABC Repro', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono:   'ABC Repro Mono', 'IBM Plex Mono', monospace;
+      --font-logo:   'Louize', Georgia, serif;
+      --margin: 4%;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--white);
+      color: var(--black);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    a { color: var(--eigen-blue); text-decoration: underline; }
+    a:hover { opacity: 0.75; }
+
+    .container {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 0 var(--margin);
+    }
+
+    .legal-nav {
+      height: 56px;
+      border-bottom: 1px solid var(--grey-01);
+      display: flex;
+      align-items: center;
+    }
+    .legal-nav a.back {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--grey-03);
+      text-decoration: none;
+      letter-spacing: 0.01em;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .legal-nav a.back:hover { color: var(--black); }
+
+    .legal-content {
+      max-width: 740px;
+      margin: 0 auto;
+      padding: 60px var(--margin) 80px;
+    }
+
+    .legal-content h1 {
+      font-family: var(--font-sans);
+      font-weight: 700;
+      font-size: 32px;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      color: var(--black);
+      margin-bottom: 8px;
+    }
+
+    .legal-content .date {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--grey-02);
+      letter-spacing: 0.01em;
+      margin-bottom: 32px;
+    }
+
+    .legal-content .lead {
+      font-size: 15px;
+      color: var(--grey-03);
+      line-height: 1.7;
+      margin-bottom: 40px;
+      padding-bottom: 40px;
+      border-bottom: 1px solid var(--grey-01);
+    }
+
+    .legal-section {
+      margin-bottom: 36px;
+    }
+
+    .legal-section h2 {
+      font-family: var(--font-sans);
+      font-weight: 700;
+      font-size: 14px;
+      letter-spacing: -0.01em;
+      color: var(--eigen-blue);
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    .legal-section p {
+      font-size: 14px;
+      color: var(--grey-03);
+      line-height: 1.75;
+    }
+
+    .legal-section p + p { margin-top: 10px; }
+
+    .legal-section ul {
+      margin-top: 8px;
+      margin-bottom: 8px;
+      padding-left: 20px;
+      list-style: disc;
+    }
+
+    .legal-section ul li {
+      font-size: 14px;
+      color: var(--grey-03);
+      line-height: 1.75;
+      margin-bottom: 4px;
+    }
+
+    footer {
+      padding: 40px 0;
+      border-top: 1px solid var(--grey-01);
+    }
+    footer .fi {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    footer .copy {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--grey-02);
+      letter-spacing: 0.01em;
+    }
+    footer .fl { display: flex; gap: 20px; }
+    footer .fl a {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--grey-03);
+      text-decoration: none;
+      letter-spacing: 0.01em;
+    }
+    footer .fl a:hover { color: var(--black); }
+  </style>
+</head>
+<body>
+
+<nav class="legal-nav">
+  <div class="container" style="display:flex;align-items:center;">
+    <a href="index.html" class="back">← Darkbloom</a>
+  </div>
+</nav>
+
+<div class="legal-content">
+  <h1>Privacy Policy</h1>
+  <p class="date">Updated: April 17, 2026</p>
+
+  <p class="lead">This Privacy Policy explains how Eigen Labs, Inc., operating the Darkbloom platform ("Eigen Labs," "Darkbloom," "we," "us," or "our") collects, uses, discloses, and otherwise processes personal information in connection with Darkbloom's websites, console, APIs, software, provider applications, hosted services, and related products and features (collectively, the "Services").</p>
+
+  <p class="lead"><strong>Standalone Document.</strong> This Privacy Policy is a standalone document governing the Darkbloom Services only. It is separate from and does not incorporate the Eigen Labs Privacy Policy or other privacy notices governing EigenLayer, EigenCloud, EigenDA, EigenCompute, or other Eigen Labs products. Your use of those products is governed solely by their respective privacy notices. This Privacy Policy is designed for the Darkbloom product, including consumer-facing API and console features and provider-facing node software. It does not apply to third-party services we do not control, even if they interoperate with the Services.</p>
+
+  <div class="legal-section">
+    <h2>1. Scope</h2>
+    <p>This Privacy Policy applies when you:</p>
+    <ul>
+      <li>visit our websites or console;</li>
+      <li>create or use an account, API key, wallet-linked session, or device-link flow;</li>
+      <li>submit prompts, files, images, or audio to the Services;</li>
+      <li>install or operate provider software or the macOS app;</li>
+      <li>communicate with us about the Services.</li>
+    </ul>
+    <p>Additional notices may apply to specific products, integrations, or enterprise relationships.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>2. Personal Information We Collect</h2>
+    <p>The categories of personal information we collect depend on how you use the Services.</p>
+
+    <p><strong>2.1 Account and identity information.</strong> We may collect:</p>
+    <ul>
+      <li>name and business details you provide to us;</li>
+      <li>email address;</li>
+      <li>authentication identifiers from our identity providers, including Privy user identifiers;</li>
+      <li>wallet addresses and related wallet identifiers used for authentication or payment-related features;</li>
+      <li>API keys and account identifiers associated with the Services;</li>
+      <li>tax identification information (such as W-9 or W-8BEN data) collected from providers for tax reporting purposes.</li>
+    </ul>
+
+    <p><strong>2.2 Payment, transaction, and billing information.</strong> We may collect:</p>
+    <ul>
+      <li>billing session identifiers;</li>
+      <li>payment method type;</li>
+      <li>deposit and withdrawal information;</li>
+      <li>Stripe checkout or other processor transaction identifiers;</li>
+      <li>blockchain transaction signatures, wallet addresses, transfer details, and related public-ledger information;</li>
+      <li>account balances, credit history, payout history, referral codes, and ledger entries.</li>
+    </ul>
+    <p>We generally do not receive full payment card numbers from Stripe or similar payment processors.</p>
+
+    <p><strong>2.3 Usage and service metadata.</strong> We collect service usage information such as:</p>
+    <ul>
+      <li>request identifiers;</li>
+      <li>account and provider identifiers;</li>
+      <li>selected model or feature;</li>
+      <li>token counts, audio duration, image count, or similar usage measures;</li>
+      <li>timestamps;</li>
+      <li>per-request cost or billing metadata;</li>
+      <li>API route, status code, and related operational metrics.</li>
+    </ul>
+
+    <p><strong>2.4 Content you submit and receive.</strong> Depending on the feature you use, we may process:</p>
+    <ul>
+      <li>prompts, messages, and instructions;</li>
+      <li>files and attachments;</li>
+      <li>model outputs and responses.</li>
+    </ul>
+    <p>We refer to this material as "Content."</p>
+
+    <p><strong>2.5 Provider and device information.</strong> If you run provider software or use provider-related features, we may collect:</p>
+    <ul>
+      <li>hardware and device characteristics, such as machine model, chip family, memory, CPU/GPU information, and available capacity;</li>
+      <li>provider wallet addresses;</li>
+      <li>attestation materials and related security data, including: Secure Enclave-generated P-256 public keys and ECDSA attestation signatures; SHA-256 hashes of the provider binary; hardware serial numbers used to cross-reference device identity in our MDM server; SIP status, Secure Boot level, and Authenticated Root Volume integrity status as reported by the device;</li>
+      <li>challenge-response verification data: approximately every five minutes, our coordinator sends a 32-byte cryptographic nonce to the provider's device. The device signs the nonce using its Secure Enclave key and returns a response including fresh SIP and Secure Boot status. We collect and process the nonce, the signed response, and the accompanying security posture data for each challenge cycle;</li>
+      <li>heartbeats, health checks, thermal state, memory pressure, security posture, and version information;</li>
+      <li>device-linking tokens and account-link status.</li>
+    </ul>
+    <p>Further, provider Macs enrolled in the platform are subject to periodic automated SecurityInfo queries sent via Apple's MDM protocol through Apple's Push Notification service (APNs). These queries request SIP status, Secure Boot level, and Authenticated Root Volume integrity from the device's OS MDM client and not from Darkbloom software. This querying occurs on an ongoing basis throughout the provider's participation in the platform.</p>
+    <p>MDM enrollment is configured for security verification. Darkbloom requests only the minimum MDM permissions necessary to verify your device's security posture, specifically the ability to query device information and security status. We have deliberately not requested MDM permissions that would allow us to erase, lock, install or remove applications, or access user content or application data.</p>
+
+    <p><strong>2.6 Technical and log information.</strong> When you use the Services, we may automatically collect:</p>
+    <ul>
+      <li>IP address and network information;</li>
+      <li>request logs, including route, response status, duration, and remote address;</li>
+      <li>device, browser, and operating system information exposed to us;</li>
+      <li>local storage or similar client-side state used to support the Services, such as stored API keys, preferred coordinator URL, theme preference, verification mode preference, and dismissed UI state;</li>
+      <li>cookies, SDK storage, or similar session technologies used by our authentication or wallet partners.</li>
+    </ul>
+
+    <p><strong>2.7 Communications and support information.</strong> If you contact us, we collect the contents of your message, attachments, and related contact details.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>3. How We Collect Personal Information</h2>
+    <p>We collect personal information:</p>
+    <ul>
+      <li>directly from you when you create an account, authenticate, submit Content, operate provider software, make payments, or contact us;</li>
+      <li>automatically when you use the Services;</li>
+      <li>from service providers and partners that help us authenticate users, process payments, provide wallet functionality, operate infrastructure, or verify transactions;</li>
+      <li>from public sources, including public blockchain records, when relevant to payment and fraud-prevention workflows.</li>
+    </ul>
+  </div>
+
+  <div class="legal-section">
+    <h2>4. How We Use Personal Information</h2>
+    <p>We use personal information to:</p>
+    <ul>
+      <li>provide, operate, maintain, secure, and improve the Services;</li>
+      <li>authenticate users and devices, generate API keys, and manage access control;</li>
+      <li>route requests, return outputs, meter usage, and support billing, accounting, payouts, and fraud prevention;</li>
+      <li>operate provider onboarding, MDM enrollment, attestation, integrity verification, challenge-response verification, and account-linking features;</li>
+      <li>if applicable, collect tax identification information and fulfill tax reporting obligations, including IRS Form 1099-NEC reporting for qualifying US providers;</li>
+      <li>communicate with you about the Services, updates, support issues, and legal or security notices;</li>
+      <li>monitor performance, reliability, and abuse;</li>
+      <li>investigate and enforce compliance with our Terms of Service and other legal requirements;</li>
+      <li>comply with law, regulation, court order, or lawful government request;</li>
+      <li>create aggregated or de-identified information for analytics, reporting, security, and service improvement, where permitted by law.</li>
+    </ul>
+  </div>
+
+  <div class="legal-section">
+    <h2>5. Important Content-Handling Disclosures</h2>
+    <p>Because Darkbloom is an inference platform, Content handling is central to how the Services work. The following disclosures are intended to be precise and conservative.</p>
+    <p><strong>5.1 Transit and relay.</strong> Content sent to the Services is transmitted to our coordinator over TLS. Depending on the service path and provider capabilities, we may also encrypt request bodies before relaying them to a selected provider.</p>
+    <p><strong>5.2 Coordinator access.</strong> The current service architecture requires our coordinator to process request payloads in plaintext on a transient basis for routing, compatibility, metering, and operation of the Services. You should not treat the current architecture as guaranteeing that the coordinator is technically incapable of accessing request payloads in every service path.</p>
+    <p><strong>5.3 Logging.</strong> Our coordinator code is designed not to log prompt content in ordinary request logs. However, we do log operational metadata such as request path, status, duration, and remote address. Content may also be disclosed to us if you intentionally provide it in support requests, bug reports, or other communications.</p>
+    <p><strong>5.4 Selected providers.</strong> To fulfill inference requests, we disclose relevant Content to the provider selected to process the request. If you operate provider software, that means customer requests may be routed to your device subject to the Services' security and attestation controls.</p>
+    <p><strong>5.5 Images and uploads.</strong> Generated images may be temporarily stored in service memory pending retrieval and delivery to the requesting user. These in-memory image uploads are removed after retrieval, but no system can guarantee perfect deletion or eliminate all risk.</p>
+    <p><strong>5.6 Training.</strong> This Privacy Policy does not grant us a right to use your Content for general-purpose model training. If we decide to do so in the future, we will update this Privacy Policy and any related contractual terms before doing so, to the extent required by law.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>6. How We Disclose Personal Information</h2>
+    <p>We may disclose personal information:</p>
+    <ul>
+      <li>to service providers and subprocessors that host infrastructure, provide observability, process payments, verify transactions, support authentication, or otherwise help us operate the Services;</li>
+      <li>to identity, wallet, or payment partners such as Privy, Stripe, card networks, banks, blockchain RPC providers, or wallet providers when needed to authenticate you or complete a transaction;</li>
+      <li>to providers participating in the network, to the extent needed to process your requests;</li>
+      <li>to your organization, if you use the Services through a company or enterprise account;</li>
+      <li>to law enforcement, regulators, courts, or other third parties when required by law or when we believe disclosure is necessary to protect rights, safety, property, or the Services;</li>
+      <li>in connection with an actual or proposed merger, acquisition, financing, reorganization, bankruptcy, receivership, or sale of assets;</li>
+      <li>with your direction or consent.</li>
+    </ul>
+    <p>Some information may also be public by design:</p>
+    <ul>
+      <li>blockchain transaction data may be visible on public ledgers;</li>
+      <li>attestation or verification artifacts may be made available through public or customer-facing verification endpoints.</li>
+    </ul>
+    <p>We do not sell personal information for money. We also do not share personal information for cross-context behavioral advertising as those terms are used in certain U.S. privacy laws.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>7. Legal Bases</h2>
+    <p>If and to the extent a legal basis is required for our processing, we rely on:</p>
+    <ul>
+      <li>performance of our contract with you;</li>
+      <li>our legitimate interests in operating, securing, improving, and enforcing the Services;</li>
+      <li>compliance with legal obligations;</li>
+      <li>your consent, where required by law.</li>
+    </ul>
+  </div>
+
+  <div class="legal-section">
+    <h2>8. Retention</h2>
+    <p>We retain personal information for as long as reasonably necessary for the purposes described in this Privacy Policy, including to:</p>
+    <ul>
+      <li>provide the Services;</li>
+      <li>maintain account, billing, ledger, tax, and compliance records;</li>
+      <li>investigate incidents, fraud, or abuse;</li>
+      <li>enforce our agreements;</li>
+      <li>satisfy legal, regulatory, audit, accounting, or reporting requirements.</li>
+    </ul>
+    <p>Retention periods may vary by data type. For example:</p>
+    <ul>
+      <li>account and billing records may be retained for legal and accounting periods;</li>
+      <li>usage and security logs may be retained for operational, fraud-prevention, and support purposes;</li>
+      <li>tax identification information (W-9/W-8BEN data) is retained for as long as required by IRS regulations;</li>
+      <li>provider attestation and device-link data, including hardware serial numbers, binary hashes, Secure Enclave public keys, MDM SecurityInfo responses, and challenge-response records, may be retained for trust, audit, and network-integrity purposes;</li>
+      <li>Content may be retained for shorter operational periods unless preserved longer for support, abuse review, legal compliance, or dispute resolution.</li>
+    </ul>
+  </div>
+
+  <div class="legal-section">
+    <h2>9. Your Privacy Choices and Rights</h2>
+    <p>Depending on where you live, you may have rights to:</p>
+    <ul>
+      <li>know or access the personal information we hold about you;</li>
+      <li>correct inaccurate personal information;</li>
+      <li>delete personal information;</li>
+      <li>receive a portable copy of certain information;</li>
+      <li>opt out of sale, sharing, targeted advertising, or certain profiling, if applicable;</li>
+      <li>limit the use or disclosure of sensitive personal information, where applicable under state law;</li>
+      <li>not receive discriminatory treatment for exercising privacy rights.</li>
+    </ul>
+    <p>We may need to verify your identity before fulfilling a request. We may deny or limit requests where permitted by law, including where we cannot verify identity, where the request is legally exempt, or where retention is necessary for security, billing, compliance, or dispute purposes.</p>
+    <p>To submit a privacy request, contact us at <a href="mailto:notices@eigenlabs.org">notices@eigenlabs.org</a>.</p>
+    <p>Authorized agents may submit requests on your behalf where permitted by law, subject to verification.</p>
+    <p>California residents may have rights described in the California Consumer Privacy Act, including rights to know, delete, correct, and opt out, subject to applicable exceptions.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>10. Cookies, Local Storage, and Similar Technologies</h2>
+    <p>We and our partners may use cookies, local storage, SDK storage, or similar technologies to:</p>
+    <ul>
+      <li>keep you signed in or authenticated;</li>
+      <li>store API keys or configuration choices you elect to save in the browser;</li>
+      <li>remember preferences such as theme, coordinator URL, or verification mode;</li>
+      <li>support wallet or authentication SDK functionality;</li>
+      <li>secure sessions and detect abuse.</li>
+    </ul>
+    <p>You can control some browser storage through your browser settings, but disabling these features may impair the Services.</p>
+    <p>Our websites and apps are not currently designed to respond to browser "Do Not Track" signals.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>11. Third-Party Sites, Wallets, and Social Features</h2>
+    <p>The Services may link to third-party websites, repositories, social channels, wallet providers, identity providers, and payment services. If you follow those links or use those services, your information will be governed by the applicable third party's terms and privacy practices, not ours.</p>
+    <p>This includes services used for authentication and embedded wallet flows:</p>
+    <ul>
+      <li>payment processing and billing;</li>
+      <li>blockchain transaction broadcasting, indexing, or verification;</li>
+      <li>social, support, or community interactions outside our Services.</li>
+    </ul>
+    <p>We are not responsible for the privacy, security, availability, or accuracy of third-party services we do not control.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>12. Security</h2>
+    <p>We use administrative, technical, and organizational safeguards designed to protect personal information appropriate to the nature of the data and the Services. These may include authentication controls, TLS, integrity checks, attestation workflows, access restrictions, and logging.</p>
+    <p>No security program is perfect, and we cannot guarantee absolute security.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>13. International Transfers</h2>
+    <p>We may process personal information in the United States and other jurisdictions where we or our service providers operate. Those jurisdictions may not provide the same level of data protection as your home jurisdiction. Where required by applicable law, we rely on appropriate legal mechanisms for international transfers of personal information, which may include Standard Contractual Clauses approved by the European Commission or other lawful transfer mechanisms. For more information about the transfer mechanisms we use, contact us at <a href="mailto:notices@eigenlabs.org">notices@eigenlabs.org</a>.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>14. Children's Privacy</h2>
+    <p>The Services are not directed to children under 13, and we do not knowingly collect personal information from children under 13. We also do not permit users under 18 to use the Services under our Terms of Service.</p>
+    <p>If you believe a child has provided personal information to us in violation of this Privacy Policy, contact us so we can take appropriate steps.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>15. Changes to This Privacy Policy</h2>
+    <p>We may update this Privacy Policy from time to time. If we make material changes, we will post the updated version, update the effective date, and take any additional steps required by law.</p>
+  </div>
+
+  <div class="legal-section">
+    <h2>16. Contact Us</h2>
+    <p>For questions or requests about this Privacy Policy, contact: <a href="mailto:notices@eigenlabs.org">notices@eigenlabs.org</a></p>
+  </div>
+</div>
+
+<footer>
+  <div class="container">
+    <div class="fi">
+      <span class="copy">Darkbloom · Eigen Labs · 2026</span>
+      <div class="fl">
+        <a href="https://github.com/Layr-Labs/d-inference/blob/master/papers/dginf-private-inference.pdf" target="_blank">Paper</a>
+        <a href="https://console.darkbloom.dev" target="_blank">Console</a>
+        <a href="https://github.com/Layr-Labs/d-inference" target="_blank">GitHub</a>
+        <a href="https://x.com/eigen_labs" target="_blank">X</a>
+        <a href="https://www.linkedin.com/company/eigenlabsorg" target="_blank">LinkedIn</a>
+        <a href="terms.html" target="_blank">Terms</a>
+        <a href="privacy.html" target="_blank">Privacy</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/buildattest"
@@ -93,6 +94,13 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 	s.SyncBinaryHashes()
 	s.SyncRuntimeManifest()
 
+	// Invalidate cached version/manifest/release responses so providers and
+	// install.sh see the new release on the next request instead of waiting
+	// out the TTL.
+	s.readCache.Invalidate("api_version:v1")
+	s.readCache.Invalidate("runtime_manifest:v1")
+	s.readCache.Invalidate("latest_release:v1")
+
 	s.logger.Info("release registered",
 		"version", release.Version,
 		"platform", release.Platform,
@@ -114,13 +122,25 @@ func (s *Server) handleLatestRelease(w http.ResponseWriter, r *http.Request) {
 		platform = "macos-arm64"
 	}
 
+	cacheKey := "latest_release:v1:" + platform
+	if cached, ok := s.readCache.Get(cacheKey); ok {
+		writeCachedJSON(w, http.StatusOK, cached)
+		return
+	}
+
 	release := s.store.GetLatestRelease(platform)
 	if release == nil {
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "no active release for platform "+platform))
 		return
 	}
 
-	writeJSON(w, http.StatusOK, release)
+	body, err := json.Marshal(release)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode release"))
+		return
+	}
+	s.readCache.Set(cacheKey, body, time.Minute)
+	writeCachedJSON(w, http.StatusOK, body)
 }
 
 // handleAdminListReleases handles GET /v1/admin/releases.

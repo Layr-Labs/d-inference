@@ -11,10 +11,11 @@
 //	                        inference_complete, inference_error, attestation_response
 //	Coordinator → Provider: inference_request, cancel, attestation_challenge
 //
-// The inference request body is plain JSON (model, messages, stream). No
-// encryption fields are needed in the wire protocol because the coordinator
-// runs in a Confidential VM and can read requests for routing. The provider
-// is attested via Secure Enclave challenge-response.
+// Inference requests may be carried either as plain JSON in Body or as an
+// X25519/NaCl-box encrypted payload in EncryptedBody. The coordinator can
+// decrypt sender-sealed requests inside its Confidential VM for routing, then
+// re-encrypts to the provider before dispatch. The provider is attested via
+// Secure Enclave challenge-response.
 package protocol
 
 import (
@@ -27,24 +28,20 @@ import (
 
 // Message type constants.
 const (
-	// Provider → Coordinator
-	TypeRegister                = "register"
-	TypeHeartbeat               = "heartbeat"
-	TypeInferenceAccepted       = "inference_accepted"
-	TypeInferenceResponseChunk  = "inference_response_chunk"
-	TypeInferenceComplete       = "inference_complete"
-	TypeInferenceError          = "inference_error"
-	TypeAttestationResponse     = "attestation_response"
-	TypeTranscriptionComplete   = "transcription_complete"
-	TypeImageGenerationComplete = "image_generation_complete"
+	// Provider → Coordinator.
+	TypeRegister               = "register"
+	TypeHeartbeat              = "heartbeat"
+	TypeInferenceAccepted      = "inference_accepted"
+	TypeInferenceResponseChunk = "inference_response_chunk"
+	TypeInferenceComplete      = "inference_complete"
+	TypeInferenceError         = "inference_error"
+	TypeAttestationResponse    = "attestation_response"
 
-	// Coordinator → Provider
-	TypeInferenceRequest       = "inference_request"
-	TypeCancel                 = "cancel"
-	TypeAttestationChallenge   = "attestation_challenge"
-	TypeTranscriptionRequest   = "transcription_request"
-	TypeImageGenerationRequest = "image_generation_request"
-	TypeRuntimeStatus          = "runtime_status"
+	// Coordinator → Provider.
+	TypeInferenceRequest     = "inference_request"
+	TypeCancel               = "cancel"
+	TypeAttestationChallenge = "attestation_challenge"
+	TypeRuntimeStatus        = "runtime_status"
 )
 
 // ---------------------------------------------------------------------------
@@ -86,32 +83,70 @@ type ModelInfo struct {
 
 // RegisterMessage is sent when a provider first connects.
 type RegisterMessage struct {
-	Type          string          `json:"type"`
-	Hardware      Hardware        `json:"hardware"`
-	Models        []ModelInfo     `json:"models"`
-	Backend       string          `json:"backend"`
-	Version       string          `json:"version,omitempty"`        // provider binary version (e.g. "0.2.31")
-	PublicKey     string          `json:"public_key,omitempty"`     // base64-encoded X25519 public key for E2E encryption
-	WalletAddress string          `json:"wallet_address,omitempty"` // Ethereum-format hex address for Tempo payouts
-	Attestation   json.RawMessage `json:"attestation,omitempty"`    // signed Secure Enclave attestation blob
-	PrefillTPS    float64         `json:"prefill_tps,omitempty"`    // benchmark: prefill tokens per second
-	DecodeTPS     float64         `json:"decode_tps,omitempty"`     // benchmark: decode tokens per second
-	AuthToken     string          `json:"auth_token,omitempty"`     // device-linked provider token (from eigeninference-provider login)
+	Type                    string          `json:"type"`
+	Hardware                Hardware        `json:"hardware"`
+	Models                  []ModelInfo     `json:"models"`
+	Backend                 string          `json:"backend"`
+	Version                 string          `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
+	PublicKey               string          `json:"public_key,omitempty"`                // base64-encoded X25519 public key for E2E encryption
+	EncryptedResponseChunks bool            `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are returned encrypted to the coordinator
+	WalletAddress           string          `json:"wallet_address,omitempty"`            // Ethereum-format hex address for Tempo payouts
+	Attestation             json.RawMessage `json:"attestation,omitempty"`               // signed Secure Enclave attestation blob
+	PrefillTPS              float64         `json:"prefill_tps,omitempty"`               // benchmark: prefill tokens per second
+	DecodeTPS               float64         `json:"decode_tps,omitempty"`                // benchmark: decode tokens per second
+	AuthToken               string          `json:"auth_token,omitempty"`                // device-linked provider token (from darkbloom login)
 
 	// Runtime integrity hashes — used for runtime verification against known-good manifests.
-	PythonHash     string            `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
-	RuntimeHash    string            `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
-	TemplateHashes map[string]string `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
+	PythonHash          string               `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
+	RuntimeHash         string               `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
+	TemplateHashes      map[string]string    `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
+	PrivacyCapabilities *PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
+}
+
+// PrivacyCapabilities describes the provider's privacy invariants at registration time.
+type PrivacyCapabilities struct {
+	TextBackendInprocess    bool `json:"text_backend_inprocess"`
+	TextProxyDisabled       bool `json:"text_proxy_disabled"`
+	PythonRuntimeLocked     bool `json:"python_runtime_locked"`
+	DangerousModulesBlocked bool `json:"dangerous_modules_blocked"`
+	SIPEnabled              bool `json:"sip_enabled"`
+	AntiDebugEnabled        bool `json:"anti_debug_enabled"`
+	CoreDumpsDisabled       bool `json:"core_dumps_disabled"`
+	EnvScrubbed             bool `json:"env_scrubbed"`
+	HypervisorActive        bool `json:"hypervisor_active"`
 }
 
 // HeartbeatMessage is sent periodically by connected providers.
 type HeartbeatMessage struct {
-	Type          string         `json:"type"`
-	Status        string         `json:"status"`
-	ActiveModel   *string        `json:"active_model"`
-	Stats         HeartbeatStats `json:"stats"`
-	WarmModels    []string       `json:"warm_models,omitempty"` // models currently loaded in memory
-	SystemMetrics SystemMetrics  `json:"system_metrics"`        // live resource utilization
+	Type            string           `json:"type"`
+	Status          string           `json:"status"`
+	ActiveModel     *string          `json:"active_model"`
+	Stats           HeartbeatStats   `json:"stats"`
+	WarmModels      []string         `json:"warm_models,omitempty"`      // models currently loaded in memory
+	SystemMetrics   SystemMetrics    `json:"system_metrics"`             // live resource utilization
+	BackendCapacity *BackendCapacity `json:"backend_capacity,omitempty"` // live backend capacity (nil for old providers)
+}
+
+// BackendSlotCapacity describes the capacity state of a single backend slot
+// (one vllm-mlx instance serving one model).
+type BackendSlotCapacity struct {
+	Model              string `json:"model"`                // model ID for this slot
+	State              string `json:"state"`                // "running", "idle_shutdown", "crashed", "reloading"
+	NumRunning         int    `json:"num_running"`          // requests actively generating
+	NumWaiting         int    `json:"num_waiting"`          // requests queued in backend scheduler
+	ActiveTokens       int64  `json:"active_tokens"`        // sum of (prompt_tokens + completion_tokens) across running requests
+	MaxTokensPotential int64  `json:"max_tokens_potential"` // sum of max_tokens across running requests (worst-case growth)
+}
+
+// BackendCapacity describes the aggregate capacity across all backend slots
+// on a provider. Reported in heartbeats so the coordinator can make informed
+// routing decisions based on actual GPU utilization rather than hardcoded limits.
+type BackendCapacity struct {
+	Slots             []BackendSlotCapacity `json:"slots"`                // per-model slot capacity
+	GPUMemoryActiveGB float64               `json:"gpu_memory_active_gb"` // Metal active memory (shared across all slots)
+	GPUMemoryPeakGB   float64               `json:"gpu_memory_peak_gb"`   // Metal peak memory
+	GPUMemoryCacheGB  float64               `json:"gpu_memory_cache_gb"`  // Metal cache memory (reclaimable)
+	TotalMemoryGB     float64               `json:"total_memory_gb"`      // total system/GPU memory
 }
 
 // SystemMetrics contains live resource utilization reported by a provider.
@@ -128,9 +163,9 @@ type HeartbeatStats struct {
 }
 
 // InferenceAcceptedMessage signals the provider accepted the request and is
-// working on it (possibly reloading the backend). The coordinator should
-// commit to this provider and wait for chunks with the full inference timeout
-// instead of retrying.
+// working on it (possibly reloading the backend). The coordinator extends the
+// wait window to the full inference timeout, but can still retry if the
+// provider fails before sending the first chunk.
 type InferenceAcceptedMessage struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`
@@ -225,12 +260,21 @@ type AttestationChallengeMessage struct {
 }
 
 // AttestationResponseMessage is sent by the provider in response to an
-// attestation challenge. The signature covers nonce + timestamp.
-// Includes fresh security posture fields verified at challenge time.
+// attestation challenge. The Signature field covers nonce + timestamp only;
+// it proves the responder still holds the SE key. Status fields below
+// (SIPEnabled, BinaryHash, etc.) are NOT covered by Signature and would be
+// trivially forgeable if used in isolation.
+//
+// StatusSignature (added in v0.3.11) covers a canonical JSON of nonce +
+// timestamp + all status fields, sealing them against tampering. New
+// providers send both signatures; old providers send only Signature, in
+// which case the status fields are treated as advisory (not a basis for
+// trust upgrades).
 type AttestationResponseMessage struct {
 	Type              string `json:"type"`
 	Nonce             string `json:"nonce"`                         // echoed back from the challenge
 	Signature         string `json:"signature"`                     // base64-encoded signature of nonce+timestamp
+	StatusSignature   string `json:"status_signature,omitempty"`    // base64-encoded signature of canonical status JSON (see attestation.BuildStatusCanonical)
 	PublicKey         string `json:"public_key"`                    // base64-encoded public key
 	HypervisorActive  *bool  `json:"hypervisor_active,omitempty"`   // hypervisor memory isolation active (Stage 2 page tables)
 	RDMADisabled      *bool  `json:"rdma_disabled,omitempty"`       // fresh RDMA status (true = safe, false = remote memory access possible)
@@ -243,6 +287,7 @@ type AttestationResponseMessage struct {
 	PythonHash     string            `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
 	RuntimeHash    string            `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
 	TemplateHashes map[string]string `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
+	ModelHashes    map[string]string `json:"model_hashes,omitempty"`    // model_id -> SHA-256 weight hash (all active models)
 }
 
 // ---------------------------------------------------------------------------
@@ -264,98 +309,6 @@ type RuntimeMismatch struct {
 	Component string `json:"component"`
 	Expected  string `json:"expected"`
 	Got       string `json:"got"`
-}
-
-// ---------------------------------------------------------------------------
-// STT (Speech-to-Text) messages
-// ---------------------------------------------------------------------------
-
-// TranscriptionRequestBody is the body sent inside a TranscriptionRequest.
-type TranscriptionRequestBody struct {
-	Model    string  `json:"model"`
-	Audio    string  `json:"audio"`              // base64-encoded audio data
-	Language *string `json:"language,omitempty"` // ISO 639-1 language code (e.g. "en")
-	Format   string  `json:"format,omitempty"`   // audio format hint: "mp3", "wav", etc.
-}
-
-// TranscriptionRequestMessage tells a provider to transcribe audio.
-// When E2E encryption is enabled, Body is empty and EncryptedBody contains
-// the NaCl Box encrypted request (same as InferenceRequestMessage).
-type TranscriptionRequestMessage struct {
-	Type          string                   `json:"type"`
-	RequestID     string                   `json:"request_id"`
-	Body          TranscriptionRequestBody `json:"body,omitempty"`
-	EncryptedBody *EncryptedPayload        `json:"encrypted_body,omitempty"`
-}
-
-// TranscriptionSegment is a timed segment within a transcription.
-type TranscriptionSegment struct {
-	Start float64 `json:"start"`
-	End   float64 `json:"end"`
-	Text  string  `json:"text"`
-}
-
-// TranscriptionUsage carries usage info for billing STT requests.
-type TranscriptionUsage struct {
-	AudioSeconds     float64 `json:"audio_seconds"`
-	GenerationTokens int     `json:"generation_tokens"`
-}
-
-// TranscriptionCompleteMessage signals the provider finished transcribing.
-type TranscriptionCompleteMessage struct {
-	Type         string                 `json:"type"`
-	RequestID    string                 `json:"request_id"`
-	Text         string                 `json:"text"`
-	Segments     []TranscriptionSegment `json:"segments,omitempty"`
-	Language     string                 `json:"language,omitempty"`
-	Usage        TranscriptionUsage     `json:"usage"`
-	DurationSecs float64                `json:"duration_secs"` // processing time
-}
-
-// ---------------------------------------------------------------------------
-// Image Generation messages
-// ---------------------------------------------------------------------------
-
-// ImageGenerationRequestBody is the body sent inside an ImageGenerationRequest.
-type ImageGenerationRequestBody struct {
-	Model          string `json:"model"`
-	Prompt         string `json:"prompt"`
-	NegativePrompt string `json:"negative_prompt,omitempty"`
-	N              int    `json:"n,omitempty"`     // number of images (default 1)
-	Size           string `json:"size,omitempty"`  // e.g. "1024x1024"
-	Steps          *int   `json:"steps,omitempty"` // inference steps
-	Seed           *int64 `json:"seed,omitempty"`
-	ResponseFormat string `json:"response_format,omitempty"` // "b64_json" (default) or "url"
-}
-
-// ImageGenerationRequestMessage tells a provider to generate images.
-// Includes an upload_url where the provider should POST the generated images
-// via HTTP (instead of sending them over the WebSocket, which has size limits).
-type ImageGenerationRequestMessage struct {
-	Type          string                     `json:"type"`
-	RequestID     string                     `json:"request_id"`
-	UploadURL     string                     `json:"upload_url"` // HTTP endpoint for image upload
-	Body          ImageGenerationRequestBody `json:"body,omitempty"`
-	EncryptedBody *EncryptedPayload          `json:"encrypted_body,omitempty"`
-}
-
-// ImageGenerationUsage carries usage info for billing image generation requests.
-type ImageGenerationUsage struct {
-	ImagesGenerated int    `json:"images_generated"`
-	Width           int    `json:"width"`
-	Height          int    `json:"height"`
-	Steps           int    `json:"steps"`
-	Model           string `json:"model"`
-}
-
-// ImageGenerationCompleteMessage signals the provider finished generating images.
-// The actual image data is uploaded separately via HTTP to the upload_url.
-// This message only carries metadata so it stays small on the WebSocket.
-type ImageGenerationCompleteMessage struct {
-	Type         string               `json:"type"`
-	RequestID    string               `json:"request_id"`
-	Usage        ImageGenerationUsage `json:"usage"`
-	DurationSecs float64              `json:"duration_secs"` // processing time
 }
 
 // ---------------------------------------------------------------------------
@@ -427,20 +380,6 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg AttestationResponseMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal attestation_response: %w", err)
-		}
-		pm.Payload = &msg
-
-	case TypeTranscriptionComplete:
-		var msg TranscriptionCompleteMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return fmt.Errorf("protocol: failed to unmarshal transcription_complete: %w", err)
-		}
-		pm.Payload = &msg
-
-	case TypeImageGenerationComplete:
-		var msg ImageGenerationCompleteMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return fmt.Errorf("protocol: failed to unmarshal image_generation_complete: %w", err)
 		}
 		pm.Payload = &msg
 

@@ -1,4 +1,4 @@
-// Reputation tracking for EigenInference provider agents.
+// Reputation tracking for Darkbloom provider agents.
 //
 // Each provider accumulates a reputation score based on their operational
 // history: job success rate, uptime, attestation challenge pass rate, and

@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -9,15 +11,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"crypto/rand"
-	"encoding/base64"
-
+	"github.com/eigeninference/coordinator/internal/e2e"
 	"github.com/eigeninference/coordinator/internal/protocol"
 	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
+	"golang.org/x/crypto/nacl/box"
 	"nhooyr.io/websocket"
 )
 
@@ -189,8 +191,12 @@ func TestCORSHeaders(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
-	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
-		t.Errorf("CORS origin = %q, want *", w.Header().Get("Access-Control-Allow-Origin"))
+	origin := w.Header().Get("Access-Control-Allow-Origin")
+	if origin == "*" {
+		t.Errorf("CORS origin must not be wildcard, got %q", origin)
+	}
+	if origin == "" {
+		t.Errorf("CORS origin header missing")
 	}
 }
 
@@ -206,11 +212,82 @@ func TestCORSPreflight(t *testing.T) {
 	}
 }
 
-// testPublicKeyB64 generates a random 32-byte X25519 public key for tests.
+type testProviderKeyPair struct {
+	public  [32]byte
+	private [32]byte
+}
+
+var testProviderKeys sync.Map
+
+func testPrivacyCaps() *protocol.PrivacyCapabilities {
+	return &protocol.PrivacyCapabilities{
+		TextBackendInprocess:    true,
+		TextProxyDisabled:       true,
+		PythonRuntimeLocked:     true,
+		DangerousModulesBlocked: true,
+		SIPEnabled:              true,
+		AntiDebugEnabled:        true,
+		CoreDumpsDisabled:       true,
+		EnvScrubbed:             true,
+	}
+}
+
+// testPublicKeyB64 generates a real X25519 keypair for tests and returns the
+// provider public key. The matching private key is cached so test providers can
+// encrypt response chunks back to the coordinator.
 func testPublicKeyB64() string {
-	key := make([]byte, 32)
-	rand.Read(key)
-	return base64.StdEncoding.EncodeToString(key)
+	pub, priv, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	key := base64.StdEncoding.EncodeToString(pub[:])
+	testProviderKeys.Store(key, testProviderKeyPair{
+		public:  *pub,
+		private: *priv,
+	})
+	return key
+}
+
+func testEncryptedChunk(t *testing.T, inferReq protocol.InferenceRequestMessage, providerPublicKey, sseData string) protocol.InferenceResponseChunkMessage {
+	t.Helper()
+	if inferReq.EncryptedBody == nil {
+		t.Fatal("inference request missing encrypted body")
+	}
+
+	value, ok := testProviderKeys.Load(providerPublicKey)
+	if !ok {
+		t.Fatalf("missing provider keypair for %q", providerPublicKey)
+	}
+	keypair := value.(testProviderKeyPair)
+	coordinatorPub, err := e2e.ParsePublicKey(inferReq.EncryptedBody.EphemeralPublicKey)
+	if err != nil {
+		t.Fatalf("parse coordinator public key: %v", err)
+	}
+	payload, err := e2e.Encrypt([]byte(sseData), coordinatorPub, &e2e.SessionKeys{
+		PublicKey:  keypair.public,
+		PrivateKey: keypair.private,
+	})
+	if err != nil {
+		t.Fatalf("encrypt test chunk: %v", err)
+	}
+
+	return protocol.InferenceResponseChunkMessage{
+		Type:      protocol.TypeInferenceResponseChunk,
+		RequestID: inferReq.RequestID,
+		EncryptedData: &protocol.EncryptedPayload{
+			EphemeralPublicKey: payload.EphemeralPublicKey,
+			Ciphertext:         payload.Ciphertext,
+		},
+	}
+}
+
+func writeEncryptedTestChunk(t *testing.T, ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey, sseData string) {
+	t.Helper()
+	chunk := testEncryptedChunk(t, inferReq, providerPublicKey, sseData)
+	data, _ := json.Marshal(chunk)
+	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+		t.Fatalf("write encrypted chunk: %v", err)
+	}
 }
 
 // TestStreamingE2E sets up a full end-to-end streaming test with a simulated
@@ -236,6 +313,7 @@ func TestStreamingE2E(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
+	pubKey := testPublicKeyB64()
 	// Send register message (with public key — encryption is mandatory).
 	regMsg := protocol.RegisterMessage{
 		Type: protocol.TypeRegister,
@@ -247,8 +325,10 @@ func TestStreamingE2E(t *testing.T) {
 		Models: []protocol.ModelInfo{
 			{ID: "test-model", SizeBytes: 1000, ModelType: "test", Quantization: "4bit"},
 		},
-		Backend:   "test",
-		PublicKey: testPublicKeyB64(),
+		Backend:                 "inprocess-mlx",
+		PublicKey:               pubKey,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
 	}
 	regData, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
@@ -279,22 +359,18 @@ func TestStreamingE2E(t *testing.T) {
 				t.Errorf("provider read: %v", err)
 				return
 			}
-			// Check if this is a challenge — respond and continue reading.
 			var raw map[string]interface{}
 			if err := json.Unmarshal(data, &raw); err == nil {
-				if raw["type"] == protocol.TypeAttestationChallenge {
-					resp := protocol.AttestationResponseMessage{
-						Type:      protocol.TypeAttestationResponse,
-						Nonce:     raw["nonce"].(string),
-						PublicKey: "dummy",
-						Signature: "dummy",
-					}
-					respData, _ := json.Marshal(resp)
+				msgType, _ := raw["type"].(string)
+				if msgType == protocol.TypeAttestationChallenge {
+					respData := makeValidChallengeResponse(data, pubKey)
 					conn.Write(ctx, websocket.MessageText, respData)
 					continue
 				}
+				if msgType == protocol.TypeRuntimeStatus {
+					continue
+				}
 			}
-			// Otherwise it's the inference request.
 			if err := json.Unmarshal(data, &inferReq); err != nil {
 				t.Errorf("unmarshal inference request: %v", err)
 				return
@@ -304,16 +380,8 @@ func TestStreamingE2E(t *testing.T) {
 
 		// Send two chunks.
 		for _, word := range []string{"Hello", " world"} {
-			chunk := protocol.InferenceResponseChunkMessage{
-				Type:      protocol.TypeInferenceResponseChunk,
-				RequestID: inferReq.RequestID,
-				Data:      `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"` + word + `"}}]}` + "\n\n",
-			}
-			chunkData, _ := json.Marshal(chunk)
-			if err := conn.Write(ctx, websocket.MessageText, chunkData); err != nil {
-				t.Errorf("write chunk: %v", err)
-				return
-			}
+			writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
+				`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"`+word+`"}}]}`+"\n\n")
 		}
 
 		// Send complete.
@@ -401,13 +469,16 @@ func TestNonStreamingE2E(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
+	pubKey := testPublicKeyB64()
 	// Register (with public key — encryption is mandatory).
 	regMsg := protocol.RegisterMessage{
-		Type:      protocol.TypeRegister,
-		Hardware:  protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
-		Models:    []protocol.ModelInfo{{ID: "test-model", ModelType: "test", Quantization: "4bit"}},
-		Backend:   "test",
-		PublicKey: testPublicKeyB64(),
+		Type:                    protocol.TypeRegister,
+		Hardware:                protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
+		Models:                  []protocol.ModelInfo{{ID: "test-model", ModelType: "test", Quantization: "4bit"}},
+		Backend:                 "inprocess-mlx",
+		PublicKey:               pubKey,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
 	}
 	regData, _ := json.Marshal(regMsg)
 	conn.Write(ctx, websocket.MessageText, regData)
@@ -435,13 +506,7 @@ func TestNonStreamingE2E(t *testing.T) {
 			var raw map[string]interface{}
 			if err := json.Unmarshal(data, &raw); err == nil {
 				if raw["type"] == protocol.TypeAttestationChallenge {
-					resp := protocol.AttestationResponseMessage{
-						Type:      protocol.TypeAttestationResponse,
-						Nonce:     raw["nonce"].(string),
-						PublicKey: "dummy",
-						Signature: "dummy",
-					}
-					respData, _ := json.Marshal(resp)
+					respData := makeValidChallengeResponse(data, pubKey)
 					conn.Write(ctx, websocket.MessageText, respData)
 					continue
 				}
@@ -451,13 +516,8 @@ func TestNonStreamingE2E(t *testing.T) {
 		}
 
 		// Send one chunk with the full content.
-		chunk := protocol.InferenceResponseChunkMessage{
-			Type:      protocol.TypeInferenceResponseChunk,
-			RequestID: inferReq.RequestID,
-			Data:      `data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello world"}}]}` + "\n\n",
-		}
-		chunkData, _ := json.Marshal(chunk)
-		conn.Write(ctx, websocket.MessageText, chunkData)
+		writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
+			`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello world"}}]}`+"\n\n")
 
 		// Complete.
 		complete := protocol.InferenceCompleteMessage{
@@ -503,6 +563,182 @@ func TestNonStreamingE2E(t *testing.T) {
 	}
 
 	<-providerDone
+}
+
+func TestChatCompletionsRetriesAcceptedProviderErrorBeforeFirstChunk(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	trustAllProviders := func() {
+		for _, id := range reg.ProviderIDs() {
+			reg.SetTrustLevel(id, registry.TrustHardware)
+			reg.RecordChallengeSuccess(id)
+		}
+	}
+	connectProvider := func(pubKey string) *websocket.Conn {
+		t.Helper()
+		wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+		conn, _, err := websocket.Dial(ctx, wsURL, nil)
+		if err != nil {
+			t.Fatalf("websocket dial: %v", err)
+		}
+		regMsg := protocol.RegisterMessage{
+			Type:                    protocol.TypeRegister,
+			Hardware:                protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
+			Models:                  []protocol.ModelInfo{{ID: "retry-model", ModelType: "test", Quantization: "4bit"}},
+			Backend:                 "inprocess-mlx",
+			PublicKey:               pubKey,
+			EncryptedResponseChunks: true,
+			PrivacyCapabilities:     testPrivacyCaps(),
+		}
+		regData, _ := json.Marshal(regMsg)
+		if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
+			t.Fatalf("write register: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+		trustAllProviders()
+		return conn
+	}
+
+	pubKey1 := testPublicKeyB64()
+	conn1 := connectProvider(pubKey1)
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+
+	firstGotRequest := make(chan protocol.InferenceRequestMessage, 1)
+	secondReady := make(chan struct{})
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		for {
+			_, data, err := conn1.Read(ctx)
+			if err != nil {
+				t.Errorf("first provider read: %v", err)
+				return
+			}
+			var raw map[string]any
+			if err := json.Unmarshal(data, &raw); err == nil && raw["type"] == protocol.TypeAttestationChallenge {
+				conn1.Write(ctx, websocket.MessageText, makeValidChallengeResponse(data, pubKey1))
+				continue
+			}
+			var inferReq protocol.InferenceRequestMessage
+			if err := json.Unmarshal(data, &inferReq); err != nil {
+				t.Errorf("first provider unmarshal inference: %v", err)
+				return
+			}
+			firstGotRequest <- inferReq
+			<-secondReady
+			accepted := protocol.InferenceAcceptedMessage{
+				Type:      protocol.TypeInferenceAccepted,
+				RequestID: inferReq.RequestID,
+			}
+			acceptedData, _ := json.Marshal(accepted)
+			if err := conn1.Write(ctx, websocket.MessageText, acceptedData); err != nil {
+				t.Errorf("first provider write accepted: %v", err)
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+			errMsg := protocol.InferenceErrorMessage{
+				Type:       protocol.TypeInferenceError,
+				RequestID:  inferReq.RequestID,
+				Error:      "in-process model load failed",
+				StatusCode: http.StatusServiceUnavailable,
+			}
+			errData, _ := json.Marshal(errMsg)
+			if err := conn1.Write(ctx, websocket.MessageText, errData); err != nil {
+				t.Errorf("first provider write error: %v", err)
+			}
+			return
+		}
+	}()
+
+	respCh := make(chan struct {
+		status int
+		body   []byte
+		err    error
+	}, 1)
+	go func() {
+		chatBody := `{"model":"retry-model","messages":[{"role":"user","content":"hi"}],"stream":false}`
+		httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(chatBody))
+		httpReq.Header.Set("Authorization", "Bearer test-key")
+		resp, err := http.DefaultClient.Do(httpReq)
+		if err != nil {
+			respCh <- struct {
+				status int
+				body   []byte
+				err    error
+			}{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		respCh <- struct {
+			status int
+			body   []byte
+			err    error
+		}{status: resp.StatusCode, body: body}
+	}()
+
+	<-firstGotRequest
+
+	pubKey2 := testPublicKeyB64()
+	conn2 := connectProvider(pubKey2)
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		for {
+			_, data, err := conn2.Read(ctx)
+			if err != nil {
+				t.Errorf("second provider read: %v", err)
+				return
+			}
+			var raw map[string]any
+			if err := json.Unmarshal(data, &raw); err == nil && raw["type"] == protocol.TypeAttestationChallenge {
+				conn2.Write(ctx, websocket.MessageText, makeValidChallengeResponse(data, pubKey2))
+				continue
+			}
+			var inferReq protocol.InferenceRequestMessage
+			if err := json.Unmarshal(data, &inferReq); err != nil {
+				t.Errorf("second provider unmarshal inference: %v", err)
+				return
+			}
+			writeEncryptedTestChunk(t, ctx, conn2, inferReq, pubKey2,
+				`data: {"id":"chatcmpl-2","choices":[{"delta":{"content":"retry ok"}}]}`+"\n\n")
+			complete := protocol.InferenceCompleteMessage{
+				Type:      protocol.TypeInferenceComplete,
+				RequestID: inferReq.RequestID,
+				Usage:     protocol.UsageInfo{PromptTokens: 4, CompletionTokens: 2},
+			}
+			completeData, _ := json.Marshal(complete)
+			if err := conn2.Write(ctx, websocket.MessageText, completeData); err != nil {
+				t.Errorf("second provider write complete: %v", err)
+			}
+			return
+		}
+	}()
+	close(secondReady)
+
+	got := <-respCh
+	if got.err != nil {
+		t.Fatalf("http request: %v", got.err)
+	}
+	if got.status != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", got.status, got.body)
+	}
+	if !strings.Contains(string(got.body), "retry ok") {
+		t.Fatalf("response did not come from retry provider: %s", got.body)
+	}
+	<-firstDone
+	<-secondDone
 }
 
 func TestExtractMessage(t *testing.T) {
@@ -630,6 +866,212 @@ func TestNormalizeSSEChunk(t *testing.T) {
 	}
 }
 
+func TestNormalizeCompleteChatResponse(t *testing.T) {
+	resp := map[string]any{
+		"id":     "chatcmpl-1",
+		"object": "chat.completion",
+		"model":  "/Users/provider/.cache/huggingface/hub/models--mlx-community--MiniMax-M2.5-8bit/snapshots/main",
+		"choices": []any{
+			map[string]any{
+				"index": 0,
+				"message": map[string]any{
+					"role":              "assistant",
+					"content":           "<think>work through it</think>\n\n4",
+					"reasoning_content": "existing reasoning",
+					"tool_calls":        nil,
+				},
+			},
+		},
+		"system_fingerprint": nil,
+	}
+
+	normalizeCompleteChatResponse(resp, "mlx-community/MiniMax-M2.5-8bit")
+
+	if resp["model"] != "mlx-community/MiniMax-M2.5-8bit" {
+		t.Fatalf("model = %v", resp["model"])
+	}
+	if _, ok := resp["system_fingerprint"]; ok {
+		t.Fatalf("system_fingerprint should be removed: %#v", resp)
+	}
+	message := resp["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	if message["content"] != "4" {
+		t.Fatalf("content = %q, want 4", message["content"])
+	}
+	if _, ok := message["reasoning_content"]; ok {
+		t.Fatalf("reasoning_content should be removed: %#v", message)
+	}
+	if _, ok := message["tool_calls"]; ok {
+		t.Fatalf("null tool_calls should be removed: %#v", message)
+	}
+	reasoning := message["reasoning"].(string)
+	if !strings.Contains(reasoning, "existing reasoning") || !strings.Contains(reasoning, "work through it") {
+		t.Fatalf("reasoning was not merged correctly: %q", reasoning)
+	}
+}
+
+func TestNormalizeCompleteChatResponseNullContent(t *testing.T) {
+	resp := map[string]any{
+		"object": "chat.completion",
+		"choices": []any{
+			map[string]any{
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": nil,
+				},
+			},
+		},
+	}
+
+	normalizeCompleteChatResponse(resp, "test-model")
+
+	message := resp["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	if message["content"] != "" {
+		t.Fatalf("content = %v, want empty string", message["content"])
+	}
+}
+
+func TestResponsesRequestToChatCompletions(t *testing.T) {
+	req := map[string]any{
+		"model":             "mlx-community/gemma-4-26b-a4b-it-8bit",
+		"max_output_tokens": float64(64),
+		"input": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": "Reply exactly OK"},
+				},
+			},
+		},
+		"tools": []any{
+			map[string]any{
+				"type":        "function",
+				"name":        "get_current_weather",
+				"description": "Get weather",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"city": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+		"tool_choice": map[string]any{"type": "function", "name": "get_current_weather"},
+	}
+
+	got, err := responsesRequestToChatCompletions(req)
+	if err != nil {
+		t.Fatalf("responsesRequestToChatCompletions: %v", err)
+	}
+	if _, ok := got["input"]; ok {
+		t.Fatalf("input should not be forwarded to chat backend: %#v", got)
+	}
+	if got["max_tokens"] != 64 {
+		t.Fatalf("max_tokens = %v, want 64", got["max_tokens"])
+	}
+	messages := got["messages"].([]map[string]any)
+	if messages[0]["role"] != "user" || messages[0]["content"] != "Reply exactly OK" {
+		t.Fatalf("messages = %#v", messages)
+	}
+	tools := got["tools"].([]any)
+	firstTool := tools[0].(map[string]any)
+	fn := firstTool["function"].(map[string]any)
+	if firstTool["type"] != "function" || fn["name"] != "get_current_weather" {
+		t.Fatalf("tools = %#v", tools)
+	}
+	choiceFn := got["tool_choice"].(map[string]any)["function"].(map[string]any)
+	if choiceFn["name"] != "get_current_weather" {
+		t.Fatalf("tool_choice = %#v", got["tool_choice"])
+	}
+}
+
+func TestResponsesInputToolTranscriptToChatMessages(t *testing.T) {
+	input := []any{
+		map[string]any{
+			"role":    "user",
+			"content": []any{map[string]any{"type": "input_text", "text": "weather?"}},
+		},
+		map[string]any{
+			"type":      "function_call",
+			"call_id":   "call_123",
+			"name":      "get_current_weather",
+			"arguments": `{"city":"Paris"}`,
+		},
+		map[string]any{
+			"type":    "function_call_output",
+			"call_id": "call_123",
+			"output":  `{"temperature":21}`,
+		},
+	}
+
+	messages, err := responsesInputToChatMessages(input)
+	if err != nil {
+		t.Fatalf("responsesInputToChatMessages: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("len(messages) = %d, want 3: %#v", len(messages), messages)
+	}
+	if messages[1]["role"] != "assistant" {
+		t.Fatalf("second message = %#v", messages[1])
+	}
+	toolCalls := messages[1]["tool_calls"].([]map[string]any)
+	if toolCalls[0]["id"] != "call_123" {
+		t.Fatalf("tool_calls = %#v", toolCalls)
+	}
+	if messages[2]["role"] != "tool" || messages[2]["tool_call_id"] != "call_123" {
+		t.Fatalf("third message = %#v", messages[2])
+	}
+}
+
+func TestChatCompletionToResponses(t *testing.T) {
+	chat := map[string]any{
+		"id":      "chatcmpl-test",
+		"object":  "chat.completion",
+		"created": float64(123),
+		"model":   "local-path",
+		"choices": []any{
+			map[string]any{
+				"finish_reason": "tool_calls",
+				"message": map[string]any{
+					"role":      "assistant",
+					"content":   "",
+					"reasoning": "need weather",
+					"tool_calls": []any{
+						map[string]any{
+							"id":   "call_123",
+							"type": "function",
+							"function": map[string]any{
+								"name":      "get_current_weather",
+								"arguments": `{"city":"Paris"}`,
+							},
+						},
+					},
+				},
+			},
+		},
+		"usage": map[string]any{
+			"prompt_tokens":     float64(10),
+			"completion_tokens": float64(5),
+		},
+	}
+
+	got := chatCompletionToResponses(chat, "mlx-community/gemma-4-26b-a4b-it-8bit", "", "")
+	if got["object"] != "response" || got["model"] != "mlx-community/gemma-4-26b-a4b-it-8bit" {
+		t.Fatalf("response metadata = %#v", got)
+	}
+	output := got["output"].([]any)
+	if output[0].(map[string]any)["type"] != "reasoning" {
+		t.Fatalf("first output = %#v", output[0])
+	}
+	call := output[1].(map[string]any)
+	if call["type"] != "function_call" || call["call_id"] != "call_123" {
+		t.Fatalf("function call output = %#v", call)
+	}
+	usage := got["usage"].(map[string]any)
+	if usage["input_tokens"] != uint64(10) || usage["output_tokens"] != uint64(5) {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
 func TestExtractMessageWithNullFields(t *testing.T) {
 	// Simulates real vllm-mlx chunks where the first chunk has null content
 	// and subsequent chunks have actual content.
@@ -642,6 +1084,21 @@ func TestExtractMessageWithNullFields(t *testing.T) {
 	msg := extractMessage(chunks)
 	if msg.Content != "Hello world" {
 		t.Errorf("content = %q, want %q", msg.Content, "Hello world")
+	}
+}
+
+func TestExtractMessageWithReasoningContentAndThinkTags(t *testing.T) {
+	chunks := []string{
+		`data: {"choices":[{"delta":{"reasoning_content":"hidden"}}]}`,
+		`data: {"choices":[{"delta":{"content":"<think>more hidden</think>\n\n4"}}]}`,
+	}
+
+	msg := extractMessage(chunks)
+	if msg.Content != "4" {
+		t.Fatalf("content = %q, want 4", msg.Content)
+	}
+	if !strings.Contains(msg.Reasoning, "hidden") || !strings.Contains(msg.Reasoning, "more hidden") {
+		t.Fatalf("reasoning not preserved: %q", msg.Reasoning)
 	}
 }
 
@@ -689,6 +1146,44 @@ func TestProviderEarningsEndpoint(t *testing.T) {
 	}
 }
 
+func TestProviderEarningsUsesStoredPayoutRecords(t *testing.T) {
+	srv, _ := testServer(t)
+
+	wallet := "0xStoredPayoutWallet1234567890abcdef1234"
+	if err := srv.ledger.CreditProvider(wallet, 250_000, "qwen3.5-9b", "job-stored"); err != nil {
+		t.Fatalf("CreditProvider: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/provider/earnings?wallet="+wallet, nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	payouts, ok := resp["payouts"].([]any)
+	if !ok || len(payouts) != 1 {
+		t.Fatalf("payouts = %#v, want single payout", resp["payouts"])
+	}
+
+	payout, ok := payouts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("payout = %#v, want object", payouts[0])
+	}
+	if payout["model"] != "qwen3.5-9b" {
+		t.Errorf("payout model = %v, want qwen3.5-9b", payout["model"])
+	}
+	if settled, _ := payout["settled"].(bool); settled {
+		t.Errorf("payout settled = %v, want false", payout["settled"])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Benchmarks for normalizeSSEChunk (called per SSE chunk in streaming path)
 // ---------------------------------------------------------------------------
@@ -699,7 +1194,7 @@ func BenchmarkNormalizeSSEChunk_NoNulls(b *testing.B) {
 	chunk := `data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1700000000,"model":"qwen3.5-27b","choices":[{"index":0,"delta":{"content":"Hello world"},"finish_reason":null}]}`
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = normalizeSSEChunk(chunk)
 	}
 }
@@ -710,7 +1205,7 @@ func BenchmarkNormalizeSSEChunk_WithNulls(b *testing.B) {
 	chunk := `data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1700000000,"model":"qwen3.5-27b","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":null,"reasoning_content":null},"finish_reason":null}],"usage":null,"system_fingerprint":null}`
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = normalizeSSEChunk(chunk)
 	}
 }
@@ -721,7 +1216,7 @@ func BenchmarkNormalizeSSEChunk_Usage(b *testing.B) {
 	chunk := `data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1700000000,"model":"qwen3.5-27b","choices":[],"usage":{"prompt_tokens":150,"completion_tokens":83,"total_tokens":233}}`
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = normalizeSSEChunk(chunk)
 	}
 }

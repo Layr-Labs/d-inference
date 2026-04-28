@@ -21,6 +21,10 @@ use crate::hardware::{HardwareInfo, SystemMetrics};
 use crate::models::ModelInfo;
 use serde::{Deserialize, Serialize};
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Messages sent from provider to coordinator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -35,6 +39,10 @@ pub enum ProviderMessage {
         version: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         public_key: Option<String>,
+        /// True when text response chunks are encrypted back to the coordinator
+        /// using the request's session key.
+        #[serde(default, skip_serializing_if = "is_false")]
+        encrypted_response_chunks: bool,
         /// Ethereum-format hex wallet address for Tempo blockchain payouts (pathUSD).
         #[serde(skip_serializing_if = "Option::is_none")]
         wallet_address: Option<String>,
@@ -49,7 +57,7 @@ pub enum ProviderMessage {
         /// Benchmark: decode tokens per second.
         #[serde(skip_serializing_if = "Option::is_none")]
         decode_tps: Option<f64>,
-        /// Device-linked provider token (from `eigeninference-provider login`).
+        /// Device-linked provider token (from `darkbloom login`).
         /// When present, the coordinator links this provider to the token's account.
         #[serde(skip_serializing_if = "Option::is_none")]
         auth_token: Option<String>,
@@ -62,6 +70,9 @@ pub enum ProviderMessage {
         /// Per-file SHA-256 hashes of Jinja templates.
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         template_hashes: std::collections::HashMap<String, String>,
+        /// Privacy capability fields attested at registration.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        privacy_capabilities: Option<PrivacyCapabilities>,
     },
     Heartbeat {
         status: ProviderStatus,
@@ -71,13 +82,20 @@ pub enum ProviderMessage {
         warm_models: Vec<String>,
         stats: ProviderStats,
         system_metrics: SystemMetrics,
+        /// Live backend capacity reported from polling vllm-mlx /v1/status endpoints.
+        /// None for providers that don't support capacity reporting (backward compat).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        backend_capacity: Option<BackendCapacity>,
     },
     InferenceAccepted {
         request_id: String,
     },
     InferenceResponseChunk {
         request_id: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_data: Option<EncryptedPayload>,
     },
     InferenceComplete {
         request_id: String,
@@ -95,31 +113,22 @@ pub enum ProviderMessage {
         error: String,
         status_code: u16,
     },
-    /// Transcription result — full text and optional segments.
-    TranscriptionComplete {
-        request_id: String,
-        text: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        segments: Option<Vec<TranscriptionSegment>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        language: Option<String>,
-        usage: TranscriptionUsage,
-        /// Processing time in seconds.
-        duration_secs: f64,
-    },
-    /// Image generation complete — images were uploaded via HTTP, this just carries metadata.
-    ImageGenerationComplete {
-        request_id: String,
-        usage: ImageGenerationUsage,
-        /// Processing time in seconds.
-        duration_secs: f64,
-    },
     /// Response to an attestation challenge from the coordinator.
     /// Includes a fresh SIP status check — the coordinator verifies this
     /// hasn't changed since registration.
     AttestationResponse {
         nonce: String,
         signature: String,
+        /// Signature over canonical JSON of all status fields below
+        /// (sip_enabled, binary_hash, etc.) plus nonce and timestamp.
+        /// Without this, the status fields would be trivially forgeable
+        /// — only nonce+timestamp is covered by `signature`.
+        ///
+        /// Optional for backward compatibility with pre-v0.3.11 providers;
+        /// the coordinator treats missing/empty as "status unsigned" and
+        /// downgrades trust accordingly.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status_signature: Option<String>,
         public_key: String,
         /// Fresh hypervisor status at time of challenge response.
         /// When true, inference memory is hardware-isolated via Stage 2
@@ -153,6 +162,9 @@ pub enum ProviderMessage {
         /// Per-file SHA-256 hashes of Jinja templates.
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         template_hashes: std::collections::HashMap<String, String>,
+        /// Per-model weight hashes: model_id → SHA-256 of weight files.
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        model_hashes: std::collections::HashMap<String, String>,
     },
 }
 
@@ -165,27 +177,6 @@ pub enum CoordinatorMessage {
         #[serde(default)]
         body: serde_json::Value,
         /// E2E encrypted request body — only the hardened process can decrypt
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        encrypted_body: Option<EncryptedPayload>,
-    },
-    /// Transcription request — provider should transcribe the audio data.
-    TranscriptionRequest {
-        request_id: String,
-        #[serde(default)]
-        body: serde_json::Value,
-        /// E2E encrypted transcription body — same encryption as inference requests
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        encrypted_body: Option<EncryptedPayload>,
-    },
-    /// Image generation request — provider should generate images from prompt.
-    /// Images are uploaded to upload_url via HTTP POST (not sent over WebSocket).
-    ImageGenerationRequest {
-        request_id: String,
-        /// HTTP URL where the provider should POST generated image bytes.
-        #[serde(default)]
-        upload_url: String,
-        #[serde(default)]
-        body: serde_json::Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         encrypted_body: Option<EncryptedPayload>,
     },
@@ -207,20 +198,6 @@ pub enum CoordinatorMessage {
     },
 }
 
-/// Body of a transcription request from the coordinator.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TranscriptionRequestBody {
-    pub model: String,
-    /// Base64-encoded audio data.
-    pub audio: String,
-    /// ISO 639-1 language code (e.g. "en"). Optional — model may auto-detect.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub language: Option<String>,
-    /// Audio format hint: "mp3", "wav", "webm", etc.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub format: String,
-}
-
 /// NaCl Box encrypted payload for E2E encryption.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EncryptedPayload {
@@ -228,6 +205,22 @@ pub struct EncryptedPayload {
     pub ephemeral_public_key: String,
     /// Nonce + encrypted data (base64)
     pub ciphertext: String,
+}
+
+/// Privacy capability fields reported by the provider at registration and
+/// verified by the coordinator before routing private text jobs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PrivacyCapabilities {
+    pub text_backend_inprocess: bool,
+    pub text_proxy_disabled: bool,
+    pub python_runtime_locked: bool,
+    pub dangerous_modules_blocked: bool,
+    pub sip_enabled: bool,
+    pub anti_debug_enabled: bool,
+    pub core_dumps_disabled: bool,
+    pub env_scrubbed: bool,
+    #[serde(default)]
+    pub hypervisor_active: bool,
 }
 
 /// A single runtime component whose hash doesn't match the coordinator's known-good value.
@@ -249,6 +242,40 @@ impl PartialEq for ProviderMessage {
         let b = serde_json::to_string(other).unwrap_or_default();
         a == b
     }
+}
+
+/// Capacity state of a single backend slot (one vllm-mlx instance serving one model).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackendSlotCapacity {
+    /// Model ID for this slot.
+    pub model: String,
+    /// Backend state: "running", "idle_shutdown", "crashed", "reloading".
+    pub state: String,
+    /// Requests actively generating tokens.
+    pub num_running: u32,
+    /// Requests queued in the backend scheduler.
+    pub num_waiting: u32,
+    /// Sum of (prompt_tokens + completion_tokens) across running requests.
+    pub active_tokens: i64,
+    /// Sum of max_tokens across running requests (worst-case future growth).
+    pub max_tokens_potential: i64,
+}
+
+/// Aggregate backend capacity across all slots on a provider. Reported in
+/// heartbeats so the coordinator can make routing decisions based on actual
+/// GPU utilization rather than hardcoded concurrency limits.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackendCapacity {
+    /// Per-model slot capacity.
+    pub slots: Vec<BackendSlotCapacity>,
+    /// Metal active memory in GB (shared across all slots).
+    pub gpu_memory_active_gb: f64,
+    /// Metal peak memory in GB.
+    pub gpu_memory_peak_gb: f64,
+    /// Metal cache memory in GB (reclaimable).
+    pub gpu_memory_cache_gb: f64,
+    /// Total system/GPU memory in GB.
+    pub total_memory_gb: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -277,60 +304,6 @@ impl Default for ProviderStats {
 pub struct UsageInfo {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
-}
-
-/// A timed segment within a transcription result.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TranscriptionSegment {
-    pub start: f64,
-    pub end: f64,
-    pub text: String,
-}
-
-/// Usage info for billing STT requests.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TranscriptionUsage {
-    pub audio_seconds: f64,
-    pub generation_tokens: u64,
-}
-
-/// Body of an image generation request from the coordinator.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ImageGenerationRequestBody {
-    pub model: String,
-    pub prompt: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub negative_prompt: Option<String>,
-    #[serde(default = "default_image_count")]
-    pub n: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub size: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub steps: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub seed: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_format: Option<String>,
-}
-
-fn default_image_count() -> u32 {
-    1
-}
-
-/// A single generated image in base64 format.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ImageDataPayload {
-    pub b64_json: String,
-}
-
-/// Usage info for billing image generation requests.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ImageGenerationUsage {
-    pub images_generated: u32,
-    pub width: u32,
-    pub height: u32,
-    pub steps: u32,
-    pub model: String,
 }
 
 #[cfg(test)]
@@ -372,6 +345,7 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: None,
+            encrypted_response_chunks: true,
             wallet_address: None,
             attestation: None,
             prefill_tps: None,
@@ -380,6 +354,7 @@ mod tests {
             python_hash: None,
             runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
+            privacy_capabilities: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -415,6 +390,7 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: None,
+            encrypted_response_chunks: true,
             wallet_address: Some("0x1234567890abcdef1234567890abcdef12345678".to_string()),
             attestation: None,
             prefill_tps: None,
@@ -423,6 +399,7 @@ mod tests {
             python_hash: None,
             runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
+            privacy_capabilities: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -451,6 +428,7 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: Some("c29tZWtleQ==".to_string()),
+            encrypted_response_chunks: true,
             wallet_address: None,
             attestation: Some(attestation_raw),
             prefill_tps: Some(500.0),
@@ -459,6 +437,7 @@ mod tests {
             python_hash: None,
             runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
+            privacy_capabilities: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -484,6 +463,7 @@ mod tests {
                 cpu_usage: 0.0,
                 thermal_state: ThermalState::Nominal,
             },
+            backend_capacity: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -510,6 +490,7 @@ mod tests {
                 cpu_usage: 0.5,
                 thermal_state: ThermalState::Nominal,
             },
+            backend_capacity: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -525,10 +506,29 @@ mod tests {
         let msg = ProviderMessage::InferenceResponseChunk {
             request_id: "uuid-123".to_string(),
             data: "data: {\"choices\":[]}".to_string(),
+            encrypted_data: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"inference_response_chunk\""));
+        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, deserialized);
+    }
+
+    #[test]
+    fn test_inference_response_chunk_encrypted_roundtrip() {
+        let msg = ProviderMessage::InferenceResponseChunk {
+            request_id: "uuid-enc".to_string(),
+            data: String::new(),
+            encrypted_data: Some(EncryptedPayload {
+                ephemeral_public_key: "provider-public-key".to_string(),
+                ciphertext: "ciphertext".to_string(),
+            }),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"inference_response_chunk\""));
+        assert!(json.contains("\"encrypted_data\""));
         let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, deserialized);
     }
@@ -652,6 +652,7 @@ mod tests {
         let msg = ProviderMessage::AttestationResponse {
             nonce: "dGVzdG5vbmNl".to_string(),
             signature: "c2lnbmF0dXJl".to_string(),
+            status_signature: None,
             public_key: "cHVia2V5".to_string(),
             hypervisor_active: Some(true),
             rdma_disabled: Some(true),
@@ -662,6 +663,7 @@ mod tests {
             python_hash: None,
             runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
+            model_hashes: std::collections::HashMap::new(),
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -686,6 +688,7 @@ mod tests {
                 cpu_usage: 0.3,
                 thermal_state: ThermalState::Nominal,
             },
+            backend_capacity: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -694,6 +697,118 @@ mod tests {
         assert!(json.contains("\"thermal_state\":\"nominal\""));
         let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, deserialized);
+    }
+
+    #[test]
+    fn test_backend_capacity_roundtrip() {
+        let cap = BackendCapacity {
+            slots: vec![
+                BackendSlotCapacity {
+                    model: "mlx-community/Qwen2.5-7B-4bit".to_string(),
+                    state: "running".to_string(),
+                    num_running: 3,
+                    num_waiting: 1,
+                    active_tokens: 5000,
+                    max_tokens_potential: 12000,
+                },
+                BackendSlotCapacity {
+                    model: "mlx-community/Gemma-4-27B-4bit".to_string(),
+                    state: "idle_shutdown".to_string(),
+                    num_running: 0,
+                    num_waiting: 0,
+                    active_tokens: 0,
+                    max_tokens_potential: 0,
+                },
+            ],
+            gpu_memory_active_gb: 45.2,
+            gpu_memory_peak_gb: 52.1,
+            gpu_memory_cache_gb: 8.3,
+            total_memory_gb: 128.0,
+        };
+
+        let json = serde_json::to_string(&cap).unwrap();
+        assert!(json.contains("\"num_running\":3"));
+        assert!(json.contains("\"idle_shutdown\""));
+        assert!(json.contains("\"gpu_memory_active_gb\":45.2"));
+
+        let deserialized: BackendCapacity = serde_json::from_str(&json).unwrap();
+        assert_eq!(cap, deserialized);
+    }
+
+    #[test]
+    fn test_heartbeat_with_backend_capacity_roundtrip() {
+        use crate::hardware::{SystemMetrics, ThermalState};
+        let msg = ProviderMessage::Heartbeat {
+            status: ProviderStatus::Serving,
+            active_model: Some("test-model".to_string()),
+            warm_models: vec!["test-model".to_string()],
+            stats: ProviderStats {
+                requests_served: 42,
+                tokens_generated: 10000,
+            },
+            system_metrics: SystemMetrics {
+                memory_pressure: 0.3,
+                cpu_usage: 0.5,
+                thermal_state: ThermalState::Nominal,
+            },
+            backend_capacity: Some(BackendCapacity {
+                slots: vec![BackendSlotCapacity {
+                    model: "test-model".to_string(),
+                    state: "running".to_string(),
+                    num_running: 2,
+                    num_waiting: 0,
+                    active_tokens: 3000,
+                    max_tokens_potential: 8000,
+                }],
+                gpu_memory_active_gb: 25.5,
+                gpu_memory_peak_gb: 30.0,
+                gpu_memory_cache_gb: 5.0,
+                total_memory_gb: 64.0,
+            }),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"backend_capacity\""));
+        assert!(json.contains("\"gpu_memory_active_gb\":25.5"));
+
+        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, deserialized);
+    }
+
+    #[test]
+    fn test_heartbeat_without_capacity_omits_field() {
+        use crate::hardware::{SystemMetrics, ThermalState};
+        let msg = ProviderMessage::Heartbeat {
+            status: ProviderStatus::Idle,
+            active_model: None,
+            warm_models: vec![],
+            stats: ProviderStats::default(),
+            system_metrics: SystemMetrics {
+                memory_pressure: 0.0,
+                cpu_usage: 0.0,
+                thermal_state: ThermalState::Nominal,
+            },
+            backend_capacity: None,
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        // backend_capacity should be omitted when None (skip_serializing_if)
+        assert!(!json.contains("backend_capacity"));
+
+        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, deserialized);
+    }
+
+    #[test]
+    fn test_cross_language_backend_capacity_json() {
+        // Verify Rust can parse JSON that Go would produce (snake_case fields)
+        let go_json = r#"{"slots":[{"model":"test-model","state":"running","num_running":2,"num_waiting":1,"active_tokens":5000,"max_tokens_potential":12000}],"gpu_memory_active_gb":45.2,"gpu_memory_peak_gb":52.1,"gpu_memory_cache_gb":8.3,"total_memory_gb":128}"#;
+
+        let cap: BackendCapacity = serde_json::from_str(go_json).unwrap();
+        assert_eq!(cap.slots.len(), 1);
+        assert_eq!(cap.slots[0].num_running, 2);
+        assert_eq!(cap.gpu_memory_active_gb, 45.2);
+        assert_eq!(cap.total_memory_gb, 128.0);
     }
 
     #[test]
@@ -706,187 +821,6 @@ mod tests {
                 assert_eq!(timestamp, "2025-06-01T00:00:00Z");
             }
             _ => panic!("expected AttestationChallenge"),
-        }
-    }
-
-    #[test]
-    fn test_transcription_request_roundtrip() {
-        let body = serde_json::json!({
-            "model": "CohereLabs/cohere-transcribe",
-            "audio": "SGVsbG8=",
-            "language": "en",
-            "format": "wav"
-        });
-        let msg = CoordinatorMessage::TranscriptionRequest {
-            request_id: "stt-123".to_string(),
-            body,
-            encrypted_body: None,
-        };
-
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"type\":\"transcription_request\""));
-        assert!(json.contains("\"request_id\":\"stt-123\""));
-        assert!(json.contains("\"model\":\"CohereLabs/cohere-transcribe\""));
-        assert!(json.contains("\"audio\":\"SGVsbG8=\""));
-        let deserialized: CoordinatorMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg, deserialized);
-    }
-
-    #[test]
-    fn test_transcription_complete_roundtrip() {
-        let msg = ProviderMessage::TranscriptionComplete {
-            request_id: "stt-456".to_string(),
-            text: "Hello world".to_string(),
-            segments: Some(vec![TranscriptionSegment {
-                start: 0.0,
-                end: 5.0,
-                text: "Hello world".to_string(),
-            }]),
-            language: Some("en".to_string()),
-            usage: TranscriptionUsage {
-                audio_seconds: 5.0,
-                generation_tokens: 10,
-            },
-            duration_secs: 0.5,
-        };
-
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"type\":\"transcription_complete\""));
-        assert!(json.contains("\"text\":\"Hello world\""));
-        assert!(json.contains("\"audio_seconds\":5.0"));
-        assert!(json.contains("\"duration_secs\":0.5"));
-        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg, deserialized);
-    }
-
-    #[test]
-    fn test_deserialize_transcription_request_from_go_json() {
-        // This is the JSON format that Go coordinator would produce (plaintext)
-        let raw = r#"{"type":"transcription_request","request_id":"go-req-1","body":{"model":"cohere-transcribe","audio":"dGVzdA==","language":"en","format":"mp3"}}"#;
-        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
-        match msg {
-            CoordinatorMessage::TranscriptionRequest {
-                request_id,
-                body,
-                encrypted_body,
-            } => {
-                assert_eq!(request_id, "go-req-1");
-                assert_eq!(body["model"], "cohere-transcribe");
-                assert_eq!(body["audio"], "dGVzdA==");
-                assert!(encrypted_body.is_none());
-            }
-            _ => panic!("expected TranscriptionRequest"),
-        }
-    }
-
-    #[test]
-    fn test_deserialize_transcription_request_encrypted() {
-        // When E2E encrypted, body is empty and encrypted_body is present
-        let raw = r#"{"type":"transcription_request","request_id":"enc-1","encrypted_body":{"ephemeral_public_key":"a2V5","ciphertext":"Y2lwaGVy"}}"#;
-        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
-        match msg {
-            CoordinatorMessage::TranscriptionRequest {
-                request_id,
-                encrypted_body,
-                ..
-            } => {
-                assert_eq!(request_id, "enc-1");
-                let enc = encrypted_body.unwrap();
-                assert_eq!(enc.ephemeral_public_key, "a2V5");
-                assert_eq!(enc.ciphertext, "Y2lwaGVy");
-            }
-            _ => panic!("expected TranscriptionRequest"),
-        }
-    }
-
-    #[test]
-    fn test_image_generation_request_roundtrip() {
-        let body = serde_json::json!({
-            "model": "flux-klein-4b",
-            "prompt": "a cat wearing a hat",
-            "n": 1,
-            "size": "1024x1024"
-        });
-        let msg = CoordinatorMessage::ImageGenerationRequest {
-            request_id: "img-123".to_string(),
-            upload_url: "https://example.com/v1/provider/image-upload?request_id=img-123"
-                .to_string(),
-            body,
-            encrypted_body: None,
-        };
-
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"type\":\"image_generation_request\""));
-        assert!(json.contains("\"request_id\":\"img-123\""));
-        assert!(json.contains("\"upload_url\""));
-        assert!(json.contains("\"prompt\":\"a cat wearing a hat\""));
-        let deserialized: CoordinatorMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg, deserialized);
-    }
-
-    #[test]
-    fn test_image_generation_complete_roundtrip() {
-        // Complete message carries only usage metadata — images uploaded via HTTP
-        let msg = ProviderMessage::ImageGenerationComplete {
-            request_id: "img-456".to_string(),
-            usage: ImageGenerationUsage {
-                images_generated: 1,
-                width: 1024,
-                height: 1024,
-                steps: 4,
-                model: "flux-klein-4b".to_string(),
-            },
-            duration_secs: 7.5,
-        };
-
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"type\":\"image_generation_complete\""));
-        assert!(json.contains("\"images_generated\":1"));
-        assert!(json.contains("\"duration_secs\":7.5"));
-        // No images field — they're uploaded via HTTP
-        assert!(!json.contains("b64_json"));
-        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg, deserialized);
-    }
-
-    #[test]
-    fn test_deserialize_image_generation_request_from_go_json() {
-        let raw = r#"{"type":"image_generation_request","request_id":"go-img-1","upload_url":"https://example.com/upload","body":{"model":"flux-klein-4b","prompt":"sunset over mountains","n":2,"size":"512x512"}}"#;
-        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
-        match msg {
-            CoordinatorMessage::ImageGenerationRequest {
-                request_id,
-                upload_url,
-                body,
-                encrypted_body,
-            } => {
-                assert_eq!(request_id, "go-img-1");
-                assert_eq!(upload_url, "https://example.com/upload");
-                assert_eq!(body["model"], "flux-klein-4b");
-                assert_eq!(body["prompt"], "sunset over mountains");
-                assert_eq!(body["n"], 2);
-                assert!(encrypted_body.is_none());
-            }
-            _ => panic!("expected ImageGenerationRequest"),
-        }
-    }
-
-    #[test]
-    fn test_deserialize_image_generation_request_encrypted() {
-        let raw = r#"{"type":"image_generation_request","request_id":"enc-img-1","upload_url":"https://example.com/upload","encrypted_body":{"ephemeral_public_key":"a2V5","ciphertext":"Y2lwaGVy"}}"#;
-        let msg: CoordinatorMessage = serde_json::from_str(raw).unwrap();
-        match msg {
-            CoordinatorMessage::ImageGenerationRequest {
-                request_id,
-                encrypted_body,
-                ..
-            } => {
-                assert_eq!(request_id, "enc-img-1");
-                let enc = encrypted_body.unwrap();
-                assert_eq!(enc.ephemeral_public_key, "a2V5");
-                assert_eq!(enc.ciphertext, "Y2lwaGVy");
-            }
-            _ => panic!("expected ImageGenerationRequest"),
         }
     }
 
@@ -1016,6 +950,7 @@ mod tests {
                 backend: "vllm_mlx".to_string(),
                 version: None,
                 public_key: None,
+                encrypted_response_chunks: true,
                 wallet_address: None,
                 attestation: None,
                 prefill_tps: None,
@@ -1024,6 +959,7 @@ mod tests {
                 python_hash: None,
                 runtime_hash: None,
                 template_hashes: std::collections::HashMap::new(),
+                privacy_capabilities: None,
             },
             // Heartbeat (idle)
             ProviderMessage::Heartbeat {
@@ -1036,6 +972,7 @@ mod tests {
                     cpu_usage: 0.0,
                     thermal_state: ThermalState::Nominal,
                 },
+                backend_capacity: None,
             },
             // Heartbeat (serving)
             ProviderMessage::Heartbeat {
@@ -1051,11 +988,13 @@ mod tests {
                     cpu_usage: 0.95,
                     thermal_state: ThermalState::Serious,
                 },
+                backend_capacity: None,
             },
             // InferenceResponseChunk
             ProviderMessage::InferenceResponseChunk {
                 request_id: "req-1".to_string(),
                 data: "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}".to_string(),
+                encrypted_data: None,
             },
             // InferenceComplete
             ProviderMessage::InferenceComplete {
@@ -1077,6 +1016,7 @@ mod tests {
             ProviderMessage::AttestationResponse {
                 nonce: "bm9uY2U=".to_string(),
                 signature: "c2ln".to_string(),
+                status_signature: None,
                 public_key: "cGs=".to_string(),
                 hypervisor_active: Some(false),
                 rdma_disabled: Some(true),
@@ -1087,6 +1027,7 @@ mod tests {
                 python_hash: None,
                 runtime_hash: None,
                 template_hashes: std::collections::HashMap::new(),
+                model_hashes: std::collections::HashMap::new(),
             },
         ];
 
@@ -1112,17 +1053,6 @@ mod tests {
                     ephemeral_public_key: "ZXBoZW1lcmFs".to_string(),
                     ciphertext: "Y2lwaGVy".to_string(),
                 }),
-            },
-            CoordinatorMessage::TranscriptionRequest {
-                request_id: "t1".to_string(),
-                body: serde_json::json!({"model": "whisper", "audio": "YXVkaW8="}),
-                encrypted_body: None,
-            },
-            CoordinatorMessage::ImageGenerationRequest {
-                request_id: "i1".to_string(),
-                upload_url: "https://example.com/upload".to_string(),
-                body: serde_json::json!({"model": "flux", "prompt": "a cat"}),
-                encrypted_body: None,
             },
             CoordinatorMessage::Cancel {
                 request_id: "c1".to_string(),
@@ -1267,6 +1197,7 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: None,
+            encrypted_response_chunks: true,
             wallet_address: None,
             attestation: None,
             prefill_tps: None,
@@ -1275,6 +1206,7 @@ mod tests {
             python_hash: Some("pythonhash123".to_string()),
             runtime_hash: Some("runtimehash456".to_string()),
             template_hashes,
+            privacy_capabilities: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();

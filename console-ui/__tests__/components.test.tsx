@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { TrustBadge } from "@/components/TrustBadge";
+import { VerificationModeProvider } from "@/lib/verification-mode";
 import type { TrustMetadata } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
@@ -20,75 +21,64 @@ function makeTrust(overrides: Partial<TrustMetadata> = {}): TrustMetadata {
   };
 }
 
+/** Render wrapped in VerificationModeProvider (default: normal mode). */
+function renderWithMode(ui: React.ReactElement) {
+  return render(<VerificationModeProvider>{ui}</VerificationModeProvider>);
+}
+
 // ---------------------------------------------------------------------------
-// TrustBadge
+// TrustBadge — Normal Mode (default)
 // ---------------------------------------------------------------------------
 
-describe("TrustBadge", () => {
+describe("TrustBadge (normal mode)", () => {
   it("renders 'Unverified' for trust level none", () => {
-    render(<TrustBadge trust={makeTrust({ trustLevel: "none" })} />);
+    renderWithMode(<TrustBadge trust={makeTrust({ trustLevel: "none" })} />);
     expect(screen.getByText("Unverified")).toBeInTheDocument();
   });
 
-  it("renders 'Unverified' for non-hardware trust levels", () => {
-    render(<TrustBadge trust={makeTrust({ trustLevel: "none" })} />);
-    expect(screen.getByText("Unverified")).toBeInTheDocument();
-  });
-
-  it("renders 'Hardware Attested' for hardware without MDA", () => {
-    render(
+  it("renders 'Hardware Verified' for hardware without MDA", () => {
+    renderWithMode(
       <TrustBadge
         trust={makeTrust({ trustLevel: "hardware", mdaVerified: false })}
       />
     );
-    expect(screen.getByText("Hardware Attested")).toBeInTheDocument();
+    expect(screen.getByText("Hardware Verified")).toBeInTheDocument();
   });
 
-  it("renders 'Apple Attested' for hardware with MDA verified", () => {
-    render(
+  it("renders 'Apple-verified hardware' for hardware with MDA", () => {
+    renderWithMode(
       <TrustBadge
         trust={makeTrust({ trustLevel: "hardware", mdaVerified: true })}
       />
     );
-    expect(screen.getByText("Apple Attested")).toBeInTheDocument();
+    expect(screen.getByText("Apple-verified hardware")).toBeInTheDocument();
   });
 
-  it("shows SE indicator when secureEnclave is true", () => {
-    render(
-      <TrustBadge
-        trust={makeTrust({ trustLevel: "hardware", secureEnclave: true })}
-      />
-    );
-    expect(screen.getByText((t) => t.includes("SE"))).toBeInTheDocument();
-  });
-
-  it("shows MDA indicator when mdaVerified is true", () => {
-    render(
+  it("does NOT show SE/MDA indicators in normal mode", () => {
+    renderWithMode(
       <TrustBadge
         trust={makeTrust({
           trustLevel: "hardware",
-          mdaVerified: true,
           secureEnclave: true,
+          mdaVerified: true,
         })}
       />
     );
-    expect(screen.getByText((t) => t.includes("MDA"))).toBeInTheDocument();
+    expect(screen.queryByText((t) => t.includes("SE"))).not.toBeInTheDocument();
+    expect(screen.queryByText((t) => t.includes("MDA"))).not.toBeInTheDocument();
   });
 
   // Compact mode -----------------------------------------------------------
 
   it("in compact mode, does NOT render the label text", () => {
-    render(
-      <TrustBadge
-        trust={makeTrust({ trustLevel: "hardware" })}
-        compact
-      />
+    renderWithMode(
+      <TrustBadge trust={makeTrust({ trustLevel: "hardware" })} compact />
     );
-    expect(screen.queryByText("Hardware Attested")).not.toBeInTheDocument();
+    expect(screen.queryByText("Hardware Verified")).not.toBeInTheDocument();
   });
 
-  it("in compact mode, renders a title attribute with trust details", () => {
-    const { container } = render(
+  it("in compact mode, renders a title attribute", () => {
+    const { container } = renderWithMode(
       <TrustBadge
         trust={makeTrust({
           trustLevel: "hardware",
@@ -100,24 +90,6 @@ describe("TrustBadge", () => {
     );
     const span = container.querySelector("span[title]");
     expect(span).toBeTruthy();
-    expect(span!.getAttribute("title")).toContain("Apple Attested");
-    expect(span!.getAttribute("title")).toContain("Secure Enclave");
-    expect(span!.getAttribute("title")).toContain("Apple MDA");
-  });
-
-  it("in compact mode, does NOT show SE/MDA text spans", () => {
-    render(
-      <TrustBadge
-        trust={makeTrust({
-          trustLevel: "hardware",
-          secureEnclave: true,
-          mdaVerified: true,
-        })}
-        compact
-      />
-    );
-    // Text spans for SE / MDA are only in non-compact mode
-    expect(screen.queryByText((t) => t.includes("SE"))).not.toBeInTheDocument();
-    expect(screen.queryByText((t) => t.includes("MDA"))).not.toBeInTheDocument();
+    expect(span!.getAttribute("title")).toBe("Apple-verified hardware");
   });
 });

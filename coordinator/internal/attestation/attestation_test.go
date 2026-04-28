@@ -214,12 +214,12 @@ func TestParseP256PublicKeyUncompressed(t *testing.T) {
 		t.Fatalf("expected 65 bytes, got %d", len(raw))
 	}
 
-	parsed, err := parseP256PublicKey(raw)
+	parsed, err := ParseP256PublicKey(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if parsed.X.Cmp(privKey.PublicKey.X) != 0 || parsed.Y.Cmp(privKey.PublicKey.Y) != 0 {
+	if parsed.X.Cmp(privKey.X) != 0 || parsed.Y.Cmp(privKey.Y) != 0 {
 		t.Error("parsed key does not match original")
 	}
 }
@@ -238,19 +238,19 @@ func TestParseP256PublicKeyRawXY(t *testing.T) {
 		t.Fatalf("expected 64 bytes, got %d", len(rawXY))
 	}
 
-	parsed, err := parseP256PublicKey(rawXY)
+	parsed, err := ParseP256PublicKey(rawXY)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if parsed.X.Cmp(privKey.PublicKey.X) != 0 || parsed.Y.Cmp(privKey.PublicKey.Y) != 0 {
+	if parsed.X.Cmp(privKey.X) != 0 || parsed.Y.Cmp(privKey.Y) != 0 {
 		t.Error("parsed key does not match original")
 	}
 }
 
 // TestParseP256PublicKeyInvalid tests rejection of invalid key data.
 func TestParseP256PublicKeyInvalid(t *testing.T) {
-	_, err := parseP256PublicKey([]byte("short"))
+	_, err := ParseP256PublicKey([]byte("short"))
 	if err == nil {
 		t.Error("expected error for short key data")
 	}
@@ -258,9 +258,125 @@ func TestParseP256PublicKeyInvalid(t *testing.T) {
 	// 65 bytes but not a valid curve point
 	bad := make([]byte, 65)
 	bad[0] = 0x04
-	_, err = parseP256PublicKey(bad)
+	_, err = ParseP256PublicKey(bad)
 	if err == nil {
 		t.Error("expected error for invalid curve point")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// VerifyChallengeSignature tests
+// ---------------------------------------------------------------------------
+
+// TestVerifyChallengeSignatureValid generates a real P-256 key pair, signs
+// challenge data, and verifies it round-trips correctly.
+func TestVerifyChallengeSignatureValid(t *testing.T) {
+	// Generate a P-256 key pair (simulating Secure Enclave)
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Export public key as raw X||Y (64 bytes), base64-encoded
+	xBytes := privKey.X.Bytes()
+	yBytes := privKey.Y.Bytes()
+	padded := make([]byte, 64)
+	copy(padded[32-len(xBytes):32], xBytes)
+	copy(padded[64-len(yBytes):64], yBytes)
+	pubKeyB64 := base64.StdEncoding.EncodeToString(padded)
+
+	// Sign challenge data: SHA-256(nonce + timestamp)
+	challengeData := "test-nonce-1234567890" + "2026-04-12T00:00:00Z"
+	hash := sha256.Sum256([]byte(challengeData))
+	r, s, err := ecdsa.Sign(rand.Reader, privKey, hash[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// DER-encode the signature
+	derSig, err := asn1.Marshal(ecdsaSig{R: r, S: s})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sigB64 := base64.StdEncoding.EncodeToString(derSig)
+
+	// Verify — should succeed
+	if err := VerifyChallengeSignature(pubKeyB64, sigB64, challengeData); err != nil {
+		t.Errorf("expected valid signature to verify, got: %v", err)
+	}
+}
+
+// TestVerifyChallengeSignatureWrongData verifies that a valid signature
+// fails verification when the challenge data doesn't match.
+func TestVerifyChallengeSignatureWrongData(t *testing.T) {
+	privKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	xBytes := privKey.X.Bytes()
+	yBytes := privKey.Y.Bytes()
+	padded := make([]byte, 64)
+	copy(padded[32-len(xBytes):32], xBytes)
+	copy(padded[64-len(yBytes):64], yBytes)
+	pubKeyB64 := base64.StdEncoding.EncodeToString(padded)
+
+	// Sign one message
+	hash := sha256.Sum256([]byte("correct-data"))
+	r, s, _ := ecdsa.Sign(rand.Reader, privKey, hash[:])
+	derSig, _ := asn1.Marshal(ecdsaSig{R: r, S: s})
+	sigB64 := base64.StdEncoding.EncodeToString(derSig)
+
+	// Verify against different data — should fail
+	if err := VerifyChallengeSignature(pubKeyB64, sigB64, "wrong-data"); err == nil {
+		t.Error("expected verification to fail with wrong data")
+	}
+}
+
+// TestVerifyChallengeSignatureWrongKey verifies that a valid signature
+// fails verification against a different public key.
+func TestVerifyChallengeSignatureWrongKey(t *testing.T) {
+	privKey1, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	privKey2, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+
+	// Use key2's public key
+	xBytes := privKey2.X.Bytes()
+	yBytes := privKey2.Y.Bytes()
+	padded := make([]byte, 64)
+	copy(padded[32-len(xBytes):32], xBytes)
+	copy(padded[64-len(yBytes):64], yBytes)
+	pubKeyB64 := base64.StdEncoding.EncodeToString(padded)
+
+	// Sign with key1
+	data := "challenge-nonce"
+	hash := sha256.Sum256([]byte(data))
+	r, s, _ := ecdsa.Sign(rand.Reader, privKey1, hash[:])
+	derSig, _ := asn1.Marshal(ecdsaSig{R: r, S: s})
+	sigB64 := base64.StdEncoding.EncodeToString(derSig)
+
+	// Verify with key2 — should fail
+	if err := VerifyChallengeSignature(pubKeyB64, sigB64, data); err == nil {
+		t.Error("expected verification to fail with wrong key")
+	}
+}
+
+// TestVerifyChallengeSignatureInvalidInputs tests error handling for
+// malformed base64, invalid keys, and invalid signatures.
+func TestVerifyChallengeSignatureInvalidInputs(t *testing.T) {
+	tests := []struct {
+		name   string
+		pubKey string
+		sig    string
+		data   string
+	}{
+		{"invalid pubkey base64", "not-base64!!!", "dGVzdA==", "data"},
+		{"invalid sig base64", "dGVzdA==", "not-base64!!!", "data"},
+		{"pubkey too short", base64.StdEncoding.EncodeToString([]byte("short")), "dGVzdA==", "data"},
+		{"sig not DER", base64.StdEncoding.EncodeToString(make([]byte, 64)), base64.StdEncoding.EncodeToString([]byte("not-der")), "data"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := VerifyChallengeSignature(tt.pubKey, tt.sig, tt.data); err == nil {
+				t.Errorf("expected error for %s", tt.name)
+			}
+		})
 	}
 }
 
@@ -406,8 +522,8 @@ func signBlob(t *testing.T, blob AttestationBlob, privKey *ecdsa.PrivateKey) Sig
 }
 
 func marshalUncompressedP256(key *ecdsa.PrivateKey) []byte {
-	xBytes := key.PublicKey.X.Bytes()
-	yBytes := key.PublicKey.Y.Bytes()
+	xBytes := key.X.Bytes()
+	yBytes := key.Y.Bytes()
 
 	// Pad to 32 bytes each
 	raw := make([]byte, 65)

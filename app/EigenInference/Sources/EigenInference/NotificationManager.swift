@@ -33,7 +33,7 @@ final class NotificationManager: ObservableObject {
     func notifyProviderOffline() {
         send(
             title: "Provider Offline",
-            body: "The inference provider stopped unexpectedly. Open EigenInference to restart.",
+            body: "The inference provider stopped unexpectedly. Open Darkbloom to restart.",
             identifier: "provider-offline"
         )
     }

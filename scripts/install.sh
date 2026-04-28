@@ -1,24 +1,32 @@
 #!/bin/bash
+# NOTE: This file is also embedded in the coordinator binary via go:embed.
+# The copy at coordinator/internal/api/install.sh must be kept in sync.
 set -euo pipefail
 
-# EigenInference Provider Installer
-# Usage: curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash
+# Darkbloom Provider Installer
+# Usage: curl -fsSL https://api.darkbloom.dev/install.sh | bash
 #
 # This script:
 #   1. Fetches the latest signed release from the coordinator
 #   2. Downloads the provider bundle (binary + enclave helper)
 #   3. Verifies the bundle hash
-#   4. Sets up Python runtime + ffmpeg
+#   4. Sets up Python runtime
 #   5. Sets up Secure Enclave identity
 #   6. Downloads the best model for your hardware
 #   7. Summary with next steps
 #
 # Zero prerequisites — just macOS + Apple Silicon.
 
-COORD_URL="https://inference-test.openinnovation.dev"
-INSTALL_DIR="$HOME/.eigeninference"
+# Direct-fetch copy: no serve-time templating applied. Override with
+#   curl ... | COORD_URL=https://api.dev.darkbloom.xyz bash
+# Or fetch the coordinator-served copy at $COORD_URL/install.sh for templating.
+COORD_URL="${COORD_URL:-https://api.darkbloom.dev}"
+INSTALL_DIR="$HOME/.darkbloom"
 BIN_DIR="$INSTALL_DIR/bin"
 PYTHON_BIN="$INSTALL_DIR/python/bin/python3.12"
+PBS_TAG="20260408"
+PBS_PYTHON_VERSION="3.12.13"
+PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/cpython-${PBS_PYTHON_VERSION}+${PBS_TAG}-aarch64-apple-darwin-install_only.tar.gz"
 
 # Detect if running interactively (terminal) or piped (curl | bash)
 if [ -t 0 ]; then
@@ -28,17 +36,17 @@ else
 fi
 
 echo "╔══════════════════════════════════════════════╗"
-echo "║  EigenInference — Private AI on Verified Macs ║"
+echo "║  Darkbloom — Private AI on Verified Macs ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 
 # ─── Pre-flight checks ───────────────────────────────────────
 if [ "$(uname)" != "Darwin" ]; then
-    echo "Error: EigenInference requires macOS with Apple Silicon."
+    echo "Error: Darkbloom requires macOS with Apple Silicon."
     exit 1
 fi
 if [ "$(uname -m)" != "arm64" ]; then
-    echo "Error: EigenInference requires Apple Silicon (arm64)."
+    echo "Error: Darkbloom requires Apple Silicon (arm64)."
     exit 1
 fi
 
@@ -70,7 +78,7 @@ echo "  Signed by: Developer ID Application: Eigen Labs, Inc."
 echo ""
 
 # ─── Step 2: Download and install bundle ──────────────────────
-echo "→ [2/7] Downloading EigenInference v${VERSION}..."
+echo "→ [2/7] Downloading Darkbloom v${VERSION}..."
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
 curl -f#L "$BUNDLE_URL" -o "/tmp/eigeninference-bundle.tar.gz"
@@ -98,18 +106,18 @@ if command -v gh &>/dev/null; then
 fi
 
 echo "  Installing binaries..."
-tar xzf /tmp/eigeninference-bundle.tar.gz -C "$BIN_DIR"
-chmod +x "$BIN_DIR/eigeninference-provider" "$BIN_DIR/eigeninference-enclave" "$BIN_DIR/gRPCServerCLI" 2>/dev/null || true
-# Move image bridge to the expected location
-if [ -d "$BIN_DIR/image-bridge" ]; then
-    rm -rf "$INSTALL_DIR/image-bridge"
-    mv "$BIN_DIR/image-bridge" "$INSTALL_DIR/image-bridge"
-fi
+tar xzf /tmp/eigeninference-bundle.tar.gz -C "$INSTALL_DIR"
+
+# Migrate older flat bundle layouts into the current install structure.
+[ -f "$INSTALL_DIR/darkbloom" ] && mv -f "$INSTALL_DIR/darkbloom" "$BIN_DIR/darkbloom"
+[ -f "$INSTALL_DIR/eigeninference-enclave" ] && mv -f "$INSTALL_DIR/eigeninference-enclave" "$BIN_DIR/eigeninference-enclave"
+
+chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/eigeninference-enclave" 2>/dev/null || true
 rm -f /tmp/eigeninference-bundle.tar.gz
 
 # Verify code signature (codesign is part of base macOS, no CLT needed)
-if codesign --verify --verbose "$BIN_DIR/eigeninference-provider" 2>/dev/null; then
-    TEAM=$(codesign -dvv "$BIN_DIR/eigeninference-provider" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)
+if codesign --verify --verbose "$BIN_DIR/darkbloom" 2>/dev/null; then
+    TEAM=$(codesign -dvv "$BIN_DIR/darkbloom" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)
     echo "  Code signature verified ✓ (Team: $TEAM)"
 else
     echo "  ⚠ Code signature could not be verified"
@@ -118,7 +126,7 @@ fi
 # Make available in PATH
 # Try /usr/local/bin symlink first (may need sudo on newer macOS)
 SYMLINKED=false
-if ln -sf "$BIN_DIR/eigeninference-provider" /usr/local/bin/eigeninference-provider 2>/dev/null; then
+if ln -sf "$BIN_DIR/darkbloom" /usr/local/bin/darkbloom 2>/dev/null; then
     SYMLINKED=true
 fi
 
@@ -127,12 +135,13 @@ RC="$HOME/.zshrc"
 if [ -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ]; then
     RC="$HOME/.bashrc"
 fi
-if ! grep -q "eigeninference" "$RC" 2>/dev/null; then
+if ! grep -q "\.darkbloom/bin" "$RC" 2>/dev/null; then
+    # Remove old PATH entries from previous installs
+    sed -i '' '/\.dginf\/bin/d; /\.eigeninference\/bin/d; /alias eigeninf/d; /alias dginf/d; /# EigenInference/d; /# Darkbloom$/d' "$RC" 2>/dev/null || true
     cat >> "$RC" << 'SHELL'
 
-# EigenInference
-export PATH="$HOME/.eigeninference/bin:$PATH"
-alias eigeninf='eigeninference-provider'
+# Darkbloom
+export PATH="$HOME/.darkbloom/bin:$PATH"
 SHELL
 fi
 export PATH="$BIN_DIR:$PATH"
@@ -145,75 +154,116 @@ export PATH="$BIN_DIR:$PATH"
 set +eu; source "$RC" 2>/dev/null; set -eu
 
 echo "  Binaries installed ✓"
-echo "  Shortcut: eigeninf (alias for eigeninference-provider)"
+echo "  Shortcut: darkbloom"
 
-# ─── Migrate from old install (if exists) ─────────────────────
-if [ -d "$HOME/.dginf" ] && [ ! -L "$HOME/.dginf" ]; then
-    echo ""
-    echo "  Migrating from previous installation..."
-    # Copy over enclave keys, wallet, and config
-    for f in enclave_key.data enclave_e2e_ka.data wallet_key; do
-        [ -f "$HOME/.dginf/$f" ] && cp -n "$HOME/.dginf/$f" "$INSTALL_DIR/$f" 2>/dev/null || true
-    done
-    # Symlink python if not already present
-    if [ -d "$HOME/.dginf/python" ] && [ ! -d "$INSTALL_DIR/python" ]; then
-        ln -sf "$HOME/.dginf/python" "$INSTALL_DIR/python"
+# ─── Migrate from old installs ───────────────────────────────
+# Migration chain: ~/.dginf → ~/.eigeninference → ~/.darkbloom
+for OLD_DIR in "$HOME/.dginf" "$HOME/.eigeninference"; do
+    if [ -d "$OLD_DIR" ] && [ ! -L "$OLD_DIR" ]; then
+        echo ""
+        echo "  Migrating from $OLD_DIR..."
+        for f in enclave_key.data wallet_key; do
+            [ -f "$OLD_DIR/$f" ] && cp -n "$OLD_DIR/$f" "$INSTALL_DIR/$f" 2>/dev/null || true
+        done
+        if [ -d "$OLD_DIR/python" ] && [ ! -d "$INSTALL_DIR/python" ]; then
+            ln -sf "$OLD_DIR/python" "$INSTALL_DIR/python"
+        fi
+        # Symlink old path so stragglers still work
+        ln -sfn "$INSTALL_DIR" "$OLD_DIR" 2>/dev/null || true
+        echo "  Migration complete ✓"
     fi
-    # Symlink ffmpeg
-    if [ -f "$HOME/.dginf/ffmpeg" ] && [ ! -f "$INSTALL_DIR/ffmpeg" ]; then
-        ln -sf "$HOME/.dginf/ffmpeg" "$INSTALL_DIR/ffmpeg"
-    fi
-    echo "  Migration complete ✓"
-fi
+done
 
-# ─── Step 3: Python runtime + ffmpeg ─────────────────────────
+# ─── Step 3: Python runtime ──────────────────────────────────
 echo ""
 echo "→ [3/7] Verifying inference runtime..."
 
 # Check for Python runtime
-if [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "import vllm_mlx" 2>/dev/null; then
+if [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "import mlx_lm, vllm_mlx; from vllm_mlx.server import app" 2>/dev/null; then
     echo "  Python runtime ✓"
 else
-    echo "  Downloading Python runtime (~105 MB)..."
-    if curl -f#L "$COORD_URL/dl/eigeninference-python-runtime.tar.gz" -o "/tmp/eigeninference-python.tar.gz" 2>/dev/null; then
-        rm -rf "$INSTALL_DIR/python"
-        tar xzf /tmp/eigeninference-python.tar.gz -C "$INSTALL_DIR"
-        rm -f /tmp/eigeninference-python.tar.gz
+    R2_CDN="${R2_CDN:-https://pub-3d1cb668259340eeb2276e1d375c846d.r2.dev}"
+    RUNTIME_INSTALLED=false
+
+    # Try R2 release artifacts first (the canonical source).
+    if [ -n "$VERSION" ] && curl -f#L "$R2_CDN/releases/v${VERSION}/eigeninference-python-macos-arm64.tar.gz" -o "/tmp/eigeninference-python.tar.gz" 2>/dev/null; then
         echo ""
+        echo "  Extracting Python runtime..."
+        rm -rf "$INSTALL_DIR/python"
+        mkdir -p "$INSTALL_DIR/python"
+        tar xzf /tmp/eigeninference-python.tar.gz -C "$INSTALL_DIR/python"
+        rm -f /tmp/eigeninference-python.tar.gz
+        RUNTIME_INSTALLED=true
         echo "  Python runtime installed ✓"
-    else
-        # Fallback to old URL
-        if curl -f#L "$COORD_URL/dl/dginf-python-runtime.tar.gz" -o "/tmp/eigeninference-python.tar.gz" 2>/dev/null; then
-            rm -rf "$INSTALL_DIR/python"
-            tar xzf /tmp/eigeninference-python.tar.gz -C "$INSTALL_DIR"
-            rm -f /tmp/eigeninference-python.tar.gz
-            echo ""
-            echo "  Python runtime installed ✓"
-        else
-            echo "  ⚠ Python runtime download failed — inference won't work without it"
+    fi
+
+    # If the full runtime tarball wasn't available but python binary exists
+    # (from the bundle), fetch just the site-packages.
+    if [ "$RUNTIME_INSTALLED" = false ] && [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
+        echo "  Downloading site-packages..."
+        SITE_DIR="$INSTALL_DIR/python/lib/python3.12/site-packages"
+        if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/eigeninference-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
+            rm -rf "$SITE_DIR"
+            mkdir -p "$SITE_DIR"
+            tar xzf /tmp/eigen-site-packages.tar.gz -C "$SITE_DIR"
+            rm -f /tmp/eigen-site-packages.tar.gz
+            RUNTIME_INSTALLED=true
+            echo "  Site-packages installed from R2 ✓"
         fi
+    fi
+
+    if [ "$RUNTIME_INSTALLED" = false ]; then
+        echo "  ⚠ Python runtime download failed — inference won't work without it"
+    fi
+fi
+
+# Test that extracted Python actually runs (catches dyld errors from non-portable builds)
+if [ -f "$PYTHON_BIN" ] && ! "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
+    echo "  ⚠ Downloaded Python binary doesn't run on this machine"
+    echo "  Downloading portable Python from python-build-standalone..."
+    if curl -f#L "$PBS_URL" -o "/tmp/pbs-python.tar.gz" 2>/dev/null; then
+        rm -rf "$INSTALL_DIR/python"
+        mkdir -p "$INSTALL_DIR/python"
+        tar xzf /tmp/pbs-python.tar.gz --strip-components=1 -C "$INSTALL_DIR/python"
+        rm -f /tmp/pbs-python.tar.gz
+        rm -f "$INSTALL_DIR/python/lib/python3.12/EXTERNALLY-MANAGED"
+        if "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
+            echo "  Portable Python installed ✓"
+            # Install packages from R2 site-packages tarball (same verified artifacts as CI)
+            SITE_DIR="$INSTALL_DIR/python/lib/python3.12/site-packages"
+            # Prefer the coordinator-served install.sh (templated) — this copy is
+            # a direct-fetch fallback and stays pinned to the prod CDN defaults.
+            R2_CDN="${R2_CDN:-https://pub-3d1cb668259340eeb2276e1d375c846d.r2.dev}"
+            if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/eigeninference-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
+                rm -rf "$SITE_DIR"
+                mkdir -p "$SITE_DIR"
+                tar xzf /tmp/eigen-site-packages.tar.gz -C "$SITE_DIR"
+                rm -f /tmp/eigen-site-packages.tar.gz
+                echo "  Packages installed from R2 ✓"
+            else
+                # Fallback: pip install from GitHub
+                "$PYTHON_BIN" -m pip install --quiet --no-cache-dir \
+                    "https://github.com/Gajesh2007/vllm-mlx/archive/refs/heads/main.zip" \
+                    "mlx-lm>=0.31.2" 2>/dev/null || true
+                "$PYTHON_BIN" -m pip install --quiet --no-cache-dir --upgrade \
+                    "mlx-lm>=0.31.2" 2>/dev/null || true
+            fi
+        else
+            echo "  ✗ Portable Python also failed — please report this issue"
+        fi
+    else
+        echo "  ✗ Could not download portable Python"
     fi
 fi
 
 # Verify vllm-mlx
 if [ -f "$PYTHON_BIN" ]; then
-    PYTHONHOME="$INSTALL_DIR/python" "$PYTHON_BIN" -c \
-        "import vllm_mlx; print(f'  vllm-mlx {vllm_mlx.__version__} ✓')" 2>/dev/null \
-        || echo "  ⚠ vllm-mlx import failed"
-fi
-
-# Ensure ffmpeg is available
-if command -v ffmpeg &>/dev/null; then
-    echo "  ffmpeg ✓"
-elif [ -x "$BIN_DIR/ffmpeg" ] || [ -x "$INSTALL_DIR/ffmpeg" ]; then
-    echo "  ffmpeg ✓ (bundled)"
-else
-    echo "  Downloading ffmpeg..."
-    if curl -fsSL "$COORD_URL/dl/ffmpeg-macos-arm64" -o "$BIN_DIR/ffmpeg" 2>/dev/null; then
-        chmod +x "$BIN_DIR/ffmpeg"
-        echo "  ffmpeg ✓"
+    if ! "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
+        echo "  ✗ Python binary does not execute"
     else
-        echo "  ffmpeg ⚠ (optional — needed only for speech-to-text)"
+        PYTHONHOME="$INSTALL_DIR/python" "$PYTHON_BIN" -c \
+            "import mlx_lm, vllm_mlx; from vllm_mlx.server import app; print(f'  vllm-mlx {vllm_mlx.__version__} / mlx-lm {mlx_lm.__version__} ✓')" 2>/dev/null \
+            || echo "  ⚠ vllm-mlx server import failed"
     fi
 fi
 
@@ -252,7 +302,7 @@ elif [ -n "$SERIAL" ]; then
         echo "  │  • Generate a key in your Secure Enclave          │"
         echo "  │  • Apple verifies your device is genuine          │"
         echo "  │                                                   │"
-        echo "  │ EigenInference CANNOT erase, lock, or control     │"
+        echo "  │ Darkbloom CANNOT erase, lock, or control     │"
         echo "  │ your Mac. Remove anytime in System Settings.      │"
         echo "  └──────────────────────────────────────────────────┘"
         echo ""
@@ -271,7 +321,7 @@ elif [ -n "$SERIAL" ]; then
         fi
         echo "  Enrollment ✓"
     else
-        echo "  Enrollment ⚠ (coordinator unreachable — enroll later with: eigeninference-provider enroll)"
+        echo "  Enrollment ⚠ (coordinator unreachable — enroll later with: darkbloom enroll)"
     fi
 else
     echo "  Enrollment ⚠ (serial number not found)"
@@ -285,7 +335,6 @@ MODEL=""
 S3_NAME=""
 MODEL_NAME=""
 MODEL_SIZE=""
-IMAGE_MODEL=""
 
 # Fetch model catalog from coordinator
 CATALOG_JSON=$(curl -fsSL "$COORD_URL/v1/models/catalog" 2>/dev/null || echo "")
@@ -331,7 +380,7 @@ for m in data.get('models', []):
                     echo "  Invalid selection."
                 fi
             else
-                echo "  Skipped — download models later: eigeninference-provider models download"
+                echo "  Skipped — download models later: darkbloom models download"
             fi
         else
             echo "  Run interactively to select: curl -fsSL $COORD_URL/install.sh | bash -s"
@@ -358,16 +407,33 @@ if [ -n "$MODEL" ]; then
             echo "  $MODEL_NAME downloaded ✓"
         else
             echo "  Tarball not available, downloading from R2..."
-            R2_BASE="https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev/$S3_NAME"
+            R2_BASE="${R2_CDN_URL:-https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev}/$S3_NAME"
             for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json model.safetensors.index.json; do
                 curl -fsSL "$R2_BASE/$f" -o "$CACHE_DIR/$f" 2>/dev/null || true
             done
-            # Download weight shards
-            for f in $(curl -fsSL "$R2_BASE/" 2>/dev/null | grep -o 'model-[0-9]*-of-[0-9]*.safetensors' || echo "model.safetensors"); do
+
+            DOWNLOAD_OK=true
+            if [ -s "$CACHE_DIR/model.safetensors.index.json" ]; then
+                SHARDS=$(PYTHONHOME="$INSTALL_DIR/python" "$CATALOG_PYTHON" -c 'import json, sys; data=json.load(open(sys.argv[1])); print("\n".join(sorted({v for v in data.get("weight_map", {}).values() if isinstance(v, str)})))' "$CACHE_DIR/model.safetensors.index.json" 2>/dev/null || true)
+                if [ -z "$SHARDS" ]; then
+                    echo "  Could not parse model shard index."
+                    DOWNLOAD_OK=false
+                fi
+            else
+                SHARDS="model.safetensors"
+            fi
+
+            for f in $SHARDS; do
                 echo "  Downloading $f..."
-                curl -f#L "$R2_BASE/$f" -o "$CACHE_DIR/$f" 2>/dev/null || true
+                curl -f#L "$R2_BASE/$f" -o "$CACHE_DIR/$f" || DOWNLOAD_OK=false
             done
-            echo "  $MODEL_NAME downloaded ✓"
+
+            if [ "$DOWNLOAD_OK" = true ]; then
+                echo "  $MODEL_NAME downloaded ✓"
+            else
+                echo "  ✗ Failed to download $MODEL_NAME"
+                exit 1
+            fi
         fi
     fi
 fi
@@ -376,7 +442,7 @@ fi
 echo ""
 echo "════════════════════════════════════════════════"
 echo ""
-echo "  EigenInference v${VERSION} installed!"
+echo "  Darkbloom v${VERSION} installed!"
 echo ""
 echo "  Hardware:  $CHIP · ${MEM}GB"
 if [ -n "$MODEL_NAME" ]; then
@@ -387,9 +453,9 @@ echo "  Status:    ○ Installed (not running)"
 echo ""
 echo "  Start serving:"
 if [ -n "$MODEL" ]; then
-    echo "    eigeninference-provider serve --model $MODEL"
+    echo "    darkbloom serve --model $MODEL"
 else
-    echo "    eigeninference-provider serve"
+    echo "    darkbloom serve"
 fi
 echo ""
 
@@ -397,7 +463,7 @@ if [ ! -f "$HOME/.config/eigeninference/auth_token" ]; then
     echo "  ┌──────────────────────────────────────────────┐"
     echo "  │  Link your account to earn rewards:          │"
     echo "  │                                              │"
-    echo "  │    eigeninference-provider login              │"
+    echo "  │    darkbloom login              │"
     echo "  │                                              │"
     echo "  │  Without linking, earnings go to a local     │"
     echo "  │  wallet and cannot be withdrawn.             │"
@@ -406,12 +472,12 @@ if [ ! -f "$HOME/.config/eigeninference/auth_token" ]; then
 fi
 
 echo "  Commands:"
-echo "    eigeninference-provider serve       Start serving"
-echo "    eigeninference-provider status      Show status"
-echo "    eigeninference-provider logs -w     Stream logs"
-echo "    eigeninference-provider stop        Stop provider"
-echo "    eigeninference-provider update      Check for updates"
-echo "    eigeninference-provider doctor      Run diagnostics"
+echo "    darkbloom serve       Start serving"
+echo "    darkbloom status      Show status"
+echo "    darkbloom logs -w     Stream logs"
+echo "    darkbloom stop        Stop provider"
+echo "    darkbloom update      Check for updates"
+echo "    darkbloom doctor      Run diagnostics"
 echo ""
 echo "  Open a new terminal or run: source ~/.zshrc"
 echo ""

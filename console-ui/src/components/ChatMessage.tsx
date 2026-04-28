@@ -87,7 +87,7 @@ function ThinkingBlock({
       </button>
 
       {expanded && (
-        <div className="mt-2 ml-1 pl-3 border-l-[3px] border-gold/30">
+        <div className="mt-2 ml-1 pl-3 border-l-2 border-gold/30">
           <div
             className={`prose text-text-secondary text-sm leading-relaxed opacity-80 ${
               streaming ? "streaming-cursor" : ""
@@ -285,8 +285,8 @@ export function ChatMessage({ message, onRetry }: { message: Message; onRetry?: 
           {/* Content */}
           <div className="flex-1 min-w-0 overflow-hidden">
             <div className="flex items-center gap-2 mb-2 flex-wrap">
-              <span className="text-sm font-display font-bold text-text-secondary">
-                EigenInference
+              <span className="text-sm font-semibold text-text-secondary">
+                Darkbloom
               </span>
               {message.trust && (
                 <>

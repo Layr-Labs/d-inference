@@ -31,6 +31,7 @@ vi.mock("@/hooks/useAuth", () => ({
     user: null,
     login: vi.fn(),
     logout: vi.fn(),
+    getAccessToken: vi.fn().mockResolvedValue("mock-token"),
     email: null,
     walletAddress: null,
     displayName: null,
@@ -47,6 +48,13 @@ vi.mock("@/components/providers/PrivyClientProvider", () => ({
     logout: vi.fn(),
     getAccessToken: vi.fn().mockResolvedValue("mock-token"),
   }),
+}));
+
+// Mock Privy Solana hooks — BillingContent uses them directly, and they
+// panic without a PrivyProvider wrapper.
+vi.mock("@privy-io/react-auth/solana", () => ({
+  useWallets: () => ({ wallets: [] }),
+  useSignAndSendTransaction: () => ({ signAndSendTransaction: vi.fn() }),
 }));
 
 // Mock @/lib/api — prevent real fetches
@@ -68,8 +76,6 @@ vi.mock("@/lib/api", async (importOriginal) => {
     fetchModels: vi.fn().mockResolvedValue([]),
     fetchPricing: vi.fn().mockResolvedValue({
       prices: [],
-      transcription_prices: [],
-      image_prices: [],
     }),
     healthCheck: vi.fn().mockResolvedValue({ status: "ok", providers: 0 }),
   };
@@ -91,9 +97,56 @@ vi.mock("@/components/UsageChart", () => ({
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  fetchMock = vi.fn().mockResolvedValue(
-    new Response(JSON.stringify({ providers: [] }), { status: 200 })
-  );
+  fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/api/me/providers")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            providers: [],
+            latest_provider_version: "0.3.10",
+            min_provider_version: "0.3.10",
+            heartbeat_timeout_seconds: 90,
+            challenge_max_age_seconds: 360,
+          }),
+          { status: 200 }
+        )
+      );
+    }
+    if (url.includes("/api/me/summary")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            account_id: "acct-test",
+            available_balance_micro_usd: 0,
+            withdrawable_balance_micro_usd: 0,
+            payout_ready: false,
+            lifetime_micro_usd: 0,
+            lifetime_jobs: 0,
+            last_24h_micro_usd: 0,
+            last_24h_jobs: 0,
+            last_7d_micro_usd: 0,
+            last_7d_jobs: 0,
+            counts: {
+              total: 0,
+              online: 0,
+              serving: 0,
+              offline: 0,
+              untrusted: 0,
+              hardware: 0,
+              needs_attention: 0,
+            },
+            latest_provider_version: "0.3.10",
+            min_provider_version: "0.3.10",
+          }),
+          { status: 200 }
+        )
+      );
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify({ providers: [] }), { status: 200 })
+    );
+  });
   vi.stubGlobal("fetch", fetchMock);
 
   const store: Record<string, string> = {};
@@ -117,20 +170,23 @@ afterEach(() => {
 // =========================================================================
 
 describe("BillingPage", () => {
+  // page.tsx wraps BillingContent in next/dynamic({ ssr: false }), whose
+  // loading fallback never resolves in vitest. Import the content component
+  // directly so the test actually renders the UI under test.
   it("renders without crashing and shows key elements", async () => {
-    const BillingPage = (await import("@/app/billing/page")).default;
-    render(<BillingPage />);
+    const BillingContent = (await import("@/app/billing/BillingContent")).default;
+    render(<BillingContent />);
 
     // TopBar is mocked and should show "Billing"
     expect(screen.getByTestId("topbar")).toHaveTextContent("Billing");
 
-    // Deposit and Withdraw buttons should be present
-    expect(screen.getByText("Deposit")).toBeInTheDocument();
-    expect(screen.getByText("Withdraw")).toBeInTheDocument();
+    // Research preview banner — purchases disabled, Buy Credits button present
+    expect(screen.getByText("Available Credits")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Buy Credits/i })).toBeInTheDocument();
 
     // Invite code section
     expect(screen.getByText("Invite Code")).toBeInTheDocument();
-    expect(screen.getByText("Redeem")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Redeem/i })).toBeInTheDocument();
 
     // Stats labels
     expect(screen.getByText("Total Spent")).toBeInTheDocument();
@@ -139,8 +195,8 @@ describe("BillingPage", () => {
   });
 
   it("shows usage history section", async () => {
-    const BillingPage = (await import("@/app/billing/page")).default;
-    render(<BillingPage />);
+    const BillingContent = (await import("@/app/billing/BillingContent")).default;
+    render(<BillingContent />);
 
     expect(screen.getByText("Usage History")).toBeInTheDocument();
   });
@@ -157,7 +213,7 @@ describe("LinkPage", () => {
 
     expect(screen.getByText("Link Your Device")).toBeInTheDocument();
     expect(
-      screen.getByText(/Connect your Mac to your EigenInference account/)
+      screen.getByText(/Connect your Mac to your Darkbloom account/)
     ).toBeInTheDocument();
   });
 
@@ -179,39 +235,30 @@ describe("LinkPage", () => {
 // =========================================================================
 
 describe("ProvidersPage", () => {
-  it("renders without crashing and shows network heading", async () => {
+  it("renders without crashing and shows dashboard heading", async () => {
     const ProvidersPage = (await import("@/app/providers/page")).default;
     render(<ProvidersPage />);
 
-    // Wait for loading to finish (it does a fetch in useEffect)
-    // The fetch mock returns { providers: [] } so it should render quickly
-    await screen.findByText("Network Providers");
-    expect(screen.getByText("Network Providers")).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Provider Dashboard" });
+    expect(screen.getByText(/Earnings, device health/)).toBeInTheDocument();
   });
 
-  it("shows summary stats", async () => {
+  it("shows provider summary stats", async () => {
     const ProvidersPage = (await import("@/app/providers/page")).default;
     render(<ProvidersPage />);
 
-    await screen.findByText("Network Providers");
-    expect(screen.getByText("Providers")).toBeInTheDocument();
-    expect(screen.getByText("Hardware Trust")).toBeInTheDocument();
-    expect(screen.getByText("Apple MDA")).toBeInTheDocument();
-    expect(screen.getByText("Total Memory")).toBeInTheDocument();
+    await screen.findByText("Devices online");
+    expect(screen.getByText("Needs attention")).toBeInTheDocument();
+    expect(screen.getByText("Available earnings")).toBeInTheDocument();
+    expect(screen.getByText("Lifetime earnings")).toBeInTheDocument();
   });
 
-  it("shows 'Become a Provider' button when no matching wallet", async () => {
+  it("shows onboarding actions when no devices are linked", async () => {
     const ProvidersPage = (await import("@/app/providers/page")).default;
     render(<ProvidersPage />);
 
-    await screen.findByText("Network Providers");
-    expect(screen.getByText("Become a Provider")).toBeInTheDocument();
-  });
-
-  it("shows empty state when no providers", async () => {
-    const ProvidersPage = (await import("@/app/providers/page")).default;
-    render(<ProvidersPage />);
-
-    await screen.findByText("No providers online");
+    await screen.findByText("No provider devices linked yet");
+    expect(screen.getByText("Set up a provider")).toBeInTheDocument();
+    expect(screen.getByText("Open calculator")).toBeInTheDocument();
   });
 });

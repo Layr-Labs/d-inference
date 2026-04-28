@@ -1,6 +1,6 @@
 /// SetupWizardView — Warm, vibrant onboarding wizard for first-time users.
 ///
-/// Mirrors the CLI `eigeninference-provider install` flow with a graphical UI:
+/// Mirrors the CLI `darkbloom install` flow with a graphical UI:
 ///   1. Welcome & hardware detection
 ///   2. Security verification
 ///   3. MDM enrollment
@@ -25,7 +25,7 @@ struct SetupWizardView: View {
 
     private let totalSteps = 6
 
-    private let stepColors: [Color] = [.coral, .blueAccent, .purpleAccent, .gold, .tealAccent, .coral]
+    private let stepColors: [Color] = [.adaptiveCoral, .adaptiveBlueAccent, .adaptivePurpleAccent, .adaptiveGold, .adaptiveTealAccent, .adaptiveCoral]
     private let stepIcons: [String] = ["hand.wave.fill", "shield.checkered", "lock.fill", "square.and.arrow.down", "stethoscope", "bolt.fill"]
     private let stepTitles: [String] = ["Welcome", "Security", "MDM", "Model", "Verify", "Launch"]
 
@@ -56,7 +56,7 @@ struct SetupWizardView: View {
             if !errorMessage.isEmpty {
                 Text(errorMessage)
                     .font(.system(size: 12, weight: .medium, design: .rounded))
-                    .foregroundColor(.warmError)
+                    .foregroundColor(.adaptiveError)
                     .padding(.horizontal, 24)
                     .padding(.bottom, 8)
                     .lineLimit(10)
@@ -98,7 +98,7 @@ struct SetupWizardView: View {
                     }
 
                     Text(stepTitles[i])
-                        .font(.system(size: 10, weight: isActive ? .bold : .medium, design: .rounded))
+                        .font(.system(size: 11, weight: isActive ? .bold : .medium, design: .rounded))
                         .foregroundStyle(isActive ? color : (isDone ? Color.warmInk : Color.warmInkFaint))
                 }
                 .frame(maxWidth: .infinity)
@@ -107,7 +107,7 @@ struct SetupWizardView: View {
                     Rectangle()
                         .fill(i < currentStep ? stepColors[i] : Color.warmBgElevated)
                         .frame(height: 2)
-                        .frame(maxWidth: 30)
+                        .frame(maxWidth: .infinity)
                         .offset(y: -10)
                 }
             }
@@ -162,7 +162,7 @@ struct SetupWizardView: View {
                     }
                     .font(.system(size: 14, weight: .bold, design: .rounded))
                 }
-                .buttonStyle(WarmButtonStyle(.tealAccent))
+                .buttonStyle(WarmButtonStyle(.adaptiveTealAccent))
                 .pointerOnHover()
             }
         }
@@ -184,16 +184,16 @@ struct SetupWizardView: View {
 
             // Hardware cards
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-                hwChip(icon: "cpu", color: .blueAccent, label: "Chip", value: viewModel.chipName)
-                hwChip(icon: "gpu", color: .gold, label: "GPU", value: "\(viewModel.gpuCores) Cores")
-                hwChip(icon: "memorychip", color: .purpleAccent, label: "Memory", value: "\(viewModel.memoryGB) GB Unified")
-                hwChip(icon: "bolt", color: .tealAccent, label: "Bandwidth", value: "\(viewModel.memoryBandwidthGBs) GB/s")
+                hwChip(icon: "cpu", color: .adaptiveBlueAccent, label: "Chip", value: viewModel.chipName)
+                hwChip(icon: "gpu", color: .adaptiveGold, label: "GPU", value: "\(viewModel.gpuCores) Cores")
+                hwChip(icon: "memorychip", color: .adaptivePurpleAccent, label: "Memory", value: "\(viewModel.memoryGB) GB Unified")
+                hwChip(icon: "bolt", color: .adaptiveTealAccent, label: "Bandwidth", value: "\(viewModel.memoryBandwidthGBs) GB/s")
             }
 
             if !viewModel.securityManager.binaryFound {
                 HStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.gold)
+                        .foregroundColor(.adaptiveGold)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Provider binary not found")
                             .font(.system(size: 13, weight: .bold, design: .rounded))
@@ -208,7 +208,7 @@ struct SetupWizardView: View {
                             Button("Install Now") {
                                 Task {
                                     isInstallingCLI = true
-                                    let result = await CLIRunner.shell("curl -fsSL https://inference-test.openinnovation.dev/install.sh | bash")
+                                    let result = await CLIRunner.shell("curl -fsSL https://api.darkbloom.dev/install.sh | bash")
                                     if result.success {
                                         viewModel.securityManager.binaryFound = CLIRunner.resolveBinaryPath() != nil
                                     } else {
@@ -217,15 +217,15 @@ struct SetupWizardView: View {
                                     isInstallingCLI = false
                                 }
                             }
-                            .buttonStyle(WarmButtonStyle(.gold))
+                            .buttonStyle(WarmButtonStyle(.adaptiveGold))
                             .controlSize(.small)
                             .pointerOnHover()
                         }
                     }
                 }
                 .padding(14)
-                .background(Color.gold.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.gold.opacity(0.2), lineWidth: 1.5))
+                .background(Color.adaptiveGold.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.adaptiveGold.opacity(0.2), lineWidth: 1.5))
             }
 
         }
@@ -246,13 +246,13 @@ struct SetupWizardView: View {
             VStack(spacing: 10) {
                 checkRow("System Integrity Protection (SIP)",
                          subtitle: "Prevents memory inspection by other processes",
-                         passed: viewModel.securityManager.sipEnabled, color: .blueAccent)
+                         passed: viewModel.securityManager.sipEnabled, color: .adaptiveBlueAccent)
                 checkRow("Secure Enclave",
                          subtitle: "Hardware-bound identity key for attestation",
-                         passed: viewModel.securityManager.secureEnclaveAvailable, color: .purpleAccent)
+                         passed: viewModel.securityManager.secureEnclaveAvailable, color: .adaptivePurpleAccent)
                 checkRow("Secure Boot",
                          subtitle: "Ensures only trusted software runs at boot",
-                         passed: viewModel.securityManager.secureBootEnabled, color: .tealAccent)
+                         passed: viewModel.securityManager.secureBootEnabled, color: .adaptiveTealAccent)
             }
 
             if viewModel.securityManager.isChecking {
@@ -284,12 +284,12 @@ struct SetupWizardView: View {
             HStack(spacing: 12) {
                 Image(systemName: viewModel.securityManager.mdmEnrolled ? "checkmark.shield.fill" : "shield.slash")
                     .font(.system(size: 28))
-                    .foregroundColor(viewModel.securityManager.mdmEnrolled ? .tealAccent : .warmInkFaint)
+                    .foregroundColor(viewModel.securityManager.mdmEnrolled ? .adaptiveTealAccent : .warmInkFaint)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(viewModel.securityManager.mdmEnrolled ? "Enrolled in EigenInference MDM" : "Not enrolled")
+                    Text(viewModel.securityManager.mdmEnrolled ? "Enrolled in Darkbloom MDM" : "Not enrolled")
                         .font(.system(size: 15, weight: .bold, design: .rounded))
-                        .foregroundStyle(viewModel.securityManager.mdmEnrolled ? Color.tealAccent : Color.warmInk)
+                        .foregroundStyle(viewModel.securityManager.mdmEnrolled ? Color.adaptiveTealAccent : Color.adaptiveInk)
                     Text(viewModel.securityManager.mdmEnrolled
                          ? "Your Mac is verified for hardware trust."
                          : "MDM enrollment enables full hardware attestation.")
@@ -300,15 +300,15 @@ struct SetupWizardView: View {
             .padding(16)
             .background(
                 RoundedRectangle(cornerRadius: 14)
-                    .fill((viewModel.securityManager.mdmEnrolled ? Color.tealAccent : Color.warmInkFaint).opacity(0.06))
-                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder((viewModel.securityManager.mdmEnrolled ? Color.tealAccent : Color.warmInkFaint).opacity(0.15), lineWidth: 1.5))
+                    .fill((viewModel.securityManager.mdmEnrolled ? Color.adaptiveTealAccent : Color.adaptiveInkFaint).opacity(0.06))
+                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder((viewModel.securityManager.mdmEnrolled ? Color.adaptiveTealAccent : Color.adaptiveInkFaint).opacity(0.15), lineWidth: 1.5))
             )
 
             if !viewModel.securityManager.mdmEnrolled {
                 Button("Enroll Now") {
                     Task { await enrollMDM() }
                 }
-                .buttonStyle(WarmButtonStyle(.purpleAccent))
+                .buttonStyle(WarmButtonStyle(.adaptivePurpleAccent))
                 .disabled(isProcessing)
                 .pointerOnHover()
 
@@ -362,7 +362,7 @@ struct SetupWizardView: View {
             if !downloadStatus.isEmpty && !isDownloadingModel {
                 Text(downloadStatus)
                     .font(.system(size: 12, weight: .bold, design: .rounded))
-                    .foregroundColor(downloadStatus.contains("\u{2713}") ? .tealAccent : .warmError)
+                    .foregroundColor(downloadStatus.contains("\u{2713}") ? .adaptiveTealAccent : .adaptiveError)
             }
 
         }
@@ -384,7 +384,7 @@ struct SetupWizardView: View {
                 Button("Run Diagnostics") {
                     Task { await runDoctor() }
                 }
-                .buttonStyle(WarmButtonStyle(.tealAccent))
+                .buttonStyle(WarmButtonStyle(.adaptiveTealAccent))
                 .pointerOnHover()
             }
 
@@ -400,7 +400,7 @@ struct SetupWizardView: View {
             if !doctorOutput.isEmpty {
                 ScrollView {
                     Text(doctorOutput)
-                        .font(.system(.caption, design: .monospaced))
+                        .font(.monoWarm)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(12)
                         .background(Color.warmBgSecondary, in: RoundedRectangle(cornerRadius: 10))
@@ -429,15 +429,15 @@ struct SetupWizardView: View {
             // Summary cards
             VStack(spacing: 10) {
                 if !selectedModelId.isEmpty {
-                    summaryRow(icon: "cpu", color: .gold, label: "Model", value: selectedModelId.components(separatedBy: "/").last ?? selectedModelId)
+                    summaryRow(icon: "cpu", color: .adaptiveGold, label: "Model", value: selectedModelId.components(separatedBy: "/").last ?? selectedModelId)
                 }
-                summaryRow(icon: viewModel.securityManager.trustLevel.iconName, color: .tealAccent,
+                summaryRow(icon: viewModel.securityManager.trustLevel.iconName, color: .adaptiveTealAccent,
                            label: "Trust", value: viewModel.securityManager.trustLevel.displayName)
                 summaryRow(icon: viewModel.securityManager.sipEnabled ? "lock.fill" : "lock.open",
-                           color: viewModel.securityManager.sipEnabled ? .blueAccent : .warmError,
+                           color: viewModel.securityManager.sipEnabled ? .adaptiveBlueAccent : .adaptiveError,
                            label: "SIP", value: viewModel.securityManager.sipEnabled ? "Enabled" : "Disabled")
                 summaryRow(icon: viewModel.securityManager.mdmEnrolled ? "checkmark.shield.fill" : "shield",
-                           color: viewModel.securityManager.mdmEnrolled ? .purpleAccent : .warmInkFaint,
+                           color: viewModel.securityManager.mdmEnrolled ? .adaptivePurpleAccent : .adaptiveInkFaint,
                            label: "MDM", value: viewModel.securityManager.mdmEnrolled ? "Enrolled" : "Not enrolled")
             }
 
@@ -445,7 +445,7 @@ struct SetupWizardView: View {
                 Text("Start provider automatically on login")
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
             }
-            .tint(.tealAccent)
+            .tint(.adaptiveTealAccent)
 
         }
     }
@@ -462,7 +462,7 @@ struct SetupWizardView: View {
                 .shadow(color: color.opacity(0.3), radius: 3, y: 2)
             VStack(alignment: .leading, spacing: 1) {
                 Text(label)
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .font(.labelWarm)
                     .foregroundStyle(color)
                     .textCase(.uppercase)
                 Text(value)
@@ -482,22 +482,22 @@ struct SetupWizardView: View {
         HStack(spacing: 12) {
             Image(systemName: passed ? "checkmark.circle.fill" : "xmark.circle.fill")
                 .font(.system(size: 22))
-                .foregroundColor(passed ? color : .warmError)
-                .shadow(color: (passed ? color : .warmError).opacity(0.3), radius: 4)
+                .foregroundColor(passed ? color : .adaptiveError)
+                .shadow(color: (passed ? color : .adaptiveError).opacity(0.3), radius: 4)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 13, weight: .bold, design: .rounded))
                     .foregroundStyle(Color.warmInk)
                 Text(subtitle)
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .font(.captionWarm)
                     .foregroundStyle(Color.warmInkFaint)
             }
         }
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill((passed ? color : .warmError).opacity(0.06))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder((passed ? color : .warmError).opacity(0.12), lineWidth: 1.5))
+                .fill((passed ? color : .adaptiveError).opacity(0.06))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder((passed ? color : .adaptiveError).opacity(0.12), lineWidth: 1.5))
         )
     }
 
@@ -538,12 +538,12 @@ struct SetupWizardView: View {
             if !fits {
                 Text("Too large")
                     .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundColor(.warmError)
+                    .foregroundColor(.adaptiveError)
             } else if isSelected {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 18))
-                    .foregroundColor(.tealAccent)
-                    .shadow(color: .tealAccent.opacity(0.3), radius: 4)
+                    .foregroundColor(.adaptiveTealAccent)
+                    .shadow(color: .adaptiveTealAccent.opacity(0.3), radius: 4)
             } else {
                 Button("Select") {
                     selectedModelId = model.id
@@ -559,10 +559,10 @@ struct SetupWizardView: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(isSelected ? Color.tealAccent.opacity(0.08) : Color.white.opacity(0.4))
+                .fill(isSelected ? Color.adaptiveTealAccent.opacity(0.08) : Color.adaptiveBgSecondary)
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
-                        .strokeBorder(isSelected ? Color.tealAccent.opacity(0.25) : Color.warmInk.opacity(0.06), lineWidth: isSelected ? 2 : 1)
+                        .strokeBorder(isSelected ? Color.adaptiveTealAccent.opacity(0.25) : Color.adaptiveInk.opacity(0.06), lineWidth: isSelected ? 2 : 1)
                 )
         )
     }

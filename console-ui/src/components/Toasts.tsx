@@ -33,7 +33,7 @@ export function Toasts() {
         return (
           <div
             key={toast.id}
-            className={`flex items-start gap-2 px-4 py-3 rounded-lg border-[3px] border-ink shadow-md text-sm message-animate ${colors[toast.type]}`}
+            className={`flex items-start gap-2 px-4 py-3 rounded-lg border border-border-dim shadow-md text-sm message-animate ${colors[toast.type]}`}
           >
             <Icon size={16} className={`shrink-0 mt-0.5 ${iconColors[toast.type]}`} />
             <span className="flex-1">{toast.message}</span>

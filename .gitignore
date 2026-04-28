@@ -51,6 +51,9 @@ coordinator/.env
 *.p12
 enclave_key.data
 
+# Database dumps (contain prod data)
+*.dump
+
 # Compiled binaries (coordinator)
 coordinator/eigeninference-coordinator
 coordinator/eigeninference-coordinator-linux
@@ -63,8 +66,6 @@ coordinator/eigeninference-coordinator-linux
 # Temp directories
 tmp/
 
-# Papers (private — submitted separately)
-papers/
 
 d-inf-docs/
 .vercel
@@ -79,9 +80,11 @@ test-ledger/
 
 # Internal docs (contain infra details, not for public repo)
 docs/coordinator-deploy-runbook.md
+docs/.private/
+docs/default-private-inference-plan.md
 
 # Rust cross-language test build artifacts
 coordinator/internal/e2e/testdata/decrypt/target/
 coordinator/coordinator
 coordinator/eigeninference-coordinator-linux
-coordinator/Caddyfile
+docs/RUNBOOK.md

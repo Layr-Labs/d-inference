@@ -1,4 +1,4 @@
-/// SettingsView — Configuration window for the EigenInference provider.
+/// SettingsView — Configuration window for the Darkbloom provider.
 ///
 /// Tabs:
 ///   - General: Coordinator URL, API key, auto-start on login
@@ -33,7 +33,7 @@ struct SettingsView: View {
                     Label("Security", systemImage: "shield")
                 }
         }
-        .frame(width: 550, height: 420)
+        .frame(minWidth: 550, idealWidth: 580, minHeight: 420)
     }
 }
 
@@ -53,14 +53,14 @@ private struct GeneralTab: View {
             }
 
             Section {
-                Toggle("Start EigenInference when you log in", isOn: $viewModel.autoStart)
+                Toggle("Start Darkbloom when you log in", isOn: $viewModel.autoStart)
 
                 HStack {
                     Text("LaunchAgent:")
                         .foregroundColor(.warmInkLight)
                     Text(LaunchAgentManager.isInstalled ? "Installed" : "Not installed")
                         .font(.caption)
-                        .foregroundColor(LaunchAgentManager.isInstalled ? .tealAccent : .warmInkLight)
+                        .foregroundColor(LaunchAgentManager.isInstalled ? .adaptiveTealAccent : .warmInkLight)
                 }
             } header: {
                 Text("Startup")
@@ -74,13 +74,13 @@ private struct GeneralTab: View {
                     if let path = CLIRunner.resolveBinaryPath() {
                         Text(path)
                             .font(.caption)
-                            .foregroundColor(.tealAccent)
+                            .foregroundColor(.adaptiveTealAccent)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     } else {
                         Text("Not found")
                             .font(.caption)
-                            .foregroundColor(.warmError)
+                            .foregroundColor(.adaptiveError)
                     }
                 }
 
@@ -92,7 +92,7 @@ private struct GeneralTab: View {
                     if viewModel.updateManager.updateAvailable {
                         Text("(update available)")
                             .font(.caption)
-                            .foregroundColor(.gold)
+                            .foregroundColor(.adaptiveGold)
                     }
                 }
             } header: {
@@ -124,8 +124,8 @@ private struct AvailabilityTab: View {
                     viewModel.idleTimeoutSeconds = newValue
                 }
 
-                Text("When you're using your Mac, EigenInference will pause inference to keep your machine responsive. It resumes automatically when you step away.")
-                    .font(.caption)
+                Text("When you're using your Mac, Darkbloom will pause inference to keep your machine responsive. It resumes automatically when you step away.")
+                    .font(.captionWarm)
                     .foregroundColor(.warmInkLight)
             } header: {
                 Text("Idle Detection")
@@ -152,8 +152,8 @@ private struct AvailabilityTab: View {
                 }
 
                 Text("Set when your machine serves inference. Outside these windows, the provider disconnects and frees GPU memory. Requires provider restart to take effect.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .font(.captionWarm)
+                    .foregroundColor(.warmInkLight)
             } header: {
                 Text("Schedule")
                     .font(.display(18))
@@ -188,8 +188,8 @@ private struct ScheduleWindowRow: View {
                         }
                     } label: {
                         Text(ScheduleWindowModel.dayLabels[day] ?? day)
-                            .font(.caption2)
-                            .frame(width: 32, height: 24)
+                            .font(.captionWarm)
+                            .frame(width: 36, height: 30)
                     }
                     .buttonStyle(.bordered)
                     .tint(isActive ? .accentColor : .secondary)
@@ -214,8 +214,8 @@ private struct ScheduleWindowRow: View {
 
                 if window.isOvernight {
                     Text("(overnight)")
-                        .font(.caption2)
-                        .foregroundColor(.orange)
+                        .font(.captionWarm)
+                        .foregroundColor(.adaptiveGold)
                 }
             }
         }
@@ -245,7 +245,7 @@ private struct SecurityTab: View {
                 Button("Refresh") {
                     Task { await viewModel.securityManager.refresh() }
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.borderless)
                 .controlSize(.small)
             }
 
@@ -253,7 +253,7 @@ private struct SecurityTab: View {
             if #available(macOS 26.0, *) {
                 HStack(spacing: 8) {
                     Image(systemName: viewModel.securityManager.trustLevel.iconName)
-                        .font(.title2)
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundColor(trustColor)
                     VStack(alignment: .leading) {
                         Text(viewModel.securityManager.trustLevel.displayName)
@@ -261,7 +261,7 @@ private struct SecurityTab: View {
                             .fontWeight(.bold)
                             .foregroundColor(trustColor)
                         Text(trustDescription)
-                            .font(.caption)
+                            .font(.captionWarm)
                             .foregroundColor(.warmInkLight)
                     }
                 }
@@ -270,7 +270,7 @@ private struct SecurityTab: View {
             } else {
                 HStack(spacing: 8) {
                     Image(systemName: viewModel.securityManager.trustLevel.iconName)
-                        .font(.title2)
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundColor(trustColor)
                     VStack(alignment: .leading) {
                         Text(viewModel.securityManager.trustLevel.displayName)
@@ -278,7 +278,7 @@ private struct SecurityTab: View {
                             .fontWeight(.bold)
                             .foregroundColor(trustColor)
                         Text(trustDescription)
-                            .font(.caption)
+                            .font(.captionWarm)
                             .foregroundColor(.warmInkLight)
                     }
                 }
@@ -312,8 +312,8 @@ private struct SecurityTab: View {
 
     private var trustColor: Color {
         switch viewModel.securityManager.trustLevel {
-        case .hardware: return .tealAccent
-        case .none: return .warmError
+        case .hardware: return .adaptiveTealAccent
+        case .none: return .adaptiveError
         }
     }
 
@@ -327,12 +327,12 @@ private struct SecurityTab: View {
     private func checkRow(_ label: String, _ enabled: Bool) -> some View {
         HStack {
             Image(systemName: enabled ? "checkmark.circle.fill" : "xmark.circle")
-                .foregroundColor(enabled ? .tealAccent : .warmError)
+                .foregroundColor(enabled ? .adaptiveTealAccent : .adaptiveError)
             Text(label)
             Spacer()
             Text(enabled ? "OK" : "Missing")
-                .font(.caption)
-                .foregroundColor(enabled ? .warmInkLight : .warmError)
+                .font(.captionWarm)
+                .foregroundColor(enabled ? .warmInkLight : .adaptiveError)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 8)

@@ -17,7 +17,7 @@ struct CLIRunnerBinaryTests {
         // nil is acceptable — binary may not be installed in test environment
     }
 
-    @Test("resolveBinaryPath checks home .eigeninference/bin first")
+    @Test("resolveBinaryPath checks home .darkbloom/bin first")
     func binaryPathSearchOrder() {
         // Verify the method doesn't crash and returns a consistent result
         let first = CLIRunner.resolveBinaryPath()

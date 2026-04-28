@@ -83,9 +83,7 @@ function PrivyClientProviderInner({ children }: { children: React.ReactNode }) {
           theme: "dark",
           accentColor: "#6366f1",
         },
-        embeddedWallets: {
-          solana: { createOnLogin: "all-users" },
-        },
+        embeddedWallets: {},
       }}
     >
       <PrivyAuthBridge>{children}</PrivyAuthBridge>

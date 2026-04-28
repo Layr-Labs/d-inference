@@ -24,7 +24,7 @@ export function UsageChart({ usage }: Props) {
   const maxCost = Math.max(...days.map(([, v]) => v), 1);
 
   return (
-    <div className="rounded-xl bg-bg-white border-[3px] border-ink p-5 shadow-md">
+    <div className="rounded-xl bg-bg-white border border-border-dim p-5 shadow-md">
       <h3 className="text-sm font-medium text-text-primary mb-4">
         Spend Over Time
       </h3>

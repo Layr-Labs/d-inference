@@ -1,0 +1,57 @@
+name: Deploy Dev Coordinator
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'coordinator/**'
+      - 'deploy/gcp/**'
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: coordinator/go.mod
+
+      - name: Cross-compile coordinator
+        run: |
+          cd coordinator
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o /tmp/coordinator ./cmd/coordinator
+
+      - name: Deploy to dev VM
+        env:
+          SSH_KEY: ${{ secrets.DEV_VM_SSH_KEY }}
+          VM_IP: ${{ secrets.DEV_VM_IP }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -t ed25519 "$VM_IP" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          # Upload binary
+          scp -i ~/.ssh/deploy_key /tmp/coordinator "deploy@${VM_IP}:/tmp/coordinator-new"
+
+          # Swap binary in running container and restart
+          ssh -i ~/.ssh/deploy_key "deploy@${VM_IP}" '
+            sudo docker cp /tmp/coordinator-new d-inference-coordinator:/usr/local/bin/coordinator
+            sudo docker restart d-inference-coordinator
+            rm /tmp/coordinator-new
+
+            # Wait for health
+            for i in $(seq 1 24); do
+              code=$(curl -sk -o /dev/null -w "%{http_code}" http://localhost:8080/health || true)
+              if [ "$code" = "200" ]; then
+                echo "Health check passed after $((i*5))s"
+                exit 0
+              fi
+              echo "attempt $i: got $code"
+              sleep 5
+            done
+            echo "Health check failed"
+            exit 1
+          '

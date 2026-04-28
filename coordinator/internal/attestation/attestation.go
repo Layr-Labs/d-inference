@@ -1,4 +1,4 @@
-// Package attestation verifies signed attestation blobs from EigenInference
+// Package attestation verifies signed attestation blobs from Darkbloom
 // provider nodes.
 //
 // Each provider generates an attestation blob containing hardware identity
@@ -31,6 +31,7 @@ import (
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"time"
@@ -159,7 +160,7 @@ func Verify(signed SignedAttestation) VerificationResult {
 		return result
 	}
 
-	pubKey, err := parseP256PublicKey(pubKeyBytes)
+	pubKey, err := ParseP256PublicKey(pubKeyBytes)
 	if err != nil {
 		result.Error = fmt.Sprintf("invalid public key: %v", err)
 		return result
@@ -247,9 +248,9 @@ func CheckTimestamp(result VerificationResult, maxAge time.Duration) bool {
 	return time.Since(result.Timestamp) <= maxAge
 }
 
-// parseP256PublicKey parses a raw P-256 public key point.
-// Accepts uncompressed format (65 bytes: 0x04 || X || Y).
-func parseP256PublicKey(raw []byte) (*ecdsa.PublicKey, error) {
+// ParseP256PublicKey parses a raw P-256 public key point.
+// Accepts uncompressed format (65 bytes: 0x04 || X || Y) or raw X||Y (64 bytes).
+func ParseP256PublicKey(raw []byte) (*ecdsa.PublicKey, error) {
 	curve := elliptic.P256()
 
 	if len(raw) == 65 && raw[0] == 0x04 {
@@ -258,7 +259,7 @@ func parseP256PublicKey(raw []byte) (*ecdsa.PublicKey, error) {
 		y := new(big.Int).SetBytes(raw[33:65])
 
 		if !curve.IsOnCurve(x, y) {
-			return nil, fmt.Errorf("point is not on the P-256 curve")
+			return nil, errors.New("point is not on the P-256 curve")
 		}
 
 		return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
@@ -271,7 +272,7 @@ func parseP256PublicKey(raw []byte) (*ecdsa.PublicKey, error) {
 		y := new(big.Int).SetBytes(raw[32:64])
 
 		if !curve.IsOnCurve(x, y) {
-			return nil, fmt.Errorf("point is not on the P-256 curve")
+			return nil, errors.New("point is not on the P-256 curve")
 		}
 
 		return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
@@ -323,4 +324,189 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 	}
 
 	return json.Marshal(m)
+}
+
+// StatusCanonicalInput holds the fields covered by StatusSignature in
+// AttestationResponseMessage. It mirrors the canonical payload the
+// provider builds + signs in handle_attestation_challenge (Rust side).
+//
+// The serialization is JSON with alphabetically-sorted keys (matching
+// Go's encoding/json map ordering and Rust's BTreeMap ordering, which
+// produce identical bytes for equivalent content).
+//
+// Fields that are absent on the provider side (e.g. hypervisor not
+// active, no model loaded yet) are omitted from the canonical payload —
+// "unknown" must serialize differently than "false" so a downgrade
+// attacker can't strip a sip_enabled=true claim and have it look like
+// the provider just didn't report it. Both sides must follow the same
+// convention.
+type StatusCanonicalInput struct {
+	Nonce             string
+	Timestamp         string
+	HypervisorActive  *bool
+	RDMADisabled      *bool
+	SIPEnabled        *bool
+	SecureBootEnabled *bool
+	BinaryHash        string
+	ActiveModelHash   string
+	PythonHash        string
+	RuntimeHash       string
+	TemplateHashes    map[string]string
+	GrpcBinaryHash    string
+	ImageBridgeHash   string
+	ModelHashes       map[string]string
+}
+
+// BuildStatusCanonical serializes the input to a deterministic JSON byte
+// sequence used for StatusSignature. The result must be byte-for-byte
+// identical to the provider's canonical bytes.
+//
+// Conventions (must match Rust handle_attestation_challenge):
+//   - Keys are sorted alphabetically (Go encoding/json sorts map keys).
+//   - nil bool/empty string/empty map fields are OMITTED entirely.
+//   - Bool fields are JSON true/false.
+//   - Map values are nested JSON objects with sorted keys.
+//   - nonce and timestamp are always present (challenge always supplies them).
+//
+// Migration note: there is no version discriminator in the canonical
+// payload. Adding a new field later REQUIRES the coordinator to be
+// upgraded BEFORE providers start signing the new field — otherwise the
+// new providers' signatures will fail verification on old coordinators.
+// Our deploy ordering already does this (coordinator deploys first,
+// providers pull updates afterwards via install.sh / autoupdate). If
+// this ordering changes, add a `canonical_version` field and gate the
+// new fields on it before shipping.
+func BuildStatusCanonical(in StatusCanonicalInput) ([]byte, error) {
+	m := map[string]any{
+		"nonce":     in.Nonce,
+		"timestamp": in.Timestamp,
+	}
+	if in.HypervisorActive != nil {
+		m["hypervisor_active"] = *in.HypervisorActive
+	}
+	if in.RDMADisabled != nil {
+		m["rdma_disabled"] = *in.RDMADisabled
+	}
+	if in.SIPEnabled != nil {
+		m["sip_enabled"] = *in.SIPEnabled
+	}
+	if in.SecureBootEnabled != nil {
+		m["secure_boot_enabled"] = *in.SecureBootEnabled
+	}
+	if in.BinaryHash != "" {
+		m["binary_hash"] = in.BinaryHash
+	}
+	if in.ActiveModelHash != "" {
+		m["active_model_hash"] = in.ActiveModelHash
+	}
+	if in.PythonHash != "" {
+		m["python_hash"] = in.PythonHash
+	}
+	if in.RuntimeHash != "" {
+		m["runtime_hash"] = in.RuntimeHash
+	}
+	if len(in.TemplateHashes) > 0 {
+		m["template_hashes"] = in.TemplateHashes
+	}
+	if in.GrpcBinaryHash != "" {
+		m["grpc_binary_hash"] = in.GrpcBinaryHash
+	}
+	if in.ImageBridgeHash != "" {
+		m["image_bridge_hash"] = in.ImageBridgeHash
+	}
+	if len(in.ModelHashes) > 0 {
+		m["model_hashes"] = in.ModelHashes
+	}
+	return json.Marshal(m)
+}
+
+// VerifyStatusSignature verifies that statusSigB64 is a valid SE P-256
+// signature over BuildStatusCanonical(in). Returns nil if the signature
+// covers the supplied fields; an error if the signature is missing,
+// malformed, or doesn't match.
+//
+// Empty signatures (legacy providers that don't yet implement the
+// extended signature) return ErrStatusSignatureMissing — callers should
+// treat this as "status fields are advisory, not signed" and refuse to
+// upgrade trust based on them.
+func VerifyStatusSignature(sePublicKeyB64, statusSigB64 string, in StatusCanonicalInput) error {
+	if statusSigB64 == "" {
+		return ErrStatusSignatureMissing
+	}
+	canonical, err := BuildStatusCanonical(in)
+	if err != nil {
+		return fmt.Errorf("build canonical status payload: %w", err)
+	}
+	return VerifyChallengeSignature(sePublicKeyB64, statusSigB64, string(canonical))
+}
+
+// ErrStatusSignatureMissing is returned by VerifyStatusSignature when the
+// provider didn't supply a status signature at all. Callers should
+// downgrade trust in the status fields rather than fail the connection,
+// to remain compatible with pre-v0.3.11 providers.
+var ErrStatusSignatureMissing = fmt.Errorf("status_signature missing — status fields not cryptographically bound")
+
+// VerifyChallengeSignature verifies a P-256 ECDSA signature over challenge
+// data (nonce + timestamp) using the provider's Secure Enclave public key.
+//
+// Parameters:
+//   - sePublicKeyB64: base64-encoded raw P-256 public key (64 or 65 bytes)
+//   - signatureB64: base64-encoded DER-encoded ECDSA signature
+//   - data: the signed data (nonce + timestamp concatenated)
+//
+// Returns nil on success, an error describing the failure otherwise.
+//
+// Security note (signature scope, 2026-04-16):
+// The signed payload currently covers ONLY (nonce + timestamp). The status
+// fields the provider reports in AttestationResponseMessage — SIPEnabled,
+// SecureBootEnabled, RDMADisabled, BinaryHash, PythonHash, RuntimeHash,
+// TemplateHashes, ActiveModelHash — are NOT included in the signature. A
+// provider with a valid SE key (e.g. a compromised device) can therefore
+// echo a correct signature while lying about its current security posture
+// or runtime hashes.
+//
+// Replay and clock-skew defenses are sound under this scheme: the
+// coordinator generates the nonce and timestamp itself (provider.go
+// sendChallenge) and tracks unused nonces in challengeTracker. A response
+// with a duplicate nonce hits "unknown challenge" because tracker.remove
+// was already called. The provider's clock is never trusted.
+//
+// Closing the signature-scope gap requires a coordinated protocol change:
+// extend the signed payload to include canonical status fields, update both
+// provider/src/coordinator.rs (handle_attestation_challenge) and this file,
+// and migrate carefully (a hard switch would invalidate all in-fleet
+// providers). Tracked separately from this file's reliability work.
+func VerifyChallengeSignature(sePublicKeyB64, signatureB64, data string) error {
+	// Decode public key
+	pubKeyBytes, err := base64.StdEncoding.DecodeString(sePublicKeyB64)
+	if err != nil {
+		return fmt.Errorf("invalid SE public key base64: %w", err)
+	}
+
+	pubKey, err := ParseP256PublicKey(pubKeyBytes)
+	if err != nil {
+		return fmt.Errorf("invalid SE public key: %w", err)
+	}
+
+	// Decode signature
+	sigBytes, err := base64.StdEncoding.DecodeString(signatureB64)
+	if err != nil {
+		return fmt.Errorf("invalid signature base64: %w", err)
+	}
+
+	// Hash the challenge data
+	hash := sha256.Sum256([]byte(data))
+
+	// Parse DER-encoded ECDSA signature
+	var sig ecdsaSig
+	if _, err := asn1.Unmarshal(sigBytes, &sig); err != nil {
+		return fmt.Errorf("invalid DER signature: %w", err)
+	}
+
+	// Verify
+	if !ecdsa.Verify(pubKey, hash[:], sig.R, sig.S) {
+		return errors.New("ECDSA signature verification failed")
+	}
+
+	return nil
 }

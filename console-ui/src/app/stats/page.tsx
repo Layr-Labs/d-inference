@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { TopBar } from "@/components/TopBar";
 
-const STATS_API = "https://inference-test.openinnovation.dev";
+const STATS_API = "https://api.darkbloom.dev";
 
 interface CPUCores {
   total: number;
@@ -32,6 +32,7 @@ interface ProviderStats {
   trust_level: string;
   decode_tps: number;
   current_model?: string;
+  models?: string[];
   requests_served: number;
   tokens_generated: number;
 }
@@ -418,11 +419,22 @@ function ProviderCard({ provider }: { provider: ProviderStats }) {
         </div>
       </div>
 
-      {provider.current_model && (
+      {(provider.models?.length || provider.current_model) && (
         <div className="mt-3 pt-3 border-t border-border-dim">
-          <p className="text-xs font-mono text-text-tertiary">
-            Serving: <span className="text-text-secondary">{provider.current_model.split("/").pop()}</span>
-          </p>
+          {provider.current_model && (
+            <p className="text-xs font-mono text-text-tertiary">
+              Serving: <span className="text-text-secondary">{provider.current_model.split("/").pop()}</span>
+            </p>
+          )}
+          {provider.models && provider.models.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {provider.models.map((m) => (
+                <span key={m} className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${m === provider.current_model ? 'bg-accent/10 text-accent' : 'bg-bg-secondary text-text-tertiary'}`}>
+                  {m.split("/").pop()}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -498,7 +510,7 @@ export default function StatsPage() {
               Network Statistics
             </h1>
             <p className="text-sm text-text-tertiary mt-1">
-              Live metrics from the EigenInference decentralized inference network
+              Live metrics from the Darkbloom decentralized inference network
             </p>
           </div>
           <div className="flex items-center gap-3">

@@ -38,12 +38,12 @@ final class UpdateManager: ObservableObject {
         }
     }
 
-    /// Check if the eigeninference-provider binary needs updating.
+    /// Check if the darkbloom binary needs updating.
     func checkBinaryVersion() async {
         do {
             let result = try await CLIRunner.run(["--version"])
             if result.success {
-                // Parse version from output like "eigeninference-provider 0.1.0"
+                // Parse version from output like "darkbloom 0.1.0"
                 let parts = result.stdout.components(separatedBy: " ")
                 if let version = parts.last {
                     // Compare with latest

@@ -21,6 +21,7 @@ package e2e
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 
 	"golang.org/x/crypto/nacl/box"
@@ -96,7 +97,7 @@ func Decrypt(payload *EncryptedPayload, session *SessionKeys) ([]byte, error) {
 		return nil, fmt.Errorf("invalid ciphertext: %w", err)
 	}
 	if len(ciphertext) < 24 {
-		return nil, fmt.Errorf("ciphertext too short")
+		return nil, errors.New("ciphertext too short")
 	}
 
 	// Extract nonce
@@ -106,7 +107,7 @@ func Decrypt(payload *EncryptedPayload, session *SessionKeys) ([]byte, error) {
 	// Decrypt
 	plaintext, ok := box.Open(nil, ciphertext[24:], &nonce, &senderPub, &session.PrivateKey)
 	if !ok {
-		return nil, fmt.Errorf("decryption failed — wrong key or tampered data")
+		return nil, errors.New("decryption failed — wrong key or tampered data")
 	}
 
 	return plaintext, nil

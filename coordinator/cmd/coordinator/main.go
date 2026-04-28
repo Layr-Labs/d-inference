@@ -42,6 +42,7 @@ import (
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/billing"
+	"github.com/eigeninference/coordinator/internal/buildattest"
 	"github.com/eigeninference/coordinator/internal/datadog"
 	"github.com/eigeninference/coordinator/internal/e2e"
 	"github.com/eigeninference/coordinator/internal/mdm"
@@ -251,6 +252,19 @@ func main() {
 	if releaseKey := os.Getenv("EIGENINFERENCE_RELEASE_KEY"); releaseKey != "" {
 		srv.SetReleaseKey(releaseKey)
 		logger.Info("release key configured")
+	}
+
+	// Build provenance attestation policy — verifies GitHub Actions provenance
+	// for release bundles before accepting them.
+	attestPolicy := buildattest.PolicyFromEnv()
+	srv.SetAttestationPolicy(attestPolicy)
+	if attestPolicy.Enabled() {
+		logger.Info("build attestation verification enabled",
+			"required", attestPolicy.Required,
+			"repo", attestPolicy.TrustedRepo,
+		)
+	} else if attestPolicy.Required {
+		logger.Warn("build attestation is required but GITHUB_ATTESTATION_TOKEN is not set")
 	}
 
 	// Sync known-good provider hashes from active releases in the store.

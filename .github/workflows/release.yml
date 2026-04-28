@@ -67,6 +67,10 @@ jobs:
     needs: [resolve-env]
     environment: ${{ needs.resolve-env.outputs.environment }}
     runs-on: macos-26-xlarge
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -501,6 +505,11 @@ jobs:
           wait
           echo "DMG uploaded to R2"
 
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: /tmp/eigeninference-bundle-macos-arm64.tar.gz
+
       # --- Register with coordinator ---
 
       - name: Register release with coordinator
@@ -561,6 +570,7 @@ jobs:
           **Runtime hash (vllm-mlx):** `${{ env.RUNTIME_HASH }}`
           **Signed by:** Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)
           **Notarized:** Yes
+          **Build provenance:** Verify with `gh attestation verify eigeninference-bundle-macos-arm64.tar.gz --repo Layr-Labs/d-inference`
 
           ### Install
           ```bash

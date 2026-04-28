@@ -96,6 +96,15 @@ fi
 echo ""
 echo "  Hash verified ✓"
 
+# Optional: verify build provenance if gh CLI is available
+if command -v gh &>/dev/null; then
+    if gh attestation verify /tmp/eigeninference-bundle.tar.gz --repo Layr-Labs/d-inference 2>/dev/null; then
+        echo "  Build provenance verified ✓"
+    else
+        echo "  Build provenance ⚠ (could not verify — install continues)"
+    fi
+fi
+
 echo "  Installing binaries..."
 tar xzf /tmp/eigeninference-bundle.tar.gz -C "$INSTALL_DIR"
 

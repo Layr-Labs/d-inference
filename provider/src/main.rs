@@ -59,10 +59,6 @@ const DEFAULT_COORDINATOR_WS_URL: &str = match option_env!("DARKBLOOM_COORDINATO
     Some(v) => v,
     None => "wss://api.darkbloom.dev/ws/provider",
 };
-const DEFAULT_ENROLL_PROFILE_URL: &str = match option_env!("DARKBLOOM_ENROLL_PROFILE_URL") {
-    Some(v) => v,
-    None => "https://api.darkbloom.dev/enroll.mobileconfig",
-};
 const DEFAULT_INSTALL_URL: &str = match option_env!("DARKBLOOM_INSTALL_URL") {
     Some(v) => v,
     None => "https://api.darkbloom.dev/install.sh",
@@ -94,6 +90,52 @@ struct CatalogModel {
     architecture: String,
     description: String,
     min_ram_gb: i32,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct CoordinatorAttestationResponse {
+    #[serde(default)]
+    providers: Vec<CoordinatorProviderTrust>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct CoordinatorProviderTrust {
+    #[serde(default)]
+    provider_id: String,
+    #[serde(default)]
+    serial_number: String,
+    #[serde(default)]
+    trust_level: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    mdm_verified: bool,
+    #[serde(default)]
+    acme_verified: bool,
+    #[serde(default)]
+    mda_verified: bool,
+    #[serde(default)]
+    secure_enclave: bool,
+    #[serde(default)]
+    sip_enabled: bool,
+    #[serde(default)]
+    secure_boot_enabled: bool,
+    #[serde(default)]
+    authenticated_root_enabled: bool,
+}
+
+impl CoordinatorProviderTrust {
+    fn is_online(&self) -> bool {
+        self.status.eq_ignore_ascii_case("online")
+    }
+
+    fn is_hardware_verified(&self) -> bool {
+        self.trust_level.eq_ignore_ascii_case("hardware")
+    }
+
+    fn short_provider_id(&self) -> &str {
+        self.provider_id.get(..8).unwrap_or(&self.provider_id)
+    }
 }
 
 fn default_model_type() -> String {
@@ -403,6 +445,47 @@ fn coordinator_http_base(coordinator_url: &str) -> String {
         .replace("/ws/provider", "")
         .trim_end_matches('/')
         .to_string()
+}
+
+fn prefer_provider_record(
+    a: &CoordinatorProviderTrust,
+    b: &CoordinatorProviderTrust,
+) -> std::cmp::Ordering {
+    b.is_hardware_verified()
+        .cmp(&a.is_hardware_verified())
+        .then_with(|| b.is_online().cmp(&a.is_online()))
+        .then_with(|| a.provider_id.cmp(&b.provider_id))
+}
+
+async fn fetch_coordinator_provider_trust(
+    coordinator_url: &str,
+    serial_number: &str,
+) -> Result<Vec<CoordinatorProviderTrust>> {
+    let base_url = coordinator_http_base(coordinator_url);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    let resp = client
+        .get(format!("{base_url}/v1/providers/attestation"))
+        .send()
+        .await
+        .with_context(|| format!("failed to query {base_url}/v1/providers/attestation"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        anyhow::bail!("coordinator returned HTTP {status}");
+    }
+
+    let body: CoordinatorAttestationResponse = resp
+        .json()
+        .await
+        .context("failed to parse coordinator attestation response")?;
+    let mut providers: Vec<_> = body
+        .providers
+        .into_iter()
+        .filter(|p| p.serial_number == serial_number)
+        .collect();
+    providers.sort_by(prefer_provider_record);
+    Ok(providers)
 }
 
 fn model_cache_dir(model_id: &str) -> std::path::PathBuf {
@@ -1497,9 +1580,9 @@ enum Command {
         #[arg(long, default_value = DEFAULT_COORDINATOR_WS_URL)]
         coordinator: String,
 
-        /// MDM enrollment profile URL
-        #[arg(long, default_value = DEFAULT_ENROLL_PROFILE_URL)]
-        profile_url: String,
+        /// Legacy static MDM enrollment profile URL. Prefer the default dynamic enrollment flow.
+        #[arg(long, hide = true)]
+        profile_url: Option<String>,
 
         /// Model to serve (auto-selects if not specified)
         #[arg(long)]
@@ -1552,6 +1635,10 @@ enum Command {
         /// Coordinator URL to test connectivity
         #[arg(long, default_value = DEFAULT_COORDINATOR_HTTP_URL)]
         coordinator: String,
+
+        /// Include provider ID, serial, and coordinator trust details for support
+        #[arg(long)]
+        support: bool,
     },
 
     /// Start the provider in the background (uses existing config)
@@ -1685,7 +1772,10 @@ async fn main() -> Result<()> {
             coordinator,
         } => cmd_models(action, coordinator, model).await,
         Command::Earnings { coordinator } => cmd_earnings(coordinator).await,
-        Command::Doctor { coordinator } => cmd_doctor(coordinator).await,
+        Command::Doctor {
+            coordinator,
+            support,
+        } => cmd_doctor(coordinator, support).await,
         Command::Start {
             coordinator,
             model,
@@ -1817,7 +1907,7 @@ async fn cmd_key_status() -> Result<()> {
 
 async fn cmd_install(
     coordinator_url: String,
-    profile_url: String,
+    profile_url: Option<String>,
     model_override: Option<String>,
 ) -> Result<()> {
     println!("╔══════════════════════════════════════════╗");
@@ -1845,42 +1935,65 @@ async fn cmd_install(
     println!("  ✓ E2E key: ephemeral (generated at startup)");
     println!();
 
-    // Step 3: MDM enrollment (skip if already enrolled)
+    // Step 3: MDM enrollment profile. Local profile presence is not the same
+    // as coordinator hardware trust; doctor checks the network-side state.
     println!("Step 3/6: MDM enrollment...");
 
     let already_enrolled = security::check_mdm_enrolled();
 
     if already_enrolled {
-        println!("  ✓ Already enrolled in MDM — skipping");
+        println!("  ✓ Local MDM profile present");
+        println!("    Coordinator hardware trust will be verified after provider registration.");
     } else {
-        let profile_path = std::env::temp_dir().join("EigenInference-Enroll.mobileconfig");
-        println!("  Downloading enrollment profile...");
-        let client = reqwest::Client::new();
-        let resp = client.get(&profile_url).send().await?;
-        if !resp.status().is_success() {
-            println!(
-                "  ⚠ Could not download profile (HTTP {}). Skipping MDM enrollment.",
-                resp.status()
-            );
-            println!("    You can enroll later: darkbloom enroll");
-        } else {
-            let profile_bytes = resp.bytes().await?;
-            std::fs::write(&profile_path, &profile_bytes)?;
+        match get_serial_number() {
+            Ok(serial) => {
+                let profile_path = std::env::temp_dir()
+                    .join(format!("EigenInference-Enroll-{serial}.mobileconfig"));
+                println!("  Requesting enrollment profile...");
+                let client = reqwest::Client::new();
+                let resp = if let Some(ref legacy_url) = profile_url {
+                    client.get(legacy_url).send().await?
+                } else {
+                    let enroll_url =
+                        format!("{}/v1/enroll", coordinator_http_base(&coordinator_url));
+                    client
+                        .post(&enroll_url)
+                        .json(&serde_json::json!({"serial_number": serial}))
+                        .send()
+                        .await?
+                };
 
-            #[cfg(target_os = "macos")]
-            {
-                println!("  Opening enrollment profile...");
-                println!("  Install it in System Settings → General → Device Management");
-                println!("  (Only queries security status — no access to personal data)");
-                println!();
-                let _ = std::process::Command::new("open")
-                    .arg(&profile_path)
-                    .status();
+                if !resp.status().is_success() {
+                    println!(
+                        "  ⚠ Could not download profile (HTTP {}). Skipping MDM enrollment.",
+                        resp.status()
+                    );
+                    println!("    You can enroll later: darkbloom enroll");
+                } else {
+                    let profile_bytes = resp.bytes().await?;
+                    std::fs::write(&profile_path, &profile_bytes)?;
+
+                    #[cfg(target_os = "macos")]
+                    {
+                        println!("  Opening enrollment profile...");
+                        println!("  Install it in System Settings → General → Device Management");
+                        println!("  (Only queries security status — no access to personal data)");
+                        println!();
+                        let _ = std::process::Command::new("open")
+                            .arg(&profile_path)
+                            .status();
+                    }
+
+                    println!("  Press Enter after installing (or to skip)...");
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    println!("  Enrollment profile opened; coordinator verification is pending.");
+                }
             }
-
-            println!("  Press Enter after installing (or to skip)...");
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
+            Err(e) => {
+                println!("  ⚠ Could not read serial number ({e}). Skipping MDM enrollment.");
+                println!("    You can enroll later: darkbloom enroll");
+            }
         }
     }
     println!();
@@ -4767,11 +4880,11 @@ async fn cmd_status() -> Result<()> {
     println!("    SE signing:     ✓ Ephemeral (per-launch)");
 
     println!(
-        "    MDM enrolled:   {}",
+        "    Local MDM:      {}",
         if security::check_mdm_enrolled() {
-            "✓ Yes (hardware trust)"
+            "✓ Profile present"
         } else {
-            "✗ No — not routable without MDM enrollment"
+            "✗ No profile found"
         }
     );
     println!();
@@ -4787,6 +4900,62 @@ async fn cmd_status() -> Result<()> {
             "✗ No — run: darkbloom login"
         }
     );
+    println!();
+
+    // Coordinator trust is the network-side source of truth for routing.
+    println!("  Coordinator trust:");
+    match get_serial_number() {
+        Ok(serial) => {
+            println!("    Serial:    {serial}");
+            match fetch_coordinator_provider_trust(DEFAULT_COORDINATOR_HTTP_URL, &serial).await {
+                Ok(records) if records.is_empty() => {
+                    println!("    Provider:  ✗ No coordinator record for this serial");
+                    println!("    Trust:     ✗ Not verified");
+                    println!(
+                        "    Next:      Start or restart the provider after installing the MDM profile"
+                    );
+                }
+                Ok(records) => {
+                    let record = &records[0];
+                    println!(
+                        "    Provider:  {} ({})",
+                        record.short_provider_id(),
+                        record.status
+                    );
+                    println!("    Trust:     {}", record.trust_level);
+                    println!(
+                        "    MDM:       {}",
+                        if record.mdm_verified {
+                            "✓ Verified"
+                        } else {
+                            "✗ Not verified"
+                        }
+                    );
+                    println!(
+                        "    MDA/ACME:  {}/{}",
+                        if record.mda_verified { "✓" } else { "✗" },
+                        if record.acme_verified { "✓" } else { "✗" }
+                    );
+                    if record.is_hardware_verified() {
+                        println!("    Trust gate: ✓ Passed");
+                    } else {
+                        println!(
+                            "    Trust gate: ✗ Not routable until coordinator verifies hardware trust"
+                        );
+                        println!(
+                            "    Next:       darkbloom stop && darkbloom start, then darkbloom doctor"
+                        );
+                    }
+                }
+                Err(e) => {
+                    println!("    Trust:     ? Could not check coordinator ({e})");
+                }
+            }
+        }
+        Err(e) => {
+            println!("    Serial:    ? Could not read serial ({e})");
+        }
+    }
     println!();
 
     // Models (catalog-filtered)
@@ -5121,12 +5290,90 @@ async fn cmd_earnings(coordinator_url: String) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_doctor(coordinator_url: String) -> Result<()> {
+#[cfg(target_os = "macos")]
+fn support_command_output(program: &str, args: &[&str]) -> String {
+    match std::process::Command::new(program).args(args).output() {
+        Ok(output) => {
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let trimmed = combined.trim();
+            if trimmed.is_empty() {
+                "<no output>".to_string()
+            } else {
+                trimmed.lines().take(12).collect::<Vec<_>>().join("\n    ")
+            }
+        }
+        Err(e) => format!("<failed to run: {e}>"),
+    }
+}
+
+fn print_doctor_support_info(
+    coordinator_url: &str,
+    serial_number: Option<&str>,
+    local_mdm_profile: bool,
+    provider_records: &[CoordinatorProviderTrust],
+    coordinator_trust_error: Option<&str>,
+) {
+    println!();
+    println!("Support info");
+    println!("  Coordinator: {}", coordinator_http_base(coordinator_url));
+    println!("  Serial: {}", serial_number.unwrap_or("<unavailable>"));
+    println!(
+        "  Local MDM profile: {}",
+        if local_mdm_profile {
+            "present"
+        } else {
+            "not detected"
+        }
+    );
+
+    if provider_records.is_empty() {
+        println!("  Coordinator provider records: none for this serial");
+    } else {
+        println!("  Coordinator provider records:");
+        for record in provider_records {
+            println!(
+                "    {} status={} trust={} mdm={} mda={} acme={} se={} sip={} secure_boot={} root={}",
+                record.provider_id,
+                record.status,
+                record.trust_level,
+                record.mdm_verified,
+                record.mda_verified,
+                record.acme_verified,
+                record.secure_enclave,
+                record.sip_enabled,
+                record.secure_boot_enabled,
+                record.authenticated_root_enabled
+            );
+        }
+    }
+    if let Some(error) = coordinator_trust_error {
+        println!("  Coordinator trust lookup error: {error}");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        println!("  profiles status -type enrollment:");
+        println!(
+            "    {}",
+            support_command_output("profiles", &["status", "-type", "enrollment"])
+        );
+    }
+}
+
+async fn cmd_doctor(coordinator_url: String, support: bool) -> Result<()> {
     println!("Darkbloom Doctor — System Diagnostics");
     println!();
 
     let mut issues: Vec<String> = Vec::new();
     let mut passed = 0;
+    let total_checks = 9;
+    let local_serial = get_serial_number().ok();
+    let mut provider_records: Vec<CoordinatorProviderTrust> = Vec::new();
+    let mut coordinator_trust_error: Option<String> = None;
 
     // 1. Hardware
     print!("1. Hardware detection........... ");
@@ -5191,16 +5438,17 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
         passed += 1;
     }
 
-    // 4. MDM enrollment
-    print!("4. MDM enrollment.............. ");
-    if security::check_mdm_enrolled() {
-        println!("✓ Enrolled");
+    // 4. Local MDM profile
+    print!("4. Local MDM profile........... ");
+    let local_mdm_profile = security::check_mdm_enrolled();
+    if local_mdm_profile {
+        println!("✓ Present");
         passed += 1;
     } else {
         #[cfg(target_os = "macos")]
         {
-            println!("✗ Not enrolled");
-            issues.push("Run: darkbloom enroll".to_string());
+            println!("✗ Not detected");
+            issues.push("Install the MDM profile: darkbloom enroll".to_string());
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -5317,9 +5565,65 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
         }
     }
 
+    // 9. Coordinator hardware trust
+    print!("9. Coordinator hardware trust.. ");
+    match local_serial.as_deref() {
+        Some(serial) => match fetch_coordinator_provider_trust(&coordinator_url, serial).await {
+            Ok(records) if records.is_empty() => {
+                println!("✗ No provider record for serial {serial}");
+                issues.push(
+                    "Coordinator has no provider record for this serial. Start or restart the provider after installing the MDM profile."
+                        .to_string(),
+                );
+            }
+            Ok(records) => {
+                provider_records = records;
+                let record = &provider_records[0];
+                if record.is_hardware_verified() {
+                    println!(
+                        "✓ hardware ({}, provider {})",
+                        record.status,
+                        record.short_provider_id()
+                    );
+                    passed += 1;
+                } else {
+                    println!(
+                        "✗ {} ({}, provider {})",
+                        record.trust_level,
+                        record.status,
+                        record.short_provider_id()
+                    );
+                    if local_mdm_profile {
+                        issues.push(
+                            "Local MDM profile is present, but the coordinator has not verified this serial through MDM. Run: darkbloom stop && darkbloom start, then retry darkbloom doctor."
+                                .to_string(),
+                        );
+                    } else {
+                        issues.push(
+                            "Coordinator trust is self-signed because no local MDM profile is detected. Run: darkbloom enroll."
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                println!("? Could not check: {e}");
+                coordinator_trust_error = Some(e.to_string());
+                issues.push(format!(
+                    "Could not check coordinator hardware trust for serial {serial}"
+                ));
+            }
+        },
+        None => {
+            println!("✗ Could not read local serial number");
+            issues
+                .push("Could not read Mac serial number for coordinator trust lookup".to_string());
+        }
+    }
+
     // Summary
     println!();
-    println!("Result: {passed}/8 checks passed");
+    println!("Result: {passed}/{total_checks} checks passed");
     if issues.is_empty() {
         println!();
         println!("All good! Start serving with: darkbloom serve");
@@ -5329,6 +5633,18 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
         for (i, issue) in issues.iter().enumerate() {
             println!("  {}. {}", i + 1, issue);
         }
+        println!();
+        println!("For support details, run: darkbloom doctor --support");
+    }
+
+    if support {
+        print_doctor_support_info(
+            &coordinator_url,
+            local_serial.as_deref(),
+            local_mdm_profile,
+            &provider_records,
+            coordinator_trust_error.as_deref(),
+        );
     }
 
     Ok(())
@@ -6684,6 +7000,57 @@ mod tests {
             coordinator_http_base("https://api.darkbloom.dev/"),
             "https://api.darkbloom.dev"
         );
+    }
+
+    #[test]
+    fn test_provider_trust_sort_prefers_hardware_then_online() {
+        let mut records = vec![
+            CoordinatorProviderTrust {
+                provider_id: "self-online".into(),
+                serial_number: "SERIAL".into(),
+                trust_level: "self_signed".into(),
+                status: "online".into(),
+                mdm_verified: false,
+                acme_verified: false,
+                mda_verified: false,
+                secure_enclave: true,
+                sip_enabled: true,
+                secure_boot_enabled: true,
+                authenticated_root_enabled: true,
+            },
+            CoordinatorProviderTrust {
+                provider_id: "hardware-offline".into(),
+                serial_number: "SERIAL".into(),
+                trust_level: "hardware".into(),
+                status: "offline".into(),
+                mdm_verified: true,
+                acme_verified: false,
+                mda_verified: false,
+                secure_enclave: true,
+                sip_enabled: true,
+                secure_boot_enabled: true,
+                authenticated_root_enabled: true,
+            },
+            CoordinatorProviderTrust {
+                provider_id: "hardware-online".into(),
+                serial_number: "SERIAL".into(),
+                trust_level: "hardware".into(),
+                status: "online".into(),
+                mdm_verified: true,
+                acme_verified: false,
+                mda_verified: false,
+                secure_enclave: true,
+                sip_enabled: true,
+                secure_boot_enabled: true,
+                authenticated_root_enabled: true,
+            },
+        ];
+
+        records.sort_by(prefer_provider_record);
+
+        assert_eq!(records[0].provider_id, "hardware-online");
+        assert_eq!(records[1].provider_id, "hardware-offline");
+        assert_eq!(records[2].provider_id, "self-online");
     }
 
     #[test]

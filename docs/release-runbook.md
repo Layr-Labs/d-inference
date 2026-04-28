@@ -187,7 +187,7 @@ To rollback to a previous version, deactivate the bad version. The old version i
 | Env var (coordinator) | `EIGENINFERENCE_RELEASE_KEY` |
 | GitHub Secret | `EIGENINFERENCE_RELEASE_KEY` |
 | Scope | Can only `POST /v1/releases` — no admin access |
-| If leaked | Attacker can register fake releases, but binary hash must match what providers actually run — no impact |
+| If leaked | Release registration still requires the URL to match `EIGENINFERENCE_R2_CDN_URL` and the coordinator verifies the downloaded bundle hash plus bundled `bin/darkbloom` hash before whitelisting it. Treat leakage as serious, but the key alone should not be enough to whitelist an arbitrary provider binary unless the release artifact origin is also compromised. |
 
 ### Admin access (managing releases)
 
@@ -210,11 +210,11 @@ To rollback to a previous version, deactivate the bad version. The old version i
 ## How Binary Verification Works
 
 1. **At build time**: SHA-256 of `darkbloom` binary is computed
-2. **At release registration**: hash stored in coordinator's release table
-3. **At startup**: `SyncBinaryHashes()` loads all active release hashes into `knownBinaryHashes`
-4. **At provider registration**: attestation blob contains `binaryHash` → checked against known set
-5. **At every challenge** (every 3 min): provider re-computes its binary hash → sent in response → checked against known set
-6. **Unknown hash**: provider's attestation is rejected (stays at TrustNone, no requests routed)
+2. **At release registration**: coordinator downloads the R2 bundle, verifies `bundle_hash`, extracts `bin/darkbloom`, and verifies `binary_hash` before storing the release
+3. **At startup and release changes**: `SyncBinaryHashes()` loads all active release hashes and preserves additive env/manual hashes in `knownBinaryHashes`
+4. **At provider registration**: attestation blob must contain `binaryHash` → checked against known set; Open Mode is rejected when a binary hash policy is configured
+5. **At every challenge** (every 3 min): provider re-computes its binary hash → challenge signature must verify against the attested Secure Enclave key → hash must still match the signed registration attestation and known set
+6. **Missing or unknown hash**: provider's attestation/challenge is rejected and the provider is marked untrusted
 
 ## How Install Verification Works
 

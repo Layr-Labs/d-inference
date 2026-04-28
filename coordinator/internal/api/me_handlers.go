@@ -18,10 +18,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/attestation"
-	"github.com/eigeninference/coordinator/internal/protocol"
-	"github.com/eigeninference/coordinator/internal/registry"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/attestation"
+	"github.com/darkbloom/coordinator/internal/protocol"
+	"github.com/darkbloom/coordinator/internal/registry"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 // myReputation is the wire shape for a provider's reputation snapshot.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-EigenInference network load test — escalating concurrency.
+Darkbloom network load test — escalating concurrency.
 
 Usage:
     export EIGENINFERENCE_API_KEY="your-key"
@@ -331,7 +331,7 @@ def print_summary(levels: list[LevelResult], model: str):
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="EigenInference escalating load test")
+    parser = argparse.ArgumentParser(description="Darkbloom escalating load test")
     parser.add_argument("--url", default="https://inference-test.openinnovation.dev/v1/chat/completions",
                         help="Chat completions endpoint")
     parser.add_argument("--model", default="qwen3.5",
@@ -357,7 +357,7 @@ async def main():
 
     model = MODEL_ALIASES.get(args.model, args.model)
 
-    print(f"EigenInference Load Test")
+    print(f"Darkbloom Load Test")
     print(f"  Model:      {model}")
     print(f"  Levels:     {args.levels}")
     print(f"  Reqs/level: {args.requests_per_level}")

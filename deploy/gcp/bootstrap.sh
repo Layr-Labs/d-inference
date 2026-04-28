@@ -16,14 +16,14 @@
 #   - Owner/Editor on the project (for initial bootstrap only; downgrade after)
 #
 # After running this, populate Secret Manager:
-#   - eigeninference-admin-key               (openssl rand -hex 32)
-#   - eigeninference-release-key             (openssl rand -hex 32)
-#   - eigeninference-solana-mnemonic         (new BIP39 mnemonic for dev)
-#   - eigeninference-privy-app-id            (dev Privy app)
-#   - eigeninference-privy-app-secret        (dev Privy app)
-#   - eigeninference-privy-verification-key  (dev Privy app)
-#   - eigeninference-micromdm-api-key        (openssl rand -hex 32)
-#   - eigeninference-mdm-push-p12-b64        (base64url-encoded MDM push PKCS#12)
+#   - darkbloom-admin-key               (openssl rand -hex 32)
+#   - darkbloom-release-key             (openssl rand -hex 32)
+#   - darkbloom-solana-mnemonic         (new BIP39 mnemonic for dev)
+#   - darkbloom-privy-app-id            (dev Privy app)
+#   - darkbloom-privy-app-secret        (dev Privy app)
+#   - darkbloom-privy-verification-key  (dev Privy app)
+#   - darkbloom-micromdm-api-key        (openssl rand -hex 32)
+#   - darkbloom-mdm-push-p12-b64        (base64url-encoded MDM push PKCS#12)
 
 set -euo pipefail
 
@@ -183,16 +183,16 @@ POLICY
   fi
 }
 
-create_secret eigeninference-admin-key
-create_secret eigeninference-release-key
-create_secret eigeninference-solana-mnemonic "$CMEK_SOLANA"
-create_secret eigeninference-privy-app-id
-create_secret eigeninference-privy-app-secret
-create_secret eigeninference-privy-verification-key
-create_secret eigeninference-database-url
-create_secret eigeninference-micromdm-api-key
-create_secret eigeninference-mdm-push-p12-b64 "$CMEK_MDM"
-create_secret eigeninference-r2-cdn-url
+create_secret darkbloom-admin-key
+create_secret darkbloom-release-key
+create_secret darkbloom-solana-mnemonic "$CMEK_SOLANA"
+create_secret darkbloom-privy-app-id
+create_secret darkbloom-privy-app-secret
+create_secret darkbloom-privy-verification-key
+create_secret darkbloom-database-url
+create_secret darkbloom-micromdm-api-key
+create_secret darkbloom-mdm-push-p12-b64 "$CMEK_MDM"
+create_secret darkbloom-r2-cdn-url
 
 echo "==> Grant coord SA decrypt on the CMEK keys (scoped to the two keys only)"
 for K in "$KMS_KEY_MDM" "$KMS_KEY_SOLANA"; do
@@ -206,7 +206,7 @@ done
 
 echo "==> Enabling Data Access audit logs for Secret Manager (logs every read)"
 # Data Access logs are OFF by default. Turn them on for Secret Manager so any
-# read of eigeninference-mdm-push-p12-b64 shows up in Cloud Logging, and we
+# read of darkbloom-mdm-push-p12-b64 shows up in Cloud Logging, and we
 # can alert on unexpected readers (anyone other than the coord SA).
 AUDIT_TMP=$(mktemp)
 gcloud projects get-iam-policy "$PROJECT" --format=json > "$AUDIT_TMP"
@@ -233,7 +233,7 @@ echo "==> Scope Secret Manager access per-secret (tighter than project-level)"
 # simplicity. Override the MDM push cert secret specifically so only the coord
 # SA can read it — no human, no other service. Revoke here if we ever had wider
 # bindings.
-gcloud secrets add-iam-policy-binding eigeninference-mdm-push-p12-b64 \
+gcloud secrets add-iam-policy-binding darkbloom-mdm-push-p12-b64 \
   --member="serviceAccount:$COORD_SA_EMAIL" \
   --role="roles/secretmanager.secretAccessor" \
   --condition=None \
@@ -262,8 +262,8 @@ if ! gcloud sql users list --instance="$SQL_INSTANCE" --format='value(name)' | g
   CONN_NAME=$(gcloud sql instances describe "$SQL_INSTANCE" --format='value(connectionName)')
   # Coordinator connects via Cloud SQL Auth Proxy sidecar on the VM (see below).
   URL="postgres://${SQL_USER}:${PW}@127.0.0.1:5432/${SQL_DB}?sslmode=disable"
-  echo "$URL" | gcloud secrets versions add eigeninference-database-url --data-file=-
-  echo "==> DB URL stored in Secret Manager eigeninference-database-url"
+  echo "$URL" | gcloud secrets versions add darkbloom-database-url --data-file=-
+  echo "==> DB URL stored in Secret Manager darkbloom-database-url"
 fi
 
 echo "==> Creating persistent data disk for step-ca + MicroMDM state"
@@ -322,8 +322,8 @@ cat <<EOF
 
 Next steps:
   1. Populate secrets:
-       for S in eigeninference-admin-key eigeninference-release-key \\
-                eigeninference-micromdm-api-key; do
+       for S in darkbloom-admin-key darkbloom-release-key \\
+                darkbloom-micromdm-api-key; do
          echo -n "\$(openssl rand -hex 32)" | gcloud secrets versions add \$S --data-file=-
        done
      Then add Privy values, Solana mnemonic (generated fresh for dev — not prod's),
@@ -332,7 +332,7 @@ Next steps:
   1a. MDM push cert — reusing prod's cert as a time-bound bridge:
       Export the prod PKCS#12 from prod's KMS. On a trusted machine:
         echo -n "<prod-p12-base64url>" \\
-          | gcloud secrets versions add eigeninference-mdm-push-p12-b64 --data-file=-
+          | gcloud secrets versions add darkbloom-mdm-push-p12-b64 --data-file=-
       This secret is CMEK-encrypted with projects/$PROJECT/.../cryptoKeys/mdm-push-cert.
       IAM is scoped to only $COORD_SA_EMAIL — no humans, no other SAs.
       Target: rotate to a dev-specific cert within 30 days once Apple issues

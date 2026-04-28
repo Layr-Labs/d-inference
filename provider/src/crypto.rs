@@ -110,7 +110,7 @@ fn purge_legacy_e2e_files() {
 fn legacy_secret_paths(file_name: &str) -> Vec<std::path::PathBuf> {
     dirs::home_dir()
         .map(|home| {
-            [".darkbloom", ".dginf", ".eigeninference"]
+            [".darkbloom", ".dginf", ".darkbloom"]
                 .into_iter()
                 .map(|dir| home.join(dir).join(file_name))
                 .collect()

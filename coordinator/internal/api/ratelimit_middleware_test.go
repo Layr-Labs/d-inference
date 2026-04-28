@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/eigeninference/coordinator/internal/ratelimit"
+	"github.com/darkbloom/coordinator/internal/ratelimit"
 )
 
 // rateLimitConsumer must short-circuit when no limiter is configured so

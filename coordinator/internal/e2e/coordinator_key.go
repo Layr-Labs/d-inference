@@ -2,7 +2,7 @@
 // uses to receive sealed requests from senders (consumer/console-ui).
 //
 // Senders fetch the public key from GET /v1/encryption-key, NaCl-Box-seal
-// their request body to it, and POST as application/eigeninference-sealed+json.
+// their request body to it, and POST as application/darkbloom-sealed+json.
 // Only the coordinator (which knows the private key) can decrypt.
 //
 // The private key is derived from the same BIP39 mnemonic used for billing,
@@ -28,7 +28,7 @@ import (
 // CoordinatorKeyHKDFInfo is the HKDF info string used to separate the
 // X25519 encryption key from any other key derived from the same mnemonic.
 // Bumping the version here rotates the coordinator key for all senders.
-const CoordinatorKeyHKDFInfo = "eigeninference-coordinator-e2e-v1"
+const CoordinatorKeyHKDFInfo = "darkbloom-coordinator-e2e-v1"
 
 // CoordinatorKey is the long-lived X25519 keypair plus a short kid that
 // senders use to detect rotations and refresh their cached pubkey.

@@ -33,20 +33,20 @@ use std::ffi::{CStr, CString, c_char, c_int, c_void};
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
-    fn eigeninference_enclave_create() -> *mut c_void;
-    fn eigeninference_enclave_free(identity: *mut c_void);
-    fn eigeninference_enclave_public_key_base64(identity: *const c_void) -> *mut c_char;
-    fn eigeninference_enclave_sign(
+    fn darkbloom_enclave_create() -> *mut c_void;
+    fn darkbloom_enclave_free(identity: *mut c_void);
+    fn darkbloom_enclave_public_key_base64(identity: *const c_void) -> *mut c_char;
+    fn darkbloom_enclave_sign(
         identity: *const c_void,
         data: *const u8,
         data_len: c_int,
     ) -> *mut c_char;
-    fn eigeninference_enclave_create_attestation_full(
+    fn darkbloom_enclave_create_attestation_full(
         identity: *const c_void,
         encryption_key_base64: *const c_char,
         binary_hash_hex: *const c_char,
     ) -> *mut c_char;
-    fn eigeninference_enclave_free_string(ptr: *mut c_char);
+    fn darkbloom_enclave_free_string(ptr: *mut c_char);
 }
 
 pub(crate) fn load_existing_x25519_secret() -> Result<Option<[u8; 32]>> {
@@ -78,20 +78,20 @@ unsafe impl Sync for SecureEnclaveHandle {}
 impl SecureEnclaveHandle {
     #[cfg(target_os = "macos")]
     pub fn create() -> Result<Self> {
-        let ptr = unsafe { eigeninference_enclave_create() };
+        let ptr = unsafe { darkbloom_enclave_create() };
         if ptr.is_null() {
             return Err(anyhow!("Secure Enclave unavailable or key creation failed"));
         }
 
-        let pk_ptr = unsafe { eigeninference_enclave_public_key_base64(ptr) };
+        let pk_ptr = unsafe { darkbloom_enclave_public_key_base64(ptr) };
         if pk_ptr.is_null() {
-            unsafe { eigeninference_enclave_free(ptr) };
+            unsafe { darkbloom_enclave_free(ptr) };
             return Err(anyhow!("failed to retrieve Secure Enclave public key"));
         }
         let public_key_b64 = unsafe { CStr::from_ptr(pk_ptr) }
             .to_string_lossy()
             .into_owned();
-        unsafe { eigeninference_enclave_free_string(pk_ptr) };
+        unsafe { darkbloom_enclave_free_string(pk_ptr) };
 
         Ok(Self {
             ptr,
@@ -112,14 +112,14 @@ impl SecureEnclaveHandle {
     pub fn sign(&self, data: &[u8]) -> Result<String> {
         use anyhow::Context;
         let data_len: c_int = data.len().try_into().context("data too large for FFI")?;
-        let sig_ptr = unsafe { eigeninference_enclave_sign(self.ptr, data.as_ptr(), data_len) };
+        let sig_ptr = unsafe { darkbloom_enclave_sign(self.ptr, data.as_ptr(), data_len) };
         if sig_ptr.is_null() {
             return Err(anyhow!("Secure Enclave signing failed"));
         }
         let sig = unsafe { CStr::from_ptr(sig_ptr) }
             .to_string_lossy()
             .into_owned();
-        unsafe { eigeninference_enclave_free_string(sig_ptr) };
+        unsafe { darkbloom_enclave_free_string(sig_ptr) };
         Ok(sig)
     }
 
@@ -142,7 +142,7 @@ impl SecureEnclaveHandle {
             .transpose()?;
 
         let json_ptr = unsafe {
-            eigeninference_enclave_create_attestation_full(
+            darkbloom_enclave_create_attestation_full(
                 self.ptr,
                 enc_key_c.as_ptr(),
                 hash_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
@@ -154,7 +154,7 @@ impl SecureEnclaveHandle {
         let json_str = unsafe { CStr::from_ptr(json_ptr) }
             .to_string_lossy()
             .into_owned();
-        unsafe { eigeninference_enclave_free_string(json_ptr) };
+        unsafe { darkbloom_enclave_free_string(json_ptr) };
 
         serde_json::value::RawValue::from_string(json_str).context("attestation JSON is not valid")
     }
@@ -173,7 +173,7 @@ impl SecureEnclaveHandle {
 impl Drop for SecureEnclaveHandle {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
-            unsafe { eigeninference_enclave_free(self.ptr) };
+            unsafe { darkbloom_enclave_free(self.ptr) };
         }
     }
 }
@@ -201,8 +201,8 @@ const LEGACY_KEY_FILES: &[&str] = &[
     ".darkbloom/enclave_e2e_ka.data",
     ".dginf/enclave_e2e_ka.data",
     ".dginf/node_key",
-    ".eigeninference/enclave_e2e_ka.data",
-    ".eigeninference/node_key",
+    ".darkbloom/enclave_e2e_ka.data",
+    ".darkbloom/node_key",
 ];
 
 pub fn cleanup_legacy_key_files() {

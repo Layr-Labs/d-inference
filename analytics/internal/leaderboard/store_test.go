@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/analytics/internal/pseudonym"
+	"github.com/darkbloom/analytics/internal/pseudonym"
 )
 
 func fixedNow() time.Time {

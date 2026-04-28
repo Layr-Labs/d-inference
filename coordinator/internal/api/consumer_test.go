@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/e2e"
-	"github.com/eigeninference/coordinator/internal/protocol"
-	"github.com/eigeninference/coordinator/internal/registry"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/e2e"
+	"github.com/darkbloom/coordinator/internal/protocol"
+	"github.com/darkbloom/coordinator/internal/registry"
+	"github.com/darkbloom/coordinator/internal/store"
 	"golang.org/x/crypto/nacl/box"
 	"nhooyr.io/websocket"
 )

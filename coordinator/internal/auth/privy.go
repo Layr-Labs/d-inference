@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/store"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )

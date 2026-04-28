@@ -214,6 +214,6 @@ describe("encryption — toggle persistence", () => {
 // Sanity-check the exported constant matches what the coordinator expects.
 describe("encryption — constants", () => {
   it("SEALED_CONTENT_TYPE matches the coordinator's media type", () => {
-    expect(SEALED_CONTENT_TYPE).toBe("application/eigeninference-sealed+json");
+    expect(SEALED_CONTENT_TYPE).toBe("application/darkbloom-sealed+json");
   });
 });

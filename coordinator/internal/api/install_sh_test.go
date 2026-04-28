@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/eigeninference/coordinator/internal/registry"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/registry"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 // TestInstallScriptTemplating verifies the coordinator substitutes

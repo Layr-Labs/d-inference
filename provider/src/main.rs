@@ -679,8 +679,8 @@ fn ensure_chat_template(
     };
 
     // Check local cache first (~/.darkbloom/templates/)
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
-    let templates_dir = eigeninference_dir.join("templates");
+    let darkbloom_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
+    let templates_dir = darkbloom_dir.join("templates");
     let cached_template = templates_dir.join(format!("{template_name}.jinja"));
 
     if cached_template.exists() {
@@ -890,7 +890,7 @@ fn fetch_runtime_manifest(
 fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
     const PBS_PYTHON_URL: &str = "https://github.com/astral-sh/python-build-standalone/releases/download/20260408/cpython-3.12.13+20260408-aarch64-apple-darwin-install_only.tar.gz";
 
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
+    let darkbloom_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
     let manifest = fetch_runtime_manifest(coordinator_base);
     let expected_python_hashes: Vec<String> = manifest
         .as_ref()
@@ -931,8 +931,8 @@ fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
             match serde_json::from_slice::<serde_json::Value>(&output.stdout) {
                 Ok(release) => release.get("url").and_then(|v| v.as_str()).map(|url| {
                     url.replace(
-                        "eigeninference-bundle-macos-arm64.tar.gz",
-                        "eigeninference-python-macos-arm64.tar.gz",
+                        "darkbloom-bundle-macos-arm64.tar.gz",
+                        "darkbloom-python-macos-arm64.tar.gz",
                     )
                 }),
                 Err(_) => {
@@ -946,7 +946,7 @@ fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
 
     if let Some(download_url) = python_download_url {
         // Download to temp
-        let tmp_tarball = "/tmp/eigeninference-python-update.tar.gz";
+        let tmp_tarball = "/tmp/darkbloom-python-update.tar.gz";
         let download = std::process::Command::new("curl")
             .args([
                 "-fsSL",
@@ -960,7 +960,7 @@ fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
 
         if let Ok(output) = download {
             if output.status.success() {
-                let python_dir = eigeninference_dir.join("python");
+                let python_dir = darkbloom_dir.join("python");
 
                 // Extract over existing Python dir
                 tracing::info!("Extracting canonical Python runtime...");
@@ -999,7 +999,7 @@ fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
 
     // Fallback: download python-build-standalone directly
     tracing::info!("Downloading portable Python from python-build-standalone...");
-    let pbs_tmp = "/tmp/eigeninference-pbs-python.tar.gz";
+    let pbs_tmp = "/tmp/darkbloom-pbs-python.tar.gz";
     let pbs_ok = std::process::Command::new("curl")
         .args([
             "-fsSL",
@@ -1014,7 +1014,7 @@ fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
         .unwrap_or(false);
 
     if pbs_ok {
-        let python_dir = eigeninference_dir.join("python");
+        let python_dir = darkbloom_dir.join("python");
         let _ = std::fs::remove_dir_all(&python_dir);
         let _ = std::fs::create_dir_all(&python_dir);
         // PBS tarball extracts to python/ — extract parent dir and it maps directly
@@ -1057,7 +1057,7 @@ fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
         if matches!(test, Ok(ref o) if o.status.success()) {
             tracing::info!("Using Homebrew Python 3.12 as fallback");
             // Create a venv from Homebrew Python
-            let python_dir = eigeninference_dir.join("python");
+            let python_dir = darkbloom_dir.join("python");
             let _ = std::fs::remove_dir_all(&python_dir);
             let venv_ok = std::process::Command::new(brew_python)
                 .args(["-m", "venv", "--copies", &python_dir.to_string_lossy()])
@@ -1154,15 +1154,15 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
     );
 
     let release_version = fetch_latest_release_version(coordinator_base);
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
-    let site_packages_dir = eigeninference_dir.join("python/lib/python3.12/site-packages");
-    let tmp_tarball = "/tmp/eigeninference-site-packages.tar.gz";
+    let darkbloom_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
+    let site_packages_dir = darkbloom_dir.join("python/lib/python3.12/site-packages");
+    let tmp_tarball = "/tmp/darkbloom-site-packages.tar.gz";
 
     // Try R2 site-packages tarball first, fall back to vllm-mlx source zip.
     let mut downloaded = false;
     if !release_version.is_empty() {
         let r2_url =
-            format!("{r2_cdn}/releases/v{release_version}/eigeninference-site-packages.tar.gz");
+            format!("{r2_cdn}/releases/v{release_version}/darkbloom-site-packages.tar.gz");
         tracing::info!("Downloading site-packages from R2 (release v{release_version})...");
         downloaded = std::process::Command::new("curl")
             .args([
@@ -1181,8 +1181,8 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
     if downloaded {
         // Extract to staging directory first — never delete current before verifying new
         tracing::info!("Replacing site-packages with canonical CI build...");
-        let staging_dir = eigeninference_dir.join("python/lib/python3.12/site-packages-staging");
-        let backup_dir = eigeninference_dir.join("python/lib/python3.12/site-packages-backup");
+        let staging_dir = darkbloom_dir.join("python/lib/python3.12/site-packages-staging");
+        let backup_dir = darkbloom_dir.join("python/lib/python3.12/site-packages-backup");
         let _ = std::fs::remove_dir_all(&staging_dir);
         let _ = std::fs::remove_dir_all(&backup_dir);
         let _ = std::fs::create_dir_all(&staging_dir);
@@ -1262,7 +1262,7 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
     // Fallback: pip install just vllm-mlx source zip (older releases
     // may not have the site-packages tarball on R2).
     tracing::info!("Falling back to vllm-mlx source zip...");
-    let tmp_zip = "/tmp/eigeninference-vllm-mlx-update.zip";
+    let tmp_zip = "/tmp/darkbloom-vllm-mlx-update.zip";
     let mut zip_downloaded = false;
     if !release_version.is_empty() {
         let r2_url = format!("{r2_cdn}/releases/v{release_version}/vllm-mlx-source.zip");
@@ -1853,7 +1853,7 @@ async fn cmd_install(
     if already_enrolled {
         println!("  ✓ Already enrolled in MDM — skipping");
     } else {
-        let profile_path = std::env::temp_dir().join("EigenInference-Enroll.mobileconfig");
+        let profile_path = std::env::temp_dir().join("Darkbloom-Enroll.mobileconfig");
         println!("  Downloading enrollment profile...");
         let client = reqwest::Client::new();
         let resp = client.get(&profile_url).send().await?;
@@ -2130,8 +2130,8 @@ async fn cmd_serve(
     #[cfg(unix)]
     {
         let my_pid = std::process::id();
-        let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
-        let pid_file = eigeninference_dir.join("provider.pid");
+        let darkbloom_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
+        let pid_file = darkbloom_dir.join("provider.pid");
 
         // Check for an existing provider process
         if let Ok(old_pid_str) = std::fs::read_to_string(&pid_file) {
@@ -2424,20 +2424,20 @@ async fn cmd_serve(
     }
 
     // Find bundled Python at ~/.darkbloom/python (standalone Python 3.12 + vllm-mlx)
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
-    let bundled_python = eigeninference_dir.join("python/bin/python3.12");
+    let darkbloom_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
+    let bundled_python = darkbloom_dir.join("python/bin/python3.12");
     let python_cmd = if bundled_python.exists() {
         // Only set PYTHONHOME if this is a real standalone Python install
         // (not a symlink to uv/pyenv/system Python). Wrong PYTHONHOME causes
         // Python to fail to find its stdlib and crash silently.
         let is_standalone = !bundled_python.is_symlink()
-            && eigeninference_dir
+            && darkbloom_dir
                 .join("python/lib/python3.12/os.py")
                 .exists();
         if is_standalone {
             tracing::info!("Using bundled Python: {}", bundled_python.display());
             unsafe {
-                std::env::set_var("PYTHONHOME", eigeninference_dir.join("python"));
+                std::env::set_var("PYTHONHOME", darkbloom_dir.join("python"));
             }
         } else {
             tracing::info!("Using Python at: {}", bundled_python.display());
@@ -4345,7 +4345,7 @@ async fn handle_inprocess_request(
     }
 }
 
-/// Generate a Secure Enclave attestation by calling the eigeninference-enclave CLI tool.
+/// Generate a Secure Enclave attestation by calling the darkbloom-enclave CLI tool.
 ///
 /// The attestation binds the X25519 encryption public key to the hardware
 /// identity, proving the same device controls both keys.
@@ -4388,7 +4388,7 @@ async fn cmd_enroll(coordinator_url: String) -> Result<()> {
 
     let bytes = resp.bytes().await?;
     let profile_path =
-        std::env::temp_dir().join(format!("EigenInference-Enroll-{serial}.mobileconfig"));
+        std::env::temp_dir().join(format!("Darkbloom-Enroll-{serial}.mobileconfig"));
     std::fs::write(&profile_path, &bytes)?;
 
     // Register the profile and open System Settings to the Device Management pane
@@ -4465,7 +4465,7 @@ async fn cmd_unenroll() -> Result<()> {
     // Clean up local data
     println!();
     println!("Clean up local Darkbloom data? This removes:");
-    println!("  - Config: ~/.config/eigeninference/");
+    println!("  - Config: ~/.config/darkbloom/");
     println!("  - Legacy key files in ~/.darkbloom/");
     println!("  - Auth token: ~/.darkbloom/auth_token");
     println!();
@@ -4474,7 +4474,7 @@ async fn cmd_unenroll() -> Result<()> {
     std::io::stdin().read_line(&mut input)?;
     if input.trim() == "yes" {
         let home = dirs::home_dir().unwrap_or_default();
-        let _ = std::fs::remove_dir_all(home.join(".config/eigeninference"));
+        let _ = std::fs::remove_dir_all(home.join(".config/darkbloom"));
         secure_enclave_key::cleanup_legacy_key_files();
         let _ = std::fs::remove_file(home.join(".darkbloom/wallet_key"));
         let _ = std::fs::remove_file(home.join(".darkbloom/auth_token"));
@@ -4498,8 +4498,8 @@ async fn cmd_benchmark() -> Result<()> {
     println!();
 
     // Find bundled Python
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
-    let bundled_python = eigeninference_dir.join("python/bin/python3.12");
+    let darkbloom_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
+    let bundled_python = darkbloom_dir.join("python/bin/python3.12");
     let python_cmd = if bundled_python.exists() {
         bundled_python.to_string_lossy().to_string()
     } else {
@@ -4635,7 +4635,7 @@ asyncio.run(main())
 
     let mut child = std::process::Command::new(&python_cmd)
         .args(["-c", &bench_script])
-        .env("PYTHONHOME", eigeninference_dir.join("python"))
+        .env("PYTHONHOME", darkbloom_dir.join("python"))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()?;
@@ -4682,14 +4682,14 @@ asyncio.run(main())
 async fn cmd_status() -> Result<()> {
     let hw = hardware::detect()?;
     let home = dirs::home_dir().unwrap_or_default();
-    let eigeninference_dir = home.join(".darkbloom");
+    let darkbloom_dir = home.join(".darkbloom");
 
     println!();
     println!("  Darkbloom Provider Status");
     println!("  ─────────────────────────────────────");
 
     // Running state
-    let pid_path = eigeninference_dir.join("provider.pid");
+    let pid_path = darkbloom_dir.join("provider.pid");
     let is_running = if pid_path.exists() {
         if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
             if let Ok(pid) = pid_str.trim().parse::<i32>() {
@@ -4712,7 +4712,7 @@ async fn cmd_status() -> Result<()> {
 
     // Try to read the current model from the log
     let serving_model = if is_running {
-        let log_path = eigeninference_dir.join("provider.log");
+        let log_path = darkbloom_dir.join("provider.log");
         if log_path.exists() {
             std::fs::read_to_string(&log_path).ok().and_then(|log| {
                 log.lines()
@@ -5166,12 +5166,12 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
     print!("3. Secure Enclave.............. ");
     #[cfg(target_os = "macos")]
     {
-        let enclave_ok = std::process::Command::new("eigeninference-enclave")
+        let enclave_ok = std::process::Command::new("darkbloom-enclave")
             .args(["info"])
             .output()
             .or_else(|_| {
                 let home = dirs::home_dir().unwrap_or_default();
-                std::process::Command::new(home.join(".darkbloom/bin/eigeninference-enclave"))
+                std::process::Command::new(home.join(".darkbloom/bin/darkbloom-enclave"))
                     .args(["info"])
                     .output()
             })
@@ -5181,8 +5181,8 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
             println!("✓ Available");
             passed += 1;
         } else {
-            println!("✗ eigeninference-enclave not found");
-            issues.push("Install eigeninference-enclave binary".to_string());
+            println!("✗ darkbloom-enclave not found");
+            issues.push("Install darkbloom-enclave binary".to_string());
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -5211,12 +5211,12 @@ async fn cmd_doctor(coordinator_url: String) -> Result<()> {
 
     // 5. Inference runtime (vllm-mlx / mlx-lm)
     print!("5. Inference runtime........... ");
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
-    let bundled_python = eigeninference_dir.join("python/bin/python3.12");
+    let darkbloom_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
+    let bundled_python = darkbloom_dir.join("python/bin/python3.12");
     let (python_cmd, python_home) = if bundled_python.exists() {
         (
             bundled_python.to_string_lossy().to_string(),
-            Some(eigeninference_dir.join("python")),
+            Some(darkbloom_dir.join("python")),
         )
     } else {
         ("python3".to_string(), None)
@@ -5699,9 +5699,9 @@ async fn cmd_start(
 }
 
 async fn cmd_stop() -> Result<()> {
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
-    let pid_path = eigeninference_dir.join("provider.pid");
-    let caffeinate_pid_path = eigeninference_dir.join("caffeinate.pid");
+    let darkbloom_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
+    let pid_path = darkbloom_dir.join("provider.pid");
+    let caffeinate_pid_path = darkbloom_dir.join("caffeinate.pid");
 
     // Unload launchd service (stops the process and prevents auto-restart)
     if service::is_loaded() {
@@ -5831,7 +5831,7 @@ async fn cmd_update(coordinator: String, force: bool) -> Result<()> {
 
     // Download the bundle
     println!("  Downloading update...");
-    let tmp_path = "/tmp/eigeninference-bundle.tar.gz";
+    let tmp_path = "/tmp/darkbloom-bundle.tar.gz";
     let download = client.get(download_url).send().await?;
     if !download.status().is_success() {
         anyhow::bail!("Download failed: {}", download.status());
@@ -5854,14 +5854,14 @@ async fn cmd_update(coordinator: String, force: bool) -> Result<()> {
     }
 
     // Extract and install
-    let eigeninference_dir = dirs::home_dir()
+    let darkbloom_dir = dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("cannot find home directory"))?
         .join(".darkbloom");
-    let bin_dir = eigeninference_dir.join("bin");
+    let bin_dir = darkbloom_dir.join("bin");
 
     println!("  Installing...");
     let status = std::process::Command::new("tar")
-        .args(["xzf", tmp_path, "-C", &eigeninference_dir.to_string_lossy()])
+        .args(["xzf", tmp_path, "-C", &darkbloom_dir.to_string_lossy()])
         .status()?;
     if !status.success() {
         anyhow::bail!("tar extraction failed");
@@ -5869,19 +5869,19 @@ async fn cmd_update(coordinator: String, force: bool) -> Result<()> {
 
     // Move binaries to bin dir
     let _ = std::fs::rename(
-        eigeninference_dir.join("darkbloom"),
+        darkbloom_dir.join("darkbloom"),
         bin_dir.join("darkbloom"),
     );
     let _ = std::fs::rename(
-        eigeninference_dir.join("eigeninference-enclave"),
-        bin_dir.join("eigeninference-enclave"),
+        darkbloom_dir.join("darkbloom-enclave"),
+        bin_dir.join("darkbloom-enclave"),
     );
 
     // Make executable
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        for name in &["darkbloom", "eigeninference-enclave"] {
+        for name in &["darkbloom", "darkbloom-enclave"] {
             let path = bin_dir.join(name);
             if path.exists() {
                 let mut perms = std::fs::metadata(&path)?.permissions();
@@ -5897,10 +5897,10 @@ async fn cmd_update(coordinator: String, force: bool) -> Result<()> {
         .replace("wss://", "https://")
         .replace("ws://", "http://")
         .replace("/ws/provider", "");
-    verify_installed_update_runtime(&eigeninference_dir, &coordinator_http, true)?;
+    verify_installed_update_runtime(&darkbloom_dir, &coordinator_http, true)?;
 
     // Verify manifest if included in bundle
-    let manifest_path = eigeninference_dir.join("manifest.json");
+    let manifest_path = darkbloom_dir.join("manifest.json");
     if manifest_path.exists() {
         println!("  Runtime manifest: present ✓");
     }
@@ -6011,8 +6011,8 @@ fn collect_python_core_signature_targets(dir: &std::path::Path, out: &mut Vec<st
     }
 }
 
-fn verify_python_core_signature_match(eigeninference_dir: &std::path::Path) -> Result<()> {
-    let darkbloom_path = eigeninference_dir.join("bin/darkbloom");
+fn verify_python_core_signature_match(darkbloom_dir: &std::path::Path) -> Result<()> {
+    let darkbloom_path = darkbloom_dir.join("bin/darkbloom");
     if !darkbloom_path.exists() {
         anyhow::bail!("updated darkbloom binary missing after install");
     }
@@ -6020,11 +6020,11 @@ fn verify_python_core_signature_match(eigeninference_dir: &std::path::Path) -> R
     let darkbloom_team = codesign_team_identifier(&darkbloom_path)?;
     let mut targets = Vec::new();
 
-    let bundled_python = eigeninference_dir.join("python/bin/python3.12");
+    let bundled_python = darkbloom_dir.join("python/bin/python3.12");
     if bundled_python.exists() {
         targets.push(bundled_python);
     }
-    collect_python_core_signature_targets(&eigeninference_dir.join("python/lib"), &mut targets);
+    collect_python_core_signature_targets(&darkbloom_dir.join("python/lib"), &mut targets);
     targets.sort();
     targets.dedup();
 
@@ -6062,13 +6062,13 @@ fn verify_python_core_signature_match(eigeninference_dir: &std::path::Path) -> R
 }
 
 fn verify_installed_update_runtime(
-    eigeninference_dir: &std::path::Path,
+    darkbloom_dir: &std::path::Path,
     coordinator_http: &str,
     stdout: bool,
 ) -> Result<()> {
-    let bundled_python = eigeninference_dir.join("python/bin/python3.12");
+    let bundled_python = darkbloom_dir.join("python/bin/python3.12");
 
-    if let Err(err) = verify_python_core_signature_match(eigeninference_dir) {
+    if let Err(err) = verify_python_core_signature_match(darkbloom_dir) {
         emit_update_warning(
             stdout,
             &format!("  ⚠ {err} — forcing canonical Python runtime reinstall"),
@@ -6112,7 +6112,7 @@ fn verify_installed_update_runtime(
     if !ensure_python_verified(&python_cmd, coordinator_http) {
         anyhow::bail!("Python runtime could not be verified after update");
     }
-    verify_python_core_signature_match(eigeninference_dir)
+    verify_python_core_signature_match(darkbloom_dir)
         .context("bundled Python core still failed signature validation after reinstall")?;
     if !ensure_runtime_updated(&python_cmd, coordinator_http) {
         anyhow::bail!("Python site-packages could not be verified after update");
@@ -6200,15 +6200,15 @@ async fn auto_update_check(coordinator_base_url: &str) -> Result<bool> {
     let tmp_path = "/tmp/darkbloom-auto-update.tar.gz";
     std::fs::write(tmp_path, &bytes)?;
 
-    let eigeninference_dir = dirs::home_dir()
+    let darkbloom_dir = dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("cannot find home directory"))?
         .join(".darkbloom");
-    let bin_dir = eigeninference_dir.join("bin");
+    let bin_dir = darkbloom_dir.join("bin");
     let darkbloom_backup = backup_installed_binary(&bin_dir.join("darkbloom"))?;
-    let enclave_backup = backup_installed_binary(&bin_dir.join("eigeninference-enclave"))?;
+    let enclave_backup = backup_installed_binary(&bin_dir.join("darkbloom-enclave"))?;
 
     let status = std::process::Command::new("tar")
-        .args(["xzf", tmp_path, "-C", &eigeninference_dir.to_string_lossy()])
+        .args(["xzf", tmp_path, "-C", &darkbloom_dir.to_string_lossy()])
         .status()?;
     if !status.success() {
         anyhow::bail!("tar extraction failed");
@@ -6216,18 +6216,18 @@ async fn auto_update_check(coordinator_base_url: &str) -> Result<bool> {
 
     // Move binaries to bin dir
     let _ = std::fs::rename(
-        eigeninference_dir.join("darkbloom"),
+        darkbloom_dir.join("darkbloom"),
         bin_dir.join("darkbloom"),
     );
     let _ = std::fs::rename(
-        eigeninference_dir.join("eigeninference-enclave"),
-        bin_dir.join("eigeninference-enclave"),
+        darkbloom_dir.join("darkbloom-enclave"),
+        bin_dir.join("darkbloom-enclave"),
     );
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        for name in &["darkbloom", "eigeninference-enclave"] {
+        for name in &["darkbloom", "darkbloom-enclave"] {
             let path = bin_dir.join(name);
             if path.exists() {
                 let mut perms = std::fs::metadata(&path)?.permissions();
@@ -6242,14 +6242,14 @@ async fn auto_update_check(coordinator_base_url: &str) -> Result<bool> {
         .replace("wss://", "https://")
         .replace("ws://", "http://")
         .replace("/ws/provider", "");
-    if let Err(err) = verify_installed_update_runtime(&eigeninference_dir, &coordinator_http, false)
+    if let Err(err) = verify_installed_update_runtime(&darkbloom_dir, &coordinator_http, false)
     {
         tracing::error!(
             "Auto-update runtime verification failed after installing {latest}: {err}. Restoring previous binaries"
         );
         restore_installed_binary(&bin_dir.join("darkbloom"), darkbloom_backup.as_deref())?;
         restore_installed_binary(
-            &bin_dir.join("eigeninference-enclave"),
+            &bin_dir.join("darkbloom-enclave"),
             enclave_backup.as_deref(),
         )?;
         anyhow::bail!("auto-update runtime verification failed: {err}");
@@ -6340,7 +6340,7 @@ async fn cmd_logs(lines: usize, watch: bool) -> Result<()> {
 fn auth_token_path() -> std::path::PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("eigeninference")
+        .join("darkbloom")
         .join("auth_token")
 }
 

@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { migrateStorage } from "@/lib/migrate-storage";
 
-// Migrate old eigeninference_* localStorage keys to darkbloom_* before any
+// Migrate old darkbloom_* localStorage keys to darkbloom_* before any
 // component reads them. Module-scope call ensures it runs once on bundle load.
 migrateStorage();
 

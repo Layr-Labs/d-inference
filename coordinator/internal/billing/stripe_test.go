@@ -55,7 +55,7 @@ func TestCreateCheckoutSessionAddsDashboardMetadata(t *testing.T) {
 
 	expectedMetadata := map[string]string{
 		"app":                "darkbloom",
-		"platform":           "eigeninference",
+		"platform":           "darkbloom",
 		"purchase_type":      "inference_credits",
 		"source":             "coordinator",
 		"billing_session_id": "billing-session-123",

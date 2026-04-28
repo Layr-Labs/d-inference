@@ -1,8 +1,8 @@
-# EigenInference Architecture
+# Darkbloom Architecture
 
 ## Overview
 
-EigenInference is a platform for private, decentralized AI inference on Apple Silicon Macs. Mac owners provide idle compute. Consumers get private inference on open-source models with hardware-backed trust guarantees from Apple's Secure Enclave and MDM-verified security posture.
+Darkbloom is a platform for private, decentralized AI inference on Apple Silicon Macs. Mac owners provide idle compute. Consumers get private inference on open-source models with hardware-backed trust guarantees from Apple's Secure Enclave and MDM-verified security posture.
 
 ```
 Consumer (Python SDK)
@@ -78,8 +78,8 @@ The control plane. Runs in a GCP Confidential VM (AMD SEV-SNP) — hardware-encr
 OpenAI-compatible client library and CLI. Drop-in replacement for existing OpenAI code:
 
 ```python
-from eigeninference import EigenInference
-client = EigenInference(base_url="https://coordinator.darkbloom.io", api_key="eigeninference-...")
+from darkbloom import Darkbloom
+client = Darkbloom(base_url="https://coordinator.darkbloom.io", api_key="darkbloom-...")
 response = client.chat.completions.create(
     model="mlx-community/Qwen2.5-7B-Instruct-4bit",
     messages=[{"role": "user", "content": "Hello"}],
@@ -89,9 +89,9 @@ response = client.chat.completions.create(
 
 CLI commands: `configure`, `models`, `ask`, `chat`, `deposit`, `balance`, `usage`, `withdraw`.
 
-EigenInference-specific response fields: `provider_attested` (bool), `provider_trust_level` (string).
+Darkbloom-specific response fields: `provider_attested` (bool), `provider_trust_level` (string).
 
-### macOS App (`app/EigenInference/`)
+### macOS App (`app/Darkbloom/`)
 
 **Language:** Swift/SwiftUI
 
@@ -110,7 +110,7 @@ Hardware-bound cryptographic identity for provider nodes:
 - P-256 key generation/storage in Apple Secure Enclave (non-extractable)
 - Signed attestation blobs (chip, SIP, SecureBoot, SE status, binary hash)
 - C FFI bridge (`@_cdecl`) for Rust integration
-- CLI tool: `eigeninference-enclave attest [--encryption-key <b64>] [--binary-hash <hex>]`
+- CLI tool: `darkbloom-enclave attest [--encryption-key <b64>] [--binary-hash <hex>]`
 
 ## Security Architecture
 
@@ -144,7 +144,7 @@ SIP (System Integrity Protection) is the foundation of the security model. To di
 2. Run `csrutil disable`
 3. Reboot back to macOS
 
-EigenInference checks SIP:
+Darkbloom checks SIP:
 - At process startup (refuses to serve if disabled)
 - Before every inference request (defense-in-depth)
 - In every 5-minute challenge-response (coordinator detects if provider rebooted with SIP off)
@@ -161,7 +161,7 @@ If SIP is found disabled at any point, the provider is immediately marked untrus
 
 ### MDM Integration
 
-EigenInference uses Apple MDM (MicroMDM) to independently verify provider security posture:
+Darkbloom uses Apple MDM (MicroMDM) to independently verify provider security posture:
 
 - **Enrollment:** Profile-based (`.mobileconfig`), minimal permissions (AccessRights=1041)
 - **SecurityInfo query returns:**
@@ -275,7 +275,7 @@ User-verifiable attestation API    Working     GET /v1/providers/attestation —
 
 ## Inference
 
-EigenInference runs inference **in-process** — no subprocess architecture. The Python MLX engine is embedded directly in the Rust process via PyO3.
+Darkbloom runs inference **in-process** — no subprocess architecture. The Python MLX engine is embedded directly in the Rust process via PyO3.
 
 | Backend | Mode | Features |
 |---------|------|----------|

@@ -4,7 +4,7 @@ export const runtime = "nodejs";
 // Disable body parsing and response buffering for streaming
 export const dynamic = "force-dynamic";
 
-const SEALED_CT = "application/eigeninference-sealed+json";
+const SEALED_CT = "application/darkbloom-sealed+json";
 
 const COORD_URL = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
 

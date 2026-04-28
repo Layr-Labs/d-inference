@@ -62,7 +62,7 @@ pub struct StreamToken {
     pub finish_reason: Option<String>,
 }
 
-const VLLM_ENGINE_STORE: &str = "_eigeninference_vllm_engines";
+const VLLM_ENGINE_STORE: &str = "_darkbloom_vllm_engines";
 
 fn engine_cache_key_for(model_id: &str) -> String {
     let mut hasher = Sha256::new();
@@ -203,9 +203,9 @@ _BLOCKED = frozenset([
 ])
 
 _original_import = getattr(
-    builtins, '_eigeninference_original_import', builtins.__import__
+    builtins, '_darkbloom_original_import', builtins.__import__
 )
-builtins._eigeninference_original_import = _original_import
+builtins._darkbloom_original_import = _original_import
 
 def _blocked_os_call(*args, **kwargs):
     raise PermissionError('os process control is blocked in private text mode')
@@ -216,7 +216,7 @@ def _blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
         raise ImportError(
             f"module {name!r} is blocked in private text mode"
         )
-    return builtins._eigeninference_original_import(
+    return builtins._darkbloom_original_import(
         name, globals, locals, fromlist, level
     )
 
@@ -418,7 +418,7 @@ gc.collect()
                 r#"
 import asyncio, builtins, json, traceback as _tb
 try:
-    engine = builtins._eigeninference_vllm_engines[engine_key]
+    engine = builtins._darkbloom_vllm_engines[engine_key]
     _req = json.loads(request_json)
     _messages = _req.get('messages', [])
     if not _messages and _req.get('input'):
@@ -633,7 +633,7 @@ except Exception as _e:
                     r#"
 import builtins, json, uuid, time, asyncio, re, traceback as _tb
 
-engine = builtins._eigeninference_vllm_engines[engine_key]
+engine = builtins._darkbloom_vllm_engines[engine_key]
 _req = json.loads(request_json)
 _messages = _req.get('messages', [])
 if not _messages and _req.get('input'):
@@ -1092,8 +1092,8 @@ if hasattr(os, 'fork'):
 
             let cleanup = CString::new(
                 r#"import builtins
-if hasattr(builtins, '_eigeninference_original_import'):
-    builtins.__import__ = builtins._eigeninference_original_import
+if hasattr(builtins, '_darkbloom_original_import'):
+    builtins.__import__ = builtins._darkbloom_original_import
 "#,
             )
             .unwrap();
@@ -1116,7 +1116,7 @@ if hasattr(builtins, '_eigeninference_original_import'):
     #[test]
     fn test_python_runtime_roots_discovers_bundle_and_home_runtime() {
         let tmp = tempfile::tempdir().unwrap();
-        let app_root = tmp.path().join("EigenInference.app");
+        let app_root = tmp.path().join("Darkbloom.app");
         let exe = app_root.join("Contents/MacOS/darkbloom");
         let frameworks_python = app_root.join("Contents/Frameworks/python");
         let resources_python = app_root.join("Contents/Resources/python");

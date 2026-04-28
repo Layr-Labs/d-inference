@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 // parseLeaderboardWindow returns the cutoff time for the requested

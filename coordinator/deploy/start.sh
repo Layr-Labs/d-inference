@@ -12,7 +12,7 @@ ln -sfn "$PERSIST" /data
 if [ ! -d "/data/step-ca/config" ]; then
     echo "Initializing step-ca (first boot)..."
     mkdir -p /data/step-ca/secrets
-    echo "eigeninference-step-ca" > /data/step-ca/secrets/password
+    echo "darkbloom-step-ca" > /data/step-ca/secrets/password
 
     # Copy Apple attestation root CA and ACME template to persistent storage
     mkdir -p /data/step-ca/apple /data/step-ca/templates
@@ -23,7 +23,7 @@ if [ ! -d "/data/step-ca/config" ]; then
         --name "Darkbloom CA" \
         --dns "${DOMAIN:-localhost}" \
         --address ":9000" \
-        --provisioner "eigeninference-admin" \
+        --provisioner "darkbloom-admin" \
         --password-file /data/step-ca/secrets/password \
         --deployment-type standalone \
         --acme 2>&1
@@ -36,7 +36,7 @@ if [ ! -d "/data/step-ca/config" ]; then
     jq '(.authority.provisioners[] | select(.type == "ACME")) |=
         {
             "type": "ACME",
-            "name": "eigeninference-acme",
+            "name": "darkbloom-acme",
             "challenges": ["device-attest-01"],
             "attestationFormats": ["apple"],
             "forceCN": false,
@@ -61,9 +61,9 @@ if [ -n "$MICROMDM_API_KEY" ]; then
     if [ -n "$MDM_PUSH_P12_B64" ] && [ ! -f /data/micromdm/push.crt ]; then
         echo "Decoding MDM push certificate from PKCS#12..."
         printf '%s' "$MDM_PUSH_P12_B64" | tr '_-' '/+' | base64 -d > /tmp/push.p12
-        openssl pkcs12 -in /tmp/push.p12 -clcerts -nokeys -passin pass:eigeninference \
+        openssl pkcs12 -in /tmp/push.p12 -clcerts -nokeys -passin pass:darkbloom \
             -out /data/micromdm/push.crt 2>/dev/null
-        openssl pkcs12 -in /tmp/push.p12 -nocerts -nodes -passin pass:eigeninference \
+        openssl pkcs12 -in /tmp/push.p12 -nocerts -nodes -passin pass:darkbloom \
             -out /tmp/push_pkcs8.key 2>/dev/null
         openssl rsa -in /tmp/push_pkcs8.key -traditional -out /data/micromdm/push.key 2>/dev/null
         rm -f /tmp/push.p12 /tmp/push_pkcs8.key
@@ -83,7 +83,7 @@ if [ -n "$MICROMDM_API_KEY" ]; then
     echo "Starting MicroMDM..."
     micromdm serve \
         -server-url "https://${DOMAIN:-localhost}" \
-        -api-key "${MICROMDM_API_KEY:-eigeninference-micromdm-api}" \
+        -api-key "${MICROMDM_API_KEY:-darkbloom-micromdm-api}" \
         -filerepo /data/micromdm \
         -config-path /data/micromdm \
         -tls-cert /data/micromdm/server.crt \
@@ -98,9 +98,9 @@ if [ -n "$MICROMDM_API_KEY" ]; then
     if [ -f /data/micromdm/push.crt ] && [ ! -f /data/micromdm/.push_imported ]; then
         echo "Importing MDM push certificate..."
         mdmctl config set \
-            -name eigeninference \
+            -name darkbloom \
             -server-url "https://localhost:9002" \
-            -api-token "${MICROMDM_API_KEY:-eigeninference-micromdm-api}" \
+            -api-token "${MICROMDM_API_KEY:-darkbloom-micromdm-api}" \
             -skip-verify
         mdmctl mdmcert upload \
             -cert /data/micromdm/push.crt \

@@ -34,17 +34,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/auth"
-	"github.com/eigeninference/coordinator/internal/billing"
-	"github.com/eigeninference/coordinator/internal/datadog"
-	"github.com/eigeninference/coordinator/internal/e2e"
-	"github.com/eigeninference/coordinator/internal/mdm"
-	"github.com/eigeninference/coordinator/internal/payments"
-	"github.com/eigeninference/coordinator/internal/protocol"
-	"github.com/eigeninference/coordinator/internal/ratelimit"
-	"github.com/eigeninference/coordinator/internal/registry"
-	"github.com/eigeninference/coordinator/internal/store"
-	"github.com/eigeninference/coordinator/internal/telemetry"
+	"github.com/darkbloom/coordinator/internal/auth"
+	"github.com/darkbloom/coordinator/internal/billing"
+	"github.com/darkbloom/coordinator/internal/datadog"
+	"github.com/darkbloom/coordinator/internal/e2e"
+	"github.com/darkbloom/coordinator/internal/mdm"
+	"github.com/darkbloom/coordinator/internal/payments"
+	"github.com/darkbloom/coordinator/internal/protocol"
+	"github.com/darkbloom/coordinator/internal/ratelimit"
+	"github.com/darkbloom/coordinator/internal/registry"
+	"github.com/darkbloom/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/telemetry"
 )
 
 // contextKey is an unexported type for context keys in this package.
@@ -794,7 +794,7 @@ func (s *Server) routes() {
 	// Consumer endpoints — API key auth required + per-account rate limit.
 	// Inference endpoints are wrapped in sealedTransport so senders can opt into
 	// sender→coordinator encryption by setting Content-Type:
-	// application/eigeninference-sealed+json (see sender_encryption.go).
+	// application/darkbloom-sealed+json (see sender_encryption.go).
 	// rateLimitConsumer is chained inside requireAuth so the accountID is in
 	// context. Read-only endpoints (GET /v1/models) skip rate limiting since
 	// they're cheap and clients poll them.

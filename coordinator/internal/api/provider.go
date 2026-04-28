@@ -33,13 +33,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/attestation"
-	"github.com/eigeninference/coordinator/internal/e2e"
-	"github.com/eigeninference/coordinator/internal/payments"
-	"github.com/eigeninference/coordinator/internal/protocol"
-	"github.com/eigeninference/coordinator/internal/registry"
-	"github.com/eigeninference/coordinator/internal/saferun"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/attestation"
+	"github.com/darkbloom/coordinator/internal/e2e"
+	"github.com/darkbloom/coordinator/internal/payments"
+	"github.com/darkbloom/coordinator/internal/protocol"
+	"github.com/darkbloom/coordinator/internal/registry"
+	"github.com/darkbloom/coordinator/internal/saferun"
+	"github.com/darkbloom/coordinator/internal/store"
 	"github.com/google/uuid"
 	"nhooyr.io/websocket"
 )
@@ -532,7 +532,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 
 	// Verify the signature cryptographically using the provider's Secure
 	// Enclave P-256 public key. The provider signs SHA-256(nonce + timestamp)
-	// with its SE key via eigeninference-enclave CLI.
+	// with its SE key via darkbloom-enclave CLI.
 	if resp.Signature == "" {
 		s.handleChallengeFailure(providerID, "empty signature")
 		return

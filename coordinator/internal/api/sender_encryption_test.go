@@ -16,9 +16,9 @@ import (
 
 	"golang.org/x/crypto/nacl/box"
 
-	"github.com/eigeninference/coordinator/internal/e2e"
-	"github.com/eigeninference/coordinator/internal/registry"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/e2e"
+	"github.com/darkbloom/coordinator/internal/registry"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 const senderTestMnemonic = "praise warfare warrior rebuild raven garlic kite blast crew impulse pencil hidden"
@@ -250,7 +250,7 @@ func TestSealedRequest_WrongKID(t *testing.T) {
 
 // TestSealedRequest_CaseInsensitiveContentType regression-guards the
 // reviewer-flagged bug: the gate was case-sensitive HasPrefix, so a client
-// sending Application/EigenInference-Sealed+json would silently fall through
+// sending Application/Darkbloom-Sealed+json would silently fall through
 // to the plaintext handler. RFC 7231 §3.1.1.1 says media types are
 // case-insensitive.
 func TestSealedRequest_CaseInsensitiveContentType(t *testing.T) {
@@ -261,7 +261,7 @@ func TestSealedRequest_CaseInsensitiveContentType(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", bytes.NewReader(env))
 	// Mixed case + a charset parameter — both should be tolerated.
-	req.Header.Set("Content-Type", "Application/EigenInference-Sealed+JSON; charset=utf-8")
+	req.Header.Set("Content-Type", "Application/Darkbloom-Sealed+JSON; charset=utf-8")
 	req.Header.Set("Authorization", "Bearer test-key")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

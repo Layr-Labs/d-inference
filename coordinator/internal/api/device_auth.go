@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/auth"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/auth"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 const (
@@ -132,7 +132,7 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to generate token"))
 			return
 		}
-		rawToken := "eigeninference-pt-" + hex.EncodeToString(tokenBytes)
+		rawToken := "darkbloom-pt-" + hex.EncodeToString(tokenBytes)
 		tokenHash := sha256Hash(rawToken)
 
 		pt := &store.ProviderToken{

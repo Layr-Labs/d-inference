@@ -3,7 +3,7 @@
 // Mirror of coordinator/internal/api/sender_encryption.go. Senders fetch the
 // coordinator's long-lived X25519 public key from /v1/encryption-key, NaCl-
 // Box-seal each request body to it, and POST as
-// Content-Type: application/eigeninference-sealed+json.
+// Content-Type: application/darkbloom-sealed+json.
 //
 // Per-request: a fresh ephemeral X25519 keypair gives forward secrecy. The
 // coordinator seals its response back using the sender's ephemeral pubkey
@@ -14,7 +14,7 @@
 
 import nacl from "tweetnacl";
 
-export const SEALED_CONTENT_TYPE = "application/eigeninference-sealed+json";
+export const SEALED_CONTENT_TYPE = "application/darkbloom-sealed+json";
 export const ENCRYPTION_FLAG_KEY = "darkbloom_encrypt_to_coordinator";
 const COORD_KEY_CACHE_KEY = "darkbloom_coord_enc_key_v2"; // v2: keyed-per-URL
 const COORD_KEY_TTL_MS = 60 * 60 * 1000; // 1 hour

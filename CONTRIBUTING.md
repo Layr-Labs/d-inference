@@ -27,7 +27,7 @@ See [CLAUDE.md](CLAUDE.md) for the full layout and architectural decisions. The 
 | `coordinator/` | Go | Central matchmaking server (runs on EigenCloud / GCP) |
 | `provider/` | Rust | Hardened daemon on Apple Silicon Macs |
 | `console-ui/` | Next.js 16 / React 19 | Web app (chat, billing, models) |
-| `app/EigenInference/` | Swift / SwiftUI | macOS menu bar app for providers |
+| `app/Darkbloom/` | Swift / SwiftUI | macOS menu bar app for providers |
 | `enclave/` | Swift | Secure Enclave attestation helper |
 | `image-bridge/` | Python / FastAPI | Image generation backend adapter |
 
@@ -60,7 +60,7 @@ cd provider && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo test
 cd console-ui && npm install && npm test && npx eslint src/
 
 # macOS app
-cd app/EigenInference && swift test
+cd app/Darkbloom && swift test
 
 # Enclave helper
 cd enclave && swift test

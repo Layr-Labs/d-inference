@@ -2,7 +2,7 @@
 
 import XCTest
 import CryptoKit
-@testable import EigenInferenceEnclave
+@testable import DarkbloomEnclave
 
 final class AttestationTests: XCTestCase {
 

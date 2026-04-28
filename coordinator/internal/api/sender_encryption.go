@@ -2,7 +2,7 @@
 //
 // Senders fetch the coordinator's long-lived X25519 public key from
 // GET /v1/encryption-key, NaCl-Box-seal their request body to it, and POST as
-// Content-Type: application/eigeninference-sealed+json. The middleware below
+// Content-Type: application/darkbloom-sealed+json. The middleware below
 // transparently decrypts the body so downstream handlers see plaintext, and
 // re-seals the response (both buffered JSON and SSE streams) using the
 // sender's ephemeral public key from the request envelope.
@@ -52,7 +52,7 @@ import (
 
 // SealedContentType is the media type senders set on encrypted requests.
 // The same media type is used on the response when the request was sealed.
-const SealedContentType = "application/eigeninference-sealed+json"
+const SealedContentType = "application/darkbloom-sealed+json"
 
 // sealedRequestEnvelope is the on-the-wire shape of a sealed request body.
 type sealedRequestEnvelope struct {
@@ -111,7 +111,7 @@ func (s *Server) handleEncryptionKey(w http.ResponseWriter, r *http.Request) {
 }
 
 // sealedTransport wraps an inference handler so that requests sent with
-// Content-Type: application/eigeninference-sealed+json are transparently
+// Content-Type: application/darkbloom-sealed+json are transparently
 // decrypted before the handler sees them, and the handler's response is
 // transparently sealed before it goes out on the wire.
 //

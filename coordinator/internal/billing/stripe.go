@@ -134,7 +134,7 @@ func (p *StripeProcessor) CreateCheckoutSession(req CheckoutSessionRequest) (*Ch
 func checkoutMetadata(metadata map[string]string) map[string]string {
 	params := map[string]string{
 		"app":           "darkbloom",
-		"platform":      "eigeninference",
+		"platform":      "darkbloom",
 		"purchase_type": "inference_credits",
 		"source":        "coordinator",
 	}

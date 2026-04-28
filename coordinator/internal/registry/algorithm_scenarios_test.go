@@ -38,7 +38,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/darkbloom/coordinator/internal/protocol"
 )
 
 // scenarioProvider builds a fully-attested provider with controllable

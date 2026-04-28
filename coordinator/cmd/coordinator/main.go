@@ -1,4 +1,4 @@
-// Command coordinator runs the Darkbloom (EigenInference) coordinator control plane.
+// Command coordinator runs the Darkbloom (Darkbloom) coordinator control plane.
 //
 // The coordinator is the central routing and trust layer in the Darkbloom network.
 // It accepts provider WebSocket connections, verifies their Secure Enclave
@@ -11,6 +11,12 @@
 // prompt content.
 //
 // Configuration (environment variables):
+//
+// NOTE: Environment variable names intentionally retain the EIGENINFERENCE_ prefix.
+// They have not been migrated to DARKBLOOM_ to avoid breaking production deployments
+// that already have these vars configured in EigenCloud KMS and GCP Secret Manager.
+// Forward migration: when you reconfigure all deployment environments, replace each
+// EIGENINFERENCE_* name with the equivalent DARKBLOOM_* name and update this block.
 //
 //	EIGENINFERENCE_PORT                  - HTTP listen port (default: "8080")
 //	EIGENINFERENCE_ADMIN_KEY             - Pre-seeded API key for bootstrapping
@@ -38,19 +44,19 @@ import (
 
 	"strconv"
 
-	"github.com/eigeninference/coordinator/internal/api"
-	"github.com/eigeninference/coordinator/internal/attestation"
-	"github.com/eigeninference/coordinator/internal/auth"
-	"github.com/eigeninference/coordinator/internal/billing"
-	"github.com/eigeninference/coordinator/internal/datadog"
-	"github.com/eigeninference/coordinator/internal/e2e"
-	"github.com/eigeninference/coordinator/internal/mdm"
-	"github.com/eigeninference/coordinator/internal/payments"
-	"github.com/eigeninference/coordinator/internal/ratelimit"
-	"github.com/eigeninference/coordinator/internal/registry"
-	"github.com/eigeninference/coordinator/internal/saferun"
-	"github.com/eigeninference/coordinator/internal/store"
-	"github.com/eigeninference/coordinator/internal/telemetry"
+	"github.com/darkbloom/coordinator/internal/api"
+	"github.com/darkbloom/coordinator/internal/attestation"
+	"github.com/darkbloom/coordinator/internal/auth"
+	"github.com/darkbloom/coordinator/internal/billing"
+	"github.com/darkbloom/coordinator/internal/datadog"
+	"github.com/darkbloom/coordinator/internal/e2e"
+	"github.com/darkbloom/coordinator/internal/mdm"
+	"github.com/darkbloom/coordinator/internal/payments"
+	"github.com/darkbloom/coordinator/internal/ratelimit"
+	"github.com/darkbloom/coordinator/internal/registry"
+	"github.com/darkbloom/coordinator/internal/saferun"
+	"github.com/darkbloom/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/telemetry"
 
 	ddtracer "gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
@@ -413,7 +419,7 @@ func main() {
 	if mdmURL := os.Getenv("EIGENINFERENCE_MDM_URL"); mdmURL != "" {
 		mdmKey := os.Getenv("EIGENINFERENCE_MDM_API_KEY")
 		if mdmKey == "" {
-			mdmKey = "eigeninference-micromdm-api" // default
+			mdmKey = "darkbloom-micromdm-api" // default
 		}
 		mdmClient := mdm.NewClient(mdmURL, mdmKey, logger)
 

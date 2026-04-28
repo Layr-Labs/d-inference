@@ -3,7 +3,7 @@
 
 import Testing
 import Foundation
-@testable import EigenInference
+@testable import Darkbloom
 
 @Suite("TelemetryReporter")
 struct TelemetryReporterTests {

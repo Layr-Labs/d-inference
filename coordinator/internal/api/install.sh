@@ -82,29 +82,29 @@ echo ""
 echo "→ [2/7] Downloading Darkbloom v${VERSION}..."
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
-curl -f#L "$BUNDLE_URL" -o "/tmp/eigeninference-bundle.tar.gz"
+curl -f#L "$BUNDLE_URL" -o "/tmp/darkbloom-bundle.tar.gz"
 
 # Verify bundle hash
-ACTUAL_HASH=$(shasum -a 256 /tmp/eigeninference-bundle.tar.gz | cut -d' ' -f1)
+ACTUAL_HASH=$(shasum -a 256 /tmp/darkbloom-bundle.tar.gz | cut -d' ' -f1)
 if [ "$ACTUAL_HASH" != "$BUNDLE_HASH" ]; then
     echo ""
     echo "  ✗ Bundle hash mismatch — download may be corrupted."
     echo "    Expected: $BUNDLE_HASH"
     echo "    Got:      $ACTUAL_HASH"
-    rm -f /tmp/eigeninference-bundle.tar.gz
+    rm -f /tmp/darkbloom-bundle.tar.gz
     exit 1
 fi
 echo ""
 echo "  Hash verified ✓"
 
 echo "  Installing binaries..."
-tar xzf /tmp/eigeninference-bundle.tar.gz -C "$INSTALL_DIR"
+tar xzf /tmp/darkbloom-bundle.tar.gz -C "$INSTALL_DIR"
 
 # Migrate older flat bundle layouts into the current install structure.
 [ -f "$INSTALL_DIR/darkbloom" ] && mv -f "$INSTALL_DIR/darkbloom" "$BIN_DIR/darkbloom"
-[ -f "$INSTALL_DIR/eigeninference-enclave" ] && mv -f "$INSTALL_DIR/eigeninference-enclave" "$BIN_DIR/eigeninference-enclave"
-chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/eigeninference-enclave" 2>/dev/null || true
-rm -f /tmp/eigeninference-bundle.tar.gz
+[ -f "$INSTALL_DIR/darkbloom-enclave" ] && mv -f "$INSTALL_DIR/darkbloom-enclave" "$BIN_DIR/darkbloom-enclave"
+chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/darkbloom-enclave" 2>/dev/null || true
+rm -f /tmp/darkbloom-bundle.tar.gz
 
 # Verify code signature (codesign is part of base macOS, no CLT needed)
 if codesign --verify --verbose "$BIN_DIR/darkbloom" 2>/dev/null; then
@@ -128,7 +128,7 @@ if [ -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ]; then
 fi
 if ! grep -q "\.darkbloom/bin" "$RC" 2>/dev/null; then
     # Remove old PATH entries from previous installs
-    sed -i '' '/\.dginf\/bin/d; /\.eigeninference\/bin/d; /alias eigeninf/d; /alias dginf/d; /# EigenInference/d; /# Darkbloom$/d' "$RC" 2>/dev/null || true
+    sed -i '' '/\.dginf\/bin/d; /\.darkbloom\/bin/d; /alias eigeninf/d; /alias dginf/d; /# Darkbloom/d; /# Darkbloom$/d' "$RC" 2>/dev/null || true
     cat >> "$RC" << 'SHELL'
 
 # Darkbloom
@@ -148,8 +148,8 @@ echo "  Binaries installed ✓"
 echo "  Shortcut: darkbloom"
 
 # ─── Migrate from old installs ───────────────────────────────
-# Migration chain: ~/.dginf → ~/.eigeninference → ~/.darkbloom
-for OLD_DIR in "$HOME/.dginf" "$HOME/.eigeninference"; do
+# Migration chain: ~/.dginf → ~/.darkbloom → ~/.darkbloom
+for OLD_DIR in "$HOME/.dginf" "$HOME/.darkbloom"; do
     if [ -d "$OLD_DIR" ] && [ ! -L "$OLD_DIR" ]; then
         echo ""
         echo "  Migrating from $OLD_DIR..."
@@ -177,13 +177,13 @@ else
     RUNTIME_INSTALLED=false
 
     # Try R2 release artifacts first (the canonical source).
-    if [ -n "$VERSION" ] && curl -f#L "$R2_CDN/releases/v${VERSION}/eigeninference-python-macos-arm64.tar.gz" -o "/tmp/eigeninference-python.tar.gz" 2>/dev/null; then
+    if [ -n "$VERSION" ] && curl -f#L "$R2_CDN/releases/v${VERSION}/darkbloom-python-macos-arm64.tar.gz" -o "/tmp/darkbloom-python.tar.gz" 2>/dev/null; then
         echo ""
         echo "  Extracting Python runtime..."
         rm -rf "$INSTALL_DIR/python"
         mkdir -p "$INSTALL_DIR/python"
-        tar xzf /tmp/eigeninference-python.tar.gz -C "$INSTALL_DIR/python"
-        rm -f /tmp/eigeninference-python.tar.gz
+        tar xzf /tmp/darkbloom-python.tar.gz -C "$INSTALL_DIR/python"
+        rm -f /tmp/darkbloom-python.tar.gz
         RUNTIME_INSTALLED=true
         echo "  Python runtime installed ✓"
     fi
@@ -193,7 +193,7 @@ else
     if [ "$RUNTIME_INSTALLED" = false ] && [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
         echo "  Downloading site-packages..."
         SITE_DIR="$INSTALL_DIR/python/lib/python3.12/site-packages"
-        if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/eigeninference-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
+        if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/darkbloom-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
             rm -rf "$SITE_DIR"
             mkdir -p "$SITE_DIR"
             tar xzf /tmp/eigen-site-packages.tar.gz -C "$SITE_DIR"
@@ -223,7 +223,7 @@ if [ -f "$PYTHON_BIN" ] && ! "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
             # Install packages from R2 site-packages tarball (same verified artifacts as CI)
             SITE_DIR="$INSTALL_DIR/python/lib/python3.12/site-packages"
             R2_CDN="${R2_CDN:-__DARKBLOOM_R2_SITE_PACKAGES_CDN_URL__}"
-            if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/eigeninference-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
+            if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/darkbloom-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
                 rm -rf "$SITE_DIR"
                 mkdir -p "$SITE_DIR"
                 tar xzf /tmp/eigen-site-packages.tar.gz -C "$SITE_DIR"
@@ -256,7 +256,7 @@ fi
 echo ""
 echo "→ [4/7] Setting up Secure Enclave identity..."
 
-"$BIN_DIR/eigeninference-enclave" info >/dev/null 2>&1 \
+"$BIN_DIR/darkbloom-enclave" info >/dev/null 2>&1 \
     && echo "  Secure Enclave ✓ (P-256 key generated)" \
     || echo "  Secure Enclave ⚠ (not available on this hardware)"
 
@@ -273,11 +273,11 @@ if [ "$ALREADY_ENROLLED" = true ]; then
     echo "  Already enrolled ✓"
 elif [ -n "$SERIAL" ]; then
     echo "  Requesting enrollment profile..."
-    rm -f "/tmp/EigenInference-Enroll-${SERIAL}.mobileconfig" 2>/dev/null
+    rm -f "/tmp/Darkbloom-Enroll-${SERIAL}.mobileconfig" 2>/dev/null
     if curl -fsSL -X POST "$COORD_URL/v1/enroll" \
         -H "Content-Type: application/json" \
         -d "{\"serial_number\": \"$SERIAL\"}" \
-        -o "/tmp/EigenInference-Enroll-${SERIAL}.mobileconfig" 2>/dev/null; then
+        -o "/tmp/Darkbloom-Enroll-${SERIAL}.mobileconfig" 2>/dev/null; then
         echo ""
         echo "  ┌──────────────────────────────────────────────────┐"
         echo "  │ ACTION REQUIRED: Install the enrollment profile   │"
@@ -292,7 +292,7 @@ elif [ -n "$SERIAL" ]; then
         echo "  └──────────────────────────────────────────────────┘"
         echo ""
         # Register the profile, then open System Settings to the install pane
-        open "/tmp/EigenInference-Enroll-${SERIAL}.mobileconfig"
+        open "/tmp/Darkbloom-Enroll-${SERIAL}.mobileconfig"
         sleep 1
         open "x-apple.systempreferences:com.apple.Profiles-Settings.extension"
 
@@ -443,7 +443,7 @@ else
 fi
 echo ""
 
-if [ ! -f "$HOME/.config/eigeninference/auth_token" ]; then
+if [ ! -f "$HOME/.config/darkbloom/auth_token" ]; then
     echo "  ┌──────────────────────────────────────────────┐"
     echo "  │  Link your account to earn rewards:          │"
     echo "  │                                              │"

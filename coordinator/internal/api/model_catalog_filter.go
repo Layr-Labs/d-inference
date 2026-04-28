@@ -3,7 +3,7 @@ package api
 import (
 	"strings"
 
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 // IsRetiredProviderModel returns true for catalog entries that should never be

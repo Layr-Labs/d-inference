@@ -110,20 +110,20 @@ jobs:
             -o /tmp/pbs-python.tar.gz
 
           # Extract for Rust linking (clean copy, no pip installs)
-          rm -rf /tmp/eigeninference-build-python
-          mkdir -p /tmp/eigeninference-build-python
-          tar xzf /tmp/pbs-python.tar.gz --strip-components=1 -C /tmp/eigeninference-build-python
+          rm -rf /tmp/darkbloom-build-python
+          mkdir -p /tmp/darkbloom-build-python
+          tar xzf /tmp/pbs-python.tar.gz --strip-components=1 -C /tmp/darkbloom-build-python
 
           # Extract for Python runtime (will get pip installs)
           tar xzf /tmp/pbs-python.tar.gz -C /tmp/
-          mv /tmp/python /tmp/eigeninference-python
+          mv /tmp/python /tmp/darkbloom-python
           rm -f /tmp/pbs-python.tar.gz
 
           # Pre-download vllm-mlx source for pip install
           curl -fsSL -o /tmp/vllm-mlx-source.zip \
             'https://github.com/Gajesh2007/vllm-mlx/archive/refs/heads/main.zip'
 
-          /tmp/eigeninference-build-python/bin/python3.12 --version
+          /tmp/darkbloom-build-python/bin/python3.12 --version
 
       - name: Cache cargo registry + target
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -148,10 +148,10 @@ jobs:
           # Task A: Rust provider
           (
             set -e
-            export PYO3_PYTHON=/tmp/eigeninference-build-python/bin/python3.12
-            export LIBRARY_PATH=/tmp/eigeninference-build-python/lib
-            export DYLD_LIBRARY_PATH=/tmp/eigeninference-build-python/lib
-            export RUSTFLAGS="-L native=/tmp/eigeninference-build-python/lib"
+            export PYO3_PYTHON=/tmp/darkbloom-build-python/bin/python3.12
+            export LIBRARY_PATH=/tmp/darkbloom-build-python/lib
+            export DYLD_LIBRARY_PATH=/tmp/darkbloom-build-python/lib
+            export RUSTFLAGS="-L native=/tmp/darkbloom-build-python/lib"
             cd provider && cargo build --release
           ) > /tmp/rust-build.log 2>&1 &
           RUST_PID=$!
@@ -168,7 +168,7 @@ jobs:
           # Task C: Python runtime (uv is ~10x faster than pip)
           (
             set -e
-            PYTHON=/tmp/eigeninference-python/bin/python3.12
+            PYTHON=/tmp/darkbloom-python/bin/python3.12
 
             "$HOME/.local/bin/uv" pip install --python "$PYTHON" --quiet --no-cache-dir \
               'mlx-lm>=0.31.2' \
@@ -181,13 +181,13 @@ jobs:
             "$PYTHON" -c "from vllm_mlx.server import app; print('vllm-mlx server imports OK')"
 
             # Trim bloat
-            cd /tmp/eigeninference-python/lib/python*/site-packages
+            cd /tmp/darkbloom-python/lib/python*/site-packages
             rm -rf torch* gradio* opencv* cv2* pandas* pyarrow* \
                    sympy* networkx* mcp* miniaudio* pydub* datasets*
-            find /tmp/eigeninference-python -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
-            find /tmp/eigeninference-python -name "*.pyc" -delete 2>/dev/null || true
-            "$PYTHON" -m compileall -q /tmp/eigeninference-python/lib/python3.12/site-packages/ 2>/dev/null || true
-            rm -f /tmp/eigeninference-python/lib/python*/EXTERNALLY-MANAGED
+            find /tmp/darkbloom-python -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+            find /tmp/darkbloom-python -name "*.pyc" -delete 2>/dev/null || true
+            "$PYTHON" -m compileall -q /tmp/darkbloom-python/lib/python3.12/site-packages/ 2>/dev/null || true
+            rm -f /tmp/darkbloom-python/lib/python*/EXTERNALLY-MANAGED
           ) > /tmp/python-build.log 2>&1 &
           PYTHON_PID=$!
           echo "Started Python runtime build (pid $PYTHON_PID)"
@@ -195,7 +195,7 @@ jobs:
           # Task D: Swift macOS app (compile only — assembly happens after signing)
           (
             set -e
-            cd app/EigenInference && swift build -c release
+            cd app/Darkbloom && swift build -c release
           ) > /tmp/app-build.log 2>&1 &
           APP_PID=$!
           echo "Started Swift app build (pid $APP_PID)"
@@ -230,10 +230,10 @@ jobs:
           # ---- Provider tests in background ----
           (
             set -e
-            export PYO3_PYTHON=/tmp/eigeninference-build-python/bin/python3.12
-            export LIBRARY_PATH=/tmp/eigeninference-build-python/lib
-            export DYLD_LIBRARY_PATH=/tmp/eigeninference-build-python/lib
-            export RUSTFLAGS="-L native=/tmp/eigeninference-build-python/lib"
+            export PYO3_PYTHON=/tmp/darkbloom-build-python/bin/python3.12
+            export LIBRARY_PATH=/tmp/darkbloom-build-python/lib
+            export DYLD_LIBRARY_PATH=/tmp/darkbloom-build-python/lib
+            export RUSTFLAGS="-L native=/tmp/darkbloom-build-python/lib"
             cd provider && cargo test -- --skip proxy::tests --skip server::tests --skip coordinator::tests::test_coordinator_connect_register_and_receive
           ) > /tmp/test.log 2>&1 &
           TEST_PID=$!
@@ -251,27 +251,27 @@ jobs:
             done
           }
           echo "Signing Python runtime Mach-Os..."
-          if ! sign_macho_tree /tmp/eigeninference-python; then
+          if ! sign_macho_tree /tmp/darkbloom-python; then
             echo "Python runtime codesign failed — retrying in 30s"
             sleep 30
-            sign_macho_tree /tmp/eigeninference-python
+            sign_macho_tree /tmp/darkbloom-python
           fi
           echo "✓ Python runtime signed"
 
           # ---- Assemble provider bundle ----
-          mkdir -p /tmp/eigeninference-bundle/bin /tmp/eigeninference-bundle/python
+          mkdir -p /tmp/darkbloom-bundle/bin /tmp/darkbloom-bundle/python
 
-          cp provider/target/release/darkbloom /tmp/eigeninference-bundle/bin/
-          cp enclave/.build/release/eigeninference-enclave /tmp/eigeninference-bundle/bin/
+          cp provider/target/release/darkbloom /tmp/darkbloom-bundle/bin/
+          cp enclave/.build/release/darkbloom-enclave /tmp/darkbloom-bundle/bin/
 
           # Copy SIGNED Python base to bundle (no site-packages).
           # These files are already signed from the runtime pass above.
-          cp -R /tmp/eigeninference-python/bin /tmp/eigeninference-bundle/python/
-          cp -R /tmp/eigeninference-python/lib /tmp/eigeninference-bundle/python/
-          rm -rf /tmp/eigeninference-bundle/python/lib/python3.12/site-packages
+          cp -R /tmp/darkbloom-python/bin /tmp/darkbloom-bundle/python/
+          cp -R /tmp/darkbloom-python/lib /tmp/darkbloom-bundle/python/
+          rm -rf /tmp/darkbloom-bundle/python/lib/python3.12/site-packages
 
           # Fix libpython linkage in darkbloom
-          PYTHON_LOAD_PATH=$(otool -L /tmp/eigeninference-bundle/bin/darkbloom | awk '/libpython3\.12\.dylib/ {print $1; exit}')
+          PYTHON_LOAD_PATH=$(otool -L /tmp/darkbloom-bundle/bin/darkbloom | awk '/libpython3\.12\.dylib/ {print $1; exit}')
           if [ -z "$PYTHON_LOAD_PATH" ]; then
             echo "ERROR: could not find libpython linkage in darkbloom"
             exit 1
@@ -279,34 +279,34 @@ jobs:
           install_name_tool -change \
             "$PYTHON_LOAD_PATH" \
             "@executable_path/../python/lib/libpython3.12.dylib" \
-            /tmp/eigeninference-bundle/bin/darkbloom
+            /tmp/darkbloom-bundle/bin/darkbloom
 
           # Sign binaries (hardened runtime + entitlements)
           codesign --force --sign "$DEVELOPER_ID" \
             --keychain "$KEYCHAIN_PATH" \
             --entitlements scripts/entitlements.plist \
             --options runtime \
-            /tmp/eigeninference-bundle/bin/darkbloom
+            /tmp/darkbloom-bundle/bin/darkbloom
 
           codesign --force --sign "$DEVELOPER_ID" \
             --keychain "$KEYCHAIN_PATH" \
             --entitlements scripts/entitlements.plist \
             --options runtime \
-            /tmp/eigeninference-bundle/bin/eigeninference-enclave
+            /tmp/darkbloom-bundle/bin/darkbloom-enclave
 
           # Verify key signatures
-          codesign --verify --verbose /tmp/eigeninference-bundle/bin/darkbloom
-          codesign --verify --verbose /tmp/eigeninference-bundle/bin/eigeninference-enclave
-          codesign --verify --verbose /tmp/eigeninference-bundle/python/bin/python3.12
-          codesign --verify --verbose /tmp/eigeninference-bundle/python/lib/libpython3.12.dylib
+          codesign --verify --verbose /tmp/darkbloom-bundle/bin/darkbloom
+          codesign --verify --verbose /tmp/darkbloom-bundle/bin/darkbloom-enclave
+          codesign --verify --verbose /tmp/darkbloom-bundle/python/bin/python3.12
+          codesign --verify --verbose /tmp/darkbloom-bundle/python/lib/libpython3.12.dylib
 
-          cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
-          echo "Bundle created: $(du -h /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -f1)"
+          cd /tmp && tar czf darkbloom-bundle-macos-arm64.tar.gz -C darkbloom-bundle .
+          echo "Bundle created: $(du -h /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -f1)"
 
           # ---- Compute Python hashes (stable — not affected by stapling) ----
           # Binary and bundle hashes are computed AFTER notarization stapling
           # in the next step, since stapling modifies the Mach-O binaries.
-          PYTHON_BIN="/tmp/eigeninference-python/bin/python3.12"
+          PYTHON_BIN="/tmp/darkbloom-python/bin/python3.12"
           PYTHON_HASH=$(shasum -a 256 "$PYTHON_BIN" | cut -d' ' -f1)
           echo "Python hash: $PYTHON_HASH"
           echo "PYTHON_HASH=$PYTHON_HASH" >> "$GITHUB_ENV"
@@ -318,14 +318,14 @@ jobs:
           # libpython rpath points at @executable_path/../python/lib/ which
           # doesn't exist in the bundle (site-packages stripped). Set
           # DYLD_LIBRARY_PATH so the binary can load libpython.
-          RUNTIME_HASH=$(DYLD_LIBRARY_PATH="/tmp/eigeninference-python/lib:/tmp/eigeninference-build-python/lib" \
-            /tmp/eigeninference-bundle/bin/darkbloom hash-runtime "$PYTHON_LIB_DIR")
+          RUNTIME_HASH=$(DYLD_LIBRARY_PATH="/tmp/darkbloom-python/lib:/tmp/darkbloom-build-python/lib" \
+            /tmp/darkbloom-bundle/bin/darkbloom hash-runtime "$PYTHON_LIB_DIR")
           echo "Runtime hash: $RUNTIME_HASH"
           echo "RUNTIME_HASH=$RUNTIME_HASH" >> "$GITHUB_ENV"
 
           # Create runtime tarballs
-          cd /tmp && tar czf eigeninference-python-macos-arm64.tar.gz -C eigeninference-python .
-          cd /tmp && tar czf eigeninference-site-packages.tar.gz -C "$SITE_PACKAGES_DIR" .
+          cd /tmp && tar czf darkbloom-python-macos-arm64.tar.gz -C darkbloom-python .
+          cd /tmp && tar czf darkbloom-site-packages.tar.gz -C "$SITE_PACKAGES_DIR" .
 
           # ---- Wait for provider tests ----
           echo "Waiting for provider tests..."
@@ -355,8 +355,8 @@ jobs:
           # ---- Task A: Notarize provider bundle (background) ----
           (
             set -e
-            ditto -c -k --keepParent /tmp/eigeninference-bundle /tmp/eigeninference-notarize.zip
-            xcrun notarytool submit /tmp/eigeninference-notarize.zip \
+            ditto -c -k --keepParent /tmp/darkbloom-bundle /tmp/darkbloom-notarize.zip
+            xcrun notarytool submit /tmp/darkbloom-notarize.zip \
               --apple-id "$APPLE_ID" \
               --password "$APPLE_APP_PASSWORD" \
               --team-id "$APPLE_TEAM_ID" \
@@ -366,9 +366,9 @@ jobs:
           echo "Started bundle notarization (pid $NOTARIZE_BUNDLE_PID)"
 
           # ---- Task B: Build macOS app + DMG (foreground, overlaps with notarize) ----
-          APP_BIN=$(cd app/EigenInference && swift build -c release --show-bin-path)/EigenInference
+          APP_BIN=$(cd app/Darkbloom && swift build -c release --show-bin-path)/Darkbloom
 
-          APP_DIR="/tmp/EigenInference.app"
+          APP_DIR="/tmp/Darkbloom.app"
           CONTENTS="$APP_DIR/Contents"
           MACOS="$CONTENTS/MacOS"
           RESOURCES="$CONTENTS/Resources"
@@ -381,12 +381,12 @@ jobs:
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-            <key>CFBundleName</key><string>EigenInference</string>
-            <key>CFBundleDisplayName</key><string>EigenInference</string>
+            <key>CFBundleName</key><string>Darkbloom</string>
+            <key>CFBundleDisplayName</key><string>Darkbloom</string>
             <key>CFBundleIdentifier</key><string>io.darkbloom.provider</string>
             <key>CFBundleVersion</key><string>${VERSION}</string>
             <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-            <key>CFBundleExecutable</key><string>EigenInference</string>
+            <key>CFBundleExecutable</key><string>Darkbloom</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleIconFile</key><string>AppIcon</string>
             <key>LSMinimumSystemVersion</key><string>14.0</string>
@@ -396,12 +396,12 @@ jobs:
           </plist>
           PLIST
 
-          cp "$APP_BIN" "$MACOS/EigenInference"
-          cp /tmp/eigeninference-bundle/bin/darkbloom "$MACOS/darkbloom"
-          cp /tmp/eigeninference-bundle/bin/eigeninference-enclave "$MACOS/eigeninference-enclave" 2>/dev/null || true
+          cp "$APP_BIN" "$MACOS/Darkbloom"
+          cp /tmp/darkbloom-bundle/bin/darkbloom "$MACOS/darkbloom"
+          cp /tmp/darkbloom-bundle/bin/darkbloom-enclave "$MACOS/darkbloom-enclave" 2>/dev/null || true
 
           # Copy already-signed Python runtime into app (skip re-signing individual files)
-          cp -a /tmp/eigeninference-python/. "$PYTHON_ROOT/"
+          cp -a /tmp/darkbloom-python/. "$PYTHON_ROOT/"
 
           # Sign app binaries (entitlements)
           for bin in "$MACOS"/*; do
@@ -436,15 +436,15 @@ jobs:
           tail -5 /tmp/notarize-bundle.log
 
           # Staple notarization tickets to bundle binaries
-          xcrun stapler staple /tmp/eigeninference-bundle/bin/darkbloom || true
-          xcrun stapler staple /tmp/eigeninference-bundle/bin/eigeninference-enclave || true
+          xcrun stapler staple /tmp/darkbloom-bundle/bin/darkbloom || true
+          xcrun stapler staple /tmp/darkbloom-bundle/bin/darkbloom-enclave || true
 
           # Recreate bundle tarball with stapled binaries
-          cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
+          cd /tmp && tar czf darkbloom-bundle-macos-arm64.tar.gz -C darkbloom-bundle .
 
           # Compute final hashes AFTER stapling (stapling modifies the binaries)
-          BINARY_HASH=$(shasum -a 256 /tmp/eigeninference-bundle/bin/darkbloom | cut -d' ' -f1)
-          BUNDLE_HASH=$(shasum -a 256 /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
+          BINARY_HASH=$(shasum -a 256 /tmp/darkbloom-bundle/bin/darkbloom | cut -d' ' -f1)
+          BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
           echo "Binary hash (signed+stapled): $BINARY_HASH"
           echo "Bundle hash: $BUNDLE_HASH"
           echo "BINARY_HASH=$BINARY_HASH" >> "$GITHUB_ENV"
@@ -465,9 +465,9 @@ jobs:
           # ---- Task D: Upload bundles to R2 (overlaps with DMG notarize) ----
           # Wait on explicit PIDs — bare `wait` would also block on DMG notarize.
           PREFIX="s3://${R2_BUCKET}/releases/v${VERSION}"
-          aws s3 cp /tmp/eigeninference-bundle-macos-arm64.tar.gz "${PREFIX}/eigeninference-bundle-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors & UL1=$!
-          aws s3 cp /tmp/eigeninference-python-macos-arm64.tar.gz "${PREFIX}/eigeninference-python-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors & UL2=$!
-          aws s3 cp /tmp/eigeninference-site-packages.tar.gz      "${PREFIX}/eigeninference-site-packages.tar.gz"      --endpoint-url "$R2_ENDPOINT" --only-show-errors & UL3=$!
+          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz "${PREFIX}/darkbloom-bundle-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors & UL1=$!
+          aws s3 cp /tmp/darkbloom-python-macos-arm64.tar.gz "${PREFIX}/darkbloom-python-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors & UL2=$!
+          aws s3 cp /tmp/darkbloom-site-packages.tar.gz      "${PREFIX}/darkbloom-site-packages.tar.gz"      --endpoint-url "$R2_ENDPOINT" --only-show-errors & UL3=$!
           aws s3 cp /tmp/vllm-mlx-source.zip                      "${PREFIX}/vllm-mlx-source.zip"                      --endpoint-url "$R2_ENDPOINT" --only-show-errors & UL4=$!
           wait $UL1 $UL2 $UL3 $UL4
           echo "All bundle uploads complete"
@@ -510,7 +510,7 @@ jobs:
           R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          BUNDLE_URL="${R2_PUBLIC_URL}/releases/v${VERSION}/eigeninference-bundle-macos-arm64.tar.gz"
+          BUNDLE_URL="${R2_PUBLIC_URL}/releases/v${VERSION}/darkbloom-bundle-macos-arm64.tar.gz"
 
           TAG_MSG=$(git tag -l --format='%(contents:subject)%0a%(contents:body)' "$GITHUB_REF_NAME" 2>/dev/null || echo "")
           if [ -z "$TAG_MSG" ] || [ "$TAG_MSG" = $'\n' ]; then
@@ -568,7 +568,7 @@ jobs:
           ```
           NOTES
           gh release create "${{ github.ref_name }}" \
-            /tmp/eigeninference-bundle-macos-arm64.tar.gz \
+            /tmp/darkbloom-bundle-macos-arm64.tar.gz \
             /tmp/Darkbloom.dmg \
             --title "${{ github.ref_name }}" \
             --notes-file /tmp/release-notes.md \

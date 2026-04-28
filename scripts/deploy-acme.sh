@@ -10,13 +10,13 @@
 set -euo pipefail
 
 SERVER="ubuntu@34.197.17.112"
-SSH="ssh -o ConnectTimeout=15 -i ~/.ssh/eigeninference-infra $SERVER"
-SCP="scp -o ConnectTimeout=15 -i ~/.ssh/eigeninference-infra"
+SSH="ssh -o ConnectTimeout=15 -i ~/.ssh/darkbloom-infra $SERVER"
+SCP="scp -o ConnectTimeout=15 -i ~/.ssh/darkbloom-infra"
 
 echo "=== Step 1: Add ACME proxy to nginx ==="
 $SSH '
-if ! grep -q "/acme/" /etc/nginx/sites-enabled/eigeninference-mdm; then
-  sudo sed -i "/# SCEP/i\\\\n    # step-ca ACME (device-attest-01)\\n    location /acme/ {\\n        proxy_pass https://127.0.0.1:9000;\\n        proxy_ssl_verify off;\\n        proxy_set_header Host api.darkbloom.dev;\\n    }" /etc/nginx/sites-enabled/eigeninference-mdm
+if ! grep -q "/acme/" /etc/nginx/sites-enabled/darkbloom-mdm; then
+  sudo sed -i "/# SCEP/i\\\\n    # step-ca ACME (device-attest-01)\\n    location /acme/ {\\n        proxy_pass https://127.0.0.1:9000;\\n        proxy_ssl_verify off;\\n        proxy_set_header Host api.darkbloom.dev;\\n    }" /etc/nginx/sites-enabled/darkbloom-mdm
   sudo nginx -t && sudo systemctl reload nginx
   echo "nginx: ACME proxy added"
 else
@@ -35,7 +35,7 @@ echo "Enrollment profile updated"
 
 echo ""
 echo "=== Step 3: Verify ACME endpoint ==="
-curl -s https://api.darkbloom.dev/acme/eigeninference-acme/directory | python3 -m json.tool
+curl -s https://api.darkbloom.dev/acme/darkbloom-acme/directory | python3 -m json.tool
 
 echo ""
 echo "=== Done ==="

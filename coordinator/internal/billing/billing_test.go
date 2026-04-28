@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/eigeninference/coordinator/internal/payments"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/payments"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 func newTestService(t *testing.T) (*Service, store.Store) {

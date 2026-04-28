@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/analytics/internal/leaderboard"
-	"github.com/eigeninference/analytics/internal/pseudonym"
+	"github.com/darkbloom/analytics/internal/leaderboard"
+	"github.com/darkbloom/analytics/internal/pseudonym"
 )
 
 func TestHealthz(t *testing.T) {

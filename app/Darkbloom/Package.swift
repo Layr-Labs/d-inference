@@ -2,21 +2,21 @@
 import PackageDescription
 
 let package = Package(
-    name: "EigenInference",
+    name: "Darkbloom",
     platforms: [.macOS(.v14)],
     dependencies: [],
     targets: [
         .executableTarget(
-            name: "EigenInference",
-            path: "Sources/EigenInference",
+            name: "Darkbloom",
+            path: "Sources/Darkbloom",
             resources: [
                 .process("Resources"),
             ]
         ),
         .testTarget(
-            name: "EigenInferenceTests",
-            dependencies: ["EigenInference"],
-            path: "Tests/EigenInferenceTests"
+            name: "DarkbloomTests",
+            dependencies: ["Darkbloom"],
+            path: "Tests/DarkbloomTests"
         ),
     ]
 )

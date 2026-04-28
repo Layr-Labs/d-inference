@@ -1,6 +1,6 @@
 # Analytics
 
-Standalone read-only analytics service for Darkbloom / EigenInference.
+Standalone read-only analytics service for Darkbloom / Darkbloom.
 
 This service is meant to sit beside the coordinator, not inside it.
 It serves public read models like:

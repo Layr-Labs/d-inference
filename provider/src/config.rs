@@ -1,6 +1,6 @@
 //! Provider configuration management.
 //!
-//! Configuration is stored in TOML format at `~/.config/eigeninference/provider.toml`
+//! Configuration is stored in TOML format at `~/.config/darkbloom/provider.toml`
 //! (or the platform-appropriate config directory). The config includes:
 //!   - Provider identity (name, memory reserve)
 //!   - Backend settings (type, port, model, continuous batching)
@@ -66,7 +66,7 @@ pub struct CoordinatorSettings {
 impl ProviderConfig {
     pub fn default_for_hardware(hw: &HardwareInfo) -> Self {
         let name = format!(
-            "eigeninference-{}",
+            "darkbloom-{}",
             &hw.machine_model.replace(',', "-").to_lowercase()
         );
 
@@ -95,7 +95,7 @@ impl ProviderConfig {
 pub fn default_config_path() -> Result<PathBuf> {
     let config_dir = dirs::config_dir()
         .context("could not determine config directory")?
-        .join("eigeninference");
+        .join("darkbloom");
     Ok(config_dir.join("provider.toml"))
 }
 
@@ -147,7 +147,7 @@ mod tests {
         let hw = sample_hardware();
         let config = ProviderConfig::default_for_hardware(&hw);
 
-        assert_eq!(config.provider.name, "eigeninference-mac16-1");
+        assert_eq!(config.provider.name, "darkbloom-mac16-1");
         assert_eq!(config.backend.port, 8100);
         assert!(config.backend.continuous_batching);
     }
@@ -235,7 +235,7 @@ mod tests {
             546,
         );
         let config = ProviderConfig::default_for_hardware(&hw);
-        assert_eq!(config.provider.name, "eigeninference-mac16-1");
+        assert_eq!(config.provider.name, "darkbloom-mac16-1");
         assert_eq!(config.backend.port, 8100);
         assert_eq!(config.coordinator.heartbeat_interval_secs, 5);
         assert!(config.backend.continuous_batching);
@@ -255,7 +255,7 @@ mod tests {
             100,
         );
         let config = ProviderConfig::default_for_hardware(&hw);
-        assert_eq!(config.provider.name, "eigeninference-mac15-3");
+        assert_eq!(config.provider.name, "darkbloom-mac15-3");
         assert_eq!(config.backend.port, 8100);
         assert_eq!(config.provider.memory_reserve_gb, 4);
     }
@@ -272,7 +272,7 @@ mod tests {
             200,
         );
         let config = ProviderConfig::default_for_hardware(&hw);
-        assert_eq!(config.provider.name, "eigeninference-mac14-10");
+        assert_eq!(config.provider.name, "darkbloom-mac14-10");
         assert_eq!(config.backend.port, 8100);
         assert_eq!(config.coordinator.url, "ws://localhost:8080/ws/provider");
     }

@@ -22,15 +22,15 @@ APP_KEY="${DD_APPLICATION_KEY:-${DD_APP_KEY:-${DD_WRITE_KEY:-}}}"
 SITE="${DD_SITE:-}"
 
 if [[ -z "$API_KEY" ]]; then
-  API_KEY="$(fetch_secret eigeninference-dd-api-key || true)"
+  API_KEY="$(fetch_secret darkbloom-dd-api-key || true)"
 fi
 
 if [[ -z "$APP_KEY" ]]; then
-  APP_KEY="$(fetch_secret eigeninference-dd-app-key || true)"
+  APP_KEY="$(fetch_secret darkbloom-dd-app-key || true)"
 fi
 
 if [[ -z "$SITE" ]]; then
-  SITE="$(fetch_secret eigeninference-dd-site || true)"
+  SITE="$(fetch_secret darkbloom-dd-site || true)"
 fi
 
 SITE="${SITE:-datadoghq.com}"

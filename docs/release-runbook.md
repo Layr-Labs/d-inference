@@ -1,4 +1,4 @@
-# EigenInference Release Runbook
+# Darkbloom Release Runbook
 
 How to build, release, and distribute provider binaries. Covers both the automated GitHub Actions pipeline and manual release process.
 
@@ -48,11 +48,11 @@ git push origin master --tags
 The `.github/workflows/release.yml` workflow:
 
 1. Builds `darkbloom` (Rust, `--no-default-features`)
-2. Builds `eigeninference-enclave` (Swift)
+2. Builds `darkbloom-enclave` (Swift)
 3. Runs all tests (provider + coordinator)
 4. Creates code-signed bundle tarball
 5. Computes SHA-256 of binary and bundle
-6. Uploads bundle to R2 at `releases/v0.2.1/eigeninference-bundle-macos-arm64.tar.gz`
+6. Uploads bundle to R2 at `releases/v0.2.1/darkbloom-bundle-macos-arm64.tar.gz`
 7. Registers the release with coordinator via `POST /v1/releases` (scoped key)
 8. Creates a GitHub Release with the bundle attached
 
@@ -88,24 +88,24 @@ swift build -c release
 ### 2. Create bundle
 
 ```bash
-mkdir -p /tmp/eigeninference-bundle
-cp provider/target/release/darkbloom /tmp/eigeninference-bundle/
-cp enclave/.build/release/eigeninference-enclave /tmp/eigeninference-bundle/
+mkdir -p /tmp/darkbloom-bundle
+cp provider/target/release/darkbloom /tmp/darkbloom-bundle/
+cp enclave/.build/release/darkbloom-enclave /tmp/darkbloom-bundle/
 
 # Code sign
 codesign --force --sign - --entitlements scripts/entitlements.plist \
-  --options runtime /tmp/eigeninference-bundle/darkbloom
+  --options runtime /tmp/darkbloom-bundle/darkbloom
 codesign --force --sign - --entitlements scripts/entitlements.plist \
-  --options runtime /tmp/eigeninference-bundle/eigeninference-enclave
+  --options runtime /tmp/darkbloom-bundle/darkbloom-enclave
 
-cd /tmp && tar czf eigeninference-bundle-macos-arm64.tar.gz -C eigeninference-bundle .
+cd /tmp && tar czf darkbloom-bundle-macos-arm64.tar.gz -C darkbloom-bundle .
 ```
 
 ### 3. Compute hashes
 
 ```bash
 BINARY_HASH=$(shasum -a 256 provider/target/release/darkbloom | cut -d' ' -f1)
-BUNDLE_HASH=$(shasum -a 256 /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
+BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
 echo "Binary: $BINARY_HASH"
 echo "Bundle: $BUNDLE_HASH"
 ```
@@ -114,8 +114,8 @@ echo "Bundle: $BUNDLE_HASH"
 
 ```bash
 VERSION="0.2.1"
-aws s3 cp /tmp/eigeninference-bundle-macos-arm64.tar.gz \
-  "s3://d-inf-releases/releases/v${VERSION}/eigeninference-bundle-macos-arm64.tar.gz" \
+aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+  "s3://d-inf-releases/releases/v${VERSION}/darkbloom-bundle-macos-arm64.tar.gz" \
   --endpoint-url "$R2_ENDPOINT"
 ```
 
@@ -133,7 +133,7 @@ curl -X POST https://api.darkbloom.dev/v1/releases \
     \"platform\": \"macos-arm64\",
     \"binary_hash\": \"$BINARY_HASH\",
     \"bundle_hash\": \"$BUNDLE_HASH\",
-    \"url\": \"$R2_PUBLIC_URL/releases/v$VERSION/eigeninference-bundle-macos-arm64.tar.gz\"
+    \"url\": \"$R2_PUBLIC_URL/releases/v$VERSION/darkbloom-bundle-macos-arm64.tar.gz\"
   }"
 ```
 

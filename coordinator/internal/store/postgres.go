@@ -479,7 +479,7 @@ func (s *PostgresStore) CreateKey() (string, error) {
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("store: generate key: %w", err)
 	}
-	raw := "eigeninference-" + hex.EncodeToString(b)
+	raw := "darkbloom-" + hex.EncodeToString(b)
 	h := hashKey(raw)
 	prefix := keyPrefix(raw)
 
@@ -523,7 +523,7 @@ func (s *PostgresStore) CreateKeyForAccount(accountID string) (string, error) {
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("store: generate key: %w", err)
 	}
-	raw := "eigeninference-" + hex.EncodeToString(b)
+	raw := "darkbloom-" + hex.EncodeToString(b)
 	h := hashKey(raw)
 	prefix := keyPrefix(raw)
 

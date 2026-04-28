@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/auth"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/auth"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 // handleRegisterRelease handles POST /v1/releases.

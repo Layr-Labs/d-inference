@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/darkbloom/coordinator/internal/protocol"
 )
 
 const (

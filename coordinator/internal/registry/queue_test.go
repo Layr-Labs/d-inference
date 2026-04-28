@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/darkbloom/coordinator/internal/protocol"
 )
 
 func TestEnqueueAndSize(t *testing.T) {

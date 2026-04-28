@@ -1,4 +1,4 @@
-module github.com/eigeninference/analytics
+module github.com/darkbloom/analytics
 
 go 1.25.0
 

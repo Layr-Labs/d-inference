@@ -710,7 +710,7 @@ func TestPolicyFromEnv_Defaults(t *testing.T) {
 	if p.TrustedWorkflow != ".github/workflows/release.yml" {
 		t.Errorf("default TrustedWorkflow: got %q", p.TrustedWorkflow)
 	}
-	if len(p.TrustedTriggers) != 1 || p.TrustedTriggers[0] != "push" {
+	if len(p.TrustedTriggers) != 2 || p.TrustedTriggers[0] != "push" || p.TrustedTriggers[1] != "workflow_dispatch" {
 		t.Errorf("default TrustedTriggers: got %v", p.TrustedTriggers)
 	}
 	if p.RequireGitHubHosted != true {

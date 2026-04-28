@@ -20,7 +20,8 @@ type Policy struct {
 	// TrustedActors is the list of GitHub usernames allowed to trigger releases.
 	TrustedActors []string
 
-	// TrustedTriggers is the list of allowed event triggers (e.g. ["push"]).
+	// TrustedTriggers is the list of allowed event triggers (e.g.
+	// ["push", "workflow_dispatch"]).
 	TrustedTriggers []string
 
 	// RequireGitHubHosted requires the build to run on GitHub-hosted runners.
@@ -35,7 +36,7 @@ func PolicyFromEnv() Policy {
 	p := Policy{
 		TrustedRepo:         "Layr-Labs/d-inference",
 		TrustedWorkflow:     ".github/workflows/release.yml",
-		TrustedTriggers:     []string{"push"},
+		TrustedTriggers:     []string{"push", "workflow_dispatch"},
 		RequireGitHubHosted: true,
 	}
 

@@ -61,6 +61,8 @@ export interface ChatMessage {
   content: string;
 }
 
+export type RoutingPreference = "performance" | "cost";
+
 export interface TrustMetadata {
   attested: boolean;
   trustLevel: "none" | "hardware";
@@ -88,6 +90,10 @@ export interface StreamCallbacks {
   onMetrics: (metrics: StreamMetrics) => void;
   onDone: (trustMeta: TrustMetadata, metrics: StreamMetrics) => void;
   onError: (error: string) => void;
+}
+
+export interface StreamChatOptions {
+  routingPreference?: RoutingPreference;
 }
 
 export async function fetchModels(): Promise<Model[]> {
@@ -300,15 +306,26 @@ export async function streamChat(
   messages: ChatMessage[],
   model: string,
   callbacks: StreamCallbacks,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options?: StreamChatOptions
 ): Promise<void> {
   // Optional sender→coordinator encryption. Defaults off so plaintext SDK
   // and curl flows keep working unchanged. When enabled we NaCl-Box-seal the
   // outgoing body to the coordinator's published X25519 pubkey, then decrypt
   // each SSE event on the way back.
-  const requestBody = { model, messages, stream: true };
+  const routingPreference = options?.routingPreference || "performance";
+  const requestBody = {
+    model,
+    messages,
+    stream: true,
+    ...(routingPreference === "cost" ? { routing_preference: "cost" } : {}),
+  };
   let sealCtx: { ephemPriv: Uint8Array; coordPub: Uint8Array } | null = null;
-  let fetchHeaders = proxyHeaders();
+  let fetchHeaders = proxyHeaders(
+    routingPreference === "cost"
+      ? { "X-Darkbloom-Routing-Preference": "cost" }
+      : undefined,
+  );
   let fetchBody: string;
 
   if (isEncryptionEnabled()) {
@@ -316,7 +333,12 @@ export async function streamChat(
       const coordKey = await getCoordinatorKey();
       const sealed = sealRequest(requestBody, coordKey);
       fetchBody = sealed.envelopeJson;
-      fetchHeaders = proxyHeaders({ "Content-Type": SEALED_CONTENT_TYPE });
+      fetchHeaders = proxyHeaders({
+        "Content-Type": SEALED_CONTENT_TYPE,
+        ...(routingPreference === "cost"
+          ? { "X-Darkbloom-Routing-Preference": "cost" }
+          : {}),
+      });
       sealCtx = {
         ephemPriv: sealed.ephemeralPrivateKey,
         coordPub: coordKey.publicKey,

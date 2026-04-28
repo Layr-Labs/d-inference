@@ -877,10 +877,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/billing/stripe/connect/webhook", s.handleStripeConnectWebhook) // no auth — Stripe signs it
 
 	// Pricing — GET is public, PUT/DELETE require auth
-	s.mux.HandleFunc("GET /v1/pricing", s.handleGetPricing)                        // public
-	s.mux.HandleFunc("PUT /v1/pricing", s.requireAuth(s.handleSetPricing))         // provider sets own prices
-	s.mux.HandleFunc("DELETE /v1/pricing", s.requireAuth(s.handleDeletePricing))   // revert to default
-	s.mux.HandleFunc("PUT /v1/admin/pricing", s.requireAuth(s.handleAdminPricing)) // platform sets defaults
+	s.mux.HandleFunc("GET /v1/pricing", s.handleGetPricing)                         // public
+	s.mux.HandleFunc("GET /v1/pricing/me", s.handleMyPricing)                       // provider discount view
+	s.mux.HandleFunc("PUT /v1/pricing/discount", s.handleSetProviderDiscount)       // provider sets discounts
+	s.mux.HandleFunc("DELETE /v1/pricing/discount", s.handleDeleteProviderDiscount) // provider clears discounts
+	s.mux.HandleFunc("PUT /v1/pricing", s.requireAuth(s.handleSetPricing))          // provider sets own prices
+	s.mux.HandleFunc("DELETE /v1/pricing", s.requireAuth(s.handleDeletePricing))    // revert to default
+	s.mux.HandleFunc("PUT /v1/admin/pricing", s.requireAuth(s.handleAdminPricing))  // platform sets defaults
 
 	// Admin model catalog
 	s.mux.HandleFunc("GET /v1/admin/models", s.requireAuth(s.handleAdminListModels))

@@ -14,10 +14,13 @@ package api
 // read-only endpoints and inference.
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +28,8 @@ import (
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/billing"
 	"github.com/eigeninference/coordinator/internal/payments"
+	providerpricing "github.com/eigeninference/coordinator/internal/pricing"
+	"github.com/eigeninference/coordinator/internal/registry"
 	"github.com/eigeninference/coordinator/internal/store"
 	"github.com/google/uuid"
 )
@@ -369,6 +374,254 @@ func (s *Server) handleGetPricing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"prices": prices,
 	})
+}
+
+type providerPricingActor struct {
+	AccountID string
+}
+
+func (s *Server) providerPricingActor(w http.ResponseWriter, r *http.Request) (*providerPricingActor, bool) {
+	token := extractBearerToken(r)
+	if token == "" {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing credentials — use Authorization: Bearer <token>"))
+		return nil, false
+	}
+
+	if pt, err := s.store.GetProviderToken(token); err == nil && pt != nil && pt.Active {
+		return &providerPricingActor{AccountID: pt.AccountID}, true
+	}
+
+	if s.privyAuth != nil && strings.HasPrefix(token, "eyJ") {
+		privyUserID, err := s.privyAuth.VerifyToken(token)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "invalid Privy token"))
+			return nil, false
+		}
+		user, err := s.privyAuth.GetOrCreateUser(privyUserID)
+		if err != nil {
+			s.logger.Error("privy: user resolution failed", "error", err)
+			writeJSON(w, http.StatusInternalServerError, errorResponse("auth_error", "failed to resolve user"))
+			return nil, false
+		}
+		return &providerPricingActor{AccountID: user.AccountID}, true
+	}
+
+	if s.store.ValidateKey(token) {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "provider pricing requires a Privy session or provider device token"))
+		return nil, false
+	}
+
+	writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "invalid credentials"))
+	return nil, false
+}
+
+type providerDiscountResponse struct {
+	AccountID       string  `json:"account_id,omitempty"`
+	ProviderKey     string  `json:"provider_key,omitempty"`
+	Model           string  `json:"model,omitempty"`
+	Scope           string  `json:"scope"`
+	DiscountBPS     int     `json:"discount_bps"`
+	DiscountPercent float64 `json:"discount_percent"`
+}
+
+type providerEffectivePriceResponse struct {
+	Model           string  `json:"model"`
+	BaseInputPrice  int64   `json:"base_input_price"`
+	BaseOutputPrice int64   `json:"base_output_price"`
+	InputPrice      int64   `json:"input_price"`
+	OutputPrice     int64   `json:"output_price"`
+	DiscountBPS     int     `json:"discount_bps"`
+	DiscountPercent float64 `json:"discount_percent"`
+	DiscountScope   string  `json:"discount_scope,omitempty"`
+	InputUSD        string  `json:"input_usd"`
+	OutputUSD       string  `json:"output_usd"`
+}
+
+func providerDiscountToResponse(d store.ProviderDiscount) providerDiscountResponse {
+	return providerDiscountResponse{
+		AccountID:       d.AccountID,
+		ProviderKey:     d.ProviderKey,
+		Model:           d.Model,
+		Scope:           d.Scope(),
+		DiscountBPS:     d.DiscountBPS,
+		DiscountPercent: providerpricing.DiscountPercentFromBPS(d.DiscountBPS),
+	}
+}
+
+func effectivePriceToResponse(ep providerpricing.EffectivePrice) providerEffectivePriceResponse {
+	return providerEffectivePriceResponse{
+		Model:           ep.Model,
+		BaseInputPrice:  ep.BaseInputPrice,
+		BaseOutputPrice: ep.BaseOutputPrice,
+		InputPrice:      ep.InputPrice,
+		OutputPrice:     ep.OutputPrice,
+		DiscountBPS:     ep.DiscountBPS,
+		DiscountPercent: ep.DiscountPercent,
+		DiscountScope:   ep.DiscountScope,
+		InputUSD:        fmt.Sprintf("$%.4f", float64(ep.InputPrice)/1_000_000),
+		OutputUSD:       fmt.Sprintf("$%.4f", float64(ep.OutputPrice)/1_000_000),
+	}
+}
+
+func (s *Server) handleMyPricing(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.providerPricingActor(w, r)
+	if !ok {
+		return
+	}
+
+	discounts := s.store.ListProviderDiscounts(actor.AccountID)
+	sort.Slice(discounts, func(i, j int) bool {
+		if discounts[i].ProviderKey != discounts[j].ProviderKey {
+			return discounts[i].ProviderKey < discounts[j].ProviderKey
+		}
+		return discounts[i].Model < discounts[j].Model
+	})
+	discountResp := make([]providerDiscountResponse, 0, len(discounts))
+	for _, d := range discounts {
+		discountResp = append(discountResp, providerDiscountToResponse(d))
+	}
+
+	priceModels := make(map[string]struct{})
+	for model := range payments.DefaultPrices() {
+		priceModels[model] = struct{}{}
+	}
+	for _, mp := range s.store.ListModelPrices("platform") {
+		priceModels[mp.Model] = struct{}{}
+	}
+	models := make([]string, 0, len(priceModels))
+	for model := range priceModels {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+
+	prices := make([]providerEffectivePriceResponse, 0, len(models))
+	for _, model := range models {
+		prices = append(prices, effectivePriceToResponse(providerpricing.EffectiveModelPrice(s.store, actor.AccountID, "", model)))
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"account_id":           actor.AccountID,
+		"discounts":            discountResp,
+		"prices":               prices,
+		"max_discount_percent": providerpricing.DiscountPercentFromBPS(providerpricing.MaxProviderDiscountBPS),
+	})
+}
+
+func (s *Server) handleSetProviderDiscount(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.providerPricingActor(w, r)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		ProviderKey     string  `json:"provider_key"`
+		Model           string  `json:"model"`
+		DiscountPercent float64 `json:"discount_percent"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		return
+	}
+	req.ProviderKey = strings.TrimSpace(req.ProviderKey)
+	req.Model = strings.TrimSpace(req.Model)
+
+	discountBPS, err := providerpricing.DiscountBPSFromPercent(req.DiscountPercent)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+		return
+	}
+	if req.ProviderKey != "" && !s.providerKeyBelongsToAccount(r.Context(), actor.AccountID, req.ProviderKey) {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "provider_key does not belong to this account"))
+		return
+	}
+
+	if err := s.store.SetProviderDiscount(actor.AccountID, req.ProviderKey, req.Model, discountBPS); err != nil {
+		s.logger.Error("provider discount: set failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to set discount"))
+		return
+	}
+	d, _ := s.store.GetProviderDiscount(actor.AccountID, req.ProviderKey, req.Model)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "updated",
+		"discount": providerDiscountToResponse(d),
+	})
+}
+
+func (s *Server) handleDeleteProviderDiscount(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.providerPricingActor(w, r)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		ProviderKey string `json:"provider_key"`
+		Model       string `json:"model"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+			return
+		}
+	}
+	q := r.URL.Query()
+	if q.Has("provider_key") {
+		req.ProviderKey = q.Get("provider_key")
+	}
+	if q.Has("model") {
+		req.Model = q.Get("model")
+	}
+	req.ProviderKey = strings.TrimSpace(req.ProviderKey)
+	req.Model = strings.TrimSpace(req.Model)
+
+	if req.ProviderKey != "" && !s.providerKeyBelongsToAccount(r.Context(), actor.AccountID, req.ProviderKey) {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "provider_key does not belong to this account"))
+		return
+	}
+
+	if err := s.store.DeleteProviderDiscount(actor.AccountID, req.ProviderKey, req.Model); err != nil {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":       "deleted",
+		"provider_key": req.ProviderKey,
+		"model":        req.Model,
+	})
+}
+
+func (s *Server) providerKeyBelongsToAccount(ctx context.Context, accountID, providerKey string) bool {
+	if strings.TrimSpace(providerKey) == "" {
+		return true
+	}
+	records, err := s.store.ListProvidersByAccount(ctx, accountID)
+	if err == nil {
+		for _, rec := range records {
+			if rec.ID == providerKey || rec.SerialNumber == providerKey || rec.SEPublicKey == providerKey {
+				return true
+			}
+		}
+	}
+	found := false
+	s.registry.ForEachProvider(func(p *registry.Provider) {
+		if found {
+			return
+		}
+		p.Mu().Lock()
+		defer p.Mu().Unlock()
+		if p.AccountID != accountID {
+			return
+		}
+		if p.ID == providerKey || p.PublicKey == providerKey {
+			found = true
+			return
+		}
+		if p.AttestationResult != nil {
+			if p.AttestationResult.SerialNumber == providerKey || p.AttestationResult.PublicKey == providerKey {
+				found = true
+			}
+		}
+	})
+	return found
 }
 
 // handleAdminPricing handles PUT /v1/admin/pricing.

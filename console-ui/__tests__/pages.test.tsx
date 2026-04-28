@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 
+const authMocks = vi.hoisted(() => ({
+  getAccessToken: vi.fn().mockResolvedValue("mock-token"),
+  login: vi.fn(),
+  logout: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Mock modules used by page components. We mock at the module level so the
 // pages can import them without hitting Privy, Zustand persistence, etc.
@@ -29,9 +35,9 @@ vi.mock("@/hooks/useAuth", () => ({
     ready: true,
     authenticated: true,
     user: null,
-    login: vi.fn(),
-    logout: vi.fn(),
-    getAccessToken: vi.fn().mockResolvedValue("mock-token"),
+    login: authMocks.login,
+    logout: authMocks.logout,
+    getAccessToken: authMocks.getAccessToken,
     email: null,
     walletAddress: null,
     displayName: null,
@@ -44,9 +50,9 @@ vi.mock("@/components/providers/PrivyClientProvider", () => ({
     ready: true,
     authenticated: true,
     user: null,
-    login: vi.fn(),
-    logout: vi.fn(),
-    getAccessToken: vi.fn().mockResolvedValue("mock-token"),
+    login: authMocks.login,
+    logout: authMocks.logout,
+    getAccessToken: authMocks.getAccessToken,
   }),
 }));
 
@@ -180,8 +186,8 @@ describe("BillingPage", () => {
     // TopBar is mocked and should show "Billing"
     expect(screen.getByTestId("topbar")).toHaveTextContent("Billing");
 
-    // Research preview banner — purchases disabled, Buy Credits button present
-    expect(screen.getByText("Available Credits")).toBeInTheDocument();
+    // Balance card and Buy Credits button present
+    expect(screen.getByText("Balance")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Buy Credits/i })).toBeInTheDocument();
 
     // Invite code section
@@ -231,6 +237,23 @@ describe("LinkPage", () => {
 });
 
 // =========================================================================
+// API Console page
+// =========================================================================
+
+describe("ApiConsolePage", () => {
+  it("renders routing preference examples", async () => {
+    const ApiConsolePage = (await import("@/app/api-console/page")).default;
+    render(<ApiConsolePage />);
+
+    expect(screen.getByText("Routing Preference")).toBeInTheDocument();
+    expect(screen.getByText("JSON Body")).toBeInTheDocument();
+    expect(screen.getByText("Header")).toBeInTheDocument();
+    expect(screen.getByText("Query Param")).toBeInTheDocument();
+    expect(screen.getAllByText(/routing_preference/).length).toBeGreaterThan(0);
+  });
+});
+
+// =========================================================================
 // Providers page
 // =========================================================================
 
@@ -240,17 +263,15 @@ describe("ProvidersPage", () => {
     render(<ProvidersPage />);
 
     await screen.findByRole("heading", { name: "Provider Dashboard" });
-    expect(screen.getByText(/Earnings, device health/)).toBeInTheDocument();
+    expect(screen.getByText("Your linked provider machines.")).toBeInTheDocument();
   });
 
-  it("shows provider summary stats", async () => {
+  it("shows the rebuild notice", async () => {
     const ProvidersPage = (await import("@/app/providers/page")).default;
     render(<ProvidersPage />);
 
-    await screen.findByText("Devices online");
-    expect(screen.getByText("Needs attention")).toBeInTheDocument();
-    expect(screen.getByText("Available earnings")).toBeInTheDocument();
-    expect(screen.getByText("Lifetime earnings")).toBeInTheDocument();
+    await screen.findByText("We're rebuilding this page");
+    expect(screen.getByText(/Detailed machine stats/)).toBeInTheDocument();
   });
 
   it("shows onboarding actions when no devices are linked", async () => {

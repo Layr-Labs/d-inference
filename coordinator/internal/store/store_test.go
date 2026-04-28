@@ -389,6 +389,50 @@ func TestProviderToken(t *testing.T) {
 	}
 }
 
+func TestProviderDiscountCRUD(t *testing.T) {
+	s := NewMemory("")
+
+	if err := s.SetProviderDiscount(" acct-1 ", " serial-1 ", " model-a ", 1250); err != nil {
+		t.Fatalf("SetProviderDiscount: %v", err)
+	}
+	got, ok := s.GetProviderDiscount("acct-1", "serial-1", "model-a")
+	if !ok {
+		t.Fatal("GetProviderDiscount returned ok=false")
+	}
+	if got.AccountID != "acct-1" || got.ProviderKey != "serial-1" || got.Model != "model-a" || got.DiscountBPS != 1250 {
+		t.Fatalf("discount = %#v", got)
+	}
+	if got.Scope() != "machine_model" {
+		t.Fatalf("Scope() = %q, want machine_model", got.Scope())
+	}
+
+	if err := s.SetProviderDiscount("acct-1", "", "", 500); err != nil {
+		t.Fatalf("SetProviderDiscount global: %v", err)
+	}
+	list := s.ListProviderDiscounts("acct-1")
+	if len(list) != 2 {
+		t.Fatalf("ListProviderDiscounts len = %d, want 2", len(list))
+	}
+	list[0].DiscountBPS = 9000
+	again, ok := s.GetProviderDiscount("acct-1", "serial-1", "model-a")
+	if !ok {
+		t.Fatal("discount disappeared")
+	}
+	if again.DiscountBPS != 1250 {
+		t.Fatalf("ListProviderDiscounts did not return a copy; bps = %d", again.DiscountBPS)
+	}
+
+	if err := s.DeleteProviderDiscount("acct-1", "serial-1", "model-a"); err != nil {
+		t.Fatalf("DeleteProviderDiscount: %v", err)
+	}
+	if _, ok := s.GetProviderDiscount("acct-1", "serial-1", "model-a"); ok {
+		t.Fatal("discount still exists after delete")
+	}
+	if err := s.DeleteProviderDiscount("acct-1", "serial-1", "model-a"); err == nil {
+		t.Fatal("expected error deleting missing discount")
+	}
+}
+
 func TestProviderEarnings_RecordAndGetByAccount(t *testing.T) {
 	s := NewMemory("")
 

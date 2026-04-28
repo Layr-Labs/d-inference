@@ -214,13 +214,37 @@ func parseProviderSerialAllowlist(parsed map[string]any) ([]string, bool, error)
 
 func stripProviderRoutingFields(parsed map[string]any) bool {
 	changed := false
-	for _, key := range []string{"provider_serial", "provider_serials"} {
+	for _, key := range []string{"provider_serial", "provider_serials", "routing_preference"} {
 		if _, ok := parsed[key]; ok {
 			delete(parsed, key)
 			changed = true
 		}
 	}
 	return changed
+}
+
+func parseRoutingPreference(r *http.Request, parsed map[string]any) (string, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("routing_preference"))
+	if raw == "" {
+		raw = strings.TrimSpace(r.Header.Get("X-Darkbloom-Routing-Preference"))
+	}
+	if raw == "" {
+		if v, ok := parsed["routing_preference"]; ok {
+			s, ok := v.(string)
+			if !ok {
+				return "", fmt.Errorf("routing_preference must be a string")
+			}
+			raw = strings.TrimSpace(s)
+		}
+	}
+	switch strings.ToLower(raw) {
+	case "", "performance", "perf":
+		return "performance", nil
+	case "cost":
+		return "cost", nil
+	default:
+		return "", fmt.Errorf("routing_preference must be one of: performance, perf, cost")
+	}
 }
 
 // defaultMaxOutputTokens is the ceiling injected into requests that don't set
@@ -555,7 +579,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 		return
 	}
-	if hasProviderAllowlist && stripProviderRoutingFields(parsed) {
+	routingPreference, err := parseRoutingPreference(r, parsed)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+		return
+	}
+	_, hasRoutingPreferenceBody := parsed["routing_preference"]
+	if (hasProviderAllowlist || hasRoutingPreferenceBody) && stripProviderRoutingFields(parsed) {
 		rawBody, _ = json.Marshal(parsed)
 	}
 
@@ -648,6 +678,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			RequestID:              requestID,
 			Model:                  model,
 			ConsumerKey:            consumerKey,
+			RoutingPreference:      routingPreference,
 			IsResponsesAPI:         isResponsesAPI,
 			EstimatedPromptTokens:  estimatedPromptTokens,
 			RequestedMaxTokens:     requestedMaxTokens,
@@ -2380,7 +2411,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 		return
 	}
-	if hasProviderAllowlist {
+	routingPreference, err := parseRoutingPreference(r, parsed)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+		return
+	}
+	_, hasRoutingPreferenceBody := parsed["routing_preference"]
+	if hasProviderAllowlist || hasRoutingPreferenceBody {
 		stripProviderRoutingFields(parsed)
 	}
 
@@ -2422,6 +2459,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		RequestID:              requestID,
 		Model:                  model,
 		ConsumerKey:            consumerKey,
+		RoutingPreference:      routingPreference,
 		AllowedProviderSerials: allowedProviderSerials,
 		EstimatedPromptTokens:  estimatedPromptTokens,
 		RequestedMaxTokens:     requestedMaxTokens,

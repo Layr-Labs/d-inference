@@ -47,7 +47,8 @@ const ENDPOINTS = [
     {"role": "user", "content": "Hello!"}
   ],
   "stream": true,
-  "max_tokens": 1024
+  "max_tokens": 1024,
+  "routing_preference": "performance"
 }`,
     response: `{
   "id": "chatcmpl-...",
@@ -59,7 +60,7 @@ const ENDPOINTS = [
     "finish_reason": null
   }]
 }`,
-    notes: "Supports streaming (SSE) and non-streaming responses. All prompts are end-to-end encrypted. Response headers include provider attestation metadata (x-provider-attested, x-provider-trust-level, x-provider-chip).",
+    notes: "Supports streaming (SSE) and non-streaming responses. routing_preference defaults to performance; set cost to route to the lowest estimated provider price. Response headers include provider attestation metadata (x-provider-attested, x-provider-trust-level, x-provider-chip).",
   },
   {
     method: "POST",
@@ -450,6 +451,44 @@ console.log(text);`,
     },
   ];
 
+  const routingExample = [
+    {
+      label: "JSON Body",
+      language: "bash",
+      code: `curl -X POST ${u}/v1/chat/completions \\
+  -H "Authorization: Bearer ${k}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "mlx-community/gemma-4-26b-a4b-it-8bit",
+    "messages": [{"role": "user", "content": "Summarize this"}],
+    "routing_preference": "cost"
+  }'`,
+    },
+    {
+      label: "Header",
+      language: "bash",
+      code: `curl -X POST ${u}/v1/chat/completions \\
+  -H "Authorization: Bearer ${k}" \\
+  -H "Content-Type: application/json" \\
+  -H "X-Darkbloom-Routing-Preference: cost" \\
+  -d '{
+    "model": "mlx-community/gemma-4-26b-a4b-it-8bit",
+    "messages": [{"role": "user", "content": "Summarize this"}]
+  }'`,
+    },
+    {
+      label: "Query Param",
+      language: "bash",
+      code: `curl -X POST "${u}/v1/chat/completions?routing_preference=cost" \\
+  -H "Authorization: Bearer ${k}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "mlx-community/gemma-4-26b-a4b-it-8bit",
+    "messages": [{"role": "user", "content": "Summarize this"}]
+  }'`,
+    },
+  ];
+
   const modelsExample = [
     {
       label: "Python",
@@ -502,7 +541,7 @@ for model in models.data:
               <h3 className="text-sm font-semibold text-text-primary mb-2">Base URL</h3>
               <p className="text-sm font-mono text-accent-brand">{coordinatorUrl}/v1</p>
               <p className="text-xs text-text-tertiary mt-2">
-                All endpoints are relative to this base URL. Provider attestation and pricing endpoints are publicly accessible without authentication.
+                All endpoints are relative to this base URL. Provider attestation and base pricing endpoints are publicly accessible without authentication.
               </p>
             </div>
           </section>
@@ -599,6 +638,14 @@ for model in models.data:
               Stream chat completions with any supported model. Supports system messages, multi-turn conversations, and thinking/reasoning output.
             </p>
             <CodeExample examples={chatExample} />
+          </section>
+
+          <section>
+            <h2 className="text-lg font-semibold text-text-primary mb-2">Routing Preference</h2>
+            <p className="text-sm text-text-secondary mb-4">
+              Use <code className="text-accent-brand">performance</code> or <code className="text-accent-brand">perf</code> for the default scheduler, or <code className="text-accent-brand">cost</code> for lowest estimated provider price.
+            </p>
+            <CodeExample examples={routingExample} />
           </section>
 
           {/* List Models */}

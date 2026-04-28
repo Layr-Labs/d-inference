@@ -149,6 +149,19 @@ type Store interface {
 	// DeleteModelPrice removes a custom price override.
 	DeleteModelPrice(accountID, model string) error
 
+	// SetProviderDiscount sets a provider discount override. Empty providerKey
+	// means account-wide; empty model means all models.
+	SetProviderDiscount(accountID, providerKey, model string, discountBPS int) error
+
+	// GetProviderDiscount returns one exact provider discount override.
+	GetProviderDiscount(accountID, providerKey, model string) (ProviderDiscount, bool)
+
+	// ListProviderDiscounts returns all discount overrides for an account.
+	ListProviderDiscounts(accountID string) []ProviderDiscount
+
+	// DeleteProviderDiscount removes one exact provider discount override.
+	DeleteProviderDiscount(accountID, providerKey, model string) error
+
 	// --- Supported Models (admin-managed catalog) ---
 
 	// SetSupportedModel adds or updates a supported model in the catalog.
@@ -490,6 +503,28 @@ type ModelPrice struct {
 	Model       string `json:"model"`
 	InputPrice  int64  `json:"input_price"`  // micro-USD per 1M tokens
 	OutputPrice int64  `json:"output_price"` // micro-USD per 1M tokens
+}
+
+// ProviderDiscount represents a provider-side percentage discount. ProviderKey
+// and Model are optional selectors; empty values mean account-wide/all-models.
+type ProviderDiscount struct {
+	AccountID   string `json:"account_id"`
+	ProviderKey string `json:"provider_key,omitempty"`
+	Model       string `json:"model,omitempty"`
+	DiscountBPS int    `json:"discount_bps"`
+}
+
+func (d ProviderDiscount) Scope() string {
+	switch {
+	case d.ProviderKey != "" && d.Model != "":
+		return "machine_model"
+	case d.ProviderKey != "":
+		return "machine_global"
+	case d.Model != "":
+		return "account_model"
+	default:
+		return "account_global"
+	}
 }
 
 // User represents a consumer account linked to a Privy identity.

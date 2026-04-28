@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, Square, ChevronDown, LogIn } from "lucide-react";
+import { Send, Square, ChevronDown, LogIn, Zap, DollarSign } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { trackEvent } from "@/lib/google-analytics";
+import type { RoutingPreference } from "@/lib/api";
 
 interface ChatInputProps {
   onSend: (content: string) => void;
@@ -11,9 +12,19 @@ interface ChatInputProps {
   isStreaming: boolean;
   authenticated?: boolean;
   onLogin?: () => void;
+  routingPreference?: RoutingPreference;
+  onRoutingPreferenceChange?: (preference: RoutingPreference) => void;
 }
 
-export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, onLogin }: ChatInputProps) {
+export function ChatInput({
+  onSend,
+  onStop,
+  isStreaming,
+  authenticated = true,
+  onLogin,
+  routingPreference = "performance",
+  onRoutingPreferenceChange,
+}: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { selectedModel, models, setSelectedModel } = useStore();
@@ -100,7 +111,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
           {/* Bottom bar */}
           <div className="flex items-center justify-between px-3 pb-3">
             {/* Left: model selector */}
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 flex-wrap">
               <div className="relative">
                 <button
                   onClick={(e) => {
@@ -148,6 +159,30 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                     })}
                   </div>
                 )}
+              </div>
+              <div className="flex items-center rounded-lg border border-border-dim bg-bg-tertiary p-0.5">
+                {([
+                  { value: "performance" as const, label: "Performance", icon: Zap },
+                  { value: "cost" as const, label: "Lowest cost", icon: DollarSign },
+                ]).map(({ value, label, icon: Icon }) => {
+                  const active = routingPreference === value;
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => onRoutingPreferenceChange?.(value)}
+                      title={label}
+                      className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                        active
+                          ? "bg-bg-white text-text-primary shadow-sm"
+                          : "text-text-tertiary hover:text-text-secondary"
+                      }`}
+                    >
+                      <Icon size={11} />
+                      <span className="hidden sm:inline">{label}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 

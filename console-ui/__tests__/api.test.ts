@@ -7,6 +7,7 @@ import {
   fetchModels,
   fetchPricing,
   healthCheck,
+  streamChat,
 } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
@@ -57,6 +58,7 @@ afterEach(() => {
 
 describe("fetchBalance", () => {
   it("calls /api/payments/balance with correct headers", async () => {
+    localStorage.setItem("darkbloom_api_key", "test-key");
     const payload = { balance_micro_usd: 5_000_000, balance_usd: 5.0 };
     fetchMock.mockResolvedValueOnce(jsonResponse(payload));
 
@@ -73,6 +75,74 @@ describe("fetchBalance", () => {
   it("throws on non-ok response", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({}, 500));
     await expect(fetchBalance()).rejects.toThrow("Failed to fetch balance: 500");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// streamChat routing preference
+// ---------------------------------------------------------------------------
+
+function sseDoneResponse(): Response {
+  const bytes = new TextEncoder().encode("data: [DONE]\n\n");
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    }),
+    {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }
+  );
+}
+
+function streamCallbacks() {
+  return {
+    onToken: vi.fn(),
+    onThinking: vi.fn(),
+    onMetrics: vi.fn(),
+    onDone: vi.fn(),
+    onError: vi.fn(),
+  };
+}
+
+describe("streamChat routing preference", () => {
+  it("sends lowest-cost preference in body and header", async () => {
+    fetchMock.mockResolvedValueOnce(sseDoneResponse());
+    const callbacks = streamCallbacks();
+
+    await streamChat(
+      [{ role: "user", content: "hi" }],
+      "model-a",
+      callbacks,
+      undefined,
+      { routingPreference: "cost" }
+    );
+
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/chat");
+    expect(opts.headers["X-Darkbloom-Routing-Preference"]).toBe("cost");
+    expect(JSON.parse(opts.body)).toMatchObject({
+      model: "model-a",
+      routing_preference: "cost",
+    });
+    expect(callbacks.onDone).toHaveBeenCalledOnce();
+  });
+
+  it("keeps performance default wire-compatible", async () => {
+    fetchMock.mockResolvedValueOnce(sseDoneResponse());
+
+    await streamChat(
+      [{ role: "user", content: "hi" }],
+      "model-a",
+      streamCallbacks()
+    );
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(opts.headers["X-Darkbloom-Routing-Preference"]).toBeUndefined();
+    expect(JSON.parse(opts.body).routing_preference).toBeUndefined();
   });
 });
 

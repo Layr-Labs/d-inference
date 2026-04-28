@@ -3,6 +3,7 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { useStore } from "@/lib/store";
 import { streamChat, fetchModels } from "@/lib/api";
+import type { RoutingPreference } from "@/lib/api";
 import { useToastStore } from "@/hooks/useToast";
 import { useAuth } from "@/hooks/useAuth";
 import { ChatMessage } from "@/components/ChatMessage";
@@ -38,6 +39,13 @@ const SUGGESTED_PROMPTS = [
   { label: "Explain zero-knowledge proofs", prompt: "What are zero-knowledge proofs and how are they used in blockchain?" },
 ];
 
+const ROUTING_PREF_STORAGE = "darkbloom_routing_preference";
+
+function readRoutingPreference(): RoutingPreference {
+  if (typeof window === "undefined") return "performance";
+  return localStorage.getItem(ROUTING_PREF_STORAGE) === "cost" ? "cost" : "performance";
+}
+
 export default function ChatPage() {
   const {
     chats,
@@ -57,6 +65,7 @@ export default function ChatPage() {
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [routingPreference, setRoutingPreference] = useState<RoutingPreference>("performance");
 
   const activeChat = chats.find((c) => c.id === activeChatId);
 
@@ -74,6 +83,20 @@ export default function ChatPage() {
     }
     bootstrap();
   }, [setModels, authenticated, apiKeyReady]);
+
+  useEffect(() => {
+    setRoutingPreference(readRoutingPreference());
+  }, []);
+
+  const updateRoutingPreference = useCallback((preference: RoutingPreference) => {
+    setRoutingPreference(preference);
+    if (typeof window !== "undefined") {
+      localStorage.setItem(ROUTING_PREF_STORAGE, preference);
+    }
+    trackEvent("chat_routing_preference_changed", {
+      routing_preference: preference,
+    });
+  }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -198,7 +221,8 @@ export default function ChatPage() {
               setIsStreaming(false);
             },
           },
-          abort.signal
+          abort.signal,
+          { routingPreference }
         );
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
@@ -226,6 +250,7 @@ export default function ChatPage() {
       appendToThinking,
       updateChatTitle,
       selectedModel,
+      routingPreference,
       addToast,
     ]
   );
@@ -306,7 +331,8 @@ export default function ChatPage() {
             setIsStreaming(false);
           },
         },
-        abort.signal
+        abort.signal,
+        { routingPreference }
       ).catch((err) => {
         if ((err as Error).name !== "AbortError") {
           trackEvent("chat_error", {
@@ -321,7 +347,7 @@ export default function ChatPage() {
         setIsStreaming(false);
       });
     },
-    [activeChat, isStreaming, authenticated, apiKeyReady, selectedModel, updateMessage, appendToMessage, appendToThinking, addToast]
+    [activeChat, isStreaming, authenticated, apiKeyReady, selectedModel, routingPreference, updateMessage, appendToMessage, appendToThinking, addToast]
   );
 
   return (
@@ -438,6 +464,8 @@ export default function ChatPage() {
         isStreaming={isStreaming}
         authenticated={authenticated}
         onLogin={login}
+        routingPreference={routingPreference}
+        onRoutingPreferenceChange={updateRoutingPreference}
       />
     </div>
   );

@@ -59,6 +59,10 @@ type PendingRequest struct {
 	ProviderID  string
 	Model       string
 	ConsumerKey string
+	// RoutingPreference controls candidate selection. Empty and "performance"
+	// use the latency/performance cost model; "cost" prefers lower effective
+	// provider price, then breaks ties by latency/performance cost.
+	RoutingPreference string
 	// IsResponsesAPI tracks requests received through /v1/responses so the
 	// coordinator can translate provider chat-completions output back into
 	// Responses API objects for SDK clients.

@@ -181,7 +181,7 @@ describe("BillingPage", () => {
     expect(screen.getByTestId("topbar")).toHaveTextContent("Billing");
 
     // Research preview banner — purchases disabled, Buy Credits button present
-    expect(screen.getByText("Available Credits")).toBeInTheDocument();
+    expect(screen.getByText("Balance")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Buy Credits/i })).toBeInTheDocument();
 
     // Invite code section
@@ -208,7 +208,7 @@ describe("BillingPage", () => {
 
 describe("LinkPage", () => {
   it("renders without crashing and shows heading", async () => {
-    const LinkPage = (await import("@/app/link/page")).default;
+    const LinkPage = (await import("@/app/[locale]/link/page")).default;
     render(<LinkPage />);
 
     expect(screen.getByText("Link Your Device")).toBeInTheDocument();
@@ -218,7 +218,7 @@ describe("LinkPage", () => {
   });
 
   it("shows the device code input form when authenticated", async () => {
-    const LinkPage = (await import("@/app/link/page")).default;
+    const LinkPage = (await import("@/app/[locale]/link/page")).default;
     render(<LinkPage />);
 
     // The DeviceLinkForm renders code input when authenticated
@@ -236,25 +236,23 @@ describe("LinkPage", () => {
 
 describe("ProvidersPage", () => {
   it("renders without crashing and shows dashboard heading", async () => {
-    const ProvidersPage = (await import("@/app/providers/page")).default;
+    const ProvidersPage = (await import("@/app/[locale]/providers/page")).default;
     render(<ProvidersPage />);
 
     await screen.findByRole("heading", { name: "Provider Dashboard" });
-    expect(screen.getByText(/Earnings, device health/)).toBeInTheDocument();
+    expect(screen.getByText("Your linked provider machines.")).toBeInTheDocument();
   });
 
-  it("shows provider summary stats", async () => {
-    const ProvidersPage = (await import("@/app/providers/page")).default;
+  it("shows the rebuild banner and earnings link", async () => {
+    const ProvidersPage = (await import("@/app/[locale]/providers/page")).default;
     render(<ProvidersPage />);
 
-    await screen.findByText("Devices online");
-    expect(screen.getByText("Needs attention")).toBeInTheDocument();
-    expect(screen.getByText("Available earnings")).toBeInTheDocument();
-    expect(screen.getByText("Lifetime earnings")).toBeInTheDocument();
+    await screen.findByText("We're rebuilding this page");
+    expect(screen.getByText("Earnings page")).toBeInTheDocument();
   });
 
   it("shows onboarding actions when no devices are linked", async () => {
-    const ProvidersPage = (await import("@/app/providers/page")).default;
+    const ProvidersPage = (await import("@/app/[locale]/providers/page")).default;
     render(<ProvidersPage />);
 
     await screen.findByText("No provider devices linked yet");

@@ -1,0 +1,298 @@
+{
+  "Metadata": {
+    "title": "Darkbloom — Doğrulanmış Maclerde Özel AI",
+    "description": "Donanım doğrulamalı Apple Silicon sağlayıcıları üzerinden özel AI çıkarımı. İstemleriniz şifreli kalır, verileriniz size ait kalır."
+  },
+  "Shell": {
+    "loading": "Yükleniyor..."
+  },
+  "TopBar": {
+    "openSidebar": "Kenar çubuğunu aç"
+  },
+  "Sidebar": {
+    "tagline": "Bir Eigen Labs projesi · Araştırma Önizlemesi",
+    "newChat": "Yeni sohbet",
+    "disclaimer": "Deneysel araştırma önizlemesi. Değerlendirme için olduğu gibi sağlanır. Üretim kullanımı için değildir.",
+    "switchDark": "Koyu moda geç",
+    "switchLight": "Açık moda geç",
+    "signOut": "Çıkış yap",
+    "nav": {
+      "chat": "Sohbet",
+      "stats": "İstatistikler",
+      "providers": "Sağlayıcı Panosu",
+      "earn": "Kazan",
+      "api": "API",
+      "models": "Modeller",
+      "billing": "Faturalandırma",
+      "settings": "Ayarlar"
+    },
+    "language": "Dil",
+    "changeLanguage": "Dili değiştir"
+  },
+  "AnalyticsConsent": {
+    "body": "Darkbloom ürün deneyimini iyileştirmeye yardımcı olmak için gizlilik filtreli kullanım analizlerine izin verin.",
+    "allow": "Analitiğe izin ver",
+    "decline": "Reddet",
+    "storedIn": "<code>{key}</code> içinde saklanır"
+  },
+  "ChatPage": {
+    "loading": "Yükleniyor...",
+    "signIn": "Giriş Yap",
+    "trustLine": "Uçtan uca şifreli · Apple Silicon · Merkeziyetsiz",
+    "guest": {
+      "title": "Doğrulanmış donanımda özel çıkarım.",
+      "subtitle": "İstemleriniz şifreli kalır, verileriniz size ait kalır.",
+      "signInHint": "Başlamak için e-postanızla giriş yapın"
+    },
+    "empty": {
+      "subtitle": "Doğrulanmış donanımda özel çıkarım"
+    },
+    "suggestions": {
+      "quantum": {
+        "label": "Kuantum bilişimi açıkla",
+        "prompt": "Kuantum bilişimi basit terimlerle açıkla"
+      },
+      "python": {
+        "label": "Bir Python betiği yaz",
+        "prompt": "Bir CSV okuyan ve özet rapor oluşturan bir Python betiği yaz"
+      },
+      "frameworks": {
+        "label": "ML frameworklerini karşılaştır",
+        "prompt": "Araştırma kullanım durumları için PyTorch ve JAX karşılaştırması yap"
+      },
+      "zk": {
+        "label": "Zero-knowledge proofları açıkla",
+        "prompt": "Zero-knowledge prooflar nedir ve blockchain içinde nasıl kullanılır?"
+      }
+    },
+    "errors": {
+      "stream": "Hata: {error}",
+      "connection": "Bağlantı hatası: {error}"
+    }
+  },
+  "ChatInput": {
+    "selectModel": "Model seç",
+    "signInToChat": "Sohbete başlamak için giriş yapın",
+    "placeholder": "Bir mesaj gönder...",
+    "modelSelector": "Model seç",
+    "send": "Mesaj gönder",
+    "stop": "Üretimi durdur"
+  },
+  "ChatMessage": {
+    "code": "kod",
+    "copy": "Kopyala",
+    "copied": "Kopyalandı",
+    "thinking": "Düşünüyor",
+    "thinkingStreaming": "Düşünüyor...",
+    "chars": "({count} karakter)",
+    "tokens": "tokenlar",
+    "live": "canlı",
+    "retry": "Yeniden dene",
+    "regenerate": "Yeniden üret"
+  },
+  "SettingsPage": {
+    "title": "Ayarlar",
+    "save": "Ayarları Kaydet",
+    "saved": "Kaydedildi",
+    "savedToast": "Ayarlar kaydedildi",
+    "coordinator": {
+      "title": "Coordinator URL",
+      "description": "Çıkarım isteklerinizi doğrulanmış sağlayıcılara yönlendiren Darkbloom coordinator için temel URL.",
+      "test": "Bağlantıyı Test Et",
+      "connected": "Bağlandı — {count, plural, one {# sağlayıcı} other {# sağlayıcı}} çevrimiçi"
+    },
+    "language": {
+      "title": "Dil",
+      "description": "Darkbloom, kayıtlı tercihinizden, tarayıcı dilinizden ve yaklaşık ülke sinyalinden otomatik olarak bir dil seçer. Buradan geçersiz kılabilirsiniz.",
+      "detected": "Geçerli dil: {locale}"
+    },
+    "encryption": {
+      "title": "İstekleri coordinator için şifrele",
+      "description": "Etkinleştirildiğinde, istemleriniz bu tarayıcıdan ayrılmadan önce coordinator uzun ömürlü X25519 public key (NaCl Box) için mühürlenir. Coordinator, TEE içinde şifreyi çözer, bir sağlayıcı seçer ve sağlayıcının Secure Enclave anahtarına yeniden mühürler. Coordinator önündeki her şey (CDN, proxyler, ağ gözlemcileri) TLS tünelinin ötesinde yalnızca şifreli metin görür. İsteğe bağlıdır ve varsayılan olarak kapalıdır — düz metin API istemcileri çalışmaya devam eder.",
+      "checkbox": "Her isteği coordinator public key için mühürle",
+      "fetching": "coordinator anahtarı alınıyor...",
+      "unavailable": "Bu coordinator sender encryption yapılandırmamış.",
+      "keyInfo": "coordinator anahtarı kid={kid}",
+      "enabledToast": "Coordinator için şifreleme etkinleştirildi",
+      "disabledToast": "Coordinator için şifreleme devre dışı bırakıldı"
+    },
+    "analytics": {
+      "title": "Analitik",
+      "description": "Darkbloom ürün kullanımını ölçmek için gizlilik filtreli Google Analytics yükleyebilsin mi kontrol edin. Kampanya ölçümünü korumak için kullanılan küçük ilişkilendirme izin listesi dışında, sorgu parametreleri analitik olayları gönderilmeden önce temizlenir.",
+      "allow": "Analitiğe izin ver",
+      "decline": "Analitiği reddet",
+      "current": "Geçerli seçim:",
+      "enabledToast": "Analitik etkinleştirildi",
+      "disabledToast": "Analitik devre dışı bırakıldı"
+    },
+    "about": {
+      "title": "Darkbloom Hakkında",
+      "p1": "Darkbloom merkeziyetsiz bir özel çıkarım ağıdır. İstekleriniz Secure Enclave doğrulaması, SIP enforcement ve Hardened Runtime koruması olan donanım doğrulamalı Apple Silicon sağlayıcılarına yönlendirilir.",
+      "p2": "Sağlayıcı güveni, coordinator ile MDM (Mobile Device Management) çapraz denetimi üzerinden bağımsız olarak doğrulanır."
+    }
+  },
+  "ModelsPage": {
+    "title": "Modeller",
+    "heading": "Kullanılabilir Modeller",
+    "description": "Darkbloom ağında donanım doğrulamalı sağlayıcılar tarafından sunulan modeller.",
+    "loading": "Modeller yükleniyor...",
+    "empty": "Kullanılabilir model yok. Ayarlar içinde coordinator bağlantınızı kontrol edin.",
+    "hardware": "Donanım",
+    "none": "Yok",
+    "perMillionTokens": "1M token başına",
+    "cheaper": "%{percent} daha ucuz",
+    "vs": "{competitor} ile karşılaştırma",
+    "providers": "{count, plural, one {# sağlayıcı} other {# sağlayıcı}}",
+    "attested": "Doğrulanmış"
+  },
+  "StatsPage": {
+    "title": "Ağ İstatistikleri",
+    "heading": "Ağ İstatistikleri",
+    "description": "Darkbloom merkeziyetsiz çıkarım ağından canlı metrikler",
+    "failedFetch": "İstatistikler alınamadı",
+    "failedLoad": "Platform istatistikleri yüklenemedi",
+    "retry": "Yeniden dene",
+    "live": "Canlı",
+    "hardware": "Donanım",
+    "none": "Yok",
+    "lastMinutes": "Son {count} dk",
+    "activityPlaceholder": "Etkinlik burada görünecek",
+    "tokensPerMinute": "Token / Dakika",
+    "input": "Girdi",
+    "output": "Çıktı",
+    "tokenPlaceholder": "Token akışı burada görünecek",
+    "tokenTooltip": "{input} giriş / {output} çıkış",
+    "memory": "Bellek",
+    "gpu": "GPU",
+    "cpu": "CPU",
+    "bandwidth": "Bant genişliği",
+    "requests": "İstekler",
+    "tokens": "Tokenlar",
+    "serving": "Sunulan:",
+    "tokensServed": "Sunulan Tokenlar",
+    "tokensInOut": "{input} giriş / {output} çıkış",
+    "nodesOnline": "Çevrimiçi Düğümler",
+    "allHardwareAttested": "tümü donanım doğrulamalı",
+    "hardwareAttestedCount": "{count} donanım doğrulamalı",
+    "gbBandwidth": "GB/s Bant Genişliği",
+    "combinedThroughput": "birleşik bellek verimi",
+    "gpuCores": "GPU Çekirdekleri",
+    "cpuCores": "CPU Çekirdekleri",
+    "pECores": "P + E çekirdekleri",
+    "unifiedRam": "Unified RAM",
+    "avgTokReq": "Ort. Tok/Req",
+    "models": "Modeller",
+    "requestsPerMinute": "İstek / Dakika",
+    "tokenDistribution": "Token Dağılımı",
+    "inputPercent": "{value} giriş ({percent}%)",
+    "outputPercent": "{value} çıkış ({percent}%)",
+    "activeModels": "Aktif Modeller",
+    "nodes": "{count, plural, one {node} other {nodes}}",
+    "networkNodes": "Ağ Düğümleri",
+    "autoRefresh": "Her 10 saniyede otomatik yenilenir"
+  },
+  "ApiConsolePage": {
+    "title": "API Konsolu",
+    "auth": "Auth",
+    "request": "İstek",
+    "response": "Yanıt",
+    "requiresAuth": "<code>Authorization: Bearer &lt;api_key&gt;</code> header gerektirir",
+    "noApiKey": "API anahtarı oluşturulmadı",
+    "noKey": "Anahtar oluşturulmadı",
+    "intro": "<strong>Darkbloom API</strong> — OpenAI-compatible. Base URL değerini değiştirin, mevcut kodunuzu koruyun. Her istek uçtan uca şifrelenir ve donanım doğrulamalı Apple Silicon üzerinde işlenir.",
+    "endpointReference": "Endpoint Referansı",
+    "endpointDescription": "İstek/yanıt biçimini ve notları görmek için her endpointi genişletin.",
+    "baseUrl": "Base URL",
+    "baseUrlDescription": "Tüm endpointler bu base URL değerine göredir. Sağlayıcı doğrulama ve fiyatlandırma endpointleri kimlik doğrulama olmadan herkese açıktır.",
+    "apiKey": "API Anahtarı",
+    "hideKey": "Anahtarı gizle",
+    "showKey": "Anahtarı göster",
+    "copyKey": "Anahtarı kopyala",
+    "regenerate": "Yeniden oluştur",
+    "generate": "Oluştur",
+    "keyHelp": "Bu anahtarı tüm kimliği doğrulanmış istekler için <code>Authorization: Bearer</code> header içinde kullanın.",
+    "quickStart": "Hızlı Başlangıç",
+    "quickStartDescription": "OpenAI SDK veya Vercel AI SDK yükleyin. Darkbloom API tamamen OpenAI-compatible — yalnızca base URL değerini değiştirin.",
+    "availableModels": "Kullanılabilir Modeller",
+    "modelId": "Model ID",
+    "type": "Tür",
+    "architecture": "Mimari",
+    "modelsHelp": "Model kullanılabilirliği çevrimiçi sağlayıcılara bağlıdır. Gerçek zamanlı kullanılabilirlik için <code>/v1/models</code> kontrol edin.",
+    "chatCompletions": "Chat Completions",
+    "chatDescription": "Desteklenen herhangi bir modelle chat completions akışı yapın. System messages, çok turlu konuşmalar ve thinking/reasoning çıktısını destekler.",
+    "listModels": "Modelleri Listele",
+    "listModelsDescription": "Kullanılabilir modelleri, sağlayıcı sayılarını ve doğrulama durumunu kontrol edin."
+  },
+  "LinkPage": {
+    "title": "Cihazınızı Bağlayın",
+    "description": "Hesaplama sağlayarak kazanç almak için Macinizi Darkbloom hesabınıza bağlayın."
+  },
+  "DeviceLinkForm": {
+    "loading": "Yükleniyor...",
+    "missingToken": "Auth token alınamadı. Lütfen tekrar giriş yapın.",
+    "failed": "Cihaz bağlanamadı",
+    "networkError": "Ağ hatası. Lütfen bağlantınızı kontrol edin.",
+    "successTitle": "Cihaz Bağlandı!",
+    "successBody": "Sağlayıcınız artık hesabınıza bağlı. Kazançlar otomatik olarak kredilendirilecek.",
+    "successClose": "Bu sayfayı kapatabilirsiniz.",
+    "signInPrompt": "Cihazınızı bağlamak için Darkbloom hesabınıza giriş yapın.",
+    "signIn": "Giriş Yap",
+    "signedInAs": "Giriş yapılan hesap",
+    "yourAccount": "hesabınız",
+    "codeLabel": "Terminalinizde gösterilen kodu girin",
+    "linking": "Bağlanıyor...",
+    "linkDevice": "Cihazı Bağla",
+    "run": "Çalıştır",
+    "runSuffix": "kod almak için Macinizde."
+  },
+  "ProvidersLayout": {
+    "title": "Sağlayıcı Panosu",
+    "dashboard": "Pano",
+    "setup": "Kurulum",
+    "earnings": "Kazançlar"
+  },
+  "BillingPage": {
+    "title": "Faturalandırma",
+    "balance": "Bakiye",
+    "loading": "Yükleniyor...",
+    "credits": "{amount} kredi",
+    "earnings": "{amount} kazanç",
+    "buyCredits": "Kredi Satın Al",
+    "inviteCode": "Davet Kodu",
+    "redeem": "Kullan",
+    "inviteCredited": "Hesabınıza {amount} kredilendirildi",
+    "totalSpent": "Toplam Harcama",
+    "totalTokens": "Toplam Token",
+    "requests": "İstekler",
+    "usageHistory": "Kullanım Geçmişi",
+    "noUsage": "Henüz kullanım geçmişi yok. İstekleri burada görmek için bir sohbet başlatın.",
+    "time": "Zaman",
+    "model": "Model",
+    "tokens": "Tokenlar",
+    "cost": "Maliyet",
+    "creditsDescription": "Krediler çıkarım istekleri için ödeme yapmakta kullanılır.",
+    "amountUsd": "Tutar (USD)",
+    "maxDeposit": "Maksimum yatırma tutarı $20",
+    "redirecting": "Yönlendiriliyor...",
+    "continue": "Devam",
+    "stripePowered": "Stripe tarafından desteklenir. Güvenli kart ödemesi."
+  },
+  "EarnPage": {
+    "title": "Kazanç Hesaplayıcı",
+    "heading": "Sağlayıcı Kazanç Hesaplayıcı",
+    "loading": "Yükleniyor...",
+    "signIn": "Giriş Yap",
+    "estimatedEarnings": "Tahmini Kazançlar"
+  },
+  "Common": {
+    "auth": "Auth",
+    "request": "İstek",
+    "response": "Yanıt",
+    "notes": "Notlar",
+    "copied": "Kopyalandı",
+    "copy": "Kopyala",
+    "loading": "Yükleniyor...",
+    "refresh": "Yenile",
+    "error": "Hata"
+  }
+}

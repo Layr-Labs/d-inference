@@ -21,7 +21,7 @@ vi.mock("@/lib/google-analytics", () => ({
 
 describe("EarnPage", () => {
   it("keeps rendering when selected hardware has no eligible models", async () => {
-    const EarnPage = (await import("@/app/earn/page")).default;
+    const EarnPage = (await import("@/app/[locale]/earn/page")).default;
     render(<EarnPage />);
 
     fireEvent.click(screen.getByRole("button", { name: "MacBook Air" }));

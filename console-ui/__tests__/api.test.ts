@@ -57,6 +57,7 @@ afterEach(() => {
 
 describe("fetchBalance", () => {
   it("calls /api/payments/balance with correct headers", async () => {
+    localStorage.setItem("darkbloom_api_key", "test-key-123");
     const payload = { balance_micro_usd: 5_000_000, balance_usd: 5.0 };
     fetchMock.mockResolvedValueOnce(jsonResponse(payload));
 

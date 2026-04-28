@@ -10,6 +10,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "i18n:seed": "node scripts/seed-translations.mjs",
+    "i18n:check": "node scripts/check-translations.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -20,6 +22,7 @@
     "asn1js": "^3.0.7",
     "lucide-react": "^1.0.1",
     "next": "^16.2.2",
+    "next-intl": "^4.9.2",
     "pkijs": "^3.4.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

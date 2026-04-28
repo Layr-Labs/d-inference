@@ -1,0 +1,298 @@
+{
+  "Metadata": {
+    "title": "Darkbloom — AI ส่วนตัวบน Macs ที่ยืนยันแล้ว",
+    "description": "AI inference ส่วนตัวผ่านผู้ให้บริการ Apple Silicon ที่ hardware-attested. Prompts ของคุณยังคงเข้ารหัส และ data ของคุณยังเป็นของคุณ"
+  },
+  "Shell": {
+    "loading": "กำลังโหลด..."
+  },
+  "TopBar": {
+    "openSidebar": "เปิด sidebar"
+  },
+  "Sidebar": {
+    "tagline": "โครงการของ Eigen Labs · Research Preview",
+    "newChat": "Chat ใหม่",
+    "disclaimer": "Research preview เชิงทดลอง. ให้ใช้งานตามสภาพเพื่อการประเมิน. ไม่ใช่สำหรับ production.",
+    "switchDark": "สลับเป็นโหมดมืด",
+    "switchLight": "สลับเป็นโหมดสว่าง",
+    "signOut": "ออกจากระบบ",
+    "nav": {
+      "chat": "Chat",
+      "stats": "สถิติ",
+      "providers": "Provider Dashboard",
+      "earn": "รับรายได้",
+      "api": "API",
+      "models": "Models",
+      "billing": "Billing",
+      "settings": "การตั้งค่า"
+    },
+    "language": "ภาษา",
+    "changeLanguage": "เปลี่ยนภาษา"
+  },
+  "AnalyticsConsent": {
+    "body": "อนุญาตให้ใช้ usage analytics ที่กรองเพื่อความเป็นส่วนตัว เพื่อช่วยปรับปรุงประสบการณ์ผลิตภัณฑ์ของ Darkbloom.",
+    "allow": "อนุญาต analytics",
+    "decline": "ปฏิเสธ",
+    "storedIn": "เก็บไว้ใน <code>{key}</code>"
+  },
+  "ChatPage": {
+    "loading": "กำลังโหลด...",
+    "signIn": "เข้าสู่ระบบ",
+    "trustLine": "End-to-end encrypted · Apple Silicon · Decentralized",
+    "guest": {
+      "title": "Inference ส่วนตัวบน hardware ที่ยืนยันแล้ว.",
+      "subtitle": "Prompts ของคุณยังคงเข้ารหัส และ data ของคุณยังเป็นของคุณ.",
+      "signInHint": "เข้าสู่ระบบด้วย email ของคุณเพื่อเริ่มต้น"
+    },
+    "empty": {
+      "subtitle": "Inference ส่วนตัวบน hardware ที่ยืนยันแล้ว"
+    },
+    "suggestions": {
+      "quantum": {
+        "label": "อธิบาย quantum computing",
+        "prompt": "อธิบาย quantum computing ด้วยภาษาง่าย ๆ"
+      },
+      "python": {
+        "label": "เขียน Python script",
+        "prompt": "เขียน Python script ที่อ่าน CSV และสร้าง summary report"
+      },
+      "frameworks": {
+        "label": "เปรียบเทียบ ML frameworks",
+        "prompt": "เปรียบเทียบ PyTorch และ JAX สำหรับ research use cases"
+      },
+      "zk": {
+        "label": "อธิบาย zero-knowledge proofs",
+        "prompt": "zero-knowledge proofs คืออะไร และใช้ใน blockchain อย่างไร?"
+      }
+    },
+    "errors": {
+      "stream": "ข้อผิดพลาด: {error}",
+      "connection": "ข้อผิดพลาดการเชื่อมต่อ: {error}"
+    }
+  },
+  "ChatInput": {
+    "selectModel": "เลือก model",
+    "signInToChat": "เข้าสู่ระบบเพื่อเริ่ม chat",
+    "placeholder": "ส่งข้อความ...",
+    "modelSelector": "เลือก model",
+    "send": "ส่งข้อความ",
+    "stop": "หยุด generation"
+  },
+  "ChatMessage": {
+    "code": "โค้ด",
+    "copy": "คัดลอก",
+    "copied": "คัดลอกแล้ว",
+    "thinking": "กำลังคิด",
+    "thinkingStreaming": "กำลังคิด...",
+    "chars": "({count} ตัวอักษร)",
+    "tokens": "tokens",
+    "live": "live",
+    "retry": "ลองใหม่",
+    "regenerate": "Generate ใหม่"
+  },
+  "SettingsPage": {
+    "title": "การตั้งค่า",
+    "save": "บันทึกการตั้งค่า",
+    "saved": "บันทึกแล้ว",
+    "savedToast": "บันทึกการตั้งค่าแล้ว",
+    "coordinator": {
+      "title": "Coordinator URL",
+      "description": "Base URL ของ Darkbloom coordinator ที่ route inference requests ของคุณไปยัง attested providers.",
+      "test": "ทดสอบการเชื่อมต่อ",
+      "connected": "เชื่อมต่อแล้ว — {count, plural, one {# provider} other {# providers}} online"
+    },
+    "language": {
+      "title": "ภาษา",
+      "description": "Darkbloom เลือกภาษาจาก preference ที่บันทึกไว้, browser language และ coarse country signal โดยอัตโนมัติ. คุณสามารถ override ได้ที่นี่.",
+      "detected": "ภาษาปัจจุบัน: {locale}"
+    },
+    "encryption": {
+      "title": "Encrypt requests ไปยัง coordinator",
+      "description": "เมื่อเปิดใช้งาน prompts ของคุณจะถูก seal ไปยัง public key X25519 แบบ long-lived ของ coordinator (NaCl Box) ก่อนออกจาก browser นี้. coordinator จะ decrypt ภายใน TEE, เลือก provider, แล้ว re-seal ไปยัง Secure Enclave key ของ provider. ทุกอย่างที่อยู่หน้า coordinator (CDN, proxies, network observers) จะเห็นเฉพาะ ciphertext นอก TLS tunnel. เป็นตัวเลือกและค่าเริ่มต้น off — plaintext API clients ยังทำงานได้.",
+      "checkbox": "Seal request แต่ละรายการไปยัง public key ของ coordinator",
+      "fetching": "กำลังดึง coordinator key...",
+      "unavailable": "Coordinator นี้ยังไม่ได้ configure sender encryption.",
+      "keyInfo": "coordinator key kid={kid}",
+      "enabledToast": "เปิด encryption ไปยัง coordinator แล้ว",
+      "disabledToast": "ปิด encryption ไปยัง coordinator แล้ว"
+    },
+    "analytics": {
+      "title": "Analytics",
+      "description": "ควบคุมว่า Darkbloom สามารถ load Google Analytics ที่กรองเพื่อความเป็นส่วนตัวเพื่อวัดการใช้งานผลิตภัณฑ์ได้หรือไม่. Query parameters จะถูก sanitize ก่อนส่ง analytics events ยกเว้น attribution allowlist ขนาดเล็กที่ใช้เพื่อรักษา campaign measurement.",
+      "allow": "อนุญาต analytics",
+      "decline": "ปฏิเสธ analytics",
+      "current": "ตัวเลือกปัจจุบัน:",
+      "enabledToast": "เปิด Analytics แล้ว",
+      "disabledToast": "ปิด Analytics แล้ว"
+    },
+    "about": {
+      "title": "เกี่ยวกับ Darkbloom",
+      "p1": "Darkbloom เป็น decentralized private inference network. Requests ของคุณจะถูก route ไปยัง hardware-attested Apple Silicon providers พร้อม Secure Enclave verification, SIP enforcement และ Hardened Runtime protection.",
+      "p2": "Provider trust ได้รับการ verify อย่างอิสระผ่าน MDM (Mobile Device Management) โดย cross-check กับ coordinator."
+    }
+  },
+  "ModelsPage": {
+    "title": "Models",
+    "heading": "Models ที่พร้อมใช้งาน",
+    "description": "Models ที่ให้บริการโดย hardware-attested providers บนเครือข่าย Darkbloom.",
+    "loading": "กำลังโหลด models...",
+    "empty": "ไม่มี model ที่พร้อมใช้งาน. ตรวจสอบ coordinator connection ของคุณใน Settings.",
+    "hardware": "Hardware",
+    "none": "ไม่มี",
+    "perMillionTokens": "ต่อ 1M tokens",
+    "cheaper": "ถูกกว่า {percent}%",
+    "vs": "vs {competitor}",
+    "providers": "{count, plural, one {# provider} other {# providers}}",
+    "attested": "Attested"
+  },
+  "StatsPage": {
+    "title": "Network Stats",
+    "heading": "Network Statistics",
+    "description": "Metrics live จาก Darkbloom decentralized inference network",
+    "failedFetch": "Fetch stats ไม่สำเร็จ",
+    "failedLoad": "โหลด platform stats ไม่สำเร็จ",
+    "retry": "ลองใหม่",
+    "live": "Live",
+    "hardware": "Hardware",
+    "none": "ไม่มี",
+    "lastMinutes": "{count} min ล่าสุด",
+    "activityPlaceholder": "Activity จะปรากฏที่นี่",
+    "tokensPerMinute": "Tokens / Minute",
+    "input": "Input",
+    "output": "Output",
+    "tokenPlaceholder": "Token flow จะปรากฏที่นี่",
+    "tokenTooltip": "{input} in / {output} out",
+    "memory": "Memory",
+    "gpu": "GPU",
+    "cpu": "CPU",
+    "bandwidth": "Bandwidth",
+    "requests": "Requests",
+    "tokens": "Tokens",
+    "serving": "Serving:",
+    "tokensServed": "Tokens Served",
+    "tokensInOut": "{input} in / {output} out",
+    "nodesOnline": "Nodes Online",
+    "allHardwareAttested": "ทั้งหมด hardware-attested",
+    "hardwareAttestedCount": "{count} hardware-attested",
+    "gbBandwidth": "GB/s Bandwidth",
+    "combinedThroughput": "combined memory throughput",
+    "gpuCores": "GPU Cores",
+    "cpuCores": "CPU Cores",
+    "pECores": "P + E cores",
+    "unifiedRam": "Unified RAM",
+    "avgTokReq": "Avg Tok/Req",
+    "models": "Models",
+    "requestsPerMinute": "Requests / Minute",
+    "tokenDistribution": "Token Distribution",
+    "inputPercent": "{value} in ({percent}%)",
+    "outputPercent": "{value} out ({percent}%)",
+    "activeModels": "Active Models",
+    "nodes": "{count, plural, one {node} other {nodes}}",
+    "networkNodes": "Network Nodes",
+    "autoRefresh": "Auto-refresh ทุก 10 seconds"
+  },
+  "ApiConsolePage": {
+    "title": "API Console",
+    "auth": "Auth",
+    "request": "Request",
+    "response": "Response",
+    "requiresAuth": "ต้องมี header <code>Authorization: Bearer &lt;api_key&gt;</code>",
+    "noApiKey": "ยังไม่ได้ generate API key",
+    "noKey": "ยังไม่ได้ generate key",
+    "intro": "<strong>Darkbloom API</strong> — OpenAI-compatible. เปลี่ยน base URL ของคุณ และคง code เดิมไว้. ทุก request เป็น end-to-end encrypted และประมวลผลบน hardware-attested Apple Silicon.",
+    "endpointReference": "Endpoint Reference",
+    "endpointDescription": "Expand แต่ละ endpoint เพื่อดู format ของ request/response และ notes.",
+    "baseUrl": "Base URL",
+    "baseUrlDescription": "Endpoints ทั้งหมดเป็น relative กับ base URL นี้. Provider attestation และ pricing endpoints เข้าถึงได้แบบสาธารณะโดยไม่ต้อง authentication.",
+    "apiKey": "API Key",
+    "hideKey": "ซ่อน key",
+    "showKey": "แสดง key",
+    "copyKey": "คัดลอก key",
+    "regenerate": "Generate ใหม่",
+    "generate": "Generate",
+    "keyHelp": "ใช้ key นี้ใน header <code>Authorization: Bearer</code> สำหรับ authenticated requests ทั้งหมด.",
+    "quickStart": "Quick Start",
+    "quickStartDescription": "Install OpenAI SDK หรือ Vercel AI SDK. Darkbloom API เป็น OpenAI-compatible อย่างสมบูรณ์ — เพียงเปลี่ยน base URL.",
+    "availableModels": "Models ที่พร้อมใช้งาน",
+    "modelId": "Model ID",
+    "type": "Type",
+    "architecture": "Architecture",
+    "modelsHelp": "Model availability ขึ้นอยู่กับ providers ที่ online. ตรวจสอบ <code>/v1/models</code> เพื่อดู availability แบบ real-time.",
+    "chatCompletions": "Chat Completions",
+    "chatDescription": "Stream chat completions ด้วย model ใดก็ได้ที่ supported. รองรับ system messages, multi-turn conversations และ thinking/reasoning output.",
+    "listModels": "List Models",
+    "listModelsDescription": "ตรวจสอบ models ที่พร้อมใช้งาน, จำนวน provider และ attestation status."
+  },
+  "LinkPage": {
+    "title": "Link Device ของคุณ",
+    "description": "เชื่อมต่อ Mac ของคุณกับบัญชี Darkbloom เพื่อรับ earnings สำหรับการให้ compute."
+  },
+  "DeviceLinkForm": {
+    "loading": "กำลังโหลด...",
+    "missingToken": "รับ auth token ไม่สำเร็จ. โปรด log in อีกครั้ง.",
+    "failed": "Link device ไม่สำเร็จ",
+    "networkError": "Network error. โปรดตรวจสอบการเชื่อมต่อของคุณ.",
+    "successTitle": "Device Linked!",
+    "successBody": "Provider ของคุณเชื่อมต่อกับบัญชีของคุณแล้ว. Earnings จะถูก credit โดยอัตโนมัติ.",
+    "successClose": "คุณสามารถปิดหน้านี้ได้.",
+    "signInPrompt": "เข้าสู่ระบบบัญชี Darkbloom ของคุณเพื่อ link device.",
+    "signIn": "เข้าสู่ระบบ",
+    "signedInAs": "เข้าสู่ระบบเป็น",
+    "yourAccount": "บัญชีของคุณ",
+    "codeLabel": "ป้อน code ที่แสดงใน terminal ของคุณ",
+    "linking": "กำลัง link...",
+    "linkDevice": "Link Device",
+    "run": "รัน",
+    "runSuffix": "บน Mac ของคุณเพื่อรับ code."
+  },
+  "ProvidersLayout": {
+    "title": "Provider Dashboard",
+    "dashboard": "Dashboard",
+    "setup": "Setup",
+    "earnings": "Earnings"
+  },
+  "BillingPage": {
+    "title": "Billing",
+    "balance": "Balance",
+    "loading": "กำลังโหลด...",
+    "credits": "{amount} credits",
+    "earnings": "{amount} earnings",
+    "buyCredits": "ซื้อ Credits",
+    "inviteCode": "Invite Code",
+    "redeem": "Redeem",
+    "inviteCredited": "{amount} ถูก credit เข้าบัญชีของคุณ",
+    "totalSpent": "ใช้จ่ายทั้งหมด",
+    "totalTokens": "Tokens ทั้งหมด",
+    "requests": "Requests",
+    "usageHistory": "Usage History",
+    "noUsage": "ยังไม่มี usage history. เริ่ม chat เพื่อดู requests ที่นี่.",
+    "time": "Time",
+    "model": "Model",
+    "tokens": "Tokens",
+    "cost": "Cost",
+    "creditsDescription": "Credits ใช้สำหรับชำระ inference requests.",
+    "amountUsd": "Amount (USD)",
+    "maxDeposit": "Maximum deposit คือ $20",
+    "redirecting": "Redirecting...",
+    "continue": "ดำเนินการต่อ",
+    "stripePowered": "Powered by Stripe. การชำระเงินด้วยบัตรที่ปลอดภัย."
+  },
+  "EarnPage": {
+    "title": "Earnings Calculator",
+    "heading": "Provider Earnings Calculator",
+    "loading": "กำลังโหลด...",
+    "signIn": "เข้าสู่ระบบ",
+    "estimatedEarnings": "Estimated Earnings"
+  },
+  "Common": {
+    "auth": "Auth",
+    "request": "Request",
+    "response": "Response",
+    "notes": "Notes",
+    "copied": "คัดลอกแล้ว",
+    "copy": "คัดลอก",
+    "loading": "กำลังโหลด...",
+    "refresh": "Refresh",
+    "error": "ข้อผิดพลาด"
+  }
+}

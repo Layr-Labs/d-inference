@@ -1,0 +1,298 @@
+{
+  "Metadata": {
+    "title": "Darkbloom — 在已驗證 Mac 上執行的私密 AI",
+    "description": "透過經硬體認證的 Apple Silicon 提供者進行私密 AI 推論。你的提示詞保持加密，你的資料仍歸你所有。"
+  },
+  "Shell": {
+    "loading": "載入中..."
+  },
+  "TopBar": {
+    "openSidebar": "開啟側邊欄"
+  },
+  "Sidebar": {
+    "tagline": "Eigen Labs 專案 · Research Preview",
+    "newChat": "新增聊天",
+    "disclaimer": "實驗性 Research Preview。依現狀提供用於評估。不適用於正式環境。",
+    "switchDark": "切換到深色模式",
+    "switchLight": "切換到淺色模式",
+    "signOut": "登出",
+    "nav": {
+      "chat": "聊天",
+      "stats": "統計",
+      "providers": "提供者儀表板",
+      "earn": "收益",
+      "api": "API",
+      "models": "模型",
+      "billing": "帳務",
+      "settings": "設定"
+    },
+    "language": "語言",
+    "changeLanguage": "變更語言"
+  },
+  "AnalyticsConsent": {
+    "body": "允許經隱私篩選的使用分析，以協助改善 Darkbloom 的產品體驗。",
+    "allow": "允許分析",
+    "decline": "拒絕",
+    "storedIn": "已儲存在 <code>{key}</code>"
+  },
+  "ChatPage": {
+    "loading": "載入中...",
+    "signIn": "登入",
+    "trustLine": "端對端加密 · Apple Silicon · 去中心化",
+    "guest": {
+      "title": "在已驗證硬體上進行私密推論。",
+      "subtitle": "你的提示詞保持加密，你的資料仍歸你所有。",
+      "signInHint": "使用電子郵件登入即可開始"
+    },
+    "empty": {
+      "subtitle": "在已驗證硬體上進行私密推論"
+    },
+    "suggestions": {
+      "quantum": {
+        "label": "解釋量子運算",
+        "prompt": "用簡單的術語解釋量子運算"
+      },
+      "python": {
+        "label": "撰寫 Python 腳本",
+        "prompt": "撰寫一個 Python 腳本，讀取 CSV 並產生摘要報告"
+      },
+      "frameworks": {
+        "label": "比較 ML 框架",
+        "prompt": "比較 PyTorch 和 JAX 在研究場景中的用途"
+      },
+      "zk": {
+        "label": "解釋零知識證明",
+        "prompt": "什麼是零知識證明，它們如何用於區塊鏈？"
+      }
+    },
+    "errors": {
+      "stream": "錯誤：{error}",
+      "connection": "連線錯誤：{error}"
+    }
+  },
+  "ChatInput": {
+    "selectModel": "選擇模型",
+    "signInToChat": "登入以開始聊天",
+    "placeholder": "傳送訊息...",
+    "modelSelector": "選擇模型",
+    "send": "傳送訊息",
+    "stop": "停止生成"
+  },
+  "ChatMessage": {
+    "code": "程式碼",
+    "copy": "複製",
+    "copied": "已複製",
+    "thinking": "思考中",
+    "thinkingStreaming": "思考中...",
+    "chars": "（{count} 個字元）",
+    "tokens": "tokens",
+    "live": "即時",
+    "retry": "重試",
+    "regenerate": "重新生成"
+  },
+  "SettingsPage": {
+    "title": "設定",
+    "save": "儲存設定",
+    "saved": "已儲存",
+    "savedToast": "設定已儲存",
+    "coordinator": {
+      "title": "協調器 URL",
+      "description": "Darkbloom 協調器的基礎 URL，用於將你的推論請求路由到已認證的提供者。",
+      "test": "測試連線",
+      "connected": "已連線 — {count, plural, one {# 個提供者} other {# 個提供者}}在線"
+    },
+    "language": {
+      "title": "語言",
+      "description": "Darkbloom 會根據你儲存的偏好、瀏覽器語言和粗略的國家訊號自動選擇語言。你可以在這裡覆寫它。",
+      "detected": "目前語言：{locale}"
+    },
+    "encryption": {
+      "title": "加密傳送到協調器的請求",
+      "description": "啟用後，你的提示詞會在離開此瀏覽器之前，被密封到協調器的長期 X25519 公鑰（NaCl Box）。協調器會在其 TEE 內解密，選擇一個提供者，然後重新密封到該提供者的 Secure Enclave 金鑰。位於協調器前方的任何元件（CDN、代理、網路觀察者）在 TLS 通道之外只能看到密文。此功能可選且預設關閉 — 明文 API 用戶端仍可繼續運作。",
+      "checkbox": "將每個請求密封到協調器的公鑰",
+      "fetching": "正在取得協調器金鑰...",
+      "unavailable": "此協調器尚未設定傳送者加密。",
+      "keyInfo": "協調器金鑰 kid={kid}",
+      "enabledToast": "已啟用到協調器的加密",
+      "disabledToast": "已停用到協調器的加密"
+    },
+    "analytics": {
+      "title": "分析",
+      "description": "控制 Darkbloom 是否可以載入經隱私篩選的 Google Analytics 來衡量產品使用情況。傳送分析事件之前會清理查詢參數，但用於保留廣告活動衡量的小型歸因允許清單除外。",
+      "allow": "允許分析",
+      "decline": "拒絕分析",
+      "current": "目前選擇：",
+      "enabledToast": "分析已啟用",
+      "disabledToast": "分析已停用"
+    },
+    "about": {
+      "title": "關於 Darkbloom",
+      "p1": "Darkbloom 是一個去中心化的私密推論網路。你的請求會被路由到經硬體認證的 Apple Silicon 提供者，並具備 Secure Enclave 驗證、SIP 強制執行和 Hardened Runtime 保護。",
+      "p2": "提供者信任透過 MDM（Mobile Device Management）與協調器交叉檢查來獨立驗證。"
+    }
+  },
+  "ModelsPage": {
+    "title": "模型",
+    "heading": "可用模型",
+    "description": "Darkbloom 網路上由經硬體認證的提供者服務的模型。",
+    "loading": "正在載入模型...",
+    "empty": "沒有可用模型。請在設定中檢查你的協調器連線。",
+    "hardware": "硬體",
+    "none": "無",
+    "perMillionTokens": "每 100 萬 tokens",
+    "cheaper": "便宜 {percent}%",
+    "vs": "vs {competitor}",
+    "providers": "{count, plural, one {# 個提供者} other {# 個提供者}}",
+    "attested": "已認證"
+  },
+  "StatsPage": {
+    "title": "網路統計",
+    "heading": "網路統計資訊",
+    "description": "來自 Darkbloom 去中心化推論網路的即時指標",
+    "failedFetch": "取得統計資訊失敗",
+    "failedLoad": "載入平台統計資訊失敗",
+    "retry": "重試",
+    "live": "即時",
+    "hardware": "硬體",
+    "none": "無",
+    "lastMinutes": "過去 {count} 分鐘",
+    "activityPlaceholder": "活動將顯示在這裡",
+    "tokensPerMinute": "Tokens / 分鐘",
+    "input": "輸入",
+    "output": "輸出",
+    "tokenPlaceholder": "Token 流將顯示在這裡",
+    "tokenTooltip": "{input} 輸入 / {output} 輸出",
+    "memory": "記憶體",
+    "gpu": "GPU",
+    "cpu": "CPU",
+    "bandwidth": "頻寬",
+    "requests": "請求",
+    "tokens": "Tokens",
+    "serving": "正在服務：",
+    "tokensServed": "已服務 Tokens",
+    "tokensInOut": "{input} 輸入 / {output} 輸出",
+    "nodesOnline": "線上節點",
+    "allHardwareAttested": "全部經硬體認證",
+    "hardwareAttestedCount": "{count} 個經硬體認證",
+    "gbBandwidth": "GB/s 頻寬",
+    "combinedThroughput": "合計記憶體吞吐量",
+    "gpuCores": "GPU 核心",
+    "cpuCores": "CPU 核心",
+    "pECores": "P + E 核心",
+    "unifiedRam": "統一記憶體",
+    "avgTokReq": "平均 Tok/請求",
+    "models": "模型",
+    "requestsPerMinute": "請求 / 分鐘",
+    "tokenDistribution": "Token 分布",
+    "inputPercent": "{value} 輸入（{percent}%）",
+    "outputPercent": "{value} 輸出（{percent}%）",
+    "activeModels": "活躍模型",
+    "nodes": "{count, plural, one {節點} other {節點}}",
+    "networkNodes": "網路節點",
+    "autoRefresh": "每 10 秒自動重新整理"
+  },
+  "ApiConsolePage": {
+    "title": "API 控制台",
+    "auth": "認證",
+    "request": "請求",
+    "response": "回應",
+    "requiresAuth": "需要 <code>Authorization: Bearer &lt;api_key&gt;</code> 標頭",
+    "noApiKey": "尚未產生 API 金鑰",
+    "noKey": "尚未產生金鑰",
+    "intro": "<strong>Darkbloom API</strong> — OpenAI 相容。更換基礎 URL，保留現有程式碼。每個請求都會端對端加密，並在經硬體認證的 Apple Silicon 上處理。",
+    "endpointReference": "端點參考",
+    "endpointDescription": "展開每個端點以查看請求/回應格式和說明。",
+    "baseUrl": "基礎 URL",
+    "baseUrlDescription": "所有端點都相對於此基礎 URL。提供者認證和定價端點無需身份驗證即可公開存取。",
+    "apiKey": "API 金鑰",
+    "hideKey": "隱藏金鑰",
+    "showKey": "顯示金鑰",
+    "copyKey": "複製金鑰",
+    "regenerate": "重新產生",
+    "generate": "產生",
+    "keyHelp": "在所有需要認證的請求中，將此金鑰用於 <code>Authorization: Bearer</code> 標頭。",
+    "quickStart": "快速開始",
+    "quickStartDescription": "安裝 OpenAI SDK 或 Vercel AI SDK。Darkbloom API 完全相容 OpenAI — 只需更改基礎 URL。",
+    "availableModels": "可用模型",
+    "modelId": "模型 ID",
+    "type": "類型",
+    "architecture": "架構",
+    "modelsHelp": "模型可用性取決於線上提供者。查看 <code>/v1/models</code> 取得即時可用性。",
+    "chatCompletions": "Chat Completions",
+    "chatDescription": "使用任何受支援的模型串流傳輸聊天補全。支援系統訊息、多輪對話以及思考/推理輸出。",
+    "listModels": "列出模型",
+    "listModelsDescription": "檢查可用模型、提供者數量和認證狀態。"
+  },
+  "LinkPage": {
+    "title": "連結你的裝置",
+    "description": "將你的 Mac 連接到 Darkbloom 帳戶，以透過提供運算資源獲得收益。"
+  },
+  "DeviceLinkForm": {
+    "loading": "載入中...",
+    "missingToken": "無法取得認證權杖。請重新登入。",
+    "failed": "連結裝置失敗",
+    "networkError": "網路錯誤。請檢查你的連線。",
+    "successTitle": "裝置已連結！",
+    "successBody": "你的提供者現已連接到你的帳戶。收益將自動入帳。",
+    "successClose": "你可以關閉此頁面。",
+    "signInPrompt": "登入你的 Darkbloom 帳戶以連結裝置。",
+    "signIn": "登入",
+    "signedInAs": "登入身分",
+    "yourAccount": "你的帳戶",
+    "codeLabel": "輸入終端機中顯示的代碼",
+    "linking": "正在連結...",
+    "linkDevice": "連結裝置",
+    "run": "執行",
+    "runSuffix": "在你的 Mac 上執行以取得代碼。"
+  },
+  "ProvidersLayout": {
+    "title": "提供者儀表板",
+    "dashboard": "儀表板",
+    "setup": "設定",
+    "earnings": "收益"
+  },
+  "BillingPage": {
+    "title": "帳務",
+    "balance": "餘額",
+    "loading": "載入中...",
+    "credits": "{amount} 點數",
+    "earnings": "{amount} 收益",
+    "buyCredits": "購買點數",
+    "inviteCode": "邀請碼",
+    "redeem": "兌換",
+    "inviteCredited": "{amount} 已計入你的帳戶",
+    "totalSpent": "總支出",
+    "totalTokens": "總 Tokens",
+    "requests": "請求",
+    "usageHistory": "使用記錄",
+    "noUsage": "還沒有使用記錄。開始聊天後，請求會顯示在這裡。",
+    "time": "時間",
+    "model": "模型",
+    "tokens": "Tokens",
+    "cost": "費用",
+    "creditsDescription": "點數用於支付推論請求。",
+    "amountUsd": "金額（USD）",
+    "maxDeposit": "最高儲值金額為 $20",
+    "redirecting": "正在重新導向...",
+    "continue": "繼續",
+    "stripePowered": "Powered by Stripe。安全的信用卡付款。"
+  },
+  "EarnPage": {
+    "title": "收益計算器",
+    "heading": "提供者收益計算器",
+    "loading": "載入中...",
+    "signIn": "登入",
+    "estimatedEarnings": "預估收益"
+  },
+  "Common": {
+    "auth": "認證",
+    "request": "請求",
+    "response": "回應",
+    "notes": "說明",
+    "copied": "已複製",
+    "copy": "複製",
+    "loading": "載入中...",
+    "refresh": "重新整理",
+    "error": "錯誤"
+  }
+}

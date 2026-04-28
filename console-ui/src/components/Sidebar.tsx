@@ -1,8 +1,15 @@
 "use client";
 
+import { useState } from "react";
 import { useStore } from "@/lib/store";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/components/providers/ThemeProvider";
+import {
+  localeCookieName,
+  localeLabels,
+  locales,
+  type Locale,
+} from "@/i18n/locales";
 import {
   Plus,
   MessageSquare,
@@ -18,9 +25,14 @@ import {
   LogOut,
   Sun,
   Moon,
+  Languages,
 } from "lucide-react";
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { Link, usePathname, useRouter } from "@/i18n/navigation";
+import { useLocale, useTranslations } from "next-intl";
+
+function writeLocaleCookie(nextLocale: Locale) {
+  document.cookie = `${localeCookieName}=${nextLocale}; Path=/; Max-Age=31536000; SameSite=Lax`;
+}
 
 export function Sidebar() {
   const {
@@ -36,10 +48,21 @@ export function Sidebar() {
   const router = useRouter();
   const { displayName, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const currentLocale = useLocale() as Locale;
+  const t = useTranslations("Sidebar");
+  const [languageOpen, setLanguageOpen] = useState(false);
 
   if (!sidebarOpen) return null;
 
   const isChatActive = pathname === "/";
+  const handleLocaleChange = (nextLocale: Locale) => {
+    writeLocaleCookie(nextLocale);
+    let nextPath = pathname;
+    if (nextLocale !== "en") {
+      nextPath = `/${nextLocale}${pathname === "/" ? "" : pathname}`;
+    }
+    window.location.assign(`${nextPath}${window.location.search}`);
+  };
 
   return (
     <aside className="sidebar-animate fixed inset-0 z-50 w-full sm:static sm:w-[260px] h-screen flex flex-col bg-bg-secondary sm:border-r sm:border-border-default shrink-0">
@@ -50,7 +73,7 @@ export function Sidebar() {
             Darkbloom
           </h1>
           <p className="text-[10px] font-mono text-text-tertiary tracking-wide uppercase mt-1">
-            An Eigen Labs project · Research Preview
+            {t("tagline")}
           </p>
         </Link>
         <button
@@ -64,11 +87,11 @@ export function Sidebar() {
       {/* Primary navigation */}
       <nav className="px-3 space-y-1">
         {[
-          { href: "/", icon: MessageSquare, label: "Chat" },
-          { href: "/stats", icon: Activity, label: "Stats" },
-          { href: "/providers", icon: Server, label: "Provider Dashboard" },
-          { href: "/earn", icon: Coins, label: "Earn" },
-          { href: "/api-console", icon: Code, label: "API" },
+          { href: "/", icon: MessageSquare, label: t("nav.chat") },
+          { href: "/stats", icon: Activity, label: t("nav.stats") },
+          { href: "/providers", icon: Server, label: t("nav.providers") },
+          { href: "/earn", icon: Coins, label: t("nav.earn") },
+          { href: "/api-console", icon: Code, label: t("nav.api") },
         ].map(({ href, icon: Icon, label }) => {
           const isActive =
             href === "/"
@@ -104,7 +127,7 @@ export function Sidebar() {
                          hover:opacity-90"
             >
               <Plus size={16} />
-              New chat
+              {t("newChat")}
             </button>
           </div>
 
@@ -146,9 +169,9 @@ export function Sidebar() {
       {/* Secondary navigation */}
       <nav className="px-3 pt-3 border-t border-border-dim space-y-1">
         {[
-          { href: "/models", icon: Cpu, label: "Models" },
-          { href: "/billing", icon: CreditCard, label: "Billing" },
-          { href: "/settings", icon: Settings, label: "Settings" },
+          { href: "/models", icon: Cpu, label: t("nav.models") },
+          { href: "/billing", icon: CreditCard, label: t("nav.billing") },
+          { href: "/settings", icon: Settings, label: t("nav.settings") },
         ].map(({ href, icon: Icon, label }) => (
           <Link
             key={href}
@@ -169,29 +192,66 @@ export function Sidebar() {
       {/* Research disclaimer */}
       <div className="px-4 py-2 border-t border-border-dim">
         <p className="text-[10px] text-text-tertiary leading-relaxed">
-          Experimental research preview. Provided as-is for evaluation. Not for production use.
+          {t("disclaimer")}
         </p>
       </div>
 
       {/* User footer */}
-      <div className="px-3 py-3 border-t border-border-dim">
+      <div className="relative px-3 py-3 border-t border-border-dim">
+        {languageOpen && (
+          <div
+            className="absolute left-3 right-3 bottom-full mb-2 overflow-y-auto rounded-xl border border-border-dim bg-bg-white shadow-lg p-1 z-50"
+            style={{ maxHeight: "min(22rem, 60vh)" }}
+          >
+            <div className="px-3 py-2 text-[10px] font-mono uppercase tracking-wider text-text-tertiary">
+              {t("language")}
+            </div>
+            {locales.map((locale) => (
+              <button
+                key={locale}
+                onClick={() => handleLocaleChange(locale)}
+                className={`w-full flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                  currentLocale === locale
+                    ? "bg-coral/10 text-coral font-semibold"
+                    : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                }`}
+              >
+                <span className="truncate">{localeLabels[locale]}</span>
+                <span className="shrink-0 font-mono text-[10px] uppercase text-text-tertiary">
+                  {locale}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <div className="flex-1 min-w-0">
             {displayName && (
               <p className="text-xs text-text-secondary font-semibold truncate">{displayName}</p>
             )}
           </div>
+          <div>
+            <button
+              onClick={() => setLanguageOpen((open) => !open)}
+              className="p-1.5 rounded-lg hover:bg-bg-hover text-text-tertiary hover:text-text-secondary transition-colors"
+              title={t("changeLanguage")}
+              aria-label={t("changeLanguage")}
+              aria-expanded={languageOpen}
+            >
+              <Languages size={14} />
+            </button>
+          </div>
           <button
             onClick={toggleTheme}
             className="p-1.5 rounded-lg hover:bg-bg-hover text-text-tertiary hover:text-text-secondary transition-colors"
-            title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
+            title={theme === "light" ? t("switchDark") : t("switchLight")}
           >
             {theme === "light" ? <Moon size={14} /> : <Sun size={14} />}
           </button>
           <button
             onClick={() => logout()}
             className="p-1.5 rounded-lg hover:bg-accent-red/10 text-text-tertiary hover:text-accent-red transition-colors"
-            title="Sign out"
+            title={t("signOut")}
           >
             <LogOut size={14} />
           </button>

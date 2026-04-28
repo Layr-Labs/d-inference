@@ -3,6 +3,7 @@
 import { useState, useCallback } from "react";
 import { useAuthContext } from "@/components/providers/PrivyClientProvider";
 import { trackEvent } from "@/lib/google-analytics";
+import { useTranslations } from "next-intl";
 
 const COORDINATOR_URL =
   process.env.NEXT_PUBLIC_COORDINATOR_URL ||
@@ -15,6 +16,7 @@ export function DeviceLinkForm() {
   const [code, setCode] = useState("");
   const [status, setStatus] = useState<LinkStatus>("idle");
   const [errorMsg, setErrorMsg] = useState("");
+  const t = useTranslations("DeviceLinkForm");
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -34,7 +36,7 @@ export function DeviceLinkForm() {
             flow: "device_link_form",
             reason: "missing_auth_token",
           });
-          setErrorMsg("Failed to get auth token. Please log in again.");
+          setErrorMsg(t("missingToken"));
           setStatus("error");
           return;
         }
@@ -56,7 +58,7 @@ export function DeviceLinkForm() {
             reason: "approval_failed",
           });
           setErrorMsg(
-            data?.error?.message || data?.message || "Failed to link device"
+            data?.error?.message || data?.message || t("failed")
           );
           setStatus("error");
           return;
@@ -71,11 +73,11 @@ export function DeviceLinkForm() {
           flow: "device_link_form",
           reason: "network_error",
         });
-        setErrorMsg("Network error. Please check your connection.");
+        setErrorMsg(t("networkError"));
         setStatus("error");
       }
     },
-    [code, getAccessToken]
+    [code, getAccessToken, t]
   );
 
   // Format input as XXXX-XXXX
@@ -91,7 +93,7 @@ export function DeviceLinkForm() {
   if (!ready) {
     return (
       <div className="bg-bg-white rounded-2xl border border-border-dim shadow-md p-8 text-center">
-        <div className="animate-pulse text-text-tertiary">Loading...</div>
+        <div className="animate-pulse text-text-tertiary">{t("loading")}</div>
       </div>
     );
   }
@@ -116,14 +118,13 @@ export function DeviceLinkForm() {
           </svg>
         </div>
         <h2 className="text-2xl font-semibold text-ink mb-2">
-          Device Linked!
+          {t("successTitle")}
         </h2>
         <p className="text-text-secondary">
-          Your provider is now connected to your account. Earnings will be
-          credited automatically.
+          {t("successBody")}
         </p>
         <p className="text-text-tertiary text-sm mt-4">
-          You can close this page.
+          {t("successClose")}
         </p>
       </div>
     );
@@ -134,7 +135,7 @@ export function DeviceLinkForm() {
     return (
       <div className="bg-bg-white rounded-2xl border border-border-dim shadow-md p-8 text-center">
         <p className="text-text-secondary mb-6">
-          Sign in to your Darkbloom account to link your device.
+          {t("signInPrompt")}
         </p>
         <button
           onClick={() => {
@@ -146,7 +147,7 @@ export function DeviceLinkForm() {
           className="w-full px-6 py-3 bg-coral text-white rounded-xl font-bold border border-border-dim
                      hover:opacity-90 transition-all"
         >
-          Sign In
+          {t("signIn")}
         </button>
       </div>
     );
@@ -156,11 +157,11 @@ export function DeviceLinkForm() {
   return (
     <div className="bg-bg-white rounded-2xl border border-border-dim shadow-md p-8">
       <div className="text-sm text-text-secondary mb-6 text-center">
-        Signed in as{" "}
+        {t("signedInAs")}{" "}
         <span className="font-semibold text-ink">
           {(user as { email?: { address?: string }; wallet?: { address?: string } })?.email?.address ||
             (user as { wallet?: { address?: string } })?.wallet?.address ||
-            "your account"}
+            t("yourAccount")}
         </span>
       </div>
 
@@ -170,7 +171,7 @@ export function DeviceLinkForm() {
             htmlFor="device-code"
             className="block text-sm font-semibold text-ink mb-2"
           >
-            Enter the code shown in your terminal
+            {t("codeLabel")}
           </label>
           <input
             id="device-code"
@@ -201,16 +202,16 @@ export function DeviceLinkForm() {
                      hover:opacity-90
                      transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {status === "submitting" ? "Linking..." : "Link Device"}
+          {status === "submitting" ? t("linking") : t("linkDevice")}
         </button>
       </form>
 
       <div className="mt-6 text-xs text-text-tertiary text-center">
-        Run{" "}
+        {t("run")}{" "}
         <code className="bg-bg-tertiary px-1.5 py-0.5 rounded font-mono text-coral border border-border-dim">
           darkbloom login
         </code>{" "}
-        on your Mac to get a code.
+        {t("runSuffix")}
       </div>
     </div>
   );

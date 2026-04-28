@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import { Ticket, X, Check, Loader2 } from "lucide-react";
 import { redeemInviteCode } from "@/lib/api";
 import { trackEvent } from "@/lib/google-analytics";
+import { Link } from "@/i18n/navigation";
 
 const DISMISSED_KEY = "darkbloom_invite_dismissed";
 
@@ -93,7 +94,7 @@ export function InviteCodeBanner() {
         <div className="px-4 pb-2">
           <p className="text-xs text-text-tertiary leading-relaxed">
             Invite codes are not required to become a provider. They give you free credits for inference.
-            You can also <a href="/billing" className="text-accent-brand hover:underline">purchase credits</a> directly.
+            You can also <Link href="/billing" className="text-accent-brand hover:underline">purchase credits</Link> directly.
           </p>
         </div>
 

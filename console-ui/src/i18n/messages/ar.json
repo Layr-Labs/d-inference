@@ -1,0 +1,298 @@
+{
+  "Metadata": {
+    "title": "Darkbloom — ذكاء اصطناعي خاص على أجهزة Mac موثّقة",
+    "description": "استدلال ذكاء اصطناعي خاص عبر مزوّدي Apple Silicon موثّقين عتاديًا. تبقى مطالباتك مشفّرة، وتبقى بياناتك لك."
+  },
+  "Shell": {
+    "loading": "جارٍ التحميل..."
+  },
+  "TopBar": {
+    "openSidebar": "فتح الشريط الجانبي"
+  },
+  "Sidebar": {
+    "tagline": "مشروع من Eigen Labs · معاينة بحثية",
+    "newChat": "محادثة جديدة",
+    "disclaimer": "معاينة بحثية تجريبية. تُقدّم كما هي للتقييم. ليست للاستخدام الإنتاجي.",
+    "switchDark": "التبديل إلى الوضع الداكن",
+    "switchLight": "التبديل إلى الوضع الفاتح",
+    "signOut": "تسجيل الخروج",
+    "nav": {
+      "chat": "المحادثة",
+      "stats": "الإحصاءات",
+      "providers": "لوحة تحكم المزوّد",
+      "earn": "الأرباح",
+      "api": "API",
+      "models": "النماذج",
+      "billing": "الفوترة",
+      "settings": "الإعدادات"
+    },
+    "language": "اللغة",
+    "changeLanguage": "تغيير اللغة"
+  },
+  "AnalyticsConsent": {
+    "body": "اسمح بتحليلات استخدام مفلترة للخصوصية للمساعدة في تحسين تجربة منتج Darkbloom.",
+    "allow": "السماح بالتحليلات",
+    "decline": "رفض",
+    "storedIn": "مخزّن في <code>{key}</code>"
+  },
+  "ChatPage": {
+    "loading": "جارٍ التحميل...",
+    "signIn": "تسجيل الدخول",
+    "trustLine": "مشفّر من طرف إلى طرف · Apple Silicon · لامركزي",
+    "guest": {
+      "title": "استدلال خاص على عتاد موثّق.",
+      "subtitle": "تبقى مطالباتك مشفّرة، وتبقى بياناتك لك.",
+      "signInHint": "سجّل الدخول ببريدك الإلكتروني للبدء"
+    },
+    "empty": {
+      "subtitle": "استدلال خاص على عتاد موثّق"
+    },
+    "suggestions": {
+      "quantum": {
+        "label": "اشرح الحوسبة الكمّية",
+        "prompt": "اشرح الحوسبة الكمّية بعبارات بسيطة"
+      },
+      "python": {
+        "label": "اكتب سكربت Python",
+        "prompt": "اكتب سكربت Python يقرأ ملف CSV وينشئ تقريرًا موجزًا"
+      },
+      "frameworks": {
+        "label": "قارن أطر عمل ML",
+        "prompt": "قارن PyTorch و JAX لحالات الاستخدام البحثية"
+      },
+      "zk": {
+        "label": "اشرح zero-knowledge proofs",
+        "prompt": "ما هي zero-knowledge proofs وكيف تُستخدم في blockchain؟"
+      }
+    },
+    "errors": {
+      "stream": "خطأ: {error}",
+      "connection": "خطأ في الاتصال: {error}"
+    }
+  },
+  "ChatInput": {
+    "selectModel": "اختر النموذج",
+    "signInToChat": "سجّل الدخول لبدء المحادثة",
+    "placeholder": "أرسل رسالة...",
+    "modelSelector": "اختر النموذج",
+    "send": "إرسال الرسالة",
+    "stop": "إيقاف التوليد"
+  },
+  "ChatMessage": {
+    "code": "كود",
+    "copy": "نسخ",
+    "copied": "تم النسخ",
+    "thinking": "يفكّر",
+    "thinkingStreaming": "يفكّر...",
+    "chars": "({count} حرفًا)",
+    "tokens": "الرموز",
+    "live": "مباشر",
+    "retry": "إعادة المحاولة",
+    "regenerate": "إعادة التوليد"
+  },
+  "SettingsPage": {
+    "title": "الإعدادات",
+    "save": "حفظ الإعدادات",
+    "saved": "تم الحفظ",
+    "savedToast": "تم حفظ الإعدادات",
+    "coordinator": {
+      "title": "Coordinator URL",
+      "description": "عنوان URL الأساسي لـ coordinator في Darkbloom الذي يوجّه طلبات الاستدلال إلى مزوّدين موثّقين.",
+      "test": "اختبار الاتصال",
+      "connected": "متصل — {count, plural, one {# مزوّد} other {# مزوّدين}} على الإنترنت"
+    },
+    "language": {
+      "title": "اللغة",
+      "description": "يختار Darkbloom لغة تلقائيًا من تفضيلك المحفوظ ولغة المتصفح وإشارة البلد التقريبية. يمكنك تجاوز ذلك هنا.",
+      "detected": "اللغة الحالية: {locale}"
+    },
+    "encryption": {
+      "title": "تشفير الطلبات إلى coordinator",
+      "description": "عند التفعيل، تُغلق مطالباتك إلى X25519 public key (NaCl Box) طويل الأمد الخاص بـ coordinator قبل مغادرة هذا المتصفح. يفك coordinator التشفير داخل TEE، ويختار مزوّدًا، ثم يعيد الإغلاق إلى مفتاح Secure Enclave الخاص بالمزوّد. أي شيء أمام coordinator (CDN أو proxy أو مراقبو الشبكة) لا يرى إلا ciphertext بعد نفق TLS. اختياري ومتوقف افتراضيًا — يستمر عمل عملاء plaintext API.",
+      "checkbox": "إغلاق كل طلب إلى public key الخاص بـ coordinator",
+      "fetching": "جارٍ جلب مفتاح coordinator...",
+      "unavailable": "لم يضبط هذا coordinator ميزة sender encryption.",
+      "keyInfo": "مفتاح coordinator kid={kid}",
+      "enabledToast": "تم تفعيل التشفير إلى coordinator",
+      "disabledToast": "تم تعطيل التشفير إلى coordinator"
+    },
+    "analytics": {
+      "title": "التحليلات",
+      "description": "تحكّم في ما إذا كان يمكن لـ Darkbloom تحميل Google Analytics مفلترة للخصوصية لقياس استخدام المنتج. تُنظّف معاملات الاستعلام قبل إرسال أحداث التحليلات، باستثناء allowlist صغير للإسناد يُستخدم للحفاظ على قياس الحملات.",
+      "allow": "السماح بالتحليلات",
+      "decline": "رفض التحليلات",
+      "current": "الاختيار الحالي:",
+      "enabledToast": "تم تفعيل التحليلات",
+      "disabledToast": "تم تعطيل التحليلات"
+    },
+    "about": {
+      "title": "حول Darkbloom",
+      "p1": "Darkbloom شبكة استدلال خاص لامركزية. تُوجّه طلباتك إلى مزوّدي Apple Silicon موثّقين عتاديًا مع تحقق Secure Enclave و SIP enforcement وحماية Hardened Runtime.",
+      "p2": "تُتحقق ثقة المزوّد بشكل مستقل عبر فحص متقاطع باستخدام MDM (Mobile Device Management) مع coordinator."
+    }
+  },
+  "ModelsPage": {
+    "title": "النماذج",
+    "heading": "النماذج المتاحة",
+    "description": "نماذج يقدّمها مزوّدون موثّقون عتاديًا على شبكة Darkbloom.",
+    "loading": "جارٍ تحميل النماذج...",
+    "empty": "لا توجد نماذج متاحة. تحقق من اتصال coordinator في الإعدادات.",
+    "hardware": "العتاد",
+    "none": "لا شيء",
+    "perMillionTokens": "لكل 1M رمز",
+    "cheaper": "أرخص بنسبة {percent}%",
+    "vs": "مقابل {competitor}",
+    "providers": "{count, plural, one {# مزوّد} other {# مزوّدين}}",
+    "attested": "موثّق"
+  },
+  "StatsPage": {
+    "title": "إحصاءات الشبكة",
+    "heading": "إحصاءات الشبكة",
+    "description": "مقاييس مباشرة من شبكة الاستدلال اللامركزية Darkbloom",
+    "failedFetch": "فشل جلب الإحصاءات",
+    "failedLoad": "فشل تحميل إحصاءات المنصة",
+    "retry": "إعادة المحاولة",
+    "live": "مباشر",
+    "hardware": "العتاد",
+    "none": "لا شيء",
+    "lastMinutes": "آخر {count} دقيقة",
+    "activityPlaceholder": "سيظهر النشاط هنا",
+    "tokensPerMinute": "الرموز / الدقيقة",
+    "input": "الإدخال",
+    "output": "الإخراج",
+    "tokenPlaceholder": "سيظهر تدفق الرموز هنا",
+    "tokenTooltip": "{input} إدخال / {output} إخراج",
+    "memory": "الذاكرة",
+    "gpu": "GPU",
+    "cpu": "CPU",
+    "bandwidth": "عرض النطاق",
+    "requests": "الطلبات",
+    "tokens": "الرموز",
+    "serving": "يقدّم:",
+    "tokensServed": "الرموز المقدّمة",
+    "tokensInOut": "{input} إدخال / {output} إخراج",
+    "nodesOnline": "العُقد المتصلة",
+    "allHardwareAttested": "كلها موثّقة عتاديًا",
+    "hardwareAttestedCount": "{count} موثّقة عتاديًا",
+    "gbBandwidth": "عرض النطاق GB/s",
+    "combinedThroughput": "إجمالي إنتاجية الذاكرة",
+    "gpuCores": "أنوية GPU",
+    "cpuCores": "أنوية CPU",
+    "pECores": "أنوية P + E",
+    "unifiedRam": "Unified RAM",
+    "avgTokReq": "متوسط Tok/Req",
+    "models": "النماذج",
+    "requestsPerMinute": "الطلبات / الدقيقة",
+    "tokenDistribution": "توزيع الرموز",
+    "inputPercent": "{value} إدخال ({percent}%)",
+    "outputPercent": "{value} إخراج ({percent}%)",
+    "activeModels": "النماذج النشطة",
+    "nodes": "{count, plural, one {node} other {nodes}}",
+    "networkNodes": "عُقد الشبكة",
+    "autoRefresh": "يُحدّث تلقائيًا كل 10 ثوانٍ"
+  },
+  "ApiConsolePage": {
+    "title": "وحدة تحكم API",
+    "auth": "Auth",
+    "request": "الطلب",
+    "response": "الاستجابة",
+    "requiresAuth": "يتطلب header <code>Authorization: Bearer &lt;api_key&gt;</code>",
+    "noApiKey": "لم يتم إنشاء API key",
+    "noKey": "لم يتم إنشاء مفتاح",
+    "intro": "<strong>Darkbloom API</strong> — OpenAI-compatible. بدّل base URL واحتفظ بكودك الحالي. كل طلب مشفّر من طرف إلى طرف ويُعالج على Apple Silicon موثّق عتاديًا.",
+    "endpointReference": "مرجع endpoint",
+    "endpointDescription": "وسّع كل endpoint لرؤية تنسيق الطلب/الاستجابة والملاحظات.",
+    "baseUrl": "Base URL",
+    "baseUrlDescription": "كل endpoint نسبي إلى هذا base URL. Endpoint الخاصة بتوثيق المزوّد والتسعير متاحة علنًا دون مصادقة.",
+    "apiKey": "API Key",
+    "hideKey": "إخفاء المفتاح",
+    "showKey": "إظهار المفتاح",
+    "copyKey": "نسخ المفتاح",
+    "regenerate": "إعادة التوليد",
+    "generate": "توليد",
+    "keyHelp": "استخدم هذا المفتاح في header <code>Authorization: Bearer</code> لكل الطلبات المصادَق عليها.",
+    "quickStart": "بدء سريع",
+    "quickStartDescription": "ثبّت OpenAI SDK أو Vercel AI SDK. Darkbloom API هو OpenAI-compatible بالكامل — غيّر base URL فقط.",
+    "availableModels": "النماذج المتاحة",
+    "modelId": "Model ID",
+    "type": "النوع",
+    "architecture": "البنية",
+    "modelsHelp": "يعتمد توفر النموذج على المزوّدين المتصلين. تحقق من <code>/v1/models</code> للتوفر في الوقت الفعلي.",
+    "chatCompletions": "Chat Completions",
+    "chatDescription": "قم ببث chat completions مع أي نموذج مدعوم. يدعم system messages والمحادثات متعددة الجولات ومخرجات thinking/reasoning.",
+    "listModels": "عرض النماذج",
+    "listModelsDescription": "تحقق من النماذج المتاحة وأعداد المزوّدين وحالة التوثيق."
+  },
+  "LinkPage": {
+    "title": "اربط جهازك",
+    "description": "صل جهاز Mac الخاص بك بحساب Darkbloom لتلقي أرباح مقابل توفير compute."
+  },
+  "DeviceLinkForm": {
+    "loading": "جارٍ التحميل...",
+    "missingToken": "فشل الحصول على auth token. يرجى تسجيل الدخول مرة أخرى.",
+    "failed": "فشل ربط الجهاز",
+    "networkError": "خطأ في الشبكة. يرجى التحقق من اتصالك.",
+    "successTitle": "تم ربط الجهاز!",
+    "successBody": "أصبح مزوّدك متصلًا بحسابك. ستُضاف الأرباح تلقائيًا.",
+    "successClose": "يمكنك إغلاق هذه الصفحة.",
+    "signInPrompt": "سجّل الدخول إلى حساب Darkbloom لربط جهازك.",
+    "signIn": "تسجيل الدخول",
+    "signedInAs": "مسجّل الدخول باسم",
+    "yourAccount": "حسابك",
+    "codeLabel": "أدخل الرمز المعروض في الطرفية",
+    "linking": "جارٍ الربط...",
+    "linkDevice": "ربط الجهاز",
+    "run": "شغّل",
+    "runSuffix": "على جهاز Mac الخاص بك للحصول على رمز."
+  },
+  "ProvidersLayout": {
+    "title": "لوحة تحكم المزوّد",
+    "dashboard": "لوحة التحكم",
+    "setup": "الإعداد",
+    "earnings": "الأرباح"
+  },
+  "BillingPage": {
+    "title": "الفوترة",
+    "balance": "الرصيد",
+    "loading": "جارٍ التحميل...",
+    "credits": "{amount} رصيدًا",
+    "earnings": "{amount} أرباحًا",
+    "buyCredits": "شراء أرصدة",
+    "inviteCode": "رمز الدعوة",
+    "redeem": "استرداد",
+    "inviteCredited": "تمت إضافة {amount} إلى حسابك",
+    "totalSpent": "إجمالي المصروف",
+    "totalTokens": "إجمالي الرموز",
+    "requests": "الطلبات",
+    "usageHistory": "سجل الاستخدام",
+    "noUsage": "لا يوجد سجل استخدام بعد. ابدأ محادثة لرؤية الطلبات هنا.",
+    "time": "الوقت",
+    "model": "النموذج",
+    "tokens": "الرموز",
+    "cost": "التكلفة",
+    "creditsDescription": "تُستخدم الأرصدة لدفع طلبات الاستدلال.",
+    "amountUsd": "المبلغ (USD)",
+    "maxDeposit": "الحد الأقصى للإيداع هو $20",
+    "redirecting": "جارٍ إعادة التوجيه...",
+    "continue": "متابعة",
+    "stripePowered": "مدعوم من Stripe. دفع آمن بالبطاقة."
+  },
+  "EarnPage": {
+    "title": "حاسبة الأرباح",
+    "heading": "حاسبة أرباح المزوّد",
+    "loading": "جارٍ التحميل...",
+    "signIn": "تسجيل الدخول",
+    "estimatedEarnings": "الأرباح المقدّرة"
+  },
+  "Common": {
+    "auth": "Auth",
+    "request": "الطلب",
+    "response": "الاستجابة",
+    "notes": "ملاحظات",
+    "copied": "تم النسخ",
+    "copy": "نسخ",
+    "loading": "جارٍ التحميل...",
+    "refresh": "تحديث",
+    "error": "خطأ"
+  }
+}

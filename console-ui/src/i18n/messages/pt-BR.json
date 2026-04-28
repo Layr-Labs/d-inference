@@ -1,0 +1,298 @@
+{
+  "Metadata": {
+    "title": "Darkbloom — IA privada em Macs verificados",
+    "description": "Inferência de IA privada por meio de provedores Apple Silicon com atestação de hardware. Seus prompts permanecem criptografados, seus dados continuam sendo seus."
+  },
+  "Shell": {
+    "loading": "Carregando..."
+  },
+  "TopBar": {
+    "openSidebar": "Abrir barra lateral"
+  },
+  "Sidebar": {
+    "tagline": "Um projeto da Eigen Labs · Prévia de pesquisa",
+    "newChat": "Novo chat",
+    "disclaimer": "Prévia experimental de pesquisa. Fornecido no estado em que se encontra para avaliação. Não destinado a uso em produção.",
+    "switchDark": "Alternar para modo escuro",
+    "switchLight": "Alternar para modo claro",
+    "signOut": "Sair",
+    "nav": {
+      "chat": "Chat",
+      "stats": "Estatísticas",
+      "providers": "Painel do provedor",
+      "earn": "Ganhar",
+      "api": "API",
+      "models": "Modelos",
+      "billing": "Faturamento",
+      "settings": "Configurações"
+    },
+    "language": "Idioma",
+    "changeLanguage": "Alterar idioma"
+  },
+  "AnalyticsConsent": {
+    "body": "Permita análises de uso filtradas por privacidade para ajudar a melhorar a experiência do produto Darkbloom.",
+    "allow": "Permitir análises",
+    "decline": "Recusar",
+    "storedIn": "Armazenado em <code>{key}</code>"
+  },
+  "ChatPage": {
+    "loading": "Carregando...",
+    "signIn": "Entrar",
+    "trustLine": "Criptografado de ponta a ponta · Apple Silicon · Descentralizado",
+    "guest": {
+      "title": "Inferência privada em hardware verificado.",
+      "subtitle": "Seus prompts permanecem criptografados, seus dados continuam sendo seus.",
+      "signInHint": "Entre com seu e-mail para começar"
+    },
+    "empty": {
+      "subtitle": "Inferência privada em hardware verificado"
+    },
+    "suggestions": {
+      "quantum": {
+        "label": "Explicar computação quântica",
+        "prompt": "Explique computação quântica em termos simples"
+      },
+      "python": {
+        "label": "Escrever um script Python",
+        "prompt": "Escreva um script Python que leia um CSV e gere um relatório resumido"
+      },
+      "frameworks": {
+        "label": "Comparar frameworks de ML",
+        "prompt": "Compare PyTorch e JAX para casos de uso em pesquisa"
+      },
+      "zk": {
+        "label": "Explicar provas de conhecimento zero",
+        "prompt": "O que são provas de conhecimento zero e como são usadas em blockchain?"
+      }
+    },
+    "errors": {
+      "stream": "Erro: {error}",
+      "connection": "Erro de conexão: {error}"
+    }
+  },
+  "ChatInput": {
+    "selectModel": "Selecionar modelo",
+    "signInToChat": "Entre para começar a conversar",
+    "placeholder": "Envie uma mensagem...",
+    "modelSelector": "Selecionar modelo",
+    "send": "Enviar mensagem",
+    "stop": "Parar geração"
+  },
+  "ChatMessage": {
+    "code": "código",
+    "copy": "Copiar",
+    "copied": "Copiado",
+    "thinking": "Pensando",
+    "thinkingStreaming": "Pensando...",
+    "chars": "({count} caracteres)",
+    "tokens": "tokens",
+    "live": "ao vivo",
+    "retry": "Tentar novamente",
+    "regenerate": "Regenerar"
+  },
+  "SettingsPage": {
+    "title": "Configurações",
+    "save": "Salvar configurações",
+    "saved": "Salvo",
+    "savedToast": "Configurações salvas",
+    "coordinator": {
+      "title": "URL do coordenador",
+      "description": "A URL base do coordenador da Darkbloom que roteia suas solicitações de inferência para provedores atestados.",
+      "test": "Testar conexão",
+      "connected": "Conectado — {count, plural, one {# provedor} other {# provedores}} online"
+    },
+    "language": {
+      "title": "Idioma",
+      "description": "A Darkbloom escolhe automaticamente um idioma com base na sua preferência salva, no idioma do navegador e em um sinal aproximado de país. Você pode substituí-lo aqui.",
+      "detected": "Idioma atual: {locale}"
+    },
+    "encryption": {
+      "title": "Criptografar solicitações para o coordenador",
+      "description": "Quando ativado, seus prompts são selados com a chave pública X25519 de longa duração do coordenador (NaCl Box) antes de saírem deste navegador. O coordenador descriptografa dentro do seu TEE, escolhe um provedor e sela novamente com a chave Secure Enclave do provedor. Qualquer elemento à frente do coordenador (CDN, proxies, observadores de rede) vê apenas texto cifrado além do túnel TLS. Opcional e desativado por padrão — clientes API em texto claro continuam funcionando.",
+      "checkbox": "Selar cada solicitação com a chave pública do coordenador",
+      "fetching": "buscando chave do coordenador...",
+      "unavailable": "Este coordenador não configurou criptografia do remetente.",
+      "keyInfo": "chave do coordenador kid={kid}",
+      "enabledToast": "Criptografia para o coordenador ativada",
+      "disabledToast": "Criptografia para o coordenador desativada"
+    },
+    "analytics": {
+      "title": "Análises",
+      "description": "Controle se a Darkbloom pode carregar Google Analytics filtrado por privacidade para medir o uso do produto. Parâmetros de consulta são sanitizados antes que eventos de análise sejam enviados, exceto pela pequena lista de atribuição permitida usada para preservar a medição de campanhas.",
+      "allow": "Permitir análises",
+      "decline": "Recusar análises",
+      "current": "Escolha atual:",
+      "enabledToast": "Análises ativadas",
+      "disabledToast": "Análises desativadas"
+    },
+    "about": {
+      "title": "Sobre a Darkbloom",
+      "p1": "A Darkbloom é uma rede descentralizada de inferência privada. Suas solicitações são roteadas para provedores Apple Silicon com atestação de hardware, verificação Secure Enclave, aplicação de SIP e proteção Hardened Runtime.",
+      "p2": "A confiança no provedor é verificada de forma independente por meio de verificação cruzada de MDM (Mobile Device Management) com o coordenador."
+    }
+  },
+  "ModelsPage": {
+    "title": "Modelos",
+    "heading": "Modelos disponíveis",
+    "description": "Modelos servidos por provedores com atestação de hardware na rede Darkbloom.",
+    "loading": "Carregando modelos...",
+    "empty": "Nenhum modelo disponível. Verifique sua conexão com o coordenador em Configurações.",
+    "hardware": "Hardware",
+    "none": "Nenhum",
+    "perMillionTokens": "por 1M tokens",
+    "cheaper": "{percent}% mais barato",
+    "vs": "vs {competitor}",
+    "providers": "{count, plural, one {# provedor} other {# provedores}}",
+    "attested": "Atestado"
+  },
+  "StatsPage": {
+    "title": "Estatísticas da rede",
+    "heading": "Estatísticas da rede",
+    "description": "Métricas ao vivo da rede descentralizada de inferência Darkbloom",
+    "failedFetch": "Falha ao buscar estatísticas",
+    "failedLoad": "Falha ao carregar estatísticas da plataforma",
+    "retry": "Tentar novamente",
+    "live": "Ao vivo",
+    "hardware": "Hardware",
+    "none": "Nenhum",
+    "lastMinutes": "Últimos {count} min",
+    "activityPlaceholder": "A atividade aparecerá aqui",
+    "tokensPerMinute": "Tokens / minuto",
+    "input": "Entrada",
+    "output": "Saída",
+    "tokenPlaceholder": "O fluxo de tokens aparecerá aqui",
+    "tokenTooltip": "{input} entrada / {output} saída",
+    "memory": "Memória",
+    "gpu": "GPU",
+    "cpu": "CPU",
+    "bandwidth": "Largura de banda",
+    "requests": "Solicitações",
+    "tokens": "Tokens",
+    "serving": "Servindo:",
+    "tokensServed": "Tokens servidos",
+    "tokensInOut": "{input} entrada / {output} saída",
+    "nodesOnline": "Nós online",
+    "allHardwareAttested": "todos com atestação de hardware",
+    "hardwareAttestedCount": "{count} com atestação de hardware",
+    "gbBandwidth": "Largura de banda GB/s",
+    "combinedThroughput": "throughput de memória combinado",
+    "gpuCores": "Núcleos GPU",
+    "cpuCores": "Núcleos CPU",
+    "pECores": "núcleos P + E",
+    "unifiedRam": "RAM unificada",
+    "avgTokReq": "Méd. Tok/Sol.",
+    "models": "Modelos",
+    "requestsPerMinute": "Solicitações / minuto",
+    "tokenDistribution": "Distribuição de tokens",
+    "inputPercent": "{value} entrada ({percent}%)",
+    "outputPercent": "{value} saída ({percent}%)",
+    "activeModels": "Modelos ativos",
+    "nodes": "{count, plural, one {node} other {nodes}}",
+    "networkNodes": "Nós da rede",
+    "autoRefresh": "Atualiza automaticamente a cada 10 segundos"
+  },
+  "ApiConsolePage": {
+    "title": "Console API",
+    "auth": "Autenticação",
+    "request": "Solicitação",
+    "response": "Resposta",
+    "requiresAuth": "Requer o cabeçalho <code>Authorization: Bearer &lt;api_key&gt;</code>",
+    "noApiKey": "Nenhuma chave API gerada",
+    "noKey": "Nenhuma chave gerada",
+    "intro": "<strong>Darkbloom API</strong> — compatível com OpenAI. Troque sua URL base e mantenha seu código existente. Cada solicitação é criptografada de ponta a ponta e processada em Apple Silicon com atestação de hardware.",
+    "endpointReference": "Referência de endpoints",
+    "endpointDescription": "Expanda cada endpoint para ver o formato de solicitação/resposta e notas.",
+    "baseUrl": "URL base",
+    "baseUrlDescription": "Todos os endpoints são relativos a esta URL base. Endpoints de atestação de provedores e preços são acessíveis publicamente sem autenticação.",
+    "apiKey": "Chave API",
+    "hideKey": "Ocultar chave",
+    "showKey": "Mostrar chave",
+    "copyKey": "Copiar chave",
+    "regenerate": "Regenerar",
+    "generate": "Gerar",
+    "keyHelp": "Use esta chave no cabeçalho <code>Authorization: Bearer</code> para todas as solicitações autenticadas.",
+    "quickStart": "Início rápido",
+    "quickStartDescription": "Instale o OpenAI SDK ou Vercel AI SDK. A Darkbloom API é totalmente compatível com OpenAI — basta alterar a URL base.",
+    "availableModels": "Modelos disponíveis",
+    "modelId": "ID do modelo",
+    "type": "Tipo",
+    "architecture": "Arquitetura",
+    "modelsHelp": "A disponibilidade de modelos depende de provedores online. Consulte <code>/v1/models</code> para disponibilidade em tempo real.",
+    "chatCompletions": "Chat Completions",
+    "chatDescription": "Transmita chat completions com qualquer modelo compatível. Oferece suporte a mensagens de sistema, conversas em vários turnos e saída de pensamento/raciocínio.",
+    "listModels": "Listar modelos",
+    "listModelsDescription": "Verifique modelos disponíveis, contagens de provedores e status de atestação."
+  },
+  "LinkPage": {
+    "title": "Vincular seu dispositivo",
+    "description": "Conecte seu Mac à sua conta Darkbloom para receber ganhos por fornecer computação."
+  },
+  "DeviceLinkForm": {
+    "loading": "Carregando...",
+    "missingToken": "Falha ao obter token de autenticação. Faça login novamente.",
+    "failed": "Falha ao vincular dispositivo",
+    "networkError": "Erro de rede. Verifique sua conexão.",
+    "successTitle": "Dispositivo vinculado!",
+    "successBody": "Seu provedor agora está conectado à sua conta. Os ganhos serão creditados automaticamente.",
+    "successClose": "Você pode fechar esta página.",
+    "signInPrompt": "Entre na sua conta Darkbloom para vincular seu dispositivo.",
+    "signIn": "Entrar",
+    "signedInAs": "Conectado como",
+    "yourAccount": "sua conta",
+    "codeLabel": "Digite o código mostrado no seu terminal",
+    "linking": "Vinculando...",
+    "linkDevice": "Vincular dispositivo",
+    "run": "Execute",
+    "runSuffix": "no seu Mac para obter um código."
+  },
+  "ProvidersLayout": {
+    "title": "Painel do provedor",
+    "dashboard": "Painel",
+    "setup": "Configuração",
+    "earnings": "Ganhos"
+  },
+  "BillingPage": {
+    "title": "Faturamento",
+    "balance": "Saldo",
+    "loading": "Carregando...",
+    "credits": "{amount} créditos",
+    "earnings": "{amount} ganhos",
+    "buyCredits": "Comprar créditos",
+    "inviteCode": "Código de convite",
+    "redeem": "Resgatar",
+    "inviteCredited": "{amount} creditados na sua conta",
+    "totalSpent": "Total gasto",
+    "totalTokens": "Total de tokens",
+    "requests": "Solicitações",
+    "usageHistory": "Histórico de uso",
+    "noUsage": "Ainda não há histórico de uso. Inicie um chat para ver solicitações aqui.",
+    "time": "Hora",
+    "model": "Modelo",
+    "tokens": "Tokens",
+    "cost": "Custo",
+    "creditsDescription": "Créditos são usados para pagar solicitações de inferência.",
+    "amountUsd": "Valor (USD)",
+    "maxDeposit": "O depósito máximo é de $20",
+    "redirecting": "Redirecionando...",
+    "continue": "Continuar",
+    "stripePowered": "Desenvolvido por Stripe. Pagamento seguro com cartão."
+  },
+  "EarnPage": {
+    "title": "Calculadora de ganhos",
+    "heading": "Calculadora de ganhos do provedor",
+    "loading": "Carregando...",
+    "signIn": "Entrar",
+    "estimatedEarnings": "Ganhos estimados"
+  },
+  "Common": {
+    "auth": "Autenticação",
+    "request": "Solicitação",
+    "response": "Resposta",
+    "notes": "Notas",
+    "copied": "Copiado",
+    "copy": "Copiar",
+    "loading": "Carregando...",
+    "refresh": "Atualizar",
+    "error": "Erro"
+  }
+}

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -68,37 +69,31 @@ func (p *StripeProcessor) CreateCheckoutSession(req CheckoutSessionRequest) (*Ch
 		return nil, errors.New("minimum Stripe charge is $0.50 (50 cents)")
 	}
 
-	// Build form-encoded body for Stripe API
-	params := map[string]string{
-		"mode":                                "payment",
-		"success_url":                         p.successURL + "?session_id={CHECKOUT_SESSION_ID}",
-		"cancel_url":                          p.cancelURL,
-		"line_items[0][price_data][currency]": req.Currency,
-		"line_items[0][price_data][product_data][name]": "Darkbloom Inference Credits",
-		"line_items[0][price_data][unit_amount]":        strconv.FormatInt(req.AmountCents, 10),
-		"line_items[0][quantity]":                       "1",
-		"payment_method_types[0]":                       "card",
-	}
+	// Build form-encoded body for Stripe API.
+	params := url.Values{}
+	params.Set("mode", "payment")
+	params.Set("success_url", p.successURL+"?session_id={CHECKOUT_SESSION_ID}")
+	params.Set("cancel_url", p.cancelURL)
+	params.Set("line_items[0][price_data][currency]", req.Currency)
+	params.Set("line_items[0][price_data][product_data][name]", "Darkbloom Inference Credits")
+	params.Set("line_items[0][price_data][unit_amount]", strconv.FormatInt(req.AmountCents, 10))
+	params.Set("line_items[0][quantity]", "1")
+	params.Set("payment_method_types[0]", "card")
 
 	if req.CustomerEmail != "" {
-		params["customer_email"] = req.CustomerEmail
+		params.Set("customer_email", req.CustomerEmail)
 	}
 
-	// Add metadata
-	if req.Metadata != nil {
-		for k, v := range req.Metadata {
-			params["metadata["+k+"]"] = v
-		}
+	// Copy metadata onto both the Checkout Session and underlying PaymentIntent
+	// so purchases are identifiable from either Stripe dashboard surface.
+	for k, v := range checkoutMetadata(req.Metadata) {
+		params.Set("metadata["+k+"]", v)
+		params.Set("payment_intent_data[metadata]["+k+"]", v)
 	}
 
-	// Build URL-encoded form body
-	var parts []string
-	for k, v := range params {
-		parts = append(parts, k+"="+v)
-	}
-	body := strings.Join(parts, "&")
+	body := params.Encode()
 
-	httpReq, err := http.NewRequest(http.MethodPost, "https://api.stripe.com/v1/checkout/sessions",
+	httpReq, err := http.NewRequest(http.MethodPost, stripeAPIBase+"/v1/checkout/sessions",
 		strings.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("stripe: build request: %w", err)
@@ -134,6 +129,19 @@ func (p *StripeProcessor) CreateCheckoutSession(req CheckoutSessionRequest) (*Ch
 		URL:         session.URL,
 		AmountCents: req.AmountCents,
 	}, nil
+}
+
+func checkoutMetadata(metadata map[string]string) map[string]string {
+	params := map[string]string{
+		"app":           "darkbloom",
+		"platform":      "eigeninference",
+		"purchase_type": "inference_credits",
+		"source":        "coordinator",
+	}
+	for k, v := range metadata {
+		params[k] = v
+	}
+	return params
 }
 
 // WebhookEvent represents a parsed Stripe webhook event.
@@ -240,7 +248,7 @@ func (p *StripeProcessor) ParseCheckoutSession(event *WebhookEvent) (*CheckoutSe
 // RetrieveSession fetches a checkout session from the Stripe API.
 func (p *StripeProcessor) RetrieveSession(sessionID string) (*CheckoutSessionEvent, error) {
 	httpReq, err := http.NewRequest(http.MethodGet,
-		"https://api.stripe.com/v1/checkout/sessions/"+sessionID, nil)
+		stripeAPIBase+"/v1/checkout/sessions/"+sessionID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("stripe: build request: %w", err)
 	}

@@ -82,6 +82,11 @@ func (s *Server) handleStripeCreateSession(w http.ResponseWriter, r *http.Reques
 		Currency:      "usd",
 		CustomerEmail: req.Email,
 		Metadata: map[string]string{
+			"app":                "darkbloom",
+			"platform":           "eigeninference",
+			"purchase_type":      "inference_credits",
+			"source":             "coordinator",
+			"coordinator_host":   r.Host,
 			"billing_session_id": sessionID,
 			"consumer_key":       accountID,
 			"referral_code":      req.ReferralCode,

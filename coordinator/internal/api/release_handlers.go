@@ -201,18 +201,38 @@ func (s *Server) validateReleaseMetadata(release *store.Release) error {
 		return fmt.Errorf("url is required")
 	}
 	if s.r2CDNURL != "" {
-		expectedURL, err := expectedReleaseArtifactURL(s.r2CDNURL, release.Version, release.Platform)
-		if err != nil {
+		if _, err := s.trustedReleaseArtifactURL(release); err != nil {
 			return err
-		}
-		if !sameReleaseArtifactURL(release.URL, expectedURL) {
-			return fmt.Errorf("url must match configured release artifact path")
 		}
 	}
 	return nil
 }
 
+func (s *Server) trustedReleaseArtifactURL(release *store.Release) (*url.URL, error) {
+	expectedURL, err := expectedReleaseArtifactURL(s.r2CDNURL, release.Version, release.Platform)
+	if err != nil {
+		return nil, err
+	}
+	if !sameReleaseArtifactURL(release.URL, expectedURL) {
+		return nil, fmt.Errorf("url must match configured release artifact path")
+	}
+	parsed, err := url.Parse(expectedURL)
+	if err != nil {
+		return nil, fmt.Errorf("configured release artifact URL is invalid")
+	}
+	return parsed, nil
+}
+
 func expectedReleaseArtifactURL(baseURL, version, platform string) (string, error) {
+	version = strings.TrimSpace(version)
+	platform = strings.TrimSpace(platform)
+	if !releaseVersionPattern.MatchString(version) {
+		return "", fmt.Errorf("version must be semver, e.g. 1.2.3 or 1.2.3-dev.1")
+	}
+	if !releasePlatformPattern.MatchString(platform) {
+		return "", fmt.Errorf("platform contains invalid characters")
+	}
+
 	u, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil {
 		return "", fmt.Errorf("configured R2 CDN URL is invalid")
@@ -299,10 +319,16 @@ func normalizeTemplateHashes(raw string) (string, error) {
 }
 
 func (s *Server) verifyReleaseArtifact(ctx context.Context, release *store.Release) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, release.URL, nil)
+	downloadURL, err := s.trustedReleaseArtifactURL(release)
 	if err != nil {
-		return fmt.Errorf("build download request: %w", err)
+		return err
 	}
+	req := &http.Request{
+		Method: http.MethodGet,
+		URL:    downloadURL,
+		Header: make(http.Header),
+	}
+	req = req.WithContext(ctx)
 
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {

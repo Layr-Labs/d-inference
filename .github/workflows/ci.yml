@@ -59,6 +59,19 @@ jobs:
       - name: Clippy
         run: cd provider && cargo clippy
 
+  test-install:
+    name: Provider Install (E2E)
+    runs-on: macos-latest
+    steps:
+      - name: Install provider
+        run: curl -fsSL https://api.darkbloom.dev/install.sh | bash
+
+      - name: Verify darkbloom runs
+        run: |
+          export PATH="$HOME/.darkbloom/bin:$PATH"
+          darkbloom --version
+          darkbloom doctor
+
   lint-console:
     name: Console UI Lint & Build
     runs-on: ubuntu-latest

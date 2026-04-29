@@ -1222,9 +1222,34 @@ mod tests {
                 .await
                 .unwrap();
 
-            // Read heartbeat or any response
-            if let Some(Ok(Message::Text(text))) = read.next().await {
-                received_messages.push(text.to_string());
+            // Read until the plaintext rejection is observed. The client may
+            // emit WebSocket control frames or heartbeats before the error.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now())
+                else {
+                    break;
+                };
+                let frame = match tokio::time::timeout(remaining, read.next()).await {
+                    Ok(Some(Ok(frame))) => frame,
+                    _ => break,
+                };
+
+                match frame {
+                    Message::Text(text) => {
+                        let is_inference_error = serde_json::from_str::<serde_json::Value>(&text)
+                            .map(|v| v["type"] == "inference_error")
+                            .unwrap_or(false);
+                        received_messages.push(text.to_string());
+                        if is_inference_error {
+                            break;
+                        }
+                    }
+                    Message::Ping(data) => {
+                        let _ = write.send(Message::Pong(data)).await;
+                    }
+                    _ => {}
+                }
             }
 
             // Send cancel

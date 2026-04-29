@@ -2287,6 +2287,25 @@ async fn cmd_serve(
             }
         };
 
+    // Load or create the persistent provider-bound identity. This is the
+    // entitlement-gated key the coordinator requires for private text routing.
+    let provider_identity: Option<std::sync::Arc<secure_enclave_key::ProviderIdentityHandle>> =
+        match secure_enclave_key::ProviderIdentityHandle::load_or_create() {
+            Ok(h) => {
+                tracing::info!(
+                    "Provider-bound identity loaded (public: {})",
+                    h.public_key_base64()
+                );
+                Some(std::sync::Arc::new(h))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Provider-bound identity unavailable: {e}; private text routing will be disabled"
+                );
+                None
+            }
+        };
+
     // Clean up legacy persistent key files from previous versions
     secure_enclave_key::cleanup_legacy_key_files();
 
@@ -2617,17 +2636,17 @@ async fn cmd_serve(
             std::sync::Arc::new(std::sync::Mutex::new(selected_models.clone()));
 
         // Compute weight hashes for all active models.
-        let initial_model_hash = models::compute_weight_hash(&model);
+        let mut all_model_hashes: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for model_id in &selected_models {
+            if let Some(hash) = models::compute_weight_hash(model_id) {
+                all_model_hashes.insert(model_id.clone(), hash);
+            }
+        }
+        let initial_model_hash = all_model_hashes.get(&model).cloned();
         let current_model_hash: std::sync::Arc<std::sync::Mutex<Option<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(initial_model_hash.clone()));
         rehash_model_hash_opt = Some(current_model_hash.clone());
-
-        // Collect per-model weight hashes for attestation.
-        let mut all_model_hashes: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        if let Some(ref h) = initial_model_hash {
-            all_model_hashes.insert(model.clone(), h.clone());
-        }
 
         // Shared backend capacity data (updated by polling task, read by heartbeats).
         let backend_capacity: std::sync::Arc<std::sync::Mutex<Option<protocol::BackendCapacity>>> =
@@ -2680,7 +2699,8 @@ async fn cmd_serve(
         .with_current_model_hash(current_model_hash)
         .with_model_hashes(all_model_hashes)
         .with_backend_capacity(backend_capacity)
-        .with_se_handle(se_handle.clone());
+        .with_se_handle(se_handle.clone())
+        .with_provider_identity(provider_identity.clone());
 
         // Store coordinator client for deferred spawn after backends are ready.
         deferred_coordinator = Some((client, event_tx, outbound_rx, shutdown_rx));
@@ -5831,27 +5851,31 @@ async fn cmd_update(coordinator: String, force: bool) -> Result<()> {
 
     // Download the bundle
     println!("  Downloading update...");
-    let tmp_path = "/tmp/eigeninference-bundle.tar.gz";
+    let download_dir =
+        UpdateStageDir::new().context("failed to create update download directory")?;
+    let tmp_path = download_dir.path().join("eigeninference-bundle.tar.gz");
     let download = client.get(download_url).send().await?;
     if !download.status().is_success() {
         anyhow::bail!("Download failed: {}", download.status());
     }
     let bytes = download.bytes().await?;
-    std::fs::write(tmp_path, &bytes)?;
+    std::fs::write(&tmp_path, &bytes)?;
     println!("  Downloaded {} MB", bytes.len() / 1_048_576);
 
-    // Verify bundle hash if provided by the coordinator.
+    // Verify bundle hash from release metadata before extraction.
     let expected_hash = info["bundle_hash"].as_str().unwrap_or("");
-    if !expected_hash.is_empty() {
-        let actual_hash = security::sha256_hex(&bytes);
-        if actual_hash != expected_hash {
-            std::fs::remove_file(tmp_path).ok();
-            anyhow::bail!(
-                "Bundle hash mismatch — download may be compromised!\n  Expected: {expected_hash}\n  Got:      {actual_hash}"
-            );
-        }
-        println!("  Hash verified ✓");
+    if expected_hash.is_empty() {
+        std::fs::remove_file(&tmp_path).ok();
+        anyhow::bail!("Coordinator did not provide bundle_hash; refusing update");
     }
+    let actual_hash = security::sha256_hex(&bytes);
+    if actual_hash != expected_hash {
+        std::fs::remove_file(&tmp_path).ok();
+        anyhow::bail!(
+            "Bundle hash mismatch — download may be compromised!\n  Expected: {expected_hash}\n  Got:      {actual_hash}"
+        );
+    }
+    println!("  Hash verified ✓");
 
     // Extract and install
     let eigeninference_dir = dirs::home_dir()
@@ -5860,14 +5884,20 @@ async fn cmd_update(coordinator: String, force: bool) -> Result<()> {
     let bin_dir = eigeninference_dir.join("bin");
 
     println!("  Installing...");
-    let status = std::process::Command::new("tar")
-        .args(["xzf", tmp_path, "-C", &eigeninference_dir.to_string_lossy()])
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("tar extraction failed");
+    let stage_dir = UpdateStageDir::new().context("failed to create update staging directory")?;
+    extract_update_tarball(&tmp_path, stage_dir.path())?;
+    verify_darkbloom_code_identity(
+        &bundled_update_binary(stage_dir.path(), "darkbloom"),
+        "darkbloom",
+    )?;
+    let staged_enclave = bundled_update_binary(stage_dir.path(), "eigeninference-enclave");
+    if staged_enclave.exists() {
+        verify_darkbloom_code_identity(&staged_enclave, "eigeninference-enclave")?;
     }
+    copy_update_tree(stage_dir.path(), &eigeninference_dir)?;
 
     // Move binaries to bin dir
+    std::fs::create_dir_all(&bin_dir)?;
     let _ = std::fs::rename(
         eigeninference_dir.join("darkbloom"),
         bin_dir.join("darkbloom"),
@@ -5891,7 +5921,7 @@ async fn cmd_update(coordinator: String, force: bool) -> Result<()> {
         }
     }
 
-    std::fs::remove_file(tmp_path).ok();
+    std::fs::remove_file(&tmp_path).ok();
 
     let coordinator_http = base_url
         .replace("wss://", "https://")
@@ -5965,6 +5995,9 @@ fn emit_update_warning(stdout: bool, message: &str) {
     }
 }
 
+const EXPECTED_PROVIDER_TEAM_ID: &str = "SLDQ2GJ6TL";
+const EXPECTED_PROVIDER_ACCESS_GROUP: &str = "SLDQ2GJ6TL.io.darkbloom.provider";
+
 fn parse_codesign_team_identifier(output: &str) -> Option<String> {
     output.lines().find_map(|line| {
         line.trim()
@@ -5989,6 +6022,56 @@ fn codesign_team_identifier(path: &std::path::Path) -> Result<String> {
 
     parse_codesign_team_identifier(&combined)
         .ok_or_else(|| anyhow::anyhow!("{} is missing a TeamIdentifier", path.display()))
+}
+
+fn verify_darkbloom_code_identity(path: &std::path::Path, name: &str) -> Result<()> {
+    if !path.exists() {
+        anyhow::bail!("{name} missing at {}", path.display());
+    }
+
+    let verify = std::process::Command::new("codesign")
+        .args(["--verify", "--strict", "--verbose", &path.to_string_lossy()])
+        .output()
+        .with_context(|| format!("failed to verify code signature for {}", path.display()))?;
+    if !verify.status.success() {
+        let detail = String::from_utf8_lossy(&verify.stderr).trim().to_string();
+        anyhow::bail!("{name} code signature is invalid: {detail}");
+    }
+
+    let team = codesign_team_identifier(path)?;
+    if team != EXPECTED_PROVIDER_TEAM_ID {
+        anyhow::bail!(
+            "{name} signed by unexpected Team ID {team}; expected {EXPECTED_PROVIDER_TEAM_ID}"
+        );
+    }
+
+    let entitlements = std::process::Command::new("codesign")
+        .args(["-d", "--entitlements", ":-", &path.to_string_lossy()])
+        .output()
+        .with_context(|| format!("failed to read entitlements for {}", path.display()))?;
+    let entitlements_text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&entitlements.stdout),
+        String::from_utf8_lossy(&entitlements.stderr)
+    );
+    if !entitlements.status.success() || !entitlements_text.contains(EXPECTED_PROVIDER_ACCESS_GROUP)
+    {
+        anyhow::bail!(
+            "{name} missing provider keychain access-group entitlement {EXPECTED_PROVIDER_ACCESS_GROUP}"
+        );
+    }
+
+    if let Ok(spctl) = std::process::Command::new("spctl")
+        .args(["-a", "-t", "execute", &path.to_string_lossy()])
+        .output()
+    {
+        if !spctl.status.success() {
+            let detail = String::from_utf8_lossy(&spctl.stderr).trim().to_string();
+            anyhow::bail!("{name} rejected by Gatekeeper/notarization policy: {detail}");
+        }
+    }
+
+    Ok(())
 }
 
 fn collect_python_core_signature_targets(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -6066,6 +6149,12 @@ fn verify_installed_update_runtime(
     coordinator_http: &str,
     stdout: bool,
 ) -> Result<()> {
+    verify_darkbloom_code_identity(&eigeninference_dir.join("bin/darkbloom"), "darkbloom")?;
+    let enclave_path = eigeninference_dir.join("bin/eigeninference-enclave");
+    if enclave_path.exists() {
+        verify_darkbloom_code_identity(&enclave_path, "eigeninference-enclave")?;
+    }
+
     let bundled_python = eigeninference_dir.join("python/bin/python3.12");
 
     if let Err(err) = verify_python_core_signature_match(eigeninference_dir) {
@@ -6118,6 +6207,127 @@ fn verify_installed_update_runtime(
         anyhow::bail!("Python site-packages could not be verified after update");
     }
 
+    Ok(())
+}
+
+struct UpdateStageDir {
+    path: std::path::PathBuf,
+}
+
+impl UpdateStageDir {
+    fn new() -> Result<Self> {
+        let base = std::env::temp_dir();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        for attempt in 0..100 {
+            let path = base.join(format!(
+                "darkbloom-update-{}-{now}-{attempt}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err).context("create update staging directory"),
+            }
+        }
+        anyhow::bail!("could not allocate unique update staging directory")
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for UpdateStageDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn validate_update_tarball(tarball: &std::path::Path) -> Result<()> {
+    let list = std::process::Command::new("tar")
+        .args(["tzf", &tarball.to_string_lossy()])
+        .output()
+        .with_context(|| format!("failed to list update archive {}", tarball.display()))?;
+    if !list.status.success() {
+        anyhow::bail!("update archive is not readable");
+    }
+
+    for member in String::from_utf8_lossy(&list.stdout).lines() {
+        let path = std::path::Path::new(member);
+        if member.is_empty() || path.is_absolute() {
+            anyhow::bail!("update archive contains unsafe path: {member}");
+        }
+        if path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            anyhow::bail!("update archive contains path traversal: {member}");
+        }
+    }
+
+    let verbose = std::process::Command::new("tar")
+        .args(["tvzf", &tarball.to_string_lossy()])
+        .output()
+        .with_context(|| format!("failed to inspect update archive {}", tarball.display()))?;
+    if !verbose.status.success() {
+        anyhow::bail!("update archive metadata is not readable");
+    }
+    for line in String::from_utf8_lossy(&verbose.stdout).lines() {
+        if line.starts_with('l') || line.starts_with('h') {
+            anyhow::bail!("update archive contains links; refusing unsafe archive");
+        }
+    }
+
+    Ok(())
+}
+
+fn extract_update_tarball(tarball: &std::path::Path, stage_dir: &std::path::Path) -> Result<()> {
+    validate_update_tarball(tarball)?;
+    let status = std::process::Command::new("tar")
+        .args([
+            "xzf",
+            &tarball.to_string_lossy(),
+            "-C",
+            &stage_dir.to_string_lossy(),
+        ])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("tar extraction failed");
+    }
+    Ok(())
+}
+
+fn bundled_update_binary(root: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let nested = root.join("bin").join(name);
+    if nested.exists() {
+        return nested;
+    }
+    root.join(name)
+}
+
+fn copy_update_tree(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            anyhow::bail!("update staging contains symlink: {}", src_path.display());
+        }
+        if file_type.is_dir() {
+            copy_update_tree(&src_path, &dst_path)?;
+        } else if file_type.is_file() {
+            if let Some(parent) = dst_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&src_path, &dst_path)
+                .with_context(|| format!("failed to install {}", dst_path.display()))?;
+        }
+    }
     Ok(())
 }
 
@@ -6186,19 +6396,22 @@ async fn auto_update_check(coordinator_base_url: &str) -> Result<bool> {
     }
     let bytes = download.bytes().await?;
 
-    // Verify bundle hash
+    // Verify bundle hash before extraction.
     let expected_hash = info["bundle_hash"].as_str().unwrap_or("");
-    if !expected_hash.is_empty() {
-        let actual_hash = security::sha256_hex(&bytes);
-        if actual_hash != expected_hash {
-            anyhow::bail!("bundle hash mismatch — aborting update");
-        }
-        tracing::info!("Bundle hash verified");
+    if expected_hash.is_empty() {
+        anyhow::bail!("coordinator did not provide bundle_hash — aborting update");
     }
+    let actual_hash = security::sha256_hex(&bytes);
+    if actual_hash != expected_hash {
+        anyhow::bail!("bundle hash mismatch — aborting update");
+    }
+    tracing::info!("Bundle hash verified");
 
     // Extract and install
-    let tmp_path = "/tmp/darkbloom-auto-update.tar.gz";
-    std::fs::write(tmp_path, &bytes)?;
+    let download_dir =
+        UpdateStageDir::new().context("failed to create update download directory")?;
+    let tmp_path = download_dir.path().join("darkbloom-auto-update.tar.gz");
+    std::fs::write(&tmp_path, &bytes)?;
 
     let eigeninference_dir = dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("cannot find home directory"))?
@@ -6207,14 +6420,20 @@ async fn auto_update_check(coordinator_base_url: &str) -> Result<bool> {
     let darkbloom_backup = backup_installed_binary(&bin_dir.join("darkbloom"))?;
     let enclave_backup = backup_installed_binary(&bin_dir.join("eigeninference-enclave"))?;
 
-    let status = std::process::Command::new("tar")
-        .args(["xzf", tmp_path, "-C", &eigeninference_dir.to_string_lossy()])
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("tar extraction failed");
+    let stage_dir = UpdateStageDir::new().context("failed to create update staging directory")?;
+    extract_update_tarball(&tmp_path, stage_dir.path())?;
+    verify_darkbloom_code_identity(
+        &bundled_update_binary(stage_dir.path(), "darkbloom"),
+        "darkbloom",
+    )?;
+    let staged_enclave = bundled_update_binary(stage_dir.path(), "eigeninference-enclave");
+    if staged_enclave.exists() {
+        verify_darkbloom_code_identity(&staged_enclave, "eigeninference-enclave")?;
     }
+    copy_update_tree(stage_dir.path(), &eigeninference_dir)?;
 
     // Move binaries to bin dir
+    std::fs::create_dir_all(&bin_dir)?;
     let _ = std::fs::rename(
         eigeninference_dir.join("darkbloom"),
         bin_dir.join("darkbloom"),
@@ -6237,7 +6456,7 @@ async fn auto_update_check(coordinator_base_url: &str) -> Result<bool> {
         }
     }
 
-    std::fs::remove_file(tmp_path).ok();
+    std::fs::remove_file(&tmp_path).ok();
     let coordinator_http = coordinator_base_url
         .replace("wss://", "https://")
         .replace("ws://", "http://")

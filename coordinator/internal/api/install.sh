@@ -82,36 +82,111 @@ echo ""
 echo "→ [2/7] Downloading Darkbloom v${VERSION}..."
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
-curl -f#L "$BUNDLE_URL" -o "/tmp/eigeninference-bundle.tar.gz"
+DOWNLOAD_PATH=$(mktemp /tmp/darkbloom-bundle.XXXXXX.tar.gz)
+STAGE_DIR=""
+cleanup_install_tmp() {
+    rm -rf "${STAGE_DIR:-}" "$DOWNLOAD_PATH" /tmp/darkbloom-tar-members.$$
+}
+trap cleanup_install_tmp EXIT
+
+curl -f#L "$BUNDLE_URL" -o "$DOWNLOAD_PATH"
+
+if [ -z "$BUNDLE_HASH" ]; then
+    echo "  ✗ Release did not include bundle_hash; refusing unsigned update metadata"
+    exit 1
+fi
 
 # Verify bundle hash
-ACTUAL_HASH=$(shasum -a 256 /tmp/eigeninference-bundle.tar.gz | cut -d' ' -f1)
+ACTUAL_HASH=$(shasum -a 256 "$DOWNLOAD_PATH" | cut -d' ' -f1)
 if [ "$ACTUAL_HASH" != "$BUNDLE_HASH" ]; then
     echo ""
     echo "  ✗ Bundle hash mismatch — download may be corrupted."
     echo "    Expected: $BUNDLE_HASH"
     echo "    Got:      $ACTUAL_HASH"
-    rm -f /tmp/eigeninference-bundle.tar.gz
     exit 1
 fi
 echo ""
 echo "  Hash verified ✓"
 
+validate_tarball() {
+    local archive="$1"
+    if ! tar tzf "$archive" >/tmp/darkbloom-tar-members.$$ 2>/dev/null; then
+        echo "  ✗ Could not read release tarball"
+        rm -f /tmp/darkbloom-tar-members.$$
+        exit 1
+    fi
+    while IFS= read -r member; do
+        case "$member" in
+            ""|/*|..|../*|*/..|*/../*)
+                echo "  ✗ Release tarball contains unsafe path: $member"
+                rm -f /tmp/darkbloom-tar-members.$$
+                exit 1
+                ;;
+        esac
+    done < /tmp/darkbloom-tar-members.$$
+    rm -f /tmp/darkbloom-tar-members.$$
+
+    if tar tvzf "$archive" | awk 'substr($1,1,1) == "l" || substr($1,1,1) == "h" { bad = 1 } END { exit bad ? 1 : 0 }'; then
+        return
+    fi
+    echo "  ✗ Release tarball contains links; refusing unsafe archive"
+    exit 1
+}
+
+# Verify code signature and Team ID (codesign is part of base macOS, no CLT needed)
+EXPECTED_TEAM="SLDQ2GJ6TL"
+EXPECTED_GROUP="SLDQ2GJ6TL.io.darkbloom.provider"
+verify_darkbloom_binary() {
+    local bin="$1"
+    local name="$2"
+    if ! codesign --verify --strict --verbose "$bin" >/dev/null 2>&1; then
+        echo "  ✗ $name code signature could not be verified"
+        exit 1
+    fi
+    local team
+    team=$(codesign -dvv "$bin" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)
+    if [ "$team" != "$EXPECTED_TEAM" ]; then
+        echo "  ✗ $name signed by unexpected TeamIdentifier: ${team:-missing}"
+        echo "    Expected: $EXPECTED_TEAM"
+        exit 1
+    fi
+    if ! codesign -d --entitlements :- "$bin" 2>/dev/null | grep -q "$EXPECTED_GROUP"; then
+        echo "  ✗ $name missing provider keychain access-group entitlement"
+        exit 1
+    fi
+    if command -v spctl >/dev/null 2>&1 && ! spctl -a -t execute "$bin" >/dev/null 2>&1; then
+        echo "  ✗ $name was not accepted by Gatekeeper/notarization policy"
+        exit 1
+    fi
+    echo "  $name signature verified ✓ (Team: $team)"
+}
+
+staged_binary() {
+    if [ -f "$STAGE_DIR/bin/$1" ]; then
+        echo "$STAGE_DIR/bin/$1"
+    else
+        echo "$STAGE_DIR/$1"
+    fi
+}
+
 echo "  Installing binaries..."
-tar xzf /tmp/eigeninference-bundle.tar.gz -C "$INSTALL_DIR"
+STAGE_DIR=$(mktemp -d /tmp/darkbloom-install.XXXXXX)
+validate_tarball "$DOWNLOAD_PATH"
+tar xzf "$DOWNLOAD_PATH" -C "$STAGE_DIR"
+verify_darkbloom_binary "$(staged_binary darkbloom)" "darkbloom"
+if [ -f "$(staged_binary eigeninference-enclave)" ]; then
+    verify_darkbloom_binary "$(staged_binary eigeninference-enclave)" "eigeninference-enclave"
+fi
+/usr/bin/ditto "$STAGE_DIR" "$INSTALL_DIR"
 
 # Migrate older flat bundle layouts into the current install structure.
 [ -f "$INSTALL_DIR/darkbloom" ] && mv -f "$INSTALL_DIR/darkbloom" "$BIN_DIR/darkbloom"
 [ -f "$INSTALL_DIR/eigeninference-enclave" ] && mv -f "$INSTALL_DIR/eigeninference-enclave" "$BIN_DIR/eigeninference-enclave"
 chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/eigeninference-enclave" 2>/dev/null || true
-rm -f /tmp/eigeninference-bundle.tar.gz
 
-# Verify code signature (codesign is part of base macOS, no CLT needed)
-if codesign --verify --verbose "$BIN_DIR/darkbloom" 2>/dev/null; then
-    TEAM=$(codesign -dvv "$BIN_DIR/darkbloom" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)
-    echo "  Code signature verified ✓ (Team: $TEAM)"
-else
-    echo "  ⚠ Code signature could not be verified"
+verify_darkbloom_binary "$BIN_DIR/darkbloom" "darkbloom"
+if [ -f "$BIN_DIR/eigeninference-enclave" ]; then
+    verify_darkbloom_binary "$BIN_DIR/eigeninference-enclave" "eigeninference-enclave"
 fi
 
 # Make available in PATH
@@ -256,9 +331,12 @@ fi
 echo ""
 echo "→ [4/7] Setting up Secure Enclave identity..."
 
-"$BIN_DIR/eigeninference-enclave" info >/dev/null 2>&1 \
-    && echo "  Secure Enclave ✓ (P-256 key generated)" \
-    || echo "  Secure Enclave ⚠ (not available on this hardware)"
+if "$BIN_DIR/eigeninference-enclave" provider-identity-info >/dev/null 2>&1; then
+    echo "  Provider-bound Secure Enclave identity ✓"
+else
+    echo "  ✗ Provider-bound identity unavailable (missing entitlement or Secure Enclave)"
+    exit 1
+fi
 
 # ─── Step 5: Enrollment + device attestation ─────────────────
 echo ""

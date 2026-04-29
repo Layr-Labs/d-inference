@@ -165,6 +165,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
 			provider = s.registry.Register(providerID, conn, regMsg)
 			s.verifyProviderAttestation(providerID, provider, regMsg)
+			s.verifyProviderIdentityRegistration(providerID, provider, regMsg)
 
 			// Record registration outcome metrics + telemetry.
 			if s.metrics != nil {
@@ -210,7 +211,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 
 			// Verify runtime integrity against the known-good manifest.
-			if s.knownRuntimeManifest != nil {
+			runtimeManifest := s.knownRuntimeManifestSnapshot()
+			if runtimeManifest != nil {
 				runtimeOK, mismatches := s.verifyRuntimeHashes(
 					regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
 				provider.Mu().Lock()
@@ -502,7 +504,11 @@ func (s *Server) handleAttestationResponse(providerID string, provider *registry
 
 	pc := tracker.remove(msg.Nonce)
 	if pc == nil {
-		s.logger.Warn("attestation response for unknown challenge", "provider_id", providerID, "nonce", msg.Nonce[:8]+"...")
+		noncePreview := msg.Nonce
+		if len(noncePreview) > 8 {
+			noncePreview = noncePreview[:8] + "..."
+		}
+		s.logger.Warn("attestation response for unknown challenge", "provider_id", providerID, "nonce", noncePreview)
 		return
 	}
 
@@ -604,6 +610,10 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		}
 	}
 
+	if !s.verifyProviderIdentityChallenge(providerID, provider, pc, resp) {
+		return
+	}
+
 	// Status-field enforcement policy (asymmetric, by design):
 	//
 	// The checks below act on resp.SIPEnabled / SecureBootEnabled /
@@ -685,9 +695,20 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		)
 	}
 
-	// Verify fresh binary hash if reported and known hashes are configured.
-	if resp.BinaryHash != "" && len(s.knownBinaryHashes) > 0 {
-		if !s.knownBinaryHashes[resp.BinaryHash] {
+	// Verify fresh binary hash when known hashes are configured. Omission is a
+	// failure for the same reason as registration: it would otherwise downgrade
+	// binary enforcement to "only if the provider volunteers a value".
+	knownBinaryHashes := s.knownBinaryHashesSnapshot()
+	if len(knownBinaryHashes) > 0 {
+		if resp.BinaryHash == "" {
+			s.logger.Error("provider omitted binary hash required by known-good list",
+				"provider_id", providerID,
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "binary hash missing")
+			return
+		}
+		if !knownBinaryHashes[resp.BinaryHash] {
 			s.logger.Error("provider binary hash changed — no longer matches known-good list",
 				"provider_id", providerID,
 				"binary_hash", resp.BinaryHash,
@@ -699,30 +720,38 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	}
 
 	// Verify active model hash if reported and catalog has expected hash.
-	if resp.ActiveModelHash != "" {
-		// Get the current model from the provider's last heartbeat.
-		provider.Mu().Lock()
-		currentModel := provider.CurrentModel
-		provider.Mu().Unlock()
+	// Get the current model from the provider's last heartbeat.
+	provider.Mu().Lock()
+	currentModel := provider.CurrentModel
+	provider.Mu().Unlock()
 
-		if currentModel != "" {
-			expectedHash := s.registry.CatalogWeightHash(currentModel)
-			if expectedHash != "" && resp.ActiveModelHash != expectedHash {
-				s.logger.Error("provider active model hash mismatch — possible model swap",
-					"provider_id", providerID,
-					"model", currentModel,
-					"expected", registry.TruncHash(expectedHash),
-					"got", registry.TruncHash(resp.ActiveModelHash),
-				)
-				s.registry.MarkUntrusted(providerID)
-				s.handleChallengeFailure(providerID, "active model weight hash mismatch")
-				return
-			}
+	if currentModel != "" {
+		expectedHash := s.registry.CatalogWeightHash(currentModel)
+		if expectedHash != "" && resp.ActiveModelHash == "" {
+			s.logger.Error("provider omitted active model hash required by catalog",
+				"provider_id", providerID,
+				"model", currentModel,
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "active model weight hash missing")
+			return
+		}
+		if expectedHash != "" && resp.ActiveModelHash != expectedHash {
+			s.logger.Error("provider active model hash mismatch — possible model swap",
+				"provider_id", providerID,
+				"model", currentModel,
+				"expected", registry.TruncHash(expectedHash),
+				"got", registry.TruncHash(resp.ActiveModelHash),
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "active model weight hash mismatch")
+			return
 		}
 	}
 
 	// Verify runtime integrity hashes from challenge response.
-	if s.knownRuntimeManifest != nil {
+	runtimeManifest := s.knownRuntimeManifestSnapshot()
+	if runtimeManifest != nil {
 		runtimeOK, mismatches := s.verifyRuntimeHashes(
 			resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
 		provider.Mu().Lock()
@@ -1126,6 +1155,188 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	)
 }
 
+func (s *Server) verifyProviderIdentityRegistration(providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage) {
+	if provider == nil || provider.PublicKey == "" {
+		return
+	}
+	knownBinaryHashes := s.knownBinaryHashesSnapshot()
+	if len(knownBinaryHashes) == 0 {
+		s.logger.Warn("provider-bound identity not verified because no known-good binary hashes are configured",
+			"provider_id", providerID,
+		)
+		return
+	}
+	if regMsg.ProviderIdentityPublicKey == "" || regMsg.ProviderIdentitySignature == "" {
+		s.logger.Warn("provider missing provider-bound identity signature; private text disabled",
+			"provider_id", providerID,
+		)
+		return
+	}
+	if regMsg.BinaryHash == "" {
+		s.logger.Warn("provider-bound registration missing binary hash; private text disabled",
+			"provider_id", providerID,
+		)
+		return
+	}
+	if !knownBinaryHashes[regMsg.BinaryHash] {
+		s.logger.Warn("provider-bound registration binary hash not in known-good list; private text disabled",
+			"provider_id", providerID,
+			"binary_hash", regMsg.BinaryHash,
+		)
+		return
+	}
+
+	canonical, err := attestation.BuildProviderIdentityRegistrationCanonical(
+		attestation.ProviderIdentityRegistrationInput{
+			ProviderIdentityPublicKey: regMsg.ProviderIdentityPublicKey,
+			PublicKey:                 provider.PublicKey,
+			BinaryHash:                regMsg.BinaryHash,
+			Version:                   regMsg.Version,
+			Backend:                   regMsg.Backend,
+			EncryptedResponseChunks:   regMsg.EncryptedResponseChunks,
+			PythonHash:                regMsg.PythonHash,
+			RuntimeHash:               regMsg.RuntimeHash,
+			TemplateHashes:            regMsg.TemplateHashes,
+			PrivacyCapabilities:       providerIdentityPrivacyCapabilities(regMsg.PrivacyCapabilities),
+		},
+	)
+	if err != nil {
+		s.logger.Warn("failed to build provider-bound registration payload",
+			"provider_id", providerID,
+			"error", err,
+		)
+		return
+	}
+	if err := attestation.VerifyProviderIdentitySignature(
+		regMsg.ProviderIdentityPublicKey,
+		regMsg.ProviderIdentitySignature,
+		canonical,
+	); err != nil {
+		s.logger.Warn("provider-bound registration signature invalid; private text disabled",
+			"provider_id", providerID,
+			"error", err,
+		)
+		return
+	}
+
+	provider.Mu().Lock()
+	provider.ProviderIdentityPublicKey = regMsg.ProviderIdentityPublicKey
+	provider.ProviderIdentityVerified = true
+	provider.BinaryHash = regMsg.BinaryHash
+	provider.Mu().Unlock()
+
+	s.logger.Info("provider-bound identity verified",
+		"provider_id", providerID,
+		"binary_hash", registry.TruncHash(regMsg.BinaryHash),
+	)
+}
+
+func (s *Server) verifyProviderIdentityChallenge(providerID string, provider *registry.Provider, pc *pendingChallenge, resp *protocol.AttestationResponseMessage) bool {
+	if provider == nil || provider.PublicKey == "" {
+		return true
+	}
+
+	provider.Mu().Lock()
+	identityPublicKey := provider.ProviderIdentityPublicKey
+	identityVerified := provider.ProviderIdentityVerified
+	registeredBinaryHash := provider.BinaryHash
+	provider.Mu().Unlock()
+
+	if !identityVerified && (identityPublicKey == "" || resp.ProviderIdentitySignature == "") {
+		return true
+	}
+	if identityPublicKey == "" || resp.ProviderIdentitySignature == "" {
+		provider.Mu().Lock()
+		provider.ProviderIdentityVerified = false
+		provider.Mu().Unlock()
+		s.handleChallengeFailure(providerID, "provider identity signature missing")
+		return false
+	}
+	if resp.BinaryHash == "" {
+		provider.Mu().Lock()
+		provider.ProviderIdentityVerified = false
+		provider.Mu().Unlock()
+		s.handleChallengeFailure(providerID, "provider identity challenge missing binary hash")
+		return false
+	}
+	if registeredBinaryHash != "" && resp.BinaryHash != registeredBinaryHash {
+		provider.Mu().Lock()
+		provider.ProviderIdentityVerified = false
+		provider.Mu().Unlock()
+		s.handleChallengeFailure(providerID, "provider identity challenge binary hash changed")
+		return false
+	}
+	knownBinaryHashes := s.knownBinaryHashesSnapshot()
+	if len(knownBinaryHashes) == 0 || !knownBinaryHashes[resp.BinaryHash] {
+		provider.Mu().Lock()
+		provider.ProviderIdentityVerified = false
+		provider.Mu().Unlock()
+		s.handleChallengeFailure(providerID, "provider identity challenge binary hash not known-good")
+		return false
+	}
+
+	canonical, err := attestation.BuildProviderIdentityChallengeCanonical(
+		attestation.ProviderIdentityChallengeInput{
+			ProviderIdentityPublicKey: identityPublicKey,
+			PublicKey:                 resp.PublicKey,
+			Nonce:                     pc.nonce,
+			Timestamp:                 pc.timestamp,
+			HypervisorActive:          resp.HypervisorActive,
+			RDMADisabled:              resp.RDMADisabled,
+			SIPEnabled:                resp.SIPEnabled,
+			SecureBootEnabled:         resp.SecureBootEnabled,
+			BinaryHash:                resp.BinaryHash,
+			ActiveModelHash:           resp.ActiveModelHash,
+			PythonHash:                resp.PythonHash,
+			RuntimeHash:               resp.RuntimeHash,
+			TemplateHashes:            resp.TemplateHashes,
+			ModelHashes:               resp.ModelHashes,
+		},
+	)
+	if err != nil {
+		provider.Mu().Lock()
+		provider.ProviderIdentityVerified = false
+		provider.Mu().Unlock()
+		s.handleChallengeFailure(providerID, "provider identity canonicalization failed: "+err.Error())
+		return false
+	}
+	if err := attestation.VerifyProviderIdentitySignature(
+		identityPublicKey,
+		resp.ProviderIdentitySignature,
+		canonical,
+	); err != nil {
+		provider.Mu().Lock()
+		provider.ProviderIdentityVerified = false
+		provider.Mu().Unlock()
+		s.handleChallengeFailure(providerID, "provider identity signature invalid: "+err.Error())
+		return false
+	}
+
+	provider.Mu().Lock()
+	provider.ProviderIdentityVerified = true
+	provider.BinaryHash = resp.BinaryHash
+	provider.Mu().Unlock()
+
+	return true
+}
+
+func providerIdentityPrivacyCapabilities(caps *protocol.PrivacyCapabilities) *attestation.ProviderIdentityPrivacyCapabilities {
+	if caps == nil {
+		return nil
+	}
+	return &attestation.ProviderIdentityPrivacyCapabilities{
+		TextBackendInprocess:    caps.TextBackendInprocess,
+		TextProxyDisabled:       caps.TextProxyDisabled,
+		PythonRuntimeLocked:     caps.PythonRuntimeLocked,
+		DangerousModulesBlocked: caps.DangerousModulesBlocked,
+		SIPEnabled:              caps.SIPEnabled,
+		AntiDebugEnabled:        caps.AntiDebugEnabled,
+		CoreDumpsDisabled:       caps.CoreDumpsDisabled,
+		EnvScrubbed:             caps.EnvScrubbed,
+		HypervisorActive:        caps.HypervisorActive,
+	}
+}
+
 // verifyProviderAttestation verifies a provider's Secure Enclave attestation
 // if one was included in the registration message. If the attestation is valid,
 // the provider is marked as attested. If missing or invalid, the provider is
@@ -1183,9 +1394,21 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		}
 	}
 
-	// Verify binary hash against known-good hashes.
-	if len(s.knownBinaryHashes) > 0 && result.BinaryHash != "" {
-		if !s.knownBinaryHashes[result.BinaryHash] {
+	// Verify binary hash against known-good hashes. When a release allow-list is
+	// configured, omission is a failure: otherwise older or modified providers
+	// can bypass the check by leaving the field empty.
+	knownBinaryHashes := s.knownBinaryHashesSnapshot()
+	if len(knownBinaryHashes) > 0 {
+		if result.BinaryHash == "" {
+			s.logger.Warn("provider attestation missing binary hash while known-good list is configured",
+				"provider_id", providerID,
+			)
+			result.Valid = false
+			result.Error = "binary hash missing"
+			provider.SetAttestationResult(&result)
+			return
+		}
+		if !knownBinaryHashes[result.BinaryHash] {
 			s.logger.Warn("provider binary hash not in known-good list",
 				"provider_id", providerID,
 				"binary_hash", result.BinaryHash,

@@ -163,6 +163,22 @@ func TestProviderPartialPrivacyCapsExcluded(t *testing.T) {
 	}
 }
 
+func TestProviderIdentityRequiredForPrivateTextRouting(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetRequireProviderIdentity(true)
+	p := reg.Register("p-identity", nil, testRegisterMessage())
+	testMakeTextRoutable(p)
+
+	if found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit"); found != nil {
+		t.Fatal("provider without verified provider-bound identity should not be routable for private text")
+	}
+
+	p.ProviderIdentityVerified = true
+	if found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit"); found == nil {
+		t.Fatal("provider with verified provider-bound identity should be routable")
+	}
+}
+
 func TestHeartbeat(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
@@ -237,6 +253,34 @@ func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 	}
 	if p.Stats.TokensGenerated != 2340 {
 		t.Fatalf("tokens_generated after provider restart = %d, want 2340", p.Stats.TokensGenerated)
+	}
+}
+
+func TestRestoreProviderStateDoesNotRestoreTrust(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+	lastChallenge := time.Now()
+
+	reg.RestoreProviderState(p, &store.ProviderRecord{
+		ID:                    "persisted-p1",
+		TrustLevel:            string(TrustHardware),
+		Attested:              true,
+		MDAVerified:           true,
+		ACMEVerified:          true,
+		LastChallengeVerified: &lastChallenge,
+		FailedChallenges:      2,
+	})
+
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	if p.TrustLevel != TrustNone {
+		t.Fatalf("trust level restored from storage = %q, want %q", p.TrustLevel, TrustNone)
+	}
+	if p.Attested || p.MDAVerified || p.ACMEVerified {
+		t.Fatal("security trust flags should require fresh verification on reconnect")
+	}
+	if !p.LastChallengeVerified.IsZero() || p.FailedChallenges != 0 {
+		t.Fatal("challenge state should require fresh verification on reconnect")
 	}
 }
 

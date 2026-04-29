@@ -121,6 +121,7 @@ type Server struct {
 	// When set, providers whose runtime hashes don't match are marked as
 	// unverified and excluded from routing (but not disconnected).
 	knownRuntimeManifest *RuntimeManifest
+	releaseStateMu       sync.RWMutex
 
 	// minProviderVersion is the minimum provider version accepted for routing.
 	// Providers below this version are excluded and told to update.
@@ -412,24 +413,26 @@ func (s *Server) SyncModelCatalog() {
 // SetKnownBinaryHashes configures the set of accepted provider binary hashes.
 // Providers whose binary SHA-256 doesn't match any known hash are rejected.
 func (s *Server) SetKnownBinaryHashes(hashes []string) {
-	s.knownBinaryHashes = make(map[string]bool, len(hashes))
+	known := make(map[string]bool, len(hashes))
 	for _, h := range hashes {
 		if h != "" {
-			s.knownBinaryHashes[h] = true
+			known[h] = true
 		}
 	}
+	s.setKnownBinaryHashes(known)
+	s.revalidateConnectedProvidersAgainstBinaryPolicy(known)
 }
 
 // AddKnownBinaryHashes adds hashes to the existing known set (for env var fallback).
 func (s *Server) AddKnownBinaryHashes(hashes []string) {
-	if s.knownBinaryHashes == nil {
-		s.knownBinaryHashes = make(map[string]bool)
-	}
+	known := s.knownBinaryHashesSnapshot()
 	for _, h := range hashes {
 		if h != "" {
-			s.knownBinaryHashes[h] = true
+			known[h] = true
 		}
 	}
+	s.setKnownBinaryHashes(known)
+	s.revalidateConnectedProvidersAgainstBinaryPolicy(known)
 }
 
 // SetConsoleURL sets the frontend URL for device auth verification links.
@@ -469,7 +472,8 @@ func (s *Server) SyncBinaryHashes() {
 			hashes[r.BinaryHash] = true
 		}
 	}
-	s.knownBinaryHashes = hashes
+	s.setKnownBinaryHashes(hashes)
+	s.revalidateConnectedProvidersAgainstBinaryPolicy(hashes)
 	s.logger.Info("binary hashes synced from releases", "known_hashes", len(hashes))
 }
 
@@ -522,20 +526,110 @@ func (s *Server) SyncRuntimeManifest() {
 	}
 
 	if hasAny {
-		s.knownRuntimeManifest = manifest
+		s.setRuntimeManifestLocked(manifest)
 		s.logger.Info("runtime manifest synced from releases",
 			"python_hashes", len(manifest.PythonHashes),
 			"runtime_hashes", len(manifest.RuntimeHashes),
 			"template_hashes", len(manifest.TemplateHashes),
 		)
 	} else {
-		s.knownRuntimeManifest = nil
+		s.setRuntimeManifestLocked(nil)
 	}
 
 	s.revalidateConnectedProvidersAgainstRuntimePolicy()
 }
 
+func (s *Server) setKnownBinaryHashes(hashes map[string]bool) {
+	s.releaseStateMu.Lock()
+	defer s.releaseStateMu.Unlock()
+	s.knownBinaryHashes = cloneBoolMap(hashes)
+}
+
+func (s *Server) knownBinaryHashesSnapshot() map[string]bool {
+	s.releaseStateMu.RLock()
+	defer s.releaseStateMu.RUnlock()
+	return cloneBoolMap(s.knownBinaryHashes)
+}
+
+func (s *Server) setRuntimeManifestLocked(m *RuntimeManifest) {
+	s.releaseStateMu.Lock()
+	defer s.releaseStateMu.Unlock()
+	s.knownRuntimeManifest = cloneRuntimeManifest(m)
+}
+
+func (s *Server) knownRuntimeManifestSnapshot() *RuntimeManifest {
+	s.releaseStateMu.RLock()
+	defer s.releaseStateMu.RUnlock()
+	return cloneRuntimeManifest(s.knownRuntimeManifest)
+}
+
+func cloneBoolMap(in map[string]bool) map[string]bool {
+	if len(in) == 0 {
+		return map[string]bool{}
+	}
+	out := make(map[string]bool, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneRuntimeManifest(in *RuntimeManifest) *RuntimeManifest {
+	if in == nil {
+		return nil
+	}
+	return &RuntimeManifest{
+		PythonHashes:   cloneBoolMap(in.PythonHashes),
+		RuntimeHashes:  cloneBoolMap(in.RuntimeHashes),
+		TemplateHashes: cloneStringMap(in.TemplateHashes),
+	}
+}
+
+func (s *Server) revalidateConnectedProvidersAgainstBinaryPolicy(hashes map[string]bool) {
+	for _, providerID := range s.registry.ProviderIDs() {
+		provider := s.registry.GetProvider(providerID)
+		if provider == nil {
+			continue
+		}
+
+		provider.Mu().Lock()
+		binaryHash := provider.BinaryHash
+		wasIdentityVerified := provider.ProviderIdentityVerified
+		switch {
+		case len(hashes) == 0:
+			provider.ProviderIdentityVerified = false
+		case binaryHash == "" || !hashes[binaryHash]:
+			provider.ProviderIdentityVerified = false
+			provider.Status = registry.StatusUntrusted
+			provider.LastChallengeVerified = time.Time{}
+		}
+		identityRevoked := wasIdentityVerified && !provider.ProviderIdentityVerified
+		status := provider.Status
+		provider.Mu().Unlock()
+
+		if identityRevoked {
+			s.logger.Warn("provider identity verification revoked after binary hash policy change",
+				"provider_id", providerID,
+				"binary_hash", registry.TruncHash(binaryHash),
+				"status", status,
+			)
+		}
+	}
+}
+
 func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
+	manifest := s.knownRuntimeManifestSnapshot()
 	for _, providerID := range s.registry.ProviderIDs() {
 		provider := s.registry.GetProvider(providerID)
 		if provider == nil {
@@ -548,7 +642,7 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		templateHashes := registry.CloneStringMap(provider.TemplateHashes)
 		version := provider.Version
 		switch {
-		case s.knownRuntimeManifest == nil:
+		case manifest == nil:
 			provider.RuntimeVerified = false
 			provider.RuntimeManifestChecked = false
 		case s.minProviderVersion != "" &&
@@ -557,7 +651,8 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 			provider.RuntimeVerified = false
 			provider.RuntimeManifestChecked = false
 		default:
-			runtimeOK, _ := s.verifyRuntimeHashes(
+			runtimeOK, _ := verifyRuntimeHashesAgainstManifest(
+				manifest,
 				pythonHash,
 				runtimeHash,
 				templateHashes,
@@ -580,8 +675,6 @@ type RuntimeManifest struct {
 	TemplateHashes map[string]string `json:"template_hashes"` // template_name -> expected hash
 }
 
-// SetRuntimeManifest configures the known-good runtime manifest for provider
-// verification. Pass nil to disable runtime verification (all providers pass).
 // semverGreater returns true if version a is greater than version b.
 // Compares numeric components (e.g. "0.2.31" > "0.2.9" = true).
 func semverGreater(a, b string) bool {
@@ -616,8 +709,10 @@ func semverLess(a, b string) bool {
 	return semverGreater(b, a)
 }
 
+// SetRuntimeManifest configures the known-good runtime manifest for provider
+// verification. Pass nil to disable runtime verification (all providers pass).
 func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
-	s.knownRuntimeManifest = m
+	s.setRuntimeManifestLocked(m)
 }
 
 // verifyRuntimeHashes checks provider-reported runtime hashes against the
@@ -625,11 +720,14 @@ func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 // the provider MUST report that component and it MUST match one of the known
 // good values. Omitting a required hash is treated as a mismatch.
 func (s *Server) verifyRuntimeHashes(pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
-	if s.knownRuntimeManifest == nil {
+	return verifyRuntimeHashesAgainstManifest(s.knownRuntimeManifestSnapshot(), pythonHash, runtimeHash, templateHashes)
+}
+
+func verifyRuntimeHashesAgainstManifest(manifest *RuntimeManifest, pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
+	if manifest == nil {
 		return true, nil
 	}
 
-	manifest := s.knownRuntimeManifest
 	var mismatches []protocol.RuntimeMismatch
 
 	requireOneOf := func(component, got string, accepted map[string]bool) {
@@ -697,15 +795,16 @@ func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
 		writeCachedJSON(w, http.StatusOK, cached)
 		return
 	}
+	manifest := s.knownRuntimeManifestSnapshot()
 	var resp map[string]any
-	if s.knownRuntimeManifest == nil {
+	if manifest == nil {
 		resp = map[string]any{"configured": false}
 	} else {
 		resp = map[string]any{
 			"configured":      true,
-			"python_hashes":   s.knownRuntimeManifest.PythonHashes,
-			"runtime_hashes":  s.knownRuntimeManifest.RuntimeHashes,
-			"template_hashes": s.knownRuntimeManifest.TemplateHashes,
+			"python_hashes":   manifest.PythonHashes,
+			"runtime_hashes":  manifest.RuntimeHashes,
+			"template_hashes": manifest.TemplateHashes,
 		}
 	}
 	body, err := json.Marshal(resp)

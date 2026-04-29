@@ -126,10 +126,10 @@ cat > "$ENTITLEMENTS" << 'ENT'
     <true/>
     <key>com.apple.security.network.server</key>
     <true/>
-    <!-- Keychain access for wallet storage -->
-    <key>com.apple.security.keychain-access-groups</key>
+    <!-- Keychain access for wallet storage and provider-bound identity -->
+    <key>keychain-access-groups</key>
     <array>
-        <string>$(AppIdentifierPrefix)io.darkbloom.provider</string>
+        <string>SLDQ2GJ6TL.io.darkbloom.provider</string>
     </array>
 </dict>
 </plist>
@@ -158,11 +158,7 @@ if [ ! -f "target/release/darkbloom" ]; then
     cargo build --release --no-default-features 2>&1 | tail -3
 fi
 cp "target/release/darkbloom" "$MACOS/darkbloom"
-# Also install to shared path so CLI and app use the same binary
-mkdir -p "$HOME/.darkbloom/bin"
-cp "target/release/darkbloom" "$HOME/.darkbloom/bin/darkbloom"
-chmod +x "$HOME/.darkbloom/bin/darkbloom"
-echo "   ✓ darkbloom ($(du -h "$MACOS/darkbloom" | cut -f1)) → also installed to ~/.darkbloom/bin/"
+echo "   ✓ darkbloom ($(du -h "$MACOS/darkbloom" | cut -f1))"
 
 # ─────────────────────────────────────────────────────────
 # 5. Build + copy enclave CLI
@@ -337,6 +333,11 @@ codesign --force --options runtime --no-strict \
     --entitlements "$ENTITLEMENTS" \
     --sign "$IDENTITY" \
     "$APP_DIR"
+
+mkdir -p "$HOME/.darkbloom/bin"
+cp "$MACOS/darkbloom" "$HOME/.darkbloom/bin/darkbloom"
+chmod +x "$HOME/.darkbloom/bin/darkbloom"
+echo "   ✓ Installed signed darkbloom to ~/.darkbloom/bin/"
 
 # ─────────────────────────────────────────────────────────
 # 10. Verify

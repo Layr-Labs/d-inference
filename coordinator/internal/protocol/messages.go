@@ -83,18 +83,21 @@ type ModelInfo struct {
 
 // RegisterMessage is sent when a provider first connects.
 type RegisterMessage struct {
-	Type                    string          `json:"type"`
-	Hardware                Hardware        `json:"hardware"`
-	Models                  []ModelInfo     `json:"models"`
-	Backend                 string          `json:"backend"`
-	Version                 string          `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
-	PublicKey               string          `json:"public_key,omitempty"`                // base64-encoded X25519 public key for E2E encryption
-	EncryptedResponseChunks bool            `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are returned encrypted to the coordinator
-	WalletAddress           string          `json:"wallet_address,omitempty"`            // Ethereum-format hex address for Tempo payouts
-	Attestation             json.RawMessage `json:"attestation,omitempty"`               // signed Secure Enclave attestation blob
-	PrefillTPS              float64         `json:"prefill_tps,omitempty"`               // benchmark: prefill tokens per second
-	DecodeTPS               float64         `json:"decode_tps,omitempty"`                // benchmark: decode tokens per second
-	AuthToken               string          `json:"auth_token,omitempty"`                // device-linked provider token (from darkbloom login)
+	Type                      string          `json:"type"`
+	Hardware                  Hardware        `json:"hardware"`
+	Models                    []ModelInfo     `json:"models"`
+	Backend                   string          `json:"backend"`
+	Version                   string          `json:"version,omitempty"`                      // provider binary version (e.g. "0.2.31")
+	PublicKey                 string          `json:"public_key,omitempty"`                   // base64-encoded X25519 public key for E2E encryption
+	BinaryHash                string          `json:"binary_hash,omitempty"`                  // SHA-256 of provider binary, signed by provider identity
+	ProviderIdentityPublicKey string          `json:"provider_identity_public_key,omitempty"` // base64 P-256 public key for provider-bound identity
+	ProviderIdentitySignature string          `json:"provider_identity_signature,omitempty"`  // signature over canonical registration payload
+	EncryptedResponseChunks   bool            `json:"encrypted_response_chunks,omitempty"`    // true when text response chunks are returned encrypted to the coordinator
+	WalletAddress             string          `json:"wallet_address,omitempty"`               // Ethereum-format hex address for Tempo payouts
+	Attestation               json.RawMessage `json:"attestation,omitempty"`                  // signed Secure Enclave attestation blob
+	PrefillTPS                float64         `json:"prefill_tps,omitempty"`                  // benchmark: prefill tokens per second
+	DecodeTPS                 float64         `json:"decode_tps,omitempty"`                   // benchmark: decode tokens per second
+	AuthToken                 string          `json:"auth_token,omitempty"`                   // device-linked provider token (from darkbloom login)
 
 	// Runtime integrity hashes — used for runtime verification against known-good manifests.
 	PythonHash          string               `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
@@ -271,17 +274,18 @@ type AttestationChallengeMessage struct {
 // which case the status fields are treated as advisory (not a basis for
 // trust upgrades).
 type AttestationResponseMessage struct {
-	Type              string `json:"type"`
-	Nonce             string `json:"nonce"`                         // echoed back from the challenge
-	Signature         string `json:"signature"`                     // base64-encoded signature of nonce+timestamp
-	StatusSignature   string `json:"status_signature,omitempty"`    // base64-encoded signature of canonical status JSON (see attestation.BuildStatusCanonical)
-	PublicKey         string `json:"public_key"`                    // base64-encoded public key
-	HypervisorActive  *bool  `json:"hypervisor_active,omitempty"`   // hypervisor memory isolation active (Stage 2 page tables)
-	RDMADisabled      *bool  `json:"rdma_disabled,omitempty"`       // fresh RDMA status (true = safe, false = remote memory access possible)
-	SIPEnabled        *bool  `json:"sip_enabled,omitempty"`         // fresh SIP status at challenge time
-	SecureBootEnabled *bool  `json:"secure_boot_enabled,omitempty"` // fresh Secure Boot status
-	BinaryHash        string `json:"binary_hash,omitempty"`         // fresh SHA-256 of provider binary
-	ActiveModelHash   string `json:"active_model_hash,omitempty"`   // SHA-256 weight fingerprint of loaded model
+	Type                      string `json:"type"`
+	Nonce                     string `json:"nonce"`                                 // echoed back from the challenge
+	Signature                 string `json:"signature"`                             // base64-encoded signature of nonce+timestamp
+	StatusSignature           string `json:"status_signature,omitempty"`            // base64-encoded signature of canonical status JSON (see attestation.BuildStatusCanonical)
+	ProviderIdentitySignature string `json:"provider_identity_signature,omitempty"` // provider-bound identity signature over canonical challenge/status JSON
+	PublicKey                 string `json:"public_key"`                            // base64-encoded public key
+	HypervisorActive          *bool  `json:"hypervisor_active,omitempty"`           // hypervisor memory isolation active (Stage 2 page tables)
+	RDMADisabled              *bool  `json:"rdma_disabled,omitempty"`               // fresh RDMA status (true = safe, false = remote memory access possible)
+	SIPEnabled                *bool  `json:"sip_enabled,omitempty"`                 // fresh SIP status at challenge time
+	SecureBootEnabled         *bool  `json:"secure_boot_enabled,omitempty"`         // fresh Secure Boot status
+	BinaryHash                string `json:"binary_hash,omitempty"`                 // fresh SHA-256 of provider binary
+	ActiveModelHash           string `json:"active_model_hash,omitempty"`           // SHA-256 weight fingerprint of loaded model
 
 	// Runtime integrity hashes — fresh values reported at challenge time.
 	PythonHash     string            `json:"python_hash,omitempty"`     // SHA-256 of Python runtime

@@ -47,6 +47,14 @@ unsafe extern "C" {
         binary_hash_hex: *const c_char,
     ) -> *mut c_char;
     fn eigeninference_enclave_free_string(ptr: *mut c_char);
+    fn eigeninference_provider_identity_load_or_create() -> *mut c_void;
+    fn eigeninference_provider_identity_free(identity: *mut c_void);
+    fn eigeninference_provider_identity_public_key_base64(identity: *const c_void) -> *mut c_char;
+    fn eigeninference_provider_identity_sign(
+        identity: *const c_void,
+        data: *const u8,
+        data_len: c_int,
+    ) -> *mut c_char;
 }
 
 pub(crate) fn load_existing_x25519_secret() -> Result<Option<[u8; 32]>> {
@@ -174,6 +182,89 @@ impl Drop for SecureEnclaveHandle {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
             unsafe { eigeninference_enclave_free(self.ptr) };
+        }
+    }
+}
+
+/// Persistent provider-bound identity.
+///
+/// This key is created once as a permanent Secure Enclave key under the
+/// Darkbloom provider keychain access group. It is the fork-resistant root used
+/// to bind a WebSocket X25519 key and runtime claims to a signed provider.
+pub struct ProviderIdentityHandle {
+    #[cfg(target_os = "macos")]
+    ptr: *mut c_void,
+    public_key_b64: String,
+}
+
+unsafe impl Send for ProviderIdentityHandle {}
+unsafe impl Sync for ProviderIdentityHandle {}
+
+impl ProviderIdentityHandle {
+    #[cfg(target_os = "macos")]
+    pub fn load_or_create() -> Result<Self> {
+        let ptr = unsafe { eigeninference_provider_identity_load_or_create() };
+        if ptr.is_null() {
+            return Err(anyhow!(
+                "provider-bound identity unavailable; signed release build with keychain entitlement required"
+            ));
+        }
+
+        let pk_ptr = unsafe { eigeninference_provider_identity_public_key_base64(ptr) };
+        if pk_ptr.is_null() {
+            unsafe { eigeninference_provider_identity_free(ptr) };
+            return Err(anyhow!("failed to retrieve provider identity public key"));
+        }
+        let public_key_b64 = unsafe { CStr::from_ptr(pk_ptr) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { eigeninference_enclave_free_string(pk_ptr) };
+
+        Ok(Self {
+            ptr,
+            public_key_b64,
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn load_or_create() -> Result<Self> {
+        Err(anyhow!(
+            "provider-bound identity is only available on macOS Secure Enclave"
+        ))
+    }
+
+    pub fn public_key_base64(&self) -> &str {
+        &self.public_key_b64
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn sign(&self, data: &[u8]) -> Result<String> {
+        let data_len: c_int = data.len().try_into().context("data too large for FFI")?;
+        let sig_ptr =
+            unsafe { eigeninference_provider_identity_sign(self.ptr, data.as_ptr(), data_len) };
+        if sig_ptr.is_null() {
+            return Err(anyhow!("provider identity signing failed"));
+        }
+        let sig = unsafe { CStr::from_ptr(sig_ptr) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { eigeninference_enclave_free_string(sig_ptr) };
+        Ok(sig)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn sign(&self, _data: &[u8]) -> Result<String> {
+        Err(anyhow!(
+            "provider-bound identity is only available on macOS Secure Enclave"
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for ProviderIdentityHandle {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { eigeninference_provider_identity_free(self.ptr) };
         }
     }
 }

@@ -12,6 +12,7 @@ set -euo pipefail
 #   ./scripts/build-bundle.sh                  # Build tarball only
 #   ./scripts/build-bundle.sh --upload         # Build + upload to server
 #   ./scripts/build-bundle.sh --skip-build     # Skip Rust/Swift builds (reuse existing)
+#   APPLE_SIGNING_IDENTITY="Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)" ./scripts/build-bundle.sh --upload
 #
 # Requirements:
 #   - macOS with Apple Silicon (arm64)
@@ -30,12 +31,17 @@ PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/
 
 UPLOAD=false
 SKIP_BUILD=false
+IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
 for arg in "$@"; do
     case "$arg" in
         --upload) UPLOAD=true ;;
         --skip-build) SKIP_BUILD=true ;;
     esac
 done
+if [ "$UPLOAD" = true ] && [ "$IDENTITY" = "-" ]; then
+    echo "ERROR: --upload requires APPLE_SIGNING_IDENTITY; refusing to upload ad-hoc signed binaries."
+    exit 1
+fi
 
 echo "╔══════════════════════════════════════════════════╗"
 echo "║  EigenInference Bundle Builder                            ║"
@@ -103,7 +109,7 @@ rm -f "$BUNDLE_DIR/python/lib/python3.12/EXTERNALLY-MANAGED"
 echo "   Code-signing portable Python runtime..."
 find "$BUNDLE_DIR/python" -type f | while read -r file; do
     if file "$file" | grep -q "Mach-O"; then
-        codesign --force --sign - --options runtime "$file"
+        codesign --force --sign "$IDENTITY" --options runtime "$file"
     fi
 done
 
@@ -170,12 +176,12 @@ install_name_tool -change \
     "$PYTHON_LOAD_PATH" \
     "@executable_path/../python/lib/libpython3.12.dylib" \
     "$BUNDLE_DIR/bin/darkbloom"
-codesign --force --sign - --entitlements "$ENTITLEMENTS" --options runtime "$BUNDLE_DIR/bin/darkbloom"
+codesign --force --sign "$IDENTITY" --entitlements "$ENTITLEMENTS" --options runtime "$BUNDLE_DIR/bin/darkbloom"
 echo "   ✓ darkbloom (signed with hypervisor entitlement)"
 
 if [ -f "$ENCLAVE_BIN" ]; then
     cp "$ENCLAVE_BIN" "$BUNDLE_DIR/bin/eigeninference-enclave"
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" --options runtime "$BUNDLE_DIR/bin/eigeninference-enclave"
+    codesign --force --sign "$IDENTITY" --entitlements "$ENTITLEMENTS" --options runtime "$BUNDLE_DIR/bin/eigeninference-enclave"
     echo "   ✓ eigeninference-enclave (signed)"
 fi
 echo ""
@@ -287,8 +293,8 @@ if [ -f "$APP_BIN" ]; then
 PLIST
 
     cp "$APP_BIN" "$APP_BUILD_DIR/EigenInference.app/Contents/MacOS/EigenInference"
-    codesign --force --sign - --options runtime "$APP_BUILD_DIR/EigenInference.app/Contents/MacOS/EigenInference" 2>/dev/null
-    codesign --force --sign - --options runtime --no-strict "$APP_BUILD_DIR/EigenInference.app" 2>/dev/null
+    codesign --force --sign "$IDENTITY" --options runtime "$APP_BUILD_DIR/EigenInference.app/Contents/MacOS/EigenInference" 2>/dev/null
+    codesign --force --sign "$IDENTITY" --options runtime --no-strict "$APP_BUILD_DIR/EigenInference.app" 2>/dev/null
 
     # Create DMG
     DMG_PATH="$APP_BUILD_DIR/EigenInference-latest.dmg"

@@ -99,6 +99,8 @@ pub struct CoordinatorClient {
     backend_capacity: Arc<std::sync::Mutex<Option<crate::protocol::BackendCapacity>>>,
     /// Ephemeral Secure Enclave handle for challenge-response signing.
     se_handle: Option<Arc<crate::secure_enclave_key::SecureEnclaveHandle>>,
+    /// Persistent entitlement-gated provider identity for private text trust.
+    provider_identity: Option<Arc<crate::secure_enclave_key::ProviderIdentityHandle>>,
 }
 
 impl CoordinatorClient {
@@ -132,6 +134,7 @@ impl CoordinatorClient {
             model_hashes: std::collections::HashMap::new(),
             backend_capacity: Arc::new(std::sync::Mutex::new(None)),
             se_handle: None,
+            provider_identity: None,
         }
     }
 
@@ -210,6 +213,15 @@ impl CoordinatorClient {
         handle: Option<Arc<crate::secure_enclave_key::SecureEnclaveHandle>>,
     ) -> Self {
         self.se_handle = handle;
+        self
+    }
+
+    /// Set the persistent provider-bound identity handle.
+    pub fn with_provider_identity(
+        mut self,
+        handle: Option<Arc<crate::secure_enclave_key::ProviderIdentityHandle>>,
+    ) -> Self {
+        self.provider_identity = handle;
         self
     }
 
@@ -324,13 +336,65 @@ impl CoordinatorClient {
             env_scrubbed: true,
             hypervisor_active: crate::security::check_hypervisor_active(),
         };
+        let version = env!("CARGO_PKG_VERSION").to_string();
+        let binary_hash = crate::security::self_binary_hash();
+        let provider_identity_public_key = self
+            .provider_identity
+            .as_ref()
+            .map(|h| h.public_key_base64().to_string());
+        let provider_identity_signature = match (
+            self.provider_identity.as_ref(),
+            provider_identity_public_key.as_deref(),
+        ) {
+            (Some(identity), Some(identity_public_key)) => {
+                match build_provider_identity_registration_canonical(
+                    identity_public_key,
+                    self.public_key.as_deref(),
+                    binary_hash.as_deref(),
+                    Some(version.as_str()),
+                    &self.backend_name,
+                    true,
+                    python_hash.as_deref(),
+                    runtime_hash.as_deref(),
+                    &template_hashes,
+                    Some(&privacy_caps),
+                ) {
+                    Ok(bytes) => match identity.sign(&bytes) {
+                        Ok(sig) => Some(sig),
+                        Err(e) => {
+                            tracing::warn!(
+                                "failed to sign provider-bound registration: {e}; private text routing will be disabled"
+                            );
+                            None
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            "failed to build provider-bound registration payload: {e}; private text routing will be disabled"
+                        );
+                        None
+                    }
+                }
+            }
+            _ => {
+                if self.public_key.is_some() {
+                    tracing::warn!(
+                        "provider-bound identity unavailable; coordinator will reject private text routing"
+                    );
+                }
+                None
+            }
+        };
 
         let register = ProviderMessage::Register {
             hardware: self.hardware.clone(),
             models: self.models.clone(),
             backend: self.backend_name.clone(),
-            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            version: Some(version),
             public_key: self.public_key.clone(),
+            binary_hash,
+            provider_identity_public_key,
+            provider_identity_signature,
             encrypted_response_chunks: true,
             wallet_address: self.wallet_address.clone(),
             attestation: self.attestation.clone(),
@@ -482,6 +546,7 @@ impl CoordinatorClient {
                                             .or(self.runtime_hashes.as_ref()),
                                         self.model_hashes.clone(),
                                         self.se_handle.as_deref(),
+                                        self.provider_identity.as_deref(),
                                     );
                                     let json = serde_json::to_string(&response)
                                         .unwrap_or_default();
@@ -603,6 +668,7 @@ pub fn handle_attestation_challenge(
     runtime_hashes: Option<&RuntimeHashes>,
     model_hashes: std::collections::HashMap<String, String>,
     se_handle: Option<&crate::secure_enclave_key::SecureEnclaveHandle>,
+    provider_identity: Option<&crate::secure_enclave_key::ProviderIdentityHandle>,
 ) -> ProviderMessage {
     let data = format!("{}{}", nonce, timestamp);
 
@@ -624,6 +690,7 @@ pub fn handle_attestation_challenge(
     let sip_enabled = crate::security::check_sip_enabled();
     let rdma_disabled = crate::security::check_rdma_disabled();
     let hypervisor_active = crate::security::check_hypervisor_active();
+    let secure_boot_enabled = crate::security::check_secure_boot_enabled();
 
     // Fresh binary hash — re-computed each challenge (~1ms for <50MB binary).
     let binary_hash = crate::security::self_binary_hash();
@@ -666,7 +733,7 @@ pub fn handle_attestation_challenge(
         Some(hypervisor_active),
         Some(rdma_disabled),
         Some(sip_enabled),
-        Some(true),
+        secure_boot_enabled,
         binary_hash.as_deref(),
         active_model_hash_owned.as_deref(),
         python_hash.as_deref(),
@@ -686,16 +753,47 @@ pub fn handle_attestation_challenge(
             None
         }
     };
+    let provider_identity_signature = provider_identity.and_then(|identity| {
+        match build_provider_identity_challenge_canonical(
+            identity.public_key_base64(),
+            pk_str,
+            nonce,
+            timestamp,
+            Some(hypervisor_active),
+            Some(rdma_disabled),
+            Some(sip_enabled),
+            secure_boot_enabled,
+            binary_hash.as_deref(),
+            active_model_hash_owned.as_deref(),
+            python_hash.as_deref(),
+            rt_hash.as_deref(),
+            &template_hashes,
+            &model_hashes,
+        ) {
+            Ok(bytes) => match identity.sign(&bytes) {
+                Ok(sig) => Some(sig),
+                Err(e) => {
+                    tracing::warn!("failed to sign provider-bound challenge payload: {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!("failed to build provider-bound challenge payload: {e}");
+                None
+            }
+        }
+    });
 
     ProviderMessage::AttestationResponse {
         nonce: nonce.to_string(),
         signature,
         status_signature,
+        provider_identity_signature,
         public_key: pk_str.to_string(),
         hypervisor_active: Some(hypervisor_active),
         rdma_disabled: Some(rdma_disabled),
         sip_enabled: Some(sip_enabled),
-        secure_boot_enabled: Some(true), // Apple Silicon always has Secure Boot in Full Security mode
+        secure_boot_enabled,
         binary_hash,
         active_model_hash: active_model_hash_owned,
         python_hash,
@@ -809,6 +907,195 @@ fn build_status_canonical(
     serde_json::to_vec(&m)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn build_provider_identity_registration_canonical(
+    provider_identity_public_key: &str,
+    public_key: Option<&str>,
+    binary_hash: Option<&str>,
+    version: Option<&str>,
+    backend: &str,
+    encrypted_response_chunks: bool,
+    python_hash: Option<&str>,
+    runtime_hash: Option<&str>,
+    template_hashes: &std::collections::HashMap<String, String>,
+    privacy_capabilities: Option<&crate::protocol::PrivacyCapabilities>,
+) -> serde_json::Result<Vec<u8>> {
+    use std::collections::BTreeMap;
+
+    let mut m: BTreeMap<&str, serde_json::Value> = BTreeMap::new();
+    m.insert("backend", serde_json::Value::String(backend.to_string()));
+    m.insert(
+        "domain",
+        serde_json::Value::String("darkbloom.provider.registration.v1".to_string()),
+    );
+    m.insert(
+        "encrypted_response_chunks",
+        serde_json::Value::Bool(encrypted_response_chunks),
+    );
+    m.insert(
+        "provider_identity_public_key",
+        serde_json::Value::String(provider_identity_public_key.to_string()),
+    );
+    if let Some(v) = public_key {
+        if !v.is_empty() {
+            m.insert("public_key", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if let Some(v) = binary_hash {
+        if !v.is_empty() {
+            m.insert("binary_hash", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if let Some(v) = version {
+        if !v.is_empty() {
+            m.insert("version", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if let Some(v) = python_hash {
+        if !v.is_empty() {
+            m.insert("python_hash", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if let Some(v) = runtime_hash {
+        if !v.is_empty() {
+            m.insert("runtime_hash", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if !template_hashes.is_empty() {
+        let sorted: BTreeMap<&str, &str> = template_hashes
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        m.insert("template_hashes", serde_json::to_value(sorted)?);
+    }
+    if let Some(caps) = privacy_capabilities {
+        let mut c: BTreeMap<&str, serde_json::Value> = BTreeMap::new();
+        c.insert(
+            "anti_debug_enabled",
+            serde_json::Value::Bool(caps.anti_debug_enabled),
+        );
+        c.insert(
+            "core_dumps_disabled",
+            serde_json::Value::Bool(caps.core_dumps_disabled),
+        );
+        c.insert(
+            "dangerous_modules_blocked",
+            serde_json::Value::Bool(caps.dangerous_modules_blocked),
+        );
+        c.insert("env_scrubbed", serde_json::Value::Bool(caps.env_scrubbed));
+        c.insert(
+            "hypervisor_active",
+            serde_json::Value::Bool(caps.hypervisor_active),
+        );
+        c.insert(
+            "python_runtime_locked",
+            serde_json::Value::Bool(caps.python_runtime_locked),
+        );
+        c.insert("sip_enabled", serde_json::Value::Bool(caps.sip_enabled));
+        c.insert(
+            "text_backend_inprocess",
+            serde_json::Value::Bool(caps.text_backend_inprocess),
+        );
+        c.insert(
+            "text_proxy_disabled",
+            serde_json::Value::Bool(caps.text_proxy_disabled),
+        );
+        m.insert("privacy_capabilities", serde_json::to_value(c)?);
+    }
+
+    serde_json::to_vec(&m)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_provider_identity_challenge_canonical(
+    provider_identity_public_key: &str,
+    public_key: &str,
+    nonce: &str,
+    timestamp: &str,
+    hypervisor_active: Option<bool>,
+    rdma_disabled: Option<bool>,
+    sip_enabled: Option<bool>,
+    secure_boot_enabled: Option<bool>,
+    binary_hash: Option<&str>,
+    active_model_hash: Option<&str>,
+    python_hash: Option<&str>,
+    runtime_hash: Option<&str>,
+    template_hashes: &std::collections::HashMap<String, String>,
+    model_hashes: &std::collections::HashMap<String, String>,
+) -> serde_json::Result<Vec<u8>> {
+    use std::collections::BTreeMap;
+
+    let mut m: BTreeMap<&str, serde_json::Value> = BTreeMap::new();
+    m.insert(
+        "domain",
+        serde_json::Value::String("darkbloom.provider.challenge.v1".to_string()),
+    );
+    m.insert("nonce", serde_json::Value::String(nonce.to_string()));
+    m.insert(
+        "provider_identity_public_key",
+        serde_json::Value::String(provider_identity_public_key.to_string()),
+    );
+    m.insert(
+        "public_key",
+        serde_json::Value::String(public_key.to_string()),
+    );
+    m.insert(
+        "timestamp",
+        serde_json::Value::String(timestamp.to_string()),
+    );
+    if let Some(v) = hypervisor_active {
+        m.insert("hypervisor_active", serde_json::Value::Bool(v));
+    }
+    if let Some(v) = rdma_disabled {
+        m.insert("rdma_disabled", serde_json::Value::Bool(v));
+    }
+    if let Some(v) = sip_enabled {
+        m.insert("sip_enabled", serde_json::Value::Bool(v));
+    }
+    if let Some(v) = secure_boot_enabled {
+        m.insert("secure_boot_enabled", serde_json::Value::Bool(v));
+    }
+    if let Some(v) = binary_hash {
+        if !v.is_empty() {
+            m.insert("binary_hash", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if let Some(v) = active_model_hash {
+        if !v.is_empty() {
+            m.insert(
+                "active_model_hash",
+                serde_json::Value::String(v.to_string()),
+            );
+        }
+    }
+    if let Some(v) = python_hash {
+        if !v.is_empty() {
+            m.insert("python_hash", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if let Some(v) = runtime_hash {
+        if !v.is_empty() {
+            m.insert("runtime_hash", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if !template_hashes.is_empty() {
+        let sorted: BTreeMap<&str, &str> = template_hashes
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        m.insert("template_hashes", serde_json::to_value(sorted)?);
+    }
+    if !model_hashes.is_empty() {
+        let sorted: BTreeMap<&str, &str> = model_hashes
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        m.insert("model_hashes", serde_json::to_value(sorted)?);
+    }
+
+    serde_json::to_vec(&m)
+}
+
 /// Build the register message for a given hardware, models, and backend.
 #[allow(dead_code)]
 pub fn build_register_message(
@@ -836,6 +1123,9 @@ pub fn build_register_message_with_wallet(
         backend: backend_name.to_string(),
         version: None,
         public_key,
+        binary_hash: None,
+        provider_identity_public_key: None,
+        provider_identity_signature: None,
         encrypted_response_chunks: true,
         wallet_address,
         attestation,
@@ -961,6 +1251,127 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_provider_identity_registration_canonical_golden_bytes() {
+        let mut templates = std::collections::HashMap::new();
+        templates.insert("z".to_string(), "2".to_string());
+        templates.insert("a".to_string(), "1".to_string());
+
+        let caps = crate::protocol::PrivacyCapabilities {
+            text_backend_inprocess: true,
+            text_proxy_disabled: true,
+            python_runtime_locked: true,
+            dangerous_modules_blocked: true,
+            sip_enabled: true,
+            anti_debug_enabled: true,
+            core_dumps_disabled: true,
+            env_scrubbed: true,
+            hypervisor_active: false,
+        };
+
+        let bytes = build_provider_identity_registration_canonical(
+            "idpk",
+            Some("x25519"),
+            Some("binhash"),
+            Some("0.4.7"),
+            "inprocess-mlx",
+            true,
+            Some("py"),
+            Some("rt"),
+            &templates,
+            Some(&caps),
+        )
+        .expect("canonical build should succeed");
+
+        let expected = br#"{"backend":"inprocess-mlx","binary_hash":"binhash","domain":"darkbloom.provider.registration.v1","encrypted_response_chunks":true,"privacy_capabilities":{"anti_debug_enabled":true,"core_dumps_disabled":true,"dangerous_modules_blocked":true,"env_scrubbed":true,"hypervisor_active":false,"python_runtime_locked":true,"sip_enabled":true,"text_backend_inprocess":true,"text_proxy_disabled":true},"provider_identity_public_key":"idpk","public_key":"x25519","python_hash":"py","runtime_hash":"rt","template_hashes":{"a":"1","z":"2"},"version":"0.4.7"}"#;
+        assert_eq!(bytes, expected.to_vec());
+    }
+
+    #[test]
+    fn test_provider_identity_challenge_canonical_golden_bytes() {
+        let mut templates = std::collections::HashMap::new();
+        templates.insert("z".to_string(), "2".to_string());
+        templates.insert("a".to_string(), "1".to_string());
+
+        let mut models = std::collections::HashMap::new();
+        models.insert("qwen".to_string(), "abc".to_string());
+        models.insert("llama".to_string(), "def".to_string());
+
+        let bytes = build_provider_identity_challenge_canonical(
+            "idpk",
+            "x25519",
+            "nonce",
+            "2026-04-28T20:00:00Z",
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some("binhash"),
+            Some("active"),
+            Some("py"),
+            Some("rt"),
+            &templates,
+            &models,
+        )
+        .expect("canonical build should succeed");
+
+        let expected = br#"{"active_model_hash":"active","binary_hash":"binhash","domain":"darkbloom.provider.challenge.v1","hypervisor_active":true,"model_hashes":{"llama":"def","qwen":"abc"},"nonce":"nonce","provider_identity_public_key":"idpk","public_key":"x25519","python_hash":"py","rdma_disabled":true,"runtime_hash":"rt","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"a":"1","z":"2"},"timestamp":"2026-04-28T20:00:00Z"}"#;
+        assert_eq!(bytes, expected.to_vec());
+    }
+
+    #[test]
+    fn test_provider_identity_registration_canonical_does_not_escape_html() {
+        let mut templates = std::collections::HashMap::new();
+        templates.insert("a<&>".to_string(), "v<&>".to_string());
+
+        let bytes = build_provider_identity_registration_canonical(
+            "id<&>pk",
+            Some("x25519"),
+            None,
+            None,
+            "inprocess-mlx",
+            true,
+            None,
+            None,
+            &templates,
+            None,
+        )
+        .expect("canonical build should succeed");
+
+        let expected = br#"{"backend":"inprocess-mlx","domain":"darkbloom.provider.registration.v1","encrypted_response_chunks":true,"provider_identity_public_key":"id<&>pk","public_key":"x25519","template_hashes":{"a<&>":"v<&>"}}"#;
+        assert_eq!(bytes, expected.to_vec());
+    }
+
+    #[test]
+    fn test_provider_identity_challenge_canonical_does_not_escape_html() {
+        let mut templates = std::collections::HashMap::new();
+        templates.insert("a<&>".to_string(), "v<&>".to_string());
+
+        let mut models = std::collections::HashMap::new();
+        models.insert("m<&>".to_string(), "w<&>".to_string());
+
+        let bytes = build_provider_identity_challenge_canonical(
+            "id<&>pk",
+            "x<&>25519",
+            "n<&>",
+            "2026-04-28T20:00:00Z",
+            None,
+            None,
+            None,
+            None,
+            Some("bin<&>hash"),
+            None,
+            None,
+            None,
+            &templates,
+            &models,
+        )
+        .expect("canonical build should succeed");
+
+        let expected = br#"{"binary_hash":"bin<&>hash","domain":"darkbloom.provider.challenge.v1","model_hashes":{"m<&>":"w<&>"},"nonce":"n<&>","provider_identity_public_key":"id<&>pk","public_key":"x<&>25519","template_hashes":{"a<&>":"v<&>"},"timestamp":"2026-04-28T20:00:00Z"}"#;
+        assert_eq!(bytes, expected.to_vec());
+    }
+
     /// Mirror of Go's TestBuildStatusCanonicalUnicodeNonce. Both
     /// serializers must pass printable Unicode through as UTF-8 (no
     /// double-escaping). Today nonces are base64 ASCII so this is
@@ -1054,6 +1465,7 @@ mod tests {
             None,
             std::collections::HashMap::new(),
             None,
+            None,
         );
 
         match response {
@@ -1084,6 +1496,7 @@ mod tests {
             None,
             std::collections::HashMap::new(),
             None,
+            None,
         );
 
         match response {
@@ -1113,6 +1526,7 @@ mod tests {
             None,
             std::collections::HashMap::new(),
             None,
+            None,
         );
         let resp2 = handle_attestation_challenge(
             "bm9uY2U=",
@@ -1121,6 +1535,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
             None,
         );
 
@@ -1144,6 +1559,7 @@ mod tests {
             None,
             std::collections::HashMap::new(),
             None,
+            None,
         );
         let resp2 = handle_attestation_challenge(
             "bm9uY2Uy",
@@ -1152,6 +1568,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
             None,
         );
 
@@ -1176,6 +1593,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
             None,
         );
         let json = serde_json::to_string(&response).unwrap();
@@ -1338,6 +1756,7 @@ mod tests {
             None,
             std::collections::HashMap::new(),
             None,
+            None,
         );
 
         match response {
@@ -1345,6 +1764,7 @@ mod tests {
                 nonce,
                 signature,
                 status_signature: _,
+                provider_identity_signature: _,
                 public_key,
                 hypervisor_active,
                 rdma_disabled,
@@ -1364,17 +1784,15 @@ mod tests {
                 let _ = signature;
                 // Public key matches input
                 assert_eq!(public_key, "cHVibGljLWtleQ==");
-                // All security status fields are populated
+                // Security status fields that have reliable software checks are populated.
                 assert!(sip_enabled.is_some(), "sip_enabled must be present");
                 assert!(rdma_disabled.is_some(), "rdma_disabled must be present");
                 assert!(
                     hypervisor_active.is_some(),
                     "hypervisor_active must be present"
                 );
-                assert!(
-                    secure_boot_enabled.is_some(),
-                    "secure_boot_enabled must be present"
-                );
+                // Secure Boot is omitted when macOS cannot provide a non-interactive answer.
+                let _ = secure_boot_enabled;
             }
             _ => panic!("Expected AttestationResponse"),
         }
@@ -1391,6 +1809,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
             None,
         );
 
@@ -1412,6 +1831,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
             None,
         );
 
@@ -1437,6 +1857,7 @@ mod tests {
             None,
             std::collections::HashMap::new(),
             None,
+            None,
         );
         let resp2 = handle_attestation_challenge(
             "bm9uY2U=",
@@ -1445,6 +1866,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
             None,
         );
 
@@ -1473,6 +1895,7 @@ mod tests {
             None,
             std::collections::HashMap::new(),
             None,
+            None,
         );
 
         let json = serde_json::to_string(&response).unwrap();
@@ -1486,7 +1909,6 @@ mod tests {
         assert!(parsed.get("sip_enabled").is_some());
         assert!(parsed.get("rdma_disabled").is_some());
         assert!(parsed.get("hypervisor_active").is_some());
-        assert!(parsed.get("secure_boot_enabled").is_some());
     }
 
     #[test]

@@ -89,25 +89,29 @@ type PendingRequest struct {
 
 // Provider represents a connected provider agent.
 type Provider struct {
-	ID                string
-	Hardware          protocol.Hardware
-	Models            []protocol.ModelInfo
-	Backend           string
-	PublicKey         string // base64-encoded X25519 public key for E2E encryption
-	WalletAddress     string // Ethereum-format hex address for Tempo payouts
-	Attested          bool   // true if attestation was verified successfully
-	AttestationResult *attestation.VerificationResult
-	TrustLevel        TrustLevel             // attestation trust level
-	MDAVerified       bool                   // true if Apple Device Attestation cert chain verified
-	MDACertChain      [][]byte               // DER-encoded Apple MDA certificate chain (leaf first)
-	MDAResult         *attestation.MDAResult // parsed OIDs from Apple cert
-	ACMEVerified      bool                   // true if ACME device-attest-01 client cert verified (SE key proven)
-	SEKeyBound        bool                   // true if SE key was bound to device via MDA nonce
-	Status            ProviderStatus
-	Conn              *websocket.Conn
-	LastHeartbeat     time.Time
-	Stats             protocol.HeartbeatStats // lifetime counters shown to users
-	lastSessionStats  protocol.HeartbeatStats // raw counters from the current provider process
+	ID                        string
+	Hardware                  protocol.Hardware
+	Models                    []protocol.ModelInfo
+	Backend                   string
+	PublicKey                 string // base64-encoded X25519 public key for E2E encryption
+	BinaryHash                string // SHA-256 of provider binary reported at registration
+	ProviderIdentityPublicKey string // base64 P-256 provider-bound identity public key
+	ProviderIdentityVerified  bool   // true when the entitlement-gated identity signed current claims
+	RequireProviderIdentity   bool   // true when private text must be provider-identity bound
+	WalletAddress             string // Ethereum-format hex address for Tempo payouts
+	Attested                  bool   // true if attestation was verified successfully
+	AttestationResult         *attestation.VerificationResult
+	TrustLevel                TrustLevel             // attestation trust level
+	MDAVerified               bool                   // true if Apple Device Attestation cert chain verified
+	MDACertChain              [][]byte               // DER-encoded Apple MDA certificate chain (leaf first)
+	MDAResult                 *attestation.MDAResult // parsed OIDs from Apple cert
+	ACMEVerified              bool                   // true if ACME device-attest-01 client cert verified (SE key proven)
+	SEKeyBound                bool                   // true if SE key was bound to device via MDA nonce
+	Status                    ProviderStatus
+	Conn                      *websocket.Conn
+	LastHeartbeat             time.Time
+	Stats                     protocol.HeartbeatStats // lifetime counters shown to users
+	lastSessionStats          protocol.HeartbeatStats // raw counters from the current provider process
 
 	// Account linkage (set when provider authenticates via device auth token)
 	AccountID string // internal account ID (from device auth flow)
@@ -159,6 +163,9 @@ type Provider struct {
 
 func providerSupportsPrivateTextLocked(p *Provider) bool {
 	if p.PublicKey == "" || p.Backend != "inprocess-mlx" || !p.EncryptedResponseChunks {
+		return false
+	}
+	if p.RequireProviderIdentity && !p.ProviderIdentityVerified {
 		return false
 	}
 	if !p.RuntimeManifestChecked {
@@ -348,6 +355,11 @@ type Registry struct {
 	// provider records and reputation are persisted across coordinator restarts.
 	store store.Store
 
+	// RequireProviderIdentity gates private text routing on the persistent
+	// entitlement-gated provider identity. Tests can leave this false when
+	// exercising scheduler behavior without protocol signatures.
+	RequireProviderIdentity bool
+
 	logger *slog.Logger
 }
 
@@ -365,6 +377,14 @@ func New(logger *slog.Logger) *Registry {
 // When set, provider state and reputation are persisted to the store.
 func (r *Registry) SetStore(st store.Store) {
 	r.store = st
+}
+
+// SetRequireProviderIdentity controls whether private text routing requires a
+// verified provider-bound identity signature.
+func (r *Registry) SetRequireProviderIdentity(required bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.RequireProviderIdentity = required
 }
 
 // LoadStoredProviders loads provider records and reputation from the store
@@ -401,9 +421,9 @@ func (r *Registry) LoadStoredProviders() map[string]*store.ProviderRecord {
 	return lookup
 }
 
-// RestoreProviderState restores trust level and reputation from a stored record
-// onto a live provider. Called after a provider reconnects and is matched to
-// its stored state by serial number or SE key.
+// RestoreProviderState restores non-security state from a stored record onto a
+// live provider. Trust is intentionally not restored: every connection must earn
+// fresh self-signed/hardware trust from the current attestation flow.
 func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) {
 	if rec == nil {
 		return
@@ -411,18 +431,6 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	// Restore trust level (will be re-verified via fresh attestation)
-	p.TrustLevel = TrustLevel(rec.TrustLevel)
-	p.Attested = rec.Attested
-	p.MDAVerified = rec.MDAVerified
-	p.ACMEVerified = rec.ACMEVerified
-
-	// Restore challenge state
-	if rec.LastChallengeVerified != nil {
-		p.LastChallengeVerified = *rec.LastChallengeVerified
-	}
-	p.FailedChallenges = rec.FailedChallenges
 
 	// Restore account linkage
 	if rec.AccountID != "" && p.AccountID == "" {
@@ -758,6 +766,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	models := msg.Models
 	r.mu.RLock()
 	catalog := r.modelCatalog
+	requireProviderIdentity := r.RequireProviderIdentity
 	r.mu.RUnlock()
 	if len(catalog) > 0 {
 		filtered := make([]protocol.ModelInfo, 0, len(models))
@@ -797,26 +806,29 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	}
 
 	p := &Provider{
-		ID:                      id,
-		Hardware:                msg.Hardware,
-		Models:                  models,
-		Backend:                 msg.Backend,
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: msg.EncryptedResponseChunks,
-		WalletAddress:           msg.WalletAddress,
-		PrefillTPS:              msg.PrefillTPS,
-		DecodeTPS:               msg.DecodeTPS,
-		TrustLevel:              TrustNone,
-		RuntimeVerified:         true,  // default to verified; API layer sets false when manifest check fails
-		RuntimeManifestChecked:  true,  // default to true; API layer sets false when no manifest is configured
-		ChallengeVerifiedSIP:    false, // starts false; set true by attestation challenge handler after SIP check
-		PrivacyCapabilities:     msg.PrivacyCapabilities,
-		TemplateHashes:          CloneStringMap(msg.TemplateHashes),
-		Status:                  StatusOnline,
-		Conn:                    conn,
-		LastHeartbeat:           time.Now(),
-		Reputation:              NewReputation(),
-		pendingReqs:             make(map[string]*PendingRequest),
+		ID:                        id,
+		Hardware:                  msg.Hardware,
+		Models:                    models,
+		Backend:                   msg.Backend,
+		PublicKey:                 pubKey,
+		BinaryHash:                msg.BinaryHash,
+		ProviderIdentityPublicKey: msg.ProviderIdentityPublicKey,
+		RequireProviderIdentity:   requireProviderIdentity,
+		EncryptedResponseChunks:   msg.EncryptedResponseChunks,
+		WalletAddress:             msg.WalletAddress,
+		PrefillTPS:                msg.PrefillTPS,
+		DecodeTPS:                 msg.DecodeTPS,
+		TrustLevel:                TrustNone,
+		RuntimeVerified:           true,  // default to verified; API layer sets false when manifest check fails
+		RuntimeManifestChecked:    true,  // default to true; API layer sets false when no manifest is configured
+		ChallengeVerifiedSIP:      false, // starts false; set true by attestation challenge handler after SIP check
+		PrivacyCapabilities:       msg.PrivacyCapabilities,
+		TemplateHashes:            CloneStringMap(msg.TemplateHashes),
+		Status:                    StatusOnline,
+		Conn:                      conn,
+		LastHeartbeat:             time.Now(),
+		Reputation:                NewReputation(),
+		pendingReqs:               make(map[string]*PendingRequest),
 	}
 
 	r.mu.Lock()

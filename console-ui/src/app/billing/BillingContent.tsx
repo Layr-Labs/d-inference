@@ -7,6 +7,7 @@ import { TopBar } from "@/components/TopBar";
 import {
   fetchBalance,
   fetchUsage,
+  fetchEnterpriseStatus,
   createStripeCheckout,
   redeemInviteCode,
   fetchStripeStatus,
@@ -16,6 +17,7 @@ import {
   computeStripeFeeUsd,
   type BalanceResponse,
   type UsageEntry,
+  type EnterpriseStatusResponse,
   type StripeStatus,
   type StripeWithdrawal,
 } from "@/lib/api";
@@ -68,6 +70,7 @@ export default function BillingContent() {
   const { email } = useAuth();
   const [balance, setBalance] = useState<BalanceResponse | null>(null);
   const [usage, setUsage] = useState<UsageEntry[]>([]);
+  const [enterprise, setEnterprise] = useState<EnterpriseStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [buyOpen, setBuyOpen] = useState(false);
   const [buyAmount, setBuyAmount] = useState("10");
@@ -98,6 +101,7 @@ export default function BillingContent() {
       ]);
       setBalance(b);
       setUsage(u);
+      fetchEnterpriseStatus().then(setEnterprise).catch(() => setEnterprise({ enabled: false }));
     } catch (e) {
       addToast(`Failed to load billing data: ${(e as Error).message}`);
     }
@@ -285,6 +289,10 @@ export default function BillingContent() {
               </button>
             </div>
           </div>
+
+          {enterprise?.account && (
+            <EnterpriseBillingCard enterprise={enterprise} />
+          )}
 
           {/* Invite Code Redemption */}
           <div className="rounded-2xl border border-border-dim bg-bg-white p-6 shadow-md">
@@ -537,6 +545,80 @@ export default function BillingContent() {
           onCancel={() => setWithdrawOpen(false)}
         />
       </Modal>
+    </div>
+  );
+}
+
+function EnterpriseBillingCard({ enterprise }: { enterprise: EnterpriseStatusResponse }) {
+  const account = enterprise.account;
+  if (!account) return null;
+  const active = enterprise.enabled;
+  const committed =
+    account.open_invoice_micro_usd + account.accrued_micro_usd + account.reserved_micro_usd + (account.rounding_carry_micro_usd ?? 0);
+  const remaining = enterprise.credit_remaining_micro_usd ?? Math.max(account.credit_limit_micro_usd - committed, 0);
+  const limitUsd = account.credit_limit_micro_usd / 1_000_000;
+  const remainingUsd = remaining / 1_000_000;
+  const periodUsageUsd = (account.accrued_micro_usd + account.reserved_micro_usd + (account.rounding_carry_micro_usd ?? 0)) / 1_000_000;
+  const cadence = account.cadence === "biweekly" ? "Bi-weekly" : account.cadence[0].toUpperCase() + account.cadence.slice(1);
+
+  return (
+    <div className="rounded-2xl border border-border-dim bg-bg-white p-6 shadow-md">
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <Building2 size={16} className="text-teal" />
+        <h3 className="text-sm font-semibold text-text-primary">Enterprise Invoicing</h3>
+        <span className={`ml-auto text-[10px] font-mono uppercase tracking-widest rounded px-2 py-0.5 ${
+          active
+            ? "text-teal bg-teal/10 border border-teal/30"
+            : "text-text-tertiary bg-bg-primary border border-border-dim"
+        }`}>
+          {active ? "Active" : "Disabled"}
+        </span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mb-4">
+        <div className="rounded-lg bg-bg-primary border border-border-dim p-3">
+          <p className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-1">Cadence</p>
+          <p className="text-sm font-semibold text-text-primary">{cadence}</p>
+        </div>
+        <div className="rounded-lg bg-bg-primary border border-border-dim p-3">
+          <p className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-1">Terms</p>
+          <p className="text-sm font-semibold text-text-primary">Net {account.terms_days}</p>
+        </div>
+        <div className="rounded-lg bg-bg-primary border border-border-dim p-3">
+          <p className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-1">Period Usage</p>
+          <p className="text-sm font-mono font-semibold text-text-primary">${periodUsageUsd.toFixed(2)}</p>
+        </div>
+        <div className="rounded-lg bg-bg-primary border border-border-dim p-3">
+          <p className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-1">Remaining</p>
+          <p className="text-sm font-mono font-semibold text-text-primary">
+            ${remainingUsd.toFixed(2)} / ${limitUsd.toFixed(2)}
+          </p>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 text-xs text-text-tertiary font-mono">
+        <span>Next invoice {new Date(account.next_invoice_at).toLocaleDateString()}</span>
+        <span>{account.billing_email}</span>
+      </div>
+      {(enterprise.recent_invoices?.length ?? 0) > 0 && (
+        <div className="mt-4 border-t border-border-subtle pt-4 space-y-2">
+          {enterprise.recent_invoices!.slice(0, 3).map((invoice) => (
+            <div key={invoice.id} className="flex items-center justify-between gap-3 text-xs">
+              <span className="font-mono text-text-secondary">
+                ${(invoice.amount_micro_usd / 1_000_000).toFixed(2)} · {invoice.status}
+              </span>
+              {invoice.stripe_hosted_invoice_url && (
+                <a
+                  href={invoice.stripe_hosted_invoice_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-semibold text-coral hover:underline"
+                >
+                  View invoice
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

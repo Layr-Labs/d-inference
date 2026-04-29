@@ -85,6 +85,13 @@ type PendingRequest struct {
 	// The post-inference charge adjusts for the difference between the
 	// actual cost and this reservation, preventing billing race conditions.
 	ReservedMicroUSD int64
+
+	// EnterpriseBilling is true when ReservedMicroUSD was reserved against an
+	// Enterprise postpaid credit limit instead of the prepaid ledger balance.
+	EnterpriseBilling bool
+	// BillingReservationID is the store reservation key for Enterprise
+	// postpaid reservations. It can differ from RequestID across retry loops.
+	BillingReservationID string
 }
 
 // Provider represents a connected provider agent.

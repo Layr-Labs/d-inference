@@ -133,6 +133,11 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if strings.HasPrefix(event.Type, "invoice.") {
+		s.handleStripeInvoiceWebhook(w, event)
+		return
+	}
+
 	if event.Type != "checkout.session.completed" {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -183,6 +188,57 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		"consumer_key", consumerKey[:min(8, len(consumerKey))]+"...",
 		"amount_micro_usd", amountMicroUSD,
 	)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleStripeInvoiceWebhook(w http.ResponseWriter, event *billing.WebhookEvent) {
+	invEvent, err := s.billing.Stripe().ParseInvoice(event)
+	if err != nil {
+		s.logger.Error("stripe: parse invoice webhook failed", "error", err)
+		http.Error(w, "invalid event data", http.StatusBadRequest)
+		return
+	}
+	local, err := s.billing.Store().GetEnterpriseInvoiceByStripeID(invEvent.Object.ID)
+	if err != nil {
+		s.logger.Debug("stripe: invoice webhook for unknown invoice", "stripe_invoice_id", invEvent.Object.ID, "event", event.Type)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	local.StripeHostedInvoiceURL = invEvent.Object.HostedInvoiceURL
+	local.StripeInvoicePDF = invEvent.Object.InvoicePDF
+	if invEvent.Object.DueDate > 0 {
+		t := time.Unix(invEvent.Object.DueDate, 0)
+		local.DueAt = &t
+	}
+	if invEvent.Object.StatusTransitions.FinalizedAt > 0 {
+		t := time.Unix(invEvent.Object.StatusTransitions.FinalizedAt, 0)
+		local.SentAt = &t
+	}
+	switch event.Type {
+	case "invoice.paid", "invoice.payment_succeeded":
+		local.Status = store.EnterpriseInvoiceStatusPaid
+		if invEvent.Object.StatusTransitions.PaidAt > 0 {
+			t := time.Unix(invEvent.Object.StatusTransitions.PaidAt, 0)
+			local.PaidAt = &t
+		} else {
+			t := time.Now()
+			local.PaidAt = &t
+		}
+	case "invoice.voided":
+		local.Status = store.EnterpriseInvoiceStatusVoid
+	case "invoice.marked_uncollectible":
+		local.Status = store.EnterpriseInvoiceStatusUncollectible
+	case "invoice.finalized", "invoice.sent":
+		local.Status = store.EnterpriseInvoiceStatusOpen
+	default:
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if err := s.billing.Store().UpdateEnterpriseInvoice(local); err != nil {
+		s.logger.Error("stripe: update enterprise invoice failed", "error", err, "stripe_invoice_id", invEvent.Object.ID)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 

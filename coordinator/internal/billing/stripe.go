@@ -60,6 +60,34 @@ type CheckoutSessionResponse struct {
 	AmountCents int64  `json:"amount_cents"`
 }
 
+type StripeCustomer struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+}
+
+type EnterpriseInvoiceRequest struct {
+	CustomerID     string
+	AccountID      string
+	AmountCents    int64
+	Currency       string
+	Description    string
+	PeriodStart    time.Time
+	PeriodEnd      time.Time
+	TermsDays      int
+	Metadata       map[string]string
+	IdempotencyKey string
+}
+
+type EnterpriseInvoiceResponse struct {
+	InvoiceID        string
+	Status           string
+	HostedInvoiceURL string
+	InvoicePDF       string
+	DueAt            *time.Time
+	SentAt           *time.Time
+	AmountDueCents   int64
+}
+
 // CreateCheckoutSession creates a Stripe Checkout Session via the API.
 func (p *StripeProcessor) CreateCheckoutSession(req CheckoutSessionRequest) (*CheckoutSessionResponse, error) {
 	if req.Currency == "" {
@@ -131,6 +159,165 @@ func (p *StripeProcessor) CreateCheckoutSession(req CheckoutSessionRequest) (*Ch
 	}, nil
 }
 
+func (p *StripeProcessor) CreateCustomer(email, accountID string) (*StripeCustomer, error) {
+	return p.CreateCustomerWithIdempotency(email, accountID, "")
+}
+
+func (p *StripeProcessor) CreateCustomerWithIdempotency(email, accountID, idempotencyKey string) (*StripeCustomer, error) {
+	form := url.Values{}
+	if email != "" {
+		form.Set("email", email)
+	}
+	form.Set("metadata[app]", "darkbloom")
+	form.Set("metadata[platform]", "eigeninference")
+	form.Set("metadata[account_id]", accountID)
+	body, err := p.doStripeForm(http.MethodPost, "/v1/customers", form, idempotencyKey)
+	if err != nil {
+		return nil, fmt.Errorf("stripe: create customer: %w", err)
+	}
+	var customer StripeCustomer
+	if err := json.Unmarshal(body, &customer); err != nil {
+		return nil, fmt.Errorf("stripe: parse customer: %w", err)
+	}
+	if customer.ID == "" {
+		return nil, errors.New("stripe: create customer returned empty id")
+	}
+	return &customer, nil
+}
+
+func (p *StripeProcessor) CreateEnterpriseInvoice(req EnterpriseInvoiceRequest) (*EnterpriseInvoiceResponse, error) {
+	if req.Currency == "" {
+		req.Currency = "usd"
+	}
+	if req.CustomerID == "" || req.AmountCents <= 0 {
+		return nil, errors.New("stripe: customer_id and amount_cents are required")
+	}
+	if req.TermsDays < 0 {
+		req.TermsDays = 0
+	}
+
+	metadata := checkoutMetadata(req.Metadata)
+	metadata["purchase_type"] = "enterprise_invoice"
+	metadata["account_id"] = req.AccountID
+
+	itemForm := url.Values{}
+	itemForm.Set("customer", req.CustomerID)
+	itemForm.Set("amount", strconv.FormatInt(req.AmountCents, 10))
+	itemForm.Set("currency", req.Currency)
+	itemForm.Set("description", req.Description)
+	itemForm.Set("period[start]", strconv.FormatInt(req.PeriodStart.Unix(), 10))
+	itemForm.Set("period[end]", strconv.FormatInt(req.PeriodEnd.Unix(), 10))
+	for k, v := range metadata {
+		itemForm.Set("metadata["+k+"]", v)
+	}
+	if _, err := p.doStripeForm(http.MethodPost, "/v1/invoiceitems", itemForm, req.IdempotencyKey+":item"); err != nil {
+		return nil, fmt.Errorf("stripe: create invoice item: %w", err)
+	}
+
+	invoiceForm := url.Values{}
+	invoiceForm.Set("customer", req.CustomerID)
+	invoiceForm.Set("collection_method", "send_invoice")
+	invoiceForm.Set("pending_invoice_items_behavior", "include")
+	invoiceForm.Set("days_until_due", strconv.Itoa(req.TermsDays))
+	invoiceForm.Set("auto_advance", "false")
+	invoiceForm.Set("currency", req.Currency)
+	for k, v := range metadata {
+		invoiceForm.Set("metadata["+k+"]", v)
+	}
+	body, err := p.doStripeForm(http.MethodPost, "/v1/invoices", invoiceForm, req.IdempotencyKey+":invoice")
+	if err != nil {
+		return nil, fmt.Errorf("stripe: create invoice: %w", err)
+	}
+	invoice, err := parseStripeInvoice(body)
+	if err != nil {
+		return nil, err
+	}
+
+	body, err = p.doStripeForm(http.MethodPost, "/v1/invoices/"+invoice.InvoiceID+"/finalize", url.Values{}, req.IdempotencyKey+":finalize")
+	if err != nil {
+		return nil, fmt.Errorf("stripe: finalize invoice: %w", err)
+	}
+	invoice, err = parseStripeInvoice(body)
+	if err != nil {
+		return nil, err
+	}
+
+	body, err = p.doStripeForm(http.MethodPost, "/v1/invoices/"+invoice.InvoiceID+"/send", url.Values{}, req.IdempotencyKey+":send")
+	if err != nil {
+		return nil, fmt.Errorf("stripe: send invoice: %w", err)
+	}
+	invoice, err = parseStripeInvoice(body)
+	if err != nil {
+		return nil, err
+	}
+	return invoice, nil
+}
+
+func (p *StripeProcessor) doStripeForm(method, path string, form url.Values, idempotencyKey string) ([]byte, error) {
+	httpReq, err := http.NewRequest(method, stripeAPIBase+path, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+p.secretKey)
+	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if idempotencyKey != "" {
+		httpReq.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	resp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+	}
+	return body, nil
+}
+
+func parseStripeInvoice(body []byte) (*EnterpriseInvoiceResponse, error) {
+	var raw struct {
+		ID                string `json:"id"`
+		Status            string `json:"status"`
+		HostedInvoiceURL  string `json:"hosted_invoice_url"`
+		InvoicePDF        string `json:"invoice_pdf"`
+		DueDate           int64  `json:"due_date"`
+		StatusTransitions struct {
+			FinalizedAt int64 `json:"finalized_at"`
+			PaidAt      int64 `json:"paid_at"`
+		} `json:"status_transitions"`
+		AmountDue int64 `json:"amount_due"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("stripe: parse invoice: %w", err)
+	}
+	if raw.ID == "" {
+		return nil, errors.New("stripe: invoice response missing id")
+	}
+	var dueAt *time.Time
+	if raw.DueDate > 0 {
+		t := time.Unix(raw.DueDate, 0)
+		dueAt = &t
+	}
+	var sentAt *time.Time
+	if raw.StatusTransitions.FinalizedAt > 0 {
+		t := time.Unix(raw.StatusTransitions.FinalizedAt, 0)
+		sentAt = &t
+	}
+	return &EnterpriseInvoiceResponse{
+		InvoiceID:        raw.ID,
+		Status:           raw.Status,
+		HostedInvoiceURL: raw.HostedInvoiceURL,
+		InvoicePDF:       raw.InvoicePDF,
+		DueAt:            dueAt,
+		SentAt:           sentAt,
+		AmountDueCents:   raw.AmountDue,
+	}, nil
+}
+
 func checkoutMetadata(metadata map[string]string) map[string]string {
 	params := map[string]string{
 		"app":           "darkbloom",
@@ -158,6 +345,24 @@ type CheckoutSessionEvent struct {
 		Currency      string            `json:"currency"`
 		PaymentStatus string            `json:"payment_status"` // "paid"
 		Metadata      map[string]string `json:"metadata"`
+	} `json:"object"`
+}
+
+type InvoiceEvent struct {
+	Object struct {
+		ID                string            `json:"id"`
+		Status            string            `json:"status"`
+		HostedInvoiceURL  string            `json:"hosted_invoice_url"`
+		InvoicePDF        string            `json:"invoice_pdf"`
+		DueDate           int64             `json:"due_date"`
+		AmountPaid        int64             `json:"amount_paid"`
+		AmountDue         int64             `json:"amount_due"`
+		Metadata          map[string]string `json:"metadata"`
+		StatusTransitions struct {
+			FinalizedAt int64 `json:"finalized_at"`
+			PaidAt      int64 `json:"paid_at"`
+			VoidedAt    int64 `json:"voided_at"`
+		} `json:"status_transitions"`
 	} `json:"object"`
 }
 
@@ -242,6 +447,20 @@ func (p *StripeProcessor) ParseCheckoutSession(event *WebhookEvent) (*CheckoutSe
 		return nil, fmt.Errorf("stripe: payment not completed (status: %s)", data.Object.PaymentStatus)
 	}
 
+	return &data, nil
+}
+
+func (p *StripeProcessor) ParseInvoice(event *WebhookEvent) (*InvoiceEvent, error) {
+	if event == nil || !strings.HasPrefix(event.Type, "invoice.") {
+		return nil, fmt.Errorf("stripe: unexpected event type %q", event.Type)
+	}
+	var data InvoiceEvent
+	if err := json.Unmarshal(event.Data, &data); err != nil {
+		return nil, fmt.Errorf("stripe: parse invoice: %w", err)
+	}
+	if data.Object.ID == "" {
+		return nil, errors.New("stripe: invoice missing id")
+	}
 	return &data, nil
 }
 

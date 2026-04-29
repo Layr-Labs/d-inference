@@ -487,6 +487,12 @@ func main() {
 	// Start background eviction of stale providers.
 	reg.StartEvictionLoop(ctx, 90*time.Second)
 
+	// Generate due Enterprise invoices in the background when Stripe is
+	// configured. Manual admin runs use the same code path.
+	saferun.Go(logger, "enterprise_invoice_runner", func() {
+		srv.StartEnterpriseInvoiceLoop(ctx, time.Hour)
+	})
+
 	// Push gauge values to DogStatsD periodically.
 	go srv.StartDDGaugeLoop(ctx)
 

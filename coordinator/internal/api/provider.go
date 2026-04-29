@@ -997,7 +997,32 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// totalCost <= reserved, so the only path here is a refund of the unused
 	// portion. The old "charge extra" path is retained for the unreserved
 	// code path below (billing disabled / legacy requests).
-	if pr.ReservedMicroUSD > 0 {
+	if pr.EnterpriseBilling {
+		reservationID := pr.BillingReservationID
+		if reservationID == "" {
+			reservationID = msg.RequestID
+		}
+		if err := s.store.FinalizeEnterpriseUsage(pr.ConsumerKey, reservationID, totalCost); err != nil {
+			s.logger.Error("enterprise billing finalize failed",
+				"consumer_key", pr.ConsumerKey,
+				"request_id", msg.RequestID,
+				"reservation_id", reservationID,
+				"cost_micro_usd", totalCost,
+				"error", err,
+			)
+			pr.ErrorCh <- protocol.InferenceErrorMessage{
+				Type:       protocol.TypeInferenceError,
+				RequestID:  msg.RequestID,
+				Error:      "enterprise billing finalization failed",
+				StatusCode: http.StatusInternalServerError,
+			}
+			close(pr.ChunkCh)
+			close(pr.CompleteCh)
+			close(pr.ErrorCh)
+			s.registry.SetProviderIdle(providerID)
+			return
+		}
+	} else if pr.ReservedMicroUSD > 0 {
 		if totalCost < pr.ReservedMicroUSD {
 			refund := pr.ReservedMicroUSD - totalCost
 			_ = s.store.Credit(pr.ConsumerKey, refund, store.LedgerRefund, msg.RequestID)

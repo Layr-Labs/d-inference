@@ -148,8 +148,8 @@ echo "  Binaries installed ✓"
 echo "  Shortcut: darkbloom"
 
 # ─── Migrate from old installs ───────────────────────────────
-# Migration chain: ~/.dginf → ~/.darkbloom → ~/.darkbloom
-for OLD_DIR in "$HOME/.dginf" "$HOME/.darkbloom"; do
+# Migration chain: ~/.dginf → ~/.eigeninference → ~/.darkbloom
+for OLD_DIR in "$HOME/.dginf" "$HOME/.eigeninference"; do
     if [ -d "$OLD_DIR" ] && [ ! -L "$OLD_DIR" ]; then
         echo ""
         echo "  Migrating from $OLD_DIR..."
@@ -193,11 +193,11 @@ else
     if [ "$RUNTIME_INSTALLED" = false ] && [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
         echo "  Downloading site-packages..."
         SITE_DIR="$INSTALL_DIR/python/lib/python3.12/site-packages"
-        if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/darkbloom-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
+        if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/darkbloom-site-packages.tar.gz" -o "/tmp/darkbloom-site-packages.tar.gz" 2>/dev/null; then
             rm -rf "$SITE_DIR"
             mkdir -p "$SITE_DIR"
-            tar xzf /tmp/eigen-site-packages.tar.gz -C "$SITE_DIR"
-            rm -f /tmp/eigen-site-packages.tar.gz
+            tar xzf /tmp/darkbloom-site-packages.tar.gz -C "$SITE_DIR"
+            rm -f /tmp/darkbloom-site-packages.tar.gz
             RUNTIME_INSTALLED=true
             echo "  Site-packages installed from R2 ✓"
         fi
@@ -225,11 +225,11 @@ if [ -f "$PYTHON_BIN" ] && ! "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
             # Prefer the coordinator-served install.sh (templated) — this copy is
             # a direct-fetch fallback and stays pinned to the prod CDN defaults.
             R2_CDN="${R2_CDN:-https://pub-3d1cb668259340eeb2276e1d375c846d.r2.dev}"
-            if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/darkbloom-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
+            if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/darkbloom-site-packages.tar.gz" -o "/tmp/darkbloom-site-packages.tar.gz" 2>/dev/null; then
                 rm -rf "$SITE_DIR"
                 mkdir -p "$SITE_DIR"
-                tar xzf /tmp/eigen-site-packages.tar.gz -C "$SITE_DIR"
-                rm -f /tmp/eigen-site-packages.tar.gz
+                tar xzf /tmp/darkbloom-site-packages.tar.gz -C "$SITE_DIR"
+                rm -f /tmp/darkbloom-site-packages.tar.gz
                 echo "  Packages installed from R2 ✓"
             else
                 # Fallback: pip install from GitHub

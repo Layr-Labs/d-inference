@@ -193,16 +193,20 @@ pub fn legacy_key_files_present() -> Vec<std::path::PathBuf> {
 }
 
 const LEGACY_KEY_FILES: &[&str] = &[
+    ".eigeninference/enclave_key.data",
+    ".eigeninference/e2e_key.data",
+    ".eigeninference/e2e_key.provisioned",
+    ".eigeninference/e2e_key.sealed",
+    ".eigeninference/node_key",
+    ".eigeninference/enclave_e2e_ka.data",
+    ".dginf/enclave_e2e_ka.data",
+    ".dginf/node_key",
     ".darkbloom/enclave_key.data",
     ".darkbloom/e2e_key.data",
     ".darkbloom/e2e_key.provisioned",
     ".darkbloom/e2e_key.sealed",
     ".darkbloom/node_key",
     ".darkbloom/enclave_e2e_ka.data",
-    ".dginf/enclave_e2e_ka.data",
-    ".dginf/node_key",
-    ".darkbloom/enclave_e2e_ka.data",
-    ".darkbloom/node_key",
 ];
 
 pub fn cleanup_legacy_key_files() {

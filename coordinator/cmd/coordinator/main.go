@@ -1,4 +1,4 @@
-// Command coordinator runs the Darkbloom (Darkbloom) coordinator control plane.
+// Command coordinator runs the Darkbloom coordinator control plane.
 //
 // The coordinator is the central routing and trust layer in the Darkbloom network.
 // It accepts provider WebSocket connections, verifies their Secure Enclave

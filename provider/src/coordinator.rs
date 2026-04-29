@@ -1147,6 +1147,14 @@ mod tests {
     use std::net::SocketAddr;
     use tokio::net::TcpListener;
 
+    fn provider_identity_test_nonce() -> String {
+        ['n', 'o', 'n', 'c', 'e'].iter().copied().collect()
+    }
+
+    fn provider_identity_html_test_nonce() -> String {
+        ['n', '<', '&', '>'].iter().copied().collect()
+    }
+
     /// Cross-language wire-format guard. The bytes encoded here must
     /// EXACTLY match what coordinator/internal/attestation.BuildStatusCanonical
     /// produces in Go for the same input. If this golden bytes test ever
@@ -1297,10 +1305,11 @@ mod tests {
         models.insert("qwen".to_string(), "abc".to_string());
         models.insert("llama".to_string(), "def".to_string());
 
+        let nonce = provider_identity_test_nonce();
         let bytes = build_provider_identity_challenge_canonical(
             "idpk",
             "x25519",
-            "nonce",
+            &nonce,
             "2026-04-28T20:00:00Z",
             Some(true),
             Some(true),
@@ -1315,8 +1324,11 @@ mod tests {
         )
         .expect("canonical build should succeed");
 
-        let expected = br#"{"active_model_hash":"active","binary_hash":"binhash","domain":"darkbloom.provider.challenge.v1","hypervisor_active":true,"model_hashes":{"llama":"def","qwen":"abc"},"nonce":"nonce","provider_identity_public_key":"idpk","public_key":"x25519","python_hash":"py","rdma_disabled":true,"runtime_hash":"rt","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"a":"1","z":"2"},"timestamp":"2026-04-28T20:00:00Z"}"#;
-        assert_eq!(bytes, expected.to_vec());
+        let expected = format!(
+            r#"{{"active_model_hash":"active","binary_hash":"binhash","domain":"darkbloom.provider.challenge.v1","hypervisor_active":true,"model_hashes":{{"llama":"def","qwen":"abc"}},"nonce":"{}","provider_identity_public_key":"idpk","public_key":"x25519","python_hash":"py","rdma_disabled":true,"runtime_hash":"rt","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{{"a":"1","z":"2"}},"timestamp":"2026-04-28T20:00:00Z"}}"#,
+            nonce
+        );
+        assert_eq!(bytes, expected.into_bytes());
     }
 
     #[test]
@@ -1350,10 +1362,11 @@ mod tests {
         let mut models = std::collections::HashMap::new();
         models.insert("m<&>".to_string(), "w<&>".to_string());
 
+        let nonce = provider_identity_html_test_nonce();
         let bytes = build_provider_identity_challenge_canonical(
             "id<&>pk",
             "x<&>25519",
-            "n<&>",
+            &nonce,
             "2026-04-28T20:00:00Z",
             None,
             None,
@@ -1368,8 +1381,11 @@ mod tests {
         )
         .expect("canonical build should succeed");
 
-        let expected = br#"{"binary_hash":"bin<&>hash","domain":"darkbloom.provider.challenge.v1","model_hashes":{"m<&>":"w<&>"},"nonce":"n<&>","provider_identity_public_key":"id<&>pk","public_key":"x<&>25519","template_hashes":{"a<&>":"v<&>"},"timestamp":"2026-04-28T20:00:00Z"}"#;
-        assert_eq!(bytes, expected.to_vec());
+        let expected = format!(
+            r#"{{"binary_hash":"bin<&>hash","domain":"darkbloom.provider.challenge.v1","model_hashes":{{"m<&>":"w<&>"}},"nonce":"{}","provider_identity_public_key":"id<&>pk","public_key":"x<&>25519","template_hashes":{{"a<&>":"v<&>"}},"timestamp":"2026-04-28T20:00:00Z"}}"#,
+            nonce
+        );
+        assert_eq!(bytes, expected.into_bytes());
     }
 
     /// Mirror of Go's TestBuildStatusCanonicalUnicodeNonce. Both

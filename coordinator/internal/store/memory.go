@@ -48,6 +48,12 @@ type MemoryStore struct {
 	// Billing sessions
 	billingSessions map[string]*BillingSession // sessionID → session
 
+	// Enterprise invoicing
+	enterpriseAccounts     map[string]*EnterpriseAccount
+	enterpriseInvoices     map[string]*EnterpriseInvoice
+	enterpriseByStripeID   map[string]string
+	enterpriseReservations map[string]*enterpriseReservation
+
 	// Custom pricing
 	modelPrices map[string]ModelPrice // "accountID:model" → price
 
@@ -113,6 +119,10 @@ func NewMemory(adminKey string) *MemoryStore {
 		referrals:                     make(map[string]string),
 		referralCounts:                make(map[string]int),
 		billingSessions:               make(map[string]*BillingSession),
+		enterpriseAccounts:            make(map[string]*EnterpriseAccount),
+		enterpriseInvoices:            make(map[string]*EnterpriseInvoice),
+		enterpriseByStripeID:          make(map[string]string),
+		enterpriseReservations:        make(map[string]*enterpriseReservation),
 		modelPrices:                   make(map[string]ModelPrice),
 		supportedModels:               make(map[string]*SupportedModel),
 		usersByPrivyID:                make(map[string]*User),
@@ -721,6 +731,396 @@ func (s *MemoryStore) IsExternalIDProcessed(externalID string) bool {
 		}
 	}
 	return false
+}
+
+type enterpriseReservation struct {
+	RequestID      string
+	AccountID      string
+	AmountMicroUSD int64
+	ActualMicroUSD int64
+	Status         string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+// --- Enterprise Invoicing ---
+
+func normalizeEnterpriseAccount(account *EnterpriseAccount) EnterpriseAccount {
+	copy := *account
+	now := time.Now()
+	if copy.Status == "" {
+		copy.Status = EnterpriseStatusActive
+	}
+	if copy.Cadence == "" {
+		copy.Cadence = EnterpriseCadenceMonthly
+	}
+	if copy.CurrentPeriodStart.IsZero() {
+		copy.CurrentPeriodStart = now
+	}
+	if copy.NextInvoiceAt.IsZero() {
+		copy.NextInvoiceAt = nextEnterpriseInvoiceAt(copy.CurrentPeriodStart, copy.Cadence)
+	}
+	if copy.CreatedAt.IsZero() {
+		copy.CreatedAt = now
+	}
+	copy.UpdatedAt = now
+	return copy
+}
+
+func nextEnterpriseInvoiceAt(start time.Time, cadence string) time.Time {
+	switch cadence {
+	case EnterpriseCadenceWeekly:
+		return start.AddDate(0, 0, 7)
+	case EnterpriseCadenceBiweekly:
+		return start.AddDate(0, 0, 14)
+	default:
+		return start.AddDate(0, 1, 0)
+	}
+}
+
+func (s *MemoryStore) UpsertEnterpriseAccount(account *EnterpriseAccount) error {
+	if account == nil || account.AccountID == "" {
+		return errors.New("enterprise account_id is required")
+	}
+	if account.CreditLimitMicroUSD < 0 ||
+		account.AccruedMicroUSD < 0 ||
+		account.ReservedMicroUSD < 0 ||
+		account.OpenInvoiceMicroUSD < 0 ||
+		account.RoundingCarryMicroUSD < 0 {
+		return errors.New("enterprise money fields cannot be negative")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if existing, ok := s.enterpriseAccounts[account.AccountID]; ok && account.CreatedAt.IsZero() {
+		account.CreatedAt = existing.CreatedAt
+	}
+	copy := normalizeEnterpriseAccount(account)
+	s.enterpriseAccounts[copy.AccountID] = &copy
+	return nil
+}
+
+func (s *MemoryStore) GetEnterpriseAccount(accountID string) (*EnterpriseAccount, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	account, ok := s.enterpriseAccounts[accountID]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrEnterpriseAccountNotFound, accountID)
+	}
+	copy := *account
+	return &copy, nil
+}
+
+func (s *MemoryStore) ListEnterpriseAccounts() ([]EnterpriseAccount, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]EnterpriseAccount, 0, len(s.enterpriseAccounts))
+	for _, account := range s.enterpriseAccounts {
+		out = append(out, *account)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
+	})
+	return out, nil
+}
+
+func (s *MemoryStore) SetEnterpriseStripeCustomerID(accountID, stripeCustomerID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	account, ok := s.enterpriseAccounts[accountID]
+	if !ok {
+		return fmt.Errorf("enterprise account %q not found", accountID)
+	}
+	account.StripeCustomerID = stripeCustomerID
+	account.UpdatedAt = time.Now()
+	return nil
+}
+
+func (s *MemoryStore) AdvanceEnterpriseInvoicePeriod(accountID string, periodStart, nextInvoiceAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	account, ok := s.enterpriseAccounts[accountID]
+	if !ok {
+		return fmt.Errorf("enterprise account %q not found", accountID)
+	}
+	account.CurrentPeriodStart = periodStart
+	account.NextInvoiceAt = nextInvoiceAt
+	account.UpdatedAt = time.Now()
+	return nil
+}
+
+func (s *MemoryStore) ReserveEnterpriseUsage(accountID, requestID string, amountMicroUSD int64) error {
+	if amountMicroUSD <= 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	account, ok := s.enterpriseAccounts[accountID]
+	if !ok || account.Status != EnterpriseStatusActive {
+		return fmt.Errorf("enterprise account %q is not active", accountID)
+	}
+	if existing, ok := s.enterpriseReservations[requestID]; ok {
+		if existing.AccountID == accountID && existing.Status == "reserved" {
+			if existing.AmountMicroUSD != amountMicroUSD {
+				return fmt.Errorf("enterprise reservation %q amount mismatch", requestID)
+			}
+			return nil
+		}
+		if existing.AccountID != accountID {
+			return fmt.Errorf("enterprise reservation %q belongs to another account", requestID)
+		}
+		return fmt.Errorf("enterprise reservation %q already %s", requestID, existing.Status)
+	}
+	exposure := account.OpenInvoiceMicroUSD + account.AccruedMicroUSD + account.ReservedMicroUSD + account.RoundingCarryMicroUSD + amountMicroUSD
+	if exposure > account.CreditLimitMicroUSD {
+		return fmt.Errorf("enterprise credit limit exceeded")
+	}
+	now := time.Now()
+	account.ReservedMicroUSD += amountMicroUSD
+	account.UpdatedAt = now
+	s.enterpriseReservations[requestID] = &enterpriseReservation{
+		RequestID: requestID, AccountID: accountID, AmountMicroUSD: amountMicroUSD,
+		Status: "reserved", CreatedAt: now, UpdatedAt: now,
+	}
+	return nil
+}
+
+func (s *MemoryStore) FinalizeEnterpriseUsage(accountID, requestID string, actualMicroUSD int64) error {
+	if actualMicroUSD < 0 {
+		actualMicroUSD = 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	account, ok := s.enterpriseAccounts[accountID]
+	if !ok {
+		return fmt.Errorf("enterprise account %q not found", accountID)
+	}
+	res, ok := s.enterpriseReservations[requestID]
+	if !ok || res.Status != "reserved" {
+		return fmt.Errorf("enterprise reservation %q not found", requestID)
+	}
+	if res.AccountID != accountID {
+		return fmt.Errorf("enterprise reservation %q belongs to another account", requestID)
+	}
+	if actualMicroUSD > res.AmountMicroUSD {
+		actualMicroUSD = res.AmountMicroUSD
+	}
+	now := time.Now()
+	account.ReservedMicroUSD -= res.AmountMicroUSD
+	if account.ReservedMicroUSD < 0 {
+		account.ReservedMicroUSD = 0
+	}
+	account.AccruedMicroUSD += actualMicroUSD
+	account.UpdatedAt = now
+	res.ActualMicroUSD = actualMicroUSD
+	res.Status = "finalized"
+	res.UpdatedAt = now
+	return nil
+}
+
+func (s *MemoryStore) ReleaseEnterpriseReservation(accountID, requestID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	account, ok := s.enterpriseAccounts[accountID]
+	if !ok {
+		return fmt.Errorf("enterprise account %q not found", accountID)
+	}
+	res, ok := s.enterpriseReservations[requestID]
+	if !ok || res.Status != "reserved" {
+		return nil
+	}
+	if res.AccountID != accountID {
+		return fmt.Errorf("enterprise reservation %q belongs to another account", requestID)
+	}
+	now := time.Now()
+	account.ReservedMicroUSD -= res.AmountMicroUSD
+	if account.ReservedMicroUSD < 0 {
+		account.ReservedMicroUSD = 0
+	}
+	account.UpdatedAt = now
+	res.Status = "released"
+	res.UpdatedAt = now
+	return nil
+}
+
+func (s *MemoryStore) ListDueEnterpriseAccounts(now time.Time) ([]EnterpriseAccount, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []EnterpriseAccount
+	for _, account := range s.enterpriseAccounts {
+		if account.Status == EnterpriseStatusActive && !account.NextInvoiceAt.After(now) {
+			out = append(out, *account)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].NextInvoiceAt.Before(out[j].NextInvoiceAt)
+	})
+	return out, nil
+}
+
+func (s *MemoryStore) CreateEnterpriseInvoice(invoice *EnterpriseInvoice) error {
+	if invoice == nil || invoice.ID == "" || invoice.AccountID == "" {
+		return errors.New("enterprise invoice id and account_id are required")
+	}
+	if invoice.AmountMicroUSD < 0 || invoice.AmountCents < 0 {
+		return errors.New("enterprise invoice amount cannot be negative")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, exists := s.enterpriseInvoices[invoice.ID]
+	if exists && existing.StripeInvoiceID != "" {
+		return fmt.Errorf("enterprise invoice %q already exists", invoice.ID)
+	}
+	if exists {
+		if existing.AccountID != invoice.AccountID || existing.AmountMicroUSD != invoice.AmountMicroUSD || existing.AmountCents != invoice.AmountCents {
+			return fmt.Errorf("enterprise invoice %q draft mismatch", invoice.ID)
+		}
+	}
+	copy := *invoice
+	now := time.Now()
+	if copy.CreatedAt.IsZero() {
+		if exists {
+			copy.CreatedAt = existing.CreatedAt
+		} else {
+			copy.CreatedAt = now
+		}
+	}
+	copy.UpdatedAt = now
+	s.enterpriseInvoices[copy.ID] = &copy
+	if copy.StripeInvoiceID != "" {
+		s.enterpriseByStripeID[copy.StripeInvoiceID] = copy.ID
+	}
+	if account, ok := s.enterpriseAccounts[copy.AccountID]; ok {
+		account.OpenInvoiceMicroUSD += copy.AmountMicroUSD
+		remainder := account.AccruedMicroUSD + account.RoundingCarryMicroUSD - copy.AmountMicroUSD
+		if remainder < 0 {
+			remainder = 0
+		}
+		account.AccruedMicroUSD = 0
+		account.RoundingCarryMicroUSD = remainder
+		account.CurrentPeriodStart = copy.PeriodEnd
+		account.NextInvoiceAt = nextEnterpriseInvoiceAt(copy.PeriodEnd, account.Cadence)
+		account.UpdatedAt = now
+	}
+	return nil
+}
+
+func (s *MemoryStore) CreateEnterpriseInvoiceDraft(invoice *EnterpriseInvoice) error {
+	if invoice == nil || invoice.ID == "" || invoice.AccountID == "" {
+		return errors.New("enterprise invoice id and account_id are required")
+	}
+	if invoice.AmountMicroUSD < 0 || invoice.AmountCents < 0 {
+		return errors.New("enterprise invoice amount cannot be negative")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if existing, exists := s.enterpriseInvoices[invoice.ID]; exists {
+		if existing.AccountID == invoice.AccountID &&
+			existing.AmountMicroUSD == invoice.AmountMicroUSD &&
+			existing.AmountCents == invoice.AmountCents {
+			return nil
+		}
+		return fmt.Errorf("enterprise invoice %q already exists", invoice.ID)
+	}
+	copy := *invoice
+	now := time.Now()
+	if copy.CreatedAt.IsZero() {
+		copy.CreatedAt = now
+	}
+	copy.UpdatedAt = now
+	s.enterpriseInvoices[copy.ID] = &copy
+	return nil
+}
+
+func (s *MemoryStore) UpdateEnterpriseInvoice(invoice *EnterpriseInvoice) error {
+	if invoice == nil || invoice.ID == "" {
+		return errors.New("enterprise invoice id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, ok := s.enterpriseInvoices[invoice.ID]
+	if !ok {
+		return fmt.Errorf("enterprise invoice %q not found", invoice.ID)
+	}
+	oldStatus := existing.Status
+	persistedAccountID := existing.AccountID
+	persistedAmount := existing.AmountMicroUSD
+	copy := *invoice
+	copy.CreatedAt = existing.CreatedAt
+	copy.AccountID = persistedAccountID
+	copy.AmountMicroUSD = persistedAmount
+	copy.AmountCents = existing.AmountCents
+	copy.PeriodStart = existing.PeriodStart
+	copy.PeriodEnd = existing.PeriodEnd
+	copy.TermsDays = existing.TermsDays
+	copy.UpdatedAt = time.Now()
+	s.enterpriseInvoices[copy.ID] = &copy
+	if copy.StripeInvoiceID != "" {
+		s.enterpriseByStripeID[copy.StripeInvoiceID] = copy.ID
+	}
+	if isEnterpriseInvoiceTerminal(oldStatus) && !isEnterpriseInvoiceTerminal(copy.Status) {
+		copy.Status = oldStatus
+		s.enterpriseInvoices[copy.ID] = &copy
+	}
+	if !isEnterpriseInvoiceTerminal(oldStatus) && isEnterpriseInvoiceTerminal(copy.Status) {
+		if account, ok := s.enterpriseAccounts[persistedAccountID]; ok {
+			account.OpenInvoiceMicroUSD -= persistedAmount
+			if account.OpenInvoiceMicroUSD < 0 {
+				account.OpenInvoiceMicroUSD = 0
+			}
+			account.UpdatedAt = copy.UpdatedAt
+		}
+	}
+	return nil
+}
+
+func isEnterpriseInvoiceTerminal(status string) bool {
+	return status == EnterpriseInvoiceStatusPaid ||
+		status == EnterpriseInvoiceStatusVoid ||
+		status == EnterpriseInvoiceStatusUncollectible
+}
+
+func (s *MemoryStore) GetEnterpriseInvoiceByStripeID(stripeInvoiceID string) (*EnterpriseInvoice, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	id := s.enterpriseByStripeID[stripeInvoiceID]
+	if id == "" {
+		return nil, fmt.Errorf("enterprise invoice for Stripe ID %q not found", stripeInvoiceID)
+	}
+	invoice := s.enterpriseInvoices[id]
+	copy := *invoice
+	return &copy, nil
+}
+
+func (s *MemoryStore) ListEnterpriseInvoices(accountID string, limit int) ([]EnterpriseInvoice, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []EnterpriseInvoice
+	for _, invoice := range s.enterpriseInvoices {
+		if invoice.AccountID == accountID {
+			out = append(out, *invoice)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 // --- Custom Pricing ---

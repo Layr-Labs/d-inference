@@ -828,3 +828,249 @@ func TestGetLatestReleasePrefersHigherSemverOverNewerTimestamp(t *testing.T) {
 		t.Fatalf("latest version = %q, want %q", latest.Version, "0.3.9")
 	}
 }
+
+func TestEnterpriseReservationLifecycleAndTerms(t *testing.T) {
+	s := NewMemory("")
+	start := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
+	if err := s.UpsertEnterpriseAccount(&EnterpriseAccount{
+		AccountID:           "acct-ent",
+		Status:              EnterpriseStatusActive,
+		BillingEmail:        "billing@example.com",
+		Cadence:             EnterpriseCadenceBiweekly,
+		TermsDays:           0,
+		CreditLimitMicroUSD: 1_000_000,
+		CurrentPeriodStart:  start,
+		NextInvoiceAt:       start,
+	}); err != nil {
+		t.Fatalf("UpsertEnterpriseAccount: %v", err)
+	}
+	account, err := s.GetEnterpriseAccount("acct-ent")
+	if err != nil {
+		t.Fatalf("GetEnterpriseAccount: %v", err)
+	}
+	if account.TermsDays != 0 {
+		t.Fatalf("terms_days = %d, want editable zero", account.TermsDays)
+	}
+	if err := s.ReserveEnterpriseUsage("acct-ent", "req-1", 700_000); err != nil {
+		t.Fatalf("ReserveEnterpriseUsage req-1: %v", err)
+	}
+	if err := s.ReserveEnterpriseUsage("acct-ent", "req-1", 700_000); err != nil {
+		t.Fatalf("duplicate ReserveEnterpriseUsage req-1 should be idempotent: %v", err)
+	}
+	account, _ = s.GetEnterpriseAccount("acct-ent")
+	if account.ReservedMicroUSD != 700_000 {
+		t.Fatalf("reserved after duplicate = %d, want 700000", account.ReservedMicroUSD)
+	}
+	if err := s.ReserveEnterpriseUsage("acct-ent", "req-2", 400_000); err == nil {
+		t.Fatal("expected over-limit reservation to fail")
+	}
+	if err := s.FinalizeEnterpriseUsage("acct-ent", "req-1", 250_000); err != nil {
+		t.Fatalf("FinalizeEnterpriseUsage: %v", err)
+	}
+	account, _ = s.GetEnterpriseAccount("acct-ent")
+	if account.ReservedMicroUSD != 0 || account.AccruedMicroUSD != 250_000 {
+		t.Fatalf("reserved/accrued = %d/%d, want 0/250000", account.ReservedMicroUSD, account.AccruedMicroUSD)
+	}
+	if err := s.ReserveEnterpriseUsage("acct-ent", "req-3", 300_000); err != nil {
+		t.Fatalf("ReserveEnterpriseUsage req-3: %v", err)
+	}
+	if err := s.FinalizeEnterpriseUsage("acct-ent", "req-3", 500_000); err != nil {
+		t.Fatalf("FinalizeEnterpriseUsage req-3: %v", err)
+	}
+	account, _ = s.GetEnterpriseAccount("acct-ent")
+	if account.AccruedMicroUSD != 550_000 {
+		t.Fatalf("accrued after over-actual finalize = %d, want capped 550000", account.AccruedMicroUSD)
+	}
+	if err := s.ReserveEnterpriseUsage("acct-ent", "req-4", 300_000); err != nil {
+		t.Fatalf("ReserveEnterpriseUsage req-4: %v", err)
+	}
+	if err := s.UpsertEnterpriseAccount(&EnterpriseAccount{
+		AccountID:           "acct-other",
+		Status:              EnterpriseStatusActive,
+		BillingEmail:        "other@example.com",
+		Cadence:             EnterpriseCadenceWeekly,
+		TermsDays:           15,
+		CreditLimitMicroUSD: 1_000_000,
+		CurrentPeriodStart:  start,
+		NextInvoiceAt:       start,
+	}); err != nil {
+		t.Fatalf("UpsertEnterpriseAccount other: %v", err)
+	}
+	if err := s.FinalizeEnterpriseUsage("acct-other", "req-4", 100_000); err == nil {
+		t.Fatal("expected cross-account finalize to fail")
+	}
+	if err := s.ReleaseEnterpriseReservation("acct-ent", "req-4"); err != nil {
+		t.Fatalf("ReleaseEnterpriseReservation: %v", err)
+	}
+	account, _ = s.GetEnterpriseAccount("acct-ent")
+	if account.ReservedMicroUSD != 0 {
+		t.Fatalf("reserved after release = %d, want 0", account.ReservedMicroUSD)
+	}
+
+	if err := s.UpsertEnterpriseAccount(&EnterpriseAccount{
+		AccountID:           "acct-zero",
+		Status:              EnterpriseStatusActive,
+		BillingEmail:        "zero@example.com",
+		Cadence:             EnterpriseCadenceWeekly,
+		TermsDays:           15,
+		CreditLimitMicroUSD: 0,
+		CurrentPeriodStart:  start,
+		NextInvoiceAt:       start,
+	}); err != nil {
+		t.Fatalf("UpsertEnterpriseAccount zero: %v", err)
+	}
+	if err := s.ReserveEnterpriseUsage("acct-zero", "req-zero", 1); err == nil {
+		t.Fatal("expected zero-limit Enterprise account to reject spend")
+	}
+
+	if err := s.UpsertEnterpriseAccount(&EnterpriseAccount{
+		AccountID:             "acct-carry-limit",
+		Status:                EnterpriseStatusActive,
+		BillingEmail:          "carry@example.com",
+		Cadence:               EnterpriseCadenceWeekly,
+		TermsDays:             15,
+		CreditLimitMicroUSD:   1_000_000,
+		RoundingCarryMicroUSD: 900_000,
+		CurrentPeriodStart:    start,
+		NextInvoiceAt:         start,
+	}); err != nil {
+		t.Fatalf("UpsertEnterpriseAccount carry: %v", err)
+	}
+	if err := s.ReserveEnterpriseUsage("acct-carry-limit", "req-carry", 200_000); err == nil {
+		t.Fatal("expected carry exposure to count toward credit limit")
+	}
+}
+
+func TestEnterpriseInvoiceUpdatesOpenExposureOnPayment(t *testing.T) {
+	s := NewMemory("")
+	start := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
+	if err := s.UpsertEnterpriseAccount(&EnterpriseAccount{
+		AccountID:           "acct-invoice",
+		Status:              EnterpriseStatusActive,
+		BillingEmail:        "billing@example.com",
+		Cadence:             EnterpriseCadenceWeekly,
+		TermsDays:           15,
+		CreditLimitMicroUSD: 10_000_000,
+		AccruedMicroUSD:     1_250_000,
+		CurrentPeriodStart:  start,
+		NextInvoiceAt:       start,
+	}); err != nil {
+		t.Fatalf("UpsertEnterpriseAccount: %v", err)
+	}
+	inv := &EnterpriseInvoice{
+		ID:              "inv-local",
+		AccountID:       "acct-invoice",
+		StripeInvoiceID: "in_test",
+		Status:          EnterpriseInvoiceStatusOpen,
+		PeriodStart:     start,
+		PeriodEnd:       start.AddDate(0, 0, 7),
+		AmountMicroUSD:  1_250_000,
+		AmountCents:     125,
+		TermsDays:       15,
+	}
+	if err := s.CreateEnterpriseInvoice(inv); err != nil {
+		t.Fatalf("CreateEnterpriseInvoice: %v", err)
+	}
+	account, _ := s.GetEnterpriseAccount("acct-invoice")
+	if account.OpenInvoiceMicroUSD != 1_250_000 || account.AccruedMicroUSD != 0 {
+		t.Fatalf("open/accrued = %d/%d, want 1250000/0", account.OpenInvoiceMicroUSD, account.AccruedMicroUSD)
+	}
+	inv.Status = EnterpriseInvoiceStatusPaid
+	now := time.Now()
+	inv.PaidAt = &now
+	if err := s.UpdateEnterpriseInvoice(inv); err != nil {
+		t.Fatalf("UpdateEnterpriseInvoice: %v", err)
+	}
+	account, _ = s.GetEnterpriseAccount("acct-invoice")
+	if account.OpenInvoiceMicroUSD != 0 {
+		t.Fatalf("open exposure after payment = %d, want 0", account.OpenInvoiceMicroUSD)
+	}
+	inv.Status = EnterpriseInvoiceStatusOpen
+	if err := s.UpdateEnterpriseInvoice(inv); err != nil {
+		t.Fatalf("late UpdateEnterpriseInvoice: %v", err)
+	}
+	invoices, err := s.ListEnterpriseInvoices("acct-invoice", 1)
+	if err != nil {
+		t.Fatalf("ListEnterpriseInvoices: %v", err)
+	}
+	if invoices[0].Status != EnterpriseInvoiceStatusPaid {
+		t.Fatalf("late open status downgraded invoice to %q, want paid", invoices[0].Status)
+	}
+}
+
+func TestEnterpriseInvoiceRoundingCarryAndVoidExposure(t *testing.T) {
+	s := NewMemory("")
+	start := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
+	if err := s.UpsertEnterpriseAccount(&EnterpriseAccount{
+		AccountID:             "acct-rounding",
+		Status:                EnterpriseStatusActive,
+		BillingEmail:          "billing@example.com",
+		Cadence:               EnterpriseCadenceWeekly,
+		TermsDays:             15,
+		CreditLimitMicroUSD:   10_000_000,
+		AccruedMicroUSD:       1_234_567,
+		RoundingCarryMicroUSD: 5_432,
+		CurrentPeriodStart:    start,
+		NextInvoiceAt:         start,
+	}); err != nil {
+		t.Fatalf("UpsertEnterpriseAccount: %v", err)
+	}
+	inv := &EnterpriseInvoice{
+		ID:              "inv-rounding",
+		AccountID:       "acct-rounding",
+		StripeInvoiceID: "in_rounding",
+		Status:          EnterpriseInvoiceStatusOpen,
+		PeriodStart:     start,
+		PeriodEnd:       start.AddDate(0, 0, 7),
+		AmountMicroUSD:  1_230_000,
+		AmountCents:     123,
+		TermsDays:       15,
+	}
+	if err := s.CreateEnterpriseInvoice(inv); err != nil {
+		t.Fatalf("CreateEnterpriseInvoice: %v", err)
+	}
+	account, _ := s.GetEnterpriseAccount("acct-rounding")
+	if account.AccruedMicroUSD != 0 || account.RoundingCarryMicroUSD != 9_999 {
+		t.Fatalf("accrued/carry = %d/%d, want 0/9999", account.AccruedMicroUSD, account.RoundingCarryMicroUSD)
+	}
+	inv.Status = EnterpriseInvoiceStatusVoid
+	if err := s.UpdateEnterpriseInvoice(inv); err != nil {
+		t.Fatalf("UpdateEnterpriseInvoice void: %v", err)
+	}
+	account, _ = s.GetEnterpriseAccount("acct-rounding")
+	if account.OpenInvoiceMicroUSD != 0 {
+		t.Fatalf("open exposure after void = %d, want 0", account.OpenInvoiceMicroUSD)
+	}
+}
+
+func TestEnterpriseSetStripeCustomerDoesNotClobberCounters(t *testing.T) {
+	s := NewMemory("")
+	start := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
+	if err := s.UpsertEnterpriseAccount(&EnterpriseAccount{
+		AccountID:             "acct-customer",
+		Status:                EnterpriseStatusActive,
+		BillingEmail:          "billing@example.com",
+		Cadence:               EnterpriseCadenceWeekly,
+		TermsDays:             30,
+		CreditLimitMicroUSD:   10_000_000,
+		AccruedMicroUSD:       1_000_000,
+		ReservedMicroUSD:      2_000_000,
+		OpenInvoiceMicroUSD:   3_000_000,
+		RoundingCarryMicroUSD: 4_000,
+		CurrentPeriodStart:    start,
+		NextInvoiceAt:         start,
+	}); err != nil {
+		t.Fatalf("UpsertEnterpriseAccount: %v", err)
+	}
+	if err := s.SetEnterpriseStripeCustomerID("acct-customer", "cus_123"); err != nil {
+		t.Fatalf("SetEnterpriseStripeCustomerID: %v", err)
+	}
+	account, _ := s.GetEnterpriseAccount("acct-customer")
+	if account.StripeCustomerID != "cus_123" ||
+		account.AccruedMicroUSD != 1_000_000 ||
+		account.ReservedMicroUSD != 2_000_000 ||
+		account.OpenInvoiceMicroUSD != 3_000_000 ||
+		account.RoundingCarryMicroUSD != 4_000 {
+		t.Fatalf("account after customer update = %+v", account)
+	}
+}

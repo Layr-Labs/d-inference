@@ -141,6 +141,49 @@ export async function fetchUsage(): Promise<UsageEntry[]> {
   return data.usage || data;
 }
 
+export interface EnterpriseAccount {
+  account_id: string;
+  status: "active" | "disabled";
+  billing_email: string;
+  stripe_customer_id?: string;
+  cadence: "weekly" | "biweekly" | "monthly";
+  terms_days: number;
+  credit_limit_micro_usd: number;
+  accrued_micro_usd: number;
+  reserved_micro_usd: number;
+  open_invoice_micro_usd: number;
+  rounding_carry_micro_usd?: number;
+  current_period_start: string;
+  next_invoice_at: string;
+}
+
+export interface EnterpriseInvoice {
+  id: string;
+  status: string;
+  amount_micro_usd: number;
+  amount_cents: number;
+  terms_days: number;
+  period_start: string;
+  period_end: string;
+  due_at?: string;
+  paid_at?: string;
+  stripe_hosted_invoice_url?: string;
+  stripe_invoice_pdf?: string;
+}
+
+export interface EnterpriseStatusResponse {
+  enabled: boolean;
+  account?: EnterpriseAccount;
+  recent_invoices?: EnterpriseInvoice[];
+  credit_remaining_micro_usd?: number;
+}
+
+export async function fetchEnterpriseStatus(): Promise<EnterpriseStatusResponse> {
+  const res = await fetch("/api/payments/enterprise/status", { headers: proxyHeaders() });
+  if (!res.ok) throw new Error(`Failed to fetch enterprise status: ${res.status}`);
+  return res.json();
+}
+
 export interface StripeCheckoutResponse {
   url: string;
   session_id: string;

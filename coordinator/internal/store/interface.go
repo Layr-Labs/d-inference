@@ -16,8 +16,11 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
+
+var ErrEnterpriseAccountNotFound = errors.New("enterprise account not found")
 
 // Store is the interface that all storage backends must implement.
 type Store interface {
@@ -132,6 +135,53 @@ type Store interface {
 	// IsExternalIDProcessed returns true if a billing session with this external ID
 	// has already been completed. Used to prevent double-crediting the same on-chain tx.
 	IsExternalIDProcessed(externalID string) bool
+
+	// --- Enterprise Invoicing ---
+
+	// UpsertEnterpriseAccount creates or updates an admin-managed Enterprise account.
+	UpsertEnterpriseAccount(account *EnterpriseAccount) error
+
+	// GetEnterpriseAccount returns the Enterprise billing record for an account.
+	GetEnterpriseAccount(accountID string) (*EnterpriseAccount, error)
+
+	// ListEnterpriseAccounts returns all Enterprise billing records.
+	ListEnterpriseAccounts() ([]EnterpriseAccount, error)
+
+	// SetEnterpriseStripeCustomerID stores the Stripe customer ID without
+	// overwriting live billing counters.
+	SetEnterpriseStripeCustomerID(accountID, stripeCustomerID string) error
+
+	// AdvanceEnterpriseInvoicePeriod advances a below-cent invoice period
+	// without touching live billing counters.
+	AdvanceEnterpriseInvoicePeriod(accountID string, periodStart, nextInvoiceAt time.Time) error
+
+	// ReserveEnterpriseUsage atomically reserves postpaid Enterprise credit.
+	ReserveEnterpriseUsage(accountID, requestID string, amountMicroUSD int64) error
+
+	// FinalizeEnterpriseUsage moves a reservation into accrued invoiceable usage.
+	FinalizeEnterpriseUsage(accountID, requestID string, actualMicroUSD int64) error
+
+	// ReleaseEnterpriseReservation releases an unused Enterprise reservation.
+	ReleaseEnterpriseReservation(accountID, requestID string) error
+
+	// ListDueEnterpriseAccounts returns active Enterprise accounts whose invoice
+	// cadence is due at or before the supplied time.
+	ListDueEnterpriseAccounts(now time.Time) ([]EnterpriseAccount, error)
+
+	// CreateEnterpriseInvoice stores an Enterprise invoice record.
+	CreateEnterpriseInvoice(invoice *EnterpriseInvoice) error
+
+	// CreateEnterpriseInvoiceDraft stores a local invoice marker before Stripe side effects.
+	CreateEnterpriseInvoiceDraft(invoice *EnterpriseInvoice) error
+
+	// UpdateEnterpriseInvoice stores Stripe/status fields for an invoice.
+	UpdateEnterpriseInvoice(invoice *EnterpriseInvoice) error
+
+	// GetEnterpriseInvoiceByStripeID returns the local invoice for a Stripe invoice ID.
+	GetEnterpriseInvoiceByStripeID(stripeInvoiceID string) (*EnterpriseInvoice, error)
+
+	// ListEnterpriseInvoices returns an account's invoices newest first.
+	ListEnterpriseInvoices(accountID string, limit int) ([]EnterpriseInvoice, error)
 
 	// --- Custom Pricing ---
 
@@ -662,6 +712,60 @@ type BillingSession struct {
 	ReferralCode   string     `json:"referral_code"` // optional
 	CreatedAt      time.Time  `json:"created_at"`
 	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+}
+
+const (
+	EnterpriseStatusActive   = "active"
+	EnterpriseStatusDisabled = "disabled"
+
+	EnterpriseCadenceWeekly   = "weekly"
+	EnterpriseCadenceBiweekly = "biweekly"
+	EnterpriseCadenceMonthly  = "monthly"
+
+	EnterpriseInvoiceStatusDraft         = "draft"
+	EnterpriseInvoiceStatusOpen          = "open"
+	EnterpriseInvoiceStatusPaid          = "paid"
+	EnterpriseInvoiceStatusVoid          = "void"
+	EnterpriseInvoiceStatusUncollectible = "uncollectible"
+)
+
+// EnterpriseAccount is an admin-managed postpaid billing configuration.
+type EnterpriseAccount struct {
+	AccountID             string    `json:"account_id"`
+	Status                string    `json:"status"` // "active" | "disabled"
+	BillingEmail          string    `json:"billing_email"`
+	StripeCustomerID      string    `json:"stripe_customer_id,omitempty"`
+	Cadence               string    `json:"cadence"` // "weekly" | "biweekly" | "monthly"
+	TermsDays             int       `json:"terms_days"`
+	CreditLimitMicroUSD   int64     `json:"credit_limit_micro_usd"`
+	AccruedMicroUSD       int64     `json:"accrued_micro_usd"`
+	ReservedMicroUSD      int64     `json:"reserved_micro_usd"`
+	OpenInvoiceMicroUSD   int64     `json:"open_invoice_micro_usd"`
+	RoundingCarryMicroUSD int64     `json:"rounding_carry_micro_usd"`
+	CurrentPeriodStart    time.Time `json:"current_period_start"`
+	NextInvoiceAt         time.Time `json:"next_invoice_at"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
+}
+
+// EnterpriseInvoice records a Stripe invoice generated for Enterprise usage.
+type EnterpriseInvoice struct {
+	ID                     string     `json:"id"`
+	AccountID              string     `json:"account_id"`
+	StripeInvoiceID        string     `json:"stripe_invoice_id,omitempty"`
+	StripeHostedInvoiceURL string     `json:"stripe_hosted_invoice_url,omitempty"`
+	StripeInvoicePDF       string     `json:"stripe_invoice_pdf,omitempty"`
+	Status                 string     `json:"status"`
+	PeriodStart            time.Time  `json:"period_start"`
+	PeriodEnd              time.Time  `json:"period_end"`
+	AmountMicroUSD         int64      `json:"amount_micro_usd"`
+	AmountCents            int64      `json:"amount_cents"`
+	TermsDays              int        `json:"terms_days"`
+	DueAt                  *time.Time `json:"due_at,omitempty"`
+	SentAt                 *time.Time `json:"sent_at,omitempty"`
+	PaidAt                 *time.Time `json:"paid_at,omitempty"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
 }
 
 // ProviderRecord is the persistent representation of a provider for storage.

@@ -87,6 +87,51 @@ func (s *Server) sendProviderCancel(provider *registry.Provider, requestID strin
 	}
 }
 
+func enterpriseBillingReservationID(pr *registry.PendingRequest) string {
+	if pr.BillingReservationID != "" {
+		return pr.BillingReservationID
+	}
+	return pr.RequestID
+}
+
+func (s *Server) releaseEnterpriseReservation(pr *registry.PendingRequest, reason string) {
+	if pr == nil || !pr.EnterpriseBilling || pr.ReservedMicroUSD <= 0 {
+		return
+	}
+	if err := s.store.ReleaseEnterpriseReservation(pr.ConsumerKey, enterpriseBillingReservationID(pr)); err != nil {
+		s.logger.Warn("enterprise billing release failed",
+			"consumer_key", pr.ConsumerKey,
+			"request_id", pr.RequestID,
+			"reservation_id", enterpriseBillingReservationID(pr),
+			"reason", reason,
+			"error", err,
+		)
+	}
+}
+
+func (s *Server) finalizeEnterpriseReservationEstimate(pr *registry.PendingRequest, reason string) {
+	if pr == nil || !pr.EnterpriseBilling || pr.ReservedMicroUSD <= 0 {
+		return
+	}
+	if err := s.store.FinalizeEnterpriseUsage(pr.ConsumerKey, enterpriseBillingReservationID(pr), pr.ReservedMicroUSD); err != nil {
+		s.logger.Warn("enterprise billing estimated finalize failed",
+			"consumer_key", pr.ConsumerKey,
+			"request_id", pr.RequestID,
+			"reservation_id", enterpriseBillingReservationID(pr),
+			"reason", reason,
+			"reserved_micro_usd", pr.ReservedMicroUSD,
+			"error", err,
+		)
+	}
+}
+
+func streamChunkHasBillableText(chunk string) bool {
+	if strings.Contains(chunk, `"content":""`) || strings.Contains(chunk, `"delta":""`) {
+		return false
+	}
+	return strings.Contains(chunk, `"content":"`) || strings.Contains(chunk, `"delta":"`)
+}
+
 func intFromRequestValue(v any) (int, bool) {
 	switch x := v.(type) {
 	case int:
@@ -589,10 +634,24 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// refunds any unused portion. Reserving only the minimum charge let
 	// consumers receive streamed output far exceeding their actual balance.
 	var reservedMicroUSD int64
+	var enterpriseBilling bool
+	var billingReservationID string
 	if s.billing != nil {
 		consumerKey := consumerKeyFromContext(r.Context())
 		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
-		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
+		if account, err := s.store.GetEnterpriseAccount(consumerKey); err == nil && account.Status == store.EnterpriseStatusActive {
+			billingReservationID = uuid.New().String()
+			if err := s.store.ReserveEnterpriseUsage(consumerKey, billingReservationID, reservedMicroUSD); err != nil {
+				writeJSON(w, http.StatusPaymentRequired, errorResponse("enterprise_credit_limit",
+					"this Enterprise account has reached its postpaid credit limit"))
+				return
+			}
+			enterpriseBilling = true
+		} else if err != nil && !errors.Is(err, store.ErrEnterpriseAccountNotFound) {
+			s.logger.Error("enterprise billing lookup failed", "consumer_key", consumerKey, "error", err)
+			writeJSON(w, http.StatusInternalServerError, errorResponse("billing_error", "failed to check Enterprise billing status"))
+			return
+		} else if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 				"your balance is too low for this request — add funds at /billing or lower max_tokens"))
 			return
@@ -603,7 +662,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	refundReservation := func() {
 		if reservedMicroUSD > 0 {
 			consumerKey := consumerKeyFromContext(r.Context())
-			_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "reservation_refund")
+			if enterpriseBilling {
+				_ = s.store.ReleaseEnterpriseReservation(consumerKey, billingReservationID)
+			} else {
+				_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "reservation_refund")
+			}
 		}
 	}
 
@@ -657,6 +720,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			CompleteCh:             make(chan protocol.UsageInfo, 1),
 			ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
 		}
+		pr.ReservedMicroUSD = reservedMicroUSD
+		pr.EnterpriseBilling = enterpriseBilling
+		pr.BillingReservationID = billingReservationID
 
 		var decision registry.RoutingDecision
 		provider, decision = s.registry.ReserveProviderEx(model, pr, excludeList()...)
@@ -757,7 +823,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		pr.SessionPrivKey = &sessionKeys.PrivateKey
-		pr.ReservedMicroUSD = reservedMicroUSD
 
 		data, err := json.Marshal(wireMsg)
 		if err != nil {
@@ -1122,6 +1187,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	// Detect Responses API format to skip appending chat-completions-style
 	// termination events (SE signature chunk + [DONE]).
 	sawResponsesAPI := false
+	wroteProviderChunk := false
 
 	// Write the first chunk that was already consumed during dispatch.
 	if firstChunk != "" {
@@ -1131,8 +1197,9 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 		if !sawResponsesAPI {
 			firstChunk = normalizeSSEChunk(firstChunk)
 		}
-		fmt.Fprintf(w, "%s\n\n", firstChunk)
+		_, _ = fmt.Fprintf(w, "%s\n\n", firstChunk)
 		flusher.Flush()
+		wroteProviderChunk = streamChunkHasBillableText(firstChunk)
 	}
 
 	// Use a timer that resets on each chunk so long-running generations
@@ -1149,6 +1216,26 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				// "response.completed" as the terminal event. Adding
 				// extra chunks would break SDK parsers.
 				if !sawResponsesAPI {
+					select {
+					case errMsg, ok := <-pr.ErrorCh:
+						if ok {
+							errData, _ := json.Marshal(map[string]any{
+								"error": map[string]any{
+									"message": errMsg.Error,
+									"type":    "provider_error",
+								},
+							})
+							fmt.Fprintf(w, "data: %s\n\n", errData)
+							flusher.Flush()
+							if wroteProviderChunk {
+								s.finalizeEnterpriseReservationEstimate(pr, "stream_provider_error_after_output")
+							} else {
+								s.releaseEnterpriseReservation(pr, "stream_provider_error_before_output")
+							}
+							return
+						}
+					default:
+					}
 					// Chat completions format: append SE signature + [DONE].
 					if pr.SESignature != "" {
 						sigEvent, _ := json.Marshal(map[string]any{
@@ -1172,8 +1259,9 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			if !sawResponsesAPI {
 				chunk = normalizeSSEChunk(chunk)
 			}
-			fmt.Fprintf(w, "%s\n\n", chunk)
+			_, _ = fmt.Fprintf(w, "%s\n\n", chunk)
 			flusher.Flush()
+			wroteProviderChunk = wroteProviderChunk || streamChunkHasBillableText(chunk)
 
 			if !timer.Stop() {
 				select {
@@ -1192,14 +1280,29 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			})
 			fmt.Fprintf(w, "data: %s\n\n", errData)
 			flusher.Flush()
+			if wroteProviderChunk {
+				s.finalizeEnterpriseReservationEstimate(pr, "stream_provider_error_after_output")
+			} else {
+				s.releaseEnterpriseReservation(pr, "stream_provider_error_before_output")
+			}
 			return
 
 		case <-timer.C:
 			fmt.Fprintf(w, "data: {\"error\":{\"message\":\"request timed out\",\"type\":\"timeout\"}}\n\n")
 			flusher.Flush()
+			if wroteProviderChunk {
+				s.finalizeEnterpriseReservationEstimate(pr, "stream_timeout_after_output")
+			} else {
+				s.releaseEnterpriseReservation(pr, "stream_timeout_before_output")
+			}
 			return
 
 		case <-r.Context().Done():
+			if wroteProviderChunk {
+				s.finalizeEnterpriseReservationEstimate(pr, "stream_context_done_after_output")
+			} else {
+				s.releaseEnterpriseReservation(pr, "stream_context_done_before_output")
+			}
 			return
 		}
 	}
@@ -1240,8 +1343,10 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 	})
 
 	chunks := make([]string, 0, 16)
+	wroteProviderChunk := false
 	if firstChunk != "" {
 		chunks = append(chunks, firstChunk)
+		wroteProviderChunk = streamChunkHasBillableText(firstChunk)
 	}
 
 	timer := time.NewTimer(inferenceTimeout)
@@ -1253,6 +1358,25 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 			if !ok {
 				var usage protocol.UsageInfo
 				select {
+				case errMsg, ok := <-pr.ErrorCh:
+					if ok {
+						writeResponsesSSE(w, flusher, map[string]any{
+							"type":            "error",
+							"sequence_number": 0,
+							"error": map[string]any{
+								"type":    "provider_error",
+								"code":    "provider_error",
+								"message": errMsg.Error,
+								"param":   nil,
+							},
+						})
+						if wroteProviderChunk {
+							s.finalizeEnterpriseReservationEstimate(pr, "responses_stream_provider_error_after_output")
+						} else {
+							s.releaseEnterpriseReservation(pr, "responses_stream_provider_error_before_output")
+						}
+						return
+					}
 				case u, ok := <-pr.CompleteCh:
 					if ok {
 						usage = u
@@ -1264,6 +1388,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 				return
 			}
 			chunks = append(chunks, chunk)
+			wroteProviderChunk = wroteProviderChunk || streamChunkHasBillableText(chunk)
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -1283,6 +1408,11 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 					"param":   nil,
 				},
 			})
+			if wroteProviderChunk {
+				s.finalizeEnterpriseReservationEstimate(pr, "responses_stream_provider_error_after_output")
+			} else {
+				s.releaseEnterpriseReservation(pr, "responses_stream_provider_error_before_output")
+			}
 			return
 
 		case <-timer.C:
@@ -1296,9 +1426,19 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 					"param":   nil,
 				},
 			})
+			if wroteProviderChunk {
+				s.finalizeEnterpriseReservationEstimate(pr, "responses_stream_timeout_after_output")
+			} else {
+				s.releaseEnterpriseReservation(pr, "responses_stream_timeout_before_output")
+			}
 			return
 
 		case <-r.Context().Done():
+			if wroteProviderChunk {
+				s.finalizeEnterpriseReservationEstimate(pr, "responses_stream_context_done_after_output")
+			} else {
+				s.releaseEnterpriseReservation(pr, "responses_stream_context_done_before_output")
+			}
 			return
 		}
 	}
@@ -1457,6 +1597,19 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if !ok {
+				select {
+				case errMsg, ok := <-pr.ErrorCh:
+					if ok {
+						statusCode := errMsg.StatusCode
+						if statusCode == 0 {
+							statusCode = http.StatusBadGateway
+						}
+						s.releaseEnterpriseReservation(pr, "nonstream_provider_error")
+						writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+						return
+					}
+				default:
+				}
 				// The provider forwards the raw backend response as a single
 				// chunk. Detect complete responses (object=chat.completion
 				// or object=response) and pass through directly — this is
@@ -1473,6 +1626,11 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 							select {
 							case <-pr.CompleteCh:
 							case <-ctx.Done():
+								s.releaseEnterpriseReservation(pr, "nonstream_timeout_waiting_complete")
+							}
+							if ctx.Err() != nil {
+								writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
+								return
 							}
 							if objType == "chat.completion" {
 								normalizeCompleteChatResponse(obj, pr.Model)
@@ -1504,6 +1662,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 					}
 					writeJSON(w, http.StatusOK, resp)
 				case <-ctx.Done():
+					s.releaseEnterpriseReservation(pr, "nonstream_timeout_waiting_usage")
 					writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
 				}
 				return
@@ -1515,10 +1674,12 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 			if statusCode == 0 {
 				statusCode = http.StatusBadGateway
 			}
+			s.releaseEnterpriseReservation(pr, "nonstream_provider_error")
 			writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
 			return
 
 		case <-ctx.Done():
+			s.releaseEnterpriseReservation(pr, "nonstream_timeout")
 			writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "request timed out"))
 			return
 		}
@@ -2401,10 +2562,23 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// paths routed without ANY reservation; the silent post-inference charge
 	// meant a consumer could receive full responses with a zero balance.
 	consumerKey := consumerKeyFromContext(r.Context())
+	requestID := uuid.New().String()
 	var reservedMicroUSD int64
+	var enterpriseBilling bool
 	if s.billing != nil {
 		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
-		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
+		if account, err := s.store.GetEnterpriseAccount(consumerKey); err == nil && account.Status == store.EnterpriseStatusActive {
+			if err := s.store.ReserveEnterpriseUsage(consumerKey, requestID, reservedMicroUSD); err != nil {
+				writeJSON(w, http.StatusPaymentRequired, errorResponse("enterprise_credit_limit",
+					"this Enterprise account has reached its postpaid credit limit"))
+				return
+			}
+			enterpriseBilling = true
+		} else if err != nil && !errors.Is(err, store.ErrEnterpriseAccountNotFound) {
+			s.logger.Error("enterprise billing lookup failed", "consumer_key", consumerKey, "error", err)
+			writeJSON(w, http.StatusInternalServerError, errorResponse("billing_error", "failed to check Enterprise billing status"))
+			return
+		} else if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 				"your balance is too low for this request — add funds at /billing or lower max_tokens"))
 			return
@@ -2413,11 +2587,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Refund the reservation on any early failure before dispatch.
 	refundReservation := func() {
 		if reservedMicroUSD > 0 {
-			_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "reservation_refund")
+			if enterpriseBilling {
+				_ = s.store.ReleaseEnterpriseReservation(consumerKey, requestID)
+			} else {
+				_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "reservation_refund")
+			}
 		}
 	}
 
-	requestID := uuid.New().String()
 	pr := &registry.PendingRequest{
 		RequestID:              requestID,
 		Model:                  model,
@@ -2426,6 +2603,8 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		EstimatedPromptTokens:  estimatedPromptTokens,
 		RequestedMaxTokens:     requestedMaxTokens,
 		ReservedMicroUSD:       reservedMicroUSD,
+		EnterpriseBilling:      enterpriseBilling,
+		BillingReservationID:   requestID,
 		ChunkCh:                make(chan string, chunkBufferSize),
 		CompleteCh:             make(chan protocol.UsageInfo, 1),
 		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),

@@ -865,6 +865,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/billing/stripe/create-session", s.requireAuth(s.rateLimitFinancial(s.handleStripeCreateSession)))
 	s.mux.HandleFunc("POST /v1/billing/stripe/webhook", s.handleStripeWebhook) // no auth — Stripe signs it
 	s.mux.HandleFunc("GET /v1/billing/stripe/session", s.requireAuth(s.handleStripeSessionStatus))
+	s.mux.HandleFunc("GET /v1/billing/enterprise/status", s.requireAuth(s.handleEnterpriseStatus))
 
 	// Wallet balance
 	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
@@ -881,6 +882,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /v1/pricing", s.requireAuth(s.handleSetPricing))         // provider sets own prices
 	s.mux.HandleFunc("DELETE /v1/pricing", s.requireAuth(s.handleDeletePricing))   // revert to default
 	s.mux.HandleFunc("PUT /v1/admin/pricing", s.requireAuth(s.handleAdminPricing)) // platform sets defaults
+	s.mux.HandleFunc("PUT /v1/admin/enterprise/account", s.requireAuth(s.handleAdminUpsertEnterpriseAccount))
+	s.mux.HandleFunc("GET /v1/admin/enterprise/accounts", s.requireAuth(s.handleAdminListEnterpriseAccounts))
+	s.mux.HandleFunc("POST /v1/admin/enterprise/invoices/run", s.requireAuth(s.rateLimitFinancial(s.handleAdminRunEnterpriseInvoices)))
 
 	// Admin model catalog
 	s.mux.HandleFunc("GET /v1/admin/models", s.requireAuth(s.handleAdminListModels))

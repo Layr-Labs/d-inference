@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -226,6 +227,56 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_billing_sessions_account ON billing_sessions(account_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_billing_sessions_external ON billing_sessions(external_id)`,
+
+		// Enterprise invoicing — admin-managed postpaid accounts.
+		`CREATE TABLE IF NOT EXISTS enterprise_accounts (
+			account_id TEXT PRIMARY KEY,
+			status TEXT NOT NULL DEFAULT 'active',
+			billing_email TEXT NOT NULL DEFAULT '',
+			stripe_customer_id TEXT NOT NULL DEFAULT '',
+			cadence TEXT NOT NULL DEFAULT 'monthly',
+			terms_days INTEGER NOT NULL DEFAULT 15,
+			credit_limit_micro_usd BIGINT NOT NULL DEFAULT 0,
+			accrued_micro_usd BIGINT NOT NULL DEFAULT 0,
+			reserved_micro_usd BIGINT NOT NULL DEFAULT 0,
+			open_invoice_micro_usd BIGINT NOT NULL DEFAULT 0,
+			rounding_carry_micro_usd BIGINT NOT NULL DEFAULT 0,
+			current_period_start TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			next_invoice_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_enterprise_due ON enterprise_accounts(status, next_invoice_at)`,
+		`CREATE TABLE IF NOT EXISTS enterprise_reservations (
+			request_id TEXT PRIMARY KEY,
+			account_id TEXT NOT NULL REFERENCES enterprise_accounts(account_id),
+			amount_micro_usd BIGINT NOT NULL,
+			actual_micro_usd BIGINT NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'reserved',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_enterprise_reservations_account ON enterprise_reservations(account_id, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS enterprise_invoices (
+			id TEXT PRIMARY KEY,
+			account_id TEXT NOT NULL REFERENCES enterprise_accounts(account_id),
+			stripe_invoice_id TEXT NOT NULL DEFAULT '',
+			stripe_hosted_invoice_url TEXT NOT NULL DEFAULT '',
+			stripe_invoice_pdf TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'draft',
+			period_start TIMESTAMPTZ NOT NULL,
+			period_end TIMESTAMPTZ NOT NULL,
+			amount_micro_usd BIGINT NOT NULL,
+			amount_cents BIGINT NOT NULL,
+			terms_days INTEGER NOT NULL,
+			due_at TIMESTAMPTZ,
+			sent_at TIMESTAMPTZ,
+			paid_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_enterprise_invoices_stripe ON enterprise_invoices(stripe_invoice_id) WHERE stripe_invoice_id != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_enterprise_invoices_account ON enterprise_invoices(account_id, created_at DESC)`,
 
 		// Custom pricing — per-account model price overrides
 		`CREATE TABLE IF NOT EXISTS model_prices (
@@ -1269,6 +1320,519 @@ func (s *PostgresStore) IsExternalIDProcessed(externalID string) bool {
 		externalID,
 	).Scan(&count)
 	return count > 0
+}
+
+// --- Enterprise Invoicing ---
+
+func (s *PostgresStore) UpsertEnterpriseAccount(account *EnterpriseAccount) error {
+	if account == nil || account.AccountID == "" {
+		return errors.New("enterprise account_id is required")
+	}
+	if account.CreditLimitMicroUSD < 0 ||
+		account.AccruedMicroUSD < 0 ||
+		account.ReservedMicroUSD < 0 ||
+		account.OpenInvoiceMicroUSD < 0 ||
+		account.RoundingCarryMicroUSD < 0 {
+		return errors.New("enterprise money fields cannot be negative")
+	}
+	now := time.Now()
+	if account.Status == "" {
+		account.Status = EnterpriseStatusActive
+	}
+	if account.Cadence == "" {
+		account.Cadence = EnterpriseCadenceMonthly
+	}
+	if account.CurrentPeriodStart.IsZero() {
+		account.CurrentPeriodStart = now
+	}
+	if account.NextInvoiceAt.IsZero() {
+		account.NextInvoiceAt = nextEnterpriseInvoiceAt(account.CurrentPeriodStart, account.Cadence)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx, `INSERT INTO enterprise_accounts (
+			account_id, status, billing_email, stripe_customer_id, cadence, terms_days,
+			credit_limit_micro_usd, accrued_micro_usd, reserved_micro_usd,
+			open_invoice_micro_usd, rounding_carry_micro_usd,
+			current_period_start, next_invoice_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
+		ON CONFLICT (account_id) DO UPDATE SET
+			status = EXCLUDED.status,
+			billing_email = EXCLUDED.billing_email,
+			stripe_customer_id = EXCLUDED.stripe_customer_id,
+			cadence = EXCLUDED.cadence,
+			terms_days = EXCLUDED.terms_days,
+			credit_limit_micro_usd = EXCLUDED.credit_limit_micro_usd,
+			accrued_micro_usd = EXCLUDED.accrued_micro_usd,
+			reserved_micro_usd = EXCLUDED.reserved_micro_usd,
+			open_invoice_micro_usd = EXCLUDED.open_invoice_micro_usd,
+			rounding_carry_micro_usd = EXCLUDED.rounding_carry_micro_usd,
+			current_period_start = EXCLUDED.current_period_start,
+			next_invoice_at = EXCLUDED.next_invoice_at,
+			updated_at = NOW()`,
+		account.AccountID, account.Status, account.BillingEmail, account.StripeCustomerID,
+		account.Cadence, account.TermsDays, account.CreditLimitMicroUSD, account.AccruedMicroUSD,
+		account.ReservedMicroUSD, account.OpenInvoiceMicroUSD, account.RoundingCarryMicroUSD,
+		account.CurrentPeriodStart, account.NextInvoiceAt)
+	if err != nil {
+		return fmt.Errorf("store: upsert enterprise account: %w", err)
+	}
+	return nil
+}
+
+const enterpriseAccountColumns = `account_id, status, billing_email, stripe_customer_id,
+	cadence, terms_days, credit_limit_micro_usd, accrued_micro_usd, reserved_micro_usd,
+	open_invoice_micro_usd, rounding_carry_micro_usd, current_period_start,
+	next_invoice_at, created_at, updated_at`
+
+func scanEnterpriseAccount(row interface{ Scan(...any) error }) (*EnterpriseAccount, error) {
+	var a EnterpriseAccount
+	if err := row.Scan(&a.AccountID, &a.Status, &a.BillingEmail, &a.StripeCustomerID,
+		&a.Cadence, &a.TermsDays, &a.CreditLimitMicroUSD, &a.AccruedMicroUSD,
+		&a.ReservedMicroUSD, &a.OpenInvoiceMicroUSD, &a.RoundingCarryMicroUSD,
+		&a.CurrentPeriodStart, &a.NextInvoiceAt, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+func (s *PostgresStore) GetEnterpriseAccount(accountID string) (*EnterpriseAccount, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	row := s.pool.QueryRow(ctx, `SELECT `+enterpriseAccountColumns+` FROM enterprise_accounts WHERE account_id = $1`, accountID)
+	a, err := scanEnterpriseAccount(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: %q", ErrEnterpriseAccountNotFound, accountID)
+		}
+		return nil, fmt.Errorf("store: enterprise account not found: %w", err)
+	}
+	return a, nil
+}
+
+func (s *PostgresStore) ListEnterpriseAccounts() ([]EnterpriseAccount, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `SELECT `+enterpriseAccountColumns+` FROM enterprise_accounts ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list enterprise accounts: %w", err)
+	}
+	defer rows.Close()
+
+	var out []EnterpriseAccount
+	for rows.Next() {
+		a, err := scanEnterpriseAccount(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan enterprise account: %w", err)
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) SetEnterpriseStripeCustomerID(accountID, stripeCustomerID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx, `UPDATE enterprise_accounts
+		SET stripe_customer_id = $2, updated_at = NOW()
+		WHERE account_id = $1`, accountID, stripeCustomerID)
+	if err != nil {
+		return fmt.Errorf("store: set enterprise stripe customer: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("enterprise account %q not found", accountID)
+	}
+	return nil
+}
+
+func (s *PostgresStore) AdvanceEnterpriseInvoicePeriod(accountID string, periodStart, nextInvoiceAt time.Time) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx, `UPDATE enterprise_accounts
+		SET current_period_start = $2, next_invoice_at = $3, updated_at = NOW()
+		WHERE account_id = $1`, accountID, periodStart, nextInvoiceAt)
+	if err != nil {
+		return fmt.Errorf("store: advance enterprise invoice period: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("enterprise account %q not found", accountID)
+	}
+	return nil
+}
+
+func (s *PostgresStore) ReserveEnterpriseUsage(accountID, requestID string, amountMicroUSD int64) error {
+	if amountMicroUSD <= 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin enterprise reserve: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var existingAccountID, existingStatus string
+	err = tx.QueryRow(ctx, `SELECT account_id, status FROM enterprise_reservations WHERE request_id = $1 FOR UPDATE`, requestID).Scan(&existingAccountID, &existingStatus)
+	if err == nil {
+		if existingAccountID == accountID && existingStatus == "reserved" {
+			var existingAmount int64
+			if amountErr := tx.QueryRow(ctx, `SELECT amount_micro_usd FROM enterprise_reservations WHERE request_id = $1`, requestID).Scan(&existingAmount); amountErr != nil {
+				return fmt.Errorf("store: check enterprise reservation amount: %w", amountErr)
+			}
+			if existingAmount != amountMicroUSD {
+				return fmt.Errorf("enterprise reservation %q amount mismatch", requestID)
+			}
+			return tx.Commit(ctx)
+		}
+		if existingAccountID != accountID {
+			return fmt.Errorf("enterprise reservation %q belongs to another account", requestID)
+		}
+		return fmt.Errorf("enterprise reservation %q already %s", requestID, existingStatus)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("store: check enterprise reservation: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx, `UPDATE enterprise_accounts
+		SET reserved_micro_usd = reserved_micro_usd + $2, updated_at = NOW()
+		WHERE account_id = $1
+			AND status = 'active'
+			AND open_invoice_micro_usd + accrued_micro_usd + reserved_micro_usd + rounding_carry_micro_usd + $2 <= credit_limit_micro_usd`,
+		accountID, amountMicroUSD)
+	if err != nil {
+		return fmt.Errorf("store: reserve enterprise usage: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("enterprise credit limit exceeded")
+	}
+
+	_, err = tx.Exec(ctx, `INSERT INTO enterprise_reservations
+		(request_id, account_id, amount_micro_usd, status)
+		VALUES ($1, $2, $3, 'reserved')`,
+		requestID, accountID, amountMicroUSD)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			_ = tx.Rollback(ctx)
+			var existingAccountID, status string
+			checkErr := s.pool.QueryRow(ctx, `SELECT account_id, status FROM enterprise_reservations WHERE request_id = $1`, requestID).Scan(&existingAccountID, &status)
+			if checkErr == nil && existingAccountID == accountID && status == "reserved" {
+				return nil
+			}
+			if checkErr == nil && existingAccountID != accountID {
+				return fmt.Errorf("enterprise reservation %q belongs to another account", requestID)
+			}
+			if checkErr == nil {
+				return fmt.Errorf("enterprise reservation %q already %s", requestID, status)
+			}
+		}
+		return fmt.Errorf("store: create enterprise reservation: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit enterprise reserve: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) FinalizeEnterpriseUsage(accountID, requestID string, actualMicroUSD int64) error {
+	if actualMicroUSD < 0 {
+		actualMicroUSD = 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin enterprise finalize: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var reserved int64
+	err = tx.QueryRow(ctx, `UPDATE enterprise_reservations
+		SET status = 'finalized', actual_micro_usd = LEAST($3, amount_micro_usd), updated_at = NOW()
+		WHERE request_id = $1 AND account_id = $2 AND status = 'reserved'
+		RETURNING amount_micro_usd`, requestID, accountID, actualMicroUSD).Scan(&reserved)
+	if err != nil {
+		return fmt.Errorf("store: finalize enterprise reservation: %w", err)
+	}
+	_, err = tx.Exec(ctx, `UPDATE enterprise_accounts
+		SET reserved_micro_usd = GREATEST(reserved_micro_usd - $2, 0),
+			accrued_micro_usd = accrued_micro_usd + LEAST($3, $2),
+			updated_at = NOW()
+		WHERE account_id = $1`, accountID, reserved, actualMicroUSD)
+	if err != nil {
+		return fmt.Errorf("store: accrue enterprise usage: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit enterprise finalize: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) ReleaseEnterpriseReservation(accountID, requestID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin enterprise release: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var reserved int64
+	err = tx.QueryRow(ctx, `UPDATE enterprise_reservations
+		SET status = 'released', updated_at = NOW()
+		WHERE request_id = $1 AND account_id = $2 AND status = 'reserved'
+		RETURNING amount_micro_usd`, requestID, accountID).Scan(&reserved)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return fmt.Errorf("store: release enterprise reservation: %w", err)
+	}
+	_, err = tx.Exec(ctx, `UPDATE enterprise_accounts
+		SET reserved_micro_usd = GREATEST(reserved_micro_usd - $2, 0), updated_at = NOW()
+		WHERE account_id = $1`, accountID, reserved)
+	if err != nil {
+		return fmt.Errorf("store: update enterprise reserved: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit enterprise release: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) ListDueEnterpriseAccounts(now time.Time) ([]EnterpriseAccount, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `SELECT `+enterpriseAccountColumns+`
+		FROM enterprise_accounts
+		WHERE status = 'active' AND next_invoice_at <= $1
+		ORDER BY next_invoice_at ASC`, now)
+	if err != nil {
+		return nil, fmt.Errorf("store: list due enterprise accounts: %w", err)
+	}
+	defer rows.Close()
+
+	var out []EnterpriseAccount
+	for rows.Next() {
+		a, err := scanEnterpriseAccount(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan due enterprise account: %w", err)
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
+const enterpriseInvoiceColumns = `id, account_id, stripe_invoice_id, stripe_hosted_invoice_url,
+	stripe_invoice_pdf, status, period_start, period_end, amount_micro_usd,
+	amount_cents, terms_days, due_at, sent_at, paid_at, created_at, updated_at`
+
+func scanEnterpriseInvoice(row interface{ Scan(...any) error }) (*EnterpriseInvoice, error) {
+	var inv EnterpriseInvoice
+	if err := row.Scan(&inv.ID, &inv.AccountID, &inv.StripeInvoiceID, &inv.StripeHostedInvoiceURL,
+		&inv.StripeInvoicePDF, &inv.Status, &inv.PeriodStart, &inv.PeriodEnd,
+		&inv.AmountMicroUSD, &inv.AmountCents, &inv.TermsDays, &inv.DueAt,
+		&inv.SentAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &inv, nil
+}
+
+func (s *PostgresStore) CreateEnterpriseInvoice(invoice *EnterpriseInvoice) error {
+	if invoice == nil || invoice.ID == "" || invoice.AccountID == "" {
+		return errors.New("enterprise invoice id and account_id are required")
+	}
+	if invoice.AmountMicroUSD < 0 || invoice.AmountCents < 0 {
+		return errors.New("enterprise invoice amount cannot be negative")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin create enterprise invoice: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var existingStripeID string
+	err = tx.QueryRow(ctx, `SELECT stripe_invoice_id FROM enterprise_invoices
+		WHERE id = $1 AND account_id = $2 AND amount_micro_usd = $3 AND amount_cents = $4
+		FOR UPDATE`, invoice.ID, invoice.AccountID, invoice.AmountMicroUSD, invoice.AmountCents).Scan(&existingStripeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		_, err = tx.Exec(ctx, `INSERT INTO enterprise_invoices (
+				id, account_id, stripe_invoice_id, stripe_hosted_invoice_url,
+				stripe_invoice_pdf, status, period_start, period_end, amount_micro_usd,
+				amount_cents, terms_days, due_at, sent_at, paid_at, updated_at
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())`,
+			invoice.ID, invoice.AccountID, invoice.StripeInvoiceID, invoice.StripeHostedInvoiceURL,
+			invoice.StripeInvoicePDF, invoice.Status, invoice.PeriodStart, invoice.PeriodEnd,
+			invoice.AmountMicroUSD, invoice.AmountCents, invoice.TermsDays, invoice.DueAt,
+			invoice.SentAt, invoice.PaidAt)
+	} else if err == nil && existingStripeID == "" {
+		_, err = tx.Exec(ctx, `UPDATE enterprise_invoices SET
+				stripe_invoice_id = $2,
+				stripe_hosted_invoice_url = $3,
+				stripe_invoice_pdf = $4,
+				status = $5,
+				due_at = $6,
+				sent_at = $7,
+				paid_at = $8,
+				updated_at = NOW()
+			WHERE id = $1`,
+			invoice.ID, invoice.StripeInvoiceID, invoice.StripeHostedInvoiceURL,
+			invoice.StripeInvoicePDF, invoice.Status, invoice.DueAt, invoice.SentAt, invoice.PaidAt)
+	} else if err == nil {
+		return fmt.Errorf("enterprise invoice %q already exists", invoice.ID)
+	}
+	if err != nil {
+		return fmt.Errorf("store: create enterprise invoice: %w", err)
+	}
+	_, err = tx.Exec(ctx, `UPDATE enterprise_accounts
+		SET open_invoice_micro_usd = open_invoice_micro_usd + $2,
+			rounding_carry_micro_usd = GREATEST(accrued_micro_usd + rounding_carry_micro_usd - $2, 0),
+			accrued_micro_usd = 0,
+			current_period_start = $3,
+			next_invoice_at = CASE cadence
+				WHEN 'weekly' THEN $3::timestamptz + INTERVAL '7 days'
+				WHEN 'biweekly' THEN $3::timestamptz + INTERVAL '14 days'
+				ELSE $3::timestamptz + INTERVAL '1 month'
+			END,
+			updated_at = NOW()
+		WHERE account_id = $1`,
+		invoice.AccountID, invoice.AmountMicroUSD, invoice.PeriodEnd)
+	if err != nil {
+		return fmt.Errorf("store: advance enterprise account invoice period: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit create enterprise invoice: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) CreateEnterpriseInvoiceDraft(invoice *EnterpriseInvoice) error {
+	if invoice == nil || invoice.ID == "" || invoice.AccountID == "" {
+		return errors.New("enterprise invoice id and account_id are required")
+	}
+	if invoice.AmountMicroUSD < 0 || invoice.AmountCents < 0 {
+		return errors.New("enterprise invoice amount cannot be negative")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.pool.Exec(ctx, `INSERT INTO enterprise_invoices (
+			id, account_id, stripe_invoice_id, stripe_hosted_invoice_url,
+			stripe_invoice_pdf, status, period_start, period_end, amount_micro_usd,
+			amount_cents, terms_days, due_at, sent_at, paid_at, updated_at
+		) VALUES ($1,$2,'','','',$3,$4,$5,$6,$7,$8,NULL,NULL,NULL,NOW())
+		ON CONFLICT (id) DO NOTHING`,
+		invoice.ID, invoice.AccountID, EnterpriseInvoiceStatusDraft, invoice.PeriodStart,
+		invoice.PeriodEnd, invoice.AmountMicroUSD, invoice.AmountCents, invoice.TermsDays)
+	if err != nil {
+		return fmt.Errorf("store: create enterprise invoice draft: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) UpdateEnterpriseInvoice(invoice *EnterpriseInvoice) error {
+	if invoice == nil || invoice.ID == "" {
+		return errors.New("enterprise invoice id is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin update enterprise invoice: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var oldStatus, accountID string
+	var amountMicroUSD int64
+	if err := tx.QueryRow(ctx, `SELECT status, account_id, amount_micro_usd FROM enterprise_invoices WHERE id = $1 FOR UPDATE`, invoice.ID).Scan(&oldStatus, &accountID, &amountMicroUSD); err != nil {
+		return fmt.Errorf("store: enterprise invoice not found: %w", err)
+	}
+	newStatus := invoice.Status
+	if isEnterpriseInvoiceTerminal(oldStatus) && !isEnterpriseInvoiceTerminal(newStatus) {
+		newStatus = oldStatus
+	}
+	_, err = tx.Exec(ctx, `UPDATE enterprise_invoices SET
+			stripe_invoice_id = $2,
+			stripe_hosted_invoice_url = $3,
+			stripe_invoice_pdf = $4,
+			status = $5,
+			due_at = $6,
+			sent_at = $7,
+			paid_at = $8,
+			updated_at = NOW()
+		WHERE id = $1`,
+		invoice.ID, invoice.StripeInvoiceID, invoice.StripeHostedInvoiceURL,
+		invoice.StripeInvoicePDF, newStatus, invoice.DueAt, invoice.SentAt, invoice.PaidAt)
+	if err != nil {
+		return fmt.Errorf("store: update enterprise invoice: %w", err)
+	}
+	if !isEnterpriseInvoiceTerminal(oldStatus) && isEnterpriseInvoiceTerminal(newStatus) {
+		_, err = tx.Exec(ctx, `UPDATE enterprise_accounts
+			SET open_invoice_micro_usd = GREATEST(open_invoice_micro_usd - $2, 0), updated_at = NOW()
+			WHERE account_id = $1`, accountID, amountMicroUSD)
+		if err != nil {
+			return fmt.Errorf("store: reduce enterprise open invoices: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit update enterprise invoice: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetEnterpriseInvoiceByStripeID(stripeInvoiceID string) (*EnterpriseInvoice, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	row := s.pool.QueryRow(ctx, `SELECT `+enterpriseInvoiceColumns+`
+		FROM enterprise_invoices WHERE stripe_invoice_id = $1`, stripeInvoiceID)
+	inv, err := scanEnterpriseInvoice(row)
+	if err != nil {
+		return nil, fmt.Errorf("store: enterprise invoice not found: %w", err)
+	}
+	return inv, nil
+}
+
+func (s *PostgresStore) ListEnterpriseInvoices(accountID string, limit int) ([]EnterpriseInvoice, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	query := `SELECT ` + enterpriseInvoiceColumns + ` FROM enterprise_invoices WHERE account_id = $1 ORDER BY created_at DESC`
+	args := []any{accountID}
+	if limit > 0 {
+		query += ` LIMIT $2`
+		args = append(args, limit)
+	}
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list enterprise invoices: %w", err)
+	}
+	defer rows.Close()
+
+	var out []EnterpriseInvoice
+	for rows.Next() {
+		inv, err := scanEnterpriseInvoice(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan enterprise invoice: %w", err)
+		}
+		out = append(out, *inv)
+	}
+	return out, rows.Err()
 }
 
 // --- Custom Pricing ---

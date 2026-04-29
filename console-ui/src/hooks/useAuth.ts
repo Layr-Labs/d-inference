@@ -5,7 +5,7 @@ import { useAuthContext } from "@/components/providers/PrivyClientProvider";
 import { trackEvent } from "@/lib/google-analytics";
 
 const API_KEY_STORAGE = "darkbloom_api_key";
-const OLD_API_KEY_STORAGE = "darkbloom_api_key";
+const OLD_API_KEY_STORAGE = "eigeninference_api_key";
 const COORD_URL_STORAGE = "darkbloom_coordinator_url";
 
 export function useAuth() {

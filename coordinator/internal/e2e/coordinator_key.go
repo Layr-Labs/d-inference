@@ -28,7 +28,7 @@ import (
 // CoordinatorKeyHKDFInfo is the HKDF info string used to separate the
 // X25519 encryption key from any other key derived from the same mnemonic.
 // Bumping the version here rotates the coordinator key for all senders.
-const CoordinatorKeyHKDFInfo = "darkbloom-coordinator-e2e-v1"
+const CoordinatorKeyHKDFInfo = "eigeninference-coordinator-e2e-v1"
 
 // CoordinatorKey is the long-lived X25519 keypair plus a short kid that
 // senders use to detect rotations and refresh their cached pubkey.

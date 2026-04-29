@@ -1161,8 +1161,7 @@ fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
     // Try R2 site-packages tarball first, fall back to vllm-mlx source zip.
     let mut downloaded = false;
     if !release_version.is_empty() {
-        let r2_url =
-            format!("{r2_cdn}/releases/v{release_version}/darkbloom-site-packages.tar.gz");
+        let r2_url = format!("{r2_cdn}/releases/v{release_version}/darkbloom-site-packages.tar.gz");
         tracing::info!("Downloading site-packages from R2 (release v{release_version})...");
         downloaded = std::process::Command::new("curl")
             .args([
@@ -2431,9 +2430,7 @@ async fn cmd_serve(
         // (not a symlink to uv/pyenv/system Python). Wrong PYTHONHOME causes
         // Python to fail to find its stdlib and crash silently.
         let is_standalone = !bundled_python.is_symlink()
-            && darkbloom_dir
-                .join("python/lib/python3.12/os.py")
-                .exists();
+            && darkbloom_dir.join("python/lib/python3.12/os.py").exists();
         if is_standalone {
             tracing::info!("Using bundled Python: {}", bundled_python.display());
             unsafe {
@@ -4387,8 +4384,7 @@ async fn cmd_enroll(coordinator_url: String) -> Result<()> {
     }
 
     let bytes = resp.bytes().await?;
-    let profile_path =
-        std::env::temp_dir().join(format!("Darkbloom-Enroll-{serial}.mobileconfig"));
+    let profile_path = std::env::temp_dir().join(format!("Darkbloom-Enroll-{serial}.mobileconfig"));
     std::fs::write(&profile_path, &bytes)?;
 
     // Register the profile and open System Settings to the Device Management pane
@@ -5868,10 +5864,7 @@ async fn cmd_update(coordinator: String, force: bool) -> Result<()> {
     }
 
     // Move binaries to bin dir
-    let _ = std::fs::rename(
-        darkbloom_dir.join("darkbloom"),
-        bin_dir.join("darkbloom"),
-    );
+    let _ = std::fs::rename(darkbloom_dir.join("darkbloom"), bin_dir.join("darkbloom"));
     let _ = std::fs::rename(
         darkbloom_dir.join("darkbloom-enclave"),
         bin_dir.join("darkbloom-enclave"),
@@ -6215,10 +6208,7 @@ async fn auto_update_check(coordinator_base_url: &str) -> Result<bool> {
     }
 
     // Move binaries to bin dir
-    let _ = std::fs::rename(
-        darkbloom_dir.join("darkbloom"),
-        bin_dir.join("darkbloom"),
-    );
+    let _ = std::fs::rename(darkbloom_dir.join("darkbloom"), bin_dir.join("darkbloom"));
     let _ = std::fs::rename(
         darkbloom_dir.join("darkbloom-enclave"),
         bin_dir.join("darkbloom-enclave"),
@@ -6242,8 +6232,7 @@ async fn auto_update_check(coordinator_base_url: &str) -> Result<bool> {
         .replace("wss://", "https://")
         .replace("ws://", "http://")
         .replace("/ws/provider", "");
-    if let Err(err) = verify_installed_update_runtime(&darkbloom_dir, &coordinator_http, false)
-    {
+    if let Err(err) = verify_installed_update_runtime(&darkbloom_dir, &coordinator_http, false) {
         tracing::error!(
             "Auto-update runtime verification failed after installing {latest}: {err}. Restoring previous binaries"
         );

@@ -69,20 +69,11 @@ fn link_enclave_library() {
     println!("cargo:rerun-if-changed={}", enclave_header.display());
 
     let status = Command::new("swift")
-        .args([
-            "build",
-            "-c",
-            "release",
-            "--product",
-            "DarkbloomEnclave",
-        ])
+        .args(["build", "-c", "release", "--product", "DarkbloomEnclave"])
         .current_dir(&enclave_dir)
         .status()
         .expect("failed to invoke swift build for DarkbloomEnclave");
-    assert!(
-        status.success(),
-        "swift build failed for DarkbloomEnclave"
-    );
+    assert!(status.success(), "swift build failed for DarkbloomEnclave");
 
     let lib_dir = enclave_dir.join(".build/arm64-apple-macosx/release");
     println!("cargo:rustc-link-search=native={}", lib_dir.display());

@@ -194,28 +194,60 @@ final class ProviderManager: ObservableObject {
 
         // Handle process termination
         proc.terminationHandler = { [weak self] terminatedProcess in
+            let exitCode = Int(terminatedProcess.terminationStatus)
+            let reason = terminatedProcess.terminationReason
             Task { @MainActor in
                 guard let self = self else { return }
                 self.isRunning = false
                 self.process = nil
 
+                let crashed = exitCode != 0 || reason == .uncaughtSignal
+
                 // Auto-restart on crash (non-zero exit)
-                if self.autoRestartEnabled
-                    && terminatedProcess.terminationStatus != 0
-                    && self.restartCount < self.maxRestarts
-                {
+                if self.autoRestartEnabled && crashed && self.restartCount < self.maxRestarts {
                     self.restartCount += 1
+                    // Report the crash before restarting so operators see
+                    // every restart cycle, not just the final give-up.
+                    TelemetryReporter.shared.emit(
+                        kind: .backendCrash,
+                        severity: .error,
+                        message: "provider subprocess crashed",
+                        fields: [
+                            "component": "app",
+                            "backend": "darkbloom",
+                            "exit_code": exitCode,
+                            "signal": reason == .uncaughtSignal ? "signal" : "exit",
+                            "attempt": self.restartCount,
+                            "reason": "subprocess_exit",
+                            "model": self.currentModel,
+                        ],
+                        stack: self.lastError.isEmpty ? nil : String(self.lastError.suffix(4096))
+                    )
+
                     // Exponential backoff: 1s, 2s, 4s, 8s, 16s
                     let delay = pow(2.0, Double(self.restartCount - 1))
                     try? await Task.sleep(for: .seconds(delay))
                     if self.autoRestartEnabled {
                         self.spawnProcess()
                     }
-                } else if self.autoRestartEnabled
-                    && terminatedProcess.terminationStatus != 0
+                } else if self.autoRestartEnabled && crashed
                     && self.restartCount >= self.maxRestarts
                 {
                     self.autoRestartEnabled = false
+                    TelemetryReporter.shared.emit(
+                        kind: .backendCrash,
+                        severity: .fatal,
+                        message: "provider exceeded max restart attempts",
+                        fields: [
+                            "component": "app",
+                            "backend": "darkbloom",
+                            "exit_code": exitCode,
+                            "attempt": self.restartCount,
+                            "reason": "restart_limit_exceeded",
+                            "model": self.currentModel,
+                        ],
+                        stack: self.lastError.isEmpty ? nil : String(self.lastError.suffix(4096))
+                    )
                     let content = UNMutableNotificationContent()
                     content.title = "Darkbloom Provider Stopped"
                     content.body = "Provider crashed \(self.maxRestarts) times. Check logs: darkbloom logs"
@@ -235,6 +267,17 @@ final class ProviderManager: ObservableObject {
         } catch {
             lastError = "Failed to start provider: \(error.localizedDescription)"
             isRunning = false
+            TelemetryReporter.shared.emit(
+                kind: .backendCrash,
+                severity: .error,
+                message: "failed to launch provider subprocess",
+                fields: [
+                    "component": "app",
+                    "backend": "darkbloom",
+                    "reason": "spawn_failed",
+                    "error": error.localizedDescription,
+                ]
+            )
         }
     }
 }

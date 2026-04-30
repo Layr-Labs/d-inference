@@ -219,7 +219,7 @@ func TestParseP256PublicKeyUncompressed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if parsed.X.Cmp(privKey.PublicKey.X) != 0 || parsed.Y.Cmp(privKey.PublicKey.Y) != 0 {
+	if parsed.X.Cmp(privKey.X) != 0 || parsed.Y.Cmp(privKey.Y) != 0 {
 		t.Error("parsed key does not match original")
 	}
 }
@@ -243,7 +243,7 @@ func TestParseP256PublicKeyRawXY(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if parsed.X.Cmp(privKey.PublicKey.X) != 0 || parsed.Y.Cmp(privKey.PublicKey.Y) != 0 {
+	if parsed.X.Cmp(privKey.X) != 0 || parsed.Y.Cmp(privKey.Y) != 0 {
 		t.Error("parsed key does not match original")
 	}
 }
@@ -278,8 +278,8 @@ func TestVerifyChallengeSignatureValid(t *testing.T) {
 	}
 
 	// Export public key as raw X||Y (64 bytes), base64-encoded
-	xBytes := privKey.PublicKey.X.Bytes()
-	yBytes := privKey.PublicKey.Y.Bytes()
+	xBytes := privKey.X.Bytes()
+	yBytes := privKey.Y.Bytes()
 	padded := make([]byte, 64)
 	copy(padded[32-len(xBytes):32], xBytes)
 	copy(padded[64-len(yBytes):64], yBytes)
@@ -310,8 +310,8 @@ func TestVerifyChallengeSignatureValid(t *testing.T) {
 // fails verification when the challenge data doesn't match.
 func TestVerifyChallengeSignatureWrongData(t *testing.T) {
 	privKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	xBytes := privKey.PublicKey.X.Bytes()
-	yBytes := privKey.PublicKey.Y.Bytes()
+	xBytes := privKey.X.Bytes()
+	yBytes := privKey.Y.Bytes()
 	padded := make([]byte, 64)
 	copy(padded[32-len(xBytes):32], xBytes)
 	copy(padded[64-len(yBytes):64], yBytes)
@@ -336,8 +336,8 @@ func TestVerifyChallengeSignatureWrongKey(t *testing.T) {
 	privKey2, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 
 	// Use key2's public key
-	xBytes := privKey2.PublicKey.X.Bytes()
-	yBytes := privKey2.PublicKey.Y.Bytes()
+	xBytes := privKey2.X.Bytes()
+	yBytes := privKey2.Y.Bytes()
 	padded := make([]byte, 64)
 	copy(padded[32-len(xBytes):32], xBytes)
 	copy(padded[64-len(yBytes):64], yBytes)
@@ -522,8 +522,8 @@ func signBlob(t *testing.T, blob AttestationBlob, privKey *ecdsa.PrivateKey) Sig
 }
 
 func marshalUncompressedP256(key *ecdsa.PrivateKey) []byte {
-	xBytes := key.PublicKey.X.Bytes()
-	yBytes := key.PublicKey.Y.Bytes()
+	xBytes := key.X.Bytes()
+	yBytes := key.Y.Bytes()
 
 	// Pad to 32 bytes each
 	raw := make([]byte, 65)

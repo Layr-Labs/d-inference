@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -91,22 +92,22 @@ func (r *ReferralService) Register(accountID, desiredCode string) (*store.Referr
 func validateReferralCode(code string) (string, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	if code == "" {
-		return "", fmt.Errorf("referral: code is required")
+		return "", errors.New("referral: code is required")
 	}
 	if len(code) < 3 {
-		return "", fmt.Errorf("referral: code must be at least 3 characters")
+		return "", errors.New("referral: code must be at least 3 characters")
 	}
 	if len(code) > 20 {
-		return "", fmt.Errorf("referral: code must be at most 20 characters")
+		return "", errors.New("referral: code must be at most 20 characters")
 	}
 	for _, ch := range code {
 		if !unicode.IsLetter(ch) && !unicode.IsDigit(ch) && ch != '-' {
-			return "", fmt.Errorf("referral: code can only contain letters, numbers, and hyphens")
+			return "", errors.New("referral: code can only contain letters, numbers, and hyphens")
 		}
 	}
 	// No leading/trailing hyphens.
 	if code[0] == '-' || code[len(code)-1] == '-' {
-		return "", fmt.Errorf("referral: code cannot start or end with a hyphen")
+		return "", errors.New("referral: code cannot start or end with a hyphen")
 	}
 	return code, nil
 }
@@ -116,7 +117,7 @@ func validateReferralCode(code string) (string, error) {
 func (r *ReferralService) Apply(accountID, referralCode string) error {
 	referralCode = strings.ToUpper(strings.TrimSpace(referralCode))
 	if referralCode == "" {
-		return fmt.Errorf("referral: code is required")
+		return errors.New("referral: code is required")
 	}
 
 	// Validate the referral code exists
@@ -127,13 +128,13 @@ func (r *ReferralService) Apply(accountID, referralCode string) error {
 
 	// Prevent self-referral
 	if referrer.AccountID == accountID {
-		return fmt.Errorf("referral: cannot refer yourself")
+		return errors.New("referral: cannot refer yourself")
 	}
 
 	// Check if account already has a referrer
 	existing, err := r.store.GetReferrerForAccount(accountID)
 	if err == nil && existing != "" {
-		return fmt.Errorf("referral: account already has a referrer")
+		return errors.New("referral: account already has a referrer")
 	}
 
 	// Record the referral
@@ -153,7 +154,7 @@ func (r *ReferralService) Apply(accountID, referralCode string) error {
 func (r *ReferralService) Stats(accountID string) (*ReferralStatsResponse, error) {
 	referrer, err := r.store.GetReferrerByAccount(accountID)
 	if err != nil {
-		return nil, fmt.Errorf("referral: account is not a referrer")
+		return nil, errors.New("referral: account is not a referrer")
 	}
 
 	stats, err := r.store.GetReferralStats(referrer.Code)
@@ -199,7 +200,7 @@ func (r *ReferralService) DistributeReferralReward(consumerKey string, platformF
 	}
 
 	// Credit the referrer
-	if err := r.store.Credit(referrer.AccountID, referralReward, store.LedgerReferralReward, jobID); err != nil {
+	if err := r.store.CreditWithdrawable(referrer.AccountID, referralReward, store.LedgerReferralReward, jobID); err != nil {
 		r.logger.Error("referral: failed to credit reward",
 			"referrer", truncateID(referrer.AccountID),
 			"reward", referralReward,

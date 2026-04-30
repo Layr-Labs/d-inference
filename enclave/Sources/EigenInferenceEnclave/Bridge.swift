@@ -40,25 +40,7 @@ public func eigeninference_enclave_create() -> UnsafeMutableRawPointer? {
     return Unmanaged.passRetained(identity as AnyObject).toOpaque()
 }
 
-/// Load an existing identity from a saved data representation.
-///
-/// The data representation is an opaque handle from a previous
-/// `eigeninference_enclave_data_representation()` call. It only works on the
-/// same device that generated the original key.
-/// Returns NULL on failure (wrong device, corrupted data, etc.).
-@_cdecl("eigeninference_enclave_load")
-public func eigeninference_enclave_load(
-    _ dataPtr: UnsafePointer<UInt8>,
-    _ dataLen: Int
-) -> UnsafeMutableRawPointer? {
-    let data = Data(bytes: dataPtr, count: dataLen)
-    guard let identity = try? SecureEnclaveIdentity(dataRepresentation: data) else {
-        return nil
-    }
-    return Unmanaged.passRetained(identity as AnyObject).toOpaque()
-}
-
-/// Free an identity created by `eigeninference_enclave_create` or `eigeninference_enclave_load`.
+/// Free an identity created by `eigeninference_enclave_create`.
 ///
 /// This releases the retained reference to the SecureEnclaveIdentity object.
 /// After calling this, the pointer must not be used again.
@@ -86,31 +68,6 @@ public func eigeninference_enclave_public_key_base64(
         .takeUnretainedValue()
     let base64 = identity.publicKeyBase64
     return strdup(base64)
-}
-
-/// Get the data representation for persisting the identity.
-///
-/// The data representation is an opaque handle from the Secure Enclave.
-/// It can be saved to disk and later passed to `eigeninference_enclave_load()` to
-/// reload the same key on the same device.
-///
-/// If `buffer` is NULL, returns the required buffer size without writing.
-/// Otherwise copies up to `bufferLen` bytes into `buffer` and returns the
-/// number of bytes written.
-@_cdecl("eigeninference_enclave_data_representation")
-public func eigeninference_enclave_data_representation(
-    _ ptr: UnsafeRawPointer,
-    _ buffer: UnsafeMutablePointer<UInt8>?,
-    _ bufferLen: Int
-) -> Int {
-    let identity = Unmanaged<SecureEnclaveIdentity>.fromOpaque(ptr)
-        .takeUnretainedValue()
-    let data = identity.dataRepresentation
-
-    if let buffer = buffer, bufferLen >= data.count {
-        data.copyBytes(to: buffer, count: data.count)
-    }
-    return data.count
 }
 
 /// Sign data with the Secure Enclave private key.
@@ -211,6 +168,39 @@ public func eigeninference_enclave_create_attestation_with_key(
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    guard let jsonData = try? encoder.encode(signed),
+          let jsonStr = String(data: jsonData, encoding: .utf8) else {
+        return nil
+    }
+
+    return strdup(jsonStr)
+}
+
+/// Create a signed attestation blob with encryption key and binary hash.
+///
+/// This is the full-featured attestation generator used by the provider's FFI
+/// path. Both the encryption key and binary hash are optional (pass NULL to omit).
+@_cdecl("eigeninference_enclave_create_attestation_full")
+public func eigeninference_enclave_create_attestation_full(
+    _ ptr: UnsafeRawPointer,
+    _ encryptionKeyBase64: UnsafePointer<CChar>?,
+    _ binaryHashHex: UnsafePointer<CChar>?
+) -> UnsafeMutablePointer<CChar>? {
+    let identity = Unmanaged<SecureEnclaveIdentity>.fromOpaque(ptr)
+        .takeUnretainedValue()
+    let service = AttestationService(identity: identity)
+
+    let encKey: String? = encryptionKeyBase64.map { String(cString: $0) }
+    let binHash: String? = binaryHashHex.map { String(cString: $0) }
+
+    guard let signed = try? service.createAttestation(
+        encryptionPublicKey: encKey,
+        binaryHash: binHash
+    ) else { return nil }
+
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    encoder.outputFormatting = [.sortedKeys]
     guard let jsonData = try? encoder.encode(signed),
           let jsonStr = String(data: jsonData, encoding: .utf8) else {
         return nil

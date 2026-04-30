@@ -33,7 +33,7 @@ enum LaunchAgentManager {
             || FileManager.default.fileExists(atPath: legacyPlistPath.path)
     }
 
-    /// Install the LaunchAgent to start EigenInference on login.
+    /// Install the LaunchAgent to start DarkBloom on login.
     static func install() throws {
         // Remove legacy plist if it exists
         if FileManager.default.fileExists(atPath: legacyPlistPath.path) {

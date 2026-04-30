@@ -31,6 +31,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,13 +71,9 @@ func startBackend(t *testing.T, model string, port int) *backendProcess {
 	return startBackendWithOptions(t, model, port, false)
 }
 
-func startBackendWithBatching(t *testing.T, model string, port int) *backendProcess {
-	return startBackendWithOptions(t, model, port, true)
-}
-
 func startBackendWithOptions(t *testing.T, model string, port int, continuousBatching bool) *backendProcess {
 	t.Helper()
-	args := []string{"serve", model, "--port", fmt.Sprintf("%d", port)}
+	args := []string{"serve", model, "--port", strconv.Itoa(port)}
 	if continuousBatching {
 		args = append(args, "--continuous-batching")
 	}
@@ -191,9 +188,11 @@ func (p *simulatedProvider) connect(ctx context.Context, coordinatorURL string) 
 			Quantization: "4bit",
 			SizeBytes:    500_000_000,
 		}},
-		Backend:   "vllm-mlx",
-		PublicKey: p.pubKeyB64,
-		DecodeTPS: 100.0,
+		Backend:                 "inprocess-mlx",
+		PublicKey:               p.pubKeyB64,
+		DecodeTPS:               100.0,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
 	}
 	data, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
@@ -295,7 +294,7 @@ func (p *simulatedProvider) handleInferenceRequest(ctx context.Context, data []b
 		endpoint = reqBody.Endpoint
 	}
 
-	backendReq, err := http.NewRequestWithContext(ctx, "POST",
+	backendReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		p.backendURL+endpoint, strings.NewReader(string(bodyJSON)))
 	if err != nil {
 		p.sendError(ctx, msg.RequestID, err.Error(), 500)
@@ -310,7 +309,7 @@ func (p *simulatedProvider) handleInferenceRequest(ctx context.Context, data []b
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
 		p.sendError(ctx, msg.RequestID, string(errBody), resp.StatusCode)
 		return
@@ -352,15 +351,30 @@ func (p *simulatedProvider) handleInferenceRequest(ctx context.Context, data []b
 			}
 		}
 
-		// Forward chunk to coordinator
-		chunkMsg := protocol.InferenceResponseChunkMessage{
-			Type:      protocol.TypeInferenceResponseChunk,
-			RequestID: msg.RequestID,
-			Data:      "data: " + sseData + "\n\n",
-		}
-		chunkData, _ := json.Marshal(chunkMsg)
-		if err := p.conn.Write(ctx, websocket.MessageText, chunkData); err != nil {
-			return
+		// Encrypt and forward chunk to coordinator
+		if msg.EncryptedBody != nil {
+			coordinatorPub, err := e2e.ParsePublicKey(msg.EncryptedBody.EphemeralPublicKey)
+			if err == nil {
+				session := &e2e.SessionKeys{
+					PublicKey:  p.pubKey,
+					PrivateKey: p.privKey,
+				}
+				payload, err := e2e.Encrypt([]byte("data: "+sseData+"\n\n"), coordinatorPub, session)
+				if err == nil {
+					chunkMsg := protocol.InferenceResponseChunkMessage{
+						Type:      protocol.TypeInferenceResponseChunk,
+						RequestID: msg.RequestID,
+						EncryptedData: &protocol.EncryptedPayload{
+							EphemeralPublicKey: payload.EphemeralPublicKey,
+							Ciphertext:         payload.Ciphertext,
+						},
+					}
+					chunkData, _ := json.Marshal(chunkMsg)
+					if err := p.conn.Write(ctx, websocket.MessageText, chunkData); err != nil {
+						return
+					}
+				}
+			}
 		}
 	}
 
@@ -417,7 +431,7 @@ func consumerRequest(ctx context.Context, coordinatorURL, apiKey, model, prompt 
 	}
 	bodyJSON, _ := json.Marshal(body)
 
-	req, err := http.NewRequestWithContext(ctx, "POST",
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		coordinatorURL+"/v1/chat/completions", strings.NewReader(string(bodyJSON)))
 	if err != nil {
 		return 0, "", err
@@ -465,7 +479,7 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 	// --- Start vllm-mlx backends ---
 	t.Logf("=== Starting %d vllm-mlx backends ===", numProviders)
 	backends := make([]*backendProcess, numProviders)
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		backends[i] = startBackend(t, testModel, basePort+i)
 	}
 	defer func() {
@@ -477,7 +491,7 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 
 	// Wait for all backends to load the model
 	var wg sync.WaitGroup
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -490,7 +504,7 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 	// --- Connect simulated providers ---
 	t.Logf("=== Connecting %d providers ===", numProviders)
 	providers := make([]*simulatedProvider, numProviders)
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		providers[i] = newSimulatedProvider(t, basePort+i)
 		providers[i].connect(ctx, ts.URL)
 		go providers[i].run(ctx)
@@ -545,7 +559,7 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 
 	// --- Test 3: Sequential requests to verify routing ---
 	t.Log("--- Test 3: Sequential requests (10) ---")
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		code, _, err := consumerRequest(ctx, ts.URL, "test-key", testModel,
 			fmt.Sprintf("What is %d+%d?", i, i), true)
 		if err != nil {
@@ -565,7 +579,7 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 	results := make(map[int]int) // status code → count
 
 	var cwg sync.WaitGroup
-	for i := 0; i < concurrentRequests; i++ {
+	for i := range concurrentRequests {
 		cwg.Add(1)
 		go func(idx int) {
 			defer cwg.Done()
@@ -677,7 +691,7 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 	burstStart := time.Now()
 	var burstSuccess int32
 	var bwg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		bwg.Add(1)
 		go func(idx int) {
 			defer bwg.Done()
@@ -737,7 +751,7 @@ func TestFullStack_TenProviderStress(t *testing.T) {
 	// Start 10 backends
 	t.Logf("starting %d vllm-mlx backends (ports %d-%d)...", numProviders, basePort, basePort+numProviders-1)
 	backends := make([]*backendProcess, numProviders)
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		backends[i] = startBackend(t, testModel, basePort+i)
 	}
 	defer func() {
@@ -749,7 +763,7 @@ func TestFullStack_TenProviderStress(t *testing.T) {
 	// Wait for all to be healthy (in parallel)
 	t.Log("waiting for all backends to load model...")
 	var wg sync.WaitGroup
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -761,7 +775,7 @@ func TestFullStack_TenProviderStress(t *testing.T) {
 
 	// Connect all providers
 	providers := make([]*simulatedProvider, numProviders)
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		providers[i] = newSimulatedProvider(t, basePort+i)
 		providers[i].connect(ctx, ts.URL)
 		go providers[i].run(ctx)
@@ -783,7 +797,7 @@ func TestFullStack_TenProviderStress(t *testing.T) {
 	start := time.Now()
 	var success int32
 	var cwg sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		cwg.Add(1)
 		go func(idx int) {
 			defer cwg.Done()
@@ -905,7 +919,7 @@ func runBatchingBenchmark(t *testing.T, numProviders, numRequests int, continuou
 
 	// Start backends
 	backends := make([]*backendProcess, numProviders)
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		port := basePort + portOffset + i
 		backends[i] = startBackendWithOptions(t, testModel, port, continuousBatching)
 	}
@@ -917,7 +931,7 @@ func runBatchingBenchmark(t *testing.T, numProviders, numRequests int, continuou
 
 	// Wait for healthy
 	var wg sync.WaitGroup
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -928,7 +942,7 @@ func runBatchingBenchmark(t *testing.T, numProviders, numRequests int, continuou
 
 	// Warmup each backend
 	client := &http.Client{Timeout: 60 * time.Second}
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		warmupBody := `{"model":"` + testModel + `","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}`
 		resp, err := client.Post(backends[i].baseURL()+"/v1/chat/completions", "application/json",
 			strings.NewReader(warmupBody))
@@ -941,7 +955,7 @@ func runBatchingBenchmark(t *testing.T, numProviders, numRequests int, continuou
 
 	// Connect providers
 	providers := make([]*simulatedProvider, numProviders)
-	for i := 0; i < numProviders; i++ {
+	for i := range numProviders {
 		port := basePort + portOffset + i
 		providers[i] = newSimulatedProvider(t, port)
 		providers[i].connect(ctx, ts.URL)
@@ -968,7 +982,7 @@ func runBatchingBenchmark(t *testing.T, numProviders, numRequests int, continuou
 	start := time.Now()
 	var success int32
 	var cwg sync.WaitGroup
-	for i := 0; i < numRequests; i++ {
+	for i := range numRequests {
 		cwg.Add(1)
 		go func(idx int) {
 			defer cwg.Done()
@@ -1103,7 +1117,7 @@ func TestFullStack_LargeModelInference(t *testing.T) {
 	// Test 2: Latency benchmark
 	t.Log("--- latency benchmark (5 requests) ---")
 	var totalLatency time.Duration
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		reqStart := time.Now()
 		code, _, err := consumerRequest(ctx, ts.URL, "test-key", selectedModel,
 			fmt.Sprintf("What is %d+%d? Just the number.", i+1, i+2), true)
@@ -1122,7 +1136,7 @@ func TestFullStack_LargeModelInference(t *testing.T) {
 	t.Log("--- concurrent requests (3) ---")
 	var cwg sync.WaitGroup
 	var success int32
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		cwg.Add(1)
 		go func(idx int) {
 			defer cwg.Done()

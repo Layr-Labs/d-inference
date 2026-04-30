@@ -19,7 +19,7 @@ struct CartoonMac: View {
         ZStack {
             // Shadow
             Ellipse()
-                .fill(Color.warmInk.opacity(0.06))
+                .fill(Color.adaptiveInk.opacity(0.06))
                 .frame(width: 48 * scale, height: 8 * scale)
                 .offset(y: 28 * scale)
 
@@ -34,11 +34,11 @@ struct CartoonMac: View {
         ZStack {
             // Screen (main body)
             RoundedRectangle(cornerRadius: 6 * scale)
-                .fill(Color.warmBgSecondary)
+                .fill(Color.adaptiveBgSecondary)
                 .frame(width: 48 * scale, height: 36 * scale)
                 .overlay(
                     RoundedRectangle(cornerRadius: 6 * scale)
-                        .strokeBorder(Color.warmInk, lineWidth: 2.5 * scale)
+                        .strokeBorder(Color.adaptiveInk, lineWidth: 2.5 * scale)
                 )
                 .offset(y: -6 * scale)
 
@@ -66,15 +66,15 @@ struct CartoonMac: View {
                     control: CGPoint(x: size / 2, y: chinY + 7 * scale)
                 )
             }
-            .stroke(Color.warmInk, lineWidth: 2 * scale)
+            .stroke(Color.adaptiveInk, lineWidth: 2 * scale)
 
             // Base
             RoundedRectangle(cornerRadius: 2 * scale)
-                .fill(Color.warmBgElevated)
+                .fill(Color.adaptiveBgElevated)
                 .frame(width: 30 * scale, height: 4 * scale)
                 .overlay(
                     RoundedRectangle(cornerRadius: 2 * scale)
-                        .strokeBorder(Color.warmInk, lineWidth: 1.5 * scale)
+                        .strokeBorder(Color.adaptiveInk, lineWidth: 1.5 * scale)
                 )
                 .offset(y: 18 * scale)
 
@@ -110,7 +110,7 @@ struct CartoonMac: View {
             .offset(y: -3 * scale)
             // Small mouth
             RoundedRectangle(cornerRadius: 1 * scale)
-                .fill(Color.warmInk)
+                .fill(Color.adaptiveInk)
                 .frame(width: 6 * scale, height: 2 * scale)
                 .offset(y: 4 * scale)
 
@@ -166,7 +166,7 @@ struct CartoonMac: View {
         ZStack {
             if open {
                 Circle()
-                    .fill(Color.warmInk)
+                    .fill(Color.adaptiveInk)
                     .frame(width: 5 * scale, height: 5 * scale)
                 // Shine
                 Circle()
@@ -180,7 +180,7 @@ struct CartoonMac: View {
     private var starEye: some View {
         Image(systemName: "star.fill")
             .font(.system(size: 5 * scale, weight: .bold))
-            .foregroundStyle(Color.gold)
+            .foregroundStyle(Color.adaptiveGold)
     }
 
     private var closedHappyEye: some View {
@@ -192,7 +192,7 @@ struct CartoonMac: View {
                 control: CGPoint(x: 0, y: -3 * scale)
             )
         }
-        .stroke(Color.warmInk, lineWidth: 1.5 * scale)
+        .stroke(Color.adaptiveInk, lineWidth: 1.5 * scale)
         .frame(width: 5 * scale, height: 4 * scale)
     }
 
@@ -205,7 +205,7 @@ struct CartoonMac: View {
                 control: CGPoint(x: 0, y: 4 * scale)
             )
         }
-        .stroke(Color.warmInk, lineWidth: 1.5 * scale)
+        .stroke(Color.adaptiveInk, lineWidth: 1.5 * scale)
         .frame(width: 14 * scale, height: 6 * scale)
     }
 
@@ -218,7 +218,7 @@ struct CartoonMac: View {
                 control: CGPoint(x: 0, y: -2 * scale)
             )
         }
-        .stroke(Color.warmInk, lineWidth: 1.5 * scale)
+        .stroke(Color.adaptiveInk, lineWidth: 1.5 * scale)
         .frame(width: 10 * scale, height: 5 * scale)
     }
 
@@ -229,7 +229,7 @@ struct CartoonMac: View {
             path.addQuadCurve(to: CGPoint(x: 0, y: 0), control: CGPoint(x: -w/4, y: -2 * scale))
             path.addQuadCurve(to: CGPoint(x: w/2, y: 0), control: CGPoint(x: w/4, y: 2 * scale))
         }
-        .stroke(Color.warmInk, lineWidth: 1.5 * scale)
+        .stroke(Color.adaptiveInk, lineWidth: 1.5 * scale)
         .frame(width: 10 * scale, height: 6 * scale)
     }
 }
@@ -286,8 +286,8 @@ struct ShieldIllustration: View {
             // Shield shape
             Image(systemName: passed ? "shield.checkered" : "shield.slash")
                 .font(.system(size: size * 0.6, weight: .bold))
-                .foregroundStyle(passed ? Color.tealAccent : Color.warmError)
-                .shadow(color: (passed ? Color.tealAccent : Color.warmError).opacity(0.3), radius: 6)
+                .foregroundStyle(passed ? Color.adaptiveTealAccent : Color.adaptiveError)
+                .shadow(color: (passed ? Color.adaptiveTealAccent : Color.adaptiveError).opacity(0.3), radius: 6)
 
             if passed {
                 // Sparkles around shield
@@ -309,11 +309,11 @@ struct CoinStackIllustration: View {
             // Stack of coins
             ForEach(0..<3, id: \.self) { i in
                 Ellipse()
-                    .fill(Color.gold)
+                    .fill(Color.adaptiveGold)
                     .frame(width: size * 0.5, height: size * 0.2)
                     .overlay(
                         Ellipse()
-                            .strokeBorder(Color.warmInk, lineWidth: 1.5)
+                            .strokeBorder(Color.adaptiveInk, lineWidth: 1.5)
                     )
                     .offset(y: CGFloat(2 - i) * size * 0.12)
             }
@@ -321,7 +321,7 @@ struct CoinStackIllustration: View {
             // Dollar sign on top coin
             Text("$")
                 .font(.system(size: size * 0.2, weight: .bold, design: .rounded))
-                .foregroundStyle(Color.warmInk)
+                .foregroundStyle(Color.adaptiveInk)
                 .offset(y: -size * 0.05)
 
             // Sparkles
@@ -347,7 +347,7 @@ struct NetworkIllustration: View {
                 path.move(to: CGPoint(x: size * 0.5, y: size * 0.3))
                 path.addLine(to: CGPoint(x: size * 0.8, y: size * 0.7))
             }
-            .stroke(Color.warmInk.opacity(0.2), style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
+            .stroke(Color.adaptiveInk.opacity(0.2), style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
 
             // Center Mac (coordinator)
             CartoonMac(mood: .excited, size: size * 0.4)
@@ -364,12 +364,12 @@ struct NetworkIllustration: View {
             // Lock icons on connections
             Image(systemName: "lock.fill")
                 .font(.system(size: size * 0.08, weight: .bold))
-                .foregroundStyle(Color.tealAccent)
+                .foregroundStyle(Color.adaptiveTealAccent)
                 .offset(x: -size * 0.18, y: size * 0.02)
 
             Image(systemName: "lock.fill")
                 .font(.system(size: size * 0.08, weight: .bold))
-                .foregroundStyle(Color.tealAccent)
+                .foregroundStyle(Color.adaptiveTealAccent)
                 .offset(x: size * 0.18, y: size * 0.02)
         }
         .frame(width: size, height: size)

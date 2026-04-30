@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 const DEFAULT_COORD = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
 
 export async function GET(req: NextRequest) {
-  const coordUrl = req.headers.get("x-coordinator-url") || DEFAULT_COORD;
+  const coordUrl = DEFAULT_COORD;
   const apiKey = req.headers.get("x-api-key") || "";
 
   const res = await fetch(`${coordUrl}/v1/payments/balance`, {

@@ -16,8 +16,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -33,6 +35,7 @@ type MemoryStore struct {
 	usage         []UsageRecord
 	payments      []PaymentRecord
 	balances      map[string]int64 // accountID → micro-USD
+	withdrawable  map[string]int64 // accountID → withdrawable micro-USD (subset of balance)
 	ledgerEntries []LedgerEntry
 	ledgerSeq     int64 // auto-increment ID
 
@@ -52,8 +55,15 @@ type MemoryStore struct {
 	supportedModels map[string]*SupportedModel // modelID → model
 
 	// Users (Privy)
-	usersByPrivyID   map[string]*User // privyUserID → user
-	usersByAccountID map[string]*User // accountID → user
+	usersByPrivyID         map[string]*User // privyUserID → user
+	usersByAccountID       map[string]*User // accountID → user
+	usersByStripeAccountID map[string]*User // stripeAccountID → user (subset of usersByAccountID)
+
+	// Stripe Connect withdrawals
+	stripeWithdrawalsByID         map[string]*StripeWithdrawal
+	stripeWithdrawalsByTransferID map[string]string   // transferID → withdrawalID
+	stripeWithdrawalsByPayoutID   map[string]string   // payoutID → withdrawalID
+	stripeWithdrawalsByAccount    map[string][]string // accountID → []withdrawalID, newest last
 
 	// Device authorization
 	deviceCodesByCode     map[string]*DeviceCode // deviceCode → DeviceCode
@@ -82,44 +92,100 @@ type MemoryStore struct {
 	providerRecords    map[string]*ProviderRecord   // providerID → record
 	reputationRecords  map[string]*ReputationRecord // providerID → reputation
 	serialToProviderID map[string]string            // serialNumber → providerID
+
+	// Telemetry ring buffer (bounded at memTelemetryCap)
+	telemetryEvents []TelemetryEventRecord
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
 // pre-seeded as a valid API key for bootstrapping.
 func NewMemory(adminKey string) *MemoryStore {
 	s := &MemoryStore{
-		keys:                  make(map[string]bool),
-		keyAccounts:           make(map[string]string),
-		usage:                 make([]UsageRecord, 0),
-		payments:              make([]PaymentRecord, 0),
-		balances:              make(map[string]int64),
-		ledgerEntries:         make([]LedgerEntry, 0),
-		referrersByCode:       make(map[string]*Referrer),
-		referrersByAccount:    make(map[string]*Referrer),
-		referrals:             make(map[string]string),
-		referralCounts:        make(map[string]int),
-		billingSessions:       make(map[string]*BillingSession),
-		modelPrices:           make(map[string]ModelPrice),
-		supportedModels:       make(map[string]*SupportedModel),
-		usersByPrivyID:        make(map[string]*User),
-		usersByAccountID:      make(map[string]*User),
-		deviceCodesByCode:     make(map[string]*DeviceCode),
-		deviceCodesByUserCode: make(map[string]*DeviceCode),
-		providerTokens:        make(map[string]*ProviderToken),
-		inviteCodes:           make(map[string]*InviteCode),
-		inviteRedemptions:     make(map[string][]InviteRedemption),
-		accountRedemptions:    make(map[string]map[string]bool),
-		providerEarnings:      make([]ProviderEarning, 0),
-		providerPayouts:       make([]ProviderPayout, 0),
-		releases:              make(map[string]*Release),
-		providerRecords:       make(map[string]*ProviderRecord),
-		reputationRecords:     make(map[string]*ReputationRecord),
-		serialToProviderID:    make(map[string]string),
+		keys:                          make(map[string]bool),
+		keyAccounts:                   make(map[string]string),
+		usage:                         make([]UsageRecord, 0),
+		payments:                      make([]PaymentRecord, 0),
+		balances:                      make(map[string]int64),
+		withdrawable:                  make(map[string]int64),
+		ledgerEntries:                 make([]LedgerEntry, 0),
+		referrersByCode:               make(map[string]*Referrer),
+		referrersByAccount:            make(map[string]*Referrer),
+		referrals:                     make(map[string]string),
+		referralCounts:                make(map[string]int),
+		billingSessions:               make(map[string]*BillingSession),
+		modelPrices:                   make(map[string]ModelPrice),
+		supportedModels:               make(map[string]*SupportedModel),
+		usersByPrivyID:                make(map[string]*User),
+		usersByAccountID:              make(map[string]*User),
+		usersByStripeAccountID:        make(map[string]*User),
+		stripeWithdrawalsByID:         make(map[string]*StripeWithdrawal),
+		stripeWithdrawalsByTransferID: make(map[string]string),
+		stripeWithdrawalsByPayoutID:   make(map[string]string),
+		stripeWithdrawalsByAccount:    make(map[string][]string),
+		deviceCodesByCode:             make(map[string]*DeviceCode),
+		deviceCodesByUserCode:         make(map[string]*DeviceCode),
+		providerTokens:                make(map[string]*ProviderToken),
+		inviteCodes:                   make(map[string]*InviteCode),
+		inviteRedemptions:             make(map[string][]InviteRedemption),
+		accountRedemptions:            make(map[string]map[string]bool),
+		providerEarnings:              make([]ProviderEarning, 0),
+		providerPayouts:               make([]ProviderPayout, 0),
+		releases:                      make(map[string]*Release),
+		providerRecords:               make(map[string]*ProviderRecord),
+		reputationRecords:             make(map[string]*ReputationRecord),
+		serialToProviderID:            make(map[string]string),
+		telemetryEvents:               make([]TelemetryEventRecord, 0, memTelemetryCap),
 	}
 	if adminKey != "" {
 		s.keys[adminKey] = true
 	}
 	return s
+}
+
+// DefaultPruneMaxEntries is the default per-slice cap used by Prune.
+// At ~1 KB per entry this keeps each slice around ~100 MB, well under the
+// coordinator's typical memory budget on a t3.small.
+const DefaultPruneMaxEntries = 100_000
+
+// Prune drops the oldest entries from append-only history slices so they
+// don't grow unboundedly in long-running processes. Entries are kept in
+// append order, so this is equivalent to a bounded ring buffer.
+//
+// This is a no-op when the PostgresStore is used — Postgres has its own
+// retention story (SQL DELETE or partitioning).
+//
+// maxEntries <= 0 uses DefaultPruneMaxEntries.
+func (s *MemoryStore) Prune(maxEntries int) {
+	if maxEntries <= 0 {
+		maxEntries = DefaultPruneMaxEntries
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if n := len(s.usage); n > maxEntries {
+		s.usage = append([]UsageRecord(nil), s.usage[n-maxEntries:]...)
+	}
+	if n := len(s.payments); n > maxEntries {
+		s.payments = append([]PaymentRecord(nil), s.payments[n-maxEntries:]...)
+	}
+	if n := len(s.ledgerEntries); n > maxEntries {
+		s.ledgerEntries = append([]LedgerEntry(nil), s.ledgerEntries[n-maxEntries:]...)
+	}
+	if n := len(s.providerEarnings); n > maxEntries {
+		s.providerEarnings = append([]ProviderEarning(nil), s.providerEarnings[n-maxEntries:]...)
+	}
+	if n := len(s.providerPayouts); n > maxEntries {
+		s.providerPayouts = append([]ProviderPayout(nil), s.providerPayouts[n-maxEntries:]...)
+	}
+
+	// Expired device codes can be dropped outright.
+	now := time.Now()
+	for code, dc := range s.deviceCodesByCode {
+		if now.After(dc.ExpiresAt) {
+			delete(s.deviceCodesByCode, code)
+			delete(s.deviceCodesByUserCode, dc.UserCode)
+		}
+	}
 }
 
 // CreateKey generates a cryptographically random API key, stores it, and
@@ -228,6 +294,118 @@ func (s *MemoryStore) UsageRecords() []UsageRecord {
 	return out
 }
 
+// UsageTotals returns aggregated lifetime totals.
+func (s *MemoryStore) UsageTotals() UsageTotals {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var t UsageTotals
+	for _, r := range s.usage {
+		t.Requests++
+		t.PromptTokens += int64(r.PromptTokens)
+		t.CompletionTokens += int64(r.CompletionTokens)
+	}
+	return t
+}
+
+// UsageTimeSeries buckets usage records by minute since `since`.
+func (s *MemoryStore) UsageTimeSeries(since time.Time) []UsageBucket {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	buckets := make(map[int64]*UsageBucket)
+	for _, r := range s.usage {
+		ts := r.Timestamp
+		if ts.IsZero() {
+			ts = r.CreatedAt
+		}
+		if ts.Before(since) {
+			continue
+		}
+		minute := ts.Truncate(time.Minute)
+		key := minute.Unix()
+		b, ok := buckets[key]
+		if !ok {
+			b = &UsageBucket{Minute: minute}
+			buckets[key] = b
+		}
+		b.Requests++
+		b.PromptTokens += int64(r.PromptTokens)
+		b.CompletionTokens += int64(r.CompletionTokens)
+	}
+	out := make([]UsageBucket, 0, len(buckets))
+	for _, b := range buckets {
+		out = append(out, *b)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Minute.Before(out[j].Minute) })
+	return out
+}
+
+// Leaderboard ranks accounts by the chosen metric across provider_earnings.
+func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	agg := make(map[string]*LeaderboardRow)
+	for _, e := range s.providerEarnings {
+		if e.AccountID == "" {
+			continue
+		}
+		if !since.IsZero() && e.CreatedAt.Before(since) {
+			continue
+		}
+		row, ok := agg[e.AccountID]
+		if !ok {
+			row = &LeaderboardRow{AccountID: e.AccountID}
+			agg[e.AccountID] = row
+		}
+		row.EarningsMicroUSD += e.AmountMicroUSD
+		row.Tokens += int64(e.PromptTokens + e.CompletionTokens)
+		row.Jobs++
+	}
+	rows := make([]LeaderboardRow, 0, len(agg))
+	for _, r := range agg {
+		rows = append(rows, *r)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		switch metric {
+		case LeaderboardTokens:
+			return rows[i].Tokens > rows[j].Tokens
+		case LeaderboardJobs:
+			return rows[i].Jobs > rows[j].Jobs
+		default:
+			return rows[i].EarningsMicroUSD > rows[j].EarningsMicroUSD
+		}
+	})
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows
+}
+
+// NetworkTotals aggregates metrics across all earnings.
+func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var t NetworkTotalsRow
+	seen := make(map[string]struct{})
+	for _, e := range s.providerEarnings {
+		if !since.IsZero() && e.CreatedAt.Before(since) {
+			continue
+		}
+		t.EarningsMicroUSD += e.AmountMicroUSD
+		t.Tokens += int64(e.PromptTokens + e.CompletionTokens)
+		t.Jobs++
+		if e.AccountID != "" {
+			if _, ok := seen[e.AccountID]; !ok {
+				seen[e.AccountID] = struct{}{}
+				t.ActiveAccounts++
+			}
+		}
+	}
+	return t
+}
+
 // UsageByConsumer returns usage records for a specific consumer key.
 func (s *MemoryStore) UsageByConsumer(consumerKey string) []UsageRecord {
 	s.mu.RLock()
@@ -271,12 +449,57 @@ func (s *MemoryStore) GetBalance(accountID string) int64 {
 	return s.balances[accountID]
 }
 
+// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
+func (s *MemoryStore) GetWithdrawableBalance(accountID string) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.withdrawable[accountID]
+}
+
 // Credit adds micro-USD to an account and records a ledger entry.
 func (s *MemoryStore) Credit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now())
+	return nil
+}
+
+// CreditWithdrawable adds micro-USD to both the total balance and the
+// withdrawable balance, and records a ledger entry.
+func (s *MemoryStore) CreditWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now())
+	s.withdrawable[accountID] += amountMicroUSD
+	return nil
+}
+
+// DebitWithdrawable subtracts micro-USD from both the total balance and
+// the withdrawable balance. Returns error if withdrawable is insufficient.
+func (s *MemoryStore) DebitWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.withdrawable[accountID] < amountMicroUSD {
+		return fmt.Errorf("insufficient withdrawable balance: have %d, need %d micro-USD", s.withdrawable[accountID], amountMicroUSD)
+	}
+	if s.balances[accountID] < amountMicroUSD {
+		return fmt.Errorf("insufficient balance: have %d, need %d micro-USD", s.balances[accountID], amountMicroUSD)
+	}
+
+	s.balances[accountID] -= amountMicroUSD
+	s.withdrawable[accountID] -= amountMicroUSD
+	s.ledgerSeq++
+	s.ledgerEntries = append(s.ledgerEntries, LedgerEntry{
+		ID:             s.ledgerSeq,
+		AccountID:      accountID,
+		Type:           entryType,
+		AmountMicroUSD: -amountMicroUSD,
+		BalanceAfter:   s.balances[accountID],
+		Reference:      reference,
+		CreatedAt:      time.Now(),
+	})
 	return nil
 }
 
@@ -290,6 +513,9 @@ func (s *MemoryStore) Debit(accountID string, amountMicroUSD int64, entryType Le
 	}
 
 	s.balances[accountID] -= amountMicroUSD
+	if s.withdrawable[accountID] > s.balances[accountID] {
+		s.withdrawable[accountID] = s.balances[accountID]
+	}
 	s.ledgerSeq++
 	s.ledgerEntries = append(s.ledgerEntries, LedgerEntry{
 		ID:             s.ledgerSeq,
@@ -393,7 +619,7 @@ func (s *MemoryStore) RecordReferral(referrerCode, referredAccountID string) err
 		return fmt.Errorf("referral code %q not found", referrerCode)
 	}
 	if _, exists := s.referrals[referredAccountID]; exists {
-		return fmt.Errorf("account already has a referrer")
+		return errors.New("account already has a referrer")
 	}
 
 	s.referrals[referredAccountID] = referrerCode
@@ -637,6 +863,179 @@ func (s *MemoryStore) GetUserByAccountID(accountID string) (*User, error) {
 	return &copy, nil
 }
 
+// SetUserStripeAccount upserts the Stripe Connect fields on a user record.
+func (s *MemoryStore) SetUserStripeAccount(accountID, stripeAccountID, status, destinationType, destinationLast4 string, instantEligible bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	u, ok := s.usersByAccountID[accountID]
+	if !ok {
+		return fmt.Errorf("user with account ID %q not found", accountID)
+	}
+
+	// Maintain the by-stripe-account index. A user may switch accounts (e.g.
+	// after a manual reset) so we drop the old mapping if it was different.
+	if u.StripeAccountID != "" && u.StripeAccountID != stripeAccountID {
+		delete(s.usersByStripeAccountID, u.StripeAccountID)
+	}
+
+	u.StripeAccountID = stripeAccountID
+	u.StripeAccountStatus = status
+	u.StripeDestinationType = destinationType
+	u.StripeDestinationLast4 = destinationLast4
+	u.StripeInstantEligible = instantEligible
+
+	if stripeAccountID != "" {
+		s.usersByStripeAccountID[stripeAccountID] = u
+	}
+	return nil
+}
+
+// GetUserByStripeAccount finds a user by their Stripe connected account ID.
+func (s *MemoryStore) GetUserByStripeAccount(stripeAccountID string) (*User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	u, ok := s.usersByStripeAccountID[stripeAccountID]
+	if !ok {
+		return nil, fmt.Errorf("user with Stripe account %q not found", stripeAccountID)
+	}
+	copy := *u
+	return &copy, nil
+}
+
+// GetUserByEmail returns the user for an email address.
+func (s *MemoryStore) GetUserByEmail(email string) (*User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	lower := strings.ToLower(email)
+	for _, u := range s.usersByAccountID {
+		if strings.ToLower(u.Email) == lower {
+			copy := *u
+			return &copy, nil
+		}
+	}
+	return nil, fmt.Errorf("user with email %q not found", email)
+}
+
+// --- Stripe Withdrawals ---
+
+func (s *MemoryStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
+	if w == nil || w.ID == "" {
+		return errors.New("stripe withdrawal id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.stripeWithdrawalsByID[w.ID]; exists {
+		return fmt.Errorf("stripe withdrawal %q already exists", w.ID)
+	}
+	cp := *w
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = time.Now()
+	}
+	if cp.UpdatedAt.IsZero() {
+		cp.UpdatedAt = cp.CreatedAt
+	}
+	s.stripeWithdrawalsByID[cp.ID] = &cp
+	if cp.TransferID != "" {
+		s.stripeWithdrawalsByTransferID[cp.TransferID] = cp.ID
+	}
+	if cp.PayoutID != "" {
+		s.stripeWithdrawalsByPayoutID[cp.PayoutID] = cp.ID
+	}
+	s.stripeWithdrawalsByAccount[cp.AccountID] = append(s.stripeWithdrawalsByAccount[cp.AccountID], cp.ID)
+	return nil
+}
+
+func (s *MemoryStore) GetStripeWithdrawal(id string) (*StripeWithdrawal, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok {
+		return nil, fmt.Errorf("stripe withdrawal %q not found", id)
+	}
+	cp := *w
+	return &cp, nil
+}
+
+func (s *MemoryStore) GetStripeWithdrawalByPayoutID(payoutID string) (*StripeWithdrawal, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id, ok := s.stripeWithdrawalsByPayoutID[payoutID]
+	if !ok {
+		return nil, fmt.Errorf("stripe withdrawal with payout %q not found", payoutID)
+	}
+	w := s.stripeWithdrawalsByID[id]
+	cp := *w
+	return &cp, nil
+}
+
+func (s *MemoryStore) GetStripeWithdrawalByTransferID(transferID string) (*StripeWithdrawal, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id, ok := s.stripeWithdrawalsByTransferID[transferID]
+	if !ok {
+		return nil, fmt.Errorf("stripe withdrawal with transfer %q not found", transferID)
+	}
+	w := s.stripeWithdrawalsByID[id]
+	cp := *w
+	return &cp, nil
+}
+
+func (s *MemoryStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
+	if w == nil || w.ID == "" {
+		return errors.New("stripe withdrawal id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.stripeWithdrawalsByID[w.ID]
+	if !ok {
+		return fmt.Errorf("stripe withdrawal %q not found", w.ID)
+	}
+	// Re-index transfer/payout IDs if they changed.
+	if existing.TransferID != w.TransferID {
+		if existing.TransferID != "" {
+			delete(s.stripeWithdrawalsByTransferID, existing.TransferID)
+		}
+		if w.TransferID != "" {
+			s.stripeWithdrawalsByTransferID[w.TransferID] = w.ID
+		}
+	}
+	if existing.PayoutID != w.PayoutID {
+		if existing.PayoutID != "" {
+			delete(s.stripeWithdrawalsByPayoutID, existing.PayoutID)
+		}
+		if w.PayoutID != "" {
+			s.stripeWithdrawalsByPayoutID[w.PayoutID] = w.ID
+		}
+	}
+	cp := *w
+	cp.UpdatedAt = time.Now()
+	s.stripeWithdrawalsByID[w.ID] = &cp
+	return nil
+}
+
+func (s *MemoryStore) ListStripeWithdrawals(accountID string, limit int) ([]StripeWithdrawal, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := s.stripeWithdrawalsByAccount[accountID]
+	if len(ids) == 0 {
+		return []StripeWithdrawal{}, nil
+	}
+	out := make([]StripeWithdrawal, 0, len(ids))
+	for i := len(ids) - 1; i >= 0; i-- {
+		w, ok := s.stripeWithdrawalsByID[ids[i]]
+		if !ok {
+			continue
+		}
+		out = append(out, *w)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 // --- Device Authorization ---
 
 func (s *MemoryStore) CreateDeviceCode(dc *DeviceCode) error {
@@ -658,7 +1057,7 @@ func (s *MemoryStore) GetDeviceCode(deviceCode string) (*DeviceCode, error) {
 
 	dc, ok := s.deviceCodesByCode[deviceCode]
 	if !ok {
-		return nil, fmt.Errorf("device code not found")
+		return nil, errors.New("device code not found")
 	}
 	copy := *dc
 	return &copy, nil
@@ -682,14 +1081,14 @@ func (s *MemoryStore) ApproveDeviceCode(deviceCode, accountID string) error {
 
 	dc, ok := s.deviceCodesByCode[deviceCode]
 	if !ok {
-		return fmt.Errorf("device code not found")
+		return errors.New("device code not found")
 	}
 	if dc.Status != "pending" {
 		return fmt.Errorf("device code is %s, not pending", dc.Status)
 	}
 	if time.Now().After(dc.ExpiresAt) {
 		dc.Status = "expired"
-		return fmt.Errorf("device code has expired")
+		return errors.New("device code has expired")
 	}
 	dc.Status = "approved"
 	dc.AccountID = accountID
@@ -717,7 +1116,7 @@ func (s *MemoryStore) CreateProviderToken(pt *ProviderToken) error {
 	defer s.mu.Unlock()
 
 	if _, exists := s.providerTokens[pt.TokenHash]; exists {
-		return fmt.Errorf("provider token already exists")
+		return errors.New("provider token already exists")
 	}
 	copy := *pt
 	s.providerTokens[pt.TokenHash] = &copy
@@ -731,10 +1130,10 @@ func (s *MemoryStore) GetProviderToken(token string) (*ProviderToken, error) {
 	h := sha256Hex(token)
 	pt, ok := s.providerTokens[h]
 	if !ok {
-		return nil, fmt.Errorf("provider token not found")
+		return nil, errors.New("provider token not found")
 	}
 	if !pt.Active {
-		return nil, fmt.Errorf("provider token is revoked")
+		return nil, errors.New("provider token is revoked")
 	}
 	copy := *pt
 	return &copy, nil
@@ -747,7 +1146,7 @@ func (s *MemoryStore) RevokeProviderToken(token string) error {
 	h := sha256Hex(token)
 	pt, ok := s.providerTokens[h]
 	if !ok {
-		return fmt.Errorf("provider token not found")
+		return errors.New("provider token not found")
 	}
 	pt.Active = false
 	return nil
@@ -915,6 +1314,8 @@ func (s *MemoryStore) GetProviderEarningsSummary(providerKey string) (ProviderEa
 		}
 		summary.Count++
 		summary.TotalMicroUSD += earning.AmountMicroUSD
+		summary.PromptTokens += int64(earning.PromptTokens)
+		summary.CompletionTokens += int64(earning.CompletionTokens)
 	}
 
 	return summary, nil
@@ -932,6 +1333,8 @@ func (s *MemoryStore) GetAccountEarningsSummary(accountID string) (ProviderEarni
 		}
 		summary.Count++
 		summary.TotalMicroUSD += earning.AmountMicroUSD
+		summary.PromptTokens += int64(earning.PromptTokens)
+		summary.CompletionTokens += int64(earning.CompletionTokens)
 	}
 
 	return summary, nil
@@ -989,10 +1392,10 @@ func (s *MemoryStore) SettleProviderPayout(id int64) error {
 // the corresponding per-node earning.
 func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
 	if earning == nil {
-		return fmt.Errorf("provider earning is required")
+		return errors.New("provider earning is required")
 	}
 	if earning.AccountID == "" {
-		return fmt.Errorf("provider earning account_id is required")
+		return errors.New("provider earning account_id is required")
 	}
 
 	s.mu.Lock()
@@ -1004,6 +1407,7 @@ func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
 	}
 
 	s.creditLocked(cp.AccountID, cp.AmountMicroUSD, LedgerPayout, cp.JobID, cp.CreatedAt)
+	s.withdrawable[cp.AccountID] += cp.AmountMicroUSD
 	s.providerEarningsSeq++
 	cp.ID = s.providerEarningsSeq
 	s.providerEarnings = append(s.providerEarnings, cp)
@@ -1014,10 +1418,10 @@ func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
 // records the corresponding payout history row.
 func (s *MemoryStore) CreditProviderWallet(payout *ProviderPayout) error {
 	if payout == nil {
-		return fmt.Errorf("provider payout is required")
+		return errors.New("provider payout is required")
 	}
 	if payout.ProviderAddress == "" {
-		return fmt.Errorf("provider payout address is required")
+		return errors.New("provider payout address is required")
 	}
 
 	s.mu.Lock()
@@ -1029,6 +1433,7 @@ func (s *MemoryStore) CreditProviderWallet(payout *ProviderPayout) error {
 	}
 
 	s.creditLocked(cp.ProviderAddress, cp.AmountMicroUSD, LedgerPayout, cp.JobID, cp.Timestamp)
+	s.withdrawable[cp.ProviderAddress] += cp.AmountMicroUSD
 	s.providerPayoutSeq++
 	cp.ID = s.providerPayoutSeq
 	s.providerPayouts = append(s.providerPayouts, cp)
@@ -1045,7 +1450,7 @@ func (s *MemoryStore) SetRelease(release *Release) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if release.Version == "" || release.Platform == "" {
-		return fmt.Errorf("version and platform are required")
+		return errors.New("version and platform are required")
 	}
 	r := *release
 	if r.CreatedAt.IsZero() {
@@ -1158,6 +1563,26 @@ func (s *MemoryStore) ListProviderRecords(_ context.Context) ([]ProviderRecord, 
 	for _, p := range s.providerRecords {
 		records = append(records, *p)
 	}
+	return records, nil
+}
+
+func (s *MemoryStore) ListProvidersByAccount(_ context.Context, accountID string) ([]ProviderRecord, error) {
+	if accountID == "" {
+		return []ProviderRecord{}, nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	records := make([]ProviderRecord, 0)
+	for _, p := range s.providerRecords {
+		if p.AccountID == accountID {
+			records = append(records, *p)
+		}
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].LastSeen.After(records[j].LastSeen)
+	})
 	return records, nil
 }
 

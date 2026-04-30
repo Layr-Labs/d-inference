@@ -71,7 +71,7 @@ func TestDeviceCodeUniquePerCall(t *testing.T) {
 	srv, _ := deviceTestServer()
 	seen := make(map[string]bool)
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		req := httptest.NewRequest(http.MethodPost, "/v1/device/code", nil)
 		w := httptest.NewRecorder()
 		srv.handleDeviceCode(w, req)
@@ -283,7 +283,7 @@ func TestDeviceApproveCaseInsensitive(t *testing.T) {
 }
 
 func TestGenerateUserCodeFormat(t *testing.T) {
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		code, err := generateUserCode()
 		if err != nil {
 			t.Fatalf("generateUserCode: %v", err)

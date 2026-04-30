@@ -18,6 +18,7 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/pem"
+	"errors"
 	"fmt"
 )
 
@@ -101,7 +102,7 @@ type MDAResult struct {
 // These properties are signed by Apple — a compromised OS cannot forge them.
 func VerifyMDADeviceAttestation(certChainDER [][]byte) (*MDAResult, error) {
 	if len(certChainDER) == 0 {
-		return nil, fmt.Errorf("mda: empty certificate chain")
+		return nil, errors.New("mda: empty certificate chain")
 	}
 
 	// Parse DER certificates.
@@ -193,7 +194,7 @@ func VerifyMDACertChain(certChainPEM []byte, appleRootCA *x509.Certificate) (*MD
 	}
 
 	if len(certs) == 0 {
-		return nil, fmt.Errorf("mda: empty certificate chain")
+		return nil, errors.New("mda: empty certificate chain")
 	}
 
 	leaf := certs[0]

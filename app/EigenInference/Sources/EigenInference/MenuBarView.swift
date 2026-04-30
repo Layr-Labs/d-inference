@@ -14,16 +14,9 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 8) {
             // Header
             HStack {
-                HStack(spacing: 0) {
-                    Text("Eigen")
-                        .font(.displaySmall)
-                        .foregroundStyle(Color.warmInk)
-                    Text("Inference")
-                        .font(.displaySmall)
-                        .foregroundStyle(Color.coral)
-                }
+                DarkBloomBrand(size: 18)
                 Circle()
-                    .fill(viewModel.coordinatorConnected ? Color.tealAccent : Color.warmError)
+                    .fill(viewModel.coordinatorConnected ? Color.adaptiveTealAccent : Color.adaptiveError)
                     .frame(width: 6, height: 6)
                     .help(viewModel.coordinatorConnected ? "Coordinator connected" : "Coordinator offline")
                 Spacer()
@@ -97,7 +90,7 @@ struct MenuBarView: View {
                         .foregroundStyle(Color.warmInkLight)
                     Text(viewModel.earningsBalance)
                         .fontWeight(.medium)
-                        .foregroundStyle(Color.tealAccent)
+                        .foregroundStyle(Color.adaptiveTealAccent)
                 }
                 .font(.bodyWarm)
             }
@@ -153,7 +146,7 @@ struct MenuBarView: View {
                 if viewModel.updateManager.updateAvailable {
                     Text("Update available")
                         .font(.captionWarm)
-                        .foregroundStyle(Color.gold)
+                    .foregroundStyle(Color.adaptiveGold)
                 }
                 Spacer()
             }
@@ -189,7 +182,7 @@ struct MenuBarView: View {
                     Text("Complete setup for inference routing \u{2192}")
                 }
                 .font(.captionWarm)
-                .foregroundStyle(Color.warmError)
+                .foregroundStyle(Color.adaptiveError)
             }
             .buttonStyle(.plain)
         }
@@ -207,7 +200,7 @@ struct MenuBarView: View {
                 .foregroundStyle(Color.warmInk)
         }
         .toggleStyle(.switch)
-        .tint(.tealAccent)
+        .tint(.adaptiveTealAccent)
         .padding(8)
         .pointerOnHover()
     }
@@ -252,24 +245,24 @@ struct MenuBarView: View {
         Group {
             if viewModel.isPaused {
                 Text("Paused (user active)")
-                    .foregroundStyle(Color.gold)
+                    .foregroundStyle(Color.adaptiveGold)
             } else if viewModel.isServing {
                 HStack(spacing: 4) {
                     Text("Serving")
-                        .foregroundStyle(Color.tealAccent)
+                        .foregroundStyle(Color.adaptiveTealAccent)
                     Text("\u{00B7}")
-                        .foregroundStyle(Color.warmInkFaint)
+                        .foregroundStyle(Color.adaptiveInkFaint)
                     Text(String(format: "%.0f tok/s", viewModel.tokensPerSecond))
-                        .foregroundStyle(Color.tealAccent)
+                        .foregroundStyle(Color.adaptiveTealAccent)
                         .monospacedDigit()
                         .contentTransition(.numericText())
                 }
             } else if viewModel.isOnline {
                 Text("Ready")
-                    .foregroundStyle(Color.tealAccent)
+                    .foregroundStyle(Color.adaptiveTealAccent)
             } else {
                 Text("Stopped")
-                    .foregroundStyle(Color.warmInkFaint)
+                    .foregroundStyle(Color.adaptiveInkFaint)
             }
         }
     }
@@ -278,15 +271,15 @@ struct MenuBarView: View {
 
     private var trustColor: Color {
         switch viewModel.securityManager.trustLevel {
-        case .hardware: return .tealAccent
-        case .none: return .warmError
+        case .hardware: return .adaptiveTealAccent
+        case .none: return .adaptiveError
         }
     }
 
     private var statusColor: Color {
-        if viewModel.isPaused { return .gold }
-        if viewModel.isOnline { return .tealAccent }
-        return .warmInkFaint
+        if viewModel.isPaused { return .adaptiveGold }
+        if viewModel.isOnline { return .adaptiveTealAccent }
+        return .adaptiveInkFaint
     }
 
     private var statusLabel: String {

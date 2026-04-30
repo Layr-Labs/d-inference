@@ -19,7 +19,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,7 +39,20 @@ type PostgresStore struct {
 // NewPostgres creates a new PostgresStore connected to the given database URL.
 // It runs schema migrations on startup.
 func NewPostgres(ctx context.Context, connString string) (*PostgresStore, error) {
-	pool, err := pgxpool.New(ctx, connString)
+	cfg, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		return nil, fmt.Errorf("store: parse postgres config: %w", err)
+	}
+
+	if cfg.MaxConns < 20 {
+		cfg.MaxConns = 20
+	}
+	cfg.MinConns = 5
+	cfg.MaxConnLifetime = 30 * time.Minute
+	cfg.MaxConnIdleTime = 5 * time.Minute
+	cfg.HealthCheckPeriod = 30 * time.Second
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("store: connect to postgres: %w", err)
 	}
@@ -113,6 +128,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS last_session_requests_served BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS last_session_tokens_generated BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_providers_serial ON providers(serial_number) WHERE serial_number != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_providers_account ON providers(account_id, last_seen DESC) WHERE account_id != ''`,
 
 		// Migrate usage table: add request_id and cost columns
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
@@ -368,6 +384,70 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_provider_payouts_address ON provider_payouts(provider_address, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_provider_payouts_settled ON provider_payouts(settled, created_at DESC)`,
+
+		// Stripe Connect — bank/card payouts
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_account_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_account_status TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_destination_type TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_destination_last4 TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_instant_eligible BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_stripe_account ON users(stripe_account_id) WHERE stripe_account_id != ''`,
+
+		`CREATE TABLE IF NOT EXISTS stripe_withdrawals (
+			id TEXT PRIMARY KEY,
+			account_id TEXT NOT NULL,
+			stripe_account_id TEXT NOT NULL,
+			transfer_id TEXT NOT NULL DEFAULT '',
+			payout_id TEXT NOT NULL DEFAULT '',
+			amount_micro_usd BIGINT NOT NULL,
+			fee_micro_usd BIGINT NOT NULL DEFAULT 0,
+			net_micro_usd BIGINT NOT NULL,
+			method TEXT NOT NULL,
+			status TEXT NOT NULL,
+			failure_reason TEXT NOT NULL DEFAULT '',
+			refunded BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_account ON stripe_withdrawals(account_id, created_at DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_stripe_withdrawals_transfer ON stripe_withdrawals(transfer_id) WHERE transfer_id != ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_stripe_withdrawals_payout ON stripe_withdrawals(payout_id) WHERE payout_id != ''`,
+
+		// Telemetry events — production observability table.
+		`CREATE TABLE IF NOT EXISTS telemetry_events (
+			id UUID PRIMARY KEY,
+			ts TIMESTAMPTZ NOT NULL,
+			source TEXT NOT NULL,
+			severity TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			version TEXT NOT NULL DEFAULT '',
+			machine_id TEXT NOT NULL DEFAULT '',
+			account_id TEXT NOT NULL DEFAULT '',
+			request_id TEXT NOT NULL DEFAULT '',
+			session_id TEXT NOT NULL DEFAULT '',
+			message TEXT NOT NULL,
+			fields JSONB NOT NULL DEFAULT '{}'::jsonb,
+			stack TEXT NOT NULL DEFAULT '',
+			received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_telemetry_ts ON telemetry_events(ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_telemetry_source_sev ON telemetry_events(source, severity, ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_telemetry_kind ON telemetry_events(kind, ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_telemetry_machine ON telemetry_events(machine_id, ts DESC) WHERE machine_id != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_telemetry_request ON telemetry_events(request_id) WHERE request_id != ''`,
+
+		// Withdrawable balance — tracks the withdrawable subset of balance_micro_usd.
+		`ALTER TABLE balances ADD COLUMN IF NOT EXISTS withdrawable_micro_usd BIGINT NOT NULL DEFAULT 0`,
+
+		// Backfill withdrawable from ledger history: sum earnings minus
+		// successful withdrawals. Idempotent — only updates rows where
+		// withdrawable is still 0 (first deploy) so it won't overwrite
+		// live values on restart.
+		`UPDATE balances b SET withdrawable_micro_usd = GREATEST(0, COALESCE((
+			SELECT SUM(amount_micro_usd) FROM ledger_entries
+			WHERE account_id = b.account_id
+			  AND entry_type IN ('payout', 'referral_reward', 'admin_reward', 'stripe_payout')
+		), 0)) WHERE b.withdrawable_micro_usd = 0`,
 	}
 
 	for _, m := range migrations {
@@ -582,6 +662,131 @@ func (s *PostgresStore) RecordPayment(txHash, consumerAddr, providerAddr, amount
 	return nil
 }
 
+// UsageTotals returns aggregated lifetime totals from the usage table.
+// Uses SQL aggregation to avoid shipping every row over the wire.
+func (s *PostgresStore) UsageTotals() UsageTotals {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var t UsageTotals
+	_ = s.pool.QueryRow(ctx,
+		`SELECT COUNT(*),
+		        COALESCE(SUM(prompt_tokens), 0),
+		        COALESCE(SUM(completion_tokens), 0)
+		 FROM usage`,
+	).Scan(&t.Requests, &t.PromptTokens, &t.CompletionTokens)
+	return t
+}
+
+// UsageTimeSeries returns per-minute usage buckets at or after `since`.
+func (s *PostgresStore) UsageTimeSeries(since time.Time) []UsageBucket {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT date_trunc('minute', created_at) AS minute,
+		        COUNT(*),
+		        COALESCE(SUM(prompt_tokens), 0),
+		        COALESCE(SUM(completion_tokens), 0)
+		 FROM usage
+		 WHERE created_at >= $1
+		 GROUP BY minute
+		 ORDER BY minute ASC`,
+		since,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var buckets []UsageBucket
+	for rows.Next() {
+		var b UsageBucket
+		if err := rows.Scan(&b.Minute, &b.Requests, &b.PromptTokens, &b.CompletionTokens); err != nil {
+			continue
+		}
+		buckets = append(buckets, b)
+	}
+	return buckets
+}
+
+// Leaderboard returns the top N accounts ranked by the given metric over the
+// given time window. Zero `since` means all-time. The ranking is computed in
+// SQL via aggregation on provider_earnings — no per-row wire transfer.
+func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+
+	orderBy := "earnings_micro_usd DESC"
+	switch metric {
+	case LeaderboardTokens:
+		orderBy = "tokens DESC"
+	case LeaderboardJobs:
+		orderBy = "jobs DESC"
+	}
+
+	// account_id != '' filters out unassigned earnings (e.g. legacy wallet-only).
+	q := `SELECT account_id,
+	             COALESCE(SUM(amount_micro_usd), 0)               AS earnings_micro_usd,
+	             COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens,
+	             COUNT(*)                                          AS jobs
+	      FROM provider_earnings
+	      WHERE account_id != ''`
+	args := []any{}
+	if !since.IsZero() {
+		q += ` AND created_at >= $1`
+		args = append(args, since)
+	}
+	q += `
+	      GROUP BY account_id
+	      ORDER BY ` + orderBy + `
+	      LIMIT $` + strconv.Itoa(len(args)+1)
+	args = append(args, limit)
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	out := make([]LeaderboardRow, 0, limit)
+	for rows.Next() {
+		var r LeaderboardRow
+		if err := rows.Scan(&r.AccountID, &r.EarningsMicroUSD, &r.Tokens, &r.Jobs); err != nil {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// NetworkTotals returns aggregated metrics across all earnings for the given
+// time window. Zero `since` means all-time.
+func (s *PostgresStore) NetworkTotals(since time.Time) NetworkTotalsRow {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	q := `SELECT COALESCE(SUM(amount_micro_usd), 0),
+	             COALESCE(SUM(prompt_tokens + completion_tokens), 0),
+	             COUNT(*),
+	             COUNT(DISTINCT account_id) FILTER (WHERE account_id != '')
+	      FROM provider_earnings`
+	args := []any{}
+	if !since.IsZero() {
+		q += ` WHERE created_at >= $1`
+		args = append(args, since)
+	}
+
+	var t NetworkTotalsRow
+	_ = s.pool.QueryRow(ctx, q, args...).
+		Scan(&t.EarningsMicroUSD, &t.Tokens, &t.Jobs, &t.ActiveAccounts)
+	return t
+}
+
 // UsageRecords returns all usage records from the database, ordered by creation time.
 func (s *PostgresStore) UsageRecords() []UsageRecord {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -665,6 +870,40 @@ func creditTx(ctx context.Context, tx pgx.Tx, accountID string, amountMicroUSD i
 	return nil
 }
 
+func creditWithdrawableTx(ctx context.Context, tx pgx.Tx, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) error {
+	_, err := tx.Exec(ctx,
+		`INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
+		 VALUES ($1, $2, $2, NOW())
+		 ON CONFLICT (account_id) DO UPDATE SET
+		   balance_micro_usd = balances.balance_micro_usd + $2,
+		   withdrawable_micro_usd = balances.withdrawable_micro_usd + $2,
+		   updated_at = NOW()`,
+		accountID, amountMicroUSD,
+	)
+	if err != nil {
+		return fmt.Errorf("store: credit withdrawable balance: %w", err)
+	}
+
+	var balanceAfter int64
+	err = tx.QueryRow(ctx,
+		`SELECT balance_micro_usd FROM balances WHERE account_id = $1`, accountID,
+	).Scan(&balanceAfter)
+	if err != nil {
+		return fmt.Errorf("store: read balance: %w", err)
+	}
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
+		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))`,
+		accountID, string(entryType), amountMicroUSD, balanceAfter, reference, nullableCreatedAt(createdAt),
+	)
+	if err != nil {
+		return fmt.Errorf("store: insert ledger entry: %w", err)
+	}
+
+	return nil
+}
+
 // Credit adds micro-USD to an account and records a ledger entry (atomic).
 func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -677,6 +916,40 @@ func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType
 	defer tx.Rollback(ctx)
 
 	if err := creditTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
+func (s *PostgresStore) GetWithdrawableBalance(accountID string) int64 {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var balance int64
+	err := s.pool.QueryRow(ctx,
+		`SELECT withdrawable_micro_usd FROM balances WHERE account_id = $1`, accountID,
+	).Scan(&balance)
+	if err != nil {
+		return 0
+	}
+	return balance
+}
+
+// CreditWithdrawable adds micro-USD to both the total balance and the
+// withdrawable balance, and records a ledger entry.
+func (s *PostgresStore) CreditWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err := creditWithdrawableTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
 		return err
 	}
 
@@ -704,10 +977,59 @@ func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType 
 		accountID, amountMicroUSD,
 	).Scan(&balanceAfter)
 	if err != nil {
-		return fmt.Errorf("insufficient balance or account not found")
+		return errors.New("insufficient balance or account not found")
 	}
 
+	// Cap withdrawable at the new balance (credits consumed first).
+	_, _ = tx.Exec(ctx,
+		`UPDATE balances SET withdrawable_micro_usd = LEAST(withdrawable_micro_usd, balance_micro_usd)
+		 WHERE account_id = $1`,
+		accountID,
+	)
+
 	// Record ledger entry
+	_, err = tx.Exec(ctx,
+		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		accountID, string(entryType), -amountMicroUSD, balanceAfter, reference,
+	)
+	if err != nil {
+		return fmt.Errorf("store: insert ledger entry: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
+// DebitWithdrawable subtracts micro-USD from both the total balance and the
+// withdrawable balance atomically. Returns error if the withdrawable balance
+// is insufficient. This ensures withdrawal debits are symmetric with
+// CreditWithdrawable refunds — both touch the same columns.
+func (s *PostgresStore) DebitWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var balanceAfter int64
+	err = tx.QueryRow(ctx,
+		`UPDATE balances
+		 SET balance_micro_usd = balance_micro_usd - $2,
+		     withdrawable_micro_usd = withdrawable_micro_usd - $2,
+		     updated_at = NOW()
+		 WHERE account_id = $1
+		   AND balance_micro_usd >= $2
+		   AND withdrawable_micro_usd >= $2
+		 RETURNING balance_micro_usd`,
+		accountID, amountMicroUSD,
+	).Scan(&balanceAfter)
+	if err != nil {
+		return errors.New("insufficient withdrawable balance or account not found")
+	}
+
 	_, err = tx.Exec(ctx,
 		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
 		 VALUES ($1, $2, $3, $4, $5)`,
@@ -725,9 +1047,12 @@ func (s *PostgresStore) LedgerHistory(accountID string) []LedgerEntry {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Cap at 500 most-recent entries. Older history isn't shown on any
+	// dashboard and was responsible for sending tens of thousands of rows
+	// per request to high-volume accounts.
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, account_id, entry_type, amount_micro_usd, balance_after, reference, created_at
-		 FROM ledger_entries WHERE account_id = $1 ORDER BY created_at DESC`,
+		 FROM ledger_entries WHERE account_id = $1 ORDER BY created_at DESC LIMIT 500`,
 		accountID,
 	)
 	if err != nil {
@@ -1039,20 +1364,35 @@ func (s *PostgresStore) CreateUser(user *User) error {
 	return nil
 }
 
+const userSelectColumns = `account_id, privy_user_id, email, solana_wallet_address, solana_wallet_id,
+	stripe_account_id, stripe_account_status, stripe_destination_type,
+	stripe_destination_last4, stripe_instant_eligible, created_at`
+
+func scanUser(row interface {
+	Scan(...any) error
+}) (*User, error) {
+	var u User
+	if err := row.Scan(&u.AccountID, &u.PrivyUserID, &u.Email, &u.SolanaWalletAddress, &u.SolanaWalletID,
+		&u.StripeAccountID, &u.StripeAccountStatus, &u.StripeDestinationType,
+		&u.StripeDestinationLast4, &u.StripeInstantEligible, &u.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
 // GetUserByPrivyID returns the user for a Privy DID.
 func (s *PostgresStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var u User
-	err := s.pool.QueryRow(ctx,
-		`SELECT account_id, privy_user_id, email, solana_wallet_address, solana_wallet_id, created_at
-		 FROM users WHERE privy_user_id = $1`, privyUserID,
-	).Scan(&u.AccountID, &u.PrivyUserID, &u.Email, &u.SolanaWalletAddress, &u.SolanaWalletID, &u.CreatedAt)
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+userSelectColumns+` FROM users WHERE privy_user_id = $1`, privyUserID,
+	)
+	u, err := scanUser(row)
 	if err != nil {
 		return nil, fmt.Errorf("store: user not found: %w", err)
 	}
-	return &u, nil
+	return u, nil
 }
 
 // GetUserByAccountID returns the user for an internal account ID.
@@ -1060,15 +1400,204 @@ func (s *PostgresStore) GetUserByAccountID(accountID string) (*User, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var u User
-	err := s.pool.QueryRow(ctx,
-		`SELECT account_id, privy_user_id, email, solana_wallet_address, solana_wallet_id, created_at
-		 FROM users WHERE account_id = $1`, accountID,
-	).Scan(&u.AccountID, &u.PrivyUserID, &u.Email, &u.SolanaWalletAddress, &u.SolanaWalletID, &u.CreatedAt)
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+userSelectColumns+` FROM users WHERE account_id = $1`, accountID,
+	)
+	u, err := scanUser(row)
 	if err != nil {
 		return nil, fmt.Errorf("store: user not found: %w", err)
 	}
-	return &u, nil
+	return u, nil
+}
+
+// SetUserStripeAccount upserts the Stripe Connect fields on a user record.
+func (s *PostgresStore) SetUserStripeAccount(accountID, stripeAccountID, status, destinationType, destinationLast4 string, instantEligible bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE users SET
+			stripe_account_id = $2,
+			stripe_account_status = $3,
+			stripe_destination_type = $4,
+			stripe_destination_last4 = $5,
+			stripe_instant_eligible = $6
+		 WHERE account_id = $1`,
+		accountID, stripeAccountID, status, destinationType, destinationLast4, instantEligible,
+	)
+	if err != nil {
+		return fmt.Errorf("store: set stripe account: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("user with account ID %q not found", accountID)
+	}
+	return nil
+}
+
+// GetUserByStripeAccount finds a user by their Stripe connected account ID.
+func (s *PostgresStore) GetUserByStripeAccount(stripeAccountID string) (*User, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+userSelectColumns+` FROM users WHERE stripe_account_id = $1`, stripeAccountID,
+	)
+	u, err := scanUser(row)
+	if err != nil {
+		return nil, fmt.Errorf("store: user with Stripe account %q not found: %w", stripeAccountID, err)
+	}
+	return u, nil
+}
+
+// GetUserByEmail returns the user for an email address.
+func (s *PostgresStore) GetUserByEmail(email string) (*User, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+userSelectColumns+` FROM users WHERE LOWER(email) = LOWER($1)`, email,
+	)
+	u, err := scanUser(row)
+	if err != nil {
+		return nil, fmt.Errorf("user with email %q not found", email)
+	}
+	return u, nil
+}
+
+// --- Stripe Withdrawals ---
+
+func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
+	if w == nil || w.ID == "" {
+		return errors.New("stripe withdrawal id is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	now := time.Now()
+	if w.CreatedAt.IsZero() {
+		w.CreatedAt = now
+	}
+	if w.UpdatedAt.IsZero() {
+		w.UpdatedAt = w.CreatedAt
+	}
+
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO stripe_withdrawals
+		 (id, account_id, stripe_account_id, transfer_id, payout_id,
+		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
+		  failure_reason, refunded, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID,
+		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Status,
+		w.FailureReason, w.Refunded, w.CreatedAt, w.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: create stripe withdrawal: %w", err)
+	}
+	return nil
+}
+
+const stripeWithdrawalSelectColumns = `id, account_id, stripe_account_id, transfer_id, payout_id,
+	amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
+	failure_reason, refunded, created_at, updated_at`
+
+func scanStripeWithdrawal(row interface{ Scan(...any) error }) (*StripeWithdrawal, error) {
+	var w StripeWithdrawal
+	if err := row.Scan(&w.ID, &w.AccountID, &w.StripeAccountID, &w.TransferID, &w.PayoutID,
+		&w.AmountMicroUSD, &w.FeeMicroUSD, &w.NetMicroUSD, &w.Method, &w.Status,
+		&w.FailureReason, &w.Refunded, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &w, nil
+}
+
+func (s *PostgresStore) GetStripeWithdrawal(id string) (*StripeWithdrawal, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals WHERE id = $1`, id)
+	w, err := scanStripeWithdrawal(row)
+	if err != nil {
+		return nil, fmt.Errorf("store: stripe withdrawal %q not found: %w", id, err)
+	}
+	return w, nil
+}
+
+func (s *PostgresStore) GetStripeWithdrawalByPayoutID(payoutID string) (*StripeWithdrawal, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals WHERE payout_id = $1`, payoutID)
+	w, err := scanStripeWithdrawal(row)
+	if err != nil {
+		return nil, fmt.Errorf("store: stripe withdrawal with payout %q not found: %w", payoutID, err)
+	}
+	return w, nil
+}
+
+func (s *PostgresStore) GetStripeWithdrawalByTransferID(transferID string) (*StripeWithdrawal, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	row := s.pool.QueryRow(ctx,
+		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals WHERE transfer_id = $1`, transferID)
+	w, err := scanStripeWithdrawal(row)
+	if err != nil {
+		return nil, fmt.Errorf("store: stripe withdrawal with transfer %q not found: %w", transferID, err)
+	}
+	return w, nil
+}
+
+func (s *PostgresStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
+	if w == nil || w.ID == "" {
+		return errors.New("stripe withdrawal id is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE stripe_withdrawals SET
+			transfer_id = $2, payout_id = $3, status = $4,
+			failure_reason = $5, refunded = $6, updated_at = NOW()
+		 WHERE id = $1`,
+		w.ID, w.TransferID, w.PayoutID, w.Status, w.FailureReason, w.Refunded,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update stripe withdrawal: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("stripe withdrawal %q not found", w.ID)
+	}
+	w.UpdatedAt = time.Now()
+	return nil
+}
+
+func (s *PostgresStore) ListStripeWithdrawals(accountID string, limit int) ([]StripeWithdrawal, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	q := `SELECT ` + stripeWithdrawalSelectColumns + ` FROM stripe_withdrawals WHERE account_id = $1 ORDER BY created_at DESC`
+	args := []any{accountID}
+	if limit > 0 {
+		q += ` LIMIT $2`
+		args = append(args, limit)
+	}
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list stripe withdrawals: %w", err)
+	}
+	defer rows.Close()
+
+	var out []StripeWithdrawal
+	for rows.Next() {
+		w, err := scanStripeWithdrawal(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan stripe withdrawal: %w", err)
+		}
+		out = append(out, *w)
+	}
+	if out == nil {
+		return []StripeWithdrawal{}, nil
+	}
+	return out, nil
 }
 
 // --- Supported Models ---
@@ -1140,13 +1669,12 @@ func (s *PostgresStore) SetRelease(release *Release) error {
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO releases (version, platform, binary_hash, bundle_hash, python_hash, runtime_hash, template_hashes, grpc_binary_hash, image_bridge_hash, url, changelog, active, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, NOW())
+		`INSERT INTO releases (version, platform, binary_hash, bundle_hash, python_hash, runtime_hash, template_hashes, url, changelog, active, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, NOW())
 		 ON CONFLICT (version, platform) DO UPDATE SET
-		   binary_hash = $3, bundle_hash = $4, python_hash = $5, runtime_hash = $6, template_hashes = $7, grpc_binary_hash = $8, image_bridge_hash = $9, url = $10, changelog = $11, active = TRUE`,
+		   binary_hash = $3, bundle_hash = $4, python_hash = $5, runtime_hash = $6, template_hashes = $7, url = $8, changelog = $9, active = TRUE`,
 		release.Version, release.Platform, release.BinaryHash, release.BundleHash,
 		release.PythonHash, release.RuntimeHash, release.TemplateHashes,
-		release.GrpcBinaryHash, release.ImageBridgeHash,
 		release.URL, release.Changelog,
 	)
 	if err != nil {
@@ -1162,7 +1690,6 @@ func (s *PostgresStore) ListReleases() []Release {
 	rows, err := s.pool.Query(ctx,
 		`SELECT version, platform, binary_hash, bundle_hash,
 		        COALESCE(python_hash, ''), COALESCE(runtime_hash, ''), COALESCE(template_hashes, ''),
-		        COALESCE(grpc_binary_hash, ''), COALESCE(image_bridge_hash, ''),
 		        url, changelog, active, created_at
 		 FROM releases ORDER BY created_at DESC`,
 	)
@@ -1176,7 +1703,6 @@ func (s *PostgresStore) ListReleases() []Release {
 		var r Release
 		if err := rows.Scan(&r.Version, &r.Platform, &r.BinaryHash, &r.BundleHash,
 			&r.PythonHash, &r.RuntimeHash, &r.TemplateHashes,
-			&r.GrpcBinaryHash, &r.ImageBridgeHash,
 			&r.URL, &r.Changelog, &r.Active, &r.CreatedAt); err != nil {
 			continue
 		}
@@ -1192,7 +1718,6 @@ func (s *PostgresStore) GetLatestRelease(platform string) *Release {
 	rows, err := s.pool.Query(ctx,
 		`SELECT version, platform, binary_hash, bundle_hash,
 		        COALESCE(python_hash, ''), COALESCE(runtime_hash, ''), COALESCE(template_hashes, ''),
-		        COALESCE(grpc_binary_hash, ''), COALESCE(image_bridge_hash, ''),
 		        url, changelog, active, created_at
 		 FROM releases WHERE platform = $1 AND active = TRUE`, platform,
 	)
@@ -1206,7 +1731,6 @@ func (s *PostgresStore) GetLatestRelease(platform string) *Release {
 		var r Release
 		if err := rows.Scan(&r.Version, &r.Platform, &r.BinaryHash, &r.BundleHash,
 			&r.PythonHash, &r.RuntimeHash, &r.TemplateHashes,
-			&r.GrpcBinaryHash, &r.ImageBridgeHash,
 			&r.URL, &r.Changelog, &r.Active, &r.CreatedAt); err != nil {
 			return nil
 		}
@@ -1300,7 +1824,7 @@ func (s *PostgresStore) ApproveDeviceCode(deviceCode, accountID string) error {
 		return fmt.Errorf("store: approve device code: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("device code not found, not pending, or expired")
+		return errors.New("device code not found, not pending, or expired")
 	}
 	return nil
 }
@@ -1361,7 +1885,7 @@ func (s *PostgresStore) RevokeProviderToken(token string) error {
 		return fmt.Errorf("store: revoke provider token: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("provider token not found")
+		return errors.New("provider token not found")
 	}
 	return nil
 }
@@ -1591,11 +2115,14 @@ func (s *PostgresStore) GetProviderEarningsSummary(providerKey string) (Provider
 
 	var summary ProviderEarningsSummary
 	if err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*), COALESCE(SUM(amount_micro_usd), 0)
+		`SELECT COUNT(*),
+		        COALESCE(SUM(amount_micro_usd), 0),
+		        COALESCE(SUM(prompt_tokens), 0),
+		        COALESCE(SUM(completion_tokens), 0)
 		 FROM provider_earnings
 		 WHERE provider_key = $1`,
 		providerKey,
-	).Scan(&summary.Count, &summary.TotalMicroUSD); err != nil {
+	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens); err != nil {
 		return ProviderEarningsSummary{}, fmt.Errorf("store: query provider earnings summary: %w", err)
 	}
 
@@ -1609,11 +2136,14 @@ func (s *PostgresStore) GetAccountEarningsSummary(accountID string) (ProviderEar
 
 	var summary ProviderEarningsSummary
 	if err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*), COALESCE(SUM(amount_micro_usd), 0)
+		`SELECT COUNT(*),
+		        COALESCE(SUM(amount_micro_usd), 0),
+		        COALESCE(SUM(prompt_tokens), 0),
+		        COALESCE(SUM(completion_tokens), 0)
 		 FROM provider_earnings
 		 WHERE account_id = $1`,
 		accountID,
-	).Scan(&summary.Count, &summary.TotalMicroUSD); err != nil {
+	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens); err != nil {
 		return ProviderEarningsSummary{}, fmt.Errorf("store: query account earnings summary: %w", err)
 	}
 
@@ -1692,10 +2222,10 @@ func (s *PostgresStore) SettleProviderPayout(id int64) error {
 // the corresponding per-node earning.
 func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	if earning == nil {
-		return fmt.Errorf("provider earning is required")
+		return errors.New("provider earning is required")
 	}
 	if earning.AccountID == "" {
-		return fmt.Errorf("provider earning account_id is required")
+		return errors.New("provider earning account_id is required")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1707,7 +2237,7 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	}
 	defer tx.Rollback(ctx)
 
-	if err := creditTx(ctx, tx, earning.AccountID, earning.AmountMicroUSD, LedgerPayout, earning.JobID, earning.CreatedAt); err != nil {
+	if err := creditWithdrawableTx(ctx, tx, earning.AccountID, earning.AmountMicroUSD, LedgerPayout, earning.JobID, earning.CreatedAt); err != nil {
 		return err
 	}
 
@@ -1736,10 +2266,10 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 // records the corresponding payout history row.
 func (s *PostgresStore) CreditProviderWallet(payout *ProviderPayout) error {
 	if payout == nil {
-		return fmt.Errorf("provider payout is required")
+		return errors.New("provider payout is required")
 	}
 	if payout.ProviderAddress == "" {
-		return fmt.Errorf("provider payout address is required")
+		return errors.New("provider payout address is required")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1751,7 +2281,7 @@ func (s *PostgresStore) CreditProviderWallet(payout *ProviderPayout) error {
 	}
 	defer tx.Rollback(ctx)
 
-	if err := creditTx(ctx, tx, payout.ProviderAddress, payout.AmountMicroUSD, LedgerPayout, payout.JobID, payout.Timestamp); err != nil {
+	if err := creditWithdrawableTx(ctx, tx, payout.ProviderAddress, payout.AmountMicroUSD, LedgerPayout, payout.JobID, payout.Timestamp); err != nil {
 		return err
 	}
 
@@ -1928,6 +2458,66 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 	}
 	if records == nil {
 		return []ProviderRecord{}, nil
+	}
+	return records, nil
+}
+
+func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID string) ([]ProviderRecord, error) {
+	if accountID == "" {
+		return []ProviderRecord{}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Dedupe in SQL: many session UUIDs can map to the same physical
+	// machine (one row per reconnect). Pick the most-recent row per
+	// stable identity (serial → SE key → id) so we don't return tens
+	// of thousands of historical rows for accounts with churny providers.
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT ON (
+			COALESCE(NULLIF(serial_number, ''),
+			         NULLIF(se_public_key, ''),
+			         id)
+		 )
+		 id, hardware, models, backend, trust_level, attested,
+			attestation_result, se_public_key, serial_number,
+			mda_verified, mda_cert_chain, acme_verified,
+			version, runtime_verified, python_hash, runtime_hash,
+			last_challenge_verified, failed_challenges, account_id,
+			lifetime_requests_served, lifetime_tokens_generated,
+			last_session_requests_served, last_session_tokens_generated,
+			registered_at, last_seen
+		 FROM providers
+		 WHERE account_id = $1
+		 ORDER BY COALESCE(NULLIF(serial_number, ''),
+		                   NULLIF(se_public_key, ''),
+		                   id),
+		          last_seen DESC`,
+		accountID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list providers by account: %w", err)
+	}
+	defer rows.Close()
+
+	records := make([]ProviderRecord, 0)
+	for rows.Next() {
+		var p ProviderRecord
+		if err := rows.Scan(
+			&p.ID, &p.Hardware, &p.Models, &p.Backend,
+			&p.TrustLevel, &p.Attested,
+			&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
+			&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
+			&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
+			&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
+			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
+			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
+			&p.RegisteredAt, &p.LastSeen,
+		); err != nil {
+			continue
+		}
+		records = append(records, p)
 	}
 	return records, nil
 }

@@ -138,7 +138,7 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 		pt := &store.ProviderToken{
 			TokenHash: tokenHash,
 			AccountID: dc.AccountID,
-			Label:     fmt.Sprintf("device-%s", dc.UserCode),
+			Label:     "device-" + dc.UserCode,
 			Active:    true,
 		}
 		if err := s.store.CreateProviderToken(pt); err != nil {

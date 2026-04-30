@@ -74,12 +74,14 @@ fn collect_memory_pressure() -> Result<f64> {
     };
 
     let active = parse_pages("Pages active");
+    let inactive = parse_pages("Pages inactive");
+    let speculative = parse_pages("Pages speculative");
     let wired = parse_pages("Pages wired down");
-    let compressed = parse_pages("Pages occupied by compressor");
+    let compressed = parse_pages("Pages used by compressor");
     let free = parse_pages("Pages free");
 
     let used = active + wired + compressed;
-    let total = used + free;
+    let total = used + inactive + speculative + free;
     if total == 0 {
         return Ok(0.0);
     }

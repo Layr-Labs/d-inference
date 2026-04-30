@@ -1,0 +1,13 @@
+# Dev provider fleet — one SSH target per line.
+# Format: <ssh-host-alias>    <notes>
+# Lines starting with # and blank lines are ignored.
+#
+# Prereqs: your public key in ~/.ssh/authorized_keys on each machine, and a
+# corresponding Host entry in ~/.ssh/config so aliases resolve.
+#
+# Machines with "connected" in the hostname are tensor-parallel testbench
+# systems — do NOT add them here (see memory/feedback_no_update_connected_machines).
+
+# dev-mba-1    M4 MBA, 24 GB, owned by gajesh
+# dev-mbp-1    M4 Max MBP, 64 GB, owned by gajesh
+# dev-mini-1   M4 Pro mini, 48 GB

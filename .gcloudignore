@@ -1,0 +1,8 @@
+.git
+.gitignore
+node_modules/
+target/
+.external/
+.claude/
+console-ui/.next/
+*.log

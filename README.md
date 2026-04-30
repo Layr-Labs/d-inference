@@ -17,7 +17,7 @@ Coordinator (Go, Confidential VM)
     v
 Provider (Rust, hardened process)
     |
-    |  vllm-mlx / Draw Things / Cohere Transcribe
+    |  vllm-mlx
     v
 Apple Silicon GPU (Metal)
 ```
@@ -38,21 +38,6 @@ Models are selected from a curated catalog. The coordinator only routes requests
 | Qwen3.5 122B MoE 8-bit | 122B MoE, 10B active | 122 GB | 128 GB | Best quality reasoning |
 | MiniMax M2.5 8-bit | 239B MoE, 11B active | 243 GB | 256 GB | SOTA coding, ~100 tok/s |
 
-### Image
-
-| Model | Architecture | Size | Min RAM |
-|-------|-------------|------|---------|
-| FLUX.2 Klein 4B | 4B diffusion | 8.1 GB | 16 GB |
-| FLUX.2 Klein 9B | 9B diffusion | 13 GB | 24 GB |
-
-Image generation uses Draw Things with Metal FlashAttention. Adaptive batching sizes batches based on available system memory.
-
-### Speech-to-Text
-
-| Model | Architecture | Size | Min RAM |
-|-------|-------------|------|---------|
-| Cohere Transcribe 03-2026 | 2B conformer | 4.2 GB | 8 GB |
-
 ## Use the API
 
 OpenAI-compatible. Works with any OpenAI SDK by changing the base URL.
@@ -70,18 +55,6 @@ response = client.chat.completions.create(
     model="qwen3.5-27b-claude-opus-8bit",
     messages=[{"role": "user", "content": "Hello"}],
     stream=True
-)
-
-# Image generation
-image = client.images.generate(
-    model="flux_2_klein_4b_q8p.ckpt",
-    prompt="A cat astronaut on Mars"
-)
-
-# Audio transcription
-transcript = client.audio.transcriptions.create(
-    model="CohereLabs/cohere-transcribe-03-2026",
-    file=open("audio.mp3", "rb")
 )
 ```
 
@@ -103,7 +76,7 @@ Earn by serving inference on your idle Mac.
 curl -fsSL https://api.darkbloom.dev/install.sh | bash
 ```
 
-Zero prerequisites. The installer bundles the provider binary, Python 3.12 runtime, vllm-mlx, ffmpeg, and Secure Enclave tooling. You pick a model from the catalog, link your account, and you're serving within minutes.
+Zero prerequisites. The installer bundles the provider binary, Python 3.12 runtime, vllm-mlx, and Secure Enclave tooling. You pick a model from the catalog, link your account, and you're serving within minutes.
 
 ### Provider CLI
 
@@ -175,8 +148,6 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 | Text (Qwen3.5 27B) | $0.10 / 1M input, $0.78 / 1M output |
 | Text (Qwen3.5 122B) | $0.13 / 1M input, $1.04 / 1M output |
 | Text (MiniMax M2.5) | $0.06 / 1M input, $0.50 / 1M output |
-| Image (FLUX.2 Klein 4B) | $0.0015 / image |
-| Audio (Cohere Transcribe) | $0.001 / minute |
 
 0% platform fee. Providers keep 100%.
 
@@ -189,7 +160,6 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 | Console (`console-ui/`) | Next.js 16 | Web dashboard: chat, billing, provider verification |
 | macOS App (`app/EigenInference/`) | Swift | Menu bar app: status, scheduling, earnings |
 | Secure Enclave (`enclave/`) | Swift | Hardware-bound P-256 identity |
-| Image Bridge (`image-bridge/`) | Python | Draw Things gRPC integration for FLUX models |
 | Landing (`landing/`) | HTML | Static landing page |
 
 ## Development
@@ -206,9 +176,6 @@ cd app/EigenInference && swift build -c release
 
 # Console UI
 cd console-ui && npm install && npm run dev
-
-# Image Bridge tests
-cd image-bridge && python3 -m pytest tests/
 ```
 
 ## License

@@ -12,7 +12,7 @@ func BenchmarkCalculateCost(b *testing.B) {
 	completionTokens := 800
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = CalculateCost(model, promptTokens, completionTokens)
 	}
 }
@@ -27,7 +27,7 @@ func BenchmarkCalculateCostWithOverrides(b *testing.B) {
 	customOutput := int64(150_000)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = CalculateCostWithOverrides(model, promptTokens, completionTokens, customInput, customOutput, true)
 	}
 }

@@ -48,6 +48,22 @@ type Store interface {
 	// UsageRecords returns all usage records.
 	UsageRecords() []UsageRecord
 
+	// UsageTotals returns aggregated lifetime totals across all usage records
+	// without transferring per-row data over the wire.
+	UsageTotals() UsageTotals
+
+	// UsageTimeSeries returns per-minute aggregates for the given time window.
+	// Buckets the rows by created_at truncated to the minute.
+	UsageTimeSeries(since time.Time) []UsageBucket
+
+	// Leaderboard returns the top N accounts ranked by the given metric
+	// over the given time window. Zero `since` means all-time.
+	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow
+
+	// NetworkTotals returns aggregated metrics across the network for the
+	// given window. Zero `since` means all-time.
+	NetworkTotals(since time.Time) NetworkTotalsRow
+
 	// UsageByConsumer returns usage records for a specific consumer key.
 	UsageByConsumer(consumerKey string) []UsageRecord
 
@@ -64,6 +80,20 @@ type Store interface {
 
 	// Debit subtracts micro-USD from an account. Returns error if insufficient funds.
 	Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
+
+	// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
+	GetWithdrawableBalance(accountID string) int64
+
+	// CreditWithdrawable adds micro-USD to both the total balance and the
+	// withdrawable balance, and records a ledger entry. Use for provider
+	// earnings, referral rewards, and admin rewards.
+	CreditWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
+
+	// DebitWithdrawable subtracts micro-USD from both the total balance and
+	// the withdrawable balance atomically. Returns error if withdrawable
+	// balance is insufficient. Use for Stripe Connect withdrawals so the
+	// debit is symmetric with CreditWithdrawable refunds.
+	DebitWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
 
 	// LedgerHistory returns ledger entries for an account, newest first.
 	LedgerHistory(accountID string) []LedgerEntry
@@ -154,6 +184,41 @@ type Store interface {
 
 	// GetUserByAccountID returns the user for an internal account ID.
 	GetUserByAccountID(accountID string) (*User, error)
+
+	// GetUserByEmail returns the user for an email address.
+	GetUserByEmail(email string) (*User, error)
+
+	// SetUserStripeAccount upserts the Stripe Connect fields on a user record.
+	// Pass empty strings to clear the destination (e.g. before re-onboarding).
+	SetUserStripeAccount(accountID, stripeAccountID, status, destinationType, destinationLast4 string, instantEligible bool) error
+
+	// GetUserByStripeAccount finds a user by their Stripe connected account ID.
+	// Used by webhook handlers to route account.updated / payout.* events.
+	GetUserByStripeAccount(stripeAccountID string) (*User, error)
+
+	// --- Stripe Withdrawals (bank/card payouts via Stripe Connect) ---
+
+	// CreateStripeWithdrawal stores a new withdrawal record. The caller is
+	// responsible for debiting the ledger atomically before calling this.
+	CreateStripeWithdrawal(withdrawal *StripeWithdrawal) error
+
+	// GetStripeWithdrawal returns a withdrawal by its internal UUID.
+	GetStripeWithdrawal(id string) (*StripeWithdrawal, error)
+
+	// GetStripeWithdrawalByPayoutID looks up a withdrawal by Stripe payout ID
+	// (po_…). Used in payout.paid / payout.failed webhook handlers.
+	GetStripeWithdrawalByPayoutID(payoutID string) (*StripeWithdrawal, error)
+
+	// GetStripeWithdrawalByTransferID looks up a withdrawal by Stripe transfer
+	// ID (tr_…). Used in transfer.failed webhook handlers.
+	GetStripeWithdrawalByTransferID(transferID string) (*StripeWithdrawal, error)
+
+	// UpdateStripeWithdrawal persists status/transfer/payout/fail-reason changes.
+	UpdateStripeWithdrawal(withdrawal *StripeWithdrawal) error
+
+	// ListStripeWithdrawals returns withdrawals for an account, newest first.
+	// Pass limit <= 0 for no limit.
+	ListStripeWithdrawals(accountID string, limit int) ([]StripeWithdrawal, error)
 
 	// --- Device Authorization (RFC 8628-style) ---
 
@@ -252,6 +317,9 @@ type Store interface {
 	// ListProviders returns all stored provider records.
 	ListProviderRecords(ctx context.Context) ([]ProviderRecord, error)
 
+	// ListProvidersByAccount returns stored provider records linked to an account.
+	ListProvidersByAccount(ctx context.Context, accountID string) ([]ProviderRecord, error)
+
 	// UpdateProviderLastSeen updates the last_seen timestamp for a provider.
 	UpdateProviderLastSeen(ctx context.Context, id string) error
 
@@ -271,6 +339,38 @@ type Store interface {
 
 	// GetReputation returns a provider's reputation record.
 	GetReputation(ctx context.Context, providerID string) (*ReputationRecord, error)
+
+	// --- Telemetry ---
+	//
+	// Telemetry events are forwarded to Datadog (Logs API + DogStatsD).
+	// The store retains a bounded in-memory ring buffer for the /v1/admin/metrics
+	// endpoint, but Postgres persistence and admin read/prune endpoints have
+	// been removed — Datadog handles retention and querying.
+
+	// InsertTelemetryEvents appends events to the in-memory ring buffer.
+	// Used by the ingestion handler and the coordinator emitter. The primary
+	// destination is Datadog; this is secondary for debugging.
+	InsertTelemetryEvents(ctx context.Context, events []TelemetryEventRecord) error
+}
+
+// TelemetryEventRecord is the persistence-layer representation of a telemetry
+// event. It mirrors protocol.TelemetryEvent but lives in this package so the
+// store can stay free of protocol-layer dependencies.
+type TelemetryEventRecord struct {
+	ID         string          `json:"id"`
+	Timestamp  time.Time       `json:"timestamp"`
+	Source     string          `json:"source"`
+	Severity   string          `json:"severity"`
+	Kind       string          `json:"kind"`
+	Version    string          `json:"version,omitempty"`
+	MachineID  string          `json:"machine_id,omitempty"`
+	AccountID  string          `json:"account_id,omitempty"`
+	RequestID  string          `json:"request_id,omitempty"`
+	SessionID  string          `json:"session_id,omitempty"`
+	Message    string          `json:"message"`
+	Fields     json.RawMessage `json:"fields,omitempty"`
+	Stack      string          `json:"stack,omitempty"`
+	ReceivedAt time.Time       `json:"received_at"`
 }
 
 // UsageRecord captures a single inference usage event.
@@ -286,6 +386,48 @@ type UsageRecord struct {
 	CreatedAt        time.Time `json:"created_at,omitempty"`
 }
 
+// UsageTotals aggregates the entire usage table.
+type UsageTotals struct {
+	Requests         int64 `json:"requests"`
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+}
+
+// UsageBucket is a per-minute aggregation of usage rows.
+type UsageBucket struct {
+	Minute           time.Time `json:"minute"`
+	Requests         int64     `json:"requests"`
+	PromptTokens     int64     `json:"prompt_tokens"`
+	CompletionTokens int64     `json:"completion_tokens"`
+}
+
+// LeaderboardMetric selects the ranking column for a leaderboard query.
+type LeaderboardMetric string
+
+const (
+	LeaderboardEarnings LeaderboardMetric = "earnings"
+	LeaderboardTokens   LeaderboardMetric = "tokens"
+	LeaderboardJobs     LeaderboardMetric = "jobs"
+)
+
+// LeaderboardRow is a single account's aggregate across provider_earnings.
+// Pseudonyms are computed at the API layer from AccountID, never returned
+// from the store directly.
+type LeaderboardRow struct {
+	AccountID        string `json:"account_id"`
+	EarningsMicroUSD int64  `json:"earnings_micro_usd"`
+	Tokens           int64  `json:"tokens"`
+	Jobs             int64  `json:"jobs"`
+}
+
+// NetworkTotalsRow holds aggregated network metrics for homepage stats.
+type NetworkTotalsRow struct {
+	EarningsMicroUSD int64 `json:"earnings_micro_usd"`
+	Tokens           int64 `json:"tokens"`
+	Jobs             int64 `json:"jobs"`
+	ActiveAccounts   int64 `json:"active_accounts"`
+}
+
 // LedgerEntryType categorizes balance changes.
 type LedgerEntryType string
 
@@ -297,8 +439,11 @@ const (
 	LedgerWithdrawal     LedgerEntryType = "withdrawal"      // on-chain withdrawal
 	LedgerReferralReward LedgerEntryType = "referral_reward" // referrer earns share of platform fee
 	LedgerStripeDeposit  LedgerEntryType = "stripe_deposit"  // Stripe checkout deposit
+	LedgerStripePayout   LedgerEntryType = "stripe_payout"   // user-initiated bank/card withdrawal via Stripe Connect
 	LedgerInviteCredit   LedgerEntryType = "invite_credit"   // invite code redemption
 	LedgerRefund         LedgerEntryType = "refund"          // reservation refund (request failed before inference)
+	LedgerAdminCredit    LedgerEntryType = "admin_credit"    // admin-granted non-withdrawable credit
+	LedgerAdminReward    LedgerEntryType = "admin_reward"    // admin-granted withdrawable reward
 )
 
 // LedgerEntry is a single balance-changing event.
@@ -355,6 +500,39 @@ type User struct {
 	SolanaWalletAddress string    `json:"solana_wallet_address"` // embedded wallet public address
 	SolanaWalletID      string    `json:"solana_wallet_id"`      // Privy's internal wallet ID (for signing API)
 	CreatedAt           time.Time `json:"created_at"`
+
+	// Stripe Connect Express — for bank/card payouts via Stripe.
+	// StripeAccountStatus mirrors the readiness of payouts on the connected
+	// account: "" (not onboarded), "pending" (link created but not finished),
+	// "ready" (payouts_enabled=true), "restricted" (Stripe needs more info),
+	// "rejected" (Stripe permanently disabled the account).
+	StripeAccountID        string `json:"stripe_account_id,omitempty"`
+	StripeAccountStatus    string `json:"stripe_account_status,omitempty"`
+	StripeDestinationType  string `json:"stripe_destination_type,omitempty"` // "bank" | "card" | ""
+	StripeDestinationLast4 string `json:"stripe_destination_last4,omitempty"`
+	StripeInstantEligible  bool   `json:"stripe_instant_eligible,omitempty"` // debit-card destination supports Instant Payouts
+}
+
+// StripeWithdrawal records a user-initiated payout via Stripe Connect Express.
+// The lifecycle is: pending (debit recorded) → transferred (platform→connected
+// account transfer succeeded) → paid (Stripe payout to bank/card succeeded).
+// On failure at any stage we re-credit the user via LedgerRefund and set the
+// status to "failed".
+type StripeWithdrawal struct {
+	ID              string    `json:"id"`                       // internal UUID, used as Stripe idempotency key prefix
+	AccountID       string    `json:"account_id"`               // internal account that owns the withdrawal
+	StripeAccountID string    `json:"stripe_account_id"`        // Stripe connected account (acct_…)
+	TransferID      string    `json:"transfer_id,omitempty"`    // Stripe transfer (tr_…)
+	PayoutID        string    `json:"payout_id,omitempty"`      // Stripe payout (po_…)
+	AmountMicroUSD  int64     `json:"amount_micro_usd"`         // gross amount debited from ledger
+	FeeMicroUSD     int64     `json:"fee_micro_usd"`            // fee retained by platform
+	NetMicroUSD     int64     `json:"net_micro_usd"`            // amount transferred to user (gross - fee)
+	Method          string    `json:"method"`                   // "standard" | "instant"
+	Status          string    `json:"status"`                   // "pending" | "transferred" | "paid" | "failed"
+	FailureReason   string    `json:"failure_reason,omitempty"` // populated when Status="failed"
+	Refunded        bool      `json:"refunded,omitempty"`       // true after the failure refund is credited
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // SupportedModel represents a model in the admin-managed catalog.
@@ -362,18 +540,18 @@ type User struct {
 // SupportedModel represents a model in the admin-managed catalog.
 // The coordinator is the single source of truth for which models providers can serve.
 //
-// ModelType determines routing: "text" for chat/completions, "transcription" for
-// speech-to-text, "embedding" for vector search, etc. Only add models that produce
-// output worth paying for — small chat models (< 7B) are not useful, but small
-// specialized models (transcription, embeddings) can be best-in-class.
+// ModelType determines routing: "text" for chat/completions, "embedding" for
+// vector search, etc. Only add models that produce output worth paying for —
+// small chat models (< 7B) are not useful, but small specialized models
+// (embeddings) can be best-in-class.
 type SupportedModel struct {
 	ID           string  `json:"id"`           // HuggingFace path (e.g. "mlx-community/Qwen3.5-9B-MLX-4bit")
 	S3Name       string  `json:"s3_name"`      // CDN key for download (e.g. "Qwen3.5-9B-MLX-4bit")
 	DisplayName  string  `json:"display_name"` // Human-readable (e.g. "Qwen3.5 9B")
-	ModelType    string  `json:"model_type"`   // "text", "transcription", "embedding", "tts", "image"
+	ModelType    string  `json:"model_type"`   // "text", "embedding", "tts"
 	SizeGB       float64 `json:"size_gb"`      // Disk/memory size in GB
 	Architecture string  `json:"architecture"` // e.g. "9B dense", "2B conformer"
-	Description  string  `json:"description"`  // e.g. "Balanced", "Best-in-class STT"
+	Description  string  `json:"description"`  // e.g. "Balanced", "Fast reasoning"
 	MinRAMGB     int     `json:"min_ram_gb"`   // Minimum system RAM for auto-selection
 	Active       bool    `json:"active"`       // Whether available for use
 	WeightHash   string  `json:"weight_hash"`  // Expected SHA-256 fingerprint of model weight files
@@ -383,19 +561,17 @@ type SupportedModel struct {
 // The GitHub Action registers new releases via POST /v1/releases (scoped key).
 // Admins manage releases via /v1/admin/releases (Privy auth).
 type Release struct {
-	Version         string    `json:"version"`                     // semver, e.g. "0.2.1"
-	Platform        string    `json:"platform"`                    // "macos-arm64"
-	BinaryHash      string    `json:"binary_hash"`                 // SHA-256 of darkbloom binary (attestation verification)
-	BundleHash      string    `json:"bundle_hash"`                 // SHA-256 of the bundle tarball (install.sh download verification)
-	PythonHash      string    `json:"python_hash,omitempty"`       // SHA-256 of bundled Python binary (runtime verification)
-	RuntimeHash     string    `json:"runtime_hash,omitempty"`      // SHA-256 of vllm-mlx package (runtime verification)
-	TemplateHashes  string    `json:"template_hashes,omitempty"`   // comma-separated name=hash pairs
-	GrpcBinaryHash  string    `json:"grpc_binary_hash,omitempty"`  // SHA-256 of gRPCServerCLI binary (image generation)
-	ImageBridgeHash string    `json:"image_bridge_hash,omitempty"` // SHA-256 of image bridge Python source
-	URL             string    `json:"url"`                         // R2 download URL for the bundle tarball
-	Changelog       string    `json:"changelog"`                   // human-readable changes in this version
-	Active          bool      `json:"active"`                      // whether this version is accepted by the coordinator
-	CreatedAt       time.Time `json:"created_at"`
+	Version        string    `json:"version"`                   // semver, e.g. "0.2.1"
+	Platform       string    `json:"platform"`                  // "macos-arm64"
+	BinaryHash     string    `json:"binary_hash"`               // SHA-256 of darkbloom binary (attestation verification)
+	BundleHash     string    `json:"bundle_hash"`               // SHA-256 of the bundle tarball (install.sh download verification)
+	PythonHash     string    `json:"python_hash,omitempty"`     // SHA-256 of bundled Python binary (runtime verification)
+	RuntimeHash    string    `json:"runtime_hash,omitempty"`    // SHA-256 of vllm-mlx package (runtime verification)
+	TemplateHashes string    `json:"template_hashes,omitempty"` // comma-separated name=hash pairs
+	URL            string    `json:"url"`                       // R2 download URL for the bundle tarball
+	Changelog      string    `json:"changelog"`                 // human-readable changes in this version
+	Active         bool      `json:"active"`                    // whether this version is accepted by the coordinator
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // DeviceCode represents a pending device authorization request (RFC 8628-style).
@@ -455,8 +631,10 @@ type ProviderEarning struct {
 // ProviderEarningsSummary captures lifetime payout aggregates independent of
 // any pagination applied to recent earnings history.
 type ProviderEarningsSummary struct {
-	Count         int64 `json:"count"`
-	TotalMicroUSD int64 `json:"total_micro_usd"`
+	Count            int64 `json:"count"`
+	TotalMicroUSD    int64 `json:"total_micro_usd"`
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
 }
 
 // ProviderPayout records a provider wallet payout event. This is separate from

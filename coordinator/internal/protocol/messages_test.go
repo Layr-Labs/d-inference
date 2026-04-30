@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 )
 
@@ -27,7 +28,8 @@ func TestRegisterMessageMarshal(t *testing.T) {
 				Quantization: "4bit",
 			},
 		},
-		Backend: "vllm_mlx",
+		Backend:                 "vllm_mlx",
+		EncryptedResponseChunks: true,
 	}
 
 	data, err := json.Marshal(msg)
@@ -54,6 +56,9 @@ func TestRegisterMessageMarshal(t *testing.T) {
 	}
 	if decoded.Backend != "vllm_mlx" {
 		t.Errorf("backend = %q, want %q", decoded.Backend, "vllm_mlx")
+	}
+	if !decoded.EncryptedResponseChunks {
+		t.Error("encrypted_response_chunks should round-trip")
 	}
 }
 
@@ -187,7 +192,7 @@ func TestInferenceErrorMarshal(t *testing.T) {
 	if decoded.Error != "model not loaded" {
 		t.Errorf("error = %q", decoded.Error)
 	}
-	if decoded.StatusCode != 500 {
+	if decoded.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status_code = %d, want 500", decoded.StatusCode)
 	}
 }
@@ -337,7 +342,7 @@ func TestProviderMessageUnmarshalError(t *testing.T) {
 	if errMsg.Error != "model not loaded" {
 		t.Errorf("error = %q", errMsg.Error)
 	}
-	if errMsg.StatusCode != 500 {
+	if errMsg.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status_code = %d", errMsg.StatusCode)
 	}
 }

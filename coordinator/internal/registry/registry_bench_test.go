@@ -46,7 +46,7 @@ func makeProvider(id string, model string, decodeTPS float64) *Provider {
 		pendingReqs:           make(map[string]*PendingRequest),
 	}
 	// Seed some reputation history.
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		p.Reputation.RecordJobSuccess(200 * time.Millisecond)
 	}
 	return p
@@ -57,7 +57,7 @@ func BenchmarkScoreProvider(b *testing.B) {
 	p := makeProvider("bench-provider", "mlx-community/Qwen3.5-9B-Instruct-4bit", 55.0)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = ScoreProvider(p, "mlx-community/Qwen3.5-9B-Instruct-4bit")
 	}
 }
@@ -68,7 +68,7 @@ func populateRegistry(n int, model string) *Registry {
 	reg := New(logger)
 	reg.MinTrustLevel = TrustNone
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		id := fmt.Sprintf("provider-%d", i)
 		msg := &protocol.RegisterMessage{
 			Type: protocol.TypeRegister,
@@ -102,7 +102,7 @@ func populateRegistry(n int, model string) *Registry {
 		}
 		p.mu.Unlock()
 		// Build some reputation.
-		for j := 0; j < 20; j++ {
+		for range 20 {
 			p.Reputation.RecordJobSuccess(time.Duration(100+i%50) * time.Millisecond)
 		}
 	}
@@ -115,7 +115,7 @@ func BenchmarkFindProvider_10(b *testing.B) {
 	reg := populateRegistry(10, model)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		p := reg.FindProvider(model)
 		if p != nil {
 			// Reset status so provider can be found again.
@@ -132,7 +132,7 @@ func BenchmarkFindProvider_100(b *testing.B) {
 	reg := populateRegistry(100, model)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		p := reg.FindProvider(model)
 		if p != nil {
 			p.mu.Lock()
@@ -148,7 +148,7 @@ func BenchmarkFindProvider_1000(b *testing.B) {
 	reg := populateRegistry(1000, model)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		p := reg.FindProvider(model)
 		if p != nil {
 			p.mu.Lock()

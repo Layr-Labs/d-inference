@@ -3,7 +3,7 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o coordinator ./cmd/coordinator
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o coordinator ./cmd/coordinator
 
 # Pre-built base with MicroMDM v1.13.1, step-ca v0.28.3, step CLI v0.28.3.
 # Rebuild base only when tool versions change: docker build -f Dockerfile.base -t eigengajesh/d-inference-base:latest . && docker push
@@ -29,3 +29,4 @@ ENV EIGENINFERENCE_STEP_CA_INTERMEDIATE=/data/step-ca/certs/intermediate_ca.crt
 
 EXPOSE 8080
 CMD ["start.sh"]
+# 2026-04-24T02:19:47-07:00

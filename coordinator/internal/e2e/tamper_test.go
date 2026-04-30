@@ -110,7 +110,7 @@ func TestReplayDecryptionSucceeds(t *testing.T) {
 
 	payload, _ := Encrypt([]byte("replay me"), *recipientPub, sender)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		plaintext, err := DecryptWithPrivateKey(payload, *recipientPriv)
 		if err != nil {
 			t.Fatalf("replay attempt %d failed: %v", i, err)

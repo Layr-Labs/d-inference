@@ -32,9 +32,6 @@ fn write_plist(
     binary_path: &Path,
     coordinator_url: &str,
     models: &[String],
-    image_model: Option<&str>,
-    image_model_path: Option<&str>,
-    stt_model: Option<&str>,
     idle_timeout: Option<u64>,
 ) -> Result<()> {
     let launch_agents_dir = plist_path()
@@ -61,35 +58,13 @@ fn write_plist(
         args.push("        <string>--model</string>".to_string());
         args.push(format!("        <string>{model}</string>"));
     }
-    if let Some(im) = image_model {
-        args.push("        <string>--image-model</string>".to_string());
-        args.push(format!("        <string>{im}</string>"));
-    }
-    if let Some(imp) = image_model_path {
-        args.push("        <string>--image-model-path</string>".to_string());
-        args.push(format!("        <string>{imp}</string>"));
-    }
     if let Some(mins) = idle_timeout {
         args.push("        <string>--idle-timeout</string>".to_string());
         args.push(format!("        <string>{mins}</string>"));
     }
     let args_xml = args.join("\n");
 
-    // Build environment variables section for non-CLI models (STT)
-    let mut env_vars = String::new();
-    if let Some(stt) = stt_model {
-        env_vars = format!(
-            r#"
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>EIGENINFERENCE_STT_MODEL</key>
-        <string>{stt}</string>
-        <key>EIGENINFERENCE_STT_MODEL_ID</key>
-        <string>{stt}</string>
-    </dict>
-"#
-        );
-    }
+    let env_vars = String::new();
 
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -197,9 +172,6 @@ pub fn is_installed() -> bool {
 pub fn install_and_start(
     coordinator_url: &str,
     models: &[String],
-    image_model: Option<&str>,
-    image_model_path: Option<&str>,
-    stt_model: Option<&str>,
     idle_timeout: Option<u64>,
 ) -> Result<()> {
     let binary_path = std::env::current_exe().unwrap_or_else(|_| {
@@ -213,15 +185,7 @@ pub fn install_and_start(
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
 
-    write_plist(
-        &binary_path,
-        coordinator_url,
-        models,
-        image_model,
-        image_model_path,
-        stt_model,
-        idle_timeout,
-    )?;
+    write_plist(&binary_path, coordinator_url, models, idle_timeout)?;
     load_service().context("Failed to load launchd service")?;
 
     Ok(())

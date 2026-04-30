@@ -4,117 +4,28 @@ import Foundation
 
 // MARK: - CLI Entry Point
 
-/// Command-line tool that generates and outputs a signed attestation.
+/// Command-line tool for Secure Enclave attestation and diagnostics.
 ///
 /// Usage:
 ///   eigeninference-enclave attest [--encryption-key <base64>] [--binary-hash <hex>]
+///   eigeninference-enclave info
 ///
-/// The --encryption-key flag binds an X25519 encryption public key to the
-/// attestation, proving the same hardware identity controls both the
-/// Secure Enclave signing key and the E2E encryption key.
-///
-/// The --binary-hash flag includes the SHA-256 hash of the provider binary
-/// in the attestation, allowing the coordinator to verify the provider is
-/// running the expected (blessed) version.
-
-let identityPath: URL = {
-    let home = FileManager.default.homeDirectoryForCurrentUser
-    return home.appendingPathComponent(".darkbloom/enclave_key.data")
-}()
-
-func loadOrCreateIdentity() throws -> SecureEnclaveIdentity {
-    let fm = FileManager.default
-    let dir = identityPath.deletingLastPathComponent().path
-
-    if fm.fileExists(atPath: identityPath.path) {
-        let data = try Data(contentsOf: identityPath)
-        return try SecureEnclaveIdentity(dataRepresentation: data)
-    }
-
-    // Create directory if needed
-    try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-
-    let identity = try SecureEnclaveIdentity()
-    let data = identity.dataRepresentation
-    try data.write(to: identityPath)
-
-    // Set restrictive permissions (0600)
-    try fm.setAttributes(
-        [.posixPermissions: 0o600],
-        ofItemAtPath: identityPath.path
-    )
-
-    return identity
-}
+/// All keys are ephemeral — a fresh P-256 key is created in the Secure Enclave
+/// for each invocation. No key material is persisted to disk.
 
 func printUsage() {
     let usage = """
     Usage: eigeninference-enclave <command> [options]
 
     Commands:
-      attest          Generate a signed attestation blob
-      info            Show Secure Enclave availability and public key
-      wallet-address  Derive wallet address from the SE public key
-      wallet-sign     Sign a message with the SE key for payout authentication
+      attest          Generate a signed attestation blob (ephemeral key)
+      info            Show Secure Enclave availability
 
     Options for 'attest':
       --encryption-key <base64>    Bind an X25519 encryption public key to the attestation
       --binary-hash <hex>          Include SHA-256 hash of provider binary for integrity verification
-
-    Options for 'wallet-sign':
-      --message <string>           Message to sign (UTF-8)
     """
     fputs(usage + "\n", stderr)
-}
-
-func cmdWalletAddress() throws {
-    guard SecureEnclave.isAvailable else {
-        fputs("error: Secure Enclave is not available on this device\n", stderr)
-        exit(1)
-    }
-
-    let identity = try loadOrCreateIdentity()
-
-    // Derive a deterministic wallet address from the SE public key.
-    // SHA-256 hash of the raw public key bytes, take last 20 bytes → 0x prefixed hex.
-    // The private key never exists outside the Secure Enclave.
-    let pubKeyData = identity.publicKeyRaw
-    let hash = SHA256.hash(data: pubKeyData)
-    let hashBytes = Array(hash)
-    let addressBytes = hashBytes.suffix(20)
-    let address = "0x" + addressBytes.map { String(format: "%02x", $0) }.joined()
-
-    let output: [String: String] = [
-        "address": address,
-        "public_key": identity.publicKeyBase64,
-        "storage": "secure_enclave",
-    ]
-
-    let jsonData = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
-    if let jsonStr = String(data: jsonData, encoding: .utf8) {
-        print(jsonStr)
-    }
-}
-
-func cmdWalletSign(message: String) throws {
-    guard SecureEnclave.isAvailable else {
-        fputs("error: Secure Enclave is not available on this device\n", stderr)
-        exit(1)
-    }
-
-    let identity = try loadOrCreateIdentity()
-    let messageData = Data(message.utf8)
-    let signature = try identity.sign(messageData)
-
-    let output: [String: String] = [
-        "signature": signature.base64EncodedString(),
-        "public_key": identity.publicKeyBase64,
-    ]
-
-    let jsonData = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
-    if let jsonStr = String(data: jsonData, encoding: .utf8) {
-        print(jsonStr)
-    }
 }
 
 func cmdAttest(encryptionKey: String?, binaryHash: String?) throws {
@@ -123,7 +34,7 @@ func cmdAttest(encryptionKey: String?, binaryHash: String?) throws {
         exit(1)
     }
 
-    let identity = try loadOrCreateIdentity()
+    let identity = try SecureEnclaveIdentity()
     let service = AttestationService(identity: identity)
     let signed = try service.createAttestation(encryptionPublicKey: encryptionKey, binaryHash: binaryHash)
 
@@ -144,12 +55,12 @@ func cmdInfo() throws {
     let available = SecureEnclave.isAvailable
     var info: [String: Any] = [
         "secure_enclave_available": available,
+        "key_persistence": "ephemeral",
     ]
 
     if available {
-        let identity = try loadOrCreateIdentity()
+        let identity = try SecureEnclaveIdentity()
         info["public_key"] = identity.publicKeyBase64
-        info["identity_path"] = identityPath.path
     }
 
     let jsonData = try JSONSerialization.data(
@@ -194,51 +105,6 @@ do {
 
     case "info":
         try cmdInfo()
-
-    case "sign":
-        var dataB64: String? = nil
-        var i = 2
-        while i < args.count {
-            if args[i] == "--data" && i + 1 < args.count {
-                dataB64 = args[i + 1]
-                i += 2
-            } else {
-                i += 1
-            }
-        }
-        guard let dataB64 = dataB64 else {
-            fputs("error: --data <base64> required\n", stderr)
-            exit(1)
-        }
-        guard let data = Data(base64Encoded: dataB64) else {
-            fputs("error: invalid base64 data\n", stderr)
-            exit(1)
-        }
-        let signIdentity = try loadOrCreateIdentity()
-        let signature = try signIdentity.sign(data)
-        print(signature.base64EncodedString())
-
-    case "wallet-address":
-        try cmdWalletAddress()
-
-    case "wallet-sign":
-        var message: String? = nil
-        var i = 2
-        while i < args.count {
-            if args[i] == "--message" && i + 1 < args.count {
-                message = args[i + 1]
-                i += 2
-            } else {
-                fputs("error: unknown option \(args[i])\n", stderr)
-                printUsage()
-                exit(1)
-            }
-        }
-        guard let message = message else {
-            fputs("error: --message <string> required\n", stderr)
-            exit(1)
-        }
-        try cmdWalletSign(message: message)
 
     default:
         fputs("error: unknown command '\(command)'\n", stderr)

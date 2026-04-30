@@ -252,15 +252,6 @@ fn is_mlx_model(snapshot_dir: &Path, model_name: &str) -> bool {
         return snapshot_dir.join("config.json").exists();
     }
 
-    // Check for .ckpt files (image models like FLUX)
-    if let Ok(entries) = std::fs::read_dir(snapshot_dir) {
-        for entry in entries.flatten() {
-            if entry.path().extension().is_some_and(|ext| ext == "ckpt") {
-                return true;
-            }
-        }
-    }
-
     false
 }
 
@@ -388,8 +379,29 @@ fn detect_quantization(model_name: &str, snapshot_dir: &Path) -> Option<String> 
     None
 }
 
+const WEIGHT_EXTENSIONS: &[&str] = &[".safetensors", ".npz", ".bin"];
+const INTEGRITY_FILES: &[&str] = &[
+    "config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "tokenizer.model",
+    "generation_config.json",
+    "chat_template.jinja",
+    "quantize_config.json",
+];
+
+fn is_integrity_file(name: &str) -> bool {
+    WEIGHT_EXTENSIONS.iter().any(|ext| name.ends_with(ext))
+        || name == "weights.npz"
+        || INTEGRITY_FILES.contains(&name)
+}
+
 /// Collect weight file paths and total size from a snapshot directory.
 /// Returns (total_size_bytes, sorted_weight_file_paths).
+///
+/// Only weight files (safetensors/npz/bin) contribute to `total_size_bytes`
+/// (used for memory estimation). Config/tokenizer/template files are included
+/// in the path list for integrity hashing but not in the size calculation.
 fn collect_weight_files(snapshot_dir: &Path) -> (u64, Vec<PathBuf>) {
     let mut total = 0u64;
     let mut paths = Vec::new();
@@ -401,22 +413,25 @@ fn collect_weight_files(snapshot_dir: &Path) -> (u64, Vec<PathBuf>) {
 
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.ends_with(".safetensors")
-            || name.ends_with(".npz")
-            || name.ends_with(".bin")
-            || name.ends_with(".ckpt")
-            || name == "weights.npz"
-        {
-            if let Ok(meta) = entry.metadata() {
-                // Handle symlinks — resolve to actual file size
-                if meta.is_file() {
+        if !is_integrity_file(&name) {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata() {
+            let is_weight =
+                WEIGHT_EXTENSIONS.iter().any(|ext| name.ends_with(ext)) || name == "weights.npz";
+
+            // Handle symlinks — resolve to actual file size
+            if meta.is_file() {
+                if is_weight {
                     total += meta.len();
-                    paths.push(entry.path());
-                } else if meta.file_type().is_symlink() {
-                    if let Ok(resolved_meta) = std::fs::metadata(entry.path()) {
+                }
+                paths.push(entry.path());
+            } else if meta.file_type().is_symlink() {
+                if let Ok(resolved_meta) = std::fs::metadata(entry.path()) {
+                    if is_weight {
                         total += resolved_meta.len();
-                        paths.push(entry.path());
                     }
+                    paths.push(entry.path());
                 }
             }
         }
@@ -883,5 +898,185 @@ mod tests {
 
         let models = scan_models_in_dir(&cache, 128);
         assert!(models.is_empty(), "Non-model directories should be ignored");
+    }
+
+    #[test]
+    fn test_collect_weight_files_includes_config_and_tokenizer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("snapshot");
+        fs::create_dir_all(&snap).unwrap();
+
+        fs::write(snap.join("model.safetensors"), vec![0u8; 1000]).unwrap();
+        fs::write(snap.join("config.json"), r#"{"hidden_size": 2048}"#).unwrap();
+        fs::write(snap.join("tokenizer.json"), r#"{"version": "1.0"}"#).unwrap();
+        fs::write(snap.join("tokenizer_config.json"), "{}").unwrap();
+        fs::write(snap.join("chat_template.jinja"), "{{ messages }}").unwrap();
+        fs::write(snap.join("generation_config.json"), "{}").unwrap();
+        fs::write(snap.join("README.md"), "# Model").unwrap();
+        fs::write(snap.join("random.txt"), "not included").unwrap();
+
+        let (size, paths) = collect_weight_files(&snap);
+
+        assert_eq!(size, 1000, "only weight files contribute to size");
+
+        let names: Vec<String> = paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(names.contains(&"model.safetensors".to_string()));
+        assert!(names.contains(&"config.json".to_string()));
+        assert!(names.contains(&"tokenizer.json".to_string()));
+        assert!(names.contains(&"tokenizer_config.json".to_string()));
+        assert!(names.contains(&"chat_template.jinja".to_string()));
+        assert!(names.contains(&"generation_config.json".to_string()));
+        assert!(
+            !names.contains(&"README.md".to_string()),
+            "README.md should not be included"
+        );
+        assert!(
+            !names.contains(&"random.txt".to_string()),
+            "random.txt should not be included"
+        );
+    }
+
+    #[test]
+    fn test_collect_weight_files_size_excludes_config_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("snapshot");
+        fs::create_dir_all(&snap).unwrap();
+
+        fs::write(snap.join("model.safetensors"), vec![0u8; 5000]).unwrap();
+        fs::write(snap.join("weights.npz"), vec![0u8; 3000]).unwrap();
+        fs::write(snap.join("config.json"), vec![0u8; 200]).unwrap();
+        fs::write(snap.join("tokenizer.json"), vec![0u8; 100]).unwrap();
+
+        let (size, paths) = collect_weight_files(&snap);
+
+        assert_eq!(
+            size, 8000,
+            "size should only count weight files (5000 + 3000)"
+        );
+        assert_eq!(paths.len(), 4, "all 4 files should be in the path list");
+    }
+
+    #[test]
+    fn test_model_hash_changes_when_config_modified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("snapshot");
+        fs::create_dir_all(&snap).unwrap();
+
+        fs::write(snap.join("model.safetensors"), vec![0u8; 100]).unwrap();
+        fs::write(snap.join("config.json"), r#"{"hidden_size": 2048}"#).unwrap();
+
+        let (_, paths1) = collect_weight_files(&snap);
+        let hash1 = crate::security::hash_files_sorted(&paths1).unwrap();
+
+        fs::write(snap.join("config.json"), r#"{"hidden_size": 4096}"#).unwrap();
+
+        let (_, paths2) = collect_weight_files(&snap);
+        let hash2 = crate::security::hash_files_sorted(&paths2).unwrap();
+
+        assert_ne!(
+            hash1, hash2,
+            "model hash must change when config.json is modified"
+        );
+    }
+
+    #[test]
+    fn test_model_hash_changes_when_template_modified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("snapshot");
+        fs::create_dir_all(&snap).unwrap();
+
+        fs::write(snap.join("model.safetensors"), vec![0u8; 100]).unwrap();
+        fs::write(snap.join("chat_template.jinja"), "{{ messages }}").unwrap();
+
+        let (_, paths1) = collect_weight_files(&snap);
+        let hash1 = crate::security::hash_files_sorted(&paths1).unwrap();
+
+        fs::write(
+            snap.join("chat_template.jinja"),
+            "{{ messages | evil_filter }}",
+        )
+        .unwrap();
+
+        let (_, paths2) = collect_weight_files(&snap);
+        let hash2 = crate::security::hash_files_sorted(&paths2).unwrap();
+
+        assert_ne!(
+            hash1, hash2,
+            "model hash must change when chat_template.jinja is modified"
+        );
+    }
+
+    #[test]
+    fn test_model_hash_changes_when_tokenizer_modified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("snapshot");
+        fs::create_dir_all(&snap).unwrap();
+
+        fs::write(snap.join("model.safetensors"), vec![0u8; 100]).unwrap();
+        fs::write(snap.join("tokenizer.json"), r#"{"model": {"vocab": {}}}"#).unwrap();
+
+        let (_, paths1) = collect_weight_files(&snap);
+        let hash1 = crate::security::hash_files_sorted(&paths1).unwrap();
+
+        fs::write(
+            snap.join("tokenizer.json"),
+            r#"{"model": {"vocab": {"<evil>": 99999}}}"#,
+        )
+        .unwrap();
+
+        let (_, paths2) = collect_weight_files(&snap);
+        let hash2 = crate::security::hash_files_sorted(&paths2).unwrap();
+
+        assert_ne!(
+            hash1, hash2,
+            "model hash must change when tokenizer.json is modified"
+        );
+    }
+
+    #[test]
+    fn test_model_hash_stable_when_readme_modified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("snapshot");
+        fs::create_dir_all(&snap).unwrap();
+
+        fs::write(snap.join("model.safetensors"), vec![0u8; 100]).unwrap();
+        fs::write(snap.join("config.json"), "{}").unwrap();
+        fs::write(snap.join("README.md"), "# Original").unwrap();
+
+        let (_, paths1) = collect_weight_files(&snap);
+        let hash1 = crate::security::hash_files_sorted(&paths1).unwrap();
+
+        fs::write(snap.join("README.md"), "# Modified by attacker").unwrap();
+
+        let (_, paths2) = collect_weight_files(&snap);
+        let hash2 = crate::security::hash_files_sorted(&paths2).unwrap();
+
+        assert_eq!(
+            hash1, hash2,
+            "model hash should NOT change when README.md is modified"
+        );
+    }
+
+    #[test]
+    fn test_is_integrity_file() {
+        assert!(is_integrity_file("model.safetensors"));
+        assert!(is_integrity_file("model-00001-of-00003.safetensors"));
+        assert!(is_integrity_file("weights.npz"));
+        assert!(is_integrity_file("pytorch_model.bin"));
+        assert!(is_integrity_file("config.json"));
+        assert!(is_integrity_file("tokenizer.json"));
+        assert!(is_integrity_file("tokenizer_config.json"));
+        assert!(is_integrity_file("tokenizer.model"));
+        assert!(is_integrity_file("chat_template.jinja"));
+        assert!(is_integrity_file("generation_config.json"));
+        assert!(is_integrity_file("quantize_config.json"));
+
+        assert!(!is_integrity_file("README.md"));
+        assert!(!is_integrity_file("model_card.md"));
+        assert!(!is_integrity_file(".gitattributes"));
+        assert!(!is_integrity_file("random.txt"));
     }
 }

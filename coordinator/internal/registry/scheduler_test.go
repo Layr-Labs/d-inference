@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/protocol"
 )
 
@@ -16,6 +17,8 @@ func makeSchedulerProvider(t *testing.T, reg *Registry, id, model string, decode
 	p.mu.Lock()
 	p.TrustLevel = TrustHardware
 	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.ChallengeVerifiedSIP = true
 	p.LastChallengeVerified = time.Now()
 	p.SystemMetrics = protocol.SystemMetrics{
 		MemoryPressure: 0.1,
@@ -39,6 +42,12 @@ func makeSchedulerProvider(t *testing.T, reg *Registry, id, model string, decode
 	return p
 }
 
+func setSchedulerProviderSerial(p *Provider, serial string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.AttestationResult = &attestation.VerificationResult{SerialNumber: serial}
+}
+
 func TestReserveProviderSkipsSelfSigned(t *testing.T) {
 	reg := New(testLogger())
 	model := "scheduler-model"
@@ -60,6 +69,226 @@ func TestReserveProviderSkipsSelfSigned(t *testing.T) {
 	}
 	if selected.ID != hw.ID {
 		t.Fatalf("selected %q, want %q", selected.ID, hw.ID)
+	}
+}
+
+func TestReserveProviderExReturnsCostBreakdown(t *testing.T) {
+	reg := New(testLogger())
+	model := "decision-model"
+	makeSchedulerProvider(t, reg, "p1", model, 100)
+	makeSchedulerProvider(t, reg, "p2", model, 80)
+
+	req := &PendingRequest{
+		RequestID:             "req-decision",
+		Model:                 model,
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    256,
+	}
+	provider, decision := reg.ReserveProviderEx(model, req)
+	if provider == nil {
+		t.Fatal("ReserveProviderEx returned nil provider")
+	}
+	if decision.ProviderID != provider.ID {
+		t.Fatalf("decision.ProviderID=%q, want %q", decision.ProviderID, provider.ID)
+	}
+	if decision.Model != model {
+		t.Fatalf("decision.Model=%q, want %q", decision.Model, model)
+	}
+	if decision.CandidateCount != 2 {
+		t.Fatalf("decision.CandidateCount=%d, want 2", decision.CandidateCount)
+	}
+	if decision.CostMs <= 0 {
+		t.Fatalf("decision.CostMs=%f, want > 0", decision.CostMs)
+	}
+	// ThisReqMs must be the dominant term for an idle provider with no backlog
+	// (decode 256 tokens / 100 TPS = 2560ms; prefill 100 / 400 = 250ms).
+	if decision.ThisReqMs < 2500 {
+		t.Fatalf("decision.ThisReqMs=%f, expected ~2810ms", decision.ThisReqMs)
+	}
+	// Sum of components should approximately equal the total cost.
+	sum := decision.StateMs + decision.QueueMs + decision.PendingMs +
+		decision.BacklogMs + decision.ThisReqMs + decision.HealthMs
+	if diff := sum - decision.CostMs; diff > 0.001 || diff < -0.001 {
+		t.Fatalf("breakdown sum %f != CostMs %f", sum, decision.CostMs)
+	}
+}
+
+func TestReserveProviderHonorsAllowedProviderSerials(t *testing.T) {
+	reg := New(testLogger())
+	model := "targeted-model"
+	fast := makeSchedulerProvider(t, reg, "fast-provider", model, 200)
+	slow := makeSchedulerProvider(t, reg, "allowed-provider", model, 40)
+	setSchedulerProviderSerial(fast, "FAST-SERIAL")
+	setSchedulerProviderSerial(slow, "ALLOWED-SERIAL")
+
+	req := &PendingRequest{
+		RequestID:              "req-targeted",
+		Model:                  model,
+		RequestedMaxTokens:     128,
+		AllowedProviderSerials: []string{"ALLOWED-SERIAL"},
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatal("ReserveProviderEx returned nil")
+	}
+	if selected.ID != slow.ID {
+		t.Fatalf("selected %q, want allowed provider %q", selected.ID, slow.ID)
+	}
+	if selected.ID == fast.ID {
+		t.Fatal("selected provider outside allowlist")
+	}
+	if decision.CandidateCount != 1 {
+		t.Fatalf("decision.CandidateCount=%d, want 1", decision.CandidateCount)
+	}
+}
+
+func TestReserveProviderAllowedProviderSerialsWithExclusion(t *testing.T) {
+	reg := New(testLogger())
+	model := "targeted-excluded-model"
+	p := makeSchedulerProvider(t, reg, "only-allowed", model, 100)
+	setSchedulerProviderSerial(p, "ONLY-ALLOWED-SERIAL")
+
+	req := &PendingRequest{
+		RequestID:              "req-targeted-excluded",
+		Model:                  model,
+		RequestedMaxTokens:     128,
+		AllowedProviderSerials: []string{"ONLY-ALLOWED-SERIAL"},
+	}
+	selected, decision := reg.ReserveProviderEx(model, req, p.ID)
+	if selected != nil {
+		t.Fatalf("selected %q, want nil because the only allowed provider is excluded", selected.ID)
+	}
+	if decision.CandidateCount != 0 {
+		t.Fatalf("decision.CandidateCount=%d, want 0", decision.CandidateCount)
+	}
+}
+
+func TestDrainQueuedRequestsPopulatesDecision(t *testing.T) {
+	reg := New(testLogger())
+	model := "queue-decision-model"
+	p := makeSchedulerProvider(t, reg, "p1", model, 90)
+	p.mu.Lock()
+	p.BackendCapacity = nil
+	p.mu.Unlock()
+
+	req := &QueuedRequest{
+		RequestID:  "queued-decision",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending: &PendingRequest{
+			RequestID:             "queued-decision",
+			Model:                 model,
+			RequestedMaxTokens:    256,
+			EstimatedPromptTokens: 50,
+		},
+	}
+	if err := reg.Queue().Enqueue(req); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	// SetProviderIdle triggers drainQueuedRequestsForModels which fills
+	// req.Decision before signaling ResponseCh.
+	reg.SetProviderIdle(p.ID)
+
+	select {
+	case assigned := <-req.ResponseCh:
+		if assigned == nil {
+			t.Fatal("expected provider, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for queue dispatch")
+	}
+
+	if req.Decision.ProviderID != p.ID {
+		t.Fatalf("Decision.ProviderID=%q, want %q", req.Decision.ProviderID, p.ID)
+	}
+	if req.Decision.CostMs <= 0 {
+		t.Fatalf("Decision.CostMs=%f, want > 0", req.Decision.CostMs)
+	}
+	if req.Decision.CandidateCount != 1 {
+		t.Fatalf("Decision.CandidateCount=%d, want 1", req.Decision.CandidateCount)
+	}
+}
+
+func TestDrainQueuedRequestsSkipsUnassignableTargetedRequest(t *testing.T) {
+	reg := New(testLogger())
+	model := "queue-targeted-model"
+	p := makeSchedulerProvider(t, reg, "available-provider", model, 90)
+	setSchedulerProviderSerial(p, "AVAILABLE-SERIAL")
+
+	targeted := &QueuedRequest{
+		RequestID:  "queued-targeted",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending: &PendingRequest{
+			RequestID:              "queued-targeted",
+			Model:                  model,
+			RequestedMaxTokens:     128,
+			AllowedProviderSerials: []string{"MISSING-SERIAL"},
+		},
+	}
+	untargeted := &QueuedRequest{
+		RequestID:  "queued-untargeted",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending: &PendingRequest{
+			RequestID:          "queued-untargeted",
+			Model:              model,
+			RequestedMaxTokens: 128,
+		},
+	}
+	if err := reg.Queue().Enqueue(targeted); err != nil {
+		t.Fatalf("enqueue targeted: %v", err)
+	}
+	if err := reg.Queue().Enqueue(untargeted); err != nil {
+		t.Fatalf("enqueue untargeted: %v", err)
+	}
+
+	reg.SetProviderIdle(p.ID)
+
+	select {
+	case assigned := <-untargeted.ResponseCh:
+		if assigned == nil {
+			t.Fatal("untargeted request got nil provider")
+		}
+		if assigned.ID != p.ID {
+			t.Fatalf("assigned %q, want %q", assigned.ID, p.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("untargeted request was blocked behind unassignable targeted request")
+	}
+
+	select {
+	case assigned := <-targeted.ResponseCh:
+		t.Fatalf("targeted request should remain queued, got provider %#v", assigned)
+	default:
+	}
+	if got := reg.Queue().QueueSize(model); got != 1 {
+		t.Fatalf("queue size = %d, want 1 targeted request still queued", got)
+	}
+}
+
+func TestReserveProviderExWhenNoneAvailable(t *testing.T) {
+	reg := New(testLogger())
+	model := "missing-model"
+
+	req := &PendingRequest{
+		RequestID:          "req-empty",
+		Model:              model,
+		RequestedMaxTokens: 256,
+	}
+	provider, decision := reg.ReserveProviderEx(model, req)
+	if provider != nil {
+		t.Fatalf("expected nil provider, got %q", provider.ID)
+	}
+	if decision.ProviderID != "" {
+		t.Fatalf("decision.ProviderID=%q, want empty", decision.ProviderID)
+	}
+	if decision.Model != model {
+		t.Fatalf("decision.Model=%q, want %q", decision.Model, model)
+	}
+	if decision.CandidateCount != 0 {
+		t.Fatalf("decision.CandidateCount=%d, want 0", decision.CandidateCount)
 	}
 }
 
@@ -190,7 +419,7 @@ func TestDrainQueuedRequestsUsesAllAvailableCapacity(t *testing.T) {
 	p.mu.Unlock()
 
 	queued := make([]*QueuedRequest, 0, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		req := &QueuedRequest{
 			RequestID:  "queued-" + string(rune('a'+i)),
 			Model:      model,
@@ -242,6 +471,8 @@ func TestReserveProviderUsesModelSpecificSlotState(t *testing.T) {
 	p.mu.Lock()
 	p.TrustLevel = TrustHardware
 	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.ChallengeVerifiedSIP = true
 	p.LastChallengeVerified = time.Now()
 	p.SystemMetrics = protocol.SystemMetrics{
 		MemoryPressure: 0.1,

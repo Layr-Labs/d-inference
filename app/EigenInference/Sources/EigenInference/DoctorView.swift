@@ -51,7 +51,7 @@ struct DoctorView: View {
 
                     DisclosureGroup("Raw Output") {
                         Text(rawOutput)
-                            .font(.system(.caption, design: .monospaced))
+                            .font(.monoWarm)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(8)
                             .background(Color.warmBgSecondary)
@@ -73,8 +73,8 @@ struct DoctorView: View {
     private func checkRow(_ check: DiagnosticCheck) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: check.passed ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .foregroundColor(check.passed ? .tealAccent : .warmError)
-                .font(.title3)
+                .foregroundColor(check.passed ? .adaptiveTealAccent : .adaptiveError)
+                .font(.system(size: 18, weight: .semibold, design: .rounded))
                 .frame(width: 24)
 
             VStack(alignment: .leading, spacing: 4) {
@@ -82,20 +82,20 @@ struct DoctorView: View {
                     .fontWeight(.medium)
 
                 Text(check.detail)
-                    .font(.caption)
+                    .font(.captionWarm)
                     .foregroundColor(.warmInkLight)
 
                 if !check.passed, let hint = check.remediation {
                     Text(hint)
-                        .font(.caption)
-                        .foregroundColor(.gold)
+                        .font(.captionWarm)
+                        .foregroundColor(.adaptiveGold)
                 }
             }
 
             Spacer()
         }
         .padding(10)
-        .background(check.passed ? Color.tealAccent.opacity(0.05) : Color.warmError.opacity(0.05))
+        .background(check.passed ? Color.adaptiveTealAccent.opacity(0.05) : Color.adaptiveError.opacity(0.05))
         .cornerRadius(8)
     }
 

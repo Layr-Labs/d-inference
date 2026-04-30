@@ -19,7 +19,7 @@ func BenchmarkEncrypt_Small(b *testing.B) {
 	rand.Read(recipientPub[:])
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = Encrypt(plaintext, recipientPub, session)
 	}
 }
@@ -32,7 +32,7 @@ func BenchmarkEncrypt_Medium(b *testing.B) {
 	rand.Read(recipientPub[:])
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = Encrypt(plaintext, recipientPub, session)
 	}
 }
@@ -45,7 +45,7 @@ func BenchmarkEncrypt_Large(b *testing.B) {
 	rand.Read(recipientPub[:])
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = Encrypt(plaintext, recipientPub, session)
 	}
 }
@@ -66,7 +66,7 @@ func BenchmarkDecrypt_Small(b *testing.B) {
 	payload, session := setupEncryptedPayload(100)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = Decrypt(payload, session)
 	}
 }
@@ -76,7 +76,7 @@ func BenchmarkDecrypt_Medium(b *testing.B) {
 	payload, session := setupEncryptedPayload(4096)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = Decrypt(payload, session)
 	}
 }
@@ -86,7 +86,7 @@ func BenchmarkDecrypt_Large(b *testing.B) {
 	payload, session := setupEncryptedPayload(65536)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = Decrypt(payload, session)
 	}
 }
@@ -98,7 +98,7 @@ func BenchmarkEncryptDecryptRoundtrip(b *testing.B) {
 	recipient, _ := GenerateSessionKeys()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		payload, err := Encrypt(plaintext, recipient.PublicKey, sender)
 		if err != nil {
 			b.Fatal(err)

@@ -38,6 +38,12 @@ type QueuedRequest struct {
 	EnqueuedAt time.Time
 	DoneCh     chan struct{} // closed when the waiter is no longer interested
 	doneOnce   sync.Once
+
+	// Decision captures the cost breakdown of the routing decision that
+	// dispatched this queued request. Populated by drainQueuedRequestsForModels
+	// just before ResponseCh is signaled, so consumers can emit the same
+	// metrics they would for an immediate (non-queued) selection.
+	Decision RoutingDecision
 }
 
 func (r *QueuedRequest) init() {

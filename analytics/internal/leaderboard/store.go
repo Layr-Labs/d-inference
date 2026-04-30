@@ -332,8 +332,8 @@ func NewMemoryStoreWithClock(activeNodeWindow time.Duration, now func() time.Tim
 			{AccountID: "acct-alpha", ProviderID: "prov-a1", ProviderKey: "node-a1", Model: "qwen3.5-27b-claude-opus-8bit", AmountMicroUSD: 8_900_000, PromptTokens: 19_500, CompletionTokens: 34_100, CreatedAt: base.Add(-4 * 24 * time.Hour)},
 			{AccountID: "acct-bravo", ProviderID: "prov-b1", ProviderKey: "node-b1", Model: "mlx-community/Trinity-Mini-8bit", AmountMicroUSD: 2_100_000, PromptTokens: 6_200, CompletionTokens: 9_000, CreatedAt: base.Add(-3 * time.Hour)},
 			{AccountID: "acct-bravo", ProviderID: "prov-b1", ProviderKey: "node-b1", Model: "mlx-community/Trinity-Mini-8bit", AmountMicroUSD: 2_900_000, PromptTokens: 7_800, CompletionTokens: 12_200, CreatedAt: base.Add(-26 * time.Hour)},
-			{AccountID: "acct-charlie", ProviderID: "prov-c1", ProviderKey: "node-c1", Model: "flux_2_klein_4b_q8p.ckpt", AmountMicroUSD: 6_500_000, PromptTokens: 0, CompletionTokens: 0, CreatedAt: base.Add(-6 * 24 * time.Hour)},
-			{AccountID: "acct-delta", ProviderID: "prov-d1", ProviderKey: "node-d1", Model: "flux_2_klein_9b_q8p.ckpt", AmountMicroUSD: 1_800_000, PromptTokens: 0, CompletionTokens: 0, CreatedAt: base.Add(-12 * time.Hour)},
+			{AccountID: "acct-charlie", ProviderID: "prov-c1", ProviderKey: "node-c1", Model: "mlx-community/Qwen2.5-7B-4bit", AmountMicroUSD: 6_500_000, PromptTokens: 15_200, CompletionTokens: 28_300, CreatedAt: base.Add(-6 * 24 * time.Hour)},
+			{AccountID: "acct-delta", ProviderID: "prov-d1", ProviderKey: "node-d1", Model: "mlx-community/Gemma-4-27B-4bit", AmountMicroUSD: 1_800_000, PromptTokens: 4_100, CompletionTokens: 7_600, CreatedAt: base.Add(-12 * time.Hour)},
 			{AccountID: "acct-echo", ProviderID: "prov-e1", ProviderKey: "node-e1", Model: "mlx-community/gemma-4-26b-a4b-it-8bit", AmountMicroUSD: 13_700_000, PromptTokens: 31_500, CompletionTokens: 48_000, CreatedAt: base.Add(-9 * 24 * time.Hour)},
 		},
 	}

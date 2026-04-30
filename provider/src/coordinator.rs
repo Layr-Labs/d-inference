@@ -24,10 +24,7 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::backend::ExponentialBackoff;
 use crate::hardware::HardwareInfo;
 use crate::models::ModelInfo;
-use crate::protocol::{
-    CoordinatorMessage, ImageGenerationRequestBody, ProviderMessage, ProviderStats, ProviderStatus,
-    TranscriptionRequestBody,
-};
+use crate::protocol::{CoordinatorMessage, ProviderMessage, ProviderStats, ProviderStatus};
 use crate::security::RuntimeHashes;
 
 /// Thread-safe counters for provider statistics, shared between the main
@@ -54,15 +51,7 @@ pub enum CoordinatorEvent {
     InferenceRequest {
         request_id: String,
         body: serde_json::Value,
-    },
-    TranscriptionRequest {
-        request_id: String,
-        body: TranscriptionRequestBody,
-    },
-    ImageGenerationRequest {
-        request_id: String,
-        body: ImageGenerationRequestBody,
-        upload_url: String,
+        response_public_key: Option<[u8; 32]>,
     },
     Cancel {
         request_id: String,
@@ -102,10 +91,14 @@ pub struct CoordinatorClient {
     current_model_hash: Arc<std::sync::Mutex<Option<String>>>,
     /// Runtime integrity hashes (Python binary, vllm_mlx package, templates).
     runtime_hashes: Option<RuntimeHashes>,
-    /// Per-model weight hashes for all active models (text, STT, image).
+    /// Python interpreter used to recompute runtime hashes on attestation challenges.
+    runtime_hash_command: Option<String>,
+    /// Per-model weight hashes for all active models.
     model_hashes: std::collections::HashMap<String, String>,
     /// Live backend capacity data (updated by main loop, read by heartbeat tick).
     backend_capacity: Arc<std::sync::Mutex<Option<crate::protocol::BackendCapacity>>>,
+    /// Ephemeral Secure Enclave handle for challenge-response signing.
+    se_handle: Option<Arc<crate::secure_enclave_key::SecureEnclaveHandle>>,
 }
 
 impl CoordinatorClient {
@@ -135,8 +128,10 @@ impl CoordinatorClient {
             warm_models: Arc::new(std::sync::Mutex::new(Vec::new())),
             current_model_hash: Arc::new(std::sync::Mutex::new(None)),
             runtime_hashes: None,
+            runtime_hash_command: None,
             model_hashes: std::collections::HashMap::new(),
             backend_capacity: Arc::new(std::sync::Mutex::new(None)),
+            se_handle: None,
         }
     }
 
@@ -203,6 +198,21 @@ impl CoordinatorClient {
         self
     }
 
+    /// Set the Python interpreter used to recompute runtime hashes at challenge time.
+    pub fn with_runtime_hash_command(mut self, python_cmd: Option<String>) -> Self {
+        self.runtime_hash_command = python_cmd;
+        self
+    }
+
+    /// Set the ephemeral Secure Enclave handle for challenge-response signing.
+    pub fn with_se_handle(
+        mut self,
+        handle: Option<Arc<crate::secure_enclave_key::SecureEnclaveHandle>>,
+    ) -> Self {
+        self.se_handle = handle;
+        self
+    }
+
     /// Set the shared backend capacity data (updated by main loop, read by heartbeats).
     pub fn with_backend_capacity(
         mut self,
@@ -222,6 +232,7 @@ impl CoordinatorClient {
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Result<()> {
         let mut backoff = ExponentialBackoff::new();
+        let mut reconnect_count: u64 = 0;
 
         loop {
             // Check for shutdown before attempting connection
@@ -248,6 +259,22 @@ impl CoordinatorClient {
                         "Coordinator connection error: {e}. Reconnecting in {:?}",
                         delay
                     );
+                    reconnect_count += 1;
+                    // Only report connectivity telemetry after a few failures
+                    // so transient hiccups don't flood the admin console.
+                    if reconnect_count == 3 || reconnect_count == 10 || reconnect_count % 30 == 0 {
+                        crate::telemetry::emit(
+                            crate::telemetry::TelemetryEvent::new(
+                                crate::telemetry::Source::Provider,
+                                crate::telemetry::Severity::Warn,
+                                crate::telemetry::Kind::Connectivity,
+                                "coordinator reconnect",
+                            )
+                            .with_field("reconnect_count", reconnect_count as i64)
+                            .with_field("last_error", format!("{e}"))
+                            .with_field("ws_state", "reconnecting"),
+                        );
+                    }
 
                     tokio::select! {
                         _ = tokio::time::sleep(delay) => {}
@@ -276,24 +303,35 @@ impl CoordinatorClient {
         let (mut write, mut read) = ws_stream.split();
 
         // Send registration message
-        let (python_hash, runtime_hash, template_hashes, grpc_binary_hash, image_bridge_hash) =
-            if let Some(ref rh) = self.runtime_hashes {
-                (
-                    rh.python_hash.clone(),
-                    rh.runtime_hash.clone(),
-                    rh.template_hashes.clone(),
-                    rh.grpc_binary_hash.clone(),
-                    rh.image_bridge_hash.clone(),
-                )
-            } else {
-                (None, None, std::collections::HashMap::new(), None, None)
-            };
+        let (python_hash, runtime_hash, template_hashes) = if let Some(ref rh) = self.runtime_hashes
+        {
+            (
+                rh.python_hash.clone(),
+                rh.runtime_hash.clone(),
+                rh.template_hashes.clone(),
+            )
+        } else {
+            (None, None, std::collections::HashMap::new())
+        };
+        let privacy_caps = crate::protocol::PrivacyCapabilities {
+            text_backend_inprocess: true,
+            text_proxy_disabled: true,
+            python_runtime_locked: true,
+            dangerous_modules_blocked: true,
+            sip_enabled: crate::security::check_sip_enabled(),
+            anti_debug_enabled: true,
+            core_dumps_disabled: true,
+            env_scrubbed: true,
+            hypervisor_active: crate::security::check_hypervisor_active(),
+        };
+
         let register = ProviderMessage::Register {
             hardware: self.hardware.clone(),
             models: self.models.clone(),
             backend: self.backend_name.clone(),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
             public_key: self.public_key.clone(),
+            encrypted_response_chunks: true,
             wallet_address: self.wallet_address.clone(),
             attestation: self.attestation.clone(),
             prefill_tps: None,
@@ -302,8 +340,7 @@ impl CoordinatorClient {
             python_hash,
             runtime_hash,
             template_hashes,
-            grpc_binary_hash,
-            image_bridge_hash,
+            privacy_capabilities: Some(privacy_caps),
         };
         let register_json = serde_json::to_string(&register)?;
         write.send(Message::Text(register_json.into())).await?;
@@ -387,88 +424,38 @@ impl CoordinatorClient {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
                             match serde_json::from_str::<CoordinatorMessage>(&text) {
-                                Ok(CoordinatorMessage::InferenceRequest { request_id, body, encrypted_body }) => {
+                                Ok(CoordinatorMessage::InferenceRequest { request_id, body: _, encrypted_body }) => {
                                     tracing::info!("Received inference request: {request_id}");
 
-                                    // Decrypt E2E encrypted body if present
-                                    let decrypted_body = if let Some(enc) = encrypted_body {
-                                        tracing::info!("Decrypting E2E encrypted request");
+                                    let Some(enc) = encrypted_body else {
+                                        tracing::error!(
+                                            "Rejecting plaintext inference request: {request_id}"
+                                        );
+                                        let error = ProviderMessage::InferenceError {
+                                            request_id,
+                                            error: "coordinator text request missing encrypted body".to_string(),
+                                            status_code: 400,
+                                        };
+                                        let json = serde_json::to_string(&error).unwrap_or_default();
+                                        let _ = write.send(Message::Text(json.into())).await;
+                                        continue;
+                                    };
+
+                                    tracing::info!("Decrypting E2E encrypted request");
+                                    let (decrypted_body, response_public_key) =
                                         match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
                                             Ok(b) => b,
                                             Err(e) => {
                                                 tracing::error!("Failed to decrypt request: {e}");
                                                 continue;
                                             }
-                                        }
-                                    } else {
-                                        body
-                                    };
+                                        };
 
                                     let _ = event_tx.send(CoordinatorEvent::InferenceRequest {
                                         request_id,
                                         body: decrypted_body,
+                                        response_public_key,
                                     }).await;
-                                }
-                                Ok(CoordinatorMessage::TranscriptionRequest { request_id, body, encrypted_body }) => {
-                                    tracing::info!("Received transcription request: {request_id}");
-
-                                    // Decrypt E2E encrypted body if present
-                                    let decrypted_body = if let Some(enc) = encrypted_body {
-                                        tracing::info!("Decrypting E2E encrypted transcription request");
-                                        match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
-                                            Ok(b) => b,
-                                            Err(e) => {
-                                                tracing::error!("Failed to decrypt transcription request: {e}");
-                                                continue;
-                                            }
-                                        }
-                                    } else {
-                                        body
-                                    };
-
-                                    // Parse the transcription body
-                                    match serde_json::from_value::<TranscriptionRequestBody>(decrypted_body) {
-                                        Ok(parsed_body) => {
-                                            let _ = event_tx.send(CoordinatorEvent::TranscriptionRequest {
-                                                request_id,
-                                                body: parsed_body,
-                                            }).await;
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Failed to parse transcription body: {e}");
-                                        }
-                                    }
-                                }
-                                Ok(CoordinatorMessage::ImageGenerationRequest { request_id, upload_url, body, encrypted_body }) => {
-                                    tracing::info!("Received image generation request: {request_id}");
-
-                                    // Decrypt E2E encrypted body if present
-                                    let decrypted_body = if let Some(enc) = encrypted_body {
-                                        tracing::info!("Decrypting E2E encrypted image generation request");
-                                        match decrypt_request_body(&enc, self.node_keypair.as_ref()) {
-                                            Ok(b) => b,
-                                            Err(e) => {
-                                                tracing::error!("Failed to decrypt image generation request: {e}");
-                                                continue;
-                                            }
-                                        }
-                                    } else {
-                                        body
-                                    };
-
-                                    // Parse the image generation body
-                                    match serde_json::from_value::<ImageGenerationRequestBody>(decrypted_body) {
-                                        Ok(parsed_body) => {
-                                            let _ = event_tx.send(CoordinatorEvent::ImageGenerationRequest {
-                                                request_id,
-                                                body: parsed_body,
-                                                upload_url,
-                                            }).await;
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Failed to parse image generation body: {e}");
-                                        }
-                                    }
                                 }
                                 Ok(CoordinatorMessage::Cancel { request_id }) => {
                                     tracing::info!("Received cancel for: {request_id}");
@@ -481,13 +468,20 @@ impl CoordinatorClient {
                                     // Respond to the challenge inline, signing with
                                     // the provider's key.
                                     let model_hash = self.current_model_hash.lock().unwrap().clone();
+                                    let fresh_runtime_hashes = self
+                                        .runtime_hash_command
+                                        .as_deref()
+                                        .map(crate::security::compute_runtime_hashes);
                                     let response = handle_attestation_challenge(
                                         &nonce,
                                         &timestamp,
                                         self.public_key.as_deref(),
                                         model_hash.as_deref(),
-                                        self.runtime_hashes.as_ref(),
+                                        fresh_runtime_hashes
+                                            .as_ref()
+                                            .or(self.runtime_hashes.as_ref()),
                                         self.model_hashes.clone(),
+                                        self.se_handle.as_deref(),
                                     );
                                     let json = serde_json::to_string(&response)
                                         .unwrap_or_default();
@@ -555,10 +549,10 @@ impl CoordinatorClient {
 fn decrypt_request_body(
     encrypted: &crate::protocol::EncryptedPayload,
     keypair: &crate::crypto::NodeKeyPair,
-) -> anyhow::Result<serde_json::Value> {
+) -> anyhow::Result<(serde_json::Value, Option<[u8; 32]>)> {
     use base64::Engine;
+    use zeroize::Zeroize;
 
-    // Decode the ephemeral public key from the coordinator
     let ephemeral_pub_bytes = base64::engine::general_purpose::STANDARD
         .decode(&encrypted.ephemeral_public_key)
         .map_err(|e| anyhow::anyhow!("invalid ephemeral public key: {e}"))?;
@@ -573,20 +567,21 @@ fn decrypt_request_body(
     let mut ephemeral_pub = [0u8; 32];
     ephemeral_pub.copy_from_slice(&ephemeral_pub_bytes);
 
-    // Decode ciphertext (nonce || encrypted data)
     let ciphertext = base64::engine::general_purpose::STANDARD
         .decode(&encrypted.ciphertext)
         .map_err(|e| anyhow::anyhow!("invalid ciphertext: {e}"))?;
 
-    // Decrypt with our private key + coordinator's ephemeral public key
-    let plaintext = keypair.decrypt(&ephemeral_pub, &ciphertext)?;
+    let mut plaintext = keypair.decrypt(&ephemeral_pub, &ciphertext)?;
 
-    // Parse the decrypted JSON
-    let body: serde_json::Value = serde_json::from_slice(&plaintext)
-        .map_err(|e| anyhow::anyhow!("decrypted body is not valid JSON: {e}"))?;
+    // Parse JSON from the decrypted buffer, but zeroize the raw bytes on both
+    // success and failure so malformed payloads do not leave plaintext behind.
+    let parsed = serde_json::from_slice(&plaintext);
+    plaintext.zeroize();
+    let body: serde_json::Value =
+        parsed.map_err(|e| anyhow::anyhow!("decrypted body is not valid JSON: {e}"))?;
 
     tracing::info!("E2E decryption successful — request decrypted inside hardened process");
-    Ok(body)
+    Ok((body, Some(ephemeral_pub)))
 }
 
 /// Handle an attestation challenge by signing the nonce+timestamp data
@@ -607,15 +602,12 @@ pub fn handle_attestation_challenge(
     current_model_hash: Option<&str>,
     runtime_hashes: Option<&RuntimeHashes>,
     model_hashes: std::collections::HashMap<String, String>,
+    se_handle: Option<&crate::secure_enclave_key::SecureEnclaveHandle>,
 ) -> ProviderMessage {
     let data = format!("{}{}", nonce, timestamp);
 
-    // Sign the challenge data (nonce + timestamp) with the Secure Enclave
-    // P-256 key via the eigeninference-enclave CLI tool. The coordinator
-    // verifies this signature using the provider's SE public key from the
-    // attestation blob, proving the same hardware is still responding.
     let pk_str = public_key.unwrap_or("");
-    let signature = match crate::security::se_sign(data.as_bytes()) {
+    let signature = match crate::security::se_sign(se_handle, data.as_bytes()) {
         Some(sig) => sig,
         None => {
             tracing::warn!(
@@ -648,36 +640,173 @@ pub fn handle_attestation_challenge(
         );
     }
 
-    let (python_hash, rt_hash, template_hashes, grpc_binary_hash, image_bridge_hash) =
-        if let Some(rh) = runtime_hashes {
-            (
-                rh.python_hash.clone(),
-                rh.runtime_hash.clone(),
-                rh.template_hashes.clone(),
-                rh.grpc_binary_hash.clone(),
-                rh.image_bridge_hash.clone(),
-            )
-        } else {
-            (None, None, std::collections::HashMap::new(), None, None)
-        };
+    let (python_hash, rt_hash, template_hashes) = if let Some(rh) = runtime_hashes {
+        (
+            rh.python_hash.clone(),
+            rh.runtime_hash.clone(),
+            rh.template_hashes.clone(),
+        )
+    } else {
+        (None, None, std::collections::HashMap::new())
+    };
+
+    let active_model_hash_owned = current_model_hash.map(|s| s.to_string());
+
+    // Build the canonical status payload and sign it. This binds all the
+    // status fields below to the SE key, preventing a compromised provider
+    // from echoing a valid nonce+timestamp signature while lying about
+    // sip_enabled, binary_hash, etc.
+    //
+    // Must stay byte-identical to coordinator/internal/attestation.go
+    // BuildStatusCanonical — sorted keys, optional fields omitted, nested
+    // maps with sorted keys (BTreeMap).
+    let canonical = build_status_canonical(
+        nonce,
+        timestamp,
+        Some(hypervisor_active),
+        Some(rdma_disabled),
+        Some(sip_enabled),
+        Some(true),
+        binary_hash.as_deref(),
+        active_model_hash_owned.as_deref(),
+        python_hash.as_deref(),
+        rt_hash.as_deref(),
+        &template_hashes,
+        None, // grpc_binary_hash removed (text-only)
+        None, // image_bridge_hash removed (text-only)
+        &model_hashes,
+    );
+    let status_signature = match canonical {
+        Ok(bytes) => crate::security::se_sign(se_handle, &bytes),
+        Err(e) => {
+            tracing::warn!(
+                "failed to build canonical status payload: {} — coordinator will treat status fields as unsigned",
+                e
+            );
+            None
+        }
+    };
 
     ProviderMessage::AttestationResponse {
         nonce: nonce.to_string(),
         signature,
+        status_signature,
         public_key: pk_str.to_string(),
         hypervisor_active: Some(hypervisor_active),
         rdma_disabled: Some(rdma_disabled),
         sip_enabled: Some(sip_enabled),
         secure_boot_enabled: Some(true), // Apple Silicon always has Secure Boot in Full Security mode
         binary_hash,
-        active_model_hash: current_model_hash.map(|s| s.to_string()),
+        active_model_hash: active_model_hash_owned,
         python_hash,
         runtime_hash: rt_hash,
         template_hashes,
-        grpc_binary_hash,
-        image_bridge_hash,
         model_hashes,
     }
+}
+
+/// Build the canonical status payload bytes that get signed by the SE
+/// key for AttestationResponse.status_signature. This must produce
+/// byte-identical output to the Go BuildStatusCanonical helper.
+///
+/// Encoding rules:
+///   - Top-level keys sorted alphabetically (BTreeMap).
+///   - nonce + timestamp always present.
+///   - Optional bool/string/map fields are OMITTED if None / empty —
+///     "unknown" must serialize differently than "false" so a downgrade
+///     attacker can't strip a positive claim and have it look like
+///     legitimate omission.
+///   - Nested maps (template_hashes, model_hashes) also sorted via
+///     BTreeMap.
+///   - serde_json defaults: compact (no whitespace), bool as true/false,
+///     strings UTF-8 with standard JSON escapes.
+#[allow(clippy::too_many_arguments)]
+fn build_status_canonical(
+    nonce: &str,
+    timestamp: &str,
+    hypervisor_active: Option<bool>,
+    rdma_disabled: Option<bool>,
+    sip_enabled: Option<bool>,
+    secure_boot_enabled: Option<bool>,
+    binary_hash: Option<&str>,
+    active_model_hash: Option<&str>,
+    python_hash: Option<&str>,
+    runtime_hash: Option<&str>,
+    template_hashes: &std::collections::HashMap<String, String>,
+    grpc_binary_hash: Option<&str>,
+    image_bridge_hash: Option<&str>,
+    model_hashes: &std::collections::HashMap<String, String>,
+) -> serde_json::Result<Vec<u8>> {
+    use std::collections::BTreeMap;
+    let mut m: BTreeMap<&str, serde_json::Value> = BTreeMap::new();
+    m.insert("nonce", serde_json::Value::String(nonce.to_string()));
+    m.insert(
+        "timestamp",
+        serde_json::Value::String(timestamp.to_string()),
+    );
+    if let Some(v) = hypervisor_active {
+        m.insert("hypervisor_active", serde_json::Value::Bool(v));
+    }
+    if let Some(v) = rdma_disabled {
+        m.insert("rdma_disabled", serde_json::Value::Bool(v));
+    }
+    if let Some(v) = sip_enabled {
+        m.insert("sip_enabled", serde_json::Value::Bool(v));
+    }
+    if let Some(v) = secure_boot_enabled {
+        m.insert("secure_boot_enabled", serde_json::Value::Bool(v));
+    }
+    if let Some(v) = binary_hash {
+        if !v.is_empty() {
+            m.insert("binary_hash", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if let Some(v) = active_model_hash {
+        if !v.is_empty() {
+            m.insert(
+                "active_model_hash",
+                serde_json::Value::String(v.to_string()),
+            );
+        }
+    }
+    if let Some(v) = python_hash {
+        if !v.is_empty() {
+            m.insert("python_hash", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if let Some(v) = runtime_hash {
+        if !v.is_empty() {
+            m.insert("runtime_hash", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if let Some(v) = grpc_binary_hash {
+        if !v.is_empty() {
+            m.insert("grpc_binary_hash", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if let Some(v) = image_bridge_hash {
+        if !v.is_empty() {
+            m.insert(
+                "image_bridge_hash",
+                serde_json::Value::String(v.to_string()),
+            );
+        }
+    }
+    if !template_hashes.is_empty() {
+        let sorted: BTreeMap<&str, &str> = template_hashes
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        m.insert("template_hashes", serde_json::to_value(sorted)?);
+    }
+    if !model_hashes.is_empty() {
+        let sorted: BTreeMap<&str, &str> = model_hashes
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        m.insert("model_hashes", serde_json::to_value(sorted)?);
+    }
+    serde_json::to_vec(&m)
 }
 
 /// Build the register message for a given hardware, models, and backend.
@@ -707,6 +836,7 @@ pub fn build_register_message_with_wallet(
         backend: backend_name.to_string(),
         version: None,
         public_key,
+        encrypted_response_chunks: true,
         wallet_address,
         attestation,
         prefill_tps: None,
@@ -715,8 +845,7 @@ pub fn build_register_message_with_wallet(
         python_hash: None,
         runtime_hash: None,
         template_hashes: std::collections::HashMap::new(),
-        grpc_binary_hash: None,
-        image_bridge_hash: None,
+        privacy_capabilities: None,
     }
 }
 
@@ -727,6 +856,142 @@ mod tests {
     use futures_util::StreamExt;
     use std::net::SocketAddr;
     use tokio::net::TcpListener;
+
+    /// Cross-language wire-format guard. The bytes encoded here must
+    /// EXACTLY match what coordinator/internal/attestation.BuildStatusCanonical
+    /// produces in Go for the same input. If this golden bytes test ever
+    /// diverges, the corresponding Go test (in attestation_test.go) will
+    /// also fail and you'll catch the protocol drift before it ships.
+    ///
+    /// Encoding properties under test:
+    ///   - Top-level keys sorted alphabetically.
+    ///   - Optional fields (None / empty) omitted entirely.
+    ///   - Nested maps (template_hashes, model_hashes) sorted.
+    ///   - Compact (no whitespace).
+    #[test]
+    fn test_build_status_canonical_golden_bytes() {
+        let mut templates = std::collections::HashMap::new();
+        templates.insert("chatml".to_string(), "tmplhash1".to_string());
+        templates.insert("gemma".to_string(), "tmplhash2".to_string());
+
+        let mut models = std::collections::HashMap::new();
+        models.insert("qwen".to_string(), "modelhash1".to_string());
+        models.insert("trinity".to_string(), "modelhash2".to_string());
+
+        let bytes = build_status_canonical(
+            "test-nonce",
+            "2026-04-16T12:00:00Z",
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some("binhash"),
+            Some("activemodel"),
+            Some("pyhash"),
+            Some("rthash"),
+            &templates,
+            None,
+            Some("imghash"),
+            &models,
+        )
+        .expect("canonical build should succeed");
+
+        let expected = br#"{"active_model_hash":"activemodel","binary_hash":"binhash","hypervisor_active":true,"image_bridge_hash":"imghash","model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}"#;
+
+        assert_eq!(
+            bytes,
+            expected.to_vec(),
+            "canonical bytes drifted — Go side will reject signatures"
+        );
+    }
+
+    /// Empty optional fields must be omitted from canonical output, not
+    /// serialized as empty/false. This prevents downgrade attacks where
+    /// a stripped sip_enabled=true claim looks like legitimate omission.
+    #[test]
+    fn test_build_status_canonical_omits_empties() {
+        let bytes = build_status_canonical(
+            "n",
+            "t",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &std::collections::HashMap::new(),
+            None,
+            None,
+            &std::collections::HashMap::new(),
+        )
+        .expect("canonical build should succeed");
+
+        // Only nonce and timestamp survive when everything else is None.
+        assert_eq!(bytes, br#"{"nonce":"n","timestamp":"t"}"#.to_vec());
+    }
+
+    /// Mirror of Go's TestBuildStatusCanonicalFalseIsExplicit. False bool
+    /// values must be serialized explicitly, not stripped — otherwise a
+    /// downgrade attacker could reduce sip_enabled=true to "absent" and
+    /// the verify step couldn't distinguish.
+    #[test]
+    fn test_build_status_canonical_false_is_explicit() {
+        let bytes = build_status_canonical(
+            "n",
+            "t",
+            None,
+            None,
+            Some(false),
+            None,
+            None,
+            None,
+            None,
+            None,
+            &std::collections::HashMap::new(),
+            None,
+            None,
+            &std::collections::HashMap::new(),
+        )
+        .expect("canonical build should succeed");
+        assert_eq!(
+            bytes,
+            br#"{"nonce":"n","sip_enabled":false,"timestamp":"t"}"#.to_vec()
+        );
+    }
+
+    /// Mirror of Go's TestBuildStatusCanonicalUnicodeNonce. Both
+    /// serializers must pass printable Unicode through as UTF-8 (no
+    /// double-escaping). Today nonces are base64 ASCII so this is
+    /// future-proofing for any signed string field that might one day
+    /// carry non-ASCII.
+    #[test]
+    fn test_build_status_canonical_unicode_nonce() {
+        let bytes = build_status_canonical(
+            "ñön¢é-π",
+            "t",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &std::collections::HashMap::new(),
+            None,
+            None,
+            &std::collections::HashMap::new(),
+        )
+        .expect("canonical build should succeed");
+        assert_eq!(
+            bytes,
+            "{\"nonce\":\"ñön¢é-π\",\"timestamp\":\"t\"}"
+                .as_bytes()
+                .to_vec()
+        );
+    }
 
     fn sample_hardware() -> HardwareInfo {
         HardwareInfo {
@@ -788,6 +1053,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         match response {
@@ -817,6 +1083,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         match response {
@@ -845,6 +1112,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
         let resp2 = handle_attestation_challenge(
             "bm9uY2U=",
@@ -853,6 +1121,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         // Same inputs should produce same output (deterministic).
@@ -874,6 +1143,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
         let resp2 = handle_attestation_challenge(
             "bm9uY2Uy",
@@ -882,6 +1152,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         // The nonce fields must differ.
@@ -905,6 +1176,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"type\":\"attestation_response\""));
@@ -950,9 +1222,34 @@ mod tests {
                 .await
                 .unwrap();
 
-            // Read heartbeat or any response
-            if let Some(Ok(Message::Text(text))) = read.next().await {
-                received_messages.push(text.to_string());
+            // Read until the plaintext rejection is observed. The client may
+            // emit WebSocket control frames or heartbeats before the error.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now())
+                else {
+                    break;
+                };
+                let frame = match tokio::time::timeout(remaining, read.next()).await {
+                    Ok(Some(Ok(frame))) => frame,
+                    _ => break,
+                };
+
+                match frame {
+                    Message::Text(text) => {
+                        let is_inference_error = serde_json::from_str::<serde_json::Value>(&text)
+                            .map(|v| v["type"] == "inference_error")
+                            .unwrap_or(false);
+                        received_messages.push(text.to_string());
+                        if is_inference_error {
+                            break;
+                        }
+                    }
+                    Message::Ping(data) => {
+                        let _ = write.send(Message::Pong(data)).await;
+                    }
+                    _ => {}
+                }
             }
 
             // Send cancel
@@ -1007,41 +1304,49 @@ mod tests {
             .expect("channel closed");
         assert!(matches!(event, CoordinatorEvent::Connected));
 
-        // Wait for InferenceRequest event
-        let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
-            .await
-            .expect("timeout waiting for InferenceRequest")
-            .expect("channel closed");
-        match event {
-            CoordinatorEvent::InferenceRequest { request_id, body } => {
-                assert_eq!(request_id, "test-req-1");
-                assert_eq!(body["model"], "qwen3.5-9b");
+        // Plaintext inference requests should be rejected before they reach the
+        // main loop. The mock server immediately closes after sending cancel, so
+        // either event may arrive first; the key invariant is that no
+        // InferenceRequest reaches the provider event loop.
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+                .await
+                .expect("timeout waiting for follow-up event")
+                .expect("channel closed");
+            match event {
+                CoordinatorEvent::Cancel { request_id } => {
+                    assert_eq!(request_id, "test-req-1");
+                    break;
+                }
+                CoordinatorEvent::Disconnected => break,
+                CoordinatorEvent::InferenceRequest { .. } => {
+                    panic!("plaintext request should not reach the inference loop")
+                }
+                other => panic!("unexpected follow-up event: {:?}", other),
             }
-            other => panic!("Expected InferenceRequest, got {:?}", other),
-        }
-
-        // Wait for Cancel event
-        let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
-            .await
-            .expect("timeout waiting for Cancel")
-            .expect("channel closed");
-        match event {
-            CoordinatorEvent::Cancel { request_id } => {
-                assert_eq!(request_id, "test-req-1");
-            }
-            other => panic!("Expected Cancel, got {:?}", other),
         }
 
         // Shutdown
         let _ = shutdown_tx.send(true);
         let _ = tokio::time::timeout(Duration::from_secs(2), client_handle).await;
 
-        // Verify server received register message
+        // Verify server received register and inference_error messages.
+        // Heartbeats may arrive between them, so search by type.
         let received = server_handle.await.unwrap();
-        assert!(!received.is_empty());
+        assert!(
+            received.len() >= 2,
+            "expected at least register and error messages, got {}",
+            received.len()
+        );
         let register: serde_json::Value = serde_json::from_str(&received[0]).unwrap();
         assert_eq!(register["type"], "register");
         assert_eq!(register["backend"], "vllm_mlx");
+        let err = received
+            .iter()
+            .filter_map(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+            .find(|v| v["type"] == "inference_error")
+            .expect("expected an inference_error message");
+        assert_eq!(err["request_id"], "test-req-1");
     }
 
     // -----------------------------------------------------------------------
@@ -1057,12 +1362,14 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         match response {
             ProviderMessage::AttestationResponse {
                 nonce,
                 signature,
+                status_signature: _,
                 public_key,
                 hypervisor_active,
                 rdma_disabled,
@@ -1073,8 +1380,6 @@ mod tests {
                 python_hash: _,
                 runtime_hash: _,
                 template_hashes: _,
-                grpc_binary_hash: _,
-                image_bridge_hash: _,
                 model_hashes: _,
             } => {
                 // Nonce echoed back exactly
@@ -1111,6 +1416,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         match response {
@@ -1131,6 +1437,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         match response {
@@ -1154,6 +1461,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
         let resp2 = handle_attestation_challenge(
             "bm9uY2U=",
@@ -1162,6 +1470,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         // Both should be valid AttestationResponse messages
@@ -1188,6 +1497,7 @@ mod tests {
             None,
             None,
             std::collections::HashMap::new(),
+            None,
         );
 
         let json = serde_json::to_string(&response).unwrap();

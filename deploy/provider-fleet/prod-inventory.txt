@@ -1,0 +1,6 @@
+# Prod provider fleet — one SSH target per line.
+# Format: <ssh-host-alias>    <notes>
+#
+# Real prod hostnames are kept out of the repo (see memory/feedback_no_ips_in_public).
+# Maintain this list locally or in a private vault; this file exists as a
+# placeholder so the fleet-update workflow path is consistent between envs.

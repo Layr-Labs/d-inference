@@ -1,0 +1,343 @@
+{
+  "title": "d-inference Dev",
+  "description": "Log-first operational dashboard for the d-inference dev coordinator. Provider telemetry is forwarded through the coordinator and indexed with source:provider; regular coordinator runtime logs are indexed with kind:coordinator_log.",
+  "layout_type": "ordered",
+  "notify_list": [],
+  "template_variables": [
+    {
+      "name": "env",
+      "prefix": "env",
+      "default": "development"
+    },
+    {
+      "name": "service",
+      "prefix": "service",
+      "default": "d-inference-coordinator"
+    }
+  ],
+  "widgets": [
+    {
+      "definition": {
+        "type": "note",
+        "content": "Dev d-inference observability. This dashboard is log-backed so it works without a Datadog Agent on the VM. Queries use `$env $service`. Provider telemetry appears as `source:provider`; coordinator runtime logs appear as `source:coordinator kind:coordinator_log`.",
+        "background_color": "blue",
+        "font_size": "14",
+        "text_align": "left",
+        "show_tick": false
+      }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "All Dev Logs",
+        "autoscale": true,
+        "precision": 0,
+        "requests": [
+          {
+            "response_format": "scalar",
+            "queries": [
+              {
+                "name": "query1",
+                "data_source": "logs",
+                "search": {
+                  "query": "$env $service"
+                },
+                "indexes": [
+                  "*"
+                ],
+                "compute": {
+                  "aggregation": "count"
+                }
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "query1"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "Provider Telemetry",
+        "autoscale": true,
+        "precision": 0,
+        "requests": [
+          {
+            "response_format": "scalar",
+            "queries": [
+              {
+                "name": "query1",
+                "data_source": "logs",
+                "search": {
+                  "query": "$env $service source:provider"
+                },
+                "indexes": [
+                  "*"
+                ],
+                "compute": {
+                  "aggregation": "count"
+                }
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "query1"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "Warnings + Errors",
+        "autoscale": true,
+        "precision": 0,
+        "requests": [
+          {
+            "response_format": "scalar",
+            "queries": [
+              {
+                "name": "query1",
+                "data_source": "logs",
+                "search": {
+                  "query": "$env $service (severity:warn OR severity:error OR severity:fatal OR status:warn OR status:error)"
+                },
+                "indexes": [
+                  "*"
+                ],
+                "compute": {
+                  "aggregation": "count"
+                }
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "query1"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Log Volume by Source",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "name": "query1",
+                "data_source": "logs",
+                "search": {
+                  "query": "$env $service"
+                },
+                "indexes": [
+                  "*"
+                ],
+                "compute": {
+                  "aggregation": "count"
+                },
+                "group_by": [
+                  {
+                    "facet": "source",
+                    "limit": 10,
+                    "sort": {
+                      "aggregation": "count",
+                      "order": "desc"
+                    }
+                  }
+                ]
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "query1"
+              }
+            ],
+            "display_type": "bars"
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Warnings + Errors by Kind",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "name": "query1",
+                "data_source": "logs",
+                "search": {
+                  "query": "$env $service (severity:warn OR severity:error OR severity:fatal OR status:warn OR status:error)"
+                },
+                "indexes": [
+                  "*"
+                ],
+                "compute": {
+                  "aggregation": "count"
+                },
+                "group_by": [
+                  {
+                    "facet": "kind",
+                    "limit": 10,
+                    "sort": {
+                      "aggregation": "count",
+                      "order": "desc"
+                    }
+                  }
+                ]
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "query1"
+              }
+            ],
+            "display_type": "bars"
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "list_stream",
+        "title": "Provider Telemetry Events",
+        "requests": [
+          {
+            "query": {
+              "data_source": "logs_stream",
+              "query_string": "$env $service source:provider"
+            },
+            "response_format": "event_list",
+            "columns": [
+              {
+                "field": "timestamp",
+                "width": "auto"
+              },
+              {
+                "field": "status",
+                "width": "auto"
+              },
+              {
+                "field": "message",
+                "width": "compact"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "list_stream",
+        "title": "Coordinator Warnings + Errors",
+        "requests": [
+          {
+            "query": {
+              "data_source": "logs_stream",
+              "query_string": "$env $service source:coordinator (severity:warn OR severity:error OR severity:fatal OR status:warn OR status:error)"
+            },
+            "response_format": "event_list",
+            "columns": [
+              {
+                "field": "timestamp",
+                "width": "auto"
+              },
+              {
+                "field": "status",
+                "width": "auto"
+              },
+              {
+                "field": "message",
+                "width": "compact"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "list_stream",
+        "title": "Recent Coordinator Runtime Logs",
+        "requests": [
+          {
+            "query": {
+              "data_source": "logs_stream",
+              "query_string": "$env $service source:coordinator kind:coordinator_log"
+            },
+            "response_format": "event_list",
+            "columns": [
+              {
+                "field": "timestamp",
+                "width": "auto"
+              },
+              {
+                "field": "status",
+                "width": "auto"
+              },
+              {
+                "field": "message",
+                "width": "compact"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "list_stream",
+        "title": "All Recent Dev Logs",
+        "requests": [
+          {
+            "query": {
+              "data_source": "logs_stream",
+              "query_string": "$env $service"
+            },
+            "response_format": "event_list",
+            "columns": [
+              {
+                "field": "timestamp",
+                "width": "auto"
+              },
+              {
+                "field": "status",
+                "width": "auto"
+              },
+              {
+                "field": "message",
+                "width": "compact"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "APM and DogStatsD panels are intentionally omitted here until the dev VM runs a Datadog Agent on 8126/8125. The coordinator currently forwards logs directly via the Datadog Logs API, which is why this dashboard uses log analytics instead of `d_inference.*` metrics.",
+        "background_color": "gray",
+        "font_size": "12",
+        "text_align": "left",
+        "show_tick": false
+      }
+    }
+  ]
+}

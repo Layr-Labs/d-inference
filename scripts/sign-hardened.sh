@@ -28,25 +28,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ENTITLEMENTS="$SCRIPT_DIR/entitlements.plist"
 
-# Create minimal entitlements (explicitly NO get-task-allow)
-cat > "$ENTITLEMENTS" << 'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <!-- Explicitly do NOT include com.apple.security.get-task-allow -->
-    <!-- This is what prevents debugger attachment under Hardened Runtime -->
-
-    <!-- Allow outbound network connections (for coordinator WebSocket) -->
-    <key>com.apple.security.network.client</key>
-    <true/>
-
-    <!-- Allow localhost server (for local-only mode) -->
-    <key>com.apple.security.network.server</key>
-    <true/>
-</dict>
-</plist>
-PLIST
+# Use the canonical entitlements file. The release workflow already signs with
+# `scripts/entitlements.plist`; overwriting it here silently drops required
+# entitlements and makes local validation diverge from the shipped artifacts.
+if [ ! -f "$ENTITLEMENTS" ]; then
+    echo "ERROR: $ENTITLEMENTS missing — keep it under source control."
+    exit 1
+fi
 
 echo "=== EigenInference Hardened Runtime Signing ==="
 echo "Identity: $IDENTITY"

@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 const DEFAULT_COORD = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
 
 export async function POST(req: NextRequest) {
-  const coordUrl = req.headers.get("x-coordinator-url") || DEFAULT_COORD;
+  const coordUrl = DEFAULT_COORD;
   // Check Authorization header first, then fall back to privy-token cookie
   let authHeader = req.headers.get("authorization") || "";
   if (!authHeader) {

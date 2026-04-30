@@ -87,7 +87,7 @@ struct LogViewerView: View {
                     }
                 }
             }
-            .font(.system(.caption, design: .monospaced))
+            .font(.monoWarm)
             .background(Color.warmBgSecondary)
 
             // Status bar
@@ -130,9 +130,9 @@ struct LogViewerView: View {
         let color: Color = {
             if line.contains("ERROR") || line.contains("error") { return .warmError }
             if line.contains("WARN") || line.contains("warn") { return .gold }
-            if line.contains("INFO") { return .primary }
+            if line.contains("INFO") { return .warmInk }
             if line.contains("DEBUG") { return .warmInkLight }
-            return .primary
+            return .warmInkLight
         }()
 
         return Text(line)

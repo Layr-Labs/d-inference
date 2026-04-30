@@ -29,6 +29,7 @@ import (
 
 	"github.com/eigeninference/coordinator/internal/attestation"
 	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/eigeninference/coordinator/internal/saferun"
 	"github.com/eigeninference/coordinator/internal/store"
 	"nhooyr.io/websocket"
 )
@@ -58,6 +59,14 @@ type PendingRequest struct {
 	ProviderID  string
 	Model       string
 	ConsumerKey string
+	// IsResponsesAPI tracks requests received through /v1/responses so the
+	// coordinator can translate provider chat-completions output back into
+	// Responses API objects for SDK clients.
+	IsResponsesAPI bool
+	// AllowedProviderSerials optionally restricts routing to providers with
+	// one of these attested hardware serials. Empty means the request may
+	// route to any eligible provider.
+	AllowedProviderSerials []string
 	// EstimatedPromptTokens is a coordinator-side heuristic used only for
 	// routing and queue admission. It does not need tokenizer-perfect accuracy.
 	EstimatedPromptTokens int
@@ -71,12 +80,6 @@ type PendingRequest struct {
 	SessionPrivKey     *[32]byte // E2E session private key for decrypting responses
 	SESignature        string    // SE signature over response hash
 	ResponseHash       string    // SHA-256 of response data
-
-	// STT transcription result (nil for inference requests)
-	TranscriptionCh chan *protocol.TranscriptionCompleteMessage
-
-	// Image generation result (nil for non-image requests)
-	ImageGenerationCh chan *protocol.ImageGenerationCompleteMessage
 
 	// ReservedMicroUSD is the balance atomically debited at pre-flight.
 	// The post-inference charge adjusts for the difference between the
@@ -127,10 +130,24 @@ type Provider struct {
 	Reputation Reputation
 
 	// Version and runtime integrity verification
-	Version         string `json:"version,omitempty"` // provider binary version (e.g. "0.2.31")
-	RuntimeVerified bool   `json:"runtime_verified"`  // true if runtime hashes match the known-good manifest
-	PythonHash      string `json:"python_hash,omitempty"`
-	RuntimeHash     string `json:"runtime_hash,omitempty"`
+	Version                 string `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
+	RuntimeVerified         bool   `json:"runtime_verified"`                    // true if runtime hashes match the known-good manifest
+	RuntimeManifestChecked  bool   `json:"runtime_manifest_checked"`            // true only when a manifest was present and hashes were verified (fail-closed for text)
+	EncryptedResponseChunks bool   `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are encrypted to the coordinator
+	PythonHash              string `json:"python_hash,omitempty"`
+	RuntimeHash             string `json:"runtime_hash,omitempty"`
+	TemplateHashes          map[string]string
+
+	// Phase 7: Privacy invariant attestation.
+	// Self-reported by the provider at registration. Fields like SIPEnabled
+	// and HypervisorActive are overridden by the coordinator after each
+	// attestation challenge response with coordinator-verified values.
+	PrivacyCapabilities *protocol.PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
+
+	// Coordinator-verified SIP status from the most recent attestation challenge.
+	// Unlike PrivacyCapabilities.SIPEnabled (provider self-report at registration),
+	// this is set by the coordinator after independently checking the challenge response.
+	ChallengeVerifiedSIP bool `json:"challenge_verified_sip"`
 
 	// Challenge-response verification state
 	LastChallengeVerified time.Time // last successful challenge verification
@@ -138,6 +155,36 @@ type Provider struct {
 
 	mu          sync.Mutex
 	pendingReqs map[string]*PendingRequest
+}
+
+func providerSupportsPrivateTextLocked(p *Provider) bool {
+	if p.PublicKey == "" || p.Backend != "inprocess-mlx" || !p.EncryptedResponseChunks {
+		return false
+	}
+	if !p.RuntimeManifestChecked {
+		return false
+	}
+	// Require coordinator-verified SIP (from attestation challenge) rather
+	// than trusting the provider's self-reported SIPEnabled field.
+	if !p.ChallengeVerifiedSIP {
+		return false
+	}
+	caps := p.PrivacyCapabilities
+	if caps == nil {
+		return false
+	}
+	// TextBackendInprocess, TextProxyDisabled, PythonRuntimeLocked,
+	// DangerousModulesBlocked, AntiDebugEnabled, CoreDumpsDisabled, EnvScrubbed
+	// remain provider-attested. They are gated by RuntimeManifestChecked
+	// (coordinator verifies the runtime binary hashes match known-good) and
+	// ChallengeVerifiedSIP (coordinator independently checks SIP status).
+	return caps.TextBackendInprocess &&
+		caps.TextProxyDisabled &&
+		caps.PythonRuntimeLocked &&
+		caps.DangerousModulesBlocked &&
+		caps.AntiDebugEnabled &&
+		caps.CoreDumpsDisabled &&
+		caps.EnvScrubbed
 }
 
 // AddPending registers a pending request on this provider.
@@ -190,6 +237,20 @@ func (p *Provider) SetLastChallengeVerified(t time.Time) {
 	p.mu.Unlock()
 }
 
+// GetLastChallengeVerified returns the last challenge verification time (thread-safe).
+func (p *Provider) GetLastChallengeVerified() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.LastChallengeVerified
+}
+
+// GetChallengeVerifiedSIP returns whether SIP was verified in the last challenge (thread-safe).
+func (p *Provider) GetChallengeVerifiedSIP() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ChallengeVerifiedSIP
+}
+
 // Mu returns the provider's mutex for external callers that need to read
 // fields like Status atomically. Prefer dedicated getters where available.
 func (p *Provider) Mu() *sync.Mutex {
@@ -201,6 +262,13 @@ func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) 
 	p.mu.Lock()
 	p.AttestationResult = result
 	p.mu.Unlock()
+}
+
+// GetAttestationResult returns the current attestation result (thread-safe).
+func (p *Provider) GetAttestationResult() *attestation.VerificationResult {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.AttestationResult
 }
 
 // pendingCount returns the number of in-flight requests.
@@ -226,6 +294,14 @@ func (p *Provider) MaxConcurrency() int {
 }
 
 // maxConcurrency is the lock-free version (caller must hold p.mu).
+//
+// Tier values were lowered in Phase 2 of the routing-algorithm rework
+// (was 4/8/16/24/32). The old caps were derived from "how many
+// requests can theoretically fit in GPU memory"; the new caps reflect
+// "how many concurrent decodes a single MLX backend can run before
+// per-request TPS collapses". Empirically this is much smaller than
+// the memory-derived ceiling. Pushing past it makes each request slow
+// without increasing fleet throughput.
 func (p *Provider) maxConcurrency() int {
 	if p.BackendCapacity == nil {
 		return DefaultMaxConcurrent
@@ -238,15 +314,15 @@ func (p *Provider) maxConcurrency() int {
 	var cap int
 	switch {
 	case memGB <= 24:
-		cap = 4
+		cap = 2
 	case memGB <= 48:
-		cap = 8
+		cap = 4
 	case memGB <= 96:
-		cap = 16
+		cap = 6
 	case memGB <= 128:
-		cap = 24
+		cap = 8
 	default:
-		cap = 32
+		cap = 12
 	}
 	return cap
 }
@@ -401,7 +477,7 @@ func (r *Registry) persistProvider(p *Provider) {
 	if r.store == nil {
 		return
 	}
-	go func() {
+	saferun.Go(r.logger, "registry.persistProvider", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -460,7 +536,7 @@ func (r *Registry) persistProvider(p *Provider) {
 		if err := r.store.UpsertProvider(ctx, rec); err != nil {
 			r.logger.Warn("failed to persist provider", "provider_id", p.ID, "error", err)
 		}
-	}()
+	})
 }
 
 // persistReputation saves a provider's current reputation to the store.
@@ -469,7 +545,7 @@ func (r *Registry) persistReputation(p *Provider) {
 	if r.store == nil {
 		return
 	}
-	go func() {
+	saferun.Go(r.logger, "registry.persistReputation", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -488,7 +564,7 @@ func (r *Registry) persistReputation(p *Provider) {
 		if err := r.store.UpsertReputation(ctx, p.ID, rep); err != nil {
 			r.logger.Warn("failed to persist reputation", "provider_id", p.ID, "error", err)
 		}
-	}()
+	})
 }
 
 // TruncHash returns the first 16 chars of a hash string for logging.
@@ -502,7 +578,8 @@ func TruncHash(h string) string {
 // CatalogEntry holds metadata about an active model in the catalog.
 type CatalogEntry struct {
 	ID         string
-	WeightHash string // expected SHA-256 weight fingerprint (empty = not enforced)
+	WeightHash string  // expected SHA-256 weight fingerprint (empty = not enforced)
+	SizeGB     float64 // disk/GPU footprint of the model weights (zero = unknown, gate disabled)
 }
 
 // SetModelCatalog updates the set of active models. Only models in this
@@ -545,6 +622,18 @@ func (r *Registry) CatalogWeightHash(model string) string {
 	return ""
 }
 
+// catalogSizeGBLocked returns the model's reported weight footprint in GB,
+// or 0 when unknown. Caller must hold r.mu (read or write). Zero means the
+// memory-admission gate should not enforce for this model — typically a
+// catalog entry that pre-dates the SizeGB field, or a model the operator
+// hasn't sized yet.
+func (r *Registry) catalogSizeGBLocked(model string) float64 {
+	if e, ok := r.modelCatalog[model]; ok {
+		return e.SizeGB
+	}
+	return 0
+}
+
 // trustMeetsMinimum returns true if the given trust level meets the minimum.
 func (r *Registry) trustMeetsMinimum(level TrustLevel) bool {
 	return trustRank(level) >= trustRank(r.MinTrustLevel)
@@ -563,9 +652,108 @@ func (r *Registry) SetQueue(q *RequestQueue) {
 	r.queue = q
 }
 
+// Sanity caps on provider-reported stats. A malicious (or broken) provider
+// could otherwise report absurd values to monopolize routing. These caps are
+// ~3-4x current hardware ceilings (M2 Ultra is ~800 GB/s, MLX decode is ~120
+// tok/s, max Mac Studio RAM is 512 GB) so legitimate future hardware isn't
+// clamped unnecessarily.
+const (
+	maxDecodeTPS          = 500.0
+	maxPrefillTPS         = 5000.0
+	maxMemoryBandwidthGBs = 2000.0
+	maxMemoryGB           = 1024
+	maxMemoryGBFloat      = 1024.0
+	maxTokensPotential    = 1_000_000
+)
+
+// clampNonNeg returns v clamped into [0, max]; NaN/negative become 0.
+// The bool is true if the value was out of range.
+func clampNonNeg(v, max float64) (float64, bool) {
+	if math.IsNaN(v) || v < 0 {
+		return 0, true
+	}
+	if v > max {
+		return max, true
+	}
+	return v, false
+}
+
+// clampBackendCapacity applies sanity caps to provider-reported backend
+// capacity fields that feed the routing scorer. A provider reporting
+// TotalMemoryGB=1e9 would make gpuUtil ~= 0 and dodge health penalties, so
+// we cap it at maxMemoryGBFloat. Same for MaxTokensPotential which directly
+// controls backlog cost. NaN/negative become 0.
+func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.BackendCapacity) {
+	if bc == nil {
+		return
+	}
+	if v, changed := clampNonNeg(bc.TotalMemoryGB, maxMemoryGBFloat); changed {
+		logger.Warn("provider total_memory_gb out of range, clamping",
+			"provider_id", providerID, "reported", bc.TotalMemoryGB, "clamped", v)
+		bc.TotalMemoryGB = v
+	}
+	if v, changed := clampNonNeg(bc.GPUMemoryActiveGB, maxMemoryGBFloat); changed {
+		logger.Warn("provider gpu_memory_active_gb out of range, clamping",
+			"provider_id", providerID, "reported", bc.GPUMemoryActiveGB, "clamped", v)
+		bc.GPUMemoryActiveGB = v
+	}
+	if v, changed := clampNonNeg(bc.GPUMemoryPeakGB, maxMemoryGBFloat); changed {
+		bc.GPUMemoryPeakGB = v
+	}
+	if v, changed := clampNonNeg(bc.GPUMemoryCacheGB, maxMemoryGBFloat); changed {
+		bc.GPUMemoryCacheGB = v
+	}
+	for i := range bc.Slots {
+		s := &bc.Slots[i]
+		if s.MaxTokensPotential < 0 || s.MaxTokensPotential > maxTokensPotential {
+			logger.Warn("provider slot max_tokens_potential out of range, clamping",
+				"provider_id", providerID, "model", s.Model, "reported", s.MaxTokensPotential)
+			if s.MaxTokensPotential < 0 {
+				s.MaxTokensPotential = 0
+			} else {
+				s.MaxTokensPotential = maxTokensPotential
+			}
+		}
+		if s.NumRunning < 0 {
+			s.NumRunning = 0
+		}
+		if s.NumWaiting < 0 {
+			s.NumWaiting = 0
+		}
+	}
+}
+
 // Register adds a new provider to the registry, returning its assigned ID.
 // If a model catalog is configured, only models in the catalog are kept.
 func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.RegisterMessage) *Provider {
+	// Clamp provider-reported performance stats used in routing score.
+	// Refuse to trust unbounded values — a malicious provider reporting
+	// DecodeTPS=1e9 would otherwise starve all other providers.
+	if v, changed := clampNonNeg(msg.DecodeTPS, maxDecodeTPS); changed {
+		r.logger.Warn("provider decode_tps out of range, clamping",
+			"provider_id", id, "reported", msg.DecodeTPS, "clamped", v)
+		msg.DecodeTPS = v
+	}
+	if v, changed := clampNonNeg(msg.PrefillTPS, maxPrefillTPS); changed {
+		r.logger.Warn("provider prefill_tps out of range, clamping",
+			"provider_id", id, "reported", msg.PrefillTPS, "clamped", v)
+		msg.PrefillTPS = v
+	}
+	if v, changed := clampNonNeg(msg.Hardware.MemoryBandwidthGBs, maxMemoryBandwidthGBs); changed {
+		r.logger.Warn("provider memory_bandwidth_gbs out of range, clamping",
+			"provider_id", id, "reported", msg.Hardware.MemoryBandwidthGBs, "clamped", v)
+		msg.Hardware.MemoryBandwidthGBs = v
+	}
+	if msg.Hardware.MemoryGB < 0 || msg.Hardware.MemoryGB > maxMemoryGB {
+		r.logger.Warn("provider memory_gb out of range, clamping",
+			"provider_id", id, "reported", msg.Hardware.MemoryGB)
+		if msg.Hardware.MemoryGB < 0 {
+			msg.Hardware.MemoryGB = 0
+		} else {
+			msg.Hardware.MemoryGB = maxMemoryGB
+		}
+	}
+
 	// Filter models against the catalog before storing.
 	models := msg.Models
 	r.mu.RLock()
@@ -609,21 +797,26 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	}
 
 	p := &Provider{
-		ID:              id,
-		Hardware:        msg.Hardware,
-		Models:          models,
-		Backend:         msg.Backend,
-		PublicKey:       pubKey,
-		WalletAddress:   msg.WalletAddress,
-		PrefillTPS:      msg.PrefillTPS,
-		DecodeTPS:       msg.DecodeTPS,
-		TrustLevel:      TrustNone,
-		RuntimeVerified: true, // default to verified; API layer sets false when manifest check fails
-		Status:          StatusOnline,
-		Conn:            conn,
-		LastHeartbeat:   time.Now(),
-		Reputation:      NewReputation(),
-		pendingReqs:     make(map[string]*PendingRequest),
+		ID:                      id,
+		Hardware:                msg.Hardware,
+		Models:                  models,
+		Backend:                 msg.Backend,
+		PublicKey:               pubKey,
+		EncryptedResponseChunks: msg.EncryptedResponseChunks,
+		WalletAddress:           msg.WalletAddress,
+		PrefillTPS:              msg.PrefillTPS,
+		DecodeTPS:               msg.DecodeTPS,
+		TrustLevel:              TrustNone,
+		RuntimeVerified:         true,  // default to verified; API layer sets false when manifest check fails
+		RuntimeManifestChecked:  true,  // default to true; API layer sets false when no manifest is configured
+		ChallengeVerifiedSIP:    false, // starts false; set true by attestation challenge handler after SIP check
+		PrivacyCapabilities:     msg.PrivacyCapabilities,
+		TemplateHashes:          CloneStringMap(msg.TemplateHashes),
+		Status:                  StatusOnline,
+		Conn:                    conn,
+		LastHeartbeat:           time.Now(),
+		Reputation:              NewReputation(),
+		pendingReqs:             make(map[string]*PendingRequest),
 	}
 
 	r.mu.Lock()
@@ -644,6 +837,17 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	r.persistProvider(p)
 
 	return p
+}
+
+func CloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // DisconnectDuplicatesBySerial disconnects all providers that share the same
@@ -694,6 +898,17 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	if !ok {
 		r.logger.Warn("heartbeat from unknown provider", "provider_id", id)
 		return
+	}
+
+	// Clamp heartbeat-reported capacity and metrics so a malicious provider
+	// can't skew routing by reporting absurd values (e.g. TotalMemoryGB=1e9
+	// would drive gpuUtil to 0 and sidestep health penalties).
+	clampBackendCapacity(r.logger, id, msg.BackendCapacity)
+	if v, changed := clampNonNeg(msg.SystemMetrics.MemoryPressure, 1.0); changed {
+		msg.SystemMetrics.MemoryPressure = v
+	}
+	if v, changed := clampNonNeg(msg.SystemMetrics.CPUUsage, 1.0); changed {
+		msg.SystemMetrics.CPUUsage = v
 	}
 
 	p.mu.Lock()
@@ -832,6 +1047,9 @@ func (r *Registry) RecordChallengeSuccess(providerID string) {
 	p.mu.Lock()
 	p.LastChallengeVerified = time.Now()
 	p.FailedChallenges = 0
+	if !p.ChallengeVerifiedSIP {
+		p.ChallengeVerifiedSIP = true
+	}
 	p.Reputation.RecordChallengePass()
 	p.mu.Unlock()
 
@@ -855,6 +1073,10 @@ func (r *Registry) RecordChallengeFailure(providerID string) int {
 
 	p.mu.Lock()
 	p.FailedChallenges++
+	// Any failed or missing challenge result invalidates the previous
+	// coordinator-verified security posture until the provider proves it again.
+	p.LastChallengeVerified = time.Time{}
+	p.ChallengeVerifiedSIP = false
 	p.Reputation.RecordChallengeFail()
 	count := p.FailedChallenges
 	p.mu.Unlock()
@@ -1068,30 +1290,26 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 			continue
 		}
 
-		// Snapshot mutable fields under the provider lock.
 		p.mu.Lock()
 		status := p.Status
 		trust := p.TrustLevel
 		lastChallenge := p.LastChallengeVerified
 		runtimeVerified := p.RuntimeVerified
+		privateReady := providerSupportsPrivateTextLocked(p)
 		p.mu.Unlock()
 
-		// Skip offline/untrusted providers
 		if status == StatusOffline || status == StatusUntrusted {
 			continue
 		}
 		if trustRank(trust) < trustRank(effectiveMin) {
 			continue
 		}
-		// Skip providers whose runtime integrity has not been verified.
-		if !runtimeVerified {
+		if !runtimeVerified || !privateReady {
 			continue
 		}
-		// Skip providers that haven't passed a recent challenge.
 		if lastChallenge.IsZero() || now.Sub(lastChallenge) > challengeMaxAge {
 			continue
 		}
-		// Skip providers at max concurrency (dynamic limit based on hardware)
 		if p.PendingCount() >= p.MaxConcurrency() {
 			continue
 		}
@@ -1207,12 +1425,13 @@ func (r *Registry) ListModels() []AggregateModel {
 		trust := p.TrustLevel
 		attested := p.Attested
 		attestResult := p.AttestationResult
+		privateReady := providerSupportsPrivateTextLocked(p)
 		p.mu.Unlock()
 
 		if status == StatusOffline || status == StatusUntrusted {
 			continue
 		}
-		if !r.trustMeetsMinimum(trust) {
+		if !r.trustMeetsMinimum(trust) || !privateReady {
 			continue
 		}
 		for _, m := range p.Models {
@@ -1321,6 +1540,44 @@ func (r *Registry) ProviderCount() int {
 	return len(r.providers)
 }
 
+// FleetSnapshot is the read-only summary used by metrics polling. We
+// don't lock individual providers — counts may be off-by-one under
+// heavy churn — that's acceptable for gauges.
+type FleetSnapshot struct {
+	Connected  int
+	Idle       int
+	QueueDepth int
+}
+
+// Snapshot returns aggregate counts for /metrics gauges. Cheap enough
+// to call every few seconds. Takes the registry's read lock for the
+// outer iteration AND each provider's mutex briefly to read Status and
+// pending count — those fields are written under p.mu elsewhere
+// (Heartbeat, AddPending, RemovePending), so reading them without
+// p.mu is a data race even if the gauge value is only advisory.
+func (r *Registry) Snapshot() FleetSnapshot {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	idle := 0
+	for _, p := range r.providers {
+		p.mu.Lock()
+		isIdle := p.Status == StatusOnline && len(p.pendingReqs) == 0
+		p.mu.Unlock()
+		if isIdle {
+			idle++
+		}
+	}
+	q := 0
+	if r.queue != nil {
+		q = r.queue.TotalSize()
+	}
+	return FleetSnapshot{
+		Connected:  len(r.providers),
+		Idle:       idle,
+		QueueDepth: q,
+	}
+}
+
 // ForEachProvider iterates over all registered providers (read lock held).
 func (r *Registry) ForEachProvider(fn func(p *Provider)) {
 	r.mu.RLock()
@@ -1346,7 +1603,7 @@ func (r *Registry) ProviderIDs() []string {
 // the context is cancelled.
 func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration) {
 	ticker := time.NewTicker(timeout / 3)
-	go func() {
+	saferun.Go(r.logger, "registry.evictionLoop", func() {
 		defer ticker.Stop()
 		for {
 			select {
@@ -1356,7 +1613,7 @@ func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration)
 				r.evictStale(timeout)
 			}
 		}
-	}()
+	})
 }
 
 func (r *Registry) evictStale(timeout time.Duration) {

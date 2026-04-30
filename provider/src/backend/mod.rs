@@ -83,8 +83,21 @@ impl BackendManager {
                     _ = tokio::time::sleep(interval) => {
                         let b = backend.lock().await;
                         if !b.health().await {
-                            tracing::warn!("Backend {} health check failed", b.name());
+                            let backend_name = b.name().to_string();
+                            tracing::warn!("Backend {} health check failed", backend_name);
                             drop(b);
+
+                            // Report the crash to telemetry before we try to recover.
+                            crate::telemetry::emit(
+                                crate::telemetry::TelemetryEvent::new(
+                                    crate::telemetry::Source::Provider,
+                                    crate::telemetry::Severity::Error,
+                                    crate::telemetry::Kind::BackendCrash,
+                                    format!("backend health check failed: {}", backend_name),
+                                )
+                                .with_field("backend", backend_name.clone())
+                                .with_field("component", "provider"),
+                            );
 
                             let delay = backoff.next_delay();
                             tracing::info!("Restarting backend in {:?}", delay);
@@ -101,6 +114,17 @@ impl BackendManager {
                                 }
                                 Err(e) => {
                                     tracing::error!("Failed to restart backend: {e}");
+                                    crate::telemetry::emit(
+                                        crate::telemetry::TelemetryEvent::new(
+                                            crate::telemetry::Source::Provider,
+                                            crate::telemetry::Severity::Error,
+                                            crate::telemetry::Kind::BackendCrash,
+                                            "backend restart failed",
+                                        )
+                                        .with_field("backend", backend_name)
+                                        .with_field("reason", "restart_error")
+                                        .with_field("error", format!("{e}")),
+                                    );
                                 }
                             }
                         } else {

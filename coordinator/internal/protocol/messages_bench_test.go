@@ -32,7 +32,7 @@ func BenchmarkMarshalRegisterMessage(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = json.Marshal(msg)
 	}
 }
@@ -63,7 +63,7 @@ func BenchmarkUnmarshalProviderMessage(b *testing.B) {
 	data, _ := json.Marshal(hb)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		var pm ProviderMessage
 		_ = pm.UnmarshalJSON(data)
 	}
@@ -81,7 +81,7 @@ func BenchmarkMarshalInferenceRequest(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = json.Marshal(msg)
 	}
 }

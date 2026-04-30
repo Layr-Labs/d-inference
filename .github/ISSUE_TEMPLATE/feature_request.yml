@@ -1,0 +1,56 @@
+name: Feature request
+description: Propose a new feature or improvement
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an idea. The clearer the motivation, the easier it is to scope and prioritize.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of the system would this affect?
+      options:
+        - coordinator (Go)
+        - provider (Rust)
+        - console-ui (Next.js)
+        - image-bridge (Python)
+        - app (macOS Swift)
+        - enclave (Swift Secure Enclave helper)
+        - infra / deploy / CI
+        - docs
+        - cross-cutting / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What problem are you trying to solve? Who is this for? Why does it matter now?
+      placeholder: e.g. "Providers running on 8GB Macs can't serve any catalog model and there's no way to opt them into STT-only mode."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should change? UI sketches, API shape, config additions — whatever makes the proposal concrete.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about and why you ruled them out.
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope notes
+      description: Any non-obvious surfaces this touches (protocol changes, billing, attestation, release bundle, etc.)? Knowing this up front helps reviewers.

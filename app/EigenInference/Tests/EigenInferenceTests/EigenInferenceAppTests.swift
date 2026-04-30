@@ -84,12 +84,13 @@ struct ModelCatalogTests {
 
     @Test("fit indicator with 16GB RAM")
     func fitsWith16GB() {
-        let small = ModelCatalog.models.first! // Cohere Transcribe, minRAMGB = 8
-        #expect(small.fitsInMemory(totalGB: 16))
+        let first = ModelCatalog.models.first! // Qwen3.5 27B Claude Opus, minRAMGB = 36
+        #expect(!first.fitsInMemory(totalGB: 16))
 
-        // Large models (minRAMGB >= 128) should not fit in 16 GB
-        let large = ModelCatalog.models.first { $0.minRAMGB > 16 }!
-        #expect(!large.fitsInMemory(totalGB: 16))
+        // No models should fit in 16 GB (smallest requires 36 GB)
+        for model in ModelCatalog.models {
+            #expect(!model.fitsInMemory(totalGB: 16))
+        }
     }
 
     @Test("fit indicator with 256GB RAM")

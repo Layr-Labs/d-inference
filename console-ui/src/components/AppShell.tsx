@@ -6,7 +6,7 @@ import { Sidebar } from "./Sidebar";
 import { Toasts } from "./Toasts";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { ready, authenticated } = useAuth();
+  const { ready } = useAuth();
   const pathname = usePathname();
 
   // Device-linking page — no shell
@@ -24,16 +24,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </h1>
           <p className="mt-2 text-sm text-text-tertiary">Loading...</p>
         </div>
-      </div>
-    );
-  }
-
-  // Unauthenticated — show page content without sidebar
-  if (!authenticated) {
-    return (
-      <div className="flex h-screen overflow-hidden bg-bg-primary">
-        <main className="flex-1 flex flex-col overflow-y-auto">{children}</main>
-        <Toasts />
       </div>
     );
   }

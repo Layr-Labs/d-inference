@@ -17,22 +17,15 @@ typedef void* EigenInferenceEnclaveIdentity;
 int32_t eigeninference_enclave_is_available(void);
 
 /*
- * Create a new identity in the Secure Enclave.
+ * Create a new ephemeral identity in the Secure Enclave.
+ * The key exists only while the returned handle is alive.
  * Returns NULL on failure (e.g., Secure Enclave unavailable).
  * Caller must free with eigeninference_enclave_free().
  */
 EigenInferenceEnclaveIdentity eigeninference_enclave_create(void);
 
 /*
- * Load an existing identity from a saved data representation.
- * The data representation is device-specific and opaque.
- * Returns NULL on failure.
- * Caller must free with eigeninference_enclave_free().
- */
-EigenInferenceEnclaveIdentity eigeninference_enclave_load(const uint8_t* data, int data_len);
-
-/*
- * Free an identity created by eigeninference_enclave_create() or eigeninference_enclave_load().
+ * Free an identity created by eigeninference_enclave_create().
  */
 void eigeninference_enclave_free(EigenInferenceEnclaveIdentity identity);
 
@@ -41,17 +34,6 @@ void eigeninference_enclave_free(EigenInferenceEnclaveIdentity identity);
  * Caller must free the returned string with eigeninference_enclave_free_string().
  */
 char* eigeninference_enclave_public_key_base64(EigenInferenceEnclaveIdentity identity);
-
-/*
- * Get the data representation for persisting the identity.
- * If buffer is NULL, returns the required buffer size.
- * Otherwise copies up to buffer_len bytes and returns bytes written.
- */
-int eigeninference_enclave_data_representation(
-    EigenInferenceEnclaveIdentity identity,
-    uint8_t* buffer,
-    int buffer_len
-);
 
 /*
  * Sign data with the Secure Enclave private key.
@@ -81,11 +63,25 @@ int32_t eigeninference_enclave_verify(
 
 /*
  * Create a signed attestation blob containing hardware/software state.
- * Returns a pretty-printed JSON null-terminated string.
+ * Returns a JSON null-terminated string.
  * Caller must free the returned string with eigeninference_enclave_free_string().
  * Returns NULL on failure.
  */
 char* eigeninference_enclave_create_attestation(EigenInferenceEnclaveIdentity identity);
+
+/*
+ * Create a signed attestation blob with encryption key and binary hash binding.
+ *   encryptionKeyBase64: optional X25519 public key (base64), NULL to omit
+ *   binaryHashHex:       optional SHA-256 hash of provider binary (hex), NULL to omit
+ * Returns JSON null-terminated string.
+ * Caller must free the returned string with eigeninference_enclave_free_string().
+ * Returns NULL on failure.
+ */
+char* eigeninference_enclave_create_attestation_full(
+    EigenInferenceEnclaveIdentity identity,
+    const char* encryptionKeyBase64,
+    const char* binaryHashHex
+);
 
 /*
  * Free a string returned by any eigeninference_enclave_* function.

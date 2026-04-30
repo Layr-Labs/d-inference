@@ -1,14 +1,66 @@
 package api
 
 import (
+	"archive/tar"
+	"compress/gzip"
+	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/eigeninference/coordinator/internal/auth"
 	"github.com/eigeninference/coordinator/internal/store"
 )
+
+const (
+	maxReleaseRegisterBodyBytes = 64 * 1024
+	maxReleaseArtifactBytes     = 2 << 30 // 2 GiB
+	maxReleaseProviderBinBytes  = 512 << 20
+	releaseArtifactTimeout      = 2 * time.Minute
+)
+
+var (
+	releaseVersionPattern      = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$`)
+	releasePlatformPattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	releaseTemplateNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+)
+
+type registerReleaseRequest struct {
+	Version        string `json:"version"`
+	Platform       string `json:"platform"`
+	BinaryHash     string `json:"binary_hash"`
+	BundleHash     string `json:"bundle_hash"`
+	PythonHash     string `json:"python_hash,omitempty"`
+	RuntimeHash    string `json:"runtime_hash,omitempty"`
+	TemplateHashes string `json:"template_hashes,omitempty"`
+	URL            string `json:"url"`
+	Changelog      string `json:"changelog"`
+}
+
+func (req registerReleaseRequest) toRelease() store.Release {
+	return store.Release{
+		Version:        req.Version,
+		Platform:       req.Platform,
+		BinaryHash:     req.BinaryHash,
+		BundleHash:     req.BundleHash,
+		PythonHash:     req.PythonHash,
+		RuntimeHash:    req.RuntimeHash,
+		TemplateHashes: req.TemplateHashes,
+		URL:            req.URL,
+		Changelog:      req.Changelog,
+	}
+}
 
 // handleRegisterRelease handles POST /v1/releases.
 // Called by GitHub Actions to register a new provider binary release.
@@ -16,29 +68,51 @@ import (
 func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 	// Verify scoped release key.
 	token := extractBearerToken(r)
-	if s.releaseKey == "" || token != s.releaseKey {
+	if !s.releaseKeyAuthorized(token) {
 		writeJSON(w, http.StatusUnauthorized, errorResponse("unauthorized", "invalid release key"))
 		return
 	}
 
-	var release store.Release
-	if err := json.NewDecoder(r.Body).Decode(&release); err != nil {
+	var req registerReleaseRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxReleaseRegisterBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
 		return
 	}
-	if release.Version == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "version is required"))
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: multiple JSON values"))
 		return
 	}
+	release := req.toRelease()
 	if release.Platform == "" {
 		release.Platform = "macos-arm64" // default
 	}
-	if release.BinaryHash == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "binary_hash is required"))
+
+	if err := s.validateReleaseMetadata(&release); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 		return
 	}
-	if release.URL == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "url is required"))
+
+	if s.r2CDNURL == "" {
+		s.logger.Error("release: artifact verification unavailable because R2 CDN URL is not configured",
+			"version", release.Version,
+			"platform", release.Platform,
+		)
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("not_configured", "release artifact verification requires R2 CDN URL"))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), releaseArtifactTimeout)
+	defer cancel()
+	if err := s.verifyReleaseArtifact(ctx, &release); err != nil {
+		s.logger.Warn("release: artifact verification failed",
+			"version", release.Version,
+			"platform", release.Platform,
+			"error", err,
+		)
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "release artifact verification failed: "+err.Error()))
 		return
 	}
 
@@ -69,6 +143,298 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 		"status":  "release_registered",
 		"release": release,
 	})
+}
+
+func (s *Server) releaseKeyAuthorized(token string) bool {
+	if s.releaseKey == "" || token == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(s.releaseKey)) == 1
+}
+
+func (s *Server) validateReleaseMetadata(release *store.Release) error {
+	release.Version = strings.TrimSpace(release.Version)
+	release.Platform = strings.TrimSpace(release.Platform)
+	release.BinaryHash = strings.TrimSpace(release.BinaryHash)
+	release.BundleHash = strings.TrimSpace(release.BundleHash)
+	release.PythonHash = strings.TrimSpace(release.PythonHash)
+	release.RuntimeHash = strings.TrimSpace(release.RuntimeHash)
+	release.TemplateHashes = strings.TrimSpace(release.TemplateHashes)
+	release.URL = strings.TrimSpace(release.URL)
+
+	if release.Version == "" {
+		return fmt.Errorf("version is required")
+	}
+	if !releaseVersionPattern.MatchString(release.Version) {
+		return fmt.Errorf("version must be semver, e.g. 1.2.3 or 1.2.3-dev.1")
+	}
+	if release.Platform == "" {
+		return fmt.Errorf("platform is required")
+	}
+	if !releasePlatformPattern.MatchString(release.Platform) {
+		return fmt.Errorf("platform contains invalid characters")
+	}
+
+	var err error
+	if release.BinaryHash, err = normalizeSHA256Hex(release.BinaryHash, "binary_hash"); err != nil {
+		return err
+	}
+	if release.BundleHash, err = normalizeSHA256Hex(release.BundleHash, "bundle_hash"); err != nil {
+		return err
+	}
+	if release.PythonHash != "" {
+		if release.PythonHash, err = normalizeSHA256Hex(release.PythonHash, "python_hash"); err != nil {
+			return err
+		}
+	}
+	if release.RuntimeHash != "" {
+		if release.RuntimeHash, err = normalizeSHA256Hex(release.RuntimeHash, "runtime_hash"); err != nil {
+			return err
+		}
+	}
+	if release.TemplateHashes != "" {
+		if release.TemplateHashes, err = normalizeTemplateHashes(release.TemplateHashes); err != nil {
+			return err
+		}
+	}
+	if release.URL == "" {
+		return fmt.Errorf("url is required")
+	}
+	if s.r2CDNURL != "" {
+		if _, err := s.trustedReleaseArtifactURL(release); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) trustedReleaseArtifactURL(release *store.Release) (*url.URL, error) {
+	expectedURL, err := expectedReleaseArtifactURL(s.r2CDNURL, release.Version, release.Platform)
+	if err != nil {
+		return nil, err
+	}
+	if !sameReleaseArtifactURL(release.URL, expectedURL) {
+		return nil, fmt.Errorf("url must match configured release artifact path")
+	}
+	parsed, err := url.Parse(expectedURL)
+	if err != nil {
+		return nil, fmt.Errorf("configured release artifact URL is invalid")
+	}
+	return parsed, nil
+}
+
+func expectedReleaseArtifactURL(baseURL, version, platform string) (string, error) {
+	version = strings.TrimSpace(version)
+	platform = strings.TrimSpace(platform)
+	if !releaseVersionPattern.MatchString(version) {
+		return "", fmt.Errorf("version must be semver, e.g. 1.2.3 or 1.2.3-dev.1")
+	}
+	if !releasePlatformPattern.MatchString(platform) {
+		return "", fmt.Errorf("platform contains invalid characters")
+	}
+
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return "", fmt.Errorf("configured R2 CDN URL is invalid")
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("configured R2 CDN URL must not include credentials, query, or fragment")
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("configured R2 CDN URL must include a host")
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return "", fmt.Errorf("configured R2 CDN URL must be absolute")
+	}
+	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+		return "", fmt.Errorf("configured R2 CDN URL must use https")
+	}
+	u.Path = path.Join(u.Path, "releases", "v"+version, "eigeninference-bundle-"+platform+".tar.gz")
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String(), nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func sameReleaseArtifactURL(actual, expected string) bool {
+	actualURL, err := url.Parse(strings.TrimSpace(actual))
+	if err != nil {
+		return false
+	}
+	expectedURL, err := url.Parse(expected)
+	if err != nil {
+		return false
+	}
+	if actualURL.User != nil || expectedURL.User != nil {
+		return false
+	}
+	return strings.EqualFold(actualURL.Scheme, expectedURL.Scheme) &&
+		strings.EqualFold(actualURL.Host, expectedURL.Host) &&
+		path.Clean(actualURL.EscapedPath()) == path.Clean(expectedURL.EscapedPath()) &&
+		actualURL.RawQuery == "" &&
+		actualURL.Fragment == ""
+}
+
+func normalizeSHA256Hex(value, field string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) != sha256.Size*2 {
+		return "", fmt.Errorf("%s must be a 64-character SHA-256 hex digest", field)
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return "", fmt.Errorf("%s must be a valid SHA-256 hex digest", field)
+	}
+	return value, nil
+}
+
+func normalizeTemplateHashes(raw string) (string, error) {
+	entries := strings.Split(raw, ",")
+	normalized := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		name, hash, ok := strings.Cut(entry, "=")
+		if !ok {
+			return "", fmt.Errorf("template_hashes entries must be name=sha256")
+		}
+		name = strings.TrimSpace(name)
+		if name == "" || !releaseTemplateNamePattern.MatchString(name) {
+			return "", fmt.Errorf("template_hashes contains an invalid template name")
+		}
+		hash, err := normalizeSHA256Hex(hash, "template_hashes")
+		if err != nil {
+			return "", err
+		}
+		normalized = append(normalized, name+"="+hash)
+	}
+	return strings.Join(normalized, ","), nil
+}
+
+func (s *Server) verifyReleaseArtifact(ctx context.Context, release *store.Release) error {
+	downloadURL, err := s.trustedReleaseArtifactURL(release)
+	if err != nil {
+		return err
+	}
+	req := &http.Request{
+		Method: http.MethodGet,
+		URL:    downloadURL,
+		Header: make(http.Header),
+	}
+	req = req.WithContext(ctx)
+
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("download bundle: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download bundle returned status %d", resp.StatusCode)
+	}
+
+	tmp, err := os.CreateTemp("", "darkbloom-release-*.tar.gz")
+	if err != nil {
+		return fmt.Errorf("create temp bundle: %w", err)
+	}
+	defer func() {
+		tmp.Close()
+		os.Remove(tmp.Name())
+	}()
+
+	bundleHash := sha256.New()
+	limited := io.LimitReader(resp.Body, maxReleaseArtifactBytes+1)
+	n, err := io.Copy(io.MultiWriter(tmp, bundleHash), limited)
+	if err != nil {
+		return fmt.Errorf("read bundle: %w", err)
+	}
+	if n > maxReleaseArtifactBytes {
+		return fmt.Errorf("bundle exceeds maximum size")
+	}
+	actualBundleHash := hex.EncodeToString(bundleHash.Sum(nil))
+	if actualBundleHash != release.BundleHash {
+		return fmt.Errorf("bundle_hash does not match release artifact")
+	}
+
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind bundle: %w", err)
+	}
+
+	gz, err := gzip.NewReader(tmp)
+	if err != nil {
+		return fmt.Errorf("open bundle gzip: %w", err)
+	}
+	defer gz.Close()
+
+	tarReader := tar.NewReader(gz)
+	binaryHash := sha256.New()
+	foundBinary := false
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read bundle tar: %w", err)
+		}
+		cleanName, err := cleanReleaseTarPath(header.Name)
+		if err != nil {
+			return err
+		}
+		if cleanName != "bin/darkbloom" {
+			continue
+		}
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+			return fmt.Errorf("bundled provider binary is not a regular file")
+		}
+		if foundBinary {
+			return fmt.Errorf("bundle contains multiple provider binaries")
+		}
+		if header.Size < 0 || header.Size > maxReleaseProviderBinBytes {
+			return fmt.Errorf("provider binary exceeds maximum size")
+		}
+		n, err := io.Copy(binaryHash, io.LimitReader(tarReader, maxReleaseProviderBinBytes+1))
+		if err != nil {
+			return fmt.Errorf("read provider binary: %w", err)
+		}
+		if n > maxReleaseProviderBinBytes {
+			return fmt.Errorf("provider binary exceeds maximum size")
+		}
+		foundBinary = true
+	}
+	if !foundBinary {
+		return fmt.Errorf("bundle is missing bin/darkbloom")
+	}
+
+	actualBinaryHash := hex.EncodeToString(binaryHash.Sum(nil))
+	if actualBinaryHash != release.BinaryHash {
+		return fmt.Errorf("binary_hash does not match bundled provider binary")
+	}
+	return nil
+}
+
+func cleanReleaseTarPath(name string) (string, error) {
+	if name == "" || strings.HasPrefix(name, "/") {
+		return "", fmt.Errorf("bundle contains unsafe path")
+	}
+	for _, part := range strings.Split(name, "/") {
+		if part == ".." {
+			return "", fmt.Errorf("bundle contains unsafe path")
+		}
+	}
+	return strings.TrimPrefix(path.Clean(name), "./"), nil
 }
 
 // handleLatestRelease handles GET /v1/releases/latest.

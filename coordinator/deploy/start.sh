@@ -9,6 +9,14 @@ mkdir -p "$PERSIST/step-ca" "$PERSIST/micromdm"
 ln -sfn "$PERSIST" /data
 
 # ---- step-ca ----
+# Migrate legacy step-ca password if needed (existing VMs have eigeninference-step-ca).
+if [ -f /data/step-ca/secrets/password ]; then
+    PW=$(cat /data/step-ca/secrets/password)
+    if [ "$PW" = "eigeninference-step-ca" ]; then
+        echo "Migrating step-ca password..."
+        echo "darkbloom-step-ca" > /data/step-ca/secrets/password
+    fi
+fi
 if [ ! -d "/data/step-ca/config" ]; then
     echo "Initializing step-ca (first boot)..."
     mkdir -p /data/step-ca/secrets
@@ -63,6 +71,18 @@ if [ ! -d "/data/step-ca/config" ]; then
          .authority.provisioners += [$legacy]' \
         "$CA_JSON" > /tmp/ca.json && mv /tmp/ca.json "$CA_JSON"
     echo "ACME provisioner configured (darkbloom-acme + eigeninference-acme alias)."
+
+    # Add eigeninference-admin as a JWK provisioner alias sharing the same key
+    # as darkbloom-admin, so existing clients using the old provisioner name
+    # can still sign certificate requests.
+    echo "Adding eigeninference-admin JWK provisioner alias..."
+    ADMIN_KEY=$(jq -r '.authority.provisioners[] | select(.type=="JWK" and .name=="darkbloom-admin") | .key' "$CA_JSON")
+    ADMIN_ENC_KEY=$(jq -r '.authority.provisioners[] | select(.type=="JWK" and .name=="darkbloom-admin") | .encryptedKey' "$CA_JSON")
+    LEGACY_JWK=$(jq -n --arg key "$ADMIN_KEY" --arg encKey "$ADMIN_ENC_KEY" \
+        '{type: "JWK", name: "eigeninference-admin", key: $key, encryptedKey: $encKey}')
+    jq --argjson jwk "$LEGACY_JWK" '.authority.provisioners += [$jwk]' \
+        "$CA_JSON" > /tmp/ca.json && mv /tmp/ca.json "$CA_JSON"
+    echo "JWK provisioner alias configured (darkbloom-admin + eigeninference-admin)."
 fi
 echo "Starting step-ca..."
 STEPPATH=/data/step-ca step-ca /data/step-ca/config/ca.json \
@@ -78,8 +98,12 @@ if [ -n "$MICROMDM_API_KEY" ]; then
         echo "Decoding MDM push certificate from PKCS#12..."
         printf '%s' "$MDM_PUSH_P12_B64" | tr '_-' '/+' | base64 -d > /tmp/push.p12
         openssl pkcs12 -in /tmp/push.p12 -clcerts -nokeys -passin pass:darkbloom \
+            -out /data/micromdm/push.crt 2>/dev/null || \
+        openssl pkcs12 -in /tmp/push.p12 -clcerts -nokeys -passin pass:eigeninference \
             -out /data/micromdm/push.crt 2>/dev/null
         openssl pkcs12 -in /tmp/push.p12 -nocerts -nodes -passin pass:darkbloom \
+            -out /tmp/push_pkcs8.key 2>/dev/null || \
+        openssl pkcs12 -in /tmp/push.p12 -nocerts -nodes -passin pass:eigeninference \
             -out /tmp/push_pkcs8.key 2>/dev/null
         openssl rsa -in /tmp/push_pkcs8.key -traditional -out /data/micromdm/push.key 2>/dev/null
         rm -f /tmp/push.p12 /tmp/push_pkcs8.key
@@ -99,7 +123,7 @@ if [ -n "$MICROMDM_API_KEY" ]; then
     echo "Starting MicroMDM..."
     micromdm serve \
         -server-url "https://${DOMAIN:-localhost}" \
-        -api-key "${MICROMDM_API_KEY:-darkbloom-micromdm-api}" \
+        -api-key "${MICROMDM_API_KEY:-${MICROMDM_API_KEY_FALLBACK:-darkbloom-micromdm-api}}" \
         -filerepo /data/micromdm \
         -config-path /data/micromdm \
         -tls-cert /data/micromdm/server.crt \
@@ -116,7 +140,7 @@ if [ -n "$MICROMDM_API_KEY" ]; then
         mdmctl config set \
             -name darkbloom \
             -server-url "https://localhost:9002" \
-            -api-token "${MICROMDM_API_KEY:-darkbloom-micromdm-api}" \
+            -api-token "${MICROMDM_API_KEY:-${MICROMDM_API_KEY_FALLBACK:-darkbloom-micromdm-api}}" \
             -skip-verify
         mdmctl mdmcert upload \
             -cert /data/micromdm/push.crt \

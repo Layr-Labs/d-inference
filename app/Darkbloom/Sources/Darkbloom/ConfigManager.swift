@@ -52,7 +52,16 @@ enum ConfigManager {
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first!
 
-        return appSupport.appendingPathComponent("darkbloom").appendingPathComponent("provider.toml")
+        let newPath = appSupport.appendingPathComponent("darkbloom").appendingPathComponent("provider.toml")
+        let legacyPath = appSupport.appendingPathComponent("eigeninference").appendingPathComponent("provider.toml")
+
+        if FileManager.default.fileExists(atPath: newPath.path) {
+            return newPath
+        }
+        if FileManager.default.fileExists(atPath: legacyPath.path) {
+            return legacyPath
+        }
+        return newPath
     }
 
     static var darkbloomDir: URL {

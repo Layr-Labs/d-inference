@@ -419,7 +419,7 @@ func main() {
 	if mdmURL := os.Getenv("EIGENINFERENCE_MDM_URL"); mdmURL != "" {
 		mdmKey := os.Getenv("EIGENINFERENCE_MDM_API_KEY")
 		if mdmKey == "" {
-			mdmKey = "darkbloom-micromdm-api" // default
+			mdmKey = "eigeninference-micromdm-api" // legacy default
 		}
 		mdmClient := mdm.NewClient(mdmURL, mdmKey, logger)
 

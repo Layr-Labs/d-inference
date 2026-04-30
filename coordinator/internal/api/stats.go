@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/registry"
+	"github.com/darkbloom/coordinator/internal/registry"
 )
 
 // handleStats returns aggregate platform statistics for the frontend dashboard.

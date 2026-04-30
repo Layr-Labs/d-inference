@@ -27,10 +27,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/attestation"
-	"github.com/eigeninference/coordinator/internal/protocol"
-	"github.com/eigeninference/coordinator/internal/saferun"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/attestation"
+	"github.com/darkbloom/coordinator/internal/protocol"
+	"github.com/darkbloom/coordinator/internal/saferun"
+	"github.com/darkbloom/coordinator/internal/store"
 	"nhooyr.io/websocket"
 )
 

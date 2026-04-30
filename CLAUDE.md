@@ -1,4 +1,4 @@
-# EigenInference - Decentralized GPU Inference
+# Darkbloom - Decentralized GPU Inference
 
 Decentralized inference network for Apple Silicon Macs. Providers offer GPU compute, consumers send OpenAI-compatible requests, the coordinator matches them.
 
@@ -41,18 +41,18 @@ provider/             Rust — runs on Apple Silicon Macs
 ├── stt_server.py     Local speech-to-text server script
 
 image-bridge/         Python FastAPI image generation bridge
-├── eigeninference_image_bridge/
+├── darkbloom_image_bridge/
 │   ├── server.py     OpenAI-compatible /v1/images/generations
 │   └── drawthings_backend.py  Draw Things gRPC backend adapter
 ├── requirements.txt
 └── tests/
 
-app/EigenInference/   Swift — macOS menu bar app (SwiftUI)
-├── Sources/EigenInference/
-│   ├── EigenInferenceApp.swift    App entry, menu bar setup
+app/Darkbloom/   Swift — macOS menu bar app (SwiftUI)
+├── Sources/Darkbloom/
+│   ├── DarkbloomApp.swift    App entry, menu bar setup
 │   ├── StatusViewModel.swift      Core state management
 │   ├── ProviderManager.swift      Provider subprocess lifecycle
-│   ├── CLIRunner.swift            Launches eigeninference-provider
+│   ├── CLIRunner.swift            Launches darkbloom-provider
 │   ├── ConfigManager.swift        TOML config read/write
 │   ├── SecurityManager.swift      Trust level checks (SIP, SE, MDM, Secure Boot)
 │   ├── ModelManager.swift         HuggingFace model scanning
@@ -71,14 +71,14 @@ app/EigenInference/   Swift — macOS menu bar app (SwiftUI)
 │   ├── ModelCatalogView.swift     Model browser with RAM fit indicators
 │   ├── GuideAvatar.swift          Animated mascot (mood-based PNGs)
 │   └── Illustrations.swift        Procedural Mac illustration
-├── Tests/EigenInferenceTests/
+├── Tests/DarkbloomTests/
 
 enclave/              Swift — Secure Enclave attestation CLI helper
 ├── Sources/
-│   ├── EigenInferenceEnclave/     Library (P-256 key gen, attestation blob, FFI bridge for Rust)
-│   └── EigenInferenceEnclaveCLI/  CLI tool (attest, sign, info, wallet-address)
-├── Tests/EigenInferenceEnclaveTests/
-└── include/eigeninference_enclave.h
+│   ├── DarkbloomEnclave/     Library (P-256 key gen, attestation blob, FFI bridge for Rust)
+│   └── DarkbloomEnclaveCLI/  CLI tool (attest, sign, info, wallet-address)
+├── Tests/DarkbloomEnclaveTests/
+└── include/darkbloom_enclave.h
 
 console-ui/           Next.js 16 / React 19 frontend (chat, billing, models, images)
 ├── src/app/          Pages: chat (/), billing, images, models, stats, providers, settings, link, api-console, earn
@@ -117,7 +117,7 @@ The `.external/` directory contains our fork of [vllm-mlx](https://github.com/Ga
 cd coordinator
 go test ./...
 # Cross-compile for the EigenCloud container (Linux amd64):
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o eigeninference-coordinator-linux ./cmd/coordinator
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o darkbloom-coordinator-linux ./cmd/coordinator
 ```
 
 ### Provider (Rust)
@@ -135,7 +135,7 @@ cargo build --release --no-default-features
 
 ### macOS App (Swift)
 ```bash
-cd app/EigenInference
+cd app/Darkbloom
 swift build -c release
 swift test
 ```
@@ -275,7 +275,7 @@ Always think from first principles. When fixing a bug or designing a feature:
 - Attestation tests need `AuthenticatedRootEnabled: true` in test blobs or the ARV check fails and overwrites earlier error messages (the checks run sequentially, last failure wins).
 - The `python` feature flag in the provider Cargo.toml links PyO3. Use `--no-default-features` when building for distribution to avoid Python linking issues.
 - The coordinator uses in-memory store by default. Provider state is lost on restart. Postgres store exists but is not used in production yet.
-- Binary files like `coordinator/eigeninference-coordinator` and `coordinator/eigeninference-coordinator-linux` should NOT be committed to git (15MB+ each).
+- Binary files like `coordinator/darkbloom-coordinator` and `coordinator/darkbloom-coordinator-linux` should NOT be committed to git (15MB+ each).
 - CI release workflow must compute binary SHA-256 hashes AFTER code signing, not before. Providers verify hashes of the signed binary.
 - Provider bundle semantics span multiple files: `scripts/build-bundle.sh`, `scripts/install.sh`, the Swift app launcher, and `LatestProviderVersion` in `coordinator/internal/api/server.go`. Keep them in sync.
 - Image generation changes span three places: coordinator consumer/provider handlers, provider proxying, and `image-bridge/`.

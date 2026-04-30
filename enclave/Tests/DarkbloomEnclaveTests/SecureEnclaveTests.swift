@@ -1,5 +1,5 @@
 import XCTest
-@testable import EigenInferenceEnclave
+@testable import DarkbloomEnclave
 
 final class SecureEnclaveTests: XCTestCase {
 
@@ -37,7 +37,7 @@ final class SecureEnclaveTests: XCTestCase {
 
     func testSignAndVerify() throws {
         let identity = try SecureEnclaveIdentity()
-        let message = "Hello, EigenInference!".data(using: .utf8)!
+        let message = "Hello, Darkbloom!".data(using: .utf8)!
 
         let signature = try identity.sign(message)
         XCTAssertFalse(signature.isEmpty)
@@ -121,42 +121,42 @@ final class SecureEnclaveTests: XCTestCase {
     // MARK: - FFI bridge tests
 
     func testBridgeIsAvailable() {
-        let result = eigeninference_enclave_is_available()
+        let result = darkbloom_enclave_is_available()
         XCTAssertEqual(result, 1, "Secure Enclave should be available via FFI")
     }
 
     func testBridgeCreateAndFree() {
-        guard let ptr = eigeninference_enclave_create() else {
+        guard let ptr = darkbloom_enclave_create() else {
             XCTFail("Failed to create identity via FFI")
             return
         }
 
         // Get public key
-        guard let keyPtr = eigeninference_enclave_public_key_base64(ptr) else {
-            eigeninference_enclave_free(ptr)
+        guard let keyPtr = darkbloom_enclave_public_key_base64(ptr) else {
+            darkbloom_enclave_free(ptr)
             XCTFail("Failed to get public key via FFI")
             return
         }
         let pubKey = String(cString: keyPtr)
-        eigeninference_enclave_free_string(keyPtr)
+        darkbloom_enclave_free_string(keyPtr)
 
         XCTAssertFalse(pubKey.isEmpty)
 
-        eigeninference_enclave_free(ptr)
+        darkbloom_enclave_free(ptr)
     }
 
     func testBridgeSignAndVerify() {
-        guard let ptr = eigeninference_enclave_create() else {
+        guard let ptr = darkbloom_enclave_create() else {
             XCTFail("Failed to create identity")
             return
         }
-        defer { eigeninference_enclave_free(ptr) }
+        defer { darkbloom_enclave_free(ptr) }
 
         let message = "test message".data(using: .utf8)!
 
         // Sign
         let sigPtr = message.withUnsafeBytes { buf -> UnsafeMutablePointer<CChar>? in
-            eigeninference_enclave_sign(
+            darkbloom_enclave_sign(
                 ptr,
                 buf.baseAddress!.assumingMemoryBound(to: UInt8.self),
                 message.count
@@ -169,8 +169,8 @@ final class SecureEnclaveTests: XCTestCase {
         let sigBase64 = String(cString: sigPtr)
 
         // Get public key
-        guard let keyPtr = eigeninference_enclave_public_key_base64(ptr) else {
-            eigeninference_enclave_free_string(sigPtr)
+        guard let keyPtr = darkbloom_enclave_public_key_base64(ptr) else {
+            darkbloom_enclave_free_string(sigPtr)
             XCTFail("Failed to get public key via FFI")
             return
         }
@@ -178,7 +178,7 @@ final class SecureEnclaveTests: XCTestCase {
 
         // Verify
         let valid = message.withUnsafeBytes { buf -> Int32 in
-            eigeninference_enclave_verify(
+            darkbloom_enclave_verify(
                 pubKeyBase64,
                 buf.baseAddress!.assumingMemoryBound(to: UInt8.self),
                 message.count,
@@ -188,23 +188,23 @@ final class SecureEnclaveTests: XCTestCase {
 
         XCTAssertEqual(valid, 1, "FFI signature should verify")
 
-        eigeninference_enclave_free_string(sigPtr)
-        eigeninference_enclave_free_string(keyPtr)
+        darkbloom_enclave_free_string(sigPtr)
+        darkbloom_enclave_free_string(keyPtr)
     }
 
     func testBridgeCreateAttestation() throws {
-        guard let ptr = eigeninference_enclave_create() else {
+        guard let ptr = darkbloom_enclave_create() else {
             XCTFail("Failed to create identity")
             return
         }
-        defer { eigeninference_enclave_free(ptr) }
+        defer { darkbloom_enclave_free(ptr) }
 
-        guard let jsonPtr = eigeninference_enclave_create_attestation(ptr) else {
+        guard let jsonPtr = darkbloom_enclave_create_attestation(ptr) else {
             XCTFail("Failed to create attestation via FFI")
             return
         }
         let json = String(cString: jsonPtr)
-        eigeninference_enclave_free_string(jsonPtr)
+        darkbloom_enclave_free_string(jsonPtr)
 
         XCTAssertTrue(json.contains("publicKey"))
         XCTAssertTrue(json.contains("signature"))
@@ -220,39 +220,39 @@ final class SecureEnclaveTests: XCTestCase {
     }
 
     func testBridgeEphemeralKeysDiffer() {
-        guard let ptr1 = eigeninference_enclave_create() else {
+        guard let ptr1 = darkbloom_enclave_create() else {
             XCTFail("Failed to create first ephemeral identity")
             return
         }
-        guard let ptr2 = eigeninference_enclave_create() else {
-            eigeninference_enclave_free(ptr1)
+        guard let ptr2 = darkbloom_enclave_create() else {
+            darkbloom_enclave_free(ptr1)
             XCTFail("Failed to create second ephemeral identity")
             return
         }
 
-        let key1Ptr = eigeninference_enclave_public_key_base64(ptr1)!
-        let key2Ptr = eigeninference_enclave_public_key_base64(ptr2)!
+        let key1Ptr = darkbloom_enclave_public_key_base64(ptr1)!
+        let key2Ptr = darkbloom_enclave_public_key_base64(ptr2)!
         let key1 = String(cString: key1Ptr)
         let key2 = String(cString: key2Ptr)
 
-        eigeninference_enclave_free_string(key1Ptr)
-        eigeninference_enclave_free_string(key2Ptr)
-        eigeninference_enclave_free(ptr1)
-        eigeninference_enclave_free(ptr2)
+        darkbloom_enclave_free_string(key1Ptr)
+        darkbloom_enclave_free_string(key2Ptr)
+        darkbloom_enclave_free(ptr1)
+        darkbloom_enclave_free(ptr2)
 
         XCTAssertNotEqual(key1, key2, "Two ephemeral SE keys must have different public keys")
     }
 
     func testBridgeEphemeralSignAndVerify() {
-        guard let ptr = eigeninference_enclave_create() else {
+        guard let ptr = darkbloom_enclave_create() else {
             XCTFail("Failed to create ephemeral identity")
             return
         }
-        defer { eigeninference_enclave_free(ptr) }
+        defer { darkbloom_enclave_free(ptr) }
 
         let message = "ephemeral challenge data".data(using: .utf8)!
         let sigPtr = message.withUnsafeBytes { buf -> UnsafeMutablePointer<CChar>? in
-            eigeninference_enclave_sign(
+            darkbloom_enclave_sign(
                 ptr,
                 buf.baseAddress!.assumingMemoryBound(to: UInt8.self),
                 message.count
@@ -264,15 +264,15 @@ final class SecureEnclaveTests: XCTestCase {
         }
         let sigBase64 = String(cString: sigPtr)
 
-        guard let keyPtr = eigeninference_enclave_public_key_base64(ptr) else {
-            eigeninference_enclave_free_string(sigPtr)
+        guard let keyPtr = darkbloom_enclave_public_key_base64(ptr) else {
+            darkbloom_enclave_free_string(sigPtr)
             XCTFail("Failed to get ephemeral public key")
             return
         }
         let pubKeyBase64 = String(cString: keyPtr)
 
         let valid = message.withUnsafeBytes { buf -> Int32 in
-            eigeninference_enclave_verify(
+            darkbloom_enclave_verify(
                 pubKeyBase64,
                 buf.baseAddress!.assumingMemoryBound(to: UInt8.self),
                 message.count,
@@ -281,27 +281,27 @@ final class SecureEnclaveTests: XCTestCase {
         }
         XCTAssertEqual(valid, 1, "Ephemeral key signature must verify")
 
-        eigeninference_enclave_free_string(sigPtr)
-        eigeninference_enclave_free_string(keyPtr)
+        darkbloom_enclave_free_string(sigPtr)
+        darkbloom_enclave_free_string(keyPtr)
     }
 
     func testBridgeCreateAttestationFull() throws {
-        guard let ptr = eigeninference_enclave_create() else {
+        guard let ptr = darkbloom_enclave_create() else {
             XCTFail("Failed to create identity")
             return
         }
-        defer { eigeninference_enclave_free(ptr) }
+        defer { darkbloom_enclave_free(ptr) }
 
         let encKey = "dGVzdC1lbmNyeXB0aW9uLWtleQ=="
         let binHash = "abcd1234"
-        guard let jsonPtr = eigeninference_enclave_create_attestation_full(
+        guard let jsonPtr = darkbloom_enclave_create_attestation_full(
             ptr, encKey, binHash
         ) else {
             XCTFail("Failed to create full attestation via FFI")
             return
         }
         let json = String(cString: jsonPtr)
-        eigeninference_enclave_free_string(jsonPtr)
+        darkbloom_enclave_free_string(jsonPtr)
 
         XCTAssertTrue(json.contains("publicKey"))
         XCTAssertTrue(json.contains("signature"))

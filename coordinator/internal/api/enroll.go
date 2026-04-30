@@ -53,7 +53,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	profile := generateCombinedProfile(req.SerialNumber, baseURL)
 
 	w.Header().Set("Content-Type", "application/x-apple-aspen-config")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="EigenInference-Enroll-%s.mobileconfig"`, req.SerialNumber))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="Darkbloom-Enroll-%s.mobileconfig"`, req.SerialNumber))
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(profile))
 }
@@ -110,13 +110,13 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
           <array>
             <array>
               <string>O</string>
-              <string>EigenInference</string>
+              <string>Darkbloom</string>
             </array>
           </array>
           <array>
             <array>
               <string>CN</string>
-              <string>EigenInference Identity</string>
+              <string>Darkbloom Identity</string>
             </array>
           </array>
         </array>
@@ -130,7 +130,7 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
       <key>PayloadIdentifier</key>
       <string>io.darkbloom.enroll.scep</string>
       <key>PayloadOrganization</key>
-      <string>EigenInference</string>
+      <string>Darkbloom</string>
       <key>PayloadType</key>
       <string>com.apple.security.scep</string>
       <key>PayloadUUID</key>
@@ -153,7 +153,7 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
       <key>PayloadIdentifier</key>
       <string>io.darkbloom.enroll.mdm</string>
       <key>PayloadOrganization</key>
-      <string>EigenInference</string>
+      <string>Darkbloom</string>
       <key>PayloadType</key>
       <string>com.apple.mdm</string>
       <key>PayloadUUID</key>
@@ -187,9 +187,9 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
       <key>PayloadDescription</key>
       <string>Generates a hardware-bound key in the Secure Enclave. Apple verifies your device is genuine and a certificate is issued binding the key to your Mac.</string>
       <key>PayloadOrganization</key>
-      <string>EigenInference</string>
+      <string>Darkbloom</string>
       <key>DirectoryURL</key>
-      <string>%s/acme/eigeninference-acme/directory</string>
+      <string>%s/acme/darkbloom-acme/directory</string>
       <key>ClientIdentifier</key>
       <string>%s</string>
       <key>KeySize</key>
@@ -226,7 +226,7 @@ func generateCombinedProfile(serialNumber, baseURL string) string {
   <key>PayloadIdentifier</key>
   <string>io.darkbloom.enroll.%s</string>
   <key>PayloadOrganization</key>
-  <string>EigenInference</string>
+  <string>Darkbloom</string>
   <key>PayloadType</key>
   <string>Configuration</string>
   <key>PayloadUUID</key>

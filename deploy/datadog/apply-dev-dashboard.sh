@@ -11,10 +11,17 @@ fetch_secret() {
   if ! command -v gcloud >/dev/null 2>&1; then
     return 1
   fi
-  gcloud secrets versions access latest \
+  local val
+  val=$(gcloud secrets versions access latest \
     --project="$GCP_PROJECT" \
     --secret="$name" \
-    2>/dev/null
+    2>/dev/null) && printf '%s' "$val" && return
+  local legacy="${name/darkbloom-/eigeninference-}"
+  [ "$legacy" != "$name" ] && val=$(gcloud secrets versions access latest \
+    --project="$GCP_PROJECT" \
+    --secret="$legacy" \
+    2>/dev/null) && printf '%s' "$val" && return
+  return 1
 }
 
 API_KEY="${DD_API_KEY:-}"
@@ -22,15 +29,15 @@ APP_KEY="${DD_APPLICATION_KEY:-${DD_APP_KEY:-${DD_WRITE_KEY:-}}}"
 SITE="${DD_SITE:-}"
 
 if [[ -z "$API_KEY" ]]; then
-  API_KEY="$(fetch_secret eigeninference-dd-api-key || true)"
+  API_KEY="$(fetch_secret darkbloom-dd-api-key || true)"
 fi
 
 if [[ -z "$APP_KEY" ]]; then
-  APP_KEY="$(fetch_secret eigeninference-dd-app-key || true)"
+  APP_KEY="$(fetch_secret darkbloom-dd-app-key || true)"
 fi
 
 if [[ -z "$SITE" ]]; then
-  SITE="$(fetch_secret eigeninference-dd-site || true)"
+  SITE="$(fetch_secret darkbloom-dd-site || true)"
 fi
 
 SITE="${SITE:-datadoghq.com}"

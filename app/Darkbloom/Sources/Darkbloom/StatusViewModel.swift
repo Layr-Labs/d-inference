@@ -442,8 +442,8 @@ final class StatusViewModel: ObservableObject {
     /// Parse tracing-formatted output from the provider binary.
     ///
     /// The Rust binary uses `tracing` which outputs lines like:
-    ///   2026-03-24T10:00:00.123Z  INFO eigeninference_provider: Connected to coordinator
-    ///   2026-03-24T10:00:01.234Z  INFO eigeninference_provider: Received inference request: req-abc
+    ///   2026-03-24T10:00:00.123Z  INFO darkbloom_provider: Connected to coordinator
+    ///   2026-03-24T10:00:01.234Z  INFO darkbloom_provider: Received inference request: req-abc
     private func parseProviderOutput(_ line: String) {
         guard !line.isEmpty else { return }
         let lower = line.lowercased()

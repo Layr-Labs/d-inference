@@ -2,7 +2,7 @@
 // uses to receive sealed requests from senders (consumer/console-ui).
 //
 // Senders fetch the public key from GET /v1/encryption-key, NaCl-Box-seal
-// their request body to it, and POST as application/eigeninference-sealed+json.
+// their request body to it, and POST as application/darkbloom-sealed+json.
 // Only the coordinator (which knows the private key) can decrypt.
 //
 // The private key is derived from the same BIP39 mnemonic used for billing,

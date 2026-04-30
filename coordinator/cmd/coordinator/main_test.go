@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 func TestSeedModelCatalogRemovesRetiredProviderModels(t *testing.T) {

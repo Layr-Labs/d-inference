@@ -47,7 +47,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="https://api.darkbloom.dev/v1",
-    api_key="eigeninference-..."
+    api_key="darkbloom-..."
 )
 
 # Chat completion
@@ -104,7 +104,7 @@ A native SwiftUI app is also available:
 
 ### Scheduling
 
-Providers can configure time-based availability windows. Outside scheduled hours, the provider disconnects and shuts down the backend to free GPU memory. Configured in the app's Settings or directly in `~/.config/eigeninference/provider.toml`:
+Providers can configure time-based availability windows. Outside scheduled hours, the provider disconnects and shuts down the backend to free GPU memory. Configured in the app's Settings or directly in `~/.config/darkbloom/provider.toml`:
 
 ```toml
 [schedule]
@@ -158,7 +158,7 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 | Coordinator (`coordinator/`) | Go | Control plane: routing, attestation, billing, API |
 | Provider (`provider/`) | Rust | Inference agent: security, attestation, WebSocket client |
 | Console (`console-ui/`) | Next.js 16 | Web dashboard: chat, billing, provider verification |
-| macOS App (`app/EigenInference/`) | Swift | Menu bar app: status, scheduling, earnings |
+| macOS App (`app/Darkbloom/`) | Swift | Menu bar app: status, scheduling, earnings |
 | Secure Enclave (`enclave/`) | Swift | Hardware-bound P-256 identity |
 | Landing (`landing/`) | HTML | Static landing page |
 
@@ -172,7 +172,7 @@ cd coordinator && go test ./...
 cd provider && cargo test
 
 # macOS App
-cd app/EigenInference && swift build -c release
+cd app/Darkbloom && swift build -c release
 
 # Console UI
 cd console-ui && npm install && npm run dev

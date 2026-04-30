@@ -22,10 +22,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/auth"
-	"github.com/eigeninference/coordinator/internal/billing"
-	"github.com/eigeninference/coordinator/internal/payments"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/auth"
+	"github.com/darkbloom/coordinator/internal/billing"
+	"github.com/darkbloom/coordinator/internal/payments"
+	"github.com/darkbloom/coordinator/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -83,7 +83,7 @@ func (s *Server) handleStripeCreateSession(w http.ResponseWriter, r *http.Reques
 		CustomerEmail: req.Email,
 		Metadata: map[string]string{
 			"app":                "darkbloom",
-			"platform":           "eigeninference",
+			"platform":           "darkbloom",
 			"purchase_type":      "inference_credits",
 			"source":             "coordinator",
 			"coordinator_host":   r.Host,

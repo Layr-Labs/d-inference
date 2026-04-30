@@ -1,5 +1,5 @@
 import CryptoKit
-import EigenInferenceEnclave
+import DarkbloomEnclave
 import Foundation
 
 // MARK: - CLI Entry Point
@@ -7,15 +7,15 @@ import Foundation
 /// Command-line tool for Secure Enclave attestation and diagnostics.
 ///
 /// Usage:
-///   eigeninference-enclave attest [--encryption-key <base64>] [--binary-hash <hex>]
-///   eigeninference-enclave info
+///   darkbloom-enclave attest [--encryption-key <base64>] [--binary-hash <hex>]
+///   darkbloom-enclave info
 ///
 /// All keys are ephemeral — a fresh P-256 key is created in the Secure Enclave
 /// for each invocation. No key material is persisted to disk.
 
 func printUsage() {
     let usage = """
-    Usage: eigeninference-enclave <command> [options]
+    Usage: darkbloom-enclave <command> [options]
 
     Commands:
       attest          Generate a signed attestation blob (ephemeral key)

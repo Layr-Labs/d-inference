@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 type accountEarningsResponse struct {

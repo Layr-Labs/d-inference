@@ -1,4 +1,4 @@
-/// EigenInferenceAppTests — Unit tests for the EigenInference menu bar app.
+/// DarkbloomAppTests — Unit tests for the Darkbloom menu bar app.
 ///
 /// Tests cover all components:
 ///   - CLIRunner: binary resolution, command execution
@@ -12,7 +12,7 @@
 
 import Testing
 import Foundation
-@testable import EigenInference
+@testable import Darkbloom
 
 // MARK: - CLIRunner Tests
 
@@ -396,7 +396,7 @@ struct OutputParsingTests {
         vm.isOnline = false
 
         // Simulate tracing output
-        vm.providerManager.lastOutputLine = "2026-03-24T10:00:00Z  INFO eigeninference_provider: Connected to coordinator"
+        vm.providerManager.lastOutputLine = "2026-03-24T10:00:00Z  INFO darkbloom_provider: Connected to coordinator"
 
         // Give Combine time to propagate
         // Since parseProviderOutput is called via Combine sink, we test the method directly

@@ -9,7 +9,7 @@
 ///   - Tamper-resistant signing operations
 ///   - Device-bound identity (key cannot be cloned to another device)
 ///
-/// This identity serves two purposes in EigenInference:
+/// This identity serves two purposes in Darkbloom:
 ///   1. **Attestation signing**: The provider signs a hardware/software state
 ///      blob with this key, proving its identity and security posture.
 ///   2. **Challenge-response**: The coordinator periodically challenges the
@@ -31,7 +31,7 @@ import Foundation
 /// The private key never leaves the Secure Enclave. Only an opaque
 /// `dataRepresentation` can be persisted to reload the same key on the
 /// same device. This provides node identity and attestation signing for
-/// the EigenInference provider agent, complementing the X25519 key used for E2E
+/// the Darkbloom provider agent, complementing the X25519 key used for E2E
 /// encryption.
 public final class SecureEnclaveIdentity {
     private let privateKey: SecureEnclave.P256.Signing.PrivateKey

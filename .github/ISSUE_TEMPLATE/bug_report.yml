@@ -33,7 +33,7 @@ body:
     attributes:
       label: What happened?
       description: A clear description of the bug, including any error messages or unexpected output.
-      placeholder: e.g. provider crashed with X after running `eigeninference-provider serve` on a fresh M2 Air
+      placeholder: e.g. provider crashed with X after running `darkbloom-provider serve` on a fresh M2 Air
     validations:
       required: true
 
@@ -52,7 +52,7 @@ body:
       description: Minimal steps that reliably trigger the bug.
       placeholder: |
         1. Install v0.3.5 via the install.sh one-liner
-        2. Run `eigeninference-provider serve --model llama-3.1-8b-instruct`
+        2. Run `darkbloom-provider serve --model llama-3.1-8b-instruct`
         3. Send a chat completion from the console UI
         4. Observe the failure
     validations:
@@ -63,7 +63,7 @@ body:
     attributes:
       label: Environment
       description: |
-        Anything relevant to reproducing this — provider version (`eigeninference-provider --version`), macOS version, Mac model + RAM, browser (for console UI bugs), etc.
+        Anything relevant to reproducing this — provider version (`darkbloom-provider --version`), macOS version, Mac model + RAM, browser (for console UI bugs), etc.
       placeholder: |
         - provider: v0.3.5
         - macOS: 15.4 (Sequoia)
@@ -75,7 +75,7 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Relevant log output. For provider crashes, include the last ~50 lines of `~/Library/Logs/eigeninference-provider/*.log`. Use code fences and redact anything sensitive.
+      description: Relevant log output. For provider crashes, include the last ~50 lines of `~/Library/Logs/darkbloom-provider/*.log`. Use code fences and redact anything sensitive.
       render: shell
 
   - type: checkboxes

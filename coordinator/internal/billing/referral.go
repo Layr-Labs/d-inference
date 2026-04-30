@@ -7,8 +7,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/eigeninference/coordinator/internal/payments"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/payments"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 // ReferralService manages the referral code system.

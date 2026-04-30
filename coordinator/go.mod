@@ -1,4 +1,4 @@
-module github.com/eigeninference/coordinator
+module github.com/darkbloom/coordinator
 
 go 1.25.0
 

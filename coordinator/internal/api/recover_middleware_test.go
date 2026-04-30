@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/eigeninference/coordinator/internal/telemetry"
+	"github.com/darkbloom/coordinator/internal/telemetry"
 )
 
 func TestRecoverMiddlewareCatchesPanic(t *testing.T) {

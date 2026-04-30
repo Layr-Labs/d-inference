@@ -299,7 +299,7 @@ pub fn check_mdm_enrolled() -> bool {
                     // Positive signals
                     let has_profile = combined.contains("micromdm")
                         || combined.contains("com.github.micromdm")
-                        || combined.contains("eigeninference")
+                        || combined.contains("darkbloom")
                         || combined.contains("attribute: profileidentifier");
                     // Negative signal
                     let no_profiles = combined.contains("no configuration profiles");
@@ -587,7 +587,7 @@ pub fn compute_runtime_hashes(python_cmd: &str) -> RuntimeHashes {
     // Hash the Python binary itself
     let python_hash = hash_file(std::path::Path::new(python_cmd));
 
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
+    let darkbloom_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
     let runtime_hash = runtime_lib_dir_from_python_cmd(python_cmd)
         .filter(|lib_dir| lib_dir.exists())
         .and_then(|lib_dir| {
@@ -605,7 +605,7 @@ pub fn compute_runtime_hashes(python_cmd: &str) -> RuntimeHashes {
         });
 
     // Hash templates in ~/.darkbloom/templates/
-    let templates_dir = eigeninference_dir.join("templates");
+    let templates_dir = darkbloom_dir.join("templates");
     let mut template_hashes = std::collections::HashMap::new();
     if templates_dir.exists() {
         for entry in std::fs::read_dir(&templates_dir).ok().into_iter().flatten() {
@@ -671,7 +671,7 @@ pub fn verify_backend_integrity(binary_name: &str) -> Result<String, String> {
 /// cannot be sniffed by tcpdump (unlike TCP localhost).
 pub fn backend_socket_path() -> std::path::PathBuf {
     let pid = std::process::id();
-    std::path::PathBuf::from(format!("/tmp/eigeninference-backend-{pid}.sock"))
+    std::path::PathBuf::from(format!("/tmp/darkbloom-backend-{pid}.sock"))
 }
 
 /// Clean up the Unix socket file if it exists.
@@ -851,7 +851,7 @@ mod tests {
 
     #[test]
     fn test_collect_files_recursive() {
-        let tmp = std::env::temp_dir().join("eigeninference_test_collect");
+        let tmp = std::env::temp_dir().join("darkbloom_test_collect");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("sub")).unwrap();
         std::fs::write(tmp.join("a.py"), "# a").unwrap();
@@ -871,7 +871,7 @@ mod tests {
 
     #[test]
     fn test_collect_files_recursive_wildcard() {
-        let tmp = std::env::temp_dir().join("eigeninference_test_collect_wildcard");
+        let tmp = std::env::temp_dir().join("darkbloom_test_collect_wildcard");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("sub")).unwrap();
         std::fs::write(tmp.join("a.py"), "# python").unwrap();
@@ -902,7 +902,7 @@ mod tests {
 
     #[test]
     fn test_collect_files_recursive_wildcard_vs_filtered() {
-        let tmp = std::env::temp_dir().join("eigeninference_test_wildcard_vs_filter");
+        let tmp = std::env::temp_dir().join("darkbloom_test_wildcard_vs_filter");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("code.py"), "# python").unwrap();
@@ -922,7 +922,7 @@ mod tests {
 
     #[test]
     fn test_hash_files_sorted_deterministic_with_mixed_types() {
-        let tmp = std::env::temp_dir().join("eigeninference_test_hash_mixed");
+        let tmp = std::env::temp_dir().join("darkbloom_test_hash_mixed");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("a.py"), "python code").unwrap();
@@ -968,7 +968,7 @@ mod tests {
     #[test]
     fn test_compute_runtime_hashes_with_temp_structure() {
         let _guard = env_lock().lock().unwrap();
-        let tmp = std::env::temp_dir().join("eigeninference_test_runtime");
+        let tmp = std::env::temp_dir().join("darkbloom_test_runtime");
         let _ = std::fs::remove_dir_all(&tmp);
 
         // Create a mock directory structure
@@ -1035,7 +1035,7 @@ mod tests {
         // Create a temp directory with known files, compute the hash using
         // our Rust implementation, and independently compute the expected
         // hash using the CI Python reference script. They MUST match.
-        let tmp = std::env::temp_dir().join("eigeninference_test_hash_parity");
+        let tmp = std::env::temp_dir().join("darkbloom_test_hash_parity");
         let _ = std::fs::remove_dir_all(&tmp);
 
         let lib_dir = tmp.join("python/lib/python3.12");

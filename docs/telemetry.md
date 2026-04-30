@@ -1,6 +1,6 @@
 # Telemetry & Crash Reporting
 
-EigenInference ships its own telemetry pipeline instead of depending on
+Darkbloom ships its own telemetry pipeline instead of depending on
 Sentry / Datadog / Prometheus SaaS. Everything rides on infrastructure we
 already own: providers and the console post events over HTTPS to the
 coordinator, which persists them to Postgres.
@@ -146,7 +146,7 @@ capped at 5 MB; the oldest half is rotated out on overflow.
 
 ### macOS App (Swift)
 
-`app/EigenInference/Sources/EigenInference/TelemetryReporter.swift` is a
+`app/Darkbloom/Sources/Darkbloom/TelemetryReporter.swift` is a
 singleton with a bounded 500-event buffer and debounced flush.
 
 - `AppDelegate` installs `NSSetUncaughtExceptionHandler` for fatal Obj-C

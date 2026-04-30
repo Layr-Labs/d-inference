@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eigeninference/analytics/internal/leaderboard"
+	"github.com/darkbloom/analytics/internal/leaderboard"
 )
 
 type Service interface {

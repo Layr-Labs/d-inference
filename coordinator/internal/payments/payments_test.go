@@ -3,7 +3,7 @@ package payments
 import (
 	"testing"
 
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 func newTestLedger() *Ledger {

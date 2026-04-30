@@ -97,7 +97,11 @@ mkdir -p "$ENV_DIR"
 chmod 700 "$ENV_DIR"
 
 fetch() {
-  gcloud --quiet secrets versions access latest --secret="$1" 2>/dev/null || true
+  local val
+  val=$(gcloud --quiet secrets versions access latest --secret="$1" 2>/dev/null) && printf '%s' "$val" && return
+  local legacy="${1/darkbloom-/eigeninference-}"
+  [ "$legacy" != "$1" ] && val=$(gcloud --quiet secrets versions access latest --secret="$legacy" 2>/dev/null) && printf '%s' "$val" && return
+  true
 }
 
 cat > "$ENV_FILE" <<EOF
@@ -107,7 +111,7 @@ EIGENINFERENCE_BILLING_MOCK=false
 EIGENINFERENCE_BASE_URL=https://api.dev.darkbloom.xyz
 EIGENINFERENCE_CONSOLE_URL=https://console.dev.darkbloom.xyz
 CORS_ORIGIN=https://console.dev.darkbloom.xyz
-EIGENINFERENCE_R2_CDN_URL=$(fetch eigeninference-r2-cdn-url)
+EIGENINFERENCE_R2_CDN_URL=$(fetch darkbloom-r2-cdn-url)
 EIGENINFERENCE_SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 EIGENINFERENCE_SOLANA_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
 EIGENINFERENCE_ADMIN_EMAILS=gajesh@eigenlabs.org
@@ -117,25 +121,25 @@ APP_PORT=8080
 EIGENINFERENCE_MDM_URL=https://localhost:9002
 EIGENINFERENCE_STEP_CA_ROOT=/data/step-ca/certs/root_ca.crt
 EIGENINFERENCE_STEP_CA_INTERMEDIATE=/data/step-ca/certs/intermediate_ca.crt
-EIGENINFERENCE_ADMIN_KEY=$(fetch eigeninference-admin-key)
-EIGENINFERENCE_RELEASE_KEY=$(fetch eigeninference-release-key)
-EIGENINFERENCE_PRIVY_APP_ID=$(fetch eigeninference-privy-app-id)
-EIGENINFERENCE_PRIVY_APP_SECRET=$(fetch eigeninference-privy-app-secret)
-EIGENINFERENCE_PRIVY_VERIFICATION_KEY=$(fetch eigeninference-privy-verification-key)
-EIGENINFERENCE_DATABASE_URL=$(fetch eigeninference-database-url)
-MNEMONIC=$(fetch eigeninference-solana-mnemonic)
-MICROMDM_API_KEY=$(fetch eigeninference-micromdm-api-key)
-EIGENINFERENCE_MDM_API_KEY=$(fetch eigeninference-micromdm-api-key)
-MDM_PUSH_P12_B64=$(fetch eigeninference-mdm-push-p12-b64)
-EIGENINFERENCE_STRIPE_SECRET_KEY=$(fetch eigeninference-stripe-secret-key)
-EIGENINFERENCE_STRIPE_WEBHOOK_SECRET=$(fetch eigeninference-stripe-webhook-secret)
-EIGENINFERENCE_STRIPE_SUCCESS_URL=$(fetch eigeninference-stripe-success-url)
-EIGENINFERENCE_STRIPE_CANCEL_URL=$(fetch eigeninference-stripe-cancel-url)
-EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET=$(fetch eigeninference-stripe-connect-webhook-secret)
-EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL=$(fetch eigeninference-stripe-connect-return-url)
-EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL=$(fetch eigeninference-stripe-connect-refresh-url)
-DD_API_KEY=$(fetch eigeninference-dd-api-key)
-DD_SITE=$(fetch eigeninference-dd-site)
+EIGENINFERENCE_ADMIN_KEY=$(fetch darkbloom-admin-key)
+EIGENINFERENCE_RELEASE_KEY=$(fetch darkbloom-release-key)
+EIGENINFERENCE_PRIVY_APP_ID=$(fetch darkbloom-privy-app-id)
+EIGENINFERENCE_PRIVY_APP_SECRET=$(fetch darkbloom-privy-app-secret)
+EIGENINFERENCE_PRIVY_VERIFICATION_KEY=$(fetch darkbloom-privy-verification-key)
+EIGENINFERENCE_DATABASE_URL=$(fetch darkbloom-database-url)
+MNEMONIC=$(fetch darkbloom-solana-mnemonic)
+MICROMDM_API_KEY=$(fetch darkbloom-micromdm-api-key)
+EIGENINFERENCE_MDM_API_KEY=$(fetch darkbloom-micromdm-api-key)
+MDM_PUSH_P12_B64=$(fetch darkbloom-mdm-push-p12-b64)
+EIGENINFERENCE_STRIPE_SECRET_KEY=$(fetch darkbloom-stripe-secret-key)
+EIGENINFERENCE_STRIPE_WEBHOOK_SECRET=$(fetch darkbloom-stripe-webhook-secret)
+EIGENINFERENCE_STRIPE_SUCCESS_URL=$(fetch darkbloom-stripe-success-url)
+EIGENINFERENCE_STRIPE_CANCEL_URL=$(fetch darkbloom-stripe-cancel-url)
+EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET=$(fetch darkbloom-stripe-connect-webhook-secret)
+EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL=$(fetch darkbloom-stripe-connect-return-url)
+EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL=$(fetch darkbloom-stripe-connect-refresh-url)
+DD_API_KEY=$(fetch darkbloom-dd-api-key)
+DD_SITE=$(fetch darkbloom-dd-site)
 DD_ENV=development
 DD_SERVICE=d-inference-coordinator
 EOF

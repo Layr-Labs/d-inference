@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/protocol"
-	"github.com/eigeninference/coordinator/internal/telemetry"
+	"github.com/darkbloom/coordinator/internal/protocol"
+	"github.com/darkbloom/coordinator/internal/telemetry"
 )
 
 // TestTelemetryE2E_FullPipeline drives the full coordinator-side telemetry

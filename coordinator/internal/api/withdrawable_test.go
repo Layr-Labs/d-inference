@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 // --- Store-level withdrawable balance tests ---

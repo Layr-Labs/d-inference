@@ -25,12 +25,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/auth"
-	"github.com/eigeninference/coordinator/internal/e2e"
-	"github.com/eigeninference/coordinator/internal/payments"
-	"github.com/eigeninference/coordinator/internal/protocol"
-	"github.com/eigeninference/coordinator/internal/registry"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/auth"
+	"github.com/darkbloom/coordinator/internal/e2e"
+	"github.com/darkbloom/coordinator/internal/payments"
+	"github.com/darkbloom/coordinator/internal/protocol"
+	"github.com/darkbloom/coordinator/internal/registry"
+	"github.com/darkbloom/coordinator/internal/store"
 	"github.com/google/uuid"
 	"nhooyr.io/websocket"
 )
@@ -2092,7 +2092,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 			"id":       m.ID,
 			"object":   "model",
 			"created":  0,
-			"owned_by": "eigeninference",
+			"owned_by": "darkbloom",
 			"metadata": metadata,
 		})
 	}
@@ -2139,7 +2139,7 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 		Key string `json:"key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", "provide {\"key\": \"eigeninference-...\"}"))
+		writeJSON(w, http.StatusBadRequest, errorResponse("bad_request", "provide {\"key\": \"darkbloom-...\"}"))
 		return
 	}
 
@@ -2193,7 +2193,7 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil && !strings.Contains(r.Host, "darkbloom.dev") {
 			scheme = "http"
 		}
-		downloadURL := fmt.Sprintf("%s://%s/dl/eigeninference-bundle-macos-arm64.tar.gz", scheme, r.Host)
+		downloadURL := fmt.Sprintf("%s://%s/dl/darkbloom-bundle-macos-arm64.tar.gz", scheme, r.Host)
 		resp = map[string]any{
 			"version":      LatestProviderVersion,
 			"download_url": downloadURL,

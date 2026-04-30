@@ -1,14 +1,14 @@
 #!/bin/bash
 #
-# Bundle EigenInference into a self-contained, code-signed macOS .app
+# Bundle Darkbloom into a self-contained, code-signed macOS .app
 #
-# Creates EigenInference.app containing:
+# Creates Darkbloom.app containing:
 #   Contents/
 #     Info.plist
 #     MacOS/
-#       EigenInference                  ← Swift menu bar app (main executable)
+#       Darkbloom                  ← Swift menu bar app (main executable)
 #       darkbloom         ← Rust CLI binary
-#       eigeninference-enclave          ← Swift Secure Enclave CLI
+#       darkbloom-enclave          ← Swift Secure Enclave CLI
 #     Frameworks/
 #       python/                ← python-build-standalone 3.12
 #         bin/python3.12
@@ -49,7 +49,7 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_DIR/build"
-APP_DIR="$BUILD_DIR/EigenInference.app"
+APP_DIR="$BUILD_DIR/Darkbloom.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
@@ -84,9 +84,9 @@ cat > "$CONTENTS/Info.plist" << PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>EigenInference</string>
+    <string>Darkbloom</string>
     <key>CFBundleDisplayName</key>
-    <string>EigenInference</string>
+    <string>Darkbloom</string>
     <key>CFBundleIdentifier</key>
     <string>${BUNDLE_ID}</string>
     <key>CFBundleVersion</key>
@@ -94,7 +94,7 @@ cat > "$CONTENTS/Info.plist" << PLIST
     <key>CFBundleShortVersionString</key>
     <string>${VERSION}</string>
     <key>CFBundleExecutable</key>
-    <string>EigenInference</string>
+    <string>Darkbloom</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleIconFile</key>
@@ -139,15 +139,15 @@ ENT
 # 3. Build Swift app
 # ─────────────────────────────────────────────────────────
 echo "2. Building Swift app..."
-cd "$PROJECT_DIR/app/EigenInference"
+cd "$PROJECT_DIR/app/Darkbloom"
 swift build -c release 2>&1 | tail -3
-APP_BIN=$(swift build -c release --show-bin-path)/EigenInference
+APP_BIN=$(swift build -c release --show-bin-path)/Darkbloom
 if [ ! -f "$APP_BIN" ]; then
-    echo "   ERROR: Swift build failed. Run: cd app/EigenInference && swift build -c release"
+    echo "   ERROR: Swift build failed. Run: cd app/Darkbloom && swift build -c release"
     exit 1
 fi
-cp "$APP_BIN" "$MACOS/EigenInference"
-echo "   ✓ EigenInference ($(du -h "$MACOS/EigenInference" | cut -f1))"
+cp "$APP_BIN" "$MACOS/Darkbloom"
+echo "   ✓ Darkbloom ($(du -h "$MACOS/Darkbloom" | cut -f1))"
 
 # ─────────────────────────────────────────────────────────
 # 4. Build + copy Rust provider
@@ -167,15 +167,15 @@ echo "   ✓ darkbloom ($(du -h "$MACOS/darkbloom" | cut -f1)) → also installe
 # ─────────────────────────────────────────────────────────
 # 5. Build + copy enclave CLI
 # ─────────────────────────────────────────────────────────
-echo "4. Building eigeninference-enclave..."
+echo "4. Building darkbloom-enclave..."
 cd "$PROJECT_DIR/enclave"
 swift build -c release 2>&1 | tail -3
-ENCLAVE_BIN=".build/release/eigeninference-enclave"
+ENCLAVE_BIN=".build/release/darkbloom-enclave"
 if [ -f "$ENCLAVE_BIN" ]; then
-    cp "$ENCLAVE_BIN" "$MACOS/eigeninference-enclave"
-    echo "   ✓ eigeninference-enclave ($(du -h "$MACOS/eigeninference-enclave" | cut -f1))"
+    cp "$ENCLAVE_BIN" "$MACOS/darkbloom-enclave"
+    echo "   ✓ darkbloom-enclave ($(du -h "$MACOS/darkbloom-enclave" | cut -f1))"
 else
-    echo "   ⚠ eigeninference-enclave not found (attestation will be unavailable)"
+    echo "   ⚠ darkbloom-enclave not found (attestation will be unavailable)"
 fi
 
 # ─────────────────────────────────────────────────────────
@@ -332,7 +332,7 @@ done
 
 # Sign the app bundle itself — use --no-strict to handle non-standard
 # framework layout (Python bundle is not a real macOS framework)
-echo "   Signing EigenInference.app..."
+echo "   Signing Darkbloom.app..."
 codesign --force --options runtime --no-strict \
     --entitlements "$ENTITLEMENTS" \
     --sign "$IDENTITY" \
@@ -352,7 +352,7 @@ if [ "$NOTARIZE" = "--notarize" ] && [ "$IDENTITY" != "-" ]; then
     echo "10. Notarizing..."
 
     # Create a zip for notarization
-    NOTARIZE_ZIP="$BUILD_DIR/EigenInference-notarize.zip"
+    NOTARIZE_ZIP="$BUILD_DIR/Darkbloom-notarize.zip"
     ditto -c -k --keepParent "$APP_DIR" "$NOTARIZE_ZIP"
 
     echo "   Submitting to Apple..."
@@ -408,7 +408,7 @@ fi
 # ─────────────────────────────────────────────────────────
 if [ "$UPLOAD" = true ] && [ -f "$DMG_PATH" ]; then
     echo "12. Uploading DMG..."
-    SSH_KEY="$HOME/.ssh/eigeninference-infra"
+    SSH_KEY="$HOME/.ssh/darkbloom-infra"
     SERVER="ubuntu@34.197.17.112"
 
     if [ ! -f "$SSH_KEY" ]; then
@@ -434,12 +434,12 @@ echo ""
 echo "════════════════════════════════════════════════════"
 echo ""
 APP_SIZE=$(du -sh "$APP_DIR" | cut -f1)
-echo "  EigenInference.app    $APP_SIZE"
+echo "  Darkbloom.app    $APP_SIZE"
 echo ""
 echo "  Contents:"
-echo "    MacOS/EigenInference              SwiftUI menu bar app"
+echo "    MacOS/Darkbloom              SwiftUI menu bar app"
 echo "    MacOS/darkbloom     Rust inference provider"
-echo "    MacOS/eigeninference-enclave      Secure Enclave attestation"
+echo "    MacOS/darkbloom-enclave      Secure Enclave attestation"
 echo "    Resources/python/        Python 3.12 + MLX + vllm-mlx"
 echo ""
 echo "  Security:"
@@ -450,7 +450,7 @@ echo "    SIP enforcement           Any modification → won't launch"
 echo ""
 echo "  Install:"
 echo "    open $APP_DIR"
-echo "    # or drag EigenInference.app from DMG to /Applications"
+echo "    # or drag Darkbloom.app from DMG to /Applications"
 echo ""
 echo "  Distribute:"
 if [ "$IDENTITY" = "-" ]; then

@@ -1,4 +1,4 @@
-//! WebSocket client for connecting to the EigenInference coordinator.
+//! WebSocket client for connecting to the Darkbloom coordinator.
 //!
 //! This module manages the provider's connection to the coordinator:
 //!   - WebSocket connection with automatic reconnection (exponential backoff)
@@ -373,7 +373,7 @@ impl CoordinatorClient {
 
                 // WebSocket ping to detect dead connections
                 _ = ping_interval.tick() => {
-                    if let Err(e) = write.send(Message::Ping("eigeninference".into())).await {
+                    if let Err(e) = write.send(Message::Ping("darkbloom".into())).await {
                         anyhow::bail!("Failed to send ping: {e}");
                     }
                 }
@@ -1222,12 +1222,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            // Read heartbeat or any response
-            if let Some(Ok(Message::Text(text))) = read.next().await {
-                received_messages.push(text.to_string());
-            }
-
-            // Send cancel
+            // Send cancel immediately after the inference request.
             let cancel = serde_json::json!({
                 "type": "cancel",
                 "request_id": "test-req-1"
@@ -1238,6 +1233,12 @@ mod tests {
                 ))
                 .await
                 .unwrap();
+
+            // Drain all messages until the connection closes (heartbeats may
+            // arrive before the inference_error, so collect everything).
+            while let Some(Ok(Message::Text(text))) = read.next().await {
+                received_messages.push(text.to_string());
+            }
 
             // Close
             let _ = write.send(Message::Close(None)).await;

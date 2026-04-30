@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_DIR/build"
-APP_DIR="$BUILD_DIR/EigenInferenceBridge.app"
+APP_DIR="$BUILD_DIR/DarkbloomBridge.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 BUNDLE_ID="io.darkbloom.ws-bridge"
@@ -23,7 +23,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS"
 
 # Copy binary
-cp .build/release/eigeninference-enclave "$MACOS/eigeninference-bridge"
+cp .build/release/darkbloom-enclave "$MACOS/darkbloom-bridge"
 
 # Create Info.plist
 cat > "$CONTENTS/Info.plist" << PLIST
@@ -32,11 +32,11 @@ cat > "$CONTENTS/Info.plist" << PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>eigeninference-bridge</string>
+    <string>darkbloom-bridge</string>
     <key>CFBundleIdentifier</key>
     <string>${BUNDLE_ID}</string>
     <key>CFBundleName</key>
-    <string>EigenInference Bridge</string>
+    <string>Darkbloom Bridge</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleShortVersionString</key>
@@ -74,4 +74,4 @@ codesign --force --sign - \
 echo "Built: $APP_DIR"
 echo "Bundle ID: $BUNDLE_ID"
 echo ""
-echo "Run: $MACOS/eigeninference-bridge tls-bridge"
+echo "Run: $MACOS/darkbloom-bridge tls-bridge"

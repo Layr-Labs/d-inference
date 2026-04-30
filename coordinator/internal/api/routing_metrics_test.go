@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/datadog"
-	"github.com/eigeninference/coordinator/internal/protocol"
-	"github.com/eigeninference/coordinator/internal/ratelimit"
-	"github.com/eigeninference/coordinator/internal/registry"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/datadog"
+	"github.com/darkbloom/coordinator/internal/protocol"
+	"github.com/darkbloom/coordinator/internal/ratelimit"
+	"github.com/darkbloom/coordinator/internal/registry"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 // udpCollector listens on a random UDP port and collects DogStatsD packets.

@@ -2,18 +2,18 @@
 import PackageDescription
 
 let package = Package(
-    name: "EigenInferenceEnclave",
+    name: "DarkbloomEnclave",
     platforms: [.macOS(.v13)],
     products: [
-        .library(name: "EigenInferenceEnclave", type: .static, targets: ["EigenInferenceEnclave"]),
-        .executable(name: "eigeninference-enclave", targets: ["EigenInferenceEnclaveCLI"]),
+        .library(name: "DarkbloomEnclave", type: .static, targets: ["DarkbloomEnclave"]),
+        .executable(name: "darkbloom-enclave", targets: ["DarkbloomEnclaveCLI"]),
     ],
     targets: [
-        .target(name: "EigenInferenceEnclave"),
+        .target(name: "DarkbloomEnclave"),
         .executableTarget(
-            name: "EigenInferenceEnclaveCLI",
-            dependencies: ["EigenInferenceEnclave"]
+            name: "DarkbloomEnclaveCLI",
+            dependencies: ["DarkbloomEnclave"]
         ),
-        .testTarget(name: "EigenInferenceEnclaveTests", dependencies: ["EigenInferenceEnclave"]),
+        .testTarget(name: "DarkbloomEnclaveTests", dependencies: ["DarkbloomEnclave"]),
     ]
 )

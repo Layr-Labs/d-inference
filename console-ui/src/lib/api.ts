@@ -5,6 +5,7 @@
 
 import {
   SEALED_CONTENT_TYPE,
+  LEGACY_SEALED_CONTENT_TYPE,
   clearCoordinatorKeyCache,
   getCoordinatorKey,
   isEncryptionEnabled,
@@ -366,7 +367,8 @@ export async function streamChat(
     const errCt = res.headers.get("content-type") || "";
     const errSealed =
       sealCtx && (res.headers.get("x-eigen-sealed") === "true" ||
-        errCt.toLowerCase().startsWith(SEALED_CONTENT_TYPE));
+        errCt.toLowerCase().startsWith(SEALED_CONTENT_TYPE) ||
+        errCt.toLowerCase().startsWith(LEGACY_SEALED_CONTENT_TYPE));
     if (errSealed && sealCtx) {
       try {
         const pt = unsealResponse(text, sealCtx.ephemPriv, sealCtx.coordPub);

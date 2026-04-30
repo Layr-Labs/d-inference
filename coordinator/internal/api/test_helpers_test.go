@@ -7,11 +7,11 @@ import (
 	"os"
 	"testing"
 
-	"github.com/eigeninference/coordinator/internal/auth"
-	"github.com/eigeninference/coordinator/internal/billing"
-	"github.com/eigeninference/coordinator/internal/payments"
-	"github.com/eigeninference/coordinator/internal/registry"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/auth"
+	"github.com/darkbloom/coordinator/internal/billing"
+	"github.com/darkbloom/coordinator/internal/payments"
+	"github.com/darkbloom/coordinator/internal/registry"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 // testBillingServer creates a Server with mock billing enabled and returns it

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Sign EigenInference binaries with macOS Hardened Runtime.
+# Sign Darkbloom binaries with macOS Hardened Runtime.
 #
 # Hardened Runtime is the CRITICAL piece that prevents debugger attachment
 # and memory inspection even with SIP enabled. Without it, our PT_DENY_ATTACH
@@ -36,7 +36,7 @@ if [ ! -f "$ENTITLEMENTS" ]; then
     exit 1
 fi
 
-echo "=== EigenInference Hardened Runtime Signing ==="
+echo "=== Darkbloom Hardened Runtime Signing ==="
 echo "Identity: $IDENTITY"
 echo "Entitlements: $ENTITLEMENTS"
 echo ""
@@ -61,9 +61,9 @@ else
 fi
 
 # Sign enclave CLI binary
-ENCLAVE_BIN="$PROJECT_DIR/enclave/.build/release/eigeninference-enclave"
+ENCLAVE_BIN="$PROJECT_DIR/enclave/.build/release/darkbloom-enclave"
 if [ -f "$ENCLAVE_BIN" ]; then
-    echo "Signing eigeninference-enclave..."
+    echo "Signing darkbloom-enclave..."
     codesign --force --options runtime \
         --entitlements "$ENTITLEMENTS" \
         --sign "$IDENTITY" \
@@ -72,7 +72,7 @@ if [ -f "$ENCLAVE_BIN" ]; then
     codesign --verify --verbose=2 "$ENCLAVE_BIN" 2>&1 | head -5
     echo ""
 else
-    echo "WARNING: eigeninference-enclave binary not found at $ENCLAVE_BIN"
+    echo "WARNING: darkbloom-enclave binary not found at $ENCLAVE_BIN"
     echo "  Build first with: cd enclave && swift build -c release"
     echo ""
 fi

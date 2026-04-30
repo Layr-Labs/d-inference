@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/eigeninference/coordinator/internal/registry"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/registry"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 func TestGenerateCombinedProfile(t *testing.T) {
@@ -24,7 +24,7 @@ func TestGenerateCombinedProfile(t *testing.T) {
 		"https://api.darkbloom.dev/scep",
 		"https://api.darkbloom.dev/mdm/checkin",
 		"https://api.darkbloom.dev/mdm/connect",
-		"https://api.darkbloom.dev/acme/eigeninference-acme/directory",
+		"https://api.darkbloom.dev/acme/darkbloom-acme/directory",
 	}
 	for _, url := range expectedURLs {
 		if !strings.Contains(profile, url) {
@@ -90,7 +90,7 @@ func TestGenerateCombinedProfileDifferentDomains(t *testing.T) {
 			if !strings.Contains(profile, tt.baseURL+"/mdm/connect") {
 				t.Errorf("expected ServerURL with base %s", tt.baseURL)
 			}
-			if !strings.Contains(profile, tt.baseURL+"/acme/eigeninference-acme/directory") {
+			if !strings.Contains(profile, tt.baseURL+"/acme/darkbloom-acme/directory") {
 				t.Errorf("expected ACME DirectoryURL with base %s", tt.baseURL)
 			}
 		})

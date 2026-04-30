@@ -60,8 +60,8 @@ fn link_enclave_library() {
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR unset"));
     let enclave_dir = manifest_dir.join("../enclave");
-    let enclave_sources = enclave_dir.join("Sources/EigenInferenceEnclave");
-    let enclave_header = enclave_dir.join("include/eigeninference_enclave.h");
+    let enclave_sources = enclave_dir.join("Sources/DarkbloomEnclave");
+    let enclave_header = enclave_dir.join("include/darkbloom_enclave.h");
     let enclave_package = enclave_dir.join("Package.swift");
 
     println!("cargo:rerun-if-changed={}", enclave_package.display());
@@ -69,20 +69,11 @@ fn link_enclave_library() {
     println!("cargo:rerun-if-changed={}", enclave_header.display());
 
     let status = Command::new("swift")
-        .args([
-            "build",
-            "-c",
-            "release",
-            "--product",
-            "EigenInferenceEnclave",
-        ])
+        .args(["build", "-c", "release", "--product", "DarkbloomEnclave"])
         .current_dir(&enclave_dir)
         .status()
-        .expect("failed to invoke swift build for EigenInferenceEnclave");
-    assert!(
-        status.success(),
-        "swift build failed for EigenInferenceEnclave"
-    );
+        .expect("failed to invoke swift build for DarkbloomEnclave");
+    assert!(status.success(), "swift build failed for DarkbloomEnclave");
 
     let lib_dir = enclave_dir.join(".build/arm64-apple-macosx/release");
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
@@ -102,7 +93,7 @@ fn link_enclave_library() {
         toolchain_swift_lib.display()
     );
 
-    println!("cargo:rustc-link-lib=static=EigenInferenceEnclave");
+    println!("cargo:rustc-link-lib=static=DarkbloomEnclave");
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=Security");
     println!("cargo:rustc-link-lib=framework=CryptoKit");

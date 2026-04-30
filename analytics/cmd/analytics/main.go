@@ -10,10 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/eigeninference/analytics/internal/config"
-	"github.com/eigeninference/analytics/internal/httpapi"
-	"github.com/eigeninference/analytics/internal/leaderboard"
-	"github.com/eigeninference/analytics/internal/pseudonym"
+	"github.com/darkbloom/analytics/internal/config"
+	"github.com/darkbloom/analytics/internal/httpapi"
+	"github.com/darkbloom/analytics/internal/leaderboard"
+	"github.com/darkbloom/analytics/internal/pseudonym"
 )
 
 func main() {

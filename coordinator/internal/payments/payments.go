@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 // Payout is the persisted provider wallet payout record.

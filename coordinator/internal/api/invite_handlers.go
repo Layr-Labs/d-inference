@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/auth"
-	"github.com/eigeninference/coordinator/internal/store"
+	"github.com/darkbloom/coordinator/internal/auth"
+	"github.com/darkbloom/coordinator/internal/store"
 )
 
 // requireAdminKey checks that the request is from an admin (either admin key or Privy admin).

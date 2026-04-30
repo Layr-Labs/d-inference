@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/coordinator/internal/attestation"
-	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/darkbloom/coordinator/internal/attestation"
+	"github.com/darkbloom/coordinator/internal/protocol"
 )
 
 func makeSchedulerProvider(t *testing.T, reg *Registry, id, model string, decodeTPS float64) *Provider {

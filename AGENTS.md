@@ -1,6 +1,6 @@
-# EigenInference - Decentralized Private Inference
+# Darkbloom - Decentralized Private Inference
 
-EigenInference is a decentralized/private inference stack for Apple Silicon Macs. Consumers use OpenAI-compatible APIs, the coordinator handles routing/auth/billing/attestation, and providers run local text, transcription, and image workloads on macOS hardware.
+Darkbloom is a decentralized/private inference stack for Apple Silicon Macs. Consumers use OpenAI-compatible APIs, the coordinator handles routing/auth/billing/attestation, and providers run local text, transcription, and image workloads on macOS hardware.
 
 ## Project Structure
 
@@ -8,7 +8,7 @@ EigenInference is a decentralized/private inference stack for Apple Silicon Macs
 coordinator/          Go control plane
 ├── cmd/coordinator/  main service entrypoint
 ├── cmd/verify-attestation/
-│   └── main.go       verifies attestation blobs from /tmp/eigeninference_attestation.json
+│   └── main.go       verifies attestation blobs from /tmp/darkbloom_attestation.json
 └── internal/
     ├── api/          HTTP + WebSocket handlers
     │   ├── consumer.go         OpenAI-compatible chat/completions/messages/transcriptions/images
@@ -53,7 +53,7 @@ provider/             Rust provider agent for Apple Silicon Macs
 └── Cargo.toml        default `python` feature enables in-process PyO3 inference
 
 image-bridge/         Python FastAPI image generation bridge
-├── eigeninference_image_bridge/
+├── darkbloom_image_bridge/
 │   ├── __main__.py
 │   ├── server.py              OpenAI-compatible `/v1/images/generations`
 │   ├── drawthings_backend.py  Draw Things gRPC backend adapter
@@ -62,9 +62,9 @@ image-bridge/         Python FastAPI image generation bridge
 ├── requirements.txt
 └── tests/                     pytest coverage for server/backend/integration
 
-app/EigenInference/            SwiftUI macOS menu bar app
-├── Sources/EigenInference/
-│   ├── EigenInferenceApp.swift
+app/Darkbloom/            SwiftUI macOS menu bar app
+├── Sources/Darkbloom/
+│   ├── DarkbloomApp.swift
 │   ├── StatusViewModel.swift
 │   ├── ProviderManager.swift
 │   ├── CLIRunner.swift
@@ -79,13 +79,13 @@ app/EigenInference/            SwiftUI macOS menu bar app
 │   ├── MenuBarView.swift / SetupWizardView.swift
 │   ├── DoctorView.swift / LogViewerView.swift / ModelCatalogView.swift
 │   └── Resources/
-└── Tests/EigenInferenceTests/
+└── Tests/DarkbloomTests/
 
 enclave/              Swift Secure Enclave helper + bridge binary
-├── Sources/EigenInferenceEnclave/      enclave key + attestation library + FFI bridge
-├── Sources/EigenInferenceEnclaveCLI/   `eigeninference-enclave` CLI (attest, sign, info)
-├── Tests/EigenInferenceEnclaveTests/
-└── include/eigeninference_enclave.h
+├── Sources/DarkbloomEnclave/      enclave key + attestation library + FFI bridge
+├── Sources/DarkbloomEnclaveCLI/   `darkbloom-enclave` CLI (attest, sign, info)
+├── Tests/DarkbloomEnclaveTests/
+└── include/darkbloom_enclave.h
 
 console-ui/           Next.js 16 / React 19 frontend
 ├── src/app/          chat, billing, images, models, stats, providers, settings, link, api-console, earn
@@ -100,7 +100,7 @@ console-ui/           Next.js 16 / React 19 frontend
 
 scripts/              build, signing, install, and deploy helpers
 ├── build-bundle.sh   provider/enclave/python/ffmpeg bundle builder (+ optional upload)
-├── bundle-app.sh     build EigenInference.app + DMG
+├── bundle-app.sh     build Darkbloom.app + DMG
 ├── install.sh        end-user installer served from coordinator (hash + codesign verification)
 ├── sign-hardened.sh  hardened runtime signing helper
 ├── admin.sh          admin CLI (Privy auth, release mgmt, API calls)
@@ -130,7 +130,7 @@ go build ./cmd/coordinator
 go build ./cmd/verify-attestation
 
 # Linux deployment build
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o eigeninference-coordinator-linux ./cmd/coordinator
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o darkbloom-coordinator-linux ./cmd/coordinator
 ```
 
 ### Provider (Rust)
@@ -156,7 +156,7 @@ PYTHONPATH=. pytest
 
 ### macOS App (Swift)
 ```bash
-cd app/EigenInference
+cd app/Darkbloom
 swift build -c release
 swift test
 ```

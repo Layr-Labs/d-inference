@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build the EigenInference provider bundle tarball
+# Build the Darkbloom provider bundle tarball
 #
 # Creates a self-contained tarball with:
 #   darkbloom     Rust CLI binary (no Python linking)
-#   eigeninference-enclave      Swift Secure Enclave CLI
+#   darkbloom-enclave      Swift Secure Enclave CLI
 #   python/            Python 3.12 venv with vllm-mlx, mlx, transformers
 #
 # Usage:
@@ -18,12 +18,12 @@ set -euo pipefail
 #   - Python 3.12 installed
 #   - Rust toolchain (cargo)
 #   - Swift toolchain (swift)
-#   - SSH key at ~/.ssh/eigeninference-infra (for --upload)
+#   - SSH key at ~/.ssh/darkbloom-infra (for --upload)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-BUNDLE_DIR="/tmp/eigeninference-bundle"
-TARBALL="/tmp/eigeninference-bundle-macos-arm64.tar.gz"
+BUNDLE_DIR="/tmp/darkbloom-bundle"
+TARBALL="/tmp/darkbloom-bundle-macos-arm64.tar.gz"
 PBS_TAG="20260408"
 PBS_PYTHON_VERSION="3.12.13"
 PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/cpython-${PBS_PYTHON_VERSION}+${PBS_TAG}-aarch64-apple-darwin-install_only.tar.gz"
@@ -38,7 +38,7 @@ for arg in "$@"; do
 done
 
 echo "╔══════════════════════════════════════════════════╗"
-echo "║  EigenInference Bundle Builder                            ║"
+echo "║  Darkbloom Bundle Builder                            ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""
 
@@ -54,19 +54,19 @@ fi
 
 # ─── 2. Build Swift enclave CLI ───────────────────────────────
 if [ "$SKIP_BUILD" = false ]; then
-    echo "2. Building eigeninference-enclave (Swift)..."
+    echo "2. Building darkbloom-enclave (Swift)..."
     cd "$PROJECT_DIR/enclave"
     swift build -c release 2>&1 | tail -3
-    echo "   ✓ eigeninference-enclave ($(du -h .build/release/eigeninference-enclave | cut -f1))"
+    echo "   ✓ darkbloom-enclave ($(du -h .build/release/darkbloom-enclave | cut -f1))"
     echo ""
 else
     echo "2. Skipping Swift build (--skip-build)"
     echo ""
 fi
 
-ENCLAVE_BIN="$PROJECT_DIR/enclave/.build/release/eigeninference-enclave"
+ENCLAVE_BIN="$PROJECT_DIR/enclave/.build/release/darkbloom-enclave"
 if [ ! -f "$ENCLAVE_BIN" ]; then
-    echo "   WARNING: eigeninference-enclave not found. Attestation will be unavailable."
+    echo "   WARNING: darkbloom-enclave not found. Attestation will be unavailable."
 fi
 
 # ─── 3. Create portable Python 3.12 runtime with inference deps ──────────
@@ -75,10 +75,10 @@ rm -rf "$BUNDLE_DIR"
 mkdir -p "$BUNDLE_DIR"
 
 echo "   Downloading python-build-standalone ${PBS_PYTHON_VERSION}..."
-curl -fsSL "$PBS_URL" -o /tmp/eigeninference-python.tar.gz
+curl -fsSL "$PBS_URL" -o /tmp/darkbloom-python.tar.gz
 mkdir -p "$BUNDLE_DIR/python"
-tar xzf /tmp/eigeninference-python.tar.gz --strip-components=1 -C "$BUNDLE_DIR/python"
-rm -f /tmp/eigeninference-python.tar.gz
+tar xzf /tmp/darkbloom-python.tar.gz --strip-components=1 -C "$BUNDLE_DIR/python"
+rm -f /tmp/darkbloom-python.tar.gz
 
 PYTHON312="$BUNDLE_DIR/python/bin/python3.12"
 echo "   Using $PYTHON312 ($("$PYTHON312" --version))"
@@ -174,9 +174,9 @@ codesign --force --sign - --entitlements "$ENTITLEMENTS" --options runtime "$BUN
 echo "   ✓ darkbloom (signed with hypervisor entitlement)"
 
 if [ -f "$ENCLAVE_BIN" ]; then
-    cp "$ENCLAVE_BIN" "$BUNDLE_DIR/bin/eigeninference-enclave"
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" --options runtime "$BUNDLE_DIR/bin/eigeninference-enclave"
-    echo "   ✓ eigeninference-enclave (signed)"
+    cp "$ENCLAVE_BIN" "$BUNDLE_DIR/bin/darkbloom-enclave"
+    codesign --force --sign - --entitlements "$ENTITLEMENTS" --options runtime "$BUNDLE_DIR/bin/darkbloom-enclave"
+    echo "   ✓ darkbloom-enclave (signed)"
 fi
 echo ""
 
@@ -251,33 +251,33 @@ echo ""
 # ─── 6. Create tarball ────────────────────────────────────────
 echo "6. Creating tarball..."
 rm -f "$TARBALL"
-cd /tmp && tar czf "$TARBALL" -C eigeninference-bundle .
+cd /tmp && tar czf "$TARBALL" -C darkbloom-bundle .
 TARBALL_SIZE=$(du -h "$TARBALL" | cut -f1)
 echo "   ✓ $TARBALL ($TARBALL_SIZE)"
 echo ""
 
 # ─── 7. Build macOS app + DMG ─────────────────────────────────
 echo "7. Building macOS app..."
-cd "$PROJECT_DIR/app/EigenInference"
+cd "$PROJECT_DIR/app/Darkbloom"
 swift build -c release 2>&1 | tail -3
-APP_BIN=$(swift build -c release --show-bin-path)/EigenInference
+APP_BIN=$(swift build -c release --show-bin-path)/Darkbloom
 
 if [ -f "$APP_BIN" ]; then
     APP_BUILD_DIR="$PROJECT_DIR/build"
-    rm -rf "$APP_BUILD_DIR/EigenInference.app"
-    mkdir -p "$APP_BUILD_DIR/EigenInference.app/Contents/MacOS" "$APP_BUILD_DIR/EigenInference.app/Contents/Resources"
+    rm -rf "$APP_BUILD_DIR/Darkbloom.app"
+    mkdir -p "$APP_BUILD_DIR/Darkbloom.app/Contents/MacOS" "$APP_BUILD_DIR/Darkbloom.app/Contents/Resources"
 
     # Info.plist
-    cat > "$APP_BUILD_DIR/EigenInference.app/Contents/Info.plist" << 'PLIST'
+    cat > "$APP_BUILD_DIR/Darkbloom.app/Contents/Info.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>EigenInference</string>
+    <key>CFBundleName</key><string>Darkbloom</string>
     <key>CFBundleIdentifier</key><string>io.darkbloom.app</string>
     <key>CFBundleVersion</key><string>0.1.0</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleExecutable</key><string>EigenInference</string>
+    <key>CFBundleExecutable</key><string>Darkbloom</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
@@ -286,23 +286,23 @@ if [ -f "$APP_BIN" ]; then
 </plist>
 PLIST
 
-    cp "$APP_BIN" "$APP_BUILD_DIR/EigenInference.app/Contents/MacOS/EigenInference"
-    codesign --force --sign - --options runtime "$APP_BUILD_DIR/EigenInference.app/Contents/MacOS/EigenInference" 2>/dev/null
-    codesign --force --sign - --options runtime --no-strict "$APP_BUILD_DIR/EigenInference.app" 2>/dev/null
+    cp "$APP_BIN" "$APP_BUILD_DIR/Darkbloom.app/Contents/MacOS/Darkbloom"
+    codesign --force --sign - --options runtime "$APP_BUILD_DIR/Darkbloom.app/Contents/MacOS/Darkbloom" 2>/dev/null
+    codesign --force --sign - --options runtime --no-strict "$APP_BUILD_DIR/Darkbloom.app" 2>/dev/null
 
     # Create DMG
-    DMG_PATH="$APP_BUILD_DIR/EigenInference-latest.dmg"
+    DMG_PATH="$APP_BUILD_DIR/Darkbloom-latest.dmg"
     rm -f "$DMG_PATH"
     DMG_TMP="$APP_BUILD_DIR/dmg-staging"
     rm -rf "$DMG_TMP"
     mkdir -p "$DMG_TMP"
-    cp -a "$APP_BUILD_DIR/EigenInference.app" "$DMG_TMP/"
+    cp -a "$APP_BUILD_DIR/Darkbloom.app" "$DMG_TMP/"
     ln -s /Applications "$DMG_TMP/Applications"
-    hdiutil create -volname "EigenInference" -srcfolder "$DMG_TMP" -ov -format UDZO "$DMG_PATH" >/dev/null 2>&1
+    hdiutil create -volname "Darkbloom" -srcfolder "$DMG_TMP" -ov -format UDZO "$DMG_PATH" >/dev/null 2>&1
     rm -rf "$DMG_TMP"
 
     DMG_SIZE=$(du -h "$DMG_PATH" | cut -f1)
-    echo "   ✓ EigenInference.app + DMG ($DMG_SIZE)"
+    echo "   ✓ Darkbloom.app + DMG ($DMG_SIZE)"
 else
     echo "   ⚠ Swift build failed — app not included"
 fi
@@ -311,7 +311,7 @@ echo ""
 # ─── 8. Upload (optional) ────────────────────────────────────
 if [ "$UPLOAD" = true ]; then
     echo "8. Uploading to server..."
-    SSH_KEY="$HOME/.ssh/eigeninference-infra"
+    SSH_KEY="$HOME/.ssh/darkbloom-infra"
     SERVER="ubuntu@34.197.17.112"
 
     if [ ! -f "$SSH_KEY" ]; then
@@ -319,19 +319,19 @@ if [ "$UPLOAD" = true ]; then
         exit 1
     fi
 
-    scp -i "$SSH_KEY" "$TARBALL" "$SERVER:/tmp/eigeninference-bundle-macos-arm64.tar.gz"
+    scp -i "$SSH_KEY" "$TARBALL" "$SERVER:/tmp/darkbloom-bundle-macos-arm64.tar.gz"
     ssh -i "$SSH_KEY" "$SERVER" '
-        sudo cp /tmp/eigeninference-bundle-macos-arm64.tar.gz /var/www/html/dl/
-        sudo chmod 644 /var/www/html/dl/eigeninference-bundle-macos-arm64.tar.gz
+        sudo cp /tmp/darkbloom-bundle-macos-arm64.tar.gz /var/www/html/dl/
+        sudo chmod 644 /var/www/html/dl/darkbloom-bundle-macos-arm64.tar.gz
     '
     echo "   ✓ Bundle uploaded"
 
     # Upload DMG
-    if [ -f "$APP_BUILD_DIR/EigenInference-latest.dmg" ]; then
-        scp -i "$SSH_KEY" "$APP_BUILD_DIR/EigenInference-latest.dmg" "$SERVER:/tmp/EigenInference-latest.dmg"
+    if [ -f "$APP_BUILD_DIR/Darkbloom-latest.dmg" ]; then
+        scp -i "$SSH_KEY" "$APP_BUILD_DIR/Darkbloom-latest.dmg" "$SERVER:/tmp/Darkbloom-latest.dmg"
         ssh -i "$SSH_KEY" "$SERVER" '
-            sudo cp /tmp/EigenInference-latest.dmg /var/www/html/dl/EigenInference-latest.dmg
-            sudo chmod 644 /var/www/html/dl/EigenInference-latest.dmg
+            sudo cp /tmp/Darkbloom-latest.dmg /var/www/html/dl/Darkbloom-latest.dmg
+            sudo chmod 644 /var/www/html/dl/Darkbloom-latest.dmg
         '
         echo "   ✓ App DMG uploaded"
     fi

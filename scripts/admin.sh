@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# EigenInference Admin CLI
+# Darkbloom Admin CLI
 #
 # Authenticate with Privy and manage releases, models, and pricing.
 #
@@ -48,7 +48,7 @@ authed_curl() {
 # ─── Commands ───────────────────────────────────────────────
 
 cmd_login() {
-    echo "EigenInference Admin Login"
+    echo "Darkbloom Admin Login"
     echo ""
     read -p "Email: " EMAIL
 

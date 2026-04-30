@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/eigeninference/coordinator/internal/attestation"
+	"github.com/darkbloom/coordinator/internal/attestation"
 )
 
 func main() {
-	data, err := os.ReadFile("/tmp/eigeninference_attestation.json")
+	data, err := os.ReadFile("/tmp/darkbloom_attestation.json")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "read: %v\n", err)
 		os.Exit(1)

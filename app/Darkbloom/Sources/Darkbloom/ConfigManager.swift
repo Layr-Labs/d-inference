@@ -6,7 +6,7 @@
 ///
 /// TOML structure:
 ///   [provider]
-///   name = "eigeninference-mac16-1"
+///   name = "darkbloom-mac16-1"
 ///   memory_reserve_gb = 4
 ///
 ///   [backend]

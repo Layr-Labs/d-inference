@@ -12,7 +12,7 @@ import aiohttp
 import argparse
 
 BASE_URL = "https://api.darkbloom.dev/v1"
-API_KEY = "eigeninference-e47e7299dc7d798ea1bcd706e0f780cb9a98536c7d2124a067f0e40e2b3b5b44"
+API_KEY = "darkbloom-e47e7299dc7d798ea1bcd706e0f780cb9a98536c7d2124a067f0e40e2b3b5b44"
 
 MODELS = [
     "mlx-community/gemma-4-26b-a4b-it-8bit",

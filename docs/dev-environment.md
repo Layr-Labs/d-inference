@@ -13,7 +13,7 @@ The d-inference dev environment runs on Google Cloud (GCP project `sepolia-ai`, 
 | Console UI | Vercel (separate "darkbloom-console-dev" project, built from `console-ui/`) | `https://console.dev.darkbloom.xyz` |
 | Database | Cloud SQL Postgres 16, instance `d-inference-dev-db`, `db-f1-micro`, accessed via cloud-sql-proxy sidecar on the VM | 127.0.0.1:5432 from inside the container |
 | Release bucket | Cloudflare R2 `d-inf-app-dev` | R2 CDN URL in env vars |
-| Secrets | Google Secret Manager, prefix `eigeninference-*`. Fetched at VM boot into `/etc/d-inference/env` | see §Secrets |
+| Secrets | Google Secret Manager, prefix `darkbloom-*`. Fetched at VM boot into `/etc/d-inference/env` | see §Secrets |
 | Mac fleet | 2–4 Macs with hostnames `dev-*` | listed in `deploy/provider-fleet/dev-inventory.txt` |
 | DNS | Vercel Domains: `api.dev.darkbloom.xyz` A → VM static IP; `console.dev.darkbloom.xyz` CNAME → Cloud Run | — |
 | Privy | Separate dev Privy app (not the prod one) | values in Secret Manager |
@@ -37,16 +37,16 @@ The d-inference dev environment runs on Google Cloud (GCP project `sepolia-ai`, 
    echo -n '<value>' | gcloud secrets versions add <secret-name> --data-file=-
    ```
    Values:
-   - `eigeninference-admin-key` — `openssl rand -hex 32`
-   - `eigeninference-release-key` — `openssl rand -hex 32`
-   - `eigeninference-solana-mnemonic` — generate a **new** BIP39 mnemonic (never reuse prod). Derive the Solana public key, fund it with a small amount of USDC on mainnet for end-to-end testing.
-   - `eigeninference-privy-app-id` — from the dev Privy app dashboard
-   - `eigeninference-privy-app-secret` — same
-   - `eigeninference-privy-verification-key` — same (JWKS JSON or PEM)
-   - `eigeninference-database-url` — already set by bootstrap if Cloud SQL was just created
-   - `eigeninference-micromdm-api-key` — `openssl rand -hex 32` (used by both MicroMDM and the coordinator's MDM client; they must match)
-   - `eigeninference-mdm-push-p12-b64` — base64url-encoded MDM push PKCS#12. Same Apple push cert prod uses (one cert per Apple Developer account). To encode: `base64 < push.p12 | tr '/+' '_-' | tr -d '\n='`
-   - `eigeninference-r2-cdn-url` — the public URL of the `d-inf-app-dev` R2 bucket (e.g. `https://pub-<randomid>.r2.dev`). Used by the coordinator to template install.sh so dev providers pull artifacts from the dev bucket.
+   - `darkbloom-admin-key` — `openssl rand -hex 32`
+   - `darkbloom-release-key` — `openssl rand -hex 32`
+   - `darkbloom-solana-mnemonic` — generate a **new** BIP39 mnemonic (never reuse prod). Derive the Solana public key, fund it with a small amount of USDC on mainnet for end-to-end testing.
+   - `darkbloom-privy-app-id` — from the dev Privy app dashboard
+   - `darkbloom-privy-app-secret` — same
+   - `darkbloom-privy-verification-key` — same (JWKS JSON or PEM)
+   - `darkbloom-database-url` — already set by bootstrap if Cloud SQL was just created
+   - `darkbloom-micromdm-api-key` — `openssl rand -hex 32` (used by both MicroMDM and the coordinator's MDM client; they must match)
+   - `darkbloom-mdm-push-p12-b64` — base64url-encoded MDM push PKCS#12. Same Apple push cert prod uses (one cert per Apple Developer account). To encode: `base64 < push.p12 | tr '/+' '_-' | tr -d '\n='`
+   - `darkbloom-r2-cdn-url` — the public URL of the `d-inf-app-dev` R2 bucket (e.g. `https://pub-<randomid>.r2.dev`). Used by the coordinator to template install.sh so dev providers pull artifacts from the dev bucket.
 
 3. **DNS.** The bootstrap reserves a static external IP and prints it. On Vercel Domains:
    - `api.dev.darkbloom.xyz`      A     `<VM_STATIC_IP>`
@@ -87,15 +87,15 @@ The d-inference dev environment runs on Google Cloud (GCP project `sepolia-ai`, 
 
 | Env var in coordinator | Secret Manager name | Source |
 |---|---|---|
-| `EIGENINFERENCE_ADMIN_KEY` | `eigeninference-admin-key` | generated once, stored |
-| `EIGENINFERENCE_RELEASE_KEY` | `eigeninference-release-key` | generated once, also set in GH env `dev`→`RELEASE_KEY` |
-| `EIGENINFERENCE_PRIVY_APP_ID` | `eigeninference-privy-app-id` | Privy dashboard (dev app) |
-| `EIGENINFERENCE_PRIVY_APP_SECRET` | `eigeninference-privy-app-secret` | Privy dashboard |
-| `EIGENINFERENCE_PRIVY_VERIFICATION_KEY` | `eigeninference-privy-verification-key` | Privy dashboard |
-| `MNEMONIC` | `eigeninference-solana-mnemonic` | generated fresh for dev |
-| `EIGENINFERENCE_DATABASE_URL` | `eigeninference-database-url` | bootstrap writes Cloud SQL conn string (via cloud-sql-proxy on 127.0.0.1:5432) |
-| `MICROMDM_API_KEY` / `EIGENINFERENCE_MDM_API_KEY` | `eigeninference-micromdm-api-key` | same value for both — keep in sync |
-| `MDM_PUSH_P12_B64` | `eigeninference-mdm-push-p12-b64` | Apple push cert (base64url-encoded PKCS#12) |
+| `EIGENINFERENCE_ADMIN_KEY` | `darkbloom-admin-key` | generated once, stored |
+| `EIGENINFERENCE_RELEASE_KEY` | `darkbloom-release-key` | generated once, also set in GH env `dev`→`RELEASE_KEY` |
+| `EIGENINFERENCE_PRIVY_APP_ID` | `darkbloom-privy-app-id` | Privy dashboard (dev app) |
+| `EIGENINFERENCE_PRIVY_APP_SECRET` | `darkbloom-privy-app-secret` | Privy dashboard |
+| `EIGENINFERENCE_PRIVY_VERIFICATION_KEY` | `darkbloom-privy-verification-key` | Privy dashboard |
+| `MNEMONIC` | `darkbloom-solana-mnemonic` | generated fresh for dev |
+| `EIGENINFERENCE_DATABASE_URL` | `darkbloom-database-url` | bootstrap writes Cloud SQL conn string (via cloud-sql-proxy on 127.0.0.1:5432) |
+| `MICROMDM_API_KEY` / `EIGENINFERENCE_MDM_API_KEY` | `darkbloom-micromdm-api-key` | same value for both — keep in sync |
+| `MDM_PUSH_P12_B64` | `darkbloom-mdm-push-p12-b64` | Apple push cert (base64url-encoded PKCS#12) |
 
 Non-secret configuration is baked into `deploy/gcp/cloudbuild.yaml` via `--set-env-vars`. If you need to change one (e.g. flip `MIN_TRUST`), edit that file — the next deploy picks it up.
 

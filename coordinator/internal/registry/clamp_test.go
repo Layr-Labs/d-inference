@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/eigeninference/coordinator/internal/protocol"
+	"github.com/darkbloom/coordinator/internal/protocol"
 )
 
 func TestClampNonNeg(t *testing.T) {

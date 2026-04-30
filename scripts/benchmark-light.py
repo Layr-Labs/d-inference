@@ -2,11 +2,14 @@
 """Lightweight continuous load test — short requests, 3 in parallel."""
 
 import asyncio
+import os
 import time
 import aiohttp
 
-BASE_URL = "https://api.darkbloom.dev/v1"
-API_KEY = "eigeninference-e47e7299dc7d798ea1bcd706e0f780cb9a98536c7d2124a067f0e40e2b3b5b44"
+BASE_URL = os.environ.get("DARKBLOOM_API_URL", "https://api.darkbloom.dev/v1")
+API_KEY = os.environ.get("DARKBLOOM_API_KEY", "")
+if not API_KEY:
+    raise SystemExit("DARKBLOOM_API_KEY environment variable is required")
 
 MODELS = [
     "mlx-community/gemma-4-26b-a4b-it-8bit",

@@ -101,6 +101,7 @@ type Server struct {
 	registry               *registry.Registry
 	store                  store.Store
 	ledger                 *payments.Ledger
+	streamTracker          *payments.StreamTracker
 	billing                *billing.Service
 	logger                 *slog.Logger
 	mux                    *http.ServeMux
@@ -226,6 +227,7 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 		registry:             reg,
 		store:                st,
 		ledger:               payments.NewLedger(st),
+		streamTracker:        payments.NewStreamTracker(st, logger),
 		logger:               logger,
 		mux:                  http.NewServeMux(),
 		imageUploads:         make(map[string][][]byte),
@@ -240,6 +242,9 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 	// Load stored provider records into a lookup table for matching
 	// reconnecting providers to their persisted state.
 	s.storedProviders = reg.LoadStoredProviders()
+
+	// Start the streaming payments flush loop (every 5 minutes).
+	go s.streamFlushLoop()
 
 	return s
 }
@@ -888,6 +893,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /v1/admin/models", s.requireAuth(s.handleAdminDeleteModel))
 	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
 	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin
+	s.mux.HandleFunc("GET /v1/admin/stream-sessions", s.requireAuth(s.handleStreamStatus))
 
 	// Admin CLI auth — Privy email OTP for getting admin tokens without a browser.
 	s.mux.HandleFunc("POST /v1/admin/auth/init", s.handleAdminAuthInit)     // no auth (sends OTP)
@@ -987,6 +993,27 @@ func (s *Server) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 // Handler returns the root http.Handler with global middleware applied.
+// streamFlushLoop periodically flushes accrued streaming earnings to the store.
+func (s *Server) streamFlushLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.streamTracker.FlushAll()
+	}
+}
+
+// handleStreamStatus handles GET /v1/admin/stream-sessions.
+func (s *Server) handleStreamStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdminAuthorized(w, r) {
+		return
+	}
+	sessions := s.streamTracker.ActiveSessions()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sessions": sessions,
+		"count":    len(sessions),
+	})
+}
+
 // Middleware order (outside-in):
 //
 //	cors → recover → logging → mux

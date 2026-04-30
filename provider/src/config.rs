@@ -96,7 +96,22 @@ pub fn default_config_path() -> Result<PathBuf> {
     let config_dir = dirs::config_dir()
         .context("could not determine config directory")?
         .join("darkbloom");
-    Ok(config_dir.join("provider.toml"))
+    let path = config_dir.join("provider.toml");
+
+    if !path.exists() {
+        let legacy_path = dirs::config_dir()
+            .context("could not determine config directory")?
+            .join("eigeninference")
+            .join("provider.toml");
+        if legacy_path.exists() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::copy(&legacy_path, &path);
+        }
+    }
+
+    Ok(path)
 }
 
 pub fn save(path: &Path, config: &ProviderConfig) -> Result<()> {

@@ -4471,6 +4471,7 @@ async fn cmd_unenroll() -> Result<()> {
     if input.trim() == "yes" {
         let home = dirs::home_dir().unwrap_or_default();
         let _ = std::fs::remove_dir_all(home.join(".config/darkbloom"));
+        let _ = std::fs::remove_dir_all(home.join(".config/eigeninference"));
         secure_enclave_key::cleanup_legacy_key_files();
         let _ = std::fs::remove_file(home.join(".darkbloom/wallet_key"));
         let _ = std::fs::remove_file(home.join(".darkbloom/auth_token"));
@@ -6336,7 +6337,19 @@ fn auth_token_path() -> std::path::PathBuf {
 /// Load the saved auth token, if any.
 fn load_auth_token() -> Option<String> {
     let path = auth_token_path();
-    std::fs::read_to_string(&path)
+    if let Some(token) = std::fs::read_to_string(&path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        return Some(token);
+    }
+
+    let legacy_path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("eigeninference")
+        .join("auth_token");
+    std::fs::read_to_string(&legacy_path)
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())

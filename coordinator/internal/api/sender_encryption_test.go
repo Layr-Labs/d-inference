@@ -279,6 +279,34 @@ func TestSealedRequest_CaseInsensitiveContentType(t *testing.T) {
 	}
 }
 
+// TestSealedRequest_LegacyContentType verifies that the pre-rename content
+// type (application/eigeninference-sealed+json) is still accepted during the
+// transition period so existing clients are not silently dropped to plaintext.
+func TestSealedRequest_LegacyContentType(t *testing.T) {
+	ts, coordKey := newEncryptedTestServer(t)
+
+	plaintext := []byte(`{"model":"qwen3.5-no-such-model","messages":[{"role":"user","content":"hi"}]}`)
+	env, _, ephemPriv := sealRequest(t, plaintext, coordKey.PublicKey, coordKey.KID)
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", bytes.NewReader(env))
+	req.Header.Set("Content-Type", LegacySealedContentType)
+	req.Header.Set("Authorization", "Bearer test-key")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(strings.ToLower(got), SealedContentType) {
+		t.Fatalf("middleware did not engage on legacy content-type: ct=%q body=%s", got, body)
+	}
+	pt := unsealResponse(t, body, coordKey.PublicKey, ephemPriv)
+	if !bytes.Contains(pt, []byte("model_not_found")) {
+		t.Fatalf("expected model_not_found inside sealed response, got: %s", pt)
+	}
+}
+
 // TestSealedTransport_SSE exercises the per-event SSE sealing path directly,
 // without spinning up a real coordinator (the inference handlers don't have
 // a no-provider streaming branch we can hit without a fake provider). We

@@ -11,10 +11,17 @@ fetch_secret() {
   if ! command -v gcloud >/dev/null 2>&1; then
     return 1
   fi
-  gcloud secrets versions access latest \
+  local val
+  val=$(gcloud secrets versions access latest \
     --project="$GCP_PROJECT" \
     --secret="$name" \
-    2>/dev/null
+    2>/dev/null) && printf '%s' "$val" && return
+  local legacy="${name/darkbloom-/eigeninference-}"
+  [ "$legacy" != "$name" ] && val=$(gcloud secrets versions access latest \
+    --project="$GCP_PROJECT" \
+    --secret="$legacy" \
+    2>/dev/null) && printf '%s' "$val" && return
+  return 1
 }
 
 API_KEY="${DD_API_KEY:-}"

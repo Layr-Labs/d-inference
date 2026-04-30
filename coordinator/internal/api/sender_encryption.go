@@ -54,6 +54,11 @@ import (
 // The same media type is used on the response when the request was sealed.
 const SealedContentType = "application/darkbloom-sealed+json"
 
+// LegacySealedContentType is the pre-rename media type. Accepted during the
+// transition period so existing clients sending the old header are not
+// silently dropped to plaintext.
+const LegacySealedContentType = "application/eigeninference-sealed+json"
+
 // sealedRequestEnvelope is the on-the-wire shape of a sealed request body.
 type sealedRequestEnvelope struct {
 	KID                string `json:"kid"`
@@ -83,11 +88,12 @@ func isSealedContentType(ct string) bool {
 	}
 	mt, _, err := mime.ParseMediaType(ct)
 	if err != nil {
-		// Permissive fallback: a malformed parameter shouldn't bypass the
-		// gate, so try a plain prefix match too.
-		return strings.EqualFold(strings.TrimSpace(strings.SplitN(ct, ";", 2)[0]), SealedContentType)
+		trimmed := strings.TrimSpace(strings.SplitN(ct, ";", 2)[0])
+		return strings.EqualFold(trimmed, SealedContentType) ||
+			strings.EqualFold(trimmed, LegacySealedContentType)
 	}
-	return strings.EqualFold(mt, SealedContentType)
+	return strings.EqualFold(mt, SealedContentType) ||
+		strings.EqualFold(mt, LegacySealedContentType)
 }
 
 // handleEncryptionKey publishes the coordinator's X25519 public key plus a

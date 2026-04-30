@@ -30,11 +30,11 @@ if [ ! -d "/data/step-ca/config" ]; then
     echo "step-ca initialized."
 
     # Patch ca.json: replace the default ACME provisioner with one configured
-    # for device-attest-01 (Apple Secure Enclave attestation).
+    # for device-attest-01 (Apple Secure Enclave attestation), and add a legacy
+    # alias provisioner so already-enrolled devices can still renew certs.
     echo "Configuring ACME device-attest-01 provisioner..."
     CA_JSON=/data/step-ca/config/ca.json
-    jq '(.authority.provisioners[] | select(.type == "ACME")) |=
-        {
+    ACME_PROV='{
             "type": "ACME",
             "name": "darkbloom-acme",
             "challenges": ["device-attest-01"],
@@ -45,8 +45,24 @@ if [ ! -d "/data/step-ca/config" ]; then
                     "templateFile": "/data/step-ca/templates/acme-device.tpl"
                 }
             }
-        }' "$CA_JSON" > /tmp/ca.json && mv /tmp/ca.json "$CA_JSON"
-    echo "ACME provisioner configured."
+        }'
+    LEGACY_ACME_PROV='{
+            "type": "ACME",
+            "name": "eigeninference-acme",
+            "challenges": ["device-attest-01"],
+            "attestationFormats": ["apple"],
+            "forceCN": false,
+            "options": {
+                "x509": {
+                    "templateFile": "/data/step-ca/templates/acme-device.tpl"
+                }
+            }
+        }'
+    jq --argjson acme "$ACME_PROV" --argjson legacy "$LEGACY_ACME_PROV" \
+        '(.authority.provisioners[] | select(.type == "ACME")) |= $acme |
+         .authority.provisioners += [$legacy]' \
+        "$CA_JSON" > /tmp/ca.json && mv /tmp/ca.json "$CA_JSON"
+    echo "ACME provisioner configured (darkbloom-acme + eigeninference-acme alias)."
 fi
 echo "Starting step-ca..."
 STEPPATH=/data/step-ca step-ca /data/step-ca/config/ca.json \

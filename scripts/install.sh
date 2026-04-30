@@ -450,7 +450,7 @@ else
 fi
 echo ""
 
-if [ ! -f "$HOME/.config/darkbloom/auth_token" ]; then
+if [ ! -f "$HOME/.config/darkbloom/auth_token" ] && [ ! -f "$HOME/.config/eigeninference/auth_token" ]; then
     echo "  ┌──────────────────────────────────────────────┐"
     echo "  │  Link your account to earn rewards:          │"
     echo "  │                                              │"

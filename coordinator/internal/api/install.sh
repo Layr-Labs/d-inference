@@ -148,8 +148,8 @@ echo "  Binaries installed ✓"
 echo "  Shortcut: darkbloom"
 
 # ─── Migrate from old installs ───────────────────────────────
-# Migration chain: ~/.dginf → ~/.darkbloom → ~/.darkbloom
-for OLD_DIR in "$HOME/.dginf" "$HOME/.darkbloom"; do
+# Migration chain: ~/.dginf → ~/.eigeninference → ~/.darkbloom
+for OLD_DIR in "$HOME/.dginf" "$HOME/.eigeninference"; do
     if [ -d "$OLD_DIR" ] && [ ! -L "$OLD_DIR" ]; then
         echo ""
         echo "  Migrating from $OLD_DIR..."
@@ -443,7 +443,7 @@ else
 fi
 echo ""
 
-if [ ! -f "$HOME/.config/darkbloom/auth_token" ]; then
+if [ ! -f "$HOME/.config/darkbloom/auth_token" ] && [ ! -f "$HOME/.config/eigeninference/auth_token" ]; then
     echo "  ┌──────────────────────────────────────────────┐"
     echo "  │  Link your account to earn rewards:          │"
     echo "  │                                              │"

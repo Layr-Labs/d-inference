@@ -15,6 +15,7 @@
 import nacl from "tweetnacl";
 
 export const SEALED_CONTENT_TYPE = "application/darkbloom-sealed+json";
+export const LEGACY_SEALED_CONTENT_TYPE = "application/eigeninference-sealed+json";
 export const ENCRYPTION_FLAG_KEY = "darkbloom_encrypt_to_coordinator";
 const COORD_KEY_CACHE_KEY = "darkbloom_coord_enc_key_v2"; // v2: keyed-per-URL
 const COORD_KEY_TTL_MS = 60 * 60 * 1000; // 1 hour

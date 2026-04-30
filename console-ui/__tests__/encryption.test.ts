@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import nacl from "tweetnacl";
 import {
   SEALED_CONTENT_TYPE,
+  LEGACY_SEALED_CONTENT_TYPE,
   ENCRYPTION_FLAG_KEY,
   clearCoordinatorKeyCache,
   getCoordinatorKey,
@@ -215,5 +216,8 @@ describe("encryption — toggle persistence", () => {
 describe("encryption — constants", () => {
   it("SEALED_CONTENT_TYPE matches the coordinator's media type", () => {
     expect(SEALED_CONTENT_TYPE).toBe("application/darkbloom-sealed+json");
+  });
+  it("LEGACY_SEALED_CONTENT_TYPE matches the pre-rename media type", () => {
+    expect(LEGACY_SEALED_CONTENT_TYPE).toBe("application/eigeninference-sealed+json");
   });
 });

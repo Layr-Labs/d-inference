@@ -97,7 +97,11 @@ mkdir -p "$ENV_DIR"
 chmod 700 "$ENV_DIR"
 
 fetch() {
-  gcloud --quiet secrets versions access latest --secret="$1" 2>/dev/null || true
+  local val
+  val=$(gcloud --quiet secrets versions access latest --secret="$1" 2>/dev/null) && printf '%s' "$val" && return
+  local legacy="${1/darkbloom-/eigeninference-}"
+  [ "$legacy" != "$1" ] && val=$(gcloud --quiet secrets versions access latest --secret="$legacy" 2>/dev/null) && printf '%s' "$val" && return
+  true
 }
 
 cat > "$ENV_FILE" <<EOF

@@ -685,15 +685,56 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		)
 	}
 
-	// Verify fresh binary hash if reported and known hashes are configured.
-	if resp.BinaryHash != "" && len(s.knownBinaryHashes) > 0 {
-		if !s.knownBinaryHashes[resp.BinaryHash] {
+	// Verify fresh binary hash when a known-good policy is configured. A
+	// reported binary hash only counts when the response is signed by the
+	// provider key from a valid registration attestation.
+	policyConfigured, knownBinaryHashes := s.binaryHashPolicySnapshot()
+	if policyConfigured {
+		attestationResult := provider.AttestationResult
+		if attestationResult == nil || !attestationResult.Valid || attestationResult.PublicKey == "" {
+			s.logger.Error("provider cannot prove binary hash without valid attestation",
+				"provider_id", providerID,
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "valid attestation required for binary hash policy")
+			return
+		}
+		if resp.BinaryHash == "" {
+			s.logger.Error("provider omitted binary hash while known-good policy is configured",
+				"provider_id", providerID,
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "binary hash missing")
+			return
+		}
+		attestedBinaryHash, err := normalizeSHA256Hex(attestationResult.BinaryHash, "attested binary_hash")
+		if err != nil {
+			s.logger.Error("provider attestation has no usable binary hash",
+				"provider_id", providerID,
+				"binary_hash", attestationResult.BinaryHash,
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "attested binary hash missing")
+			return
+		}
+		binaryHash, err := normalizeSHA256Hex(resp.BinaryHash, "binary_hash")
+		if err != nil || !knownBinaryHashes[binaryHash] {
 			s.logger.Error("provider binary hash changed — no longer matches known-good list",
 				"provider_id", providerID,
 				"binary_hash", resp.BinaryHash,
 			)
 			s.registry.MarkUntrusted(providerID)
 			s.handleChallengeFailure(providerID, "binary hash mismatch")
+			return
+		}
+		if binaryHash != attestedBinaryHash {
+			s.logger.Error("provider binary hash changed from registration attestation",
+				"provider_id", providerID,
+				"attested_binary_hash", registry.TruncHash(attestedBinaryHash),
+				"challenge_binary_hash", registry.TruncHash(binaryHash),
+			)
+			s.registry.MarkUntrusted(providerID)
+			s.handleChallengeFailure(providerID, "binary hash changed from registration attestation")
 			return
 		}
 	}
@@ -1129,12 +1170,22 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 // verifyProviderAttestation verifies a provider's Secure Enclave attestation
 // if one was included in the registration message. If the attestation is valid,
 // the provider is marked as attested. If missing or invalid, the provider is
-// still accepted (Open Mode) but marked as not attested.
+// accepted in Open Mode only when no binary hash policy is configured.
 func (s *Server) verifyProviderAttestation(providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage) {
+	policyConfigured, knownBinaryHashes := s.binaryHashPolicySnapshot()
 	if len(regMsg.Attestation) == 0 {
-		s.logger.Info("provider registered without attestation (Open Mode)",
-			"provider_id", providerID,
-		)
+		if policyConfigured {
+			s.logger.Warn("provider registered without attestation while binary hash policy is configured",
+				"provider_id", providerID,
+			)
+			provider.SetAttestationResult(&attestation.VerificationResult{
+				Valid: false,
+				Error: "attestation missing",
+			})
+			s.registry.MarkUntrusted(providerID)
+			return
+		}
+		s.logger.Info("provider registered without attestation (Open Mode)", "provider_id", providerID)
 		return
 	}
 
@@ -1183,9 +1234,21 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		}
 	}
 
-	// Verify binary hash against known-good hashes.
-	if len(s.knownBinaryHashes) > 0 && result.BinaryHash != "" {
-		if !s.knownBinaryHashes[result.BinaryHash] {
+	// Verify binary hash against known-good hashes. Once a binary hash policy is
+	// configured, omission is a policy violation, not an Open Mode downgrade.
+	if policyConfigured {
+		if result.BinaryHash == "" {
+			s.logger.Warn("provider binary hash missing while known-good policy is configured",
+				"provider_id", providerID,
+			)
+			result.Valid = false
+			result.Error = "binary hash missing"
+			provider.SetAttestationResult(&result)
+			s.registry.MarkUntrusted(providerID)
+			return
+		}
+		binaryHash, err := normalizeSHA256Hex(result.BinaryHash, "binary_hash")
+		if err != nil || !knownBinaryHashes[binaryHash] {
 			s.logger.Warn("provider binary hash not in known-good list",
 				"provider_id", providerID,
 				"binary_hash", result.BinaryHash,
@@ -1193,6 +1256,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			result.Valid = false
 			result.Error = "binary hash not recognized"
 			provider.SetAttestationResult(&result)
+			s.registry.MarkUntrusted(providerID)
 			return
 		}
 		s.logger.Info("provider binary hash verified",

@@ -7,9 +7,14 @@ package api
 // (no real backends needed) and run in CI.
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -766,7 +771,18 @@ func TestEdge_ReleaseRegisterAndRetrieve(t *testing.T) {
 	srv.SetReleaseKey("release-key")
 
 	// Register a release
-	body := `{"version":"1.0.0","platform":"macos-arm64","binary_hash":"abc123","bundle_hash":"def456","url":"http://example.com/bundle.tar.gz","changelog":"First release"}`
+	bundle, binaryHash, bundleHash := buildReleaseBundleForTest(t, []byte("provider-binary"))
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(bundle)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL + "/")
+
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":%q,"changelog":"First release"}`, binaryHash, bundleHash, cdn.URL+"/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz")
 	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer release-key")
 	w := httptest.NewRecorder()
@@ -796,6 +812,351 @@ func TestEdge_ReleaseRegisterAndRetrieve(t *testing.T) {
 	if len(releases) == 0 {
 		t.Error("expected at least one release in store")
 	}
+}
+
+func TestEdge_ReleaseRegisterRejectsInvalidHashMetadata(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	body := `{"version":"1.0.0","platform":"macos-arm64","binary_hash":"abc123","bundle_hash":"def456","url":"http://example.com/bundle.tar.gz"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with invalid hashes: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsStoreOnlyFields(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	binaryHash := strings.Repeat("a", 64)
+	bundleHash := strings.Repeat("b", 64)
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":"https://r2.example.com/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz","active":true,"created_at":"2099-01-01T00:00:00Z"}`, binaryHash, bundleHash)
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with store-only fields: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsOffOriginURLWhenR2Configured(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+	srv.SetR2CDNURL("https://r2.example.com")
+
+	binaryHash := strings.Repeat("a", 64)
+	bundleHash := strings.Repeat("b", 64)
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":"https://evil.example.com/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz"}`, binaryHash, bundleHash)
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with off-origin URL: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsHTTPArtifactOrigin(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+	srv.SetR2CDNURL("http://r2.example.com")
+
+	binaryHash := strings.Repeat("a", 64)
+	bundleHash := strings.Repeat("b", 64)
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":"http://r2.example.com/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz"}`, binaryHash, bundleHash)
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with http artifact origin: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsCredentialedArtifactURL(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+	srv.SetR2CDNURL("https://r2.example.com")
+
+	binaryHash := strings.Repeat("a", 64)
+	bundleHash := strings.Repeat("b", 64)
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":"https://user:pass@r2.example.com/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz"}`, binaryHash, bundleHash)
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with credentialed artifact URL: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterVerifiesBundleArtifact(t *testing.T) {
+	srv, st := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	bundle, binaryHash, bundleHash := buildReleaseBundleForTest(t, []byte("provider-binary"))
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(bundle)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL)
+
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":%q}`, binaryHash, bundleHash, cdn.URL+"/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz")
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("release register with verified artifact: status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+	releases := st.ListReleases()
+	if len(releases) != 1 || releases[0].BinaryHash != binaryHash {
+		t.Fatalf("release was not stored with verified binary hash: %+v", releases)
+	}
+}
+
+func TestEdge_ReleaseRegisterAcceptsLegacyRegularBundleEntry(t *testing.T) {
+	srv, st := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	bundle, binaryHash, bundleHash := buildReleaseBundleWithEntryForTest(t, "bin/darkbloom", tar.TypeRegA, []byte("provider-binary"), "")
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(bundle)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL)
+
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":%q}`, binaryHash, bundleHash, cdn.URL+"/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz")
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("release register with legacy regular bundle entry: status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+	releases := st.ListReleases()
+	if len(releases) != 1 || releases[0].BinaryHash != binaryHash {
+		t.Fatalf("release was not stored with legacy regular bundle entry: %+v", releases)
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsBundledBinaryHashMismatch(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	bundle, _, bundleHash := buildReleaseBundleForTest(t, []byte("provider-binary"))
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(bundle)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL)
+
+	wrongBinaryHash := strings.Repeat("c", 64)
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":%q}`, wrongBinaryHash, bundleHash, cdn.URL+"/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz")
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with mismatched binary hash: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsOversizedBundledBinary(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	bundle, bundleHash := buildOversizedBinaryReleaseBundleForTest(t)
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(bundle)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL)
+
+	binaryHash := strings.Repeat("d", 64)
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":%q}`, binaryHash, bundleHash, cdn.URL+"/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz")
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with oversized bundled binary: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsRedirectedBundleDownload(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	bundle, binaryHash, bundleHash := buildReleaseBundleForTest(t, []byte("provider-binary"))
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(bundle)
+	}))
+	defer target.Close()
+
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/bundle.tar.gz", http.StatusFound)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL)
+
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":%q}`, binaryHash, bundleHash, cdn.URL+"/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz")
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with redirected bundle: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsUnsafeBundlePath(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	bundle, binaryHash, bundleHash := buildReleaseBundleWithEntryForTest(t, "../bin/darkbloom", tar.TypeReg, []byte("provider-binary"), "")
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(bundle)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL)
+
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":%q}`, binaryHash, bundleHash, cdn.URL+"/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz")
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with unsafe bundle path: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsNonRegularProviderBinary(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	bundle, _, bundleHash := buildReleaseBundleWithEntryForTest(t, "bin/darkbloom", tar.TypeSymlink, nil, "darkbloom.real")
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(bundle)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL)
+
+	binaryHash := strings.Repeat("e", 64)
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":%q}`, binaryHash, bundleHash, cdn.URL+"/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz")
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with non-regular provider binary: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func buildReleaseBundleForTest(t *testing.T, binary []byte) ([]byte, string, string) {
+	t.Helper()
+
+	return buildReleaseBundleWithEntryForTest(t, "bin/darkbloom", tar.TypeReg, binary, "")
+}
+
+func buildReleaseBundleWithEntryForTest(t *testing.T, name string, typeflag byte, binary []byte, linkname string) ([]byte, string, string) {
+	t.Helper()
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+
+	header := &tar.Header{
+		Name:     name,
+		Mode:     0o755,
+		Typeflag: typeflag,
+		Linkname: linkname,
+	}
+	if typeflag == tar.TypeReg || typeflag == tar.TypeRegA {
+		header.Size = int64(len(binary))
+	}
+	if err := tw.WriteHeader(header); err != nil {
+		t.Fatalf("write tar header: %v", err)
+	}
+	if len(binary) > 0 {
+		if _, err := tw.Write(binary); err != nil {
+			t.Fatalf("write binary: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+
+	return buf.Bytes(), sha256HexBytesForReleaseTest(binary), sha256HexBytesForReleaseTest(buf.Bytes())
+}
+
+func buildOversizedBinaryReleaseBundleForTest(t *testing.T) ([]byte, string) {
+	t.Helper()
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "bin/darkbloom",
+		Mode: 0o755,
+		Size: maxReleaseProviderBinBytes + 1,
+	}); err != nil {
+		t.Fatalf("write oversized tar header: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+
+	return buf.Bytes(), sha256HexBytesForReleaseTest(buf.Bytes())
+}
+
+func sha256HexBytesForReleaseTest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // ---------------------------------------------------------------------------

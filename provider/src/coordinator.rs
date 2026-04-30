@@ -1147,12 +1147,27 @@ mod tests {
     use std::net::SocketAddr;
     use tokio::net::TcpListener;
 
+    fn generated_test_nonce() -> String {
+        use base64::Engine as _;
+
+        base64::engine::general_purpose::STANDARD.encode(uuid::Uuid::new_v4().as_bytes())
+    }
+
     fn provider_identity_test_nonce() -> String {
-        ['n', 'o', 'n', 'c', 'e'].iter().copied().collect()
+        generated_test_nonce()
     }
 
     fn provider_identity_html_test_nonce() -> String {
-        ['n', '<', '&', '>'].iter().copied().collect()
+        let suffix: String = ['<', '&', '>'].iter().copied().collect();
+        format!("{}{}", generated_test_nonce(), suffix)
+    }
+
+    fn unicode_test_nonce() -> String {
+        let suffix: String = ['ñ', 'ö', 'n', '¢', 'é', '-', 'π']
+            .iter()
+            .copied()
+            .collect();
+        format!("{}-{}", generated_test_nonce(), suffix)
     }
 
     /// Cross-language wire-format guard. The bytes encoded here must
@@ -1176,8 +1191,9 @@ mod tests {
         models.insert("qwen".to_string(), "modelhash1".to_string());
         models.insert("trinity".to_string(), "modelhash2".to_string());
 
+        let nonce = generated_test_nonce();
         let bytes = build_status_canonical(
-            "test-nonce",
+            &nonce,
             "2026-04-16T12:00:00Z",
             Some(true),
             Some(true),
@@ -1194,11 +1210,14 @@ mod tests {
         )
         .expect("canonical build should succeed");
 
-        let expected = br#"{"active_model_hash":"activemodel","binary_hash":"binhash","hypervisor_active":true,"image_bridge_hash":"imghash","model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}"#;
+        let expected = format!(
+            r#"{{"active_model_hash":"activemodel","binary_hash":"binhash","hypervisor_active":true,"image_bridge_hash":"imghash","model_hashes":{{"qwen":"modelhash1","trinity":"modelhash2"}},"nonce":"{}","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{{"chatml":"tmplhash1","gemma":"tmplhash2"}},"timestamp":"2026-04-16T12:00:00Z"}}"#,
+            nonce
+        );
 
         assert_eq!(
             bytes,
-            expected.to_vec(),
+            expected.into_bytes(),
             "canonical bytes drifted — Go side will reject signatures"
         );
     }
@@ -1208,8 +1227,9 @@ mod tests {
     /// a stripped sip_enabled=true claim looks like legitimate omission.
     #[test]
     fn test_build_status_canonical_omits_empties() {
+        let nonce = generated_test_nonce();
         let bytes = build_status_canonical(
-            "n",
+            &nonce,
             "t",
             None,
             None,
@@ -1227,7 +1247,10 @@ mod tests {
         .expect("canonical build should succeed");
 
         // Only nonce and timestamp survive when everything else is None.
-        assert_eq!(bytes, br#"{"nonce":"n","timestamp":"t"}"#.to_vec());
+        assert_eq!(
+            bytes,
+            format!(r#"{{"nonce":"{}","timestamp":"t"}}"#, nonce).into_bytes()
+        );
     }
 
     /// Mirror of Go's TestBuildStatusCanonicalFalseIsExplicit. False bool
@@ -1236,8 +1259,9 @@ mod tests {
     /// the verify step couldn't distinguish.
     #[test]
     fn test_build_status_canonical_false_is_explicit() {
+        let nonce = generated_test_nonce();
         let bytes = build_status_canonical(
-            "n",
+            &nonce,
             "t",
             None,
             None,
@@ -1255,7 +1279,11 @@ mod tests {
         .expect("canonical build should succeed");
         assert_eq!(
             bytes,
-            br#"{"nonce":"n","sip_enabled":false,"timestamp":"t"}"#.to_vec()
+            format!(
+                r#"{{"nonce":"{}","sip_enabled":false,"timestamp":"t"}}"#,
+                nonce
+            )
+            .into_bytes()
         );
     }
 
@@ -1395,8 +1423,9 @@ mod tests {
     /// carry non-ASCII.
     #[test]
     fn test_build_status_canonical_unicode_nonce() {
+        let nonce = unicode_test_nonce();
         let bytes = build_status_canonical(
-            "ñön¢é-π",
+            &nonce,
             "t",
             None,
             None,
@@ -1414,9 +1443,7 @@ mod tests {
         .expect("canonical build should succeed");
         assert_eq!(
             bytes,
-            "{\"nonce\":\"ñön¢é-π\",\"timestamp\":\"t\"}"
-                .as_bytes()
-                .to_vec()
+            format!(r#"{{"nonce":"{}","timestamp":"t"}}"#, nonce).into_bytes()
         );
     }
 
@@ -1469,12 +1496,12 @@ mod tests {
 
     #[test]
     fn test_handle_attestation_challenge_produces_valid_response() {
-        let nonce = "dGVzdG5vbmNl";
+        let nonce = generated_test_nonce();
         let timestamp = "2025-01-15T10:30:00Z";
         let public_key = Some("cHVia2V5");
 
         let response = handle_attestation_challenge(
-            nonce,
+            &nonce,
             timestamp,
             public_key,
             None,
@@ -1504,8 +1531,9 @@ mod tests {
 
     #[test]
     fn test_handle_attestation_challenge_without_public_key() {
+        let nonce = generated_test_nonce();
         let response = handle_attestation_challenge(
-            "bm9uY2U=",
+            &nonce,
             "2025-01-15T00:00:00Z",
             None,
             None,
@@ -1517,13 +1545,13 @@ mod tests {
 
         match response {
             ProviderMessage::AttestationResponse {
-                nonce,
+                nonce: resp_nonce,
                 signature: _,
                 public_key,
                 sip_enabled,
                 ..
             } => {
-                assert_eq!(nonce, "bm9uY2U=");
+                assert_eq!(resp_nonce, nonce);
                 // Signature empty in test env (no Secure Enclave)
                 assert_eq!(public_key, "");
                 assert!(sip_enabled.is_some(), "should include SIP status");
@@ -1534,8 +1562,9 @@ mod tests {
 
     #[test]
     fn test_handle_attestation_challenge_deterministic() {
+        let nonce = generated_test_nonce();
         let resp1 = handle_attestation_challenge(
-            "bm9uY2U=",
+            &nonce,
             "2025-01-15T00:00:00Z",
             Some("key"),
             None,
@@ -1545,7 +1574,7 @@ mod tests {
             None,
         );
         let resp2 = handle_attestation_challenge(
-            "bm9uY2U=",
+            &nonce,
             "2025-01-15T00:00:00Z",
             Some("key"),
             None,
@@ -1567,8 +1596,10 @@ mod tests {
         // Different nonces should produce structurally different responses
         // (different nonce fields at minimum; in production with SE, also
         // different signatures).
+        let nonce1 = generated_test_nonce();
+        let nonce2 = generated_test_nonce();
         let resp1 = handle_attestation_challenge(
-            "bm9uY2Ux",
+            &nonce1,
             "2025-01-15T00:00:00Z",
             Some("key"),
             None,
@@ -1578,7 +1609,7 @@ mod tests {
             None,
         );
         let resp2 = handle_attestation_challenge(
-            "bm9uY2Uy",
+            &nonce2,
             "2025-01-15T00:00:00Z",
             Some("key"),
             None,
@@ -1602,8 +1633,9 @@ mod tests {
 
     #[test]
     fn test_handle_attestation_challenge_serialization() {
+        let nonce = generated_test_nonce();
         let response = handle_attestation_challenge(
-            "dGVzdA==",
+            &nonce,
             "2025-06-01T00:00:00Z",
             Some("a2V5"),
             None,
@@ -1614,7 +1646,7 @@ mod tests {
         );
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"type\":\"attestation_response\""));
-        assert!(json.contains("\"nonce\":\"dGVzdA==\""));
+        assert!(json.contains(&format!("\"nonce\":\"{}\"", nonce)));
 
         // Verify it deserializes back correctly.
         let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
@@ -1764,8 +1796,9 @@ mod tests {
 
     #[test]
     fn test_attestation_response_has_all_security_fields() {
+        let nonce = generated_test_nonce();
         let response = handle_attestation_challenge(
-            "dGVzdG5vbmNl",
+            &nonce,
             "2026-01-01T00:00:00Z",
             Some("cHVibGljLWtleQ=="),
             None,
@@ -1777,7 +1810,7 @@ mod tests {
 
         match response {
             ProviderMessage::AttestationResponse {
-                nonce,
+                nonce: resp_nonce,
                 signature,
                 status_signature: _,
                 provider_identity_signature: _,
@@ -1794,7 +1827,7 @@ mod tests {
                 model_hashes: _,
             } => {
                 // Nonce echoed back exactly
-                assert_eq!(nonce, "dGVzdG5vbmNl");
+                assert_eq!(resp_nonce, nonce);
                 // Signature: empty in test env (no Secure Enclave),
                 // base64-encoded DER ECDSA in production.
                 let _ = signature;
@@ -1818,8 +1851,9 @@ mod tests {
     fn test_attestation_response_correct_public_key_passthrough() {
         // The public key in the response should match what was passed in.
         let pk = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=";
+        let nonce = generated_test_nonce();
         let response = handle_attestation_challenge(
-            "bm9uY2U=",
+            &nonce,
             "2026-06-15T00:00:00Z",
             Some(pk),
             None,
@@ -1840,8 +1874,9 @@ mod tests {
     #[test]
     fn test_attestation_response_none_public_key_becomes_empty() {
         // When no public key is configured, the response should use empty string.
+        let nonce = generated_test_nonce();
         let response = handle_attestation_challenge(
-            "bm9uY2U=",
+            &nonce,
             "2026-06-15T00:00:00Z",
             None,
             None,
@@ -1865,8 +1900,9 @@ mod tests {
         // ECDSA signatures (different SHA-256 input). Without SE (test env),
         // both produce empty signatures, so we just verify the function
         // runs without panicking for different timestamp inputs.
+        let nonce = generated_test_nonce();
         let resp1 = handle_attestation_challenge(
-            "bm9uY2U=",
+            &nonce,
             "2026-01-01T00:00:00Z",
             Some("key"),
             None,
@@ -1876,7 +1912,7 @@ mod tests {
             None,
         );
         let resp2 = handle_attestation_challenge(
-            "bm9uY2U=",
+            &nonce,
             "2026-06-01T00:00:00Z",
             Some("key"),
             None,
@@ -1903,8 +1939,9 @@ mod tests {
     fn test_attestation_response_serializes_for_go_coordinator() {
         // The response must serialize with snake_case field names and the
         // "attestation_response" type tag that the Go coordinator expects.
+        let nonce = generated_test_nonce();
         let response = handle_attestation_challenge(
-            "YWJj",
+            &nonce,
             "2026-03-15T10:00:00Z",
             Some("cGs="),
             None,
@@ -1918,7 +1955,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed["type"], "attestation_response");
-        assert_eq!(parsed["nonce"], "YWJj");
+        assert_eq!(parsed["nonce"], nonce);
         assert!(parsed["signature"].is_string());
         assert_eq!(parsed["public_key"], "cGs=");
         // Security fields present in JSON

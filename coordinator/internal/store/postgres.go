@@ -195,6 +195,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger_entries(account_id, created_at DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_reference ON ledger_entries(entry_type, reference) WHERE reference <> ''`,
 
 		// Referral system tables
 		`CREATE TABLE IF NOT EXISTS referrers (
@@ -838,6 +839,24 @@ func nullableCreatedAt(ts time.Time) any {
 }
 
 func creditTx(ctx context.Context, tx pgx.Tx, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) error {
+	// Idempotency guard: if a non-empty reference has already been recorded for
+	// this entry_type, skip the credit entirely. Prevents double-crediting on
+	// duplicate Stripe webhook deliveries. The unique index on
+	// (entry_type, reference) enforces this at the DB level even under races.
+	if reference != "" {
+		var exists bool
+		err := tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM ledger_entries WHERE entry_type = $1 AND reference = $2)`,
+			string(entryType), reference,
+		).Scan(&exists)
+		if err != nil {
+			return fmt.Errorf("store: check ledger reference: %w", err)
+		}
+		if exists {
+			return nil
+		}
+	}
+
 	_, err := tx.Exec(ctx,
 		`INSERT INTO balances (account_id, balance_micro_usd, updated_at)
 		 VALUES ($1, $2, NOW())
@@ -860,7 +879,8 @@ func creditTx(ctx context.Context, tx pgx.Tx, accountID string, amountMicroUSD i
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
-		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))`,
+		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
+		 ON CONFLICT (entry_type, reference) WHERE reference <> '' DO NOTHING`,
 		accountID, string(entryType), amountMicroUSD, balanceAfter, reference, nullableCreatedAt(createdAt),
 	)
 	if err != nil {

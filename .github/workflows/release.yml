@@ -39,12 +39,17 @@ on:
         options: [dev, prod]
         default: dev
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   PYO3_USE_ABI3_FORWARD_COMPATIBILITY: '1'
   DEVELOPER_ID: "Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)"
   PBS_TAG: "20260408"
   PBS_PYTHON_VERSION: "3.12.13"
+  UV_VERSION: "0.11.7"
+  VLLM_MLX_COMMIT: "2e92a6b3dc2c44351aab9d960d9682e2a9912ba5"
 
 jobs:
   resolve-env:
@@ -67,8 +72,28 @@ jobs:
     needs: [resolve-env]
     environment: ${{ needs.resolve-env.outputs.environment }}
     runs-on: macos-26-xlarge
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Validate prod release source
+        if: needs.resolve-env.outputs.environment == 'prod'
+        run: |
+          set -euo pipefail
+          git fetch --force origin master
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+              echo "Prod release tags must point at commits reachable from origin/master"
+              exit 1
+            fi
+          elif [ "$GITHUB_REF_NAME" != "master" ]; then
+            echo "Manual prod releases must run from master"
+            exit 1
+          fi
 
       # --- Import signing certificate ---
 
@@ -99,7 +124,7 @@ jobs:
       - name: Prepare build tools and Python
         run: |
           # Install uv for ~10x faster Python package installs
-          curl -LsSf https://astral.sh/uv/install.sh | sh
+          curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
           # awscli for R2 uploads
@@ -121,7 +146,7 @@ jobs:
 
           # Pre-download vllm-mlx source for pip install
           curl -fsSL -o /tmp/vllm-mlx-source.zip \
-            'https://github.com/Gajesh2007/vllm-mlx/archive/refs/heads/main.zip'
+            "https://github.com/Gajesh2007/vllm-mlx/archive/${VLLM_MLX_COMMIT}.zip"
 
           /tmp/eigeninference-build-python/bin/python3.12 --version
 

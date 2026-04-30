@@ -331,6 +331,13 @@ for _name in (
     /// OpenAI-compatible features (chat templates, tool calling, structured
     /// output) without starting an HTTP server.
     fn load_vllm_mlx(&self, py: Python<'_>) -> Result<()> {
+        // Enforce both security layers in the same GIL scope that runs vllm_mlx.
+        // lock_python_path was already called in detect_engine(), but re-running it
+        // here is safe (idempotent) and ensures the blocker is installed in the
+        // same interpreter state that will execute the model load.
+        Self::lock_python_path(py)?;
+        Self::block_dangerous_modules(py)?;
+
         let model = serde_json::to_string(&self.model_id).context("invalid model path")?;
         let cache_key = serde_json::to_string(&self.cache_key).context("invalid cache key")?;
         let code = format!(

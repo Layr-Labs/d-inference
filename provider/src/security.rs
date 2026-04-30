@@ -207,6 +207,41 @@ pub fn check_rdma_disabled() -> bool {
     }
 }
 
+/// Check whether Secure Boot is in Full Security mode.
+///
+/// Returns None when macOS does not expose a non-interactive answer. Callers
+/// should omit the claim rather than sign a hard-coded safe value.
+pub fn check_secure_boot_enabled() -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("/usr/sbin/bputil").arg("-d").output().ok()?;
+        if !output.status.success() {
+            tracing::warn!(
+                "Secure Boot check: bputil exited with status {:?}",
+                output.status.code()
+            );
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+        if stdout.contains("full security") {
+            return Some(true);
+        }
+        if stdout.contains("reduced security") || stdout.contains("permissive security") {
+            return Some(false);
+        }
+        tracing::warn!(
+            "Secure Boot check: bputil output did not include a recognized security mode"
+        );
+        None
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        tracing::debug!("Secure Boot check: not applicable on this platform");
+        None
+    }
+}
+
 /// Check if hypervisor memory isolation is active.
 ///
 /// When active, inference memory is protected by Stage 2 page tables

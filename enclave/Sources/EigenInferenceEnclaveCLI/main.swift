@@ -8,6 +8,7 @@ import Foundation
 ///
 /// Usage:
 ///   eigeninference-enclave attest [--encryption-key <base64>] [--binary-hash <hex>]
+///   eigeninference-enclave provider-identity-info
 ///   eigeninference-enclave info
 ///
 /// All keys are ephemeral — a fresh P-256 key is created in the Secure Enclave
@@ -19,6 +20,8 @@ func printUsage() {
 
     Commands:
       attest          Generate a signed attestation blob (ephemeral key)
+      provider-identity-info
+                      Load/create the provider-bound keychain identity
       info            Show Secure Enclave availability
 
     Options for 'attest':
@@ -72,6 +75,26 @@ func cmdInfo() throws {
     }
 }
 
+func cmdProviderIdentityInfo() throws {
+    guard SecureEnclave.isAvailable else {
+        fputs("error: Secure Enclave is not available on this device\n", stderr)
+        exit(1)
+    }
+
+    let identity = try ProviderBoundIdentity()
+    let info: [String: Any] = [
+        "provider_identity_public_key": try identity.publicKeyBase64,
+        "key_persistence": "keychain-access-group",
+    ]
+    let jsonData = try JSONSerialization.data(
+        withJSONObject: info,
+        options: [.sortedKeys, .prettyPrinted]
+    )
+    if let jsonStr = String(data: jsonData, encoding: .utf8) {
+        print(jsonStr)
+    }
+}
+
 // MARK: - Argument Parsing
 
 let args = CommandLine.arguments
@@ -105,6 +128,9 @@ do {
 
     case "info":
         try cmdInfo()
+
+    case "provider-identity-info":
+        try cmdProviderIdentityInfo()
 
     default:
         fputs("error: unknown command '\(command)'\n", stderr)

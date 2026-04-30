@@ -744,6 +744,7 @@ func TestEdge_ReleaseRegisterMissingFields(t *testing.T) {
 		// platform defaults to "macos-arm64" when omitted, so omit a truly required field instead
 		{"empty_version", `{"version":"","platform":"macos-arm64","binary_hash":"abc","bundle_hash":"def","url":"http://example.com/b.tar.gz"}`},
 		{"missing_hash", `{"version":"1.0.0","platform":"macos-arm64","url":"http://example.com/b.tar.gz"}`},
+		{"missing_bundle_hash", `{"version":"1.0.0","platform":"macos-arm64","binary_hash":"abc","url":"http://example.com/b.tar.gz"}`},
 		{"missing_url", `{"version":"1.0.0","platform":"macos-arm64","binary_hash":"abc","bundle_hash":"def"}`},
 	}
 

@@ -159,7 +159,7 @@ final class SecureEnclaveTests: XCTestCase {
             eigeninference_enclave_sign(
                 ptr,
                 buf.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                message.count
+                Int32(message.count)
             )
         }
         guard let sigPtr = sigPtr else {
@@ -181,7 +181,7 @@ final class SecureEnclaveTests: XCTestCase {
             eigeninference_enclave_verify(
                 pubKeyBase64,
                 buf.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                message.count,
+                Int32(message.count),
                 sigBase64
             )
         }
@@ -255,7 +255,7 @@ final class SecureEnclaveTests: XCTestCase {
             eigeninference_enclave_sign(
                 ptr,
                 buf.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                message.count
+                Int32(message.count)
             )
         }
         guard let sigPtr = sigPtr else {
@@ -275,7 +275,7 @@ final class SecureEnclaveTests: XCTestCase {
             eigeninference_enclave_verify(
                 pubKeyBase64,
                 buf.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                message.count,
+                Int32(message.count),
                 sigBase64
             )
         }

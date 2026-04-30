@@ -39,6 +39,18 @@ pub enum ProviderMessage {
         version: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         public_key: Option<String>,
+        /// Fresh SHA-256 hash of the provider binary.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        binary_hash: Option<String>,
+        /// Persistent provider-bound identity public key. This key is stored as
+        /// a Secure Enclave key under the signed provider keychain access group.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_identity_public_key: Option<String>,
+        /// Signature by provider_identity_public_key over the canonical
+        /// registration payload, binding public_key and runtime claims to the
+        /// signed Darkbloom provider entitlement.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_identity_signature: Option<String>,
         /// True when text response chunks are encrypted back to the coordinator
         /// using the request's session key.
         #[serde(default, skip_serializing_if = "is_false")]
@@ -129,6 +141,10 @@ pub enum ProviderMessage {
         /// downgrades trust accordingly.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status_signature: Option<String>,
+        /// Signature by the persistent provider-bound identity over the
+        /// canonical challenge/status payload. Required for private text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_identity_signature: Option<String>,
         public_key: String,
         /// Fresh hypervisor status at time of challenge response.
         /// When true, inference memory is hardware-isolated via Stage 2
@@ -345,6 +361,9 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: None,
+            binary_hash: None,
+            provider_identity_public_key: None,
+            provider_identity_signature: None,
             encrypted_response_chunks: true,
             wallet_address: None,
             attestation: None,
@@ -390,6 +409,9 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: None,
+            binary_hash: None,
+            provider_identity_public_key: None,
+            provider_identity_signature: None,
             encrypted_response_chunks: true,
             wallet_address: Some("0x1234567890abcdef1234567890abcdef12345678".to_string()),
             attestation: None,
@@ -428,6 +450,9 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: Some("c29tZWtleQ==".to_string()),
+            binary_hash: None,
+            provider_identity_public_key: None,
+            provider_identity_signature: None,
             encrypted_response_chunks: true,
             wallet_address: None,
             attestation: Some(attestation_raw),
@@ -653,6 +678,7 @@ mod tests {
             nonce: "dGVzdG5vbmNl".to_string(),
             signature: "c2lnbmF0dXJl".to_string(),
             status_signature: None,
+            provider_identity_signature: None,
             public_key: "cHVia2V5".to_string(),
             hypervisor_active: Some(true),
             rdma_disabled: Some(true),
@@ -950,6 +976,9 @@ mod tests {
                 backend: "vllm_mlx".to_string(),
                 version: None,
                 public_key: None,
+                binary_hash: None,
+                provider_identity_public_key: None,
+                provider_identity_signature: None,
                 encrypted_response_chunks: true,
                 wallet_address: None,
                 attestation: None,
@@ -1017,6 +1046,7 @@ mod tests {
                 nonce: "bm9uY2U=".to_string(),
                 signature: "c2ln".to_string(),
                 status_signature: None,
+                provider_identity_signature: None,
                 public_key: "cGs=".to_string(),
                 hypervisor_active: Some(false),
                 rdma_disabled: Some(true),
@@ -1197,6 +1227,9 @@ mod tests {
             backend: "vllm_mlx".to_string(),
             version: None,
             public_key: None,
+            binary_hash: None,
+            provider_identity_public_key: None,
+            provider_identity_signature: None,
             encrypted_response_chunks: true,
             wallet_address: None,
             attestation: None,

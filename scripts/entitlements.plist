@@ -17,7 +17,7 @@
       keychain writes fail with errSecMissingEntitlement (-34018).
       Format per Apple docs: "TEAMID.identifier".
     -->
-    <key>com.apple.security.keychain-access-groups</key>
+    <key>keychain-access-groups</key>
     <array>
         <string>SLDQ2GJ6TL.io.darkbloom.provider</string>
     </array>

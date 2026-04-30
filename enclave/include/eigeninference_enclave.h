@@ -48,6 +48,34 @@ char* eigeninference_enclave_sign(
 );
 
 /*
+ * Load or create the persistent provider-bound identity.
+ * The key is stored in the signed provider keychain access group.
+ */
+EigenInferenceEnclaveIdentity eigeninference_provider_identity_load_or_create(void);
+
+/*
+ * Free an identity created by eigeninference_provider_identity_load_or_create().
+ */
+void eigeninference_provider_identity_free(EigenInferenceEnclaveIdentity identity);
+
+/*
+ * Get the provider-bound identity public key as a base64 string.
+ * Caller must free the returned string with eigeninference_enclave_free_string().
+ */
+char* eigeninference_provider_identity_public_key_base64(EigenInferenceEnclaveIdentity identity);
+
+/*
+ * Sign data with the provider-bound identity private key.
+ * Returns the DER-encoded ECDSA signature as a base64 null-terminated string.
+ * Caller must free the returned string with eigeninference_enclave_free_string().
+ */
+char* eigeninference_provider_identity_sign(
+    EigenInferenceEnclaveIdentity identity,
+    const uint8_t* data,
+    int data_len
+);
+
+/*
  * Verify a P-256 ECDSA signature.
  *   pub_key_base64: signer's raw public key (base64)
  *   data/data_len:  the signed data

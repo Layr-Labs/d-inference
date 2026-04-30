@@ -134,6 +134,7 @@ func main() {
 	seedModelCatalog(st, logger)
 
 	reg := registry.New(logger)
+	reg.SetRequireProviderIdentity(true)
 
 	// Set minimum trust level for routing. Default: hardware (production).
 	// Set EIGENINFERENCE_MIN_TRUST=none or EIGENINFERENCE_MIN_TRUST=self_signed for testing.

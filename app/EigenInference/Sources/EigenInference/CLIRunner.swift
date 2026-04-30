@@ -32,20 +32,21 @@ final class CLIRunner {
     static func resolveBinaryPath() -> String? {
         let fm = FileManager.default
 
-        // 1. ~/.darkbloom/bin/darkbloom (shared with CLI — single source of truth)
-        let home = fm.homeDirectoryForCurrentUser
-        let homeBin = home.appendingPathComponent(".darkbloom/bin/darkbloom").path
-        if fm.isExecutableFile(atPath: homeBin) {
-            return homeBin
-        }
-
-        // 2. Inside app bundle (fallback)
+        // 1. Inside app bundle. Prefer the signed, notarized provider shipped
+        // with this app over any developer/home install path.
         if let bundlePath = Bundle.main.executablePath {
             let bundleDir = (bundlePath as NSString).deletingLastPathComponent
             let adjacent = (bundleDir as NSString).appendingPathComponent("darkbloom")
             if fm.isExecutableFile(atPath: adjacent) {
                 return adjacent
             }
+        }
+
+        // 2. ~/.darkbloom/bin/darkbloom (shared with CLI fallback)
+        let home = fm.homeDirectoryForCurrentUser
+        let homeBin = home.appendingPathComponent(".darkbloom/bin/darkbloom").path
+        if fm.isExecutableFile(atPath: homeBin) {
+            return homeBin
         }
 
         // 3. PATH lookup

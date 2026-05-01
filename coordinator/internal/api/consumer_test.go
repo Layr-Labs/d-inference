@@ -32,6 +32,33 @@ func testServer(t *testing.T) (*Server, *store.MemoryStore) {
 	return srv, st
 }
 
+func TestFirstResponseTimeoutUsesFastDefaultForHealthyRoutes(t *testing.T) {
+	got := firstResponseTimeout(registry.RoutingDecision{})
+	if got != defaultFirstResponseTimeout {
+		t.Fatalf("firstResponseTimeout(zero)=%s, want %s", got, defaultFirstResponseTimeout)
+	}
+}
+
+func TestFirstResponseTimeoutAccountsForQueueAndNetworkButCaps(t *testing.T) {
+	decision := registry.RoutingDecision{
+		StateMs:   500,
+		QueueMs:   3_000,
+		PendingMs: 750,
+		BacklogMs: 2_000,
+		NetworkMs: 1_000,
+	}
+	got := firstResponseTimeout(decision)
+	if got <= defaultFirstResponseTimeout {
+		t.Fatalf("firstResponseTimeout(degraded)=%s, want > %s", got, defaultFirstResponseTimeout)
+	}
+
+	decision.BacklogMs = 100_000
+	got = firstResponseTimeout(decision)
+	if got != maxFirstResponseTimeout {
+		t.Fatalf("firstResponseTimeout(huge backlog)=%s, want cap %s", got, maxFirstResponseTimeout)
+	}
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	srv, _ := testServer(t)
 

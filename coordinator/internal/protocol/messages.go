@@ -134,6 +134,7 @@ type HeartbeatMessage struct {
 	Stats           HeartbeatStats   `json:"stats"`
 	WarmModels      []string         `json:"warm_models,omitempty"`      // models currently loaded in memory
 	SystemMetrics   SystemMetrics    `json:"system_metrics"`             // live resource utilization
+	NetworkQuality  NetworkQuality   `json:"network_quality"`            // provider-observed coordinator transport quality
 	BackendCapacity *BackendCapacity `json:"backend_capacity,omitempty"` // live backend capacity (nil for old providers)
 }
 
@@ -164,6 +165,17 @@ type SystemMetrics struct {
 	MemoryPressure float64 `json:"memory_pressure"` // 0.0 to 1.0
 	CPUUsage       float64 `json:"cpu_usage"`       // 0.0 to 1.0
 	ThermalState   string  `json:"thermal_state"`   // nominal, fair, serious, critical
+}
+
+// NetworkQuality contains provider-observed coordinator WebSocket transport
+// health. All fields default to zero for backward compatibility with older
+// providers, and zero means "no measured penalty" rather than "bad".
+type NetworkQuality struct {
+	RTTMs                  float64 `json:"rtt_ms"`                   // latest WebSocket ping/pong round-trip time
+	JitterMs               float64 `json:"jitter_ms"`                // absolute delta between latest and previous RTT
+	ReconnectCount         int64   `json:"reconnect_count"`          // reconnect attempts since provider process start
+	WebSocketWriteFailures int64   `json:"websocket_write_failures"` // failed WebSocket writes since provider process start
+	LastWriteLatencyMs     float64 `json:"last_write_latency_ms"`    // duration of most recent successful WebSocket write
 }
 
 // HeartbeatStats contains counters reported in heartbeats.

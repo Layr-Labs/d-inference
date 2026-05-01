@@ -53,6 +53,13 @@ import Testing
             warmModels: ["mlx-community/Qwen2.5-7B-4bit"],
             stats: ProviderStats(requestsServed: 4, tokensGenerated: 4096),
             systemMetrics: SystemMetrics(memoryPressure: 0.2, cpuUsage: 0.3, thermalState: .nominal),
+            networkQuality: NetworkQuality(
+                rttMs: 42.5,
+                jitterMs: 7.25,
+                reconnectCount: 2,
+                websocketWriteFailures: 1,
+                lastWriteLatencyMs: 3.5
+            ),
             backendCapacity: BackendCapacity(
                 slots: [BackendSlotCapacity(
                     model: "mlx-community/Qwen2.5-7B-4bit",
@@ -158,6 +165,37 @@ import Testing
     let failedObj = try jsonObject(failedData)
     #expect(failedObj["status"] as? String == "failed")
     #expect(failedObj["error"] as? String == "GPU OOM")
+}
+
+@Test func heartbeatNetworkQualityUsesSnakeCaseAndDefaultsToZero() throws {
+    let heartbeat = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+        status: .idle,
+        stats: ProviderStats(),
+        systemMetrics: SystemMetrics(memoryPressure: 0, cpuUsage: 0, thermalState: .nominal),
+        networkQuality: NetworkQuality(
+            rttMs: 125.5,
+            jitterMs: 24.25,
+            reconnectCount: 3,
+            websocketWriteFailures: 2,
+            lastWriteLatencyMs: 9.75
+        )
+    ))
+
+    let data = try ProviderProtocolCodec.encodeProviderMessage(heartbeat)
+    let object = try jsonObject(data)
+    let network = object["network_quality"] as? [String: Any]
+    #expect(network?["rtt_ms"] as? Double == 125.5)
+    #expect(network?["jitter_ms"] as? Double == 24.25)
+    #expect(network?["reconnect_count"] as? Int == 3)
+    #expect(network?["websocket_write_failures"] as? Int == 2)
+    #expect(network?["last_write_latency_ms"] as? Double == 9.75)
+
+    let legacyJSON = #"{"type":"heartbeat","status":"idle","stats":{"requests_served":0,"tokens_generated":0},"system_metrics":{"memory_pressure":0,"cpu_usage":0,"thermal_state":"nominal"}}"#
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: legacyJSON)
+    guard case .heartbeat(let legacy) = decoded else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(legacy.networkQuality == NetworkQuality())
 }
 
 @Test func coordinatorMessagesDecodeAndEncodeWithSnakeCaseKeys() throws {

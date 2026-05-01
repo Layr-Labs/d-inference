@@ -70,6 +70,7 @@ public enum ProviderMessage: Sendable, Equatable {
         public var warmModels: [String]
         public var stats: ProviderStats
         public var systemMetrics: SystemMetrics
+        public var networkQuality: NetworkQuality
         public var backendCapacity: BackendCapacity?
 
         public init(
@@ -78,6 +79,7 @@ public enum ProviderMessage: Sendable, Equatable {
             warmModels: [String] = [],
             stats: ProviderStats,
             systemMetrics: SystemMetrics,
+            networkQuality: NetworkQuality = NetworkQuality(),
             backendCapacity: BackendCapacity? = nil
         ) {
             self.status = status
@@ -85,6 +87,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.warmModels = warmModels
             self.stats = stats
             self.systemMetrics = systemMetrics
+            self.networkQuality = networkQuality
             self.backendCapacity = backendCapacity
         }
     }
@@ -238,6 +241,7 @@ extension ProviderMessage: Codable {
         case warmModels = "warm_models"
         case stats
         case systemMetrics = "system_metrics"
+        case networkQuality = "network_quality"
         case backendCapacity = "backend_capacity"
         // Common
         case requestId = "request_id"
@@ -300,6 +304,7 @@ extension ProviderMessage: Codable {
             }
             try container.encode(h.stats, forKey: .stats)
             try container.encode(h.systemMetrics, forKey: .systemMetrics)
+            try container.encode(h.networkQuality, forKey: .networkQuality)
             try container.encodeIfPresent(h.backendCapacity, forKey: .backendCapacity)
 
         case .inferenceAccepted(let a):
@@ -387,6 +392,7 @@ extension ProviderMessage: Codable {
                 warmModels: try container.decodeIfPresent([String].self, forKey: .warmModels) ?? [],
                 stats: try container.decode(ProviderStats.self, forKey: .stats),
                 systemMetrics: try container.decode(SystemMetrics.self, forKey: .systemMetrics),
+                networkQuality: try container.decodeIfPresent(NetworkQuality.self, forKey: .networkQuality) ?? NetworkQuality(),
                 backendCapacity: try container.decodeIfPresent(BackendCapacity.self, forKey: .backendCapacity)
             ))
 

@@ -130,7 +130,8 @@ type Provider struct {
 	CurrentModel string   // model currently being served
 
 	// Live system metrics from heartbeats
-	SystemMetrics protocol.SystemMetrics
+	SystemMetrics  protocol.SystemMetrics
+	NetworkQuality protocol.NetworkQuality
 
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
 	BackendCapacity *protocol.BackendCapacity
@@ -696,6 +697,33 @@ func clampNonNeg(v, max float64) (float64, bool) {
 // TotalMemoryGB=1e9 would make gpuUtil ~= 0 and dodge health penalties, so
 // we cap it at maxMemoryGBFloat. Same for MaxTokensPotential which directly
 // controls backlog cost. NaN/negative become 0.
+func clampNetworkQuality(n *protocol.NetworkQuality) {
+	if n == nil {
+		return
+	}
+	if v, changed := clampNonNeg(n.RTTMs, 10_000); changed {
+		n.RTTMs = v
+	}
+	if v, changed := clampNonNeg(n.JitterMs, 10_000); changed {
+		n.JitterMs = v
+	}
+	if v, changed := clampNonNeg(n.LastWriteLatencyMs, 10_000); changed {
+		n.LastWriteLatencyMs = v
+	}
+	if n.ReconnectCount < 0 {
+		n.ReconnectCount = 0
+	}
+	if n.ReconnectCount > 1_000_000 {
+		n.ReconnectCount = 1_000_000
+	}
+	if n.WebSocketWriteFailures < 0 {
+		n.WebSocketWriteFailures = 0
+	}
+	if n.WebSocketWriteFailures > 1_000_000 {
+		n.WebSocketWriteFailures = 1_000_000
+	}
+}
+
 func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.BackendCapacity) {
 	if bc == nil {
 		return
@@ -923,6 +951,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	if v, changed := clampNonNeg(msg.SystemMetrics.CPUUsage, 1.0); changed {
 		msg.SystemMetrics.CPUUsage = v
 	}
+	clampNetworkQuality(&msg.NetworkQuality)
 
 	p.mu.Lock()
 	p.LastHeartbeat = time.Now()
@@ -930,6 +959,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	p.Stats.TokensGenerated += cumulativeDelta(p.lastSessionStats.TokensGenerated, msg.Stats.TokensGenerated)
 	p.lastSessionStats = msg.Stats
 	p.SystemMetrics = msg.SystemMetrics
+	p.NetworkQuality = msg.NetworkQuality
 	// Update backend capacity from heartbeat (nil-safe for old providers).
 	if msg.BackendCapacity != nil {
 		p.BackendCapacity = msg.BackendCapacity

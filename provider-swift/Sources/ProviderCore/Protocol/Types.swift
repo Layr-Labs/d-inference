@@ -140,6 +140,36 @@ public struct ProviderStats: Codable, Sendable, Equatable {
     }
 }
 
+public struct NetworkQuality: Codable, Sendable, Equatable {
+    public var rttMs: Double
+    public var jitterMs: Double
+    public var reconnectCount: UInt64
+    public var websocketWriteFailures: UInt64
+    public var lastWriteLatencyMs: Double
+
+    enum CodingKeys: String, CodingKey {
+        case rttMs = "rtt_ms"
+        case jitterMs = "jitter_ms"
+        case reconnectCount = "reconnect_count"
+        case websocketWriteFailures = "websocket_write_failures"
+        case lastWriteLatencyMs = "last_write_latency_ms"
+    }
+
+    public init(
+        rttMs: Double = 0,
+        jitterMs: Double = 0,
+        reconnectCount: UInt64 = 0,
+        websocketWriteFailures: UInt64 = 0,
+        lastWriteLatencyMs: Double = 0
+    ) {
+        self.rttMs = rttMs
+        self.jitterMs = jitterMs
+        self.reconnectCount = reconnectCount
+        self.websocketWriteFailures = websocketWriteFailures
+        self.lastWriteLatencyMs = lastWriteLatencyMs
+    }
+}
+
 public struct UsageInfo: Codable, Sendable, Equatable {
     public var promptTokens: UInt64
     public var completionTokens: UInt64

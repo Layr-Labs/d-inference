@@ -107,7 +107,7 @@ func TestReserveProviderExReturnsCostBreakdown(t *testing.T) {
 	}
 	// Sum of components should approximately equal the total cost.
 	sum := decision.StateMs + decision.QueueMs + decision.PendingMs +
-		decision.BacklogMs + decision.ThisReqMs + decision.HealthMs
+		decision.BacklogMs + decision.ThisReqMs + decision.HealthMs + decision.NetworkMs
 	if diff := sum - decision.CostMs; diff > 0.001 || diff < -0.001 {
 		t.Fatalf("breakdown sum %f != CostMs %f", sum, decision.CostMs)
 	}

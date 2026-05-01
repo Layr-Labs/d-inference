@@ -59,6 +59,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _warmModels: [String] = []
     private var _currentModelHash: String? = nil
     private var _backendCapacity: BackendCapacity? = nil
+    private var _networkQuality = NetworkQuality()
 
     public init() {}
 
@@ -85,6 +86,11 @@ public final class ProviderState: @unchecked Sendable {
     public var backendCapacity: BackendCapacity? {
         get { lock.withLock { _backendCapacity } }
         set { lock.withLock { _backendCapacity = newValue } }
+    }
+
+    public var networkQuality: NetworkQuality {
+        get { lock.withLock { _networkQuality } }
+        set { lock.withLock { _networkQuality = newValue } }
     }
 }
 
@@ -280,6 +286,7 @@ public actor CoordinatorClient {
     private let state: ProviderState
 
     private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "coordinator")
+    private let networkQualityTracker = NetworkQualityTracker()
 
     private var eventContinuation: AsyncStream<CoordinatorEvent>.Continuation?
     private var outboundContinuation: AsyncStream<OutboundMessage>.Continuation?
@@ -349,6 +356,8 @@ public actor CoordinatorClient {
                 logger.warning("Coordinator connection error: \(error.localizedDescription). Reconnecting in \(delay)s")
 
                 reconnectCount += 1
+                networkQualityTracker.recordReconnect()
+                state.networkQuality = networkQualityTracker.snapshot()
                 if shouldEmitReconnectTelemetry(count: reconnectCount) {
                     emitReconnectTelemetry(count: reconnectCount, error: error)
                 }
@@ -413,7 +422,15 @@ public actor CoordinatorClient {
                     let shutting = await self.shutdownRequested
                     if shutting { break }
                     let json = await self.encodeOutbound(msg)
-                    try await ws.send(.string(json))
+                    let started = CFAbsoluteTimeGetCurrent()
+                    do {
+                        try await ws.send(.string(json))
+                        let elapsedMs = (CFAbsoluteTimeGetCurrent() - started) * 1000.0
+                        await self.recordWriteLatency(elapsedMs)
+                    } catch {
+                        await self.recordWriteFailure()
+                        throw error
+                    }
                 }
             }
 
@@ -442,9 +459,18 @@ public actor CoordinatorClient {
                         throw CoordinatorError.pongTimeout
                     }
 
-                    ws.sendPing { error in
+                    let started = CFAbsoluteTimeGetCurrent()
+                    ws.sendPing { [weak self] error in
                         if error == nil {
                             pongTracker.recordPong()
+                            let elapsedMs = (CFAbsoluteTimeGetCurrent() - started) * 1000.0
+                            self?.networkQualityTracker.recordPong(rttMs: elapsedMs)
+                            if let self {
+                                Task { await self.publishNetworkQualitySnapshot() }
+                            }
+                        } else if let self {
+                            self.networkQualityTracker.recordWriteFailure()
+                            Task { await self.publishNetworkQualitySnapshot() }
                         }
                     }
                 }
@@ -613,6 +639,7 @@ public actor CoordinatorClient {
                 tokensGenerated: stats.tokensGenerated
             ),
             systemMetrics: metrics,
+            networkQuality: state.networkQuality,
             backendCapacity: capacity
         )
 
@@ -621,6 +648,20 @@ public actor CoordinatorClient {
             return "{\"type\":\"heartbeat\",\"status\":\"idle\",\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"nominal\"}}"
         }
         return json
+    }
+
+    private func recordWriteLatency(_ ms: Double) {
+        networkQualityTracker.recordWriteLatency(ms: ms)
+        state.networkQuality = networkQualityTracker.snapshot()
+    }
+
+    private func recordWriteFailure() {
+        networkQualityTracker.recordWriteFailure()
+        state.networkQuality = networkQualityTracker.snapshot()
+    }
+
+    private func publishNetworkQualitySnapshot() {
+        state.networkQuality = networkQualityTracker.snapshot()
     }
 
     // MARK: - Outbound Encoding

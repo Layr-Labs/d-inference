@@ -26,15 +26,16 @@ const (
 	// slow-provider decode, so the cost function actually spreads load
 	// across the fleet. Wider tie window admits more candidates to the
 	// queue-depth tie-break + random distribution.
-	queueDepthPenaltyMs      = 3_000.0
-	totalPendingPenaltyMs    = 750.0
-	memoryPressurePenaltyMs  = 4_000.0
-	cpuUsagePenaltyMs        = 1_500.0
-	gpuUtilizationPenaltyMs  = 5_000.0
-	thermalPenaltyFairMs     = 2_000.0
-	thermalPenaltySeriousMs  = 8_000.0
-	nearTieCostWindowMs      = 3_000.0
-	challengeFreshnessMaxAge = 6 * time.Minute
+	queueDepthPenaltyMs        = 3_000.0
+	totalPendingPenaltyMs      = 750.0
+	memoryPressurePenaltyMs    = 4_000.0
+	cpuUsagePenaltyMs          = 1_500.0
+	gpuUtilizationPenaltyMs    = 5_000.0
+	thermalPenaltyFairMs       = 2_000.0
+	thermalPenaltySeriousMs    = 8_000.0
+	networkQualityMaxPenaltyMs = 5_000.0
+	nearTieCostWindowMs        = 3_000.0
+	challengeFreshnessMaxAge   = 6 * time.Minute
 
 	// kvCacheBytesPerToken is a per-token KV-cache size estimate used by
 	// the free-memory admission gate.
@@ -77,6 +78,7 @@ type routingSnapshot struct {
 	decodeTPS          float64
 	prefillTPS         float64
 	systemMetrics      protocol.SystemMetrics
+	networkQuality     protocol.NetworkQuality
 	gpuMemoryActiveGB  float64
 	totalMemoryGB      float64
 	modelSizeGB        float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
@@ -115,6 +117,7 @@ type costBreakdown struct {
 	BacklogMs float64
 	ThisReqMs float64
 	HealthMs  float64
+	NetworkMs float64
 	Total     float64
 }
 
@@ -131,6 +134,7 @@ type RoutingDecision struct {
 	BacklogMs          float64 // tokens-ahead / decodeTPS contribution
 	ThisReqMs          float64 // this request's prefill+decode contribution
 	HealthMs           float64 // memory/CPU/thermal/GPU-util contribution
+	NetworkMs          float64 // bounded network-quality contribution
 	EffectiveQueue     int     // max(pendingForModel, backendRunning+backendWaiting)
 	CandidateCount     int     // total candidates that passed all gates
 	CapacityRejections int     // candidates rejected by the free-memory admission gate
@@ -206,6 +210,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		BacklogMs:          bd.BacklogMs,
 		ThisReqMs:          bd.ThisReqMs,
 		HealthMs:           bd.HealthMs,
+		NetworkMs:          bd.NetworkMs,
 		EffectiveQueue:     selected.effectiveQueue,
 		CandidateCount:     candidateCount,
 		CapacityRejections: capacityRejections,
@@ -349,6 +354,7 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 		"backlog_ms", bd.BacklogMs,
 		"this_req_ms", bd.ThisReqMs,
 		"health_ms", bd.HealthMs,
+		"network_ms", bd.NetworkMs,
 		"effective_tps", winner.effectiveTPS,
 		"effective_queue", winner.effectiveQueue,
 		"candidates", candidates,
@@ -384,15 +390,16 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string, pr *Pending
 	}
 
 	snap := routingSnapshot{
-		provider:      p,
-		model:         model,
-		slotState:     "unknown",
-		totalPending:  p.pendingCount(),
-		systemMetrics: p.SystemMetrics,
-		decodeTPS:     resolvedDecodeTPS(p),
-		prefillTPS:    resolvedPrefillTPS(p),
-		totalMemoryGB: float64(p.Hardware.MemoryGB),
-		modelSizeGB:   r.catalogSizeGBLocked(model),
+		provider:       p,
+		model:          model,
+		slotState:      "unknown",
+		totalPending:   p.pendingCount(),
+		systemMetrics:  p.SystemMetrics,
+		networkQuality: p.NetworkQuality,
+		decodeTPS:      resolvedDecodeTPS(p),
+		prefillTPS:     resolvedPrefillTPS(p),
+		totalMemoryGB:  float64(p.Hardware.MemoryGB),
+		modelSizeGB:    r.catalogSizeGBLocked(model),
 	}
 
 	for _, pr := range p.pendingReqs {
@@ -513,7 +520,8 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	backlogMs := backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, effectiveTPS)
 	thisReqMs := float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
 	healthMs := healthPenaltyMs(snap.systemMetrics, snap.gpuMemoryActiveGB, snap.totalMemoryGB)
-	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs
+	networkMs := networkPenaltyMs(snap.networkQuality)
+	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs + networkMs
 
 	return &routingCandidate{
 		provider:       snap.provider,
@@ -528,6 +536,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 			BacklogMs: backlogMs,
 			ThisReqMs: thisReqMs,
 			HealthMs:  healthMs,
+			NetworkMs: networkMs,
 			Total:     cost,
 		},
 	}, rejectNone, true
@@ -576,6 +585,35 @@ func healthPenaltyMs(m protocol.SystemMetrics, gpuActiveGB, totalMemGB float64) 
 			gpuUtil = 1
 		}
 		penalty += gpuUtil * gpuUtilizationPenaltyMs
+	}
+	return penalty
+}
+
+func networkPenaltyMs(n protocol.NetworkQuality) float64 {
+	// Keep normal regional RTT/jitter free, but penalize degraded transport
+	// enough to break otherwise-similar ties. The cap preserves hardware/load
+	// as dominant signals and keeps malicious counters bounded.
+	penalty := 0.0
+	if n.RTTMs > 50 {
+		penalty += (n.RTTMs - 50) * 2.0
+	}
+	if n.JitterMs > 20 {
+		penalty += (n.JitterMs - 20) * 5.0
+	}
+	if n.LastWriteLatencyMs > 25 {
+		penalty += (n.LastWriteLatencyMs - 25) * 2.0
+	}
+	if n.ReconnectCount > 0 {
+		penalty += float64(n.ReconnectCount) * 250.0
+	}
+	if n.WebSocketWriteFailures > 0 {
+		penalty += float64(n.WebSocketWriteFailures) * 500.0
+	}
+	if penalty < 0 || math.IsNaN(penalty) {
+		return 0
+	}
+	if penalty > networkQualityMaxPenaltyMs {
+		return networkQualityMaxPenaltyMs
 	}
 	return penalty
 }

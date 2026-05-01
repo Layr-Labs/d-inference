@@ -182,6 +182,10 @@ type Server struct {
 	// and used by internal counters/histograms. Never nil.
 	metrics *Metrics
 
+	// providerPrewarmWriter sends coordinator-driven preload hints. Tests can
+	// replace it to assert standby behavior without a real WebSocket.
+	providerPrewarmWriter func(context.Context, *registry.Provider, protocol.LoadModelMessage) error
+
 	// telemetryLimiter throttles telemetry ingestion per submitter.
 	telemetryLimiter *telemetryLimiter
 
@@ -230,15 +234,16 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 	reg.SetStore(st)
 
 	s := &Server{
-		registry:             reg,
-		store:                st,
-		ledger:               payments.NewLedger(st),
-		logger:               logger,
-		mux:                  http.NewServeMux(),
-		knownRuntimeManifest: &RuntimeManifest{},
-		metrics:              NewMetrics(),
-		telemetryLimiter:     newTelemetryLimiter(),
-		readCache:            newTTLCache(),
+		registry:              reg,
+		store:                 st,
+		ledger:                payments.NewLedger(st),
+		logger:                logger,
+		mux:                   http.NewServeMux(),
+		knownRuntimeManifest:  &RuntimeManifest{},
+		metrics:               NewMetrics(),
+		providerPrewarmWriter: nil,
+		telemetryLimiter:      newTelemetryLimiter(),
+		readCache:             newTTLCache(),
 	}
 	s.registerDefaultGauges()
 	s.routes()

@@ -46,6 +46,7 @@ public enum CoordinatorClientCodec {
         warmModels: [String],
         stats: ProviderStats,
         systemMetrics: SystemMetrics,
+        networkQuality: NetworkQuality = NetworkQuality(),
         backendCapacity: BackendCapacity?
     ) -> ProviderMessage {
         .heartbeat(ProviderMessage.Heartbeat(
@@ -54,6 +55,7 @@ public enum CoordinatorClientCodec {
             warmModels: warmModels,
             stats: stats,
             systemMetrics: systemMetrics,
+            networkQuality: networkQuality,
             backendCapacity: backendCapacity
         ))
     }

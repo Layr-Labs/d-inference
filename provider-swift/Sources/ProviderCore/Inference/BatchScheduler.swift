@@ -21,6 +21,7 @@ public struct SchedulerCapacity: Sendable {
     public let model: String
     public let activeRequests: Int
     public let pendingRequests: Int
+    public let activeTokens: Int
     public let maxConcurrent: Int
     public let gpuMemoryActiveBytes: Int
     public let gpuMemoryPeakBytes: Int
@@ -168,11 +169,13 @@ public actor BatchScheduler {
                 topK: request.top_k ?? 0,
                 seed: request.seed
             )
+        let admitStartedAt = ContinuousClock.now
         let assignedUids = gen.insert(
             prompts: [promptTokens],
             maxTokens: [maxTokens],
             samplers: [sampler]
         )
+        let admittedAt = ContinuousClock.now
         guard let uid = assignedUids.first else {
             continuation.yield(.error("BatchGenerator rejected the prompt"))
             continuation.finish()
@@ -185,9 +188,14 @@ public actor BatchScheduler {
             detokenizer: NaiveStreamingDetokenizer(tokenizer: tk.inner),
             promptTokens: promptTokens.count,
             completionTokens: 0,
-            submittedAt: .now
+            submittedAt: admitStartedAt,
+            admittedAt: admittedAt,
+            firstTokenAt: nil,
+            model: telemetryModelId(for: request)
         )
         requestIdToUid[id] = uid
+
+        emitLifecycle(.schedulerAdmit, entry: active[uid]!, activeCount: active.count)
 
         let scheduler = self
         continuation.onTermination = { @Sendable termination in
@@ -214,10 +222,12 @@ public actor BatchScheduler {
     // MARK: - Capacity
 
     public func capacity() -> SchedulerCapacity {
-        SchedulerCapacity(
+        let counters = capacityCounters()
+        return SchedulerCapacity(
             model: modelId,
-            activeRequests: active.count,
-            pendingRequests: 0,
+            activeRequests: counters.activeRequests,
+            pendingRequests: counters.pendingRequests,
+            activeTokens: counters.activeTokens,
             maxConcurrent: maxConcurrentRequests,
             gpuMemoryActiveBytes: gpuMemory(.active),
             gpuMemoryPeakBytes: gpuMemory(.peak),
@@ -234,7 +244,7 @@ public actor BatchScheduler {
             state: cap.activeRequests > 0 ? "running" : "idle",
             numRunning: UInt32(cap.activeRequests),
             numWaiting: UInt32(cap.pendingRequests),
-            activeTokens: 0,
+            activeTokens: Int64(cap.activeTokens),
             maxTokensPotential: Int64(defaultMaxTokens * maxConcurrentRequests)
         )
         return BackendCapacity(
@@ -279,6 +289,10 @@ public actor BatchScheduler {
 
         entry.detokenizer.append(token: response.token)
         entry.completionTokens += 1
+        if entry.firstTokenAt == nil {
+            entry.firstTokenAt = .now
+            emitLifecycle(.firstToken, entry: entry, activeCount: active.count)
+        }
         if let chunk = entry.detokenizer.next() {
             entry.continuation.yield(.chunk(chunk))
         }
@@ -307,6 +321,7 @@ public actor BatchScheduler {
             entry.continuation.finish()
             active.removeValue(forKey: response.uid)
             requestIdToUid.removeValue(forKey: entry.requestId)
+            emitLifecycle(.inferenceComplete, entry: entry, activeCount: active.count)
         }
     }
 
@@ -315,6 +330,50 @@ public actor BatchScheduler {
         requestIdToUid.removeValue(forKey: entry.requestId)
         entry.continuation.yield(.error(error))
         entry.continuation.finish()
+        let stage: InferenceLifecycleTelemetryStage = error == "Request cancelled"
+            ? .inferenceCancel
+            : .inferenceError
+        emitLifecycle(stage, entry: entry, activeCount: active.count, error: error, reason: error)
+    }
+
+    private func capacityCounters() -> SchedulerCapacityCounters {
+        SchedulerCapacityCounters.from(active.values.map { entry in
+            InferenceRequestProgress(
+                promptTokens: entry.promptTokens,
+                completionTokens: entry.completionTokens,
+                firstTokenReceived: entry.firstTokenAt != nil
+            )
+        })
+    }
+
+    private func emitLifecycle(
+        _ stage: InferenceLifecycleTelemetryStage,
+        entry: ActiveRequest,
+        activeCount: Int,
+        error: String? = nil,
+        reason: String? = nil
+    ) {
+        TelemetryClient.shared.emit(InferenceLifecycleTelemetry.event(
+            stage,
+            snapshot: InferenceLifecycleTelemetrySnapshot(
+                requestId: entry.requestId,
+                model: entry.model,
+                promptTokens: entry.promptTokens,
+                completionTokens: entry.completionTokens,
+                queueMilliseconds: InferenceLifecycleTelemetry.milliseconds(entry.admittedAt - entry.submittedAt),
+                admitMilliseconds: InferenceLifecycleTelemetry.milliseconds(entry.admittedAt - entry.submittedAt),
+                ttftMilliseconds: entry.firstTokenAt.map { InferenceLifecycleTelemetry.milliseconds($0 - entry.submittedAt) },
+                totalMilliseconds: InferenceLifecycleTelemetry.milliseconds(ContinuousClock.now - entry.submittedAt),
+                activeCount: activeCount
+            ),
+            error: error,
+            reason: reason
+        ))
+    }
+
+    private func telemetryModelId(for request: ChatCompletionRequest) -> String {
+        if !request.model.isEmpty { return request.model }
+        return modelId
     }
 
     private enum MemoryKind { case active, peak, cache }
@@ -341,6 +400,9 @@ private struct ActiveRequest {
     var promptTokens: Int
     var completionTokens: Int
     let submittedAt: ContinuousClock.Instant
+    let admittedAt: ContinuousClock.Instant
+    var firstTokenAt: ContinuousClock.Instant?
+    let model: String
 }
 
 private struct LoadSnapshot: @unchecked Sendable {

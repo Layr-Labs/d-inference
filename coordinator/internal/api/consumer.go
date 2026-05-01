@@ -53,9 +53,16 @@ const (
 	// backend crashed, model not loaded after idle shutdown).
 	maxDispatchAttempts = 3
 
-	// firstChunkTimeout is how long to wait for the first chunk from a provider
-	// before considering the attempt failed and retrying.
-	firstChunkTimeout = 10 * time.Second
+	// defaultFirstResponseTimeout is the baseline TTFT deadline before the
+	// coordinator retries on another provider. Keep this short: retries are
+	// invisible until the first chunk, so this is our Valorant-style timing
+	// authority guardrail for fast TTFT.
+	defaultFirstResponseTimeout = 4 * time.Second
+
+	// maxFirstResponseTimeout caps adaptive first-response deadlines for
+	// intentionally queued/backlogged routes. A route can earn extra time from
+	// its measured queue/backlog/network cost, but never an unbounded wait.
+	maxFirstResponseTimeout = 15 * time.Second
 
 	// cancelWriteTimeout bounds how long a cancel write to the provider can
 	// block. Using context.Background() unbounded here risks hanging the HTTP
@@ -64,6 +71,18 @@ const (
 )
 
 var thinkBlockPattern = regexp.MustCompile(`(?is)<think>(.*?)</think>\s*`)
+
+func firstResponseTimeout(decision registry.RoutingDecision) time.Duration {
+	costMs := decision.StateMs + decision.QueueMs + decision.PendingMs + decision.BacklogMs + decision.NetworkMs
+	if costMs <= 0 {
+		return defaultFirstResponseTimeout
+	}
+	adaptive := defaultFirstResponseTimeout + time.Duration(costMs*float64(time.Millisecond))
+	if adaptive > maxFirstResponseTimeout {
+		return maxFirstResponseTimeout
+	}
+	return adaptive
+}
 
 // sendProviderCancel sends a Cancel message for the given request to the
 // provider with a bounded timeout so a half-dead WebSocket doesn't hang the
@@ -786,7 +805,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		// Wait for an accepted signal, first chunk, or error before committing.
 		// No HTTP response has been written yet, so retries are invisible.
-		timer := time.NewTimer(firstChunkTimeout)
+		timer := time.NewTimer(firstResponseTimeout(decision))
 		accepted := false
 		select {
 		case <-pr.AcceptedCh:
@@ -888,6 +907,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Provider accepted or sent first chunk — commit to this provider.
+		s.dispatchStandbyPreloads(r.Context(), model, provider)
 		// If only accepted (no chunk yet), wait for the first chunk with
 		// the full inference timeout since the backend may be reloading.
 		if accepted && !committed {

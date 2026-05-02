@@ -874,3 +874,529 @@ func TestByzantine_RevokedThenReaccredited_RoutesAgain(t *testing.T) {
 		t.Fatal("re-accredited p1 should be routable")
 	}
 }
+
+// --- Full Fleet Scenario ---
+//
+// Spins up a 60-provider fleet covering every combination of health state,
+// trust level, accreditation status, and failure mode, then runs the full
+// routing + accreditation + Byzantine assertion suite against it.
+
+type fleetSnapshot struct {
+	Total             int
+	Routable          int
+	Offline           int
+	Untrusted         int
+	StaleChallenge    int
+	RuntimeUnverified int
+	ManifestUnchecked int
+	SIPUnverified     int
+	Accredited        int
+	PendingAccred     int
+	Revoked           int
+	NoAccreditation   int
+	MaxLoad           int
+	NoPublicKey       int
+	NoPrivacyCaps     int
+	WrongBackend      int
+	EligiblePaidWork  int
+}
+
+func snapshotFleet(reg *Registry) fleetSnapshot {
+	var s fleetSnapshot
+	reg.mu.RLock()
+	defer reg.mu.RUnlock()
+
+	now := time.Now()
+	challengeMaxAge := 6 * time.Minute
+
+	for _, p := range reg.providers {
+		s.Total++
+
+		p.mu.Lock()
+		status := p.Status
+		trust := p.TrustLevel
+		lastChallenge := p.LastChallengeVerified
+		runtimeVerified := p.RuntimeVerified
+		manifestChecked := p.RuntimeManifestChecked
+		challengeSIP := p.ChallengeVerifiedSIP
+		encChunks := p.EncryptedResponseChunks
+		pubKey := p.PublicKey
+		backend := p.Backend
+		caps := p.PrivacyCapabilities
+		accred := p.Accreditation
+		payment := p.AccreditationPayment
+		pending := p.pendingCount()
+		p.mu.Unlock()
+
+		if status == StatusOffline {
+			s.Offline++
+		}
+		if status == StatusUntrusted {
+			s.Untrusted++
+		}
+		if lastChallenge.IsZero() || now.Sub(lastChallenge) > challengeMaxAge {
+			s.StaleChallenge++
+		}
+		if !runtimeVerified {
+			s.RuntimeUnverified++
+		}
+		if !manifestChecked {
+			s.ManifestUnchecked++
+		}
+		if !challengeSIP {
+			s.SIPUnverified++
+		}
+		if accred == AccreditationActive && payment == PaymentConfirmed {
+			s.Accredited++
+		}
+		if accred != "" && accred != AccreditationActive {
+			s.PendingAccred++
+		}
+		if accred == AccreditationRevoked {
+			s.Revoked++
+		}
+		if accred == "" {
+			s.NoAccreditation++
+		}
+		if pending >= DefaultMaxConcurrent {
+			s.MaxLoad++
+		}
+		if pubKey == "" {
+			s.NoPublicKey++
+		}
+		if caps == nil {
+			s.NoPrivacyCaps++
+		}
+		if backend != "inprocess-mlx" {
+			s.WrongBackend++
+		}
+		if p.IsEligibleForPaidWork() {
+			s.EligiblePaidWork++
+		}
+
+		privateReady := pubKey != "" && backend == "inprocess-mlx" && encChunks &&
+			manifestChecked && challengeSIP &&
+			caps != nil &&
+			caps.TextBackendInprocess && caps.TextProxyDisabled &&
+			caps.PythonRuntimeLocked && caps.DangerousModulesBlocked &&
+			caps.AntiDebugEnabled && caps.CoreDumpsDisabled && caps.EnvScrubbed
+
+		routable := status != StatusOffline && status != StatusUntrusted &&
+			trustRank(trust) >= 0 &&
+			runtimeVerified && privateReady &&
+			(accred == "" || accred == AccreditationActive) &&
+			(!lastChallenge.IsZero() && now.Sub(lastChallenge) <= challengeMaxAge) &&
+			pending < DefaultMaxConcurrent
+
+		if routable {
+			s.Routable++
+		}
+	}
+	return s
+}
+
+func buildFullFleet() *Registry {
+	specs := []fleetProviderSpec{}
+
+	// 10 fully healthy, unaccredited providers (baseline fleet)
+	for i := 0; i < 10; i++ {
+		s := healthySpec("healthy-" + string(rune('A'+i)))
+		s.DecodeTPS = 80.0 + float64(i)*10.0
+		specs = append(specs, s)
+	}
+
+	// 8 accredited providers (paid work eligible)
+	for i := 0; i < 8; i++ {
+		s := accreditedSpec("accredited-" + string(rune('A'+i)))
+		s.DecodeTPS = 120.0 + float64(i)*15.0
+		s.TrustLevel = TrustHardware
+		specs = append(specs, s)
+	}
+
+	// 5 offline providers
+	for i := 0; i < 5; i++ {
+		s := healthySpec("offline-" + string(rune('A'+i)))
+		s.Status = StatusOffline
+		specs = append(specs, s)
+	}
+
+	// 4 untrusted providers (3+ challenge failures)
+	for i := 0; i < 4; i++ {
+		s := healthySpec("untrusted-" + string(rune('A'+i)))
+		s.Status = StatusUntrusted
+		specs = append(specs, s)
+	}
+
+	// 3 providers with stale challenges (>6 min old)
+	for i := 0; i < 3; i++ {
+		s := healthySpec("stale-" + string(rune('A'+i)))
+		s.StaleChallenge = true
+		specs = append(specs, s)
+	}
+
+	// 3 providers with failed runtime verification
+	for i := 0; i < 3; i++ {
+		s := healthySpec("no-runtime-" + string(rune('A'+i)))
+		s.RuntimeVerified = false
+		specs = append(specs, s)
+	}
+
+	// 3 providers without manifest check
+	for i := 0; i < 3; i++ {
+		s := healthySpec("no-manifest-" + string(rune('A'+i)))
+		s.ManifestChecked = false
+		specs = append(specs, s)
+	}
+
+	// 3 providers without challenge-verified SIP
+	for i := 0; i < 3; i++ {
+		s := healthySpec("no-sip-" + string(rune('A'+i)))
+		s.ChallengeSIP = false
+		specs = append(specs, s)
+	}
+
+	// 3 providers with pending accreditation (payment_pending)
+	for i := 0; i < 3; i++ {
+		s := healthySpec("pending-payment-" + string(rune('A'+i)))
+		s.Accreditation = AccreditationPendingPayment
+		s.Payment = PaymentPending
+		specs = append(specs, s)
+	}
+
+	// 2 providers with payment_failed accreditation
+	for i := 0; i < 2; i++ {
+		s := healthySpec("payment-failed-" + string(rune('A'+i)))
+		s.Accreditation = AccreditationPaymentFailed
+		s.Payment = PaymentFailed
+		specs = append(specs, s)
+	}
+
+	// 2 providers with pending_review accreditation
+	for i := 0; i < 2; i++ {
+		s := healthySpec("pending-review-" + string(rune('A'+i)))
+		s.Accreditation = AccreditationPendingReview
+		s.Payment = PaymentConfirmed
+		specs = append(specs, s)
+	}
+
+	// 2 providers with not_accredited (verification failed)
+	for i := 0; i < 2; i++ {
+		s := healthySpec("not-accredited-" + string(rune('A'+i)))
+		s.Accreditation = AccreditationNotVerified
+		s.Payment = PaymentConfirmed
+		specs = append(specs, s)
+	}
+
+	// 3 providers with revoked accreditation
+	for i := 0; i < 3; i++ {
+		s := healthySpec("revoked-" + string(rune('A'+i)))
+		s.Accreditation = AccreditationRevoked
+		s.Payment = PaymentConfirmed
+		specs = append(specs, s)
+	}
+
+	// 2 providers at max concurrency
+	for i := 0; i < 2; i++ {
+		s := healthySpec("max-load-" + string(rune('A'+i)))
+		s.MaxLoad = true
+		specs = append(specs, s)
+	}
+
+	// 1 provider with no public key
+	s := healthySpec("no-pubkey")
+	s.NoPublicKey = true
+	specs = append(specs, s)
+
+	// 1 provider with no privacy caps
+	s = healthySpec("no-caps")
+	s.NoPrivacyCaps = true
+	specs = append(specs, s)
+
+	// 1 provider with wrong backend
+	s = healthySpec("wrong-backend")
+	s.WrongBackend = true
+	specs = append(specs, s)
+
+	return newFleetRegistry(specs...)
+}
+
+func TestFullFleet_SnapshotCounts(t *testing.T) {
+	reg := buildFullFleet()
+	snap := snapshotFleet(reg)
+
+	if snap.Total != 56 {
+		t.Fatalf("expected 56 providers, got %d", snap.Total)
+	}
+	if snap.Offline != 5 {
+		t.Errorf("expected 5 offline, got %d", snap.Offline)
+	}
+	if snap.Untrusted != 4 {
+		t.Errorf("expected 4 untrusted, got %d", snap.Untrusted)
+	}
+	if snap.StaleChallenge != 3 {
+		t.Errorf("expected 3 stale challenges, got %d", snap.StaleChallenge)
+	}
+	if snap.RuntimeUnverified != 3 {
+		t.Errorf("expected 3 runtime unverified, got %d", snap.RuntimeUnverified)
+	}
+	if snap.ManifestUnchecked != 3 {
+		t.Errorf("expected 3 manifest unchecked, got %d", snap.ManifestUnchecked)
+	}
+	if snap.SIPUnverified != 3 {
+		t.Errorf("expected 3 SIP unverified, got %d", snap.SIPUnverified)
+	}
+	if snap.Accredited != 8 {
+		t.Errorf("expected 8 accredited, got %d", snap.Accredited)
+	}
+	if snap.Revoked != 3 {
+		t.Errorf("expected 3 revoked, got %d", snap.Revoked)
+	}
+	if snap.NoAccreditation < 10 {
+		t.Errorf("expected at least 10 unaccredited, got %d", snap.NoAccreditation)
+	}
+	if snap.MaxLoad != 2 {
+		t.Errorf("expected 2 at max load, got %d", snap.MaxLoad)
+	}
+	if snap.NoPublicKey != 1 {
+		t.Errorf("expected 1 no pubkey, got %d", snap.NoPublicKey)
+	}
+	if snap.NoPrivacyCaps != 1 {
+		t.Errorf("expected 1 no caps, got %d", snap.NoPrivacyCaps)
+	}
+	if snap.WrongBackend != 1 {
+		t.Errorf("expected 1 wrong backend, got %d", snap.WrongBackend)
+	}
+}
+
+func TestFullFleet_OnlyEligibleProvidersRoutable(t *testing.T) {
+	reg := buildFullFleet()
+	snap := snapshotFleet(reg)
+
+	if snap.Routable == 0 {
+		t.Fatal("expected at least some routable providers in fleet")
+	}
+
+	selected := reg.FindProvider(testModel)
+	if selected == nil {
+		t.Fatal("FindProvider should find a routable provider")
+	}
+
+	if selected.Accreditation != "" && selected.Accreditation != AccreditationActive {
+		t.Fatalf("routed to non-accredited provider: %s (accreditation=%s)", selected.ID, selected.Accreditation)
+	}
+	if selected.Status == StatusOffline || selected.Status == StatusUntrusted {
+		t.Fatalf("routed to offline/untrusted provider: %s", selected.ID)
+	}
+	if !selected.RuntimeVerified || !selected.RuntimeManifestChecked {
+		t.Fatalf("routed to unverified provider: %s", selected.ID)
+	}
+	if !selected.ChallengeVerifiedSIP {
+		t.Fatalf("routed to provider without SIP verification: %s", selected.ID)
+	}
+}
+
+func TestFullFleet_AccreditedProvidersEligibleForPaidWork(t *testing.T) {
+	reg := buildFullFleet()
+	snap := snapshotFleet(reg)
+
+	if snap.EligiblePaidWork != snap.Accredited {
+		t.Errorf("eligible for paid work (%d) should equal accredited count (%d)", snap.EligiblePaidWork, snap.Accredited)
+	}
+}
+
+func TestFullFleet_ChallengeFailureDegradesFleet(t *testing.T) {
+	reg := buildFullFleet()
+	before := snapshotFleet(reg)
+
+	reg.RecordChallengeFailure("accredited-A")
+
+	after := snapshotFleet(reg)
+	if after.Routable >= before.Routable {
+		t.Errorf("routable count should decrease after challenge failure: before=%d after=%d", before.Routable, after.Routable)
+	}
+
+	p := reg.GetProvider("accredited-A")
+	if p.ChallengeVerifiedSIP {
+		t.Error("challenge failure should clear ChallengeVerifiedSIP")
+	}
+	if !p.LastChallengeVerified.IsZero() {
+		t.Error("challenge failure should clear LastChallengeVerified")
+	}
+}
+
+func TestFullFleet_MarkUntrustedDegradesFleet(t *testing.T) {
+	reg := buildFullFleet()
+	before := snapshotFleet(reg)
+
+	reg.MarkUntrusted("accredited-B")
+
+	after := snapshotFleet(reg)
+	if after.Routable >= before.Routable {
+		t.Errorf("routable count should decrease after marking untrusted: before=%d after=%d", before.Routable, after.Routable)
+	}
+	if after.Untrusted != before.Untrusted+1 {
+		t.Errorf("untrusted count should increase by 1: before=%d after=%d", before.Untrusted, after.Untrusted)
+	}
+}
+
+func TestFullFleet_RevocationDegradesFleet(t *testing.T) {
+	reg := buildFullFleet()
+	before := snapshotFleet(reg)
+
+	p := reg.GetProvider("accredited-C")
+	p.SetAccreditation(AccreditationRevoked, PaymentConfirmed, "", "")
+
+	after := snapshotFleet(reg)
+	if after.Routable >= before.Routable {
+		t.Errorf("routable count should decrease after revocation: before=%d after=%d", before.Routable, after.Routable)
+	}
+	if after.Accredited != before.Accredited-1 {
+		t.Errorf("accredited count should decrease by 1: before=%d after=%d", before.Accredited, after.Accredited)
+	}
+	if after.Revoked != before.Revoked+1 {
+		t.Errorf("revoked count should increase by 1: before=%d after=%d", before.Revoked, after.Revoked)
+	}
+}
+
+func TestFullFleet_DisconnectRemovesProvider(t *testing.T) {
+	reg := buildFullFleet()
+	before := snapshotFleet(reg)
+
+	reg.Disconnect("healthy-A")
+
+	after := snapshotFleet(reg)
+	if after.Total != before.Total-1 {
+		t.Errorf("total should decrease by 1: before=%d after=%d", before.Total, after.Total)
+	}
+	if reg.GetProvider("healthy-A") != nil {
+		t.Error("disconnected provider should be removed from registry")
+	}
+}
+
+func TestFullFleet_ReaccreditationRestoresEligibility(t *testing.T) {
+	reg := buildFullFleet()
+
+	p := reg.GetProvider("accredited-D")
+	p.SetAccreditation(AccreditationRevoked, PaymentConfirmed, "", "")
+
+	if p.IsEligibleForPaidWork() {
+		t.Error("revoked provider should not be eligible for paid work")
+	}
+
+	p.SetAccreditation(AccreditationPendingPayment, PaymentPending, "enr-reapply", "")
+	p.SetAccreditation(AccreditationPendingReview, PaymentConfirmed, "", "pay-reapply")
+	p.SetAccreditation(AccreditationActive, PaymentConfirmed, "", "")
+
+	if !p.IsEligibleForPaidWork() {
+		t.Error("re-accredited provider should be eligible for paid work")
+	}
+}
+
+func TestFullFleet_ChallengeSuccessRestoresRoutability(t *testing.T) {
+	reg := buildFullFleet()
+
+	reg.RecordChallengeFailure("accredited-E")
+	if reg.FindProvider(testModel) != nil && reg.FindProvider(testModel).ID == "accredited-E" {
+		t.Error("provider that failed challenge should not be routed")
+	}
+
+	reg.RecordChallengeSuccess("accredited-E")
+
+	p := reg.GetProvider("accredited-E")
+	if !p.ChallengeVerifiedSIP {
+		t.Error("challenge success should restore SIP verification")
+	}
+}
+
+func TestFullFleet_ConcurrentRoutingUnderChurn(t *testing.T) {
+	reg := buildFullFleet()
+
+	var wg sync.WaitGroup
+	type result struct {
+		id  string
+		err bool
+	}
+	results := make(chan result, 200)
+
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			if p := reg.FindProvider(testModel); p != nil {
+				results <- result{id: p.ID}
+			} else {
+				results <- result{err: true}
+			}
+		}(i)
+
+		if i%10 == 0 && i > 0 {
+			target := "accredited-" + string(rune('A'+i%8))
+			if p := reg.GetProvider(target); p != nil {
+				go func() {
+					reg.RecordChallengeFailure(target)
+					reg.RecordChallengeSuccess(target)
+				}()
+			}
+		}
+	}
+	wg.Wait()
+	close(results)
+
+	routed := 0
+	failed := 0
+	for r := range results {
+		if r.err {
+			failed++
+		} else {
+			routed++
+		}
+	}
+	if routed == 0 {
+		t.Errorf("expected some successful routes under churn, got %d routed / %d failed", routed, failed)
+	}
+}
+
+func TestFullFleet_AllDegraded(t *testing.T) {
+	reg := buildFullFleet()
+
+	reg.mu.RLock()
+	for _, p := range reg.providers {
+		p.mu.Lock()
+		p.Status = StatusOffline
+		p.mu.Unlock()
+	}
+	reg.mu.RUnlock()
+
+	if reg.FindProvider(testModel) != nil {
+		t.Error("FindProvider should return nil when all providers are offline")
+	}
+}
+
+func TestFullFleet_ExcludeIDs(t *testing.T) {
+	reg := buildFullFleet()
+
+	var excludeIDs []string
+	count := 0
+	reg.mu.RLock()
+	for _, p := range reg.providers {
+		if p.Accreditation == AccreditationActive {
+			excludeIDs = append(excludeIDs, p.ID)
+			count++
+		}
+	}
+	reg.mu.RUnlock()
+
+	if count == 0 {
+		t.Skip("no accredited providers to exclude")
+	}
+
+	selected := reg.FindProvider(testModel, excludeIDs...)
+	if selected == nil {
+		t.Fatal("should still find a non-accredited routable provider")
+	}
+	for _, id := range excludeIDs {
+		if selected.ID == id {
+			t.Fatalf("should not select excluded provider %s", id)
+		}
+	}
+}

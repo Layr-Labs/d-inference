@@ -161,7 +161,10 @@ func (pa *PostgresAccountingAsserter) assertLedgerContinuitySQL(ctx context.Cont
 		WHERE EXISTS (
 			SELECT 1 FROM ledger_entries prev
 			WHERE prev.account_id = le.account_id
-			  AND prev.id < le.id
+			  AND prev.id = (
+			  	SELECT MAX(p2.id) FROM ledger_entries p2
+				WHERE p2.account_id = le.account_id AND p2.id < le.id
+			  )
 			  AND prev.balance_after + le.amount_micro_usd != le.balance_after
 		)
 	`)

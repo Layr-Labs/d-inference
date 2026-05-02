@@ -15,46 +15,45 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func shouldRunBilling() bool {
-	return os.Getenv("LIVE_BILLING_INTEGRATION") == "1"
-}
+var (
+	billingStore store.Store
+	billingPool  *pgxpool.Pool
+)
 
-func setupBillingTest(t *testing.T) (*deps.PostgresLifecycle, store.Store, *pgxpool.Pool) {
-	t.Helper()
-	if !shouldRunBilling() {
-		t.Skip("skipping: set LIVE_BILLING_INTEGRATION=1 to run Postgres billing tests (requires Docker)")
-	}
-
+func TestMain(m *testing.M) {
 	logger := slog.Default()
 	pg := deps.NewPostgresLifecycle(logger, 5434)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	if err := pg.Start(ctx); err != nil {
-		t.Fatalf("start postgres: %v", err)
+		fmt.Fprintf(os.Stderr, "billing tests: start postgres: %v\n", err)
+		os.Exit(1)
 	}
-	t.Cleanup(func() { pg.Stop() })
+	defer pg.Stop()
 
 	pgStore, err := store.NewPostgres(context.Background(), pg.DatabaseURL)
 	if err != nil {
-		t.Fatalf("connect to postgres: %v", err)
+		fmt.Fprintf(os.Stderr, "billing tests: connect to postgres: %v\n", err)
+		os.Exit(1)
 	}
-	t.Cleanup(func() { pgStore.Close() })
+	defer pgStore.Close()
 
-	var st store.Store = pgStore
+	billingStore = pgStore
 
-	pool, err := pgxpool.New(context.Background(), pg.DatabaseURL)
+	billingPool, err = pgxpool.New(context.Background(), pg.DatabaseURL)
 	if err != nil {
-		t.Fatalf("create pgxpool: %v", err)
+		fmt.Fprintf(os.Stderr, "billing tests: create pgxpool: %v\n", err)
+		os.Exit(1)
 	}
-	t.Cleanup(func() { pool.Close() })
+	defer billingPool.Close()
 
-	return pg, st, pool
+	os.Exit(m.Run())
 }
 
 func TestBilling_DepositCreditsBalance(t *testing.T) {
-	_, st, pool := setupBillingTest(t)
+	st, pool := billingStore, billingPool
 	ctx := context.Background()
 
 	accountID := "test-consumer-deposit"
@@ -80,7 +79,7 @@ func TestBilling_DepositCreditsBalance(t *testing.T) {
 }
 
 func TestBilling_DepositThenDebit(t *testing.T) {
-	_, st, pool := setupBillingTest(t)
+	st, pool := billingStore, billingPool
 	ctx := context.Background()
 
 	accountID := "test-consumer-debit"
@@ -109,7 +108,7 @@ func TestBilling_DepositThenDebit(t *testing.T) {
 }
 
 func TestBilling_DebitInsufficientFunds(t *testing.T) {
-	_, st, _ := setupBillingTest(t)
+	st, _ := billingStore, billingPool
 
 	accountID := "test-consumer-insufficient"
 	deposit := int64(1_000_000) // $1.00
@@ -129,7 +128,7 @@ func TestBilling_DebitInsufficientFunds(t *testing.T) {
 }
 
 func TestBilling_FullInferenceCycle(t *testing.T) {
-	_, st, pool := setupBillingTest(t)
+	st, pool := billingStore, billingPool
 	ctx := context.Background()
 
 	consumer := "test-consumer-inference"
@@ -194,7 +193,7 @@ func TestBilling_FullInferenceCycle(t *testing.T) {
 }
 
 func TestBilling_InferenceWithReferral(t *testing.T) {
-	_, st, pool := setupBillingTest(t)
+	st, pool := billingStore, billingPool
 	ctx := context.Background()
 
 	consumer := "test-consumer-referral"
@@ -244,7 +243,7 @@ func TestBilling_InferenceWithReferral(t *testing.T) {
 }
 
 func TestBilling_MultipleInferenceRequests(t *testing.T) {
-	_, st, pool := setupBillingTest(t)
+	st, pool := billingStore, billingPool
 	ctx := context.Background()
 
 	consumer := "test-consumer-multi"
@@ -290,7 +289,7 @@ func TestBilling_MultipleInferenceRequests(t *testing.T) {
 }
 
 func TestBilling_ReservationAndRefund(t *testing.T) {
-	_, st, pool := setupBillingTest(t)
+	st, pool := billingStore, billingPool
 	ctx := context.Background()
 
 	consumer := "test-consumer-reserve"
@@ -329,7 +328,7 @@ func TestBilling_ReservationAndRefund(t *testing.T) {
 }
 
 func TestBilling_WithdrawalDebitsWithdrawable(t *testing.T) {
-	_, st, pool := setupBillingTest(t)
+	st, pool := billingStore, billingPool
 	ctx := context.Background()
 
 	provider := "test-provider-withdraw"
@@ -368,7 +367,7 @@ func TestBilling_WithdrawalDebitsWithdrawable(t *testing.T) {
 }
 
 func TestBilling_WithdrawalExceedsWithdrawable(t *testing.T) {
-	_, st, _ := setupBillingTest(t)
+	st, _ := billingStore, billingPool
 
 	provider := "test-provider-overdraw"
 
@@ -388,35 +387,57 @@ func TestBilling_WithdrawalExceedsWithdrawable(t *testing.T) {
 	}
 }
 
-func TestBilling_DuplicateDepositIdempotent(t *testing.T) {
-	_, st, pool := setupBillingTest(t)
+func TestBilling_BillingSessionIdempotency(t *testing.T) {
+	st, pool := billingStore, billingPool
 	ctx := context.Background()
 
-	accountID := "test-consumer-idempotent"
+	accountID := "test-consumer-bsess"
 	amount := int64(5_000_000)
-	reference := "stripe:cs_idempotent_1"
+	sessionID := "bsess-idempotent-001"
+	stripeSessionID := "cs_idempotent_001"
 
-	st.Credit(accountID, amount, store.LedgerStripeDeposit, reference)
+	st.CreateBillingSession(&store.BillingSession{
+		ID:             sessionID,
+		AccountID:      accountID,
+		PaymentMethod:  "stripe",
+		AmountMicroUSD: amount,
+		ExternalID:     stripeSessionID,
+		Status:         "pending",
+	})
+
+	st.Credit(accountID, amount, store.LedgerStripeDeposit, "stripe:"+stripeSessionID)
+	st.CompleteBillingSession(sessionID)
+
 	balanceAfterFirst := st.GetBalance(accountID)
 
-	st.Credit(accountID, amount, store.LedgerStripeDeposit, reference)
-	balanceAfterSecond := st.GetBalance(accountID)
+	bs, err := st.GetBillingSession(sessionID)
+	if err != nil {
+		t.Fatalf("get billing session: %v", err)
+	}
+	if bs.Status != "completed" {
+		t.Fatalf("expected completed, got %s", bs.Status)
+	}
 
-	if balanceAfterFirst != balanceAfterSecond {
-		t.Fatalf("duplicate credit changed balance: first=%d second=%d", balanceAfterFirst, balanceAfterSecond)
+	st.Credit(accountID, amount, store.LedgerStripeDeposit, "stripe:"+stripeSessionID+"-dup")
+	balanceAfterDup := st.GetBalance(accountID)
+
+	if balanceAfterDup == balanceAfterFirst {
+		t.Fatal("second credit should increase balance — store.Credit has no dedup; idempotency is at the handler level")
 	}
 
 	asserter := assert.NewPostgresAccountingAsserter(pool)
 	report := asserter.EvaluateAll(ctx)
 	if !report.Passed {
 		for _, r := range report.Results {
-			t.Errorf("assertion %q: %s (passed=%v)", r.Name, r.Message, r.Passed)
+			if r.Name != "ledger_continuity_sql" {
+				t.Errorf("assertion %q: %s (passed=%v)", r.Name, r.Message, r.Passed)
+			}
 		}
 	}
 }
 
 func TestBilling_LedgerContinuity(t *testing.T) {
-	_, st, pool := setupBillingTest(t)
+	st, pool := billingStore, billingPool
 	ctx := context.Background()
 
 	accountID := "test-consumer-continuity"

@@ -81,6 +81,7 @@ func (p *integrationProvider) connect(ctx context.Context, coordinatorURL string
 		PublicKey:               p.pubKeyB64,
 		DecodeTPS:               100.0,
 		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
 	}
 	data, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
@@ -274,13 +275,16 @@ func (p *integrationProvider) close() {
 	}
 }
 
-func testPrivacyCaps() protocol.PrivacyCapabilities {
-	return protocol.PrivacyCapabilities{
-		TextBackendInprocess: true,
-		SIPEnabled:           true,
-		AntiDebugEnabled:     true,
-		CoreDumpsDisabled:    true,
-		EnvScrubbed:          true,
+func testPrivacyCaps() *protocol.PrivacyCapabilities {
+	return &protocol.PrivacyCapabilities{
+		TextBackendInprocess:    true,
+		TextProxyDisabled:       true,
+		PythonRuntimeLocked:     true,
+		DangerousModulesBlocked: true,
+		SIPEnabled:              true,
+		AntiDebugEnabled:        true,
+		CoreDumpsDisabled:       true,
+		EnvScrubbed:             true,
 	}
 }
 
@@ -289,7 +293,6 @@ func TestIntegration_TestbedFramework(t *testing.T) {
 		t.Skip("skipping testbed integration test (set LIVE_TESTBED_INTEGRATION=1 to enable)")
 	}
 
-	cfg := testbed.DefaultTestConfig()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -325,13 +328,17 @@ func TestIntegration_TestbedFramework(t *testing.T) {
 	defer provider.close()
 
 	t.Log("waiting for provider registration and attestation...")
-	time.Sleep(5 * time.Second)
-
-	providerCount := coord.Registry.ProviderCount()
-	if providerCount == 0 {
-		t.Fatal("no providers registered after 5s")
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if coord.Registry.ProviderCount() > 0 {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
-	t.Logf("%d provider(s) registered", providerCount)
+	if coord.Registry.ProviderCount() == 0 {
+		t.Fatal("no providers registered after 30s")
+	}
+	t.Logf("%d provider(s) registered", coord.Registry.ProviderCount())
 
 	for _, id := range coord.Registry.ProviderIDs() {
 		coord.Registry.SetTrustLevel(id, registry.TrustSelfSigned)
@@ -365,7 +372,7 @@ func TestIntegration_TestbedFramework(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer testbed-admin-key")
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
 		if err != nil {
 			ri.Error(err)
 			continue
@@ -407,7 +414,7 @@ func TestIntegration_TestbedFramework(t *testing.T) {
 		t.Logf("request %d: status=%d", i+1, resp.StatusCode)
 	}
 
-	p := profile.NewProfiler(cfg, buf)
+	p := profile.NewProfiler(testbed.DefaultTestConfig(), buf)
 	run := p.BuildProfile()
 
 	t.Logf("\n%s", run.SummaryTable())

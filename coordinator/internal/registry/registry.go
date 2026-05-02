@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"math"
 	"math/rand"
@@ -52,6 +53,50 @@ const (
 	TrustSelfSigned TrustLevel = "self_signed" // Attestation signed by provider's own key
 	TrustHardware   TrustLevel = "hardware"    // MDM + MDA + SE key bound to Apple-verified hardware
 )
+
+// AccreditationStatus represents where a provider is in the enrollment→payment→verification pipeline.
+// Only accredited providers are eligible for paid routing.
+type AccreditationStatus string
+
+const (
+	AccreditationNone           AccreditationStatus = ""                // not enrolled
+	AccreditationPendingPayment AccreditationStatus = "pending_payment" // enrolled, awaiting payment
+	AccreditationPaymentFailed  AccreditationStatus = "payment_failed"  // payment was rejected/expired
+	AccreditationPendingReview  AccreditationStatus = "pending_review"  // payment confirmed, awaiting verification
+	AccreditationNotVerified    AccreditationStatus = "not_accredited"  // verification failed
+	AccreditationActive         AccreditationStatus = "accredited"      // payment + verification passed, eligible for paid work
+	AccreditationRevoked        AccreditationStatus = "revoked"         // accreditation revoked (can re-apply via explicit path)
+)
+
+// AccreditationPaymentStatus tracks the payment leg of the accreditation pipeline.
+type AccreditationPaymentStatus string
+
+const (
+	PaymentNone      AccreditationPaymentStatus = ""
+	PaymentPending   AccreditationPaymentStatus = "pending"
+	PaymentFailed    AccreditationPaymentStatus = "failed"
+	PaymentConfirmed AccreditationPaymentStatus = "confirmed"
+)
+
+func accreditationCanTransition(from, to AccreditationStatus) bool {
+	switch from {
+	case AccreditationNone:
+		return to == AccreditationPendingPayment
+	case AccreditationPendingPayment:
+		return to == AccreditationPaymentFailed || to == AccreditationPendingReview
+	case AccreditationPaymentFailed:
+		return to == AccreditationPendingPayment
+	case AccreditationPendingReview:
+		return to == AccreditationNotVerified || to == AccreditationActive
+	case AccreditationNotVerified:
+		return to == AccreditationPendingReview
+	case AccreditationActive:
+		return to == AccreditationRevoked
+	case AccreditationRevoked:
+		return to == AccreditationPendingPayment
+	}
+	return false
+}
 
 // PendingRequest is a channel-based handle for an in-flight inference request.
 type PendingRequest struct {
@@ -152,6 +197,14 @@ type Provider struct {
 	// Challenge-response verification state
 	LastChallengeVerified time.Time // last successful challenge verification
 	FailedChallenges      int       // consecutive failed challenges
+
+	// Accreditation state (enrollment → payment → verification → accredited)
+	Accreditation             AccreditationStatus        `json:"accreditation"`
+	AccreditationPayment      AccreditationPaymentStatus `json:"accreditation_payment"`
+	AccreditationEnrollmentID string                     `json:"accreditation_enrollment_id,omitempty"`
+	AccreditationPaymentID    string                     `json:"accreditation_payment_id,omitempty"`
+	AccreditationVerifiedAt   *time.Time                 `json:"accreditation_verified_at,omitempty"`
+	AccreditationRevokedAt    *time.Time                 `json:"accreditation_revoked_at,omitempty"`
 
 	mu          sync.Mutex
 	pendingReqs map[string]*PendingRequest
@@ -262,6 +315,39 @@ func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) 
 	p.mu.Lock()
 	p.AttestationResult = result
 	p.mu.Unlock()
+}
+
+// IsEligibleForPaidWork returns true if the provider is accredited and not revoked.
+func (p *Provider) IsEligibleForPaidWork() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.Accreditation == AccreditationActive
+}
+
+// SetAccreditation transitions the provider's accreditation status.
+// Returns an error if the transition is not allowed by the state machine.
+func (p *Provider) SetAccreditation(status AccreditationStatus, payment AccreditationPaymentStatus, enrollmentID, paymentID string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !accreditationCanTransition(p.Accreditation, status) {
+		return fmt.Errorf("invalid accreditation transition: %s → %s", p.Accreditation, status)
+	}
+	p.Accreditation = status
+	p.AccreditationPayment = payment
+	if enrollmentID != "" {
+		p.AccreditationEnrollmentID = enrollmentID
+	}
+	if paymentID != "" {
+		p.AccreditationPaymentID = paymentID
+	}
+	now := time.Now()
+	switch status {
+	case AccreditationActive:
+		p.AccreditationVerifiedAt = &now
+	case AccreditationRevoked:
+		p.AccreditationRevokedAt = &now
+	}
+	return nil
 }
 
 // GetAttestationResult returns the current attestation result (thread-safe).
@@ -1305,6 +1391,9 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 			continue
 		}
 		if !runtimeVerified || !privateReady {
+			continue
+		}
+		if p.Accreditation != "" && p.Accreditation != AccreditationActive {
 			continue
 		}
 		if lastChallenge.IsZero() || now.Sub(lastChallenge) > challengeMaxAge {

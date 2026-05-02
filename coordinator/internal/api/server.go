@@ -1013,6 +1013,14 @@ func (s *Server) routes() {
 
 	// Metrics snapshot (admin only)
 	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
+
+	// Provider accreditation lifecycle
+	s.mux.HandleFunc("POST /v1/accreditation/enroll", s.requireAuth(s.handleAccreditationEnroll))
+	s.mux.HandleFunc("POST /v1/accreditation/payment-confirm", s.requireAuth(s.rateLimitFinancial(s.handleAccreditationPaymentConfirm)))
+	s.mux.HandleFunc("POST /v1/accreditation/payment-fail", s.requireAuth(s.handleAccreditationPaymentFail))
+	s.mux.HandleFunc("POST /v1/accreditation/verify", s.requireAuth(s.handleAccreditationVerify))
+	s.mux.HandleFunc("POST /v1/accreditation/revoke", s.requireAuth(s.handleAccreditationRevoke))
+	s.mux.HandleFunc("GET /v1/accreditation/status", s.requireAuth(s.handleAccreditationStatus))
 }
 
 // registerDefaultGauges wires live-computed gauges (fleet size, etc.) into

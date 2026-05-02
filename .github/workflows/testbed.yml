@@ -31,13 +31,10 @@ jobs:
 
       - name: Start vllm-mlx backend
         run: |
-          python3.12 -m vllm_mlx.entrypoints.openai.api_server \
-            --model mlx-community/Qwen3.5-0.8B-MLX-4bit \
-            --port 18200 \
-            --host 127.0.0.1 &
+          vllm-mlx serve mlx-community/Qwen3.5-0.8B-MLX-4bit --port 18200 --host 127.0.0.1 &
           echo "waiting for backend to load model (up to 5 min)..."
           for i in $(seq 1 90); do
-            if curl -sf http://127.0.0.1:18200/health >/dev/null 2>&1; then
+            if curl -sf http://127.0.0.1:18200/health 2>/dev/null | python3.12 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('model_loaded') else 1)" 2>/dev/null; then
               echo "backend healthy after $((i*2))s"
               break
             fi

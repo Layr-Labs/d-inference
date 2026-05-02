@@ -27,7 +27,6 @@ const (
 type ProviderConfig struct {
 	NumProviders        int
 	TrustLevel          TrustLevel
-	E2EEncryption       bool
 	AttestationInterval time.Duration
 }
 
@@ -60,9 +59,10 @@ func DefaultRequestConfig() RequestConfig {
 }
 
 type TestConfig struct {
-	Model    ModelConfig
-	Provider ProviderConfig
-	Request  RequestConfig
+	Model         ModelConfig
+	Provider      ProviderConfig
+	Request       RequestConfig
+	MinTrustLevel TrustLevel
 }
 
 func DefaultTestConfig() TestConfig {

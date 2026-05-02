@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 	"time"
 )
@@ -89,8 +88,4 @@ func (p *PostgresLifecycle) Stop() {
 		p.Logger.Info("ephemeral postgres removed", "container", p.ContainerID)
 	}
 	p.ContainerID = ""
-}
-
-func (p *PostgresLifecycle) SetEnv() {
-	os.Setenv("EIGENINFERENCE_DATABASE_URL", p.DatabaseURL)
 }

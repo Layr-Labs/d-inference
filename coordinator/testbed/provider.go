@@ -1,7 +1,6 @@
 package testbed
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -34,7 +33,7 @@ func (p *ProviderLifecycle) Start(ctx context.Context, cfg ProviderConfig) error
 		p.BinaryPath = findProviderBinary()
 	}
 	if p.BinaryPath == "" {
-		return fmt.Errorf("testbed: provider binary not found (set EIGENINFERENCE_PROVIDER_BINARY or ensure 'eigeninference-provider' is in PATH)")
+		return fmt.Errorf("testbed: provider binary not found (set DARKBLOOM_PROVIDER_BINARY or ensure 'darkbloom' is in PATH)")
 	}
 
 	ctx, p.cancel = context.WithCancel(ctx)
@@ -92,12 +91,12 @@ func (p *ProviderLifecycle) Stop() error {
 }
 
 func findProviderBinary() string {
-	if path := os.Getenv("EIGENINFERENCE_PROVIDER_BINARY"); path != "" {
+	if path := os.Getenv("DARKBLOOM_PROVIDER_BINARY"); path != "" {
 		if _, err := os.Stat(path); err == nil {
 			return path
 		}
 	}
-	if path, err := exec.LookPath("eigeninference-provider"); err == nil {
+	if path, err := exec.LookPath("darkbloom"); err == nil {
 		return path
 	}
 	return ""
@@ -117,8 +116,4 @@ func (w *logWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return n, nil
-}
-
-func suppressLogs() *bytes.Buffer {
-	return &bytes.Buffer{}
 }

@@ -23,36 +23,9 @@ func (a *AccountingAsserter) EvaluateAll(ctx context.Context) *AssertionReport {
 		Passed:    true,
 	}
 
-	a.assertBalanceIntegrity(report)
 	a.assertNoNegativeBalances(report)
-	a.assertLedgerContinuity(report)
-	a.assertPaymentEarningsParity(report)
-	a.assertIdempotency(report)
 
 	return report
-}
-
-func (a *AccountingAsserter) assertBalanceIntegrity(report *AssertionReport) {
-	name := "balance_integrity"
-
-	records, err := a.store.ListProviderPayouts()
-	if err != nil || records == nil {
-		report.Results = append(report.Results, AssertionResult{
-			Name:    name,
-			Passed:  true,
-			Message: "no payout records to verify (in-memory store or empty)",
-		})
-		return
-	}
-
-	usage := a.store.UsageRecords()
-	_ = usage
-
-	report.Results = append(report.Results, AssertionResult{
-		Name:    name,
-		Passed:  true,
-		Message: "balance integrity verified (full verification requires Postgres direct SQL)",
-	})
 }
 
 func (a *AccountingAsserter) assertNoNegativeBalances(report *AssertionReport) {
@@ -80,36 +53,10 @@ func (a *AccountingAsserter) assertNoNegativeBalances(report *AssertionReport) {
 	})
 }
 
-func (a *AccountingAsserter) assertLedgerContinuity(report *AssertionReport) {
-	name := "ledger_continuity"
-
-	report.Results = append(report.Results, AssertionResult{
-		Name:    name,
-		Passed:  true,
-		Message: "ledger continuity verified (full verification requires Postgres direct SQL)",
-	})
-}
-
-func (a *AccountingAsserter) assertPaymentEarningsParity(report *AssertionReport) {
-	name := "payment_earnings_parity"
-
-	report.Results = append(report.Results, AssertionResult{
-		Name:    name,
-		Passed:  true,
-		Message: "payment-earnings parity verified (full verification requires Postgres direct SQL)",
-	})
-}
-
-func (a *AccountingAsserter) assertIdempotency(report *AssertionReport) {
-	name := "idempotency"
-
-	report.Results = append(report.Results, AssertionResult{
-		Name:    name,
-		Passed:  true,
-		Message: "idempotency verified (full verification requires Postgres direct SQL)",
-	})
-}
-
+// PostgresAccountingAsserter performs integrity checks against raw Postgres SQL,
+// bypassing the store interface. This is intentional: the store interface cannot
+// express the aggregate SQL queries needed for integrity verification. This type
+// is test-only and must NOT be used as a pattern for production code paths.
 type PostgresAccountingAsserter struct {
 	pool *pgxpool.Pool
 }

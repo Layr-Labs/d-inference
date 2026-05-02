@@ -26,9 +26,9 @@ type CoordinatorLifecycle struct {
 	cancel     context.CancelFunc
 }
 
-func NewCoordinatorLifecycle(ctx context.Context, st store.Store, logger *slog.Logger) (*CoordinatorLifecycle, error) {
+func NewCoordinatorLifecycle(ctx context.Context, st store.Store, logger *slog.Logger, minTrustLevel TrustLevel) (*CoordinatorLifecycle, error) {
 	reg := registry.New(logger)
-	reg.MinTrustLevel = registry.TrustLevel(TrustNone)
+	reg.MinTrustLevel = registry.TrustLevel(minTrustLevel)
 
 	srv := api.NewServer(reg, st, logger)
 	srv.SetAdminKey("testbed-admin-key")

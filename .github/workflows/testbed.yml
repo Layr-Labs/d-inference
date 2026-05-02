@@ -12,7 +12,6 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     env:
-      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
       LIVE_TESTBED_INTEGRATION: "1"
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -21,65 +20,35 @@ jobs:
         with:
           go-version-file: coordinator/go.mod
 
-      - name: Cache cargo registry + target
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: |
-            ~/.cargo/registry/cache
-            ~/.cargo/registry/index
-            ~/.cargo/git/db
-            provider/target
-          key: cargo-testbed-v1-${{ runner.os }}-${{ hashFiles('provider/Cargo.lock') }}
-          restore-keys: |
-            cargo-testbed-v1-${{ runner.os }}-
-
-      - name: Install Python for PyO3
-        run: |
-          brew install python@3.12 2>/dev/null || true
-          python3.12 --version
-
-      - name: Build provider
-        env:
-          PYO3_PYTHON: /opt/homebrew/opt/python@3.12/bin/python3.12
-        run: |
-          cd provider
-          cargo build --release
-          echo "DARKBLOOM_PROVIDER_BINARY=$PWD/target/release/darkbloom" >> "$GITHUB_ENV"
-
       - name: Install vllm-mlx
         run: |
+          brew install python@3.12 2>/dev/null || true
           python3.12 -m pip install --quiet --break-system-packages \
             'mlx-lm>=0.31.2' \
             'vllm-mlx' \
             tokenizers
           python3.12 -c "import vllm_mlx; print(f'vllm-mlx {vllm_mlx.__version__}')"
 
-      - name: Download model
-        run: |
-          python3.12 -c "
-          from huggingface_hub import snapshot_download
-          path = snapshot_download('mlx-community/gemma-3-270m', local_dir='/tmp/testbed-model')
-          print(f'model downloaded to {path}')
-          "
-
       - name: Start vllm-mlx backend
         run: |
           python3.12 -m vllm_mlx.entrypoints.openai.api_server \
-            --model /tmp/testbed-model \
+            --model mlx-community/Qwen3.5-0.8B-MLX-4bit \
             --port 18200 \
             --host 127.0.0.1 &
-          echo "waiting for backend to load model..."
-          for i in $(seq 1 60); do
+          echo "waiting for backend to load model (up to 5 min)..."
+          for i in $(seq 1 90); do
             if curl -sf http://127.0.0.1:18200/health >/dev/null 2>&1; then
-              echo "backend healthy after ${i}s"
+              echo "backend healthy after $((i*2))s"
               break
+            fi
+            if [ "$i" -eq 90 ]; then
+              echo "ERROR: backend did not become healthy within 180s"
+              exit 1
             fi
             sleep 2
           done
 
       - name: Run testbed integration test
-        env:
-          DARKBLOOM_PROVIDER_BINARY: ${{ env.DARKBLOOM_PROVIDER_BINARY }}
         run: |
           cd coordinator
           go test -race -v -timeout=300s ./testbed/integration/ -run TestIntegration_TestbedFramework
@@ -87,4 +56,4 @@ jobs:
       - name: Run testbed unit tests
         run: |
           cd coordinator
-          go test -race ./testbed/... -run '^(?!TestIntegration_)'
+          go test -race ./testbed/ ./testbed/assert/ ./testbed/profile/

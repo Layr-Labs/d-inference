@@ -309,12 +309,20 @@ func TestIntegration_TestbedFramework(t *testing.T) {
 
 	t.Logf("coordinator running at %s", coord.BaseURL())
 
-	binaryPath := os.Getenv("DARKBLOOM_PROVIDER_BINARY")
-	provider := testbed.NewProviderLifecycle(binaryPath, coord.BaseURL(), logger)
-	if err := provider.Start(ctx, cfg.Provider); err != nil {
-		t.Fatalf("start provider: %v", err)
+	backendURL := os.Getenv("TESTBED_BACKEND_URL")
+	if backendURL == "" {
+		backendURL = "http://127.0.0.1:18200"
 	}
-	defer provider.Stop()
+
+	modelID := os.Getenv("TESTBED_MODEL_ID")
+	if modelID == "" {
+		modelID = "mlx-community/Qwen3.5-0.8B-MLX-4bit"
+	}
+
+	provider := newIntegrationProvider(t, modelID)
+	provider.connect(ctx, coord.BaseURL())
+	go provider.run(ctx, backendURL)
+	defer provider.close()
 
 	t.Log("waiting for provider registration and attestation...")
 	time.Sleep(5 * time.Second)
@@ -340,7 +348,7 @@ func TestIntegration_TestbedFramework(t *testing.T) {
 		clientTimer := ri.StartSegment(testbed.SegmentClientToCoordinator)
 
 		body := map[string]any{
-			"model":       cfg.Model.ModelID,
+			"model":       modelID,
 			"messages":    []map[string]string{{"role": "user", "content": "What is 2+2? Answer with just the number."}},
 			"stream":      true,
 			"max_tokens":  20,

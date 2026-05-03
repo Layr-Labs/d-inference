@@ -220,8 +220,6 @@ final class StatusViewModel: ObservableObject {
         // Check if the backend is healthy on port 8100
         var backendHealthy = false
         var backendModel = "None"
-        var engineType = ""
-
         if processRunning {
             if let url = URL(string: "http://127.0.0.1:8100/health") {
                 do {
@@ -233,7 +231,6 @@ final class StatusViewModel: ObservableObject {
                                 let parts = name.components(separatedBy: "/")
                                 backendModel = parts.last ?? name
                             }
-                            engineType = json["engine_type"] as? String ?? ""
                         }
                     }
                 } catch {}

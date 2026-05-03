@@ -69,8 +69,8 @@ func (c *ttlCache) PurgeExpired() {
 
 // writeCachedJSON writes pre-serialized JSON bytes with the standard
 // Content-Type header. Used on cache hit to skip json.Marshal.
-func writeCachedJSON(w http.ResponseWriter, status int, body []byte) {
+func writeCachedJSON(w http.ResponseWriter, body []byte) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
+	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
 }

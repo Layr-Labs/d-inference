@@ -9,6 +9,7 @@ import (
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
@@ -27,6 +28,8 @@ import (
 	"github.com/eigeninference/coordinator/internal/store"
 	"nhooyr.io/websocket"
 )
+
+const knownGoodBinaryHashForTest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func TestProviderWebSocketConnect(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -288,6 +291,10 @@ func rawP256PublicKeyB64ForTest(t *testing.T, pubKey *ecdsa.PublicKey) string {
 }
 
 func createTestAttestationJSON(t *testing.T, encryptionKey string) json.RawMessage {
+	return createTestAttestationJSONWithBinaryHash(t, encryptionKey, "")
+}
+
+func createTestAttestationJSONWithBinaryHash(t *testing.T, encryptionKey, binaryHash string) json.RawMessage {
 	t.Helper()
 
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -321,6 +328,9 @@ func createTestAttestationJSON(t *testing.T, encryptionKey string) json.RawMessa
 	if encryptionKey != "" {
 		blobMap["encryptionPublicKey"] = encryptionKey
 		registerTestChallengeSigner(encryptionKey, privKey)
+	}
+	if binaryHash != "" {
+		blobMap["binaryHash"] = binaryHash
 	}
 
 	blobJSON, err := json.Marshal(blobMap)
@@ -409,6 +419,252 @@ func TestProviderRegistrationWithValidAttestation(t *testing.T) {
 	if models[0].AttestedProviders != 1 {
 		t.Errorf("attested_providers = %d, want 1", models[0].AttestedProviders)
 	}
+}
+
+func TestProviderRegistrationRequiresBinaryHashWhenPolicyConfigured(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
+
+	pubKey := testPublicKeyB64()
+	regMsg := &protocol.RegisterMessage{
+		Type:                    protocol.TypeRegister,
+		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:                  []protocol.ModelInfo{{ID: "missing-binary-hash-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 "inprocess-mlx",
+		PublicKey:               pubKey,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+		Attestation:             createTestAttestationJSON(t, pubKey),
+	}
+	p := reg.Register("provider-1", nil, regMsg)
+
+	srv.verifyProviderAttestation("provider-1", p, regMsg)
+
+	if p.AttestationResult == nil {
+		t.Fatal("expected attestation result")
+	}
+	if p.AttestationResult.Valid {
+		t.Fatal("attestation should be invalid when binary hash policy is configured and hash is missing")
+	}
+	if p.AttestationResult.Error != "binary hash missing" {
+		t.Fatalf("attestation error = %q, want %q", p.AttestationResult.Error, "binary hash missing")
+	}
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	if p.Status != registry.StatusUntrusted {
+		t.Fatalf("provider status = %q, want %q", p.Status, registry.StatusUntrusted)
+	}
+	if p.TrustLevel != registry.TrustNone {
+		t.Fatalf("provider trust = %q, want %q", p.TrustLevel, registry.TrustNone)
+	}
+}
+
+func TestProviderRegistrationAcceptsKnownBinaryHash(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
+
+	pubKey := testPublicKeyB64()
+	regMsg := &protocol.RegisterMessage{
+		Type:                    protocol.TypeRegister,
+		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:                  []protocol.ModelInfo{{ID: "known-binary-hash-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 "inprocess-mlx",
+		PublicKey:               pubKey,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
+	}
+	p := reg.Register("provider-1", nil, regMsg)
+
+	srv.verifyProviderAttestation("provider-1", p, regMsg)
+
+	if p.AttestationResult == nil {
+		t.Fatal("expected attestation result")
+	}
+	if !p.AttestationResult.Valid {
+		t.Fatalf("attestation should be valid with a known binary hash, got %q", p.AttestationResult.Error)
+	}
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	if p.Status == registry.StatusUntrusted {
+		t.Fatal("provider should not be marked untrusted with a known binary hash")
+	}
+	if p.TrustLevel != registry.TrustSelfSigned {
+		t.Fatalf("provider trust = %q, want %q", p.TrustLevel, registry.TrustSelfSigned)
+	}
+}
+
+func TestProviderRegistrationRejectsInvalidConfiguredBinaryHash(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	srv.SetKnownBinaryHashes([]string{"not-a-sha256"})
+
+	pubKey := testPublicKeyB64()
+	regMsg := &protocol.RegisterMessage{
+		Type:                    protocol.TypeRegister,
+		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:                  []protocol.ModelInfo{{ID: "invalid-configured-hash-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 "inprocess-mlx",
+		PublicKey:               pubKey,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, "not-a-sha256"),
+	}
+	p := reg.Register("provider-1", nil, regMsg)
+
+	srv.verifyProviderAttestation("provider-1", p, regMsg)
+
+	policyConfigured, knownHashes := srv.binaryHashPolicySnapshot()
+	if !policyConfigured {
+		t.Fatal("binary hash policy should remain configured even when configured hashes are invalid")
+	}
+	if len(knownHashes) != 0 {
+		t.Fatalf("known binary hashes = %d, want 0 valid hashes", len(knownHashes))
+	}
+	if p.AttestationResult == nil {
+		t.Fatal("expected attestation result")
+	}
+	if p.AttestationResult.Valid {
+		t.Fatal("attestation should be invalid when configured hash and reported hash are invalid")
+	}
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	if p.Status != registry.StatusUntrusted {
+		t.Fatalf("provider status = %q, want %q", p.Status, registry.StatusUntrusted)
+	}
+}
+
+func TestSyncBinaryHashesRejectsInvalidStoredReleaseHashWithoutFailingOpen(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	if err := st.SetRelease(&store.Release{
+		Version:    "1.0.0",
+		Platform:   "macos-arm64",
+		BinaryHash: "not-a-sha256",
+		BundleHash: strings.Repeat("b", 64),
+		URL:        "https://r2.example.com/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz",
+	}); err != nil {
+		t.Fatalf("SetRelease: %v", err)
+	}
+
+	srv.SyncBinaryHashes()
+
+	policyConfigured, knownHashes := srv.binaryHashPolicySnapshot()
+	if !policyConfigured {
+		t.Fatal("binary hash policy should remain configured when an active release has an invalid hash")
+	}
+	if len(knownHashes) != 0 {
+		t.Fatalf("known binary hashes = %d, want 0 valid hashes", len(knownHashes))
+	}
+}
+
+func TestSyncBinaryHashesPreservesAdditionalConfiguredHashes(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+
+	manualHash := strings.Repeat("a", 64)
+	releaseHash := strings.Repeat("b", 64)
+	srv.AddKnownBinaryHashes([]string{manualHash})
+	if err := st.SetRelease(&store.Release{
+		Version:    "1.0.0",
+		Platform:   "macos-arm64",
+		BinaryHash: releaseHash,
+		BundleHash: strings.Repeat("c", 64),
+		URL:        "https://r2.example.com/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz",
+	}); err != nil {
+		t.Fatalf("SetRelease: %v", err)
+	}
+
+	srv.SyncBinaryHashes()
+	policyConfigured, knownHashes := srv.binaryHashPolicySnapshot()
+	if !policyConfigured {
+		t.Fatal("binary hash policy should be configured after manual hash and active release")
+	}
+	if !knownHashes[manualHash] {
+		t.Fatal("manual binary hash was dropped during release sync")
+	}
+	if !knownHashes[releaseHash] {
+		t.Fatal("release binary hash was not synced")
+	}
+
+	if err := st.DeleteRelease("1.0.0", "macos-arm64"); err != nil {
+		t.Fatalf("DeleteRelease: %v", err)
+	}
+	srv.SyncBinaryHashes()
+	policyConfigured, knownHashes = srv.binaryHashPolicySnapshot()
+	if !policyConfigured {
+		t.Fatal("binary hash policy should remain configured after release deletion because manual hash remains")
+	}
+	if !knownHashes[manualHash] {
+		t.Fatal("manual binary hash was dropped during release deletion sync")
+	}
+	if knownHashes[releaseHash] {
+		t.Fatal("inactive release binary hash should not remain after sync")
+	}
+}
+
+func TestBinaryHashPolicySnapshotConcurrentSync(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	manualHash := strings.Repeat("a", 64)
+	srv.AddKnownBinaryHashes([]string{manualHash})
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					policyConfigured, knownHashes := srv.binaryHashPolicySnapshot()
+					if policyConfigured && !knownHashes[manualHash] {
+						t.Errorf("manual hash missing from policy snapshot")
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < 50; i++ {
+		version := fmt.Sprintf("1.0.%d", i)
+		releaseHash := fmt.Sprintf("%064x", i+1)
+		if err := st.SetRelease(&store.Release{
+			Version:    version,
+			Platform:   "macos-arm64",
+			BinaryHash: releaseHash,
+			BundleHash: strings.Repeat("c", 64),
+			URL:        "https://r2.example.com/releases/v" + version + "/eigeninference-bundle-macos-arm64.tar.gz",
+		}); err != nil {
+			t.Fatalf("SetRelease: %v", err)
+		}
+		srv.SyncBinaryHashes()
+		if err := st.DeleteRelease(version, "macos-arm64"); err != nil {
+			t.Fatalf("DeleteRelease: %v", err)
+		}
+		srv.SyncBinaryHashes()
+	}
+
+	close(done)
+	wg.Wait()
 }
 
 // TestProviderRegistrationWithInvalidAttestation verifies that a provider
@@ -501,6 +757,41 @@ func TestProviderRegistrationWithoutAttestation(t *testing.T) {
 	models := reg.ListModels()
 	if len(models) != 0 {
 		t.Fatalf("models = %d, want 0 (no attestation, no hardware trust)", len(models))
+	}
+}
+
+func TestProviderRegistrationWithoutAttestationRejectedWhenBinaryHashPolicyConfigured(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
+
+	regMsg := &protocol.RegisterMessage{
+		Type:                    protocol.TypeRegister,
+		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:                  []protocol.ModelInfo{{ID: "no-attestation-policy-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 "inprocess-mlx",
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+	}
+	p := reg.Register("provider-1", nil, regMsg)
+
+	srv.verifyProviderAttestation("provider-1", p, regMsg)
+
+	if p.AttestationResult == nil {
+		t.Fatal("expected attestation result")
+	}
+	if p.AttestationResult.Valid {
+		t.Fatal("missing attestation should be invalid when binary hash policy is configured")
+	}
+	if p.AttestationResult.Error != "attestation missing" {
+		t.Fatalf("attestation error = %q, want %q", p.AttestationResult.Error, "attestation missing")
+	}
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	if p.Status != registry.StatusUntrusted {
+		t.Fatalf("provider status = %q, want %q", p.Status, registry.StatusUntrusted)
 	}
 }
 
@@ -857,6 +1148,210 @@ func TestChallengeResponseRejectsMissingSIPStatus(t *testing.T) {
 	}
 	if p.GetChallengeVerifiedSIP() {
 		t.Fatal("provider should not mark SIP verified when SIP status is omitted")
+	}
+}
+
+func TestChallengeResponseRequiresBinaryHashWhenPolicyConfigured(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
+
+	pubKey := testPublicKeyB64()
+	regMsg := &protocol.RegisterMessage{
+		Type:                    protocol.TypeRegister,
+		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:                  []protocol.ModelInfo{{ID: "missing-challenge-binary-hash-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 "inprocess-mlx",
+		PublicKey:               pubKey,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
+	}
+	p := reg.Register("provider-1", nil, regMsg)
+	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	sipEnabled := true
+	secureBootEnabled := true
+	rdmaDisabled := true
+	challengeTimestamp := "2026-04-24T12:00:00Z"
+
+	srv.verifyChallengeResponse("provider-1", p, &pendingChallenge{
+		nonce:     "nonce-1",
+		timestamp: challengeTimestamp,
+	}, &protocol.AttestationResponseMessage{
+		Type:              protocol.TypeAttestationResponse,
+		Nonce:             "nonce-1",
+		Signature:         testChallengeSignature("nonce-1", challengeTimestamp, pubKey),
+		PublicKey:         pubKey,
+		SIPEnabled:        &sipEnabled,
+		SecureBootEnabled: &secureBootEnabled,
+		RDMADisabled:      &rdmaDisabled,
+	})
+
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	if p.Status != registry.StatusUntrusted {
+		t.Fatalf("provider status = %q, want %q", p.Status, registry.StatusUntrusted)
+	}
+	if p.FailedChallenges != 1 {
+		t.Fatalf("failed challenges = %d, want 1", p.FailedChallenges)
+	}
+	if !p.LastChallengeVerified.IsZero() {
+		t.Fatal("provider should not record challenge success when binary hash is omitted")
+	}
+}
+
+func TestChallengeResponseRejectsUnsignedBinaryHashWhenPolicyConfigured(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
+
+	pubKey := testPublicKeyB64()
+	p := reg.Register("provider-1", nil, &protocol.RegisterMessage{
+		Type:                    protocol.TypeRegister,
+		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:                  []protocol.ModelInfo{{ID: "unsigned-challenge-binary-hash-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 "inprocess-mlx",
+		PublicKey:               pubKey,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+	})
+	sipEnabled := true
+	secureBootEnabled := true
+	rdmaDisabled := true
+
+	srv.verifyChallengeResponse("provider-1", p, &pendingChallenge{
+		nonce:     "nonce-1",
+		timestamp: "2026-04-24T12:00:00Z",
+	}, &protocol.AttestationResponseMessage{
+		Type:              protocol.TypeAttestationResponse,
+		Nonce:             "nonce-1",
+		Signature:         "dGVzdHNpZ25hdHVyZQ==",
+		PublicKey:         pubKey,
+		SIPEnabled:        &sipEnabled,
+		SecureBootEnabled: &secureBootEnabled,
+		RDMADisabled:      &rdmaDisabled,
+		BinaryHash:        knownGoodBinaryHashForTest,
+	})
+
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	if p.Status != registry.StatusUntrusted {
+		t.Fatalf("provider status = %q, want %q", p.Status, registry.StatusUntrusted)
+	}
+	if p.FailedChallenges != 1 {
+		t.Fatalf("failed challenges = %d, want 1", p.FailedChallenges)
+	}
+	if !p.LastChallengeVerified.IsZero() {
+		t.Fatal("provider should not record challenge success for an unsigned binary hash")
+	}
+}
+
+func TestChallengeResponseRejectsHashChangedFromRegistrationAttestation(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	otherKnownHash := strings.Repeat("f", 64)
+	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest, otherKnownHash})
+
+	pubKey := testPublicKeyB64()
+	regMsg := &protocol.RegisterMessage{
+		Type:                    protocol.TypeRegister,
+		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:                  []protocol.ModelInfo{{ID: "changed-challenge-binary-hash-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 "inprocess-mlx",
+		PublicKey:               pubKey,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
+	}
+	p := reg.Register("provider-1", nil, regMsg)
+	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	sipEnabled := true
+	secureBootEnabled := true
+	rdmaDisabled := true
+	challengeTimestamp := "2026-04-24T12:00:00Z"
+
+	srv.verifyChallengeResponse("provider-1", p, &pendingChallenge{
+		nonce:     "nonce-1",
+		timestamp: challengeTimestamp,
+	}, &protocol.AttestationResponseMessage{
+		Type:              protocol.TypeAttestationResponse,
+		Nonce:             "nonce-1",
+		Signature:         testChallengeSignature("nonce-1", challengeTimestamp, pubKey),
+		PublicKey:         pubKey,
+		SIPEnabled:        &sipEnabled,
+		SecureBootEnabled: &secureBootEnabled,
+		RDMADisabled:      &rdmaDisabled,
+		BinaryHash:        otherKnownHash,
+	})
+
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	if p.Status != registry.StatusUntrusted {
+		t.Fatalf("provider status = %q, want %q", p.Status, registry.StatusUntrusted)
+	}
+	if p.FailedChallenges != 1 {
+		t.Fatalf("failed challenges = %d, want 1", p.FailedChallenges)
+	}
+	if !p.LastChallengeVerified.IsZero() {
+		t.Fatal("provider should not record challenge success when binary hash changed from attestation")
+	}
+}
+
+func TestChallengeResponseAcceptsKnownBinaryHash(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
+
+	pubKey := testPublicKeyB64()
+	regMsg := &protocol.RegisterMessage{
+		Type:                    protocol.TypeRegister,
+		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:                  []protocol.ModelInfo{{ID: "known-challenge-binary-hash-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 "inprocess-mlx",
+		PublicKey:               pubKey,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
+	}
+	p := reg.Register("provider-1", nil, regMsg)
+	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	sipEnabled := true
+	secureBootEnabled := true
+	rdmaDisabled := true
+	challengeTimestamp := "2026-04-24T12:00:00Z"
+
+	srv.verifyChallengeResponse("provider-1", p, &pendingChallenge{
+		nonce:     "nonce-1",
+		timestamp: challengeTimestamp,
+	}, &protocol.AttestationResponseMessage{
+		Type:              protocol.TypeAttestationResponse,
+		Nonce:             "nonce-1",
+		Signature:         testChallengeSignature("nonce-1", challengeTimestamp, pubKey),
+		PublicKey:         pubKey,
+		SIPEnabled:        &sipEnabled,
+		SecureBootEnabled: &secureBootEnabled,
+		RDMADisabled:      &rdmaDisabled,
+		BinaryHash:        knownGoodBinaryHashForTest,
+	})
+
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	if p.Status == registry.StatusUntrusted {
+		t.Fatal("provider should not be marked untrusted with a known binary hash")
+	}
+	if p.FailedChallenges != 0 {
+		t.Fatalf("failed challenges = %d, want 0", p.FailedChallenges)
+	}
+	if p.LastChallengeVerified.IsZero() {
+		t.Fatal("provider should record challenge success with a known binary hash")
 	}
 }
 

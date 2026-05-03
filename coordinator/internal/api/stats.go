@@ -15,7 +15,7 @@ import (
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	const cacheKey = "stats:v1"
 	if cached, ok := s.readCache.Get(cacheKey); ok {
-		writeCachedJSON(w, http.StatusOK, cached)
+		writeCachedJSON(w, cached)
 		return
 	}
 	var (
@@ -142,5 +142,5 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, http.StatusOK, body)
+	writeCachedJSON(w, body)
 }

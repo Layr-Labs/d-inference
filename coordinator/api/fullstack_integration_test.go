@@ -38,7 +38,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/e2e"
+	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"

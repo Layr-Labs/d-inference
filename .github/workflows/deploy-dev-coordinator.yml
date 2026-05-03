@@ -16,11 +16,10 @@ jobs:
 
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
-          go-version-file: coordinator/go.mod
+          go-version-file: go.mod
 
       - name: Cross-compile coordinator
         run: |
-          cd coordinator
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o /tmp/coordinator ./cmd/coordinator
 
       - name: Deploy to dev VM

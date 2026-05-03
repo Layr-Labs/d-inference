@@ -1,0 +1,8 @@
+[package]
+name = "decrypt-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crypto_box = "0.9"
+base64 = "0.22"

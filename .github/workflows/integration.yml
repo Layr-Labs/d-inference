@@ -9,7 +9,7 @@ jobs:
   integration-testbed:
     name: E2E Integration Tests
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
     steps:
@@ -36,7 +36,13 @@ jobs:
           cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
              provider-swift/.build/release/mlx.metallib
 
+      - name: Download model
+        run: |
+          /tmp/mlxvenv/bin/pip install huggingface_hub
+          /tmp/mlxvenv/bin/huggingface-cli download \
+            mlx-community/Qwen3.5-0.8B-MLX-4bit
+
       - name: Run integration tests
         run: |
           export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
-          go test ./e2e/ -count=1 -v -timeout 25m -p=1
+          go test ./e2e/ -count=1 -v -timeout 35m -p=1

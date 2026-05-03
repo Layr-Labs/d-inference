@@ -21,11 +21,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install and start Docker (colima)
-        run: |
-          brew install docker colima
-          colima start --cpu 2 --memory 4 --disk 10
-          docker info
+      - name: Install Postgres
+        run: brew install postgresql@16
 
       - name: Build provider (Swift)
         run: |
@@ -41,4 +38,5 @@ jobs:
 
       - name: Run integration tests
         run: |
+          export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
           go test ./e2e/ -count=1 -v -timeout 25m -p=1

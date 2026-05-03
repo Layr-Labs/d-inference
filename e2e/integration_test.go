@@ -25,38 +25,18 @@ import (
 
 var httpTimeout = 300 * time.Second
 
-var (
-	sharedSuite     *testbed.Suite
-	sharedSuiteOnce sync.Once
-	sharedSuiteErr  error
-	sharedSuiteMu   sync.Mutex
-)
-
-func getSuite(t *testing.T) *testbed.Suite {
+func startSuite(t *testing.T) *testbed.Suite {
 	t.Helper()
-
-	sharedSuiteMu.Lock()
-	defer sharedSuiteMu.Unlock()
-
-	if sharedSuite != nil {
-		return sharedSuite
-	}
 
 	ctx := context.Background()
 	s := testbed.NewSuite(testbed.SuiteConfig{})
-	if err := s.Start(ctx); err != nil {
-		t.Fatalf("suite startup failed: %v", err)
-	}
-	sharedSuite = s
-	return sharedSuite
+	require.NoError(t, s.Start(ctx), "suite startup failed")
+	t.Cleanup(s.Stop)
+	return s
 }
 
 func TestMain(m *testing.M) {
-	code := m.Run()
-	if sharedSuite != nil {
-		sharedSuite.Stop()
-	}
-	os.Exit(code)
+	os.Exit(m.Run())
 }
 
 func postChatCompletions(t *testing.T, s *testbed.Suite, prompt string, stream bool, maxTokens int) *http.Response {
@@ -198,7 +178,7 @@ func sumAmounts(entries []ledgerEntry) int64 {
 }
 
 func TestIntegration_NonStreamingInference(t *testing.T) {
-	s := getSuite(t)
+	s := startSuite(t)
 
 	resp := postChatCompletions(t, s, "What is 2+2? Answer with just the number.", false, 20)
 	defer resp.Body.Close()
@@ -211,7 +191,7 @@ func TestIntegration_NonStreamingInference(t *testing.T) {
 }
 
 func TestIntegration_StreamingInference(t *testing.T) {
-	s := getSuite(t)
+	s := startSuite(t)
 
 	resp := postChatCompletions(t, s, "Count from 1 to 5.", true, 50)
 	defer resp.Body.Close()
@@ -231,7 +211,7 @@ func TestIntegration_StreamingInference(t *testing.T) {
 }
 
 func TestIntegration_MultipleRequestsAccounting(t *testing.T) {
-	s := getSuite(t)
+	s := startSuite(t)
 
 	buf := testbed.NewEventBuffer()
 	inst := testbed.NewInstrument(buf)
@@ -269,7 +249,7 @@ func TestIntegration_MultipleRequestsAccounting(t *testing.T) {
 }
 
 func TestIntegration_E2EEncryptionCorrectness(t *testing.T) {
-	s := getSuite(t)
+	s := startSuite(t)
 
 	resp := postChatCompletions(t, s, "What is 2+2? Answer with just the number.", false, 20)
 	defer resp.Body.Close()
@@ -310,7 +290,7 @@ func TestIntegration_E2EEncryptionCorrectness(t *testing.T) {
 }
 
 func TestIntegration_BillingBalanceDeduction(t *testing.T) {
-	s := getSuite(t)
+	s := startSuite(t)
 
 	accountID := "billing-user"
 	apiKey, err := s.PgStore.CreateKeyForAccount(accountID)
@@ -349,7 +329,7 @@ func TestIntegration_BillingBalanceDeduction(t *testing.T) {
 }
 
 func TestIntegration_ProviderPayoutSplit(t *testing.T) {
-	s := getSuite(t)
+	s := startSuite(t)
 
 	accountID := "payout-user"
 	apiKey, err := s.PgStore.CreateKeyForAccount(accountID)
@@ -381,7 +361,7 @@ func TestIntegration_ProviderPayoutSplit(t *testing.T) {
 }
 
 func TestIntegration_InsufficientBalance(t *testing.T) {
-	s := getSuite(t)
+	s := startSuite(t)
 
 	poorKey, err := s.PgStore.CreateKeyForAccount("poor-user")
 	require.NoError(t, err, "should create API key for poor user")
@@ -401,7 +381,7 @@ func TestIntegration_InsufficientBalance(t *testing.T) {
 }
 
 func TestIntegration_InvalidModel(t *testing.T) {
-	s := getSuite(t)
+	s := startSuite(t)
 
 	resp := postChatCompletionsWithModel(t, s, "nonexistent-model-xyz", "Say hello.", false, 20)
 	defer resp.Body.Close()
@@ -416,7 +396,7 @@ func TestIntegration_InvalidModel(t *testing.T) {
 }
 
 func TestIntegration_StreamingContentValidation(t *testing.T) {
-	s := getSuite(t)
+	s := startSuite(t)
 
 	resp := postChatCompletions(t, s, "Say exactly: hello world", true, 50)
 	defer resp.Body.Close()
@@ -491,7 +471,7 @@ func TestIntegration_StreamingContentValidation(t *testing.T) {
 }
 
 func TestIntegration_ConcurrentRequests(t *testing.T) {
-	s := getSuite(t)
+	s := startSuite(t)
 
 	const numRequests = 5
 	type result struct {
@@ -528,7 +508,7 @@ func TestIntegration_ConcurrentRequests(t *testing.T) {
 }
 
 func TestIntegration_AttestationHeaders(t *testing.T) {
-	s := getSuite(t)
+	s := startSuite(t)
 
 	resp := postChatCompletions(t, s, "Say hello.", false, 20)
 	defer resp.Body.Close()
@@ -558,7 +538,7 @@ func TestIntegration_AttestationHeaders(t *testing.T) {
 }
 
 func TestIntegration_ReferralRewardDistribution(t *testing.T) {
-	s := getSuite(t)
+	s := startSuite(t)
 
 	referrerKey := "referrer"
 	consumerKey := "referred-consumer"

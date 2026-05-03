@@ -39,8 +39,7 @@ jobs:
       - name: Download model
         run: |
           /tmp/mlxvenv/bin/pip install huggingface_hub
-          /tmp/mlxvenv/bin/huggingface-cli download \
-            mlx-community/Qwen3.5-0.8B-MLX-4bit
+          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/Qwen3.5-0.8B-MLX-4bit')"
 
       - name: Run integration tests
         run: |

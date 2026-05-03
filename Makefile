@@ -8,10 +8,10 @@
 build: build-coordinator build-provider build-console build-enclave build-app
 
 build-coordinator:
-	go build ./cmd/coordinator
+	cd coordinator && go build ./cmd/coordinator
 
 build-provider:
-	PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo build --release
+	cd provider && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo build --release
 	@echo "For distributable bundles (no embedded Python):"
 	@echo "  cd provider && cargo build --release --no-default-features"
 
@@ -29,10 +29,10 @@ build-app:
 test: test-coordinator test-provider test-console test-enclave test-app test-python
 
 test-coordinator:
-	go test -race ./...
+	cd coordinator && go test -race ./...
 
 test-provider:
-	PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo test -- --skip proxy::tests --skip server::tests
+	cd provider && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo test -- --skip proxy::tests --skip server::tests
 
 test-console:
 	cd console-ui && npm test
@@ -51,12 +51,12 @@ test-python:
 lint: lint-go lint-rust lint-console
 
 lint-go:
-	gofmt -l .
-	golangci-lint run
+	cd coordinator && gofmt -l .
+	cd coordinator && golangci-lint run
 
 lint-rust:
-	cargo fmt --check --manifest-path provider/Cargo.toml
-	cargo clippy --manifest-path provider/Cargo.toml -- -D warnings
+	cd provider && cargo fmt --check
+	cd provider && cargo clippy -- -D warnings
 
 lint-console:
 	cd console-ui && npx eslint src/
@@ -66,10 +66,10 @@ lint-console:
 fmt: fmt-go fmt-rust fmt-console
 
 fmt-go:
-	gofmt -w .
+	cd coordinator && gofmt -w .
 
 fmt-rust:
-	cargo fmt --manifest-path provider/Cargo.toml
+	cd provider && cargo fmt
 
 fmt-console:
 	cd console-ui && npx eslint src/ --fix
@@ -81,7 +81,7 @@ check: lint test
 # ── Clean ────────────────────────────────────────────────────────────────────
 
 clean:
-	go clean -testcache
+	cd coordinator && go clean -testcache
 	cd provider && cargo clean
 	cd console-ui && rm -rf .next node_modules
 	cd enclave && swift package clean

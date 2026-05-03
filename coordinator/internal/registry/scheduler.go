@@ -181,7 +181,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 
 	// Re-check capacity under the provider lock in case another goroutine
 	// changed the pending set between snapshot and reservation.
-	if !r.providerCanAdmitLocked(p, model, pr) {
+	if !r.providerCanAdmitLocked(p, model) {
 		return nil, RoutingDecision{
 			Model:              model,
 			CandidateCount:     candidateCount,
@@ -249,7 +249,7 @@ func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingReques
 		if _, excluded := excludeSet[p.ID]; excluded {
 			continue
 		}
-		snap, ok := r.snapshotProviderLocked(p, model, pr)
+		snap, ok := r.snapshotProviderLocked(p, model)
 		if !ok {
 			continue
 		}
@@ -355,7 +355,7 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 	)
 }
 
-func (r *Registry) snapshotProviderLocked(p *Provider, model string, pr *PendingRequest) (routingSnapshot, bool) {
+func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSnapshot, bool) {
 	now := time.Now()
 
 	p.mu.Lock()
@@ -643,7 +643,7 @@ func providerModelIDs(p *Provider) []string {
 	return ids
 }
 
-func (r *Registry) providerCanAdmitLocked(p *Provider, model string, pr *PendingRequest) bool {
+func (r *Registry) providerCanAdmitLocked(p *Provider, model string) bool {
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
 		return false
 	}

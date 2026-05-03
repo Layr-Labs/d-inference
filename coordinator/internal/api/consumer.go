@@ -829,7 +829,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"attempt", attempt+1,
 				"error", errMsg.Error,
 			)
-			s.emitRequest(r.Context(), protocol.SeverityWarn, protocol.KindInferenceError, requestID,
+			s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
 				"provider failed, retrying",
 				map[string]any{
 					"provider_id": provider.ID,
@@ -865,7 +865,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"provider_id", provider.ID,
 				"attempt", attempt+1,
 			)
-			s.emitRequest(r.Context(), protocol.SeverityWarn, protocol.KindInferenceError, requestID,
+			s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
 				"provider first-chunk timeout",
 				map[string]any{
 					"provider_id": provider.ID,
@@ -913,7 +913,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 							"attempt", attempt+1,
 							"error", errMsg.Error,
 						)
-						s.emitRequest(r.Context(), protocol.SeverityWarn, protocol.KindInferenceError, requestID,
+						s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
 							"provider failed after accepting request, retrying",
 							map[string]any{
 								"provider_id": provider.ID,
@@ -945,7 +945,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					"attempt", attempt+1,
 					"error", errMsg.Error,
 				)
-				s.emitRequest(r.Context(), protocol.SeverityWarn, protocol.KindInferenceError, requestID,
+				s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
 					"provider failed after accepting request, retrying",
 					map[string]any{
 						"provider_id": provider.ID,
@@ -972,7 +972,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					"provider_id", provider.ID,
 					"attempt", attempt+1,
 				)
-				s.emitRequest(r.Context(), protocol.SeverityWarn, protocol.KindInferenceError, requestID,
+				s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
 					"provider accepted timeout",
 					map[string]any{
 						"provider_id": provider.ID,
@@ -1004,7 +1004,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if statusCode == 0 {
 			statusCode = http.StatusServiceUnavailable
 		}
-		s.emitRequest(r.Context(), protocol.SeverityError, protocol.KindInferenceError, requestID,
+		s.emitRequest(r.Context(), protocol.SeverityError, requestID,
 			fmt.Sprintf("inference failed after %d attempt(s)", maxDispatchAttempts),
 			map[string]any{
 				"reason":      "dispatch_exhausted",
@@ -2174,7 +2174,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	const cacheKey = "api_version:v1"
 	if cached, ok := s.readCache.Get(cacheKey); ok {
-		writeCachedJSON(w, http.StatusOK, cached)
+		writeCachedJSON(w, cached)
 		return
 	}
 
@@ -2205,7 +2205,7 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, http.StatusOK, body)
+	writeCachedJSON(w, body)
 }
 
 // --- payment handlers ---

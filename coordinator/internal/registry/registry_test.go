@@ -156,6 +156,45 @@ func TestSwiftProviderRequiresRuntimeManifestCheck(t *testing.T) {
 	}
 }
 
+func TestSwiftProviderDoesNotRequirePythonPrivacyCaps(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	msg.Backend = BackendMLXSwift
+	msg.PrivacyCapabilities.PythonRuntimeLocked = false
+	msg.PrivacyCapabilities.DangerousModulesBlocked = false
+
+	p := reg.Register("p-swift-no-python", nil, msg)
+	p.TrustLevel = TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
+	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+
+	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if found == nil {
+		t.Fatal("swift provider should not require Python-specific privacy capabilities")
+	}
+}
+
+func TestLegacyMLXProviderRequiresPythonPrivacyCaps(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	msg.PrivacyCapabilities.PythonRuntimeLocked = false
+	msg.PrivacyCapabilities.DangerousModulesBlocked = false
+
+	p := reg.Register("p-legacy-no-python-caps", nil, msg)
+	p.TrustLevel = TrustHardware
+	p.LastChallengeVerified = time.Now()
+	p.ChallengeVerifiedSIP = true
+	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+
+	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if found != nil {
+		t.Fatal("legacy inprocess-mlx provider should still require Python privacy capabilities")
+	}
+}
+
 func TestProviderWithoutChallengeVerifiedSIPExcluded(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()

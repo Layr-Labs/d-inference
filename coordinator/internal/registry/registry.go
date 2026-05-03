@@ -182,11 +182,24 @@ func providerSupportsPrivateTextLocked(p *Provider) bool {
 	if caps == nil {
 		return false
 	}
-	// TextBackendInprocess, TextProxyDisabled, PythonRuntimeLocked,
-	// DangerousModulesBlocked, AntiDebugEnabled, CoreDumpsDisabled, EnvScrubbed
-	// remain provider-attested. They are gated by RuntimeManifestChecked
-	// (coordinator verifies the runtime binary hashes match known-good) and
-	// ChallengeVerifiedSIP (coordinator independently checks SIP status).
+	// TextBackendInprocess, TextProxyDisabled, AntiDebugEnabled,
+	// CoreDumpsDisabled, and EnvScrubbed remain provider-attested. They are
+	// gated by RuntimeManifestChecked (coordinator verifies the runtime/binary
+	// hashes match known-good) and ChallengeVerifiedSIP (coordinator
+	// independently checks SIP status).
+	//
+	// Swift providers do not embed or proxy through a Python runtime, so the
+	// PythonRuntimeLocked and DangerousModulesBlocked invariants are not
+	// meaningful for backend == "mlx-swift". Preserve those checks for the
+	// legacy inprocess-mlx backend, where Python/vllm runtime isolation is part
+	// of the privacy boundary.
+	if BackendUsesSwiftRuntime(p.Backend) {
+		return caps.TextBackendInprocess &&
+			caps.TextProxyDisabled &&
+			caps.AntiDebugEnabled &&
+			caps.CoreDumpsDisabled &&
+			caps.EnvScrubbed
+	}
 	return caps.TextBackendInprocess &&
 		caps.TextProxyDisabled &&
 		caps.PythonRuntimeLocked &&

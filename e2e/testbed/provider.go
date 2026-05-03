@@ -10,25 +10,33 @@ import (
 	"strings"
 )
 
+func providerBuildConfig() string {
+	if cfg := os.Getenv("TESTBED_PROVIDER_CONFIG"); cfg != "" {
+		return cfg
+	}
+	return "release"
+}
+
 func BuildProvider(ctx context.Context, logger *slog.Logger) (string, error) {
 	repoRoot := os.Getenv("DARKBLOOM_REPO_ROOT")
 	if repoRoot == "" {
 		repoRoot = "."
 	}
 	providerDir := repoRoot + "/provider-swift"
+	cfg := providerBuildConfig()
 
-	binaryPath := providerDir + "/.build/release/darkbloom"
+	binaryPath := providerDir + "/.build/" + cfg + "/darkbloom"
 	if _, err := os.Stat(binaryPath); err == nil {
-		metallibPath := providerDir + "/.build/release/mlx.metallib"
+		metallibPath := providerDir + "/.build/" + cfg + "/mlx.metallib"
 		if _, err2 := os.Stat(metallibPath); err2 == nil {
 			logger.Info("using cached provider binary", "path", binaryPath)
 			return binaryPath, nil
 		}
 	}
 
-	logger.Info("building provider binary (swift build -c release)", "dir", providerDir)
+	logger.Info("building provider binary", "dir", providerDir, "config", cfg)
 
-	cmd := exec.CommandContext(ctx, "swift", "build", "-c", "release")
+	cmd := exec.CommandContext(ctx, "swift", "build", "-c", cfg)
 	cmd.Dir = providerDir
 
 	out, err := cmd.CombinedOutput()
@@ -49,7 +57,8 @@ func BuildProvider(ctx context.Context, logger *slog.Logger) (string, error) {
 }
 
 func ensureMetallib(providerDir string, logger *slog.Logger) error {
-	metallibPath := providerDir + "/.build/release/mlx.metallib"
+	cfg := providerBuildConfig()
+	metallibPath := providerDir + "/.build/" + cfg + "/mlx.metallib"
 	if _, err := os.Stat(metallibPath); err == nil {
 		return nil
 	}

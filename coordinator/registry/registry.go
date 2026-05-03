@@ -1052,8 +1052,21 @@ func (r *Registry) ForceTrustProvider(providerID string) {
 	p.ChallengeVerifiedSIP = true
 	p.LastChallengeVerified = time.Now()
 	p.FailedChallenges = 0
+	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	if p.PrivacyCapabilities == nil {
+		p.PrivacyCapabilities = &protocol.PrivacyCapabilities{}
+	}
+	p.PrivacyCapabilities.TextBackendInprocess = true
+	p.PrivacyCapabilities.TextProxyDisabled = true
+	p.PrivacyCapabilities.PythonRuntimeLocked = true
+	p.PrivacyCapabilities.DangerousModulesBlocked = true
+	p.PrivacyCapabilities.AntiDebugEnabled = true
+	p.PrivacyCapabilities.CoreDumpsDisabled = true
+	p.PrivacyCapabilities.EnvScrubbed = true
 	p.mu.Unlock()
 
+	r.drainQueuedRequestsForModels(providerModelIDs(p))
 	r.logger.Info("provider force-trusted for testing",
 		"provider_id", providerID,
 	)

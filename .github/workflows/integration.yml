@@ -9,7 +9,7 @@ jobs:
   integration-testbed:
     name: E2E Integration Tests
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
     steps:
@@ -20,6 +20,22 @@ jobs:
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
+
+      - name: Install Docker
+        run: |
+          brew install --cask docker
+          # Start Docker daemon in the background
+          /Applications/Docker.app/Contents/MacOS/Docker &
+          # Wait for Docker to be ready
+          for i in $(seq 1 60); do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker is ready"
+              break
+            fi
+            echo "Waiting for Docker... ($i)"
+            sleep 5
+          done
+          docker info >/dev/null 2>&1 || { echo "Docker failed to start"; exit 1; }
 
       - name: Build provider (Swift)
         run: |
@@ -35,4 +51,4 @@ jobs:
 
       - name: Run integration tests
         run: |
-          go test ./e2e/ -count=1 -v -timeout 10m
+          go test ./e2e/ -count=1 -v -timeout 25m -p=1

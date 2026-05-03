@@ -24,7 +24,7 @@ jobs:
       - name: Install and start Docker (colima)
         run: |
           brew install docker colima
-          colima start --cpu 2 --memory 4 --disk 10 --no-mount
+          colima start --cpu 2 --memory 4 --disk 10
           docker info
 
       - name: Build provider (Swift)

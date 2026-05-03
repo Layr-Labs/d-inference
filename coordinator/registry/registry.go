@@ -264,6 +264,12 @@ func (p *Provider) GetChallengeVerifiedSIP() bool {
 	return p.ChallengeVerifiedSIP
 }
 
+func (p *Provider) SetChallengeVerifiedSIP(v bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ChallengeVerifiedSIP = v
+}
+
 // Mu returns the provider's mutex for external callers that need to read
 // fields like Status atomically. Prefer dedicated getters where available.
 func (p *Provider) Mu() *sync.Mutex {
@@ -1029,6 +1035,27 @@ func (r *Registry) MarkUntrusted(providerID string) {
 	r.logger.Warn("provider marked as untrusted",
 		"provider_id", providerID,
 		"failed_challenges", p.FailedChallenges,
+	)
+}
+
+func (r *Registry) ForceTrustProvider(providerID string) {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	p.mu.Lock()
+	p.Status = StatusOnline
+	p.TrustLevel = TrustSelfSigned
+	p.ChallengeVerifiedSIP = true
+	p.LastChallengeVerified = time.Now()
+	p.FailedChallenges = 0
+	p.mu.Unlock()
+
+	r.logger.Info("provider force-trusted for testing",
+		"provider_id", providerID,
 	)
 }
 

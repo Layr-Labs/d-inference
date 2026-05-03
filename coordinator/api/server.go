@@ -382,6 +382,10 @@ func (s *Server) Billing() *billing.Service {
 	return s.billing
 }
 
+func (s *Server) SetChallengeInterval(d time.Duration) {
+	s.challengeInterval = d
+}
+
 // SetPrivyAuth configures Privy JWT authentication for consumer endpoints.
 func (s *Server) SetPrivyAuth(pa *auth.PrivyAuth) {
 	s.privyAuth = pa

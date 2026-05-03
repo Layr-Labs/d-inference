@@ -154,6 +154,7 @@ func (s *Suite) startCoordinator() error {
 	srv := api.NewServer(reg, s.PgStore, s.Logger)
 	srv.SetAdminKey("testbed-admin-key")
 	srv.SetRuntimeManifest(&api.RuntimeManifest{})
+	srv.SetChallengeInterval(1 * time.Hour)
 
 	ledger := payments.NewLedger(s.PgStore)
 	billingSvc := billing.NewService(s.PgStore, ledger, s.Logger, billing.Config{MockMode: true})
@@ -199,11 +200,12 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 	}
 	s.Logger.Info("provider registered", "count", s.Coordinator.Registry.ProviderCount())
 
+	time.Sleep(3 * time.Second)
+
 	for _, id := range s.Coordinator.Registry.ProviderIDs() {
-		s.Coordinator.Registry.SetTrustLevel(id, registry.TrustSelfSigned)
-		s.Coordinator.Registry.RecordChallengeSuccess(id)
+		s.Coordinator.Registry.ForceTrustProvider(id)
 	}
-	s.Logger.Info("provider promoted to self-signed trust")
+	s.Logger.Info("provider force-trusted for testing")
 	return nil
 }
 

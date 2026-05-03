@@ -9,7 +9,7 @@ jobs:
   integration-testbed:
     name: E2E Integration Tests
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 25
     env:
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
     steps:
@@ -44,4 +44,4 @@ jobs:
       - name: Run integration tests
         run: |
           export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
-          go test ./e2e/ -count=1 -v -timeout 35m -p=1
+          go test ./e2e/ -count=1 -v -timeout 20m -p=1

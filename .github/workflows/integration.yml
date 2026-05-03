@@ -21,21 +21,11 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install Docker
+      - name: Install and start Docker (colima)
         run: |
-          brew install --cask docker
-          # Start Docker daemon in the background
-          /Applications/Docker.app/Contents/MacOS/Docker &
-          # Wait for Docker to be ready
-          for i in $(seq 1 60); do
-            if docker info >/dev/null 2>&1; then
-              echo "Docker is ready"
-              break
-            fi
-            echo "Waiting for Docker... ($i)"
-            sleep 5
-          done
-          docker info >/dev/null 2>&1 || { echo "Docker failed to start"; exit 1; }
+          brew install docker colima
+          colima start --cpu 2 --memory 4 --disk 10 --no-mount
+          docker info
 
       - name: Build provider (Swift)
         run: |

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -161,9 +162,17 @@ func (lg *LoadGenerator) Run() *LoadResult {
 				}
 			}
 
+			prompt := fmt.Sprintf("What is %d+%d? Answer with just the number.", idx, idx+1)
+			if lg.Config.PromptBytes > 0 {
+				padding := lg.Config.PromptBytes - len(prompt)
+				if padding > 0 {
+					prompt += strings.Repeat(" ", padding)
+				}
+			}
+
 			body := map[string]any{
 				"model":       modelID,
-				"messages":    []map[string]string{{"role": "user", "content": fmt.Sprintf("What is %d+%d? Answer with just the number.", idx, idx+1)}},
+				"messages":    []map[string]string{{"role": "user", "content": prompt}},
 				"stream":      lg.Config.Streaming,
 				"max_tokens":  lg.Config.MaxTokens,
 				"temperature": lg.Config.Temperature,
@@ -340,6 +349,55 @@ func (r *LoadResult) SummaryTable() string {
 	return s.String()
 }
 
+type SegmentStatsView struct {
+	Count  int
+	Mean   time.Duration
+	Median time.Duration
+	P95    time.Duration
+	P99    time.Duration
+	Max    time.Duration
+}
+
+func (r *LoadResult) SegmentStatsMap() map[Segment]*SegmentStatsView {
+	if r.ProfileRun == nil {
+		return nil
+	}
+	out := make(map[Segment]*SegmentStatsView, len(r.ProfileRun.SegmentTimings))
+	for seg, durations := range r.ProfileRun.SegmentTimings {
+		if len(durations) == 0 {
+			continue
+		}
+		sorted := make([]time.Duration, len(durations))
+		copy(sorted, durations)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+
+		var total time.Duration
+		for _, d := range sorted {
+			total += d
+		}
+		mean := total / time.Duration(len(sorted))
+		median := sorted[len(sorted)/2]
+		p95Idx := len(sorted) * 95 / 100
+		if p95Idx >= len(sorted) {
+			p95Idx = len(sorted) - 1
+		}
+		p99Idx := len(sorted) * 99 / 100
+		if p99Idx >= len(sorted) {
+			p99Idx = len(sorted) - 1
+		}
+
+		out[seg] = &SegmentStatsView{
+			Count:  len(sorted),
+			Mean:   mean,
+			Median: median,
+			P95:    sorted[p95Idx],
+			P99:    sorted[p99Idx],
+			Max:    sorted[len(sorted)-1],
+		}
+	}
+	return out
+}
+
 type simpleStats struct {
 	Count  int
 	Mean   time.Duration
@@ -355,13 +413,7 @@ func computeStats(durations []time.Duration) simpleStats {
 
 	sorted := make([]time.Duration, len(durations))
 	copy(sorted, durations)
-	for i := 0; i < len(sorted)-1; i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if sorted[j] < sorted[i] {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
-		}
-	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 
 	var total time.Duration
 	for _, d := range sorted {

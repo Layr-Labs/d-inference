@@ -37,23 +37,18 @@ func NewAsserter(thresholds []Threshold) *Asserter {
 
 func DefaultThresholds() []Threshold {
 	return []Threshold{
-		{Segment: testbed.SegmentTotalE2E, MaxMean: 50 * time.Millisecond, MaxP95: 100 * time.Millisecond},
-		{Segment: testbed.SegmentQueueWait, MaxMean: 30 * time.Second, MaxP95: 90 * time.Second},
-		{Segment: testbed.SegmentE2EEncrypt, MaxMean: 5 * time.Millisecond, MaxP95: 10 * time.Millisecond},
-		{Segment: testbed.SegmentCoordinatorToProvider, MaxMean: 50 * time.Millisecond, MaxP95: 100 * time.Millisecond},
-		{Segment: testbed.SegmentTTFT, MaxMean: 5 * time.Second, MaxP95: 10 * time.Second},
-		{Segment: testbed.SegmentTotalE2E, MaxMean: 30 * time.Second, MaxP95: 60 * time.Second},
+		{Segment: testbed.SegmentParse, MaxMean: 1 * time.Millisecond, MaxP95: 5 * time.Millisecond},
+		{Segment: testbed.SegmentReserve, MaxMean: 50 * time.Millisecond, MaxP95: 200 * time.Millisecond},
+		{Segment: testbed.SegmentEncrypt, MaxMean: 5 * time.Millisecond, MaxP95: 50 * time.Millisecond},
+		{Segment: testbed.SegmentDispatch, MaxMean: 5 * time.Millisecond, MaxP95: 50 * time.Millisecond},
 	}
 }
 
-type SegmentStatsView struct {
-	Count  int
-	Mean   time.Duration
-	P95    time.Duration
-	P99    time.Duration
-	Median time.Duration
-	Max    time.Duration
+func CoordinatorOverheadThresholds() []Threshold {
+	return DefaultThresholds()
 }
+
+type SegmentStatsView = testbed.SegmentStatsView
 
 func (a *Asserter) Evaluate(stats map[testbed.Segment]*SegmentStatsView) *AssertionReport {
 	report := &AssertionReport{

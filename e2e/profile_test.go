@@ -1,18 +1,14 @@
 package e2e
 
 import (
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/eigeninference/d-inference/e2e/testbed"
-	tbprofile "github.com/eigeninference/d-inference/e2e/testbed/profile"
+	tbassert "github.com/eigeninference/d-inference/e2e/testbed/assert"
 )
 
 func TestProfile_SingleProviderStreaming(t *testing.T) {
@@ -28,39 +24,9 @@ func TestProfile_SingleProviderStreaming(t *testing.T) {
 
 	t.Logf("\n%s", result.SummaryTable())
 
-	buf := testbed.NewEventBuffer()
-	inst := testbed.NewInstrument(buf)
-	p := tbprofile.NewProfiler(testbed.DefaultTestConfig(), buf)
-
-	for i := 0; i < cfg.TotalRequests; i++ {
-		ri := inst.NewRequest()
-		timer := ri.StartSegment(testbed.SegmentTotalE2E)
-
-		resp := postChatCompletionsWithConfig(t, s, cfg, fmt.Sprintf("What is %d*%d?", i, i+1))
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		timer.Stop()
-
-		if resp.StatusCode == http.StatusOK {
-			ri.EndWithDuration(0)
-
-			if cfg.Streaming {
-				var parsed struct {
-					Choices []struct {
-						Message struct {
-							Content string `json:"content"`
-						} `json:"message"`
-					} `json:"choices"`
-				}
-				json.Unmarshal(respBody, &parsed)
-			}
-		} else {
-			ri.Error(fmt.Errorf("status %d", resp.StatusCode))
-		}
-	}
-
-	run := p.BuildProfile()
-	t.Logf("\nSegment Profile:\n%s", run.SummaryTable())
+	assertReport := tbassert.NewAsserter(tbassert.CoordinatorOverheadThresholds()).Evaluate(result.SegmentStatsMap())
+	t.Logf("\n%s", assertReport.SummaryTable())
+	require.True(t, assertReport.Passed, "coordinator overhead thresholds exceeded")
 
 	require.Greater(t, result.SuccessCount, 0, "at least some requests should succeed")
 }
@@ -77,6 +43,10 @@ func TestProfile_SingleProviderNonStreaming(t *testing.T) {
 	result := runProfiledLoad(t, s, cfg)
 
 	t.Logf("\n%s", result.SummaryTable())
+
+	assertReport := tbassert.NewAsserter(tbassert.CoordinatorOverheadThresholds()).Evaluate(result.SegmentStatsMap())
+	t.Logf("\n%s", assertReport.SummaryTable())
+
 	require.Greater(t, result.SuccessCount, 0)
 }
 
@@ -92,6 +62,11 @@ func TestProfile_HighConcurrency(t *testing.T) {
 	result := runProfiledLoad(t, s, cfg)
 
 	t.Logf("\n%s", result.SummaryTable())
+
+	assertReport := tbassert.NewAsserter(tbassert.CoordinatorOverheadThresholds()).Evaluate(result.SegmentStatsMap())
+	t.Logf("\n%s", assertReport.SummaryTable())
+	require.True(t, assertReport.Passed, "coordinator overhead thresholds exceeded under high concurrency")
+
 	require.Greater(t, result.SuccessCount, 0)
 
 	if result.SuccessCount > 1 {
@@ -128,29 +103,6 @@ func runProfiledLoad(t *testing.T, s *testbed.Suite, cfg testbed.RequestConfig) 
 	}
 
 	return result
-}
-
-func postChatCompletionsWithConfig(t *testing.T, s *testbed.Suite, cfg testbed.RequestConfig, prompt string) *http.Response {
-	t.Helper()
-
-	body := map[string]any{
-		"model":       s.PrimaryModelID(),
-		"messages":    []map[string]string{{"role": "user", "content": prompt}},
-		"stream":      cfg.Streaming,
-		"max_tokens":  cfg.MaxTokens,
-		"temperature": cfg.Temperature,
-	}
-	bodyJSON, _ := json.Marshal(body)
-
-	req, err := http.NewRequestWithContext(s.Ctx, http.MethodPost,
-		s.Coordinator.BaseURL()+"/v1/chat/completions", strings.NewReader(string(bodyJSON)))
-	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer testbed-admin-key")
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := (&http.Client{Timeout: httpTimeout}).Do(req)
-	require.NoError(t, err)
-	return resp
 }
 
 type simpleStats struct {

@@ -36,6 +36,7 @@ type RequestConfig struct {
 	Concurrency   int
 	TotalRequests int
 	ModelID       string
+	PromptBytes   int
 }
 
 func DefaultRequestConfig() RequestConfig {

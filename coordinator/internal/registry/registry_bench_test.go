@@ -28,7 +28,7 @@ func makeProvider(id string, model string, decodeTPS float64) *Provider {
 		Models: []protocol.ModelInfo{
 			{ID: model, SizeBytes: 5_700_000_000, ModelType: "qwen3", Quantization: "4bit"},
 		},
-		Backend:         "vllm_mlx",
+		Backend:         "mlx-swift",
 		DecodeTPS:       decodeTPS,
 		TrustLevel:      TrustHardware,
 		RuntimeVerified: true,
@@ -86,11 +86,11 @@ func populateRegistry(n int, model string) *Registry {
 			Models: []protocol.ModelInfo{
 				{ID: model, SizeBytes: 5_700_000_000, ModelType: "qwen3", Quantization: "4bit"},
 			},
-			Backend:    "vllm_mlx",
+			Backend:    "mlx-swift",
 			DecodeTPS:  40.0 + float64(i%30),
 			PrefillTPS: 200.0 + float64(i%50),
 		}
-		p := reg.Register(id, nil, msg)
+		p, _ := reg.Register(id, nil, msg)
 		p.mu.Lock()
 		p.TrustLevel = TrustHardware
 		p.LastChallengeVerified = time.Now()

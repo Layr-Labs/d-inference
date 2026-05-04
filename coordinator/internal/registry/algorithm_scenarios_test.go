@@ -61,7 +61,7 @@ func (sp scenarioProvider) register(t *testing.T, reg *Registry, model string) *
 	msg.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 	msg.DecodeTPS = sp.decodeTPS
 	msg.Hardware.MemoryGB = int(sp.totalMemGB)
-	p := reg.Register(sp.id, nil, msg)
+	p, _ := reg.Register(sp.id, nil, msg)
 	p.mu.Lock()
 	p.TrustLevel = TrustHardware
 	p.RuntimeVerified = true
@@ -392,15 +392,14 @@ func TestAlgorithm_P4_LoadScaledTPSFlipsBatchedBigVsIdleSmall(t *testing.T) {
 // ---------------------------------------------------------------------
 // Warm vs cold provider (architectural regression guard)
 //
-// Providers run one vllm-mlx process per configured model (see
-// provider/src/main.rs:"one vllm-mlx process per model on sequential
-// ports"). Multiple models serve concurrently; they don't swap. A
-// per-slot warm vs idle_shutdown state is the real cost delta.
+// Providers run one MLX process per configured model. Multiple models
+// serve concurrently; they don't swap. A per-slot warm vs idle_shutdown
+// state is the real cost delta.
 // ---------------------------------------------------------------------
 
 // A provider whose slot for the requested model is "running" must win
 // over a peer whose slot is "idle_shutdown" — the cold one has to
-// reload vllm-mlx before it can serve.
+// reload the backend before it can serve.
 func TestAlgorithm_WarmSlotWinsOverIdleShutdown(t *testing.T) {
 	reg := New(testLogger())
 	model := "warm-vs-cold-model"

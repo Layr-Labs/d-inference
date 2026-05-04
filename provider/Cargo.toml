@@ -70,12 +70,6 @@ sha2 = "0.10"
 # Secure memory wiping — prevents decrypted plaintext from lingering in freed memory
 zeroize = "1"
 
-# Embedded Python — for in-process inference (Phase 3)
-# Links the Python interpreter directly into our binary so inference
-# happens in our hardened process. No subprocess, no IPC, no sniffable channel.
-# Behind a feature flag so `cargo test` doesn't need Python linked.
-pyo3 = { version = "0.24", features = ["auto-initialize"], optional = true }
-
 # macOS Keychain / Security.framework (host-only)
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
@@ -83,8 +77,6 @@ security-framework-sys = "2"
 core-foundation = "0.10"
 
 [features]
-default = ["python"]
-python = ["pyo3"]
 
 [dev-dependencies]
 tempfile = "3"

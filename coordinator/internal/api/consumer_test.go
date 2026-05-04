@@ -221,14 +221,11 @@ var testProviderKeys sync.Map
 
 func testPrivacyCaps() *protocol.PrivacyCapabilities {
 	return &protocol.PrivacyCapabilities{
-		TextBackendInprocess:    true,
-		TextProxyDisabled:       true,
-		PythonRuntimeLocked:     true,
-		DangerousModulesBlocked: true,
-		SIPEnabled:              true,
-		AntiDebugEnabled:        true,
-		CoreDumpsDisabled:       true,
-		EnvScrubbed:             true,
+		TextProxyDisabled: true,
+		SIPEnabled:        true,
+		AntiDebugEnabled:  true,
+		CoreDumpsDisabled: true,
+		EnvScrubbed:       true,
 	}
 }
 
@@ -325,7 +322,7 @@ func TestStreamingE2E(t *testing.T) {
 		Models: []protocol.ModelInfo{
 			{ID: "test-model", SizeBytes: 1000, ModelType: "test", Quantization: "4bit"},
 		},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -475,7 +472,7 @@ func TestNonStreamingE2E(t *testing.T) {
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "test-model", ModelType: "test", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -594,7 +591,7 @@ func TestChatCompletionsRetriesAcceptedProviderErrorBeforeFirstChunk(t *testing.
 			Type:                    protocol.TypeRegister,
 			Hardware:                protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
 			Models:                  []protocol.ModelInfo{{ID: "retry-model", ModelType: "test", Quantization: "4bit"}},
-			Backend:                 "inprocess-mlx",
+			Backend:                 "mlx-swift",
 			PublicKey:               pubKey,
 			EncryptedResponseChunks: true,
 			PrivacyCapabilities:     testPrivacyCaps(),
@@ -1073,7 +1070,7 @@ func TestChatCompletionToResponses(t *testing.T) {
 }
 
 func TestExtractMessageWithNullFields(t *testing.T) {
-	// Simulates real vllm-mlx chunks where the first chunk has null content
+	// Simulates real MLX chunks where the first chunk has null content
 	// and subsequent chunks have actual content.
 	chunks := []string{
 		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}`,

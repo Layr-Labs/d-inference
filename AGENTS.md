@@ -31,26 +31,22 @@ coordinator/          Go control plane
     ├── registry/     provider registry, queueing, routing, reputation
     └── store/        in-memory or Postgres persistence
 
-provider/             Rust provider agent for Apple Silicon Macs
+provider/             Rust provider agent for Apple Silicon Macs (legacy, retired at Swift cutover)
 ├── src/
 │   ├── main.rs       CLI (`serve`, `start`, `stop`, `models`, `benchmark`, `status`, `doctor`, `login`, etc.)
 │   ├── coordinator.rs WebSocket client, registration, heartbeats, request handling
 │   ├── proxy.rs      text proxying to local backends
-│   ├── backend/      vllm-mlx backend process management
 │   ├── service.rs    launchd install/start/stop helpers
 │   ├── server.rs     local-only HTTP server mode
 │   ├── config.rs     TOML config + hardware-based defaults
 │   ├── hardware.rs   Apple Silicon detection + live system metrics
-│   ├── hypervisor.rs Hypervisor.framework Stage 2 page table memory isolation
 │   ├── scheduling.rs time-based availability windows
 │   ├── security.rs   SIP, Secure Boot, anti-debug (PT_DENY_ATTACH), integrity checks
 │   ├── crypto.rs     X25519 keypair management
 │   ├── models.rs     local text/image model discovery (fast scan, on-demand hashing)
-│   ├── inference.rs  in-process MLX inference (behind "python" feature flag)
 │   ├── protocol.rs   message types mirrored from coordinator/internal/protocol
 │   └── wallet.rs     legacy provider wallet (secp256k1)
-├── stt_server.py     local speech-to-text server script used by bundles
-└── Cargo.toml        default `python` feature enables in-process PyO3 inference
+└── Cargo.toml
 
 provider-swift/                Swift CLI port of the provider (replacing `provider/` at cutover)
 ├── Package.swift              SwiftPM manifest, depends on libs/mlx-swift{,-lm}
@@ -107,14 +103,9 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o eigeninference-coordinator-lin
 ### Provider (Rust, legacy)
 ```bash
 cd provider
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo test
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo build --release
-
-# Distribution bundle build (no embedded Python link)
-cargo build --release --no-default-features
+cargo test
+cargo build --release
 ```
-
-The `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1` env var is still the safe default when local Python is newer than the PyO3 support window.
 
 ### Provider (Swift, replacing Rust at cutover)
 ```bash
@@ -191,7 +182,7 @@ Dev coordinator deploy (Google Cloud): see `docs/dev-environment.md`.
 
 - The repo contains mixed payment language: current coordinator code implements Privy + Stripe + Solana + referrals, but some provider comments/strings still mention Tempo/pathUSD.
 - `coordinator/coordinator` is a built binary checked into the tree. Do not model changes from it, and do not commit more built artifacts.
-- The provider's default Cargo feature still pulls in PyO3. Use `--no-default-features` for distributable bundles.
+- The provider's default Cargo feature pulls in PyO3. Use `--no-default-features` for distributable bundles if needed.
 - Provider image serving is opt-in through `EIGENINFERENCE_IMAGE_MODEL` and `EIGENINFERENCE_IMAGE_MODEL_PATH`; if you touch image flows, verify both the coordinator catalog and provider env/config path handling.
 - CI release workflow must compute binary SHA-256 hashes AFTER code signing, not before. Providers verify hashes of the signed binary.
 - Model scan uses fast discovery (no hashing) at startup. Weight hashing is on-demand via `compute_weight_hash()` only for the served model. Don't add hashing back to the scan path.

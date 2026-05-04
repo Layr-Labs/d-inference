@@ -1681,12 +1681,12 @@ func (s *PostgresStore) SetRelease(release *Release) error {
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO releases (version, platform, backend, binary_hash, bundle_hash, metallib_hash, python_hash, runtime_hash, template_hashes, url, changelog, active, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, NOW())
+		`INSERT INTO releases (version, platform, backend, binary_hash, bundle_hash, metallib_hash, template_hashes, url, changelog, active, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, NOW())
 		 ON CONFLICT (version, platform) DO UPDATE SET
-		   backend = $3, binary_hash = $4, bundle_hash = $5, metallib_hash = $6, python_hash = $7, runtime_hash = $8, template_hashes = $9, url = $10, changelog = $11, active = TRUE`,
+		   backend = $3, binary_hash = $4, bundle_hash = $5, metallib_hash = $6, template_hashes = $7, url = $8, changelog = $9, active = TRUE`,
 		release.Version, release.Platform, release.Backend, release.BinaryHash, release.BundleHash,
-		release.MetallibHash, release.PythonHash, release.RuntimeHash, release.TemplateHashes,
+		release.MetallibHash, release.TemplateHashes,
 		release.URL, release.Changelog,
 	)
 	if err != nil {
@@ -1701,7 +1701,7 @@ func (s *PostgresStore) ListReleases() []Release {
 
 	rows, err := s.pool.Query(ctx,
 		`SELECT version, platform, COALESCE(backend, ''), binary_hash, bundle_hash, COALESCE(metallib_hash, ''),
-		        COALESCE(python_hash, ''), COALESCE(runtime_hash, ''), COALESCE(template_hashes, ''),
+		        COALESCE(template_hashes, ''),
 		        url, changelog, active, created_at
 		 FROM releases ORDER BY created_at DESC`,
 	)
@@ -1714,7 +1714,7 @@ func (s *PostgresStore) ListReleases() []Release {
 	for rows.Next() {
 		var r Release
 		if err := rows.Scan(&r.Version, &r.Platform, &r.Backend, &r.BinaryHash, &r.BundleHash, &r.MetallibHash,
-			&r.PythonHash, &r.RuntimeHash, &r.TemplateHashes,
+			&r.TemplateHashes,
 			&r.URL, &r.Changelog, &r.Active, &r.CreatedAt); err != nil {
 			continue
 		}
@@ -1729,7 +1729,7 @@ func (s *PostgresStore) GetLatestRelease(platform string) *Release {
 
 	rows, err := s.pool.Query(ctx,
 		`SELECT version, platform, COALESCE(backend, ''), binary_hash, bundle_hash, COALESCE(metallib_hash, ''),
-		        COALESCE(python_hash, ''), COALESCE(runtime_hash, ''), COALESCE(template_hashes, ''),
+		        COALESCE(template_hashes, ''),
 		        url, changelog, active, created_at
 		 FROM releases WHERE platform = $1 AND active = TRUE`, platform,
 	)
@@ -1742,7 +1742,7 @@ func (s *PostgresStore) GetLatestRelease(platform string) *Release {
 	for rows.Next() {
 		var r Release
 		if err := rows.Scan(&r.Version, &r.Platform, &r.Backend, &r.BinaryHash, &r.BundleHash, &r.MetallibHash,
-			&r.PythonHash, &r.RuntimeHash, &r.TemplateHashes,
+			&r.TemplateHashes,
 			&r.URL, &r.Changelog, &r.Active, &r.CreatedAt); err != nil {
 			return nil
 		}
@@ -2325,7 +2325,7 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			id, hardware, models, backend, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
 			mda_verified, mda_cert_chain, acme_verified,
-			version, runtime_verified, python_hash, runtime_hash,
+			version, runtime_verified,
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
@@ -2334,26 +2334,26 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			$1, $2, $3, $4, $5, $6,
 			$7, $8, $9,
 			$10, $11, $12,
-			$13, $14, $15, $16,
-			$17, $18, $19,
-			$20, $21, $22, $23,
-			$24, $25
+			$13, $14,
+			$15, $16, $17,
+			$18, $19, $20, $21,
+			$22, $23
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			hardware = $2, models = $3, backend = $4,
 			trust_level = $5, attested = $6,
 			attestation_result = $7, se_public_key = $8, serial_number = $9,
 			mda_verified = $10, mda_cert_chain = $11, acme_verified = $12,
-			version = $13, runtime_verified = $14, python_hash = $15, runtime_hash = $16,
-			last_challenge_verified = $17, failed_challenges = $18, account_id = $19,
-			lifetime_requests_served = $20, lifetime_tokens_generated = $21,
-			last_session_requests_served = $22, last_session_tokens_generated = $23,
-			last_seen = $25`,
+			version = $13, runtime_verified = $14,
+			last_challenge_verified = $15, failed_challenges = $16, account_id = $17,
+			lifetime_requests_served = $18, lifetime_tokens_generated = $19,
+			last_session_requests_served = $20, last_session_tokens_generated = $21,
+			last_seen = $23`,
 		p.ID, p.Hardware, p.Models, p.Backend,
 		p.TrustLevel, p.Attested,
 		p.AttestationResult, p.SEPublicKey, p.SerialNumber,
 		p.MDAVerified, p.MDACertChain, p.ACMEVerified,
-		p.Version, p.RuntimeVerified, p.PythonHash, p.RuntimeHash,
+		p.Version, p.RuntimeVerified,
 		p.LastChallengeVerified, p.FailedChallenges, p.AccountID,
 		p.LifetimeRequestsServed, p.LifetimeTokensGenerated,
 		p.LastSessionRequestsServed, p.LastSessionTokensGenerated,
@@ -2374,7 +2374,7 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 		`SELECT id, hardware, models, backend, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
 			mda_verified, mda_cert_chain, acme_verified,
-			version, runtime_verified, python_hash, runtime_hash,
+			version, runtime_verified,
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
@@ -2385,7 +2385,7 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 		&p.TrustLevel, &p.Attested,
 		&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
 		&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
-		&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
+		&p.Version, &p.RuntimeVerified,
 		&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
 		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
@@ -2406,7 +2406,7 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 		`SELECT id, hardware, models, backend, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
 			mda_verified, mda_cert_chain, acme_verified,
-			version, runtime_verified, python_hash, runtime_hash,
+			version, runtime_verified,
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
@@ -2418,7 +2418,7 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 		&p.TrustLevel, &p.Attested,
 		&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
 		&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
-		&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
+		&p.Version, &p.RuntimeVerified,
 		&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
 		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
@@ -2438,7 +2438,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 		`SELECT id, hardware, models, backend, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
 			mda_verified, mda_cert_chain, acme_verified,
-			version, runtime_verified, python_hash, runtime_hash,
+			version, runtime_verified,
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
@@ -2458,7 +2458,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			&p.TrustLevel, &p.Attested,
 			&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
 			&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
-			&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
+			&p.Version, &p.RuntimeVerified,
 			&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
 			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
@@ -2495,7 +2495,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 		 id, hardware, models, backend, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
 			mda_verified, mda_cert_chain, acme_verified,
-			version, runtime_verified, python_hash, runtime_hash,
+			version, runtime_verified,
 			last_challenge_verified, failed_challenges, account_id,
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
@@ -2521,7 +2521,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			&p.TrustLevel, &p.Attested,
 			&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
 			&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
-			&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
+			&p.Version, &p.RuntimeVerified,
 			&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
 			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
@@ -2582,9 +2582,9 @@ func (s *PostgresStore) UpdateProviderRuntime(ctx context.Context, id string, ve
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`UPDATE providers SET runtime_verified = $2, python_hash = $3, runtime_hash = $4
+		`UPDATE providers SET runtime_verified = $2
 		 WHERE id = $1`,
-		id, verified, pythonHash, runtimeHash,
+		id, verified,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update provider runtime: %w", err)

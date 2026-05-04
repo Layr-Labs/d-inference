@@ -163,7 +163,22 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		switch msg.Type {
 		case protocol.TypeRegister:
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
-			provider = s.registry.Register(providerID, conn, regMsg)
+			provider, regErr := s.registry.Register(providerID, conn, regMsg)
+			if regErr != nil {
+				s.logger.Error("provider registration rejected",
+					"provider_id", providerID,
+					"error", regErr,
+				)
+				errMsg, _ := json.Marshal(map[string]string{
+					"type":  "error",
+					"error": regErr.Error(),
+				})
+				writeCtx, writeCancel := context.WithTimeout(loopCtx, 5*time.Second)
+				_ = conn.Write(writeCtx, websocket.MessageText, errMsg)
+				writeCancel()
+				conn.Close(websocket.StatusPolicyViolation, regErr.Error())
+				return
+			}
 			s.verifyProviderAttestation(providerID, provider, regMsg)
 
 			// Record registration outcome metrics + telemetry.
@@ -210,16 +225,14 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 
 			// Verify runtime integrity against the known-good manifest. Swift
-			// providers omit Python/vllm hashes, but they still report external
-			// runtime assets such as mlx.metallib under template_hashes.
+			// providers report external runtime assets such as mlx.metallib
+			// under template_hashes.
 			if s.knownRuntimeManifest != nil {
 				runtimeOK, mismatches := s.verifyRuntimeHashesForBackend(
-					regMsg.Backend, regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
+					regMsg.Backend, regMsg.TemplateHashes)
 				provider.Mu().Lock()
 				provider.RuntimeVerified = runtimeOK
 				provider.RuntimeManifestChecked = runtimeOK
-				provider.PythonHash = regMsg.PythonHash
-				provider.RuntimeHash = regMsg.RuntimeHash
 				provider.TemplateHashes = registry.CloneStringMap(regMsg.TemplateHashes)
 				provider.Mu().Unlock()
 
@@ -245,8 +258,6 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				} else {
 					s.logger.Info("provider runtime integrity verified",
 						"provider_id", providerID,
-						"python_hash", regMsg.PythonHash,
-						"runtime_hash", regMsg.RuntimeHash,
 					)
 				}
 			} else {
@@ -579,8 +590,6 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			SecureBootEnabled: resp.SecureBootEnabled,
 			BinaryHash:        resp.BinaryHash,
 			ActiveModelHash:   resp.ActiveModelHash,
-			PythonHash:        resp.PythonHash,
-			RuntimeHash:       resp.RuntimeHash,
 			TemplateHashes:    resp.TemplateHashes,
 			ModelHashes:       resp.ModelHashes,
 		}
@@ -757,20 +766,14 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	}
 
 	// Verify runtime integrity hashes from the signed challenge response.
-	// Swift providers omit Python/vllm hashes, but must still match manifest
-	// entries for external runtime assets such as mlx.metallib.
+	// Swift providers must match manifest entries for external runtime assets
+	// such as mlx.metallib.
 	if s.knownRuntimeManifest != nil {
 		runtimeOK, mismatches := s.verifyRuntimeHashesForBackend(
-			provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
+			provider.Backend, resp.TemplateHashes)
 		provider.Mu().Lock()
 		provider.RuntimeVerified = runtimeOK
 		provider.RuntimeManifestChecked = runtimeOK
-		if resp.PythonHash != "" {
-			provider.PythonHash = resp.PythonHash
-		}
-		if resp.RuntimeHash != "" {
-			provider.RuntimeHash = resp.RuntimeHash
-		}
 		if len(resp.TemplateHashes) > 0 {
 			provider.TemplateHashes = registry.CloneStringMap(resp.TemplateHashes)
 		}
@@ -1328,7 +1331,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 	// Deduplicate: if another provider connection exists from the same physical
 	// device (same serial number), disconnect it. This prevents multiple
 	// provider processes on the same machine from registering independently
-	// and competing for a single shared vllm-mlx backend.
+	// and competing for a single shared backend.
 	if result.SerialNumber != "" {
 		s.registry.DisconnectDuplicatesBySerial(providerID, result.SerialNumber)
 	}

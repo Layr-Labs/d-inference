@@ -93,12 +93,12 @@ func TestIntegration_ProviderEvictionRemovesFromRouting(t *testing.T) {
 }
 
 // TestIntegration_SSEChunkNormalization tests the normalizeSSEChunk function
-// with realistic vllm-mlx output patterns covering the full lifecycle of a
+// with realistic MLX output patterns covering the full lifecycle of a
 // streaming response: initial role chunk, content tokens, and final chunk
 // with finish_reason and usage.
 func TestIntegration_SSEChunkNormalization(t *testing.T) {
 	// The existing TestNormalizeSSEChunk covers basic cases. This test covers
-	// the full pipeline of a realistic vllm-mlx streaming response.
+	// the full pipeline of a realistic MLX streaming response.
 	chunks := []struct {
 		name  string
 		input string

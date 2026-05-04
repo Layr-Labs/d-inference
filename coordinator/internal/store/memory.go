@@ -1634,8 +1634,6 @@ func (s *MemoryStore) UpdateProviderRuntime(_ context.Context, id string, verifi
 		return fmt.Errorf("provider %q not found", id)
 	}
 	p.RuntimeVerified = verified
-	p.PythonHash = pythonHash
-	p.RuntimeHash = runtimeHash
 	return nil
 }
 

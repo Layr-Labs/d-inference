@@ -10,9 +10,9 @@ public enum ProviderCore {
     /// SwiftPM build-tool plugin that injects the value from `git describe`,
     /// keep this in sync with the tag (`vX.Y.Z-swift[.N]`) at release time.
     ///
-    /// 0.5.0 is the first Swift cutover release: drops Python, drops
-    /// vllm-mlx, ships only `darkbloom` + `darkbloom-enclave` +
-    /// `mlx.metallib`. (`eigeninference-enclave` ships as a backward-
-    /// compatibility symlink to `darkbloom-enclave`.)
+    /// 0.5.0 is the first Swift cutover release: ships only
+    /// `darkbloom` + `darkbloom-enclave` + `mlx.metallib`.
+    /// (`eigeninference-enclave` ships as a backward-compatibility
+    /// symlink to `darkbloom-enclave`.)
     public static let version = "0.5.0"
 }

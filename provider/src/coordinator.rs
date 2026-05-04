@@ -25,7 +25,6 @@ use crate::backend::ExponentialBackoff;
 use crate::hardware::HardwareInfo;
 use crate::models::ModelInfo;
 use crate::protocol::{CoordinatorMessage, ProviderMessage, ProviderStats, ProviderStatus};
-use crate::security::RuntimeHashes;
 
 /// Thread-safe counters for provider statistics, shared between the main
 /// event loop (which increments them) and the heartbeat sender (which reads them).
@@ -89,10 +88,6 @@ pub struct CoordinatorClient {
     warm_models: Arc<std::sync::Mutex<Vec<String>>>,
     /// SHA-256 weight fingerprint of the currently loaded model (cached at load time).
     current_model_hash: Arc<std::sync::Mutex<Option<String>>>,
-    /// Runtime integrity hashes (Python binary, vllm_mlx package, templates).
-    runtime_hashes: Option<RuntimeHashes>,
-    /// Python interpreter used to recompute runtime hashes on attestation challenges.
-    runtime_hash_command: Option<String>,
     /// Per-model weight hashes for all active models.
     model_hashes: std::collections::HashMap<String, String>,
     /// Live backend capacity data (updated by main loop, read by heartbeat tick).
@@ -127,8 +122,6 @@ impl CoordinatorClient {
             current_model: Arc::new(std::sync::Mutex::new(None)),
             warm_models: Arc::new(std::sync::Mutex::new(Vec::new())),
             current_model_hash: Arc::new(std::sync::Mutex::new(None)),
-            runtime_hashes: None,
-            runtime_hash_command: None,
             model_hashes: std::collections::HashMap::new(),
             backend_capacity: Arc::new(std::sync::Mutex::new(None)),
             se_handle: None,
@@ -189,18 +182,6 @@ impl CoordinatorClient {
     /// Set the shared current-model weight hash (cached at model load time).
     pub fn with_current_model_hash(mut self, hash: Arc<std::sync::Mutex<Option<String>>>) -> Self {
         self.current_model_hash = hash;
-        self
-    }
-
-    /// Set runtime integrity hashes (Python, vllm_mlx, templates) for registration.
-    pub fn with_runtime_hashes(mut self, hashes: Option<RuntimeHashes>) -> Self {
-        self.runtime_hashes = hashes;
-        self
-    }
-
-    /// Set the Python interpreter used to recompute runtime hashes at challenge time.
-    pub fn with_runtime_hash_command(mut self, python_cmd: Option<String>) -> Self {
-        self.runtime_hash_command = python_cmd;
         self
     }
 
@@ -303,21 +284,8 @@ impl CoordinatorClient {
         let (mut write, mut read) = ws_stream.split();
 
         // Send registration message
-        let (python_hash, runtime_hash, template_hashes) = if let Some(ref rh) = self.runtime_hashes
-        {
-            (
-                rh.python_hash.clone(),
-                rh.runtime_hash.clone(),
-                rh.template_hashes.clone(),
-            )
-        } else {
-            (None, None, std::collections::HashMap::new())
-        };
         let privacy_caps = crate::protocol::PrivacyCapabilities {
-            text_backend_inprocess: true,
             text_proxy_disabled: true,
-            python_runtime_locked: true,
-            dangerous_modules_blocked: true,
             sip_enabled: crate::security::check_sip_enabled(),
             anti_debug_enabled: true,
             core_dumps_disabled: true,
@@ -337,9 +305,7 @@ impl CoordinatorClient {
             prefill_tps: None,
             decode_tps: None,
             auth_token: self.auth_token.clone(),
-            python_hash,
-            runtime_hash,
-            template_hashes,
+            template_hashes: std::collections::HashMap::new(),
             privacy_capabilities: Some(privacy_caps),
         };
         let register_json = serde_json::to_string(&register)?;
@@ -465,21 +431,12 @@ impl CoordinatorClient {
                                 }
                                 Ok(CoordinatorMessage::AttestationChallenge { nonce, timestamp }) => {
                                     tracing::info!("Received attestation challenge");
-                                    // Respond to the challenge inline, signing with
-                                    // the provider's key.
                                     let model_hash = self.current_model_hash.lock().unwrap().clone();
-                                    let fresh_runtime_hashes = self
-                                        .runtime_hash_command
-                                        .as_deref()
-                                        .map(crate::security::compute_runtime_hashes);
                                     let response = handle_attestation_challenge(
                                         &nonce,
                                         &timestamp,
                                         self.public_key.as_deref(),
                                         model_hash.as_deref(),
-                                        fresh_runtime_hashes
-                                            .as_ref()
-                                            .or(self.runtime_hashes.as_ref()),
                                         self.model_hashes.clone(),
                                         self.se_handle.as_deref(),
                                     );
@@ -600,7 +557,6 @@ pub fn handle_attestation_challenge(
     timestamp: &str,
     public_key: Option<&str>,
     current_model_hash: Option<&str>,
-    runtime_hashes: Option<&RuntimeHashes>,
     model_hashes: std::collections::HashMap<String, String>,
     se_handle: Option<&crate::secure_enclave_key::SecureEnclaveHandle>,
 ) -> ProviderMessage {
@@ -640,26 +596,8 @@ pub fn handle_attestation_challenge(
         );
     }
 
-    let (python_hash, rt_hash, template_hashes) = if let Some(rh) = runtime_hashes {
-        (
-            rh.python_hash.clone(),
-            rh.runtime_hash.clone(),
-            rh.template_hashes.clone(),
-        )
-    } else {
-        (None, None, std::collections::HashMap::new())
-    };
-
     let active_model_hash_owned = current_model_hash.map(|s| s.to_string());
 
-    // Build the canonical status payload and sign it. This binds all the
-    // status fields below to the SE key, preventing a compromised provider
-    // from echoing a valid nonce+timestamp signature while lying about
-    // sip_enabled, binary_hash, etc.
-    //
-    // Must stay byte-identical to coordinator/internal/attestation.go
-    // BuildStatusCanonical — sorted keys, optional fields omitted, nested
-    // maps with sorted keys (BTreeMap).
     let canonical = build_status_canonical(
         nonce,
         timestamp,
@@ -669,10 +607,8 @@ pub fn handle_attestation_challenge(
         Some(true),
         binary_hash.as_deref(),
         active_model_hash_owned.as_deref(),
-        python_hash.as_deref(),
-        rt_hash.as_deref(),
-        &template_hashes,
-        None, // grpc_binary_hash removed (text-only)
+        &std::collections::HashMap::new(),
+        None,
         &model_hashes,
     );
     let status_signature = match canonical {
@@ -694,12 +630,10 @@ pub fn handle_attestation_challenge(
         hypervisor_active: Some(hypervisor_active),
         rdma_disabled: Some(rdma_disabled),
         sip_enabled: Some(sip_enabled),
-        secure_boot_enabled: Some(true), // Apple Silicon always has Secure Boot in Full Security mode
+        secure_boot_enabled: Some(true),
         binary_hash,
         active_model_hash: active_model_hash_owned,
-        python_hash,
-        runtime_hash: rt_hash,
-        template_hashes,
+        template_hashes: std::collections::HashMap::new(),
         model_hashes,
     }
 }
@@ -729,8 +663,6 @@ fn build_status_canonical(
     secure_boot_enabled: Option<bool>,
     binary_hash: Option<&str>,
     active_model_hash: Option<&str>,
-    python_hash: Option<&str>,
-    runtime_hash: Option<&str>,
     template_hashes: &std::collections::HashMap<String, String>,
     grpc_binary_hash: Option<&str>,
     model_hashes: &std::collections::HashMap<String, String>,
@@ -765,16 +697,6 @@ fn build_status_canonical(
                 "active_model_hash",
                 serde_json::Value::String(v.to_string()),
             );
-        }
-    }
-    if let Some(v) = python_hash {
-        if !v.is_empty() {
-            m.insert("python_hash", serde_json::Value::String(v.to_string()));
-        }
-    }
-    if let Some(v) = runtime_hash {
-        if !v.is_empty() {
-            m.insert("runtime_hash", serde_json::Value::String(v.to_string()));
         }
     }
     if let Some(v) = grpc_binary_hash {
@@ -832,8 +754,6 @@ pub fn build_register_message_with_wallet(
         prefill_tps: None,
         decode_tps: None,
         auth_token: None,
-        python_hash: None,
-        runtime_hash: None,
         template_hashes: std::collections::HashMap::new(),
         privacy_capabilities: None,
     }
@@ -877,15 +797,13 @@ mod tests {
             Some(true),
             Some("binhash"),
             Some("activemodel"),
-            Some("pyhash"),
-            Some("rthash"),
             &templates,
             None,
             &models,
         )
         .expect("canonical build should succeed");
 
-        let expected = br#"{"active_model_hash":"activemodel","binary_hash":"binhash","hypervisor_active":true,"model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}"#;
+        let expected = br#"{"active_model_hash":"activemodel","binary_hash":"binhash","hypervisor_active":true,"model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","rdma_disabled":true,"secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}"#;
 
         assert_eq!(
             bytes,
@@ -902,8 +820,6 @@ mod tests {
         let bytes = build_status_canonical(
             "n",
             "t",
-            None,
-            None,
             None,
             None,
             None,
@@ -935,8 +851,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
             &std::collections::HashMap::new(),
             None,
             &std::collections::HashMap::new(),
@@ -958,8 +872,6 @@ mod tests {
         let bytes = build_status_canonical(
             "ñön¢é-π",
             "t",
-            None,
-            None,
             None,
             None,
             None,
@@ -1010,7 +922,7 @@ mod tests {
             weight_hash: None,
         }];
 
-        let msg = build_register_message(&hw, &models, "vllm_mlx", None);
+        let msg = build_register_message(&hw, &models, "mlx-swift", None);
         match msg {
             ProviderMessage::Register {
                 hardware,
@@ -1020,7 +932,7 @@ mod tests {
             } => {
                 assert_eq!(hardware.chip_name, "Apple M4 Max");
                 assert_eq!(m.len(), 1);
-                assert_eq!(backend, "vllm_mlx");
+                assert_eq!(backend, "mlx-swift");
             }
             _ => panic!("Expected Register message"),
         }
@@ -1036,6 +948,37 @@ mod tests {
             nonce,
             timestamp,
             public_key,
+            None,
+            std::collections::HashMap::new(),
+            None,
+        );
+
+        match response {
+            ProviderMessage::AttestationResponse {
+                nonce: resp_nonce,
+                signature: _,
+                public_key: resp_pk,
+                sip_enabled,
+                ..
+            } => {
+                assert_eq!(resp_nonce, nonce);
+                // Signature: empty in test env (no Secure Enclave),
+                // base64-encoded DER ECDSA in production.
+                let _ = signature;
+                // Public key matches input
+                assert_eq!(resp_pk, "cHVia2V5");
+                // All security status fields are populated
+                assert!(sip_enabled.is_some(), "should include SIP status");
+            }
+            _ => panic!("Expected AttestationResponse"),
+        }
+    }
+
+    #[test]
+    fn test_handle_attestation_challenge_without_public_key() {
+        let response = handle_attestation_challenge(
+            "bm9uY2U=",
+            "2025-01-15T00:00:00Z",
             None,
             None,
             std::collections::HashMap::new(),
@@ -1067,7 +1010,6 @@ mod tests {
             "2025-01-15T00:00:00Z",
             None,
             None,
-            None,
             std::collections::HashMap::new(),
             None,
         );
@@ -1081,7 +1023,6 @@ mod tests {
                 ..
             } => {
                 assert_eq!(nonce, "bm9uY2U=");
-                // Signature empty in test env (no Secure Enclave)
                 assert_eq!(public_key, "");
                 assert!(sip_enabled.is_some(), "should include SIP status");
             }
@@ -1096,7 +1037,6 @@ mod tests {
             "2025-01-15T00:00:00Z",
             Some("key"),
             None,
-            None,
             std::collections::HashMap::new(),
             None,
         );
@@ -1104,7 +1044,6 @@ mod tests {
             "bm9uY2U=",
             "2025-01-15T00:00:00Z",
             Some("key"),
-            None,
             None,
             std::collections::HashMap::new(),
             None,
@@ -1127,7 +1066,6 @@ mod tests {
             "2025-01-15T00:00:00Z",
             Some("key"),
             None,
-            None,
             std::collections::HashMap::new(),
             None,
         );
@@ -1135,7 +1073,6 @@ mod tests {
             "bm9uY2Uy",
             "2025-01-15T00:00:00Z",
             Some("key"),
-            None,
             None,
             std::collections::HashMap::new(),
             None,
@@ -1159,7 +1096,6 @@ mod tests {
             "dGVzdA==",
             "2025-06-01T00:00:00Z",
             Some("a2V5"),
-            None,
             None,
             std::collections::HashMap::new(),
             None,
@@ -1246,7 +1182,7 @@ mod tests {
             format!("ws://127.0.0.1:{}", addr.port()),
             sample_hardware(),
             vec![],
-            "vllm_mlx".to_string(),
+            "mlx-swift".to_string(),
             Duration::from_secs(1),
             None,
             Arc::new(crate::crypto::NodeKeyPair::generate()),
@@ -1301,7 +1237,7 @@ mod tests {
         );
         let register: serde_json::Value = serde_json::from_str(&received[0]).unwrap();
         assert_eq!(register["type"], "register");
-        assert_eq!(register["backend"], "vllm_mlx");
+        assert_eq!(register["backend"], "mlx-swift");
         let err = received
             .iter()
             .filter_map(|m| serde_json::from_str::<serde_json::Value>(m).ok())
@@ -1321,7 +1257,6 @@ mod tests {
             "2026-01-01T00:00:00Z",
             Some("cHVibGljLWtleQ=="),
             None,
-            None,
             std::collections::HashMap::new(),
             None,
         );
@@ -1338,8 +1273,6 @@ mod tests {
                 secure_boot_enabled,
                 binary_hash: _,
                 active_model_hash: _,
-                python_hash: _,
-                runtime_hash: _,
                 template_hashes: _,
                 model_hashes: _,
             } => {
@@ -1375,7 +1308,6 @@ mod tests {
             "2026-06-15T00:00:00Z",
             Some(pk),
             None,
-            None,
             std::collections::HashMap::new(),
             None,
         );
@@ -1390,11 +1322,9 @@ mod tests {
 
     #[test]
     fn test_attestation_response_none_public_key_becomes_empty() {
-        // When no public key is configured, the response should use empty string.
         let response = handle_attestation_challenge(
             "bm9uY2U=",
             "2026-06-15T00:00:00Z",
-            None,
             None,
             None,
             std::collections::HashMap::new(),
@@ -1420,7 +1350,6 @@ mod tests {
             "2026-01-01T00:00:00Z",
             Some("key"),
             None,
-            None,
             std::collections::HashMap::new(),
             None,
         );
@@ -1428,7 +1357,6 @@ mod tests {
             "bm9uY2U=",
             "2026-06-01T00:00:00Z",
             Some("key"),
-            None,
             None,
             std::collections::HashMap::new(),
             None,
@@ -1455,7 +1383,6 @@ mod tests {
             "YWJj",
             "2026-03-15T10:00:00Z",
             Some("cGs="),
-            None,
             None,
             std::collections::HashMap::new(),
             None,
@@ -1492,7 +1419,7 @@ mod tests {
         let msg = build_register_message_with_wallet(
             &hw,
             &models,
-            "vllm_mlx",
+            "mlx-swift",
             Some("cHVia2V5".to_string()),
             Some(wallet_addr.clone()),
             None,

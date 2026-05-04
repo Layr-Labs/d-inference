@@ -60,7 +60,7 @@ func TestProviderWebSocketConnect(t *testing.T) {
 		Models: []protocol.ModelInfo{
 			{ID: "test-model", SizeBytes: 1000, ModelType: "chat", Quantization: "4bit"},
 		},
-		Backend: "inprocess-mlx",
+		Backend: "mlx-swift",
 	}
 	regData, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
@@ -123,7 +123,7 @@ func TestProviderWebSocketMultiple(t *testing.T) {
 			Type:                    protocol.TypeRegister,
 			Hardware:                protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
 			Models:                  []protocol.ModelInfo{{ID: "shared-model", ModelType: "chat", Quantization: "4bit"}},
-			Backend:                 "inprocess-mlx",
+			Backend:                 "mlx-swift",
 			PublicKey:               pubKey,
 			EncryptedResponseChunks: true,
 			PrivacyCapabilities:     testPrivacyCaps(),
@@ -177,7 +177,7 @@ func TestProviderInferenceError(t *testing.T) {
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "error-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -390,7 +390,7 @@ func TestProviderRegistrationWithValidAttestation(t *testing.T) {
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "attested-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -448,7 +448,7 @@ func TestProviderRegistrationWithInvalidAttestation(t *testing.T) {
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "unattested-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               testPublicKeyB64(),
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -495,7 +495,7 @@ func TestProviderRegistrationWithoutAttestation(t *testing.T) {
 		Type:     protocol.TypeRegister,
 		Hardware: protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
 		Models:   []protocol.ModelInfo{{ID: "open-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:  "inprocess-mlx",
+		Backend:  "mlx-swift",
 		// No attestation — Open Mode
 	}
 	regData, _ := json.Marshal(regMsg)
@@ -531,7 +531,7 @@ func TestProviderRegistrationRequiresBinaryHashWhenPolicyConfigured(t *testing.T
 		PrivacyCapabilities:     testPrivacyCaps(),
 		Attestation:             createTestAttestationJSON(t, pubKey),
 	}
-	p := reg.Register("provider-1", nil, regMsg)
+	p, _ := reg.Register("provider-1", nil, regMsg)
 
 	srv.verifyProviderAttestation("provider-1", p, regMsg)
 
@@ -569,7 +569,7 @@ func TestProviderRegistrationAcceptsKnownBinaryHash(t *testing.T) {
 		PrivacyCapabilities:     testPrivacyCaps(),
 		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
 	}
-	p := reg.Register("provider-1", nil, regMsg)
+	p, _ := reg.Register("provider-1", nil, regMsg)
 
 	srv.verifyProviderAttestation("provider-1", p, regMsg)
 
@@ -618,7 +618,7 @@ func TestListModelsWithAttestationInfo(t *testing.T) {
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "attested-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -697,7 +697,7 @@ func TestAttestationRejectsMissingEncryptionKeyForRegisteredPublicKey(t *testing
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "binding-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -750,7 +750,7 @@ func TestAttestationRejectsMismatchedEncryptionKey(t *testing.T) {
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "binding-mismatch-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -807,7 +807,7 @@ func TestChallengeResponseSuccess(t *testing.T) {
 		Type:      protocol.TypeRegister,
 		Hardware:  protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:    []protocol.ModelInfo{{ID: "challenge-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:   "inprocess-mlx",
+		Backend:   "mlx-swift",
 		PublicKey: pubKey,
 	}
 	regData, _ := json.Marshal(regMsg)
@@ -968,7 +968,7 @@ func TestChallengeResponseRequiresBinaryHashWhenPolicyConfigured(t *testing.T) {
 		PrivacyCapabilities:     testPrivacyCaps(),
 		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
 	}
-	p := reg.Register("provider-1", nil, regMsg)
+	p, _ := reg.Register("provider-1", nil, regMsg)
 	srv.verifyProviderAttestation("provider-1", p, regMsg)
 	sipEnabled := true
 	secureBootEnabled := true
@@ -1017,7 +1017,7 @@ func TestChallengeResponseRejectsHashChangedFromRegistrationAttestation(t *testi
 		PrivacyCapabilities:     testPrivacyCaps(),
 		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
 	}
-	p := reg.Register("provider-1", nil, regMsg)
+	p, _ := reg.Register("provider-1", nil, regMsg)
 	srv.verifyProviderAttestation("provider-1", p, regMsg)
 	sipEnabled := true
 	secureBootEnabled := true
@@ -1066,7 +1066,7 @@ func TestChallengeResponseAcceptsKnownBinaryHash(t *testing.T) {
 		PrivacyCapabilities:     testPrivacyCaps(),
 		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
 	}
-	p := reg.Register("provider-1", nil, regMsg)
+	p, _ := reg.Register("provider-1", nil, regMsg)
 	srv.verifyProviderAttestation("provider-1", p, regMsg)
 	sipEnabled := true
 	secureBootEnabled := true
@@ -1125,7 +1125,7 @@ func TestChallengeResponseRejectsMissingSIPStatus(t *testing.T) {
 		Type:      protocol.TypeRegister,
 		Hardware:  protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:    []protocol.ModelInfo{{ID: "missing-sip-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:   "inprocess-mlx",
+		Backend:   "mlx-swift",
 		PublicKey: pubKey,
 	}
 	regData, _ := json.Marshal(regMsg)
@@ -1211,7 +1211,7 @@ func TestChallengeResponseMissingSIPClearsExistingRoutingEligibility(t *testing.
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "sip-rotation-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -1313,12 +1313,12 @@ func TestApplyACMETrustRequiresBoundEncryptionAttestation(t *testing.T) {
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "acme-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               testPublicKeyB64(),
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
 	}
-	p := reg.Register("provider-1", nil, msg)
+	p, _ := reg.Register("provider-1", nil, msg)
 	p.SetAttestationResult(&attestation.VerificationResult{
 		Valid: true,
 		// Missing EncryptionPublicKey: ACME must not bypass the E2E key binding.
@@ -1358,12 +1358,12 @@ func TestApplyACMETrustUpgradesBoundEncryptionAttestation(t *testing.T) {
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "acme-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               testPublicKeyB64(),
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
 	}
-	p := reg.Register("provider-1", nil, msg)
+	p, _ := reg.Register("provider-1", nil, msg)
 	p.SetAttestationResult(&attestation.VerificationResult{
 		Valid:               true,
 		PublicKey:           rawP256PublicKeyB64ForTest(t, &attestationKey.PublicKey),
@@ -1408,12 +1408,12 @@ func TestApplyACMETrustRequiresMatchingAttestedSEKey(t *testing.T) {
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "acme-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               testPublicKeyB64(),
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
 	}
-	p := reg.Register("provider-1", nil, msg)
+	p, _ := reg.Register("provider-1", nil, msg)
 	p.SetAttestationResult(&attestation.VerificationResult{
 		Valid:               true,
 		PublicKey:           rawP256PublicKeyB64ForTest(t, &attestationKey.PublicKey),
@@ -1463,7 +1463,7 @@ func TestProviderBelowMinVersionStaysHiddenFromModelsAfterChallenge(t *testing.T
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "below-min-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               pubKey,
 		Version:                 "0.3.8",
 		EncryptedResponseChunks: true,
@@ -1541,7 +1541,7 @@ func TestChallengeResponseWrongKey(t *testing.T) {
 		Type:      protocol.TypeRegister,
 		Hardware:  protocol.Hardware{ChipName: "M3 Max", MemoryGB: 64},
 		Models:    []protocol.ModelInfo{{ID: "wrongkey-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:   "inprocess-mlx",
+		Backend:   "mlx-swift",
 		PublicKey: "Y29ycmVjdGtleQ==",
 	}
 	regData, _ := json.Marshal(regMsg)
@@ -1622,7 +1622,7 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "trust-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: true,
 		Attestation:             attestationJSON,
@@ -1724,7 +1724,7 @@ func TestTrustLevelInModelsList(t *testing.T) {
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "trust-list-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -1773,11 +1773,11 @@ func TestHandleChunkDecryptsEncryptedTextChunk(t *testing.T) {
 	srv := NewServer(reg, st, logger)
 
 	providerPublicKey := testPublicKeyB64()
-	provider := reg.Register("provider-1", nil, &protocol.RegisterMessage{
+	provider, _ := reg.Register("provider-1", nil, &protocol.RegisterMessage{
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               providerPublicKey,
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -1832,11 +1832,11 @@ func TestHandleChunkRejectsPlaintextTextChunk(t *testing.T) {
 	srv := NewServer(reg, st, logger)
 
 	providerPublicKey := testPublicKeyB64()
-	provider := reg.Register("provider-1", nil, &protocol.RegisterMessage{
+	provider, _ := reg.Register("provider-1", nil, &protocol.RegisterMessage{
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               providerPublicKey,
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -1903,11 +1903,11 @@ func TestHandleChunkRejectsMixedPlaintextAndEncryptedTextChunk(t *testing.T) {
 	srv := NewServer(reg, st, logger)
 
 	providerPublicKey := testPublicKeyB64()
-	provider := reg.Register("provider-mixed", nil, &protocol.RegisterMessage{
+	provider, _ := reg.Register("provider-mixed", nil, &protocol.RegisterMessage{
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               providerPublicKey,
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -1984,7 +1984,7 @@ func TestPrivateTextResponseContainsNoEncryptionArtifacts(t *testing.T) {
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
 		Models:                  []protocol.ModelInfo{{ID: "leak-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),

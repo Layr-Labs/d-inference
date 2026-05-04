@@ -1622,7 +1622,7 @@ func stripThinkBlocks(text string) (string, string) {
 }
 
 // normalizeSSEChunk fixes fields in SSE chunks to match the OpenAI spec.
-// Some backends (e.g. vllm-mlx) emit "content":null instead of "content":"",
+// Some backends emit "content":null instead of "content":"",
 // and include "usage":null which strict parsers (ForgeCode, Codex) reject
 // because they expect usage to be either absent or a full object.
 func normalizeSSEChunk(chunk string) string {
@@ -2341,13 +2341,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // handleCompletions handles POST /v1/completions.
-// Proxies OpenAI-compatible text completions to the provider's vllm-mlx server.
+// Proxies OpenAI-compatible text completions to the provider's backend.
 func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	s.handleGenericInference(w, r, "/v1/completions")
 }
 
 // handleAnthropicMessages handles POST /v1/messages.
-// Proxies Anthropic-compatible messages API to the provider's vllm-mlx server.
+// Proxies Anthropic-compatible messages API to the provider's backend.
 func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	s.handleGenericInference(w, r, "/v1/messages")
 }

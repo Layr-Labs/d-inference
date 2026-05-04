@@ -28,7 +28,7 @@ func TestRegisterMessageMarshal(t *testing.T) {
 				Quantization: "4bit",
 			},
 		},
-		Backend:                 "vllm_mlx",
+		Backend:                 "mlx-swift",
 		EncryptedResponseChunks: true,
 	}
 
@@ -54,8 +54,8 @@ func TestRegisterMessageMarshal(t *testing.T) {
 	if decoded.Models[0].ID != "mlx-community/Qwen3.5-9B-Instruct-4bit" {
 		t.Errorf("model id = %q", decoded.Models[0].ID)
 	}
-	if decoded.Backend != "vllm_mlx" {
-		t.Errorf("backend = %q, want %q", decoded.Backend, "vllm_mlx")
+	if decoded.Backend != "mlx-swift" {
+		t.Errorf("backend = %q, want %q", decoded.Backend, "mlx-swift")
 	}
 	if !decoded.EncryptedResponseChunks {
 		t.Error("encrypted_response_chunks should round-trip")
@@ -256,7 +256,7 @@ func TestCancelMarshal(t *testing.T) {
 }
 
 func TestProviderMessageUnmarshalRegister(t *testing.T) {
-	raw := `{"type":"register","hardware":{"machine_model":"Mac15,8","chip_name":"Apple M3 Max","chip_family":"M3","chip_tier":"Max","memory_gb":64,"memory_available_gb":60,"cpu_cores":{"total":16,"performance":12,"efficiency":4},"gpu_cores":40,"memory_bandwidth_gbs":400},"models":[{"id":"mlx-community/Qwen3.5-9B-Instruct-4bit","size_bytes":5700000000,"model_type":"qwen3","quantization":"4bit"}],"backend":"vllm_mlx"}`
+	raw := `{"type":"register","hardware":{"machine_model":"Mac15,8","chip_name":"Apple M3 Max","chip_family":"M3","chip_tier":"Max","memory_gb":64,"memory_available_gb":60,"cpu_cores":{"total":16,"performance":12,"efficiency":4},"gpu_cores":40,"memory_bandwidth_gbs":400},"models":[{"id":"mlx-community/Qwen3.5-9B-Instruct-4bit","size_bytes":5700000000,"model_type":"qwen3","quantization":"4bit"}],"backend":"mlx-swift"}`
 
 	var pm ProviderMessage
 	if err := json.Unmarshal([]byte(raw), &pm); err != nil {
@@ -375,7 +375,7 @@ func TestRegisterMessageWithWalletAddress(t *testing.T) {
 		Models: []ModelInfo{
 			{ID: "qwen3.5-9b", ModelType: "qwen3", Quantization: "4bit"},
 		},
-		Backend:       "vllm_mlx",
+		Backend:       "mlx-swift",
 		WalletAddress: "0x1234567890abcdef1234567890abcdef12345678",
 	}
 
@@ -405,7 +405,7 @@ func TestRegisterMessageWithAttestation(t *testing.T) {
 		Models: []ModelInfo{
 			{ID: "qwen3.5-9b", ModelType: "qwen3", Quantization: "4bit"},
 		},
-		Backend:     "vllm_mlx",
+		Backend:     "mlx-swift",
 		Attestation: attestationJSON,
 	}
 

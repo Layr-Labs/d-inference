@@ -61,12 +61,6 @@ pub enum ProviderMessage {
         /// When present, the coordinator links this provider to the token's account.
         #[serde(skip_serializing_if = "Option::is_none")]
         auth_token: Option<String>,
-        /// SHA-256 hash of the Python interpreter binary.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        python_hash: Option<String>,
-        /// Combined SHA-256 hash of all .py files in the vllm_mlx package (sorted).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        runtime_hash: Option<String>,
         /// Per-file SHA-256 hashes of Jinja templates.
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         template_hashes: std::collections::HashMap<String, String>,
@@ -82,7 +76,7 @@ pub enum ProviderMessage {
         warm_models: Vec<String>,
         stats: ProviderStats,
         system_metrics: SystemMetrics,
-        /// Live backend capacity reported from polling vllm-mlx /v1/status endpoints.
+        /// Live backend capacity reported from polling backend /v1/status endpoints.
         /// None for providers that don't support capacity reporting (backward compat).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         backend_capacity: Option<BackendCapacity>,
@@ -153,12 +147,6 @@ pub enum ProviderMessage {
         /// SHA-256 weight fingerprint of the currently loaded model (cached at load time).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         active_model_hash: Option<String>,
-        /// SHA-256 hash of the Python interpreter binary.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        python_hash: Option<String>,
-        /// Combined SHA-256 hash of all .py files in the vllm_mlx package (sorted).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        runtime_hash: Option<String>,
         /// Per-file SHA-256 hashes of Jinja templates.
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         template_hashes: std::collections::HashMap<String, String>,
@@ -211,10 +199,7 @@ pub struct EncryptedPayload {
 /// verified by the coordinator before routing private text jobs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PrivacyCapabilities {
-    pub text_backend_inprocess: bool,
     pub text_proxy_disabled: bool,
-    pub python_runtime_locked: bool,
-    pub dangerous_modules_blocked: bool,
     pub sip_enabled: bool,
     pub anti_debug_enabled: bool,
     pub core_dumps_disabled: bool,
@@ -226,7 +211,7 @@ pub struct PrivacyCapabilities {
 /// A single runtime component whose hash doesn't match the coordinator's known-good value.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RuntimeMismatch {
-    /// Component name (e.g. "python", "vllm_mlx", "template:chatml").
+    /// Component name (e.g. "template:chatml").
     pub component: String,
     /// The hash the coordinator expected.
     pub expected: String,
@@ -244,7 +229,7 @@ impl PartialEq for ProviderMessage {
     }
 }
 
-/// Capacity state of a single backend slot (one vllm-mlx instance serving one model).
+/// Capacity state of a single backend slot (one backend instance serving one model).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BackendSlotCapacity {
     /// Model ID for this slot.
@@ -342,7 +327,7 @@ mod tests {
                 estimated_memory_gb: 4.5,
                 weight_hash: None,
             }],
-            backend: "vllm_mlx".to_string(),
+            backend: "mlx-swift".to_string(),
             version: None,
             public_key: None,
             encrypted_response_chunks: true,
@@ -351,8 +336,6 @@ mod tests {
             prefill_tps: None,
             decode_tps: None,
             auth_token: None,
-            python_hash: None,
-            runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
             privacy_capabilities: None,
         };
@@ -367,8 +350,6 @@ mod tests {
         assert!(!json.contains("prefill_tps"));
         assert!(!json.contains("decode_tps"));
         // runtime hash fields should be omitted when empty
-        assert!(!json.contains("python_hash"));
-        assert!(!json.contains("runtime_hash"));
         assert!(!json.contains("template_hashes"));
         let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, deserialized);
@@ -387,7 +368,7 @@ mod tests {
                 estimated_memory_gb: 4.5,
                 weight_hash: None,
             }],
-            backend: "vllm_mlx".to_string(),
+            backend: "mlx-swift".to_string(),
             version: None,
             public_key: None,
             encrypted_response_chunks: true,
@@ -396,8 +377,6 @@ mod tests {
             prefill_tps: None,
             decode_tps: None,
             auth_token: None,
-            python_hash: None,
-            runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
             privacy_capabilities: None,
         };
@@ -425,7 +404,7 @@ mod tests {
                 estimated_memory_gb: 4.5,
                 weight_hash: None,
             }],
-            backend: "vllm_mlx".to_string(),
+            backend: "mlx-swift".to_string(),
             version: None,
             public_key: Some("c29tZWtleQ==".to_string()),
             encrypted_response_chunks: true,
@@ -434,8 +413,6 @@ mod tests {
             prefill_tps: Some(500.0),
             decode_tps: Some(100.0),
             auth_token: None,
-            python_hash: None,
-            runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
             privacy_capabilities: None,
         };
@@ -660,8 +637,6 @@ mod tests {
             secure_boot_enabled: Some(true),
             binary_hash: None,
             active_model_hash: None,
-            python_hash: None,
-            runtime_hash: None,
             template_hashes: std::collections::HashMap::new(),
             model_hashes: std::collections::HashMap::new(),
         };
@@ -947,7 +922,7 @@ mod tests {
             ProviderMessage::Register {
                 hardware: sample_hardware(),
                 models: vec![],
-                backend: "vllm_mlx".to_string(),
+                backend: "mlx-swift".to_string(),
                 version: None,
                 public_key: None,
                 encrypted_response_chunks: true,
@@ -956,8 +931,6 @@ mod tests {
                 prefill_tps: None,
                 decode_tps: None,
                 auth_token: None,
-                python_hash: None,
-                runtime_hash: None,
                 template_hashes: std::collections::HashMap::new(),
                 privacy_capabilities: None,
             },
@@ -1024,8 +997,6 @@ mod tests {
                 secure_boot_enabled: Some(true),
                 binary_hash: None,
                 active_model_hash: None,
-                python_hash: None,
-                runtime_hash: None,
                 template_hashes: std::collections::HashMap::new(),
                 model_hashes: std::collections::HashMap::new(),
             },
@@ -1068,7 +1039,7 @@ mod tests {
             CoordinatorMessage::RuntimeStatus {
                 verified: false,
                 mismatches: vec![RuntimeMismatch {
-                    component: "python".to_string(),
+                    component: "template:chatml".to_string(),
                     expected: "abc123".to_string(),
                     got: "def456".to_string(),
                 }],
@@ -1148,12 +1119,12 @@ mod tests {
             verified: false,
             mismatches: vec![
                 RuntimeMismatch {
-                    component: "python".to_string(),
+                    component: "template:chatml".to_string(),
                     expected: "abc123".to_string(),
                     got: "def456".to_string(),
                 },
                 RuntimeMismatch {
-                    component: "template:chatml".to_string(),
+                    component: "template:gemma".to_string(),
                     expected: "111".to_string(),
                     got: "222".to_string(),
                 },
@@ -1163,7 +1134,7 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"verified\":false"));
         assert!(json.contains("\"mismatches\""));
-        assert!(json.contains("\"component\":\"python\""));
+        assert!(json.contains("\"component\":\"template:chatml\""));
         let deserialized: CoordinatorMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, deserialized);
     }
@@ -1186,7 +1157,7 @@ mod tests {
     }
 
     #[test]
-    fn test_register_with_runtime_hashes_roundtrip() {
+    fn test_register_with_template_hashes_roundtrip() {
         let mut template_hashes = std::collections::HashMap::new();
         template_hashes.insert("chatml".to_string(), "abc123".to_string());
         template_hashes.insert("llama".to_string(), "def456".to_string());
@@ -1194,7 +1165,7 @@ mod tests {
         let msg = ProviderMessage::Register {
             hardware: sample_hardware(),
             models: vec![],
-            backend: "vllm_mlx".to_string(),
+            backend: "mlx-swift".to_string(),
             version: None,
             public_key: None,
             encrypted_response_chunks: true,
@@ -1203,28 +1174,18 @@ mod tests {
             prefill_tps: None,
             decode_tps: None,
             auth_token: None,
-            python_hash: Some("pythonhash123".to_string()),
-            runtime_hash: Some("runtimehash456".to_string()),
             template_hashes,
             privacy_capabilities: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"python_hash\":\"pythonhash123\""));
-        assert!(json.contains("\"runtime_hash\":\"runtimehash456\""));
         assert!(json.contains("\"template_hashes\""));
         assert!(json.contains("\"chatml\""));
         let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
-        // Compare fields individually (HashMap order is non-deterministic)
         match deserialized {
             ProviderMessage::Register {
-                python_hash,
-                runtime_hash,
-                template_hashes,
-                ..
+                template_hashes, ..
             } => {
-                assert_eq!(python_hash, Some("pythonhash123".to_string()));
-                assert_eq!(runtime_hash, Some("runtimehash456".to_string()));
                 assert_eq!(template_hashes.get("chatml"), Some(&"abc123".to_string()));
                 assert_eq!(template_hashes.get("llama"), Some(&"def456".to_string()));
                 assert_eq!(template_hashes.len(), 2);
@@ -1234,19 +1195,14 @@ mod tests {
     }
 
     #[test]
-    fn test_register_backward_compatible_without_runtime_hashes() {
-        // An old-format Register message without runtime hash fields should still parse
-        let raw = r#"{"type":"register","hardware":{"machine_model":"Mac16,1","chip_name":"Apple M4 Max","chip_family":"M4","chip_tier":"Max","memory_gb":128,"memory_available_gb":124,"cpu_cores":{"total":16,"performance":12,"efficiency":4},"gpu_cores":40,"memory_bandwidth_gbs":546},"models":[],"backend":"vllm_mlx"}"#;
+    fn test_register_backward_compatible_without_template_hashes() {
+        // An old-format Register message without template hash fields should still parse
+        let raw = r#"{"type":"register","hardware":{"machine_model":"Mac16,1","chip_name":"Apple M4 Max","chip_family":"M4","chip_tier":"Max","memory_gb":128,"memory_available_gb":124,"cpu_cores":{"total":16,"performance":12,"efficiency":4},"gpu_cores":40,"memory_bandwidth_gbs":546},"models":[],"backend":"mlx-swift"}"#;
         let msg: ProviderMessage = serde_json::from_str(raw).unwrap();
         match msg {
             ProviderMessage::Register {
-                python_hash,
-                runtime_hash,
-                template_hashes,
-                ..
+                template_hashes, ..
             } => {
-                assert!(python_hash.is_none());
-                assert!(runtime_hash.is_none());
                 assert!(template_hashes.is_empty());
             }
             _ => panic!("expected Register"),

@@ -1,15 +1,15 @@
 package api
 
-// Full-stack integration tests: real coordinator + real vllm-mlx backends.
+// Full-stack integration tests: real coordinator + real MLX backends.
 //
-// These tests spin up actual vllm-mlx processes with a small model, connect
+// These tests spin up actual MLX processes with a small model, connect
 // simulated providers to the coordinator via WebSocket (with full E2E
 // encryption), and send consumer HTTP requests through the coordinator.
 //
 // This tests the ENTIRE inference pipeline end-to-end with real GPU inference.
 //
 // Requirements:
-//   - Apple Silicon Mac with vllm-mlx installed
+//   - Apple Silicon Mac with MLX backend installed
 //   - mlx-community/Qwen3.5-0.8B-MLX-4bit downloaded (~0.5GB per instance)
 //   - ~1GB RAM per provider instance
 //
@@ -50,7 +50,7 @@ const (
 	// testModel is the small model used for full-stack tests.
 	testModel = "mlx-community/Qwen3.5-0.8B-MLX-4bit"
 
-	// basePort is the starting port for vllm-mlx backends.
+	// basePort is the starting port for MLX backends.
 	basePort = 18200
 )
 
@@ -59,7 +59,7 @@ func shouldRunFullStack() bool {
 }
 
 // ---------------------------------------------------------------------------
-// vllm-mlx process management
+// MLX backend process management
 // ---------------------------------------------------------------------------
 
 type backendProcess struct {
@@ -77,19 +77,19 @@ func startBackendWithOptions(t *testing.T, model string, port int, continuousBat
 	if continuousBatching {
 		args = append(args, "--continuous-batching")
 	}
-	cmd := exec.Command("vllm-mlx", args...)
+	cmd := exec.Command("mlx-swift", args...)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("failed to start vllm-mlx on port %d: %v", port, err)
+		t.Fatalf("failed to start MLX backend on port %d: %v", port, err)
 	}
 
 	mode := "sequential"
 	if continuousBatching {
 		mode = "continuous-batching"
 	}
-	t.Logf("started vllm-mlx PID=%d on port %d (%s)", cmd.Process.Pid, port, mode)
+	t.Logf("started MLX backend PID=%d on port %d (%s)", cmd.Process.Pid, port, mode)
 	return &backendProcess{port: port, cmd: cmd}
 }
 
@@ -132,7 +132,7 @@ func waitForBackendHealthy(t *testing.T, url string, timeout time.Duration) {
 
 type simulatedProvider struct {
 	id         string
-	port       int    // vllm-mlx backend port
+	port       int    // MLX backend port
 	model      string // model ID to register with
 	pubKey     [32]byte
 	privKey    [32]byte
@@ -188,7 +188,7 @@ func (p *simulatedProvider) connect(ctx context.Context, coordinatorURL string) 
 			Quantization: "4bit",
 			SizeBytes:    500_000_000,
 		}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               p.pubKeyB64,
 		DecodeTPS:               100.0,
 		EncryptedResponseChunks: true,
@@ -201,7 +201,7 @@ func (p *simulatedProvider) connect(ctx context.Context, coordinatorURL string) 
 }
 
 // run processes messages from the coordinator: challenges and inference requests.
-// It forwards real inference requests to the local vllm-mlx backend.
+// It forwards real inference requests to the local MLX backend.
 func (p *simulatedProvider) run(ctx context.Context) {
 	client := &http.Client{Timeout: 120 * time.Second}
 
@@ -275,7 +275,7 @@ func (p *simulatedProvider) handleInferenceRequest(ctx context.Context, data []b
 		json.Unmarshal(msg.Body, &reqBody)
 	}
 
-	// Forward to the real vllm-mlx backend
+	// Forward to the real MLX backend
 	backendBody := map[string]any{
 		"model":    reqBody.Model,
 		"messages": reqBody.Messages,
@@ -476,8 +476,8 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// --- Start vllm-mlx backends ---
-	t.Logf("=== Starting %d vllm-mlx backends ===", numProviders)
+	// --- Start MLX backends ---
+	t.Logf("=== Starting %d MLX backends ===", numProviders)
 	backends := make([]*backendProcess, numProviders)
 	for i := range numProviders {
 		backends[i] = startBackend(t, testModel, basePort+i)
@@ -749,7 +749,7 @@ func TestFullStack_TenProviderStress(t *testing.T) {
 	defer cancel()
 
 	// Start 10 backends
-	t.Logf("starting %d vllm-mlx backends (ports %d-%d)...", numProviders, basePort, basePort+numProviders-1)
+	t.Logf("starting %d MLX backends (ports %d-%d)...", numProviders, basePort, basePort+numProviders-1)
 	backends := make([]*backendProcess, numProviders)
 	for i := range numProviders {
 		backends[i] = startBackend(t, testModel, basePort+i)
@@ -1064,7 +1064,7 @@ func TestFullStack_LargeModelInference(t *testing.T) {
 	const port = 18250
 
 	// Start backend with the large model
-	t.Log("starting vllm-mlx with large model (this may take 30-60s)...")
+	t.Log("starting MLX backend with large model (this may take 30-60s)...")
 	coldStartTime := time.Now()
 	backend := startBackend(t, selectedModel, port)
 	defer backend.stop()

@@ -1,9 +1,9 @@
 //! Darkbloom provider agent for Apple Silicon Macs.
 //!
 //! The provider agent runs on Mac hardware and serves local inference requests
-//! from the Darkbloom coordinator. It manages the lifecycle of an inference backend
-//! (vllm-mlx or mlx-lm), connects to the coordinator via WebSocket, and
-//! handles attestation using the Apple Secure Enclave.
+//! from the Darkbloom coordinator. It manages the lifecycle of an inference backend,
+//! connects to the coordinator via WebSocket, and handles attestation using the
+//! Apple Secure Enclave.
 //!
 //! Architecture:
 //!   Provider Agent (this binary)
@@ -11,7 +11,6 @@
 //!     ├── Model scanning (HuggingFace cache, memory filtering)
 //!     ├── Backend management (spawn/monitor/restart inference server)
 //!     ├── Coordinator connection (WebSocket, registration, heartbeats)
-//!     ├── Private text engine (embedded in-process inference runtime)
 //!     ├── Attestation (Secure Enclave identity, challenge-response)
 //!     └── Crypto (NaCl X25519 key pair for coordinator-mediated E2E)
 //!
@@ -30,8 +29,6 @@ mod coordinator;
 mod crypto;
 mod hardware;
 mod hypervisor;
-#[cfg(feature = "python")]
-mod inference;
 mod models;
 mod protocol;
 mod proxy;
@@ -70,13 +67,6 @@ const DEFAULT_R2_CDN_URL: &str = match option_env!("DARKBLOOM_R2_CDN_URL") {
     Some(v) => v,
     None => "https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev",
 };
-// Site-packages tarball CDN (separate prod bucket historically, co-located for
-// dev). Falls back to the long-used prod bucket when unset.
-const DEFAULT_R2_SITE_PACKAGES_CDN_URL: &str =
-    match option_env!("DARKBLOOM_R2_SITE_PACKAGES_CDN_URL") {
-        Some(v) => v,
-        None => "https://pub-3d1cb668259340eeb2276e1d375c846d.r2.dev",
-    };
 
 /// A model from the coordinator's supported model catalog.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -911,14 +901,10 @@ fn ensure_chat_template(
 }
 
 /// Fetch the runtime manifest from the coordinator.
-/// Returns (python_hashes, runtime_hashes, template_hashes).
+/// Returns template_hashes from the runtime manifest.
 fn fetch_runtime_manifest(
     coordinator_base: &str,
-) -> Option<(
-    Vec<String>,
-    Vec<String>,
-    std::collections::HashMap<String, String>,
-)> {
+) -> Option<std::collections::HashMap<String, String>> {
     let url = format!("{coordinator_base}/v1/runtime/manifest");
     let output = std::process::Command::new("curl")
         .args(["-fsSL", "--connect-timeout", "5", &url])
@@ -928,30 +914,6 @@ fn fetch_runtime_manifest(
         return None;
     }
     let manifest: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-
-    // Coordinator returns hashes as map[string]bool (JSON object {"hash": true})
-    // or as an array of strings. Handle both formats.
-    let parse_hash_set = |v: &serde_json::Value| -> Vec<String> {
-        if let Some(arr) = v.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        } else if let Some(obj) = v.as_object() {
-            obj.keys().cloned().collect()
-        } else {
-            vec![]
-        }
-    };
-
-    let python_hashes = manifest
-        .get("python_hashes")
-        .map(|v| parse_hash_set(v))
-        .unwrap_or_default();
-
-    let runtime_hashes = manifest
-        .get("runtime_hashes")
-        .map(|v| parse_hash_set(v))
-        .unwrap_or_default();
 
     let template_hashes = manifest
         .get("template_hashes")
@@ -963,499 +925,7 @@ fn fetch_runtime_manifest(
         })
         .unwrap_or_default();
 
-    Some((python_hashes, runtime_hashes, template_hashes))
-}
-
-/// Verify the Python binary hash matches the coordinator's manifest and that it executes.
-/// If it doesn't match or can't execute, download the canonical Python runtime from R2,
-/// fall back to python-build-standalone, or Homebrew Python 3.12 as a last resort.
-/// Returns true if Python is working, false if all recovery strategies failed.
-fn ensure_python_verified(python_cmd: &str, coordinator_base: &str) -> bool {
-    const PBS_PYTHON_URL: &str = "https://github.com/astral-sh/python-build-standalone/releases/download/20260408/cpython-3.12.13+20260408-aarch64-apple-darwin-install_only.tar.gz";
-
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
-    let manifest = fetch_runtime_manifest(coordinator_base);
-    let expected_python_hashes: Vec<String> = manifest
-        .as_ref()
-        .map(|(ph, _, _)| ph.clone())
-        .unwrap_or_default();
-
-    if expected_python_hashes.is_empty() {
-        tracing::debug!("No Python hash in manifest — skipping Python verification");
-        return true;
-    }
-
-    // Hash the current Python binary
-    let python_path = std::path::Path::new(python_cmd);
-    let current_hash = security::hash_file(python_path).unwrap_or_default();
-
-    if expected_python_hashes.contains(&current_hash) {
-        // Test that the binary actually executes (catches dyld errors)
-        let test = std::process::Command::new(python_cmd)
-            .args(["-c", "print('ok')"])
-            .output();
-        if matches!(test, Ok(ref o) if o.status.success()) {
-            tracing::info!("Python binary verified and executable ✓");
-            return true;
-        }
-        tracing::warn!("Python binary hash matches but fails to execute — re-downloading");
-    } else {
-        tracing::warn!("Python binary hash mismatch — downloading canonical runtime from CDN...");
-    }
-
-    // Get the download URL from the coordinator's latest release
-    let release_url = format!("{coordinator_base}/v1/releases/latest");
-    let release_output = std::process::Command::new("curl")
-        .args(["-fsSL", "--connect-timeout", "5", &release_url])
-        .output();
-
-    let python_download_url = match release_output {
-        Ok(output) if output.status.success() => {
-            match serde_json::from_slice::<serde_json::Value>(&output.stdout) {
-                Ok(release) => release.get("url").and_then(|v| v.as_str()).map(|url| {
-                    url.replace(
-                        "eigeninference-bundle-macos-arm64.tar.gz",
-                        "eigeninference-python-macos-arm64.tar.gz",
-                    )
-                }),
-                Err(_) => {
-                    tracing::error!("Failed to parse release JSON");
-                    None
-                }
-            }
-        }
-        _ => None,
-    };
-
-    if let Some(download_url) = python_download_url {
-        // Download to temp
-        let tmp_tarball = "/tmp/eigeninference-python-update.tar.gz";
-        let download = std::process::Command::new("curl")
-            .args([
-                "-fsSL",
-                "--connect-timeout",
-                "30",
-                &download_url,
-                "-o",
-                tmp_tarball,
-            ])
-            .output();
-
-        if let Ok(output) = download {
-            if output.status.success() {
-                let python_dir = eigeninference_dir.join("python");
-
-                // Extract over existing Python dir
-                tracing::info!("Extracting canonical Python runtime...");
-                let _ = std::fs::create_dir_all(&python_dir);
-                let extract = std::process::Command::new("tar")
-                    .args(["xzf", tmp_tarball, "-C", &python_dir.to_string_lossy()])
-                    .output();
-
-                let _ = std::fs::remove_file(tmp_tarball);
-
-                if let Ok(o) = extract {
-                    if o.status.success() {
-                        // Verify the extracted binary matches
-                        let new_hash = security::hash_file(&python_dir.join("bin/python3.12"))
-                            .unwrap_or_default();
-                        if expected_python_hashes.contains(&new_hash) {
-                            // Test execution
-                            let test = std::process::Command::new(python_cmd)
-                                .args(["-c", "print('ok')"])
-                                .output();
-                            if matches!(test, Ok(ref o) if o.status.success()) {
-                                tracing::info!("Canonical Python runtime installed and verified ✓");
-                                return true;
-                            }
-                            tracing::warn!("Downloaded Python hash matches but fails to execute");
-                        } else {
-                            tracing::error!("Downloaded Python hash still doesn't match manifest!");
-                        }
-                    }
-                }
-            } else {
-                let _ = std::fs::remove_file(tmp_tarball);
-            }
-        }
-    }
-
-    // Fallback: download python-build-standalone directly
-    tracing::info!("Downloading portable Python from python-build-standalone...");
-    let pbs_tmp = "/tmp/eigeninference-pbs-python.tar.gz";
-    let pbs_ok = std::process::Command::new("curl")
-        .args([
-            "-fsSL",
-            "--connect-timeout",
-            "30",
-            PBS_PYTHON_URL,
-            "-o",
-            pbs_tmp,
-        ])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if pbs_ok {
-        let python_dir = eigeninference_dir.join("python");
-        let _ = std::fs::remove_dir_all(&python_dir);
-        let _ = std::fs::create_dir_all(&python_dir);
-        // PBS tarball extracts to python/ — extract parent dir and it maps directly
-        let extract_ok = std::process::Command::new("tar")
-            .args([
-                "xzf",
-                pbs_tmp,
-                "--strip-components=1",
-                "-C",
-                &python_dir.to_string_lossy(),
-            ])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        let _ = std::fs::remove_file(pbs_tmp);
-
-        if extract_ok {
-            let pbs_python = python_dir.join("bin/python3.12");
-            let pbs_test = std::process::Command::new(&pbs_python)
-                .args(["-c", "print('ok')"])
-                .output();
-            if matches!(pbs_test, Ok(ref o) if o.status.success()) {
-                tracing::info!("Portable Python installed and executable ✓");
-                // Remove EXTERNALLY-MANAGED if present
-                let managed = python_dir.join("lib/python3.12/EXTERNALLY-MANAGED");
-                let _ = std::fs::remove_file(managed);
-                return true;
-            }
-        }
-        tracing::error!("python-build-standalone download failed to produce working Python");
-    }
-    let _ = std::fs::remove_file(pbs_tmp);
-
-    // Last resort: check for Homebrew Python 3.12
-    let brew_python = std::path::Path::new("/opt/homebrew/opt/python@3.12/bin/python3.12");
-    if brew_python.exists() {
-        let test = std::process::Command::new(brew_python)
-            .args(["-c", "print('ok')"])
-            .output();
-        if matches!(test, Ok(ref o) if o.status.success()) {
-            tracing::info!("Using Homebrew Python 3.12 as fallback");
-            // Create a venv from Homebrew Python
-            let python_dir = eigeninference_dir.join("python");
-            let _ = std::fs::remove_dir_all(&python_dir);
-            let venv_ok = std::process::Command::new(brew_python)
-                .args(["-m", "venv", "--copies", &python_dir.to_string_lossy()])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if venv_ok {
-                let managed = python_dir.join("lib/python3.12/EXTERNALLY-MANAGED");
-                let _ = std::fs::remove_file(managed);
-                tracing::info!("Homebrew Python venv created ✓");
-                return true;
-            }
-        }
-    }
-
-    tracing::error!("All Python recovery strategies failed");
-    false
-}
-
-fn runtime_smoke_test(python_cmd: &str) -> std::result::Result<String, String> {
-    let output = std::process::Command::new(python_cmd)
-        .args([
-            "-c",
-            "import mlx_lm, vllm_mlx; from vllm_mlx.server import app; print(f'vllm-mlx {vllm_mlx.__version__}; mlx-lm {mlx_lm.__version__}')",
-        ])
-        .output();
-
-    match output {
-        Ok(o) if o.status.success() => {
-            let summary = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if summary.is_empty() {
-                Ok("runtime smoke test passed".to_string())
-            } else {
-                Ok(summary)
-            }
-        }
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            let detail = if !stderr.is_empty() {
-                stderr
-            } else if !stdout.is_empty() {
-                stdout
-            } else {
-                format!("process exited with status {}", o.status)
-            };
-            Err(detail)
-        }
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-/// Ensure the Python runtime (vllm-mlx) is up to date and verified.
-///
-/// Called once at startup. Downloads from a verified URL and checks
-/// the hash against the coordinator's runtime manifest before installing.
-/// This prevents MITM attacks on the update channel.
-fn ensure_runtime_updated(python_cmd: &str, coordinator_base: &str) -> bool {
-    let r2_cdn: &str = DEFAULT_R2_SITE_PACKAGES_CDN_URL;
-    const GITHUB_FALLBACK: &str =
-        "https://github.com/Gajesh2007/vllm-mlx/archive/refs/heads/main.zip";
-
-    // Fetch the manifest to check if our runtime hash matches.
-    let manifest = fetch_runtime_manifest(coordinator_base);
-    let expected_runtime_hashes: Vec<String> = manifest
-        .as_ref()
-        .map(|(_, rh, _)| rh.clone())
-        .unwrap_or_default();
-
-    // Check current installed hash against manifest.
-    let current_hashes = security::compute_runtime_hashes(python_cmd);
-    if let Some(ref actual_hash) = current_hashes.runtime_hash {
-        if expected_runtime_hashes.is_empty() || expected_runtime_hashes.contains(actual_hash) {
-            match runtime_smoke_test(python_cmd) {
-                Ok(summary) => {
-                    tracing::info!("Runtime check: {summary} ✓");
-                    return true;
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        "Runtime hash matched manifest but smoke test failed: {err}. Reinstalling canonical site-packages"
-                    );
-                }
-            }
-        }
-    }
-
-    // Hash mismatch. Download the exact site-packages tarball from R2
-    // that CI built for this release. This replaces the ENTIRE Python
-    // package directory — vllm-mlx, mlx-lm, mlx, and all dependencies.
-    // Same packages → same .py files → same hash.
-    tracing::warn!(
-        "Runtime hash mismatch or smoke test failure — downloading canonical site-packages from R2..."
-    );
-
-    let release_version = fetch_latest_release_version(coordinator_base);
-    let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
-    let site_packages_dir = eigeninference_dir.join("python/lib/python3.12/site-packages");
-    let tmp_tarball = "/tmp/eigeninference-site-packages.tar.gz";
-
-    // Try R2 site-packages tarball first, fall back to vllm-mlx source zip.
-    let mut downloaded = false;
-    if !release_version.is_empty() {
-        let r2_url =
-            format!("{r2_cdn}/releases/v{release_version}/eigeninference-site-packages.tar.gz");
-        tracing::info!("Downloading site-packages from R2 (release v{release_version})...");
-        downloaded = std::process::Command::new("curl")
-            .args([
-                "-fsSL",
-                "--connect-timeout",
-                "30",
-                &r2_url,
-                "-o",
-                tmp_tarball,
-            ])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-    }
-
-    if downloaded {
-        // Extract to staging directory first — never delete current before verifying new
-        tracing::info!("Replacing site-packages with canonical CI build...");
-        let staging_dir = eigeninference_dir.join("python/lib/python3.12/site-packages-staging");
-        let backup_dir = eigeninference_dir.join("python/lib/python3.12/site-packages-backup");
-        let _ = std::fs::remove_dir_all(&staging_dir);
-        let _ = std::fs::remove_dir_all(&backup_dir);
-        let _ = std::fs::create_dir_all(&staging_dir);
-
-        let extract = std::process::Command::new("tar")
-            .args(["xzf", tmp_tarball, "-C", &staging_dir.to_string_lossy()])
-            .output();
-        let _ = std::fs::remove_file(tmp_tarball);
-
-        match extract {
-            Ok(o) if o.status.success() => {
-                // Validate staging has critical packages
-                if !staging_dir.join("vllm_mlx/__init__.py").exists() {
-                    tracing::error!("Extracted site-packages missing vllm_mlx — aborting");
-                    let _ = std::fs::remove_dir_all(&staging_dir);
-                    // Fall through to pip fallback
-                } else {
-                    // Atomic swap: current → backup, staging → current
-                    if site_packages_dir.exists() {
-                        if let Err(e) = std::fs::rename(&site_packages_dir, &backup_dir) {
-                            tracing::error!("Failed to backup site-packages: {e}");
-                            let _ = std::fs::remove_dir_all(&staging_dir);
-                            return true; // keep current, it's better than nothing
-                        }
-                    }
-                    if let Err(e) = std::fs::rename(&staging_dir, &site_packages_dir) {
-                        tracing::error!("Failed to swap site-packages: {e} — rolling back");
-                        let _ = std::fs::rename(&backup_dir, &site_packages_dir);
-                        return true;
-                    }
-
-                    // Test the new site-packages
-                    match runtime_smoke_test(python_cmd) {
-                        Ok(summary) => {
-                            let _ = std::fs::remove_dir_all(&backup_dir);
-                            // Verify hash
-                            let post_install = security::compute_runtime_hashes(python_cmd);
-                            if let Some(actual_hash) = post_install.runtime_hash {
-                                if expected_runtime_hashes.is_empty()
-                                    || expected_runtime_hashes.contains(&actual_hash)
-                                {
-                                    tracing::info!(
-                                        "Runtime updated — all packages verified ({summary}) ✓"
-                                    );
-                                } else {
-                                    tracing::warn!(
-                                        "Runtime updated but hash differs from manifest"
-                                    );
-                                }
-                            } else {
-                                tracing::info!("Runtime updated ✓ ({summary})");
-                            }
-                            return true;
-                        }
-                        Err(err) => {
-                            // Rollback
-                            tracing::error!(
-                                "New site-packages failed runtime smoke test: {err} — rolling back"
-                            );
-                            let _ = std::fs::remove_dir_all(&site_packages_dir);
-                            let _ = std::fs::rename(&backup_dir, &site_packages_dir);
-                            // Fall through to pip fallback
-                        }
-                    }
-                }
-            }
-            _ => {
-                tracing::error!("Failed to extract site-packages tarball");
-                let _ = std::fs::remove_dir_all(&staging_dir);
-                // Fall through to pip fallback
-            }
-        }
-    } else {
-        let _ = std::fs::remove_file(tmp_tarball);
-    }
-
-    // Fallback: pip install just vllm-mlx source zip (older releases
-    // may not have the site-packages tarball on R2).
-    tracing::info!("Falling back to vllm-mlx source zip...");
-    let tmp_zip = "/tmp/eigeninference-vllm-mlx-update.zip";
-    let mut zip_downloaded = false;
-    if !release_version.is_empty() {
-        let r2_url = format!("{r2_cdn}/releases/v{release_version}/vllm-mlx-source.zip");
-        zip_downloaded = std::process::Command::new("curl")
-            .args(["-fsSL", "--connect-timeout", "10", &r2_url, "-o", tmp_zip])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-    }
-    if !zip_downloaded {
-        zip_downloaded = std::process::Command::new("curl")
-            .args([
-                "-fsSL",
-                "--connect-timeout",
-                "30",
-                GITHUB_FALLBACK,
-                "-o",
-                tmp_zip,
-            ])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-    }
-    if !zip_downloaded {
-        let _ = std::fs::remove_file(tmp_zip);
-        tracing::error!("Failed to download runtime from R2 and GitHub");
-        return false;
-    }
-
-    // Remove old vllm_mlx before installing to prevent leftover file mismatches.
-    let vllm_mlx_dir = site_packages_dir.join("vllm_mlx");
-    if vllm_mlx_dir.exists() {
-        let _ = std::fs::remove_dir_all(&vllm_mlx_dir);
-    }
-
-    let install = std::process::Command::new(python_cmd)
-        .args([
-            "-m",
-            "pip",
-            "install",
-            "--break-system-packages",
-            "--force-reinstall",
-            "--quiet",
-            "--no-cache-dir",
-            tmp_zip,
-            "mlx-lm>=0.31.2",
-        ])
-        .output();
-
-    let _ = std::fs::remove_file(tmp_zip);
-
-    match install {
-        Ok(o) if o.status.success() => {
-            let upgrade = std::process::Command::new(python_cmd)
-                .args([
-                    "-m",
-                    "pip",
-                    "install",
-                    "--break-system-packages",
-                    "--quiet",
-                    "--no-cache-dir",
-                    "--upgrade",
-                    "mlx-lm>=0.31.2",
-                ])
-                .output();
-            match upgrade {
-                Ok(u) if u.status.success() => match runtime_smoke_test(python_cmd) {
-                    Ok(summary) => {
-                        let post_install = security::compute_runtime_hashes(python_cmd);
-                        if let Some(actual_hash) = post_install.runtime_hash {
-                            if expected_runtime_hashes.is_empty()
-                                || expected_runtime_hashes.contains(&actual_hash)
-                            {
-                                tracing::info!(
-                                    "Updated vllm-mlx + deps — hash verified ({summary}) ✓"
-                                );
-                            } else {
-                                tracing::error!("Post-install hash MISMATCH!");
-                                tracing::error!("  Expected one of: {:?}", expected_runtime_hashes);
-                                tracing::error!("  Got: {actual_hash}");
-                            }
-                        } else {
-                            tracing::info!("Updated vllm-mlx ✓ ({summary})");
-                        }
-                        return true;
-                    }
-                    Err(err) => {
-                        tracing::error!("Updated runtime still fails smoke test: {err}");
-                    }
-                },
-                Ok(u) => {
-                    let stderr = String::from_utf8_lossy(&u.stderr);
-                    tracing::error!(
-                        "mlx-lm upgrade failed: {}",
-                        stderr.chars().take(200).collect::<String>()
-                    );
-                }
-                Err(e) => tracing::error!("Failed to run pip upgrade for mlx-lm: {e}"),
-            }
-        }
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            tracing::error!(
-                "pip install failed: {}",
-                stderr.chars().take(200).collect::<String>()
-            );
-        }
-        Err(e) => tracing::error!("Failed to run pip: {e}"),
-    }
-    false
+    Some(template_hashes)
 }
 
 /// Fetch the latest release version string from the coordinator.
@@ -1788,25 +1258,10 @@ async fn main() -> Result<()> {
         Command::Logout => cmd_logout().await,
         Command::AutoUpdate { action } => cmd_autoupdate(&action).await,
         Command::HashRuntime { path } => {
-            let lib_dir = std::path::Path::new(&path);
-            if !lib_dir.exists() {
-                eprintln!("error: directory does not exist: {path}");
-                std::process::exit(1);
-            }
-            crate::security::purge_pycache(lib_dir);
-            let mut files = Vec::new();
-            crate::security::collect_runtime_files(lib_dir, &mut files);
-            files.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
-            match crate::security::hash_files_sorted(&files) {
-                Some(hash) => {
-                    println!("{hash}");
-                    Ok(())
-                }
-                None => {
-                    eprintln!("error: failed to hash runtime at {path}");
-                    std::process::exit(1);
-                }
-            }
+            eprintln!(
+                "error: hash-runtime is no longer supported; use the Swift provider for runtime verification"
+            );
+            std::process::exit(1);
         }
     }
 }
@@ -2288,9 +1743,6 @@ async fn cmd_serve(
         let _ = std::process::Command::new("pkill")
             .args(["-f", "mlx_lm.server"])
             .status();
-        let _ = std::process::Command::new("pkill")
-            .args(["-f", "vllm_mlx"])
-            .status();
         // Kill legacy DGInf/dginf-provider processes
         let _ = std::process::Command::new("pkill")
             .args(["-f", "DGInf"])
@@ -2323,12 +1775,6 @@ async fn cmd_serve(
         anyhow::bail!("Failed to disable core dumps: {reason}");
     }
     security::scrub_private_env();
-
-    // Isolate Python BEFORE PyO3's auto-initialize triggers. This prevents
-    // sitecustomize.py and usercustomize.py from running code before
-    // lock_python_path() takes effect.
-    #[cfg(feature = "python")]
-    security::isolate_python_preinit();
 
     // Prevent system sleep while serving. caffeinate watches our own PID and
     // exits when we die — launchd restarts us, and we spawn a new caffeinate.
@@ -2419,12 +1865,10 @@ async fn cmd_serve(
         tracing::info!("Idle GPU timeout: disabled (backend stays running)");
     }
 
-    let text_backend_mode = preferred_text_backend_mode(local);
-    let using_inprocess = matches!(text_backend_mode, TextBackendMode::InProcess);
-    let text_backend_name = backend_name_for_mode(text_backend_mode);
+    let text_backend_name = "mlx-swift";
     tracing::info!("Text backend mode: {}", text_backend_name);
 
-    // Determine text models to serve (vllm-mlx backends).
+    // Determine text models to serve.
     let available_models = models::scan_models(&hw);
     let selected_models: Vec<String> = if !model_overrides.is_empty() {
         model_overrides
@@ -2448,11 +1892,9 @@ async fn cmd_serve(
         selected_models.len(),
         selected_models
     );
-    if !selected_models.is_empty() {
-        validate_private_text_runtime(local)?;
-    }
+    if !selected_models.is_empty() {}
 
-    // Build backend slots: one vllm-mlx process per model on sequential ports.
+    // Build backend slots: one backend process per model on sequential ports.
     // Shared state struct for per-slot health monitoring and lifecycle management.
     struct BackendSlot {
         model_id: String,
@@ -2469,15 +1911,11 @@ async fn cmd_serve(
             let port = be_port + i as u16;
             BackendSlot {
                 model_id: model_id.clone(),
-                model_path: String::new(), // resolved later during backend startup
+                model_path: String::new(),
                 port,
                 pid: None,
-                backend_url: if using_inprocess {
-                    format!("inprocess://{}", model_id)
-                } else {
-                    format!("http://127.0.0.1:{}", port)
-                },
-                healthy: using_inprocess,
+                backend_url: format!("http://127.0.0.1:{}", port),
+                healthy: false,
             }
         })
         .collect();
@@ -2510,76 +1948,36 @@ async fn cmd_serve(
     }
 
     // Kill any existing subprocess backends on our backend ports to avoid EADDRINUSE.
-    if !using_inprocess {
-        for slot in &backend_slots {
-            if let Ok(output) = std::process::Command::new("lsof")
-                .args(["-ti", &format!(":{}", slot.port)])
-                .output()
-            {
-                let pids = String::from_utf8_lossy(&output.stdout);
-                for pid in pids.split_whitespace() {
-                    if let Ok(pid_num) = pid.parse::<u32>() {
-                        if pid_num != std::process::id() {
-                            tracing::info!(
-                                "Killing existing process on port {}: PID {}",
-                                slot.port,
-                                pid_num
-                            );
-                            let _ = std::process::Command::new("kill").arg(pid).output();
-                        }
+    for slot in &backend_slots {
+        if let Ok(output) = std::process::Command::new("lsof")
+            .args(["-ti", &format!(":{}", slot.port)])
+            .output()
+        {
+            let pids = String::from_utf8_lossy(&output.stdout);
+            for pid in pids.split_whitespace() {
+                if let Ok(pid_num) = pid.parse::<u32>() {
+                    if pid_num != std::process::id() {
+                        tracing::info!(
+                            "Killing existing process on port {}: PID {}",
+                            slot.port,
+                            pid_num
+                        );
+                        let _ = std::process::Command::new("kill").arg(pid).output();
                     }
                 }
             }
         }
     }
-    if !backend_slots.is_empty() && !using_inprocess {
+    if !backend_slots.is_empty() {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
-    // Find bundled Python at ~/.darkbloom/python (standalone Python 3.12 + vllm-mlx)
     let eigeninference_dir = dirs::home_dir().unwrap_or_default().join(".darkbloom");
-    let bundled_python = eigeninference_dir.join("python/bin/python3.12");
-    let python_cmd = if bundled_python.exists() {
-        // Only set PYTHONHOME if this is a real standalone Python install
-        // (not a symlink to uv/pyenv/system Python). Wrong PYTHONHOME causes
-        // Python to fail to find its stdlib and crash silently.
-        let is_standalone = !bundled_python.is_symlink()
-            && eigeninference_dir
-                .join("python/lib/python3.12/os.py")
-                .exists();
-        if is_standalone {
-            tracing::info!("Using bundled Python: {}", bundled_python.display());
-            unsafe {
-                std::env::set_var("PYTHONHOME", eigeninference_dir.join("python"));
-            }
-        } else {
-            tracing::info!("Using Python at: {}", bundled_python.display());
-        }
-        bundled_python.to_string_lossy().to_string()
-    } else {
-        tracing::info!("Using system Python (bundled Python not found at ~/.darkbloom/python)");
-        "python3".to_string()
-    };
 
-    // =========================================================================
-    // Phase 0.5: Ensure runtime dependencies are up to date.
-    //
-    // Checks that vllm-mlx fork is installed at the correct version.
-    // This makes binary-only upgrades self-healing — the provider
-    // automatically updates its Python runtime on startup.
-    // =========================================================================
     let coordinator_http_base = coordinator_url
         .replace("wss://", "https://")
         .replace("ws://", "http://")
         .replace("/ws/provider", "");
-    if !ensure_python_verified(&python_cmd, &coordinator_http_base) {
-        anyhow::bail!(
-            "Python runtime is broken and could not be recovered. \
-             Please run: curl -fsSL {} | bash",
-            DEFAULT_INSTALL_URL
-        );
-    }
-    ensure_runtime_updated(&python_cmd, &coordinator_http_base);
 
     // =========================================================================
     // Phase 1: Connect to coordinator IMMEDIATELY with ALL downloaded models.
@@ -2754,14 +2152,9 @@ async fn cmd_serve(
             std::sync::Arc::new(std::sync::atomic::AtomicU8::new(BACKEND_RUNNING));
         backend_running_flag_opt = Some(backend_running_flag);
 
-        // Compute runtime integrity hashes for verification by coordinator.
-        let runtime_hashes = security::compute_runtime_hashes(&python_cmd);
-        tracing::info!(
-            "Runtime hashes: python={}, runtime={}, templates={}",
-            runtime_hashes.python_hash.as_deref().unwrap_or("none"),
-            runtime_hashes.runtime_hash.as_deref().unwrap_or("none"),
-            runtime_hashes.template_hashes.len()
-        );
+        // Compute template hashes for verification by coordinator.
+        let template_hashes = fetch_runtime_manifest(&coordinator_http_base).unwrap_or_default();
+        tracing::info!("Template hashes: {} template(s)", template_hashes.len());
 
         tracing::info!(
             "Model weight hashes for attestation: {} model(s)",
@@ -2784,8 +2177,6 @@ async fn cmd_serve(
                 .map(|w| w.address.clone()),
         )
         .with_auth_token(auth_token)
-        .with_runtime_hashes(Some(runtime_hashes))
-        .with_runtime_hash_command(Some(python_cmd.clone()))
         .with_stats(provider_stats.clone())
         .with_inference_active(inference_active.clone())
         .with_current_model(current_model)
@@ -2828,23 +2219,13 @@ async fn cmd_serve(
     let _backend_name = text_backend_name;
 
     // Fetch template hashes from manifest once (not per model)
-    let manifest_template_hashes = fetch_runtime_manifest(&coordinator_http_base)
-        .map(|(_, _, th)| th)
-        .unwrap_or_default();
+    let manifest_template_hashes =
+        fetch_runtime_manifest(&coordinator_http_base).unwrap_or_default();
 
     // Pre-populate ~/.darkbloom/templates/ with all manifest templates so
     // attestation challenges report matching hashes even when models have
     // inline chat_template fields (which makes ensure_chat_template skip).
     ensure_templates_cached(&manifest_template_hashes);
-
-    #[cfg(feature = "python")]
-    let inprocess_engines: Option<SharedInprocessEngineMap> = if using_inprocess {
-        Some(std::sync::Arc::new(tokio::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        )))
-    } else {
-        None
-    };
 
     for slot in &mut backend_slots {
         let model_path = models::resolve_local_path(&slot.model_id)
@@ -2865,76 +2246,35 @@ async fn cmd_serve(
         );
 
         ensure_chat_template(&model_path, &manifest_template_hashes);
-
-        match text_backend_mode {
-            TextBackendMode::InProcess => {
-                #[cfg(feature = "python")]
-                {
-                    let Some(ref engines) = inprocess_engines else {
-                        tracing::error!(
-                            "In-process backend requested for {} but python feature is unavailable",
-                            slot.model_id
-                        );
-                        slot.healthy = false;
-                        continue;
-                    };
-
-                    match get_or_load_inprocess_engine(engines, &slot.model_id, &model_path).await {
-                        Ok((_engine, _freshly_loaded)) => {
-                            slot.healthy = true;
-                            tracing::info!("In-process engine ready for {}", slot.model_id);
-                        }
-                        Err(e) => {
-                            slot.healthy = false;
-                            tracing::error!(
-                                "Failed to load in-process engine for {}: {e:#}",
-                                slot.model_id
-                            );
-                        }
-                    }
-                }
-
-                #[cfg(not(feature = "python"))]
-                {
-                    tracing::error!(
-                        "In-process backend requested for {} but python feature is unavailable",
-                        slot.model_id
-                    );
-                    slot.healthy = false;
-                }
-            }
-        }
     }
 
     // Wait for all subprocess backends to become healthy.
-    if !using_inprocess {
-        for slot in &mut backend_slots {
-            if slot.pid.is_none() {
-                continue;
-            }
-            tracing::info!("Waiting for {} to load...", slot.model_id);
-            let mut ready = false;
-            for i in 0..150 {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                if backend::check_model_loaded(&slot.backend_url).await {
-                    tracing::info!(
-                        "{} ready after {}s on port {}",
-                        slot.model_id,
-                        (i + 1) * 2,
-                        slot.port
-                    );
-                    ready = true;
-                    break;
-                }
-            }
-            if !ready {
-                tracing::error!(
-                    "Backend for {} failed to become healthy after 300s",
-                    slot.model_id
-                );
-            }
-            slot.healthy = ready;
+    for slot in &mut backend_slots {
+        if slot.pid.is_none() {
+            continue;
         }
+        tracing::info!("Waiting for {} to load...", slot.model_id);
+        let mut ready = false;
+        for i in 0..150 {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if backend::check_model_loaded(&slot.backend_url).await {
+                tracing::info!(
+                    "{} ready after {}s on port {}",
+                    slot.model_id,
+                    (i + 1) * 2,
+                    slot.port
+                );
+                ready = true;
+                break;
+            }
+        }
+        if !ready {
+            tracing::error!(
+                "Backend for {} failed to become healthy after 300s",
+                slot.model_id
+            );
+        }
+        slot.healthy = ready;
     }
 
     // Primary backend URL for backwards compat (local server, health monitor)
@@ -3050,107 +2390,99 @@ async fn cmd_serve(
         // vllm-mlx backend's /v1/status endpoint to collect live capacity data
         // (running requests, token counts, GPU memory). This data is included
         // in heartbeats so the coordinator can make informed routing decisions.
-        if !using_inprocess {
-            if let Some(cap_arc) = backend_capacity_opt {
-                let poll_shared_slots = shared_slots.clone();
-                let total_mem_gb = hw.memory_gb as f64;
-                let poll_backend_running = backend_running_flag_opt
-                    .as_ref()
-                    .expect("backend_running_flag must be set in non-local mode")
-                    .clone();
-                tokio::spawn(async move {
-                    let mut poll_interval =
-                        tokio::time::interval(std::time::Duration::from_secs(5));
-                    poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                    loop {
-                        poll_interval.tick().await;
-                        let mut slots = Vec::new();
-                        let mut gpu_active = 0.0_f64;
-                        let mut gpu_peak = 0.0_f64;
-                        let mut gpu_cache = 0.0_f64;
-                        let slot_snapshots: Vec<(String, u16, bool)> = {
-                            let slots = poll_shared_slots.lock().unwrap();
-                            slots
-                                .iter()
-                                .map(|s| (s.model_id.clone(), s.port, s.restarting))
-                                .collect()
-                        };
-                        for (model_id, port, restarting) in &slot_snapshots {
-                            if *restarting {
+        if let Some(cap_arc) = backend_capacity_opt {
+            let poll_shared_slots = shared_slots.clone();
+            let total_mem_gb = hw.memory_gb as f64;
+            let poll_backend_running = backend_running_flag_opt
+                .as_ref()
+                .expect("backend_running_flag must be set in non-local mode")
+                .clone();
+            tokio::spawn(async move {
+                let mut poll_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    poll_interval.tick().await;
+                    let mut slots = Vec::new();
+                    let mut gpu_active = 0.0_f64;
+                    let mut gpu_peak = 0.0_f64;
+                    let mut gpu_cache = 0.0_f64;
+                    let slot_snapshots: Vec<(String, u16, bool)> = {
+                        let slots = poll_shared_slots.lock().unwrap();
+                        slots
+                            .iter()
+                            .map(|s| (s.model_id.clone(), s.port, s.restarting))
+                            .collect()
+                    };
+                    for (model_id, port, restarting) in &slot_snapshots {
+                        if *restarting {
+                            slots.push(protocol::BackendSlotCapacity {
+                                model: model_id.clone(),
+                                state: "reloading".to_string(),
+                                num_running: 0,
+                                num_waiting: 0,
+                                active_tokens: 0,
+                                max_tokens_potential: 0,
+                            });
+                            continue;
+                        }
+
+                        let url = format!("http://127.0.0.1:{port}");
+                        match hardware::poll_backend_status(&url).await {
+                            Some(status) => {
+                                if status.gpu_memory_active_gb > gpu_active {
+                                    gpu_active = status.gpu_memory_active_gb;
+                                }
+                                if status.gpu_memory_peak_gb > gpu_peak {
+                                    gpu_peak = status.gpu_memory_peak_gb;
+                                }
+                                if status.gpu_memory_cache_gb > gpu_cache {
+                                    gpu_cache = status.gpu_memory_cache_gb;
+                                }
                                 slots.push(protocol::BackendSlotCapacity {
                                     model: model_id.clone(),
-                                    state: "reloading".to_string(),
+                                    state: "running".to_string(),
+                                    num_running: status.num_running,
+                                    num_waiting: status.num_waiting,
+                                    active_tokens: status.active_tokens,
+                                    max_tokens_potential: status.max_tokens_potential,
+                                });
+                            }
+                            None => {
+                                let flag_val =
+                                    poll_backend_running.load(std::sync::atomic::Ordering::Relaxed);
+                                let state = match flag_val {
+                                    BACKEND_IDLE_SHUTDOWN => "idle_shutdown",
+                                    _ => "crashed",
+                                };
+                                slots.push(protocol::BackendSlotCapacity {
+                                    model: model_id.clone(),
+                                    state: state.to_string(),
                                     num_running: 0,
                                     num_waiting: 0,
                                     active_tokens: 0,
                                     max_tokens_potential: 0,
                                 });
-                                continue;
-                            }
-
-                            let url = format!("http://127.0.0.1:{port}");
-                            match hardware::poll_backend_status(&url).await {
-                                Some(status) => {
-                                    // Use GPU memory from any slot (Metal memory is shared)
-                                    // Take the max across slots to avoid double-counting.
-                                    if status.gpu_memory_active_gb > gpu_active {
-                                        gpu_active = status.gpu_memory_active_gb;
-                                    }
-                                    if status.gpu_memory_peak_gb > gpu_peak {
-                                        gpu_peak = status.gpu_memory_peak_gb;
-                                    }
-                                    if status.gpu_memory_cache_gb > gpu_cache {
-                                        gpu_cache = status.gpu_memory_cache_gb;
-                                    }
-                                    slots.push(protocol::BackendSlotCapacity {
-                                        model: model_id.clone(),
-                                        state: "running".to_string(),
-                                        num_running: status.num_running,
-                                        num_waiting: status.num_waiting,
-                                        active_tokens: status.active_tokens,
-                                        max_tokens_potential: status.max_tokens_potential,
-                                    });
-                                }
-                                None => {
-                                    // Backend unreachable — use the tri-state flag
-                                    // to distinguish intentional idle-shutdown from crash.
-                                    let flag_val = poll_backend_running
-                                        .load(std::sync::atomic::Ordering::Relaxed);
-                                    let state = match flag_val {
-                                        BACKEND_IDLE_SHUTDOWN => "idle_shutdown",
-                                        // BACKEND_RUNNING (should be up but isn't) or BACKEND_CRASHED
-                                        _ => "crashed",
-                                    };
-                                    slots.push(protocol::BackendSlotCapacity {
-                                        model: model_id.clone(),
-                                        state: state.to_string(),
-                                        num_running: 0,
-                                        num_waiting: 0,
-                                        active_tokens: 0,
-                                        max_tokens_potential: 0,
-                                    });
-                                }
                             }
                         }
-                        let capacity = protocol::BackendCapacity {
-                            slots,
-                            gpu_memory_active_gb: gpu_active,
-                            gpu_memory_peak_gb: gpu_peak,
-                            gpu_memory_cache_gb: gpu_cache,
-                            total_memory_gb: total_mem_gb,
-                        };
-                        *cap_arc.lock().unwrap() = Some(capacity);
                     }
-                });
-            }
+                    let capacity = protocol::BackendCapacity {
+                        slots,
+                        gpu_memory_active_gb: gpu_active,
+                        gpu_memory_peak_gb: gpu_peak,
+                        gpu_memory_cache_gb: gpu_cache,
+                        total_memory_gb: total_mem_gb,
+                    };
+                    *cap_arc.lock().unwrap() = Some(capacity);
+                }
+            });
         }
 
         // Spawn per-slot backend health monitor — detects crashes and auto-restarts
         // each backend independently.
-        if !using_inprocess {
+        {
             let has_text_backends = !backend_slots.is_empty();
             let health_shared_slots = shared_slots.clone();
-            let health_python = python_cmd.clone();
+            let health_coordinator_http = coordinator_http_base.clone();
             let health_backend = backend_name.to_string();
             let health_backend_running = backend_running_flag_opt
                 .as_ref()
@@ -3227,71 +2559,15 @@ async fn cmd_serve(
                                 }
 
                                 tracing::error!(
-                                    "Backend for {} appears crashed — restarting (port {})...",
+                                    "Backend for {} appears crashed — cannot auto-restart (subprocess management removed); marking unhealthy",
                                     model_id,
-                                    port
                                 );
                                 any_crashed = true;
-
-                                // Mark slot as unhealthy and restarting.
                                 {
                                     let mut slots = health_shared_slots.lock().unwrap();
                                     if let Some(slot) = slots.get_mut(idx) {
                                         slot.healthy = false;
-                                        slot.restarting = true;
-                                    }
-                                }
-
-                                // Kill only THIS slot's process by PID (not all backends).
-                                // Guard: PID must be > 0. PID 0 would kill all processes in
-                                // the group, negative PIDs kill process groups.
-                                #[cfg(unix)]
-                                if let Some(slot_pid) = pid {
-                                    if *slot_pid > 0 {
-                                        let _ =
-                                            unsafe { libc::kill(*slot_pid as i32, libc::SIGTERM) };
-                                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                                        let _ =
-                                            unsafe { libc::kill(*slot_pid as i32, libc::SIGKILL) };
-                                    }
-                                }
-
-                                // Restart only this slot's model on its port.
-                                match reload_backend(
-                                    &health_python,
-                                    &health_backend,
-                                    model_path,
-                                    *port,
-                                )
-                                .await
-                                {
-                                    Ok(new_pid) => {
-                                        tracing::info!(
-                                            "Backend for {} auto-restarted successfully (new PID: {})",
-                                            model_id,
-                                            new_pid
-                                        );
-                                        consecutive_failures[idx] = 0;
-                                        let mut slots = health_shared_slots.lock().unwrap();
-                                        if let Some(slot) = slots.get_mut(idx) {
-                                            slot.pid = Some(new_pid);
-                                            slot.healthy = true;
-                                            slot.restarting = false;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(
-                                            "Backend auto-restart failed for {}: {e}",
-                                            model_id
-                                        );
-                                        // Reset counter to 0 so we don't retry every 15s.
-                                        // The next 5 consecutive failures (75s) will trigger
-                                        // another attempt — acts as exponential-ish backoff.
-                                        consecutive_failures[idx] = 0;
-                                        let mut slots = health_shared_slots.lock().unwrap();
-                                        if let Some(slot) = slots.get_mut(idx) {
-                                            slot.restarting = false;
-                                        }
+                                        slot.restarting = false;
                                     }
                                 }
                             }
@@ -3319,8 +2595,6 @@ async fn cmd_serve(
         }
 
         // Process coordinator events
-        let is_inprocess = using_inprocess;
-        let idle_python_cmd = python_cmd.clone();
         let self_heal_running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let idle_backend_name = backend_name.to_string();
         let proxy_stats = provider_stats.clone();
@@ -3341,15 +2615,6 @@ async fn cmd_serve(
             .iter()
             .map(|s| (s.model_id.clone(), s.pid))
             .collect();
-
-        #[cfg(feature = "python")]
-        let inprocess_engines = if is_inprocess {
-            inprocess_engines.clone()
-        } else {
-            None
-        };
-        #[cfg(feature = "python")]
-        let event_inprocess_engines = inprocess_engines.clone();
 
         let event_backend_running =
             backend_running_flag_opt.expect("backend_running_flag must be set in non-local mode");
@@ -3461,180 +2726,25 @@ async fn cmd_serve(
                                         .map(|s| (s.model_id.clone(), s.model_path.clone(), s.port, s.pid, s.healthy, s.restarting))
                                 };
 
-                                #[cfg(feature = "python")]
-                                let mut inprocess_engine: Option<std::sync::Arc<crate::inference::SharedEngine>> = None;
-                                #[cfg(not(feature = "python"))]
-                                let mut inprocess_engine: Option<()> = None;
-                                if let Some((slot_model_id, slot_model_path, slot_port, slot_pid, slot_healthy, slot_restarting)) = slot_info {
-                                    if is_inprocess {
-                                        #[cfg(feature = "python")]
-                                        {
-                                            let Some(ref engines) = event_inprocess_engines else {
-                                                let _ = outbound_tx.send(
-                                                    protocol::ProviderMessage::InferenceError {
-                                                        request_id,
-                                                        error: "in-process engine support unavailable in this build".to_string(),
-                                                        status_code: 503,
-                                                    }
-                                                ).await;
-                                                continue;
-                                            };
+                                if let Some((slot_model_id, _slot_model_path, slot_port, _slot_pid, slot_healthy, slot_restarting)) = slot_info {
+                                    let backend_url = format!("http://127.0.0.1:{}", slot_port);
+                                    let needs_reload = !slot_healthy || !backend::check_health(&backend_url).await;
 
-                                            {
-                                                let mut slots = shared_slots.lock().unwrap();
-                                                if let Some(s) = slots.iter_mut().find(|s| s.port == slot_port) {
-                                                    s.restarting = true;
-                                                }
+                                    if needs_reload && !slot_restarting {
+                                        tracing::warn!(
+                                            "Slot for {} on port {} not running and cannot be restarted (subprocess management removed)",
+                                            slot_model_id, slot_port
+                                        );
+                                        let _ = outbound_tx.send(
+                                            protocol::ProviderMessage::InferenceError {
+                                                request_id,
+                                                error: format!("backend for {} is not running", slot_model_id),
+                                                status_code: 503,
                                             }
-
-                                            match get_or_load_inprocess_engine(
-                                                engines,
-                                                &slot_model_id,
-                                                &slot_model_path,
-                                            ).await {
-                                                Ok((engine, freshly_loaded)) => {
-                                                    inprocess_engine = Some(engine);
-                                                    set_backend_state(BACKEND_RUNNING);
-                                                    {
-                                                        let mut slots = shared_slots.lock().unwrap();
-                                                        if let Some(s) = slots.iter_mut().find(|s| s.port == slot_port) {
-                                                            s.healthy = true;
-                                                            s.restarting = false;
-                                                        }
-                                                    }
-                                                    if freshly_loaded {
-                                                        if let Some(ref hash_arc) = rehash_handle {
-                                                            if let Some(new_hash) =
-                                                                models::compute_weight_hash(&slot_model_id)
-                                                            {
-                                                                *hash_arc.lock().unwrap() = Some(new_hash);
-                                                                tracing::info!(
-                                                                    "Model weight hash refreshed after in-process load"
-                                                                );
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    let full_err = format!("{e:#}");
-                                                    tracing::error!(
-                                                        "Failed to load in-process model {}: {full_err}",
-                                                        slot_model_id
-                                                    );
-                                                    telemetry::emit(
-                                                        telemetry::TelemetryEvent::new(
-                                                            telemetry::Source::Provider,
-                                                            telemetry::Severity::Error,
-                                                            telemetry::Kind::InferenceError,
-                                                            format!("in-process model load failed: {}", slot_model_id),
-                                                        )
-                                                        .with_field("model", slot_model_id.clone())
-                                                        .with_stack(full_err)
-                                                    );
-                                                    {
-                                                        let mut slots = shared_slots.lock().unwrap();
-                                                        if let Some(s) = slots.iter_mut().find(|s| s.port == slot_port) {
-                                                            s.healthy = false;
-                                                            s.restarting = false;
-                                                        }
-                                                    }
-                                                    let _ = outbound_tx.send(
-                                                        protocol::ProviderMessage::InferenceError {
-                                                            request_id,
-                                                            error: "in-process model load failed".to_string(),
-                                                            status_code: 503,
-                                                        }
-                                                    ).await;
-                                                    continue;
-                                                }
-                                            }
-                                        }
-
-                                        #[cfg(not(feature = "python"))]
-                                        {
-                                            let _ = outbound_tx.send(
-                                                protocol::ProviderMessage::InferenceError {
-                                                    request_id,
-                                                    error: "in-process engine support unavailable in this build".to_string(),
-                                                    status_code: 503,
-                                                }
-                                            ).await;
-                                            continue;
-                                        }
-                                    } else {
-                                        // Check if this slot's backend needs reloading.
-                                        let backend_url = format!("http://127.0.0.1:{}", slot_port);
-                                        let needs_reload = !slot_healthy || !backend::check_health(&backend_url).await;
-
-                                        if needs_reload && !slot_restarting {
-                                            tracing::info!(
-                                                "Slot for {} on port {} not running — reloading (original model, never overwritten)",
-                                                slot_model_id, slot_port
-                                            );
-
-                                            // Kill any zombie process on this port before respawning.
-                                            if let Some(pid) = slot_pid {
-                                                if pid > 0 {
-                                                    unsafe { libc::kill(pid as i32, libc::SIGTERM); }
-                                                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                                                }
-                                            }
-
-                                            // Mark slot as restarting to prevent race with health monitor.
-                                            {
-                                                let mut slots = shared_slots.lock().unwrap();
-                                                if let Some(s) = slots.iter_mut().find(|s| s.port == slot_port) {
-                                                    s.restarting = true;
-                                                }
-                                            }
-
-                                            match reload_backend(
-                                                &idle_python_cmd,
-                                                &idle_backend_name,
-                                                &slot_model_path,
-                                                slot_port,
-                                            ).await {
-                                                Ok(new_pid) => {
-                                                    set_backend_state(BACKEND_RUNNING);
-                                                    // Update slot PID and health, clear restarting flag.
-                                                    {
-                                                        let mut slots = shared_slots.lock().unwrap();
-                                                        if let Some(s) = slots.iter_mut().find(|s| s.port == slot_port) {
-                                                            s.pid = Some(new_pid);
-                                                            s.healthy = true;
-                                                            s.restarting = false;
-                                                        }
-                                                    }
-                                                    if let Some(ref hash_arc) = rehash_handle {
-                                                        if let Some(new_hash) = models::compute_weight_hash(&slot_model_id) {
-                                                            *hash_arc.lock().unwrap() = Some(new_hash);
-                                                            tracing::info!("Model weight hash refreshed after reload");
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    tracing::error!("Failed to reload {} on port {}: {e:#}", slot_model_id, slot_port);
-                                                    {
-                                                        let mut slots = shared_slots.lock().unwrap();
-                                                        if let Some(s) = slots.iter_mut().find(|s| s.port == slot_port) {
-                                                            s.restarting = false;
-                                                        }
-                                                    }
-                                                    let _ = outbound_tx.send(
-                                                        protocol::ProviderMessage::InferenceError {
-                                                            request_id,
-                                                            error: "backend reload failed".to_string(),
-                                                            status_code: 503,
-                                                        }
-                                                    ).await;
-                                                    continue;
-                                                }
-                                            }
-                                        }
+                                        ).await;
+                                        continue;
                                     }
                                 } else {
-                                    // No slot found for this model — shouldn't happen if
-                                    // the coordinator routes correctly, but handle gracefully.
                                     tracing::warn!("No slot configured for model {}", req_model_id);
                                     let _ = outbound_tx.send(
                                         protocol::ProviderMessage::InferenceError {
@@ -3654,89 +2764,48 @@ async fn cmd_serve(
                                     .unwrap_or("")
                                     .to_string();
 
-                                // The in-process engine is already loaded from the local
-                                // snapshot path. Keep the public catalog model in the
-                                // request body so OpenAI-compatible responses do not leak
-                                // provider filesystem paths.
                                 let mut body = body;
-                                if !is_inprocess {
-                                    // Legacy subprocess backends expect the local path as
-                                    // the model name, but private text routing currently
-                                    // refuses to proxy through them.
-                                    if let Some(local_path) = model_to_path.get(&requested_model)
-                                        .or_else(|| {
-                                            model_to_path.iter()
-                                                .find(|(k, _)| k.contains(&requested_model) || requested_model.contains(k.as_str()))
-                                                .map(|(_, v)| v)
-                                        })
-                                    {
-                                        if let Some(obj) = body.as_object_mut() {
-                                            obj.insert("model".to_string(), serde_json::json!(local_path));
-                                        }
+                                if let Some(local_path) = model_to_path.get(&requested_model)
+                                    .or_else(|| {
+                                        model_to_path.iter()
+                                            .find(|(k, _)| k.contains(&requested_model) || requested_model.contains(k.as_str()))
+                                            .map(|(_, v)| v)
+                                    })
+                                {
+                                    if let Some(obj) = body.as_object_mut() {
+                                        obj.insert("model".to_string(), serde_json::json!(local_path));
                                     }
-                                    let _ = outbound_tx.send(
-                                        protocol::ProviderMessage::InferenceError {
-                                            request_id,
-                                            error: "private text requests require the embedded in-process engine; refusing to proxy through a local backend".to_string(),
-                                            status_code: 503,
-                                        }
-                                    ).await;
-                                    continue;
                                 }
 
                                 let tx = outbound_tx.clone();
                                 let cancel_token = CancellationToken::new();
                                 let done_tx = done_tx.clone();
                                 let rid = request_id.clone();
+                                let proxy_backend_url = backend_url.clone();
 
                                 let handle = {
-                                    #[cfg(feature = "python")]
-                                    {
-                                        let Some(engine) = inprocess_engine else {
-                                            let _ = outbound_tx.send(
-                                                protocol::ProviderMessage::InferenceError {
-                                                    request_id,
-                                                    error: "private text requests require the embedded in-process engine; no engine instance was available".to_string(),
-                                                    status_code: 503,
-                                                }
-                                            ).await;
-                                            continue;
-                                        };
-                                        let engine = engine.clone();
-                                        let rid2 = rid.clone();
-                                        let stats = proxy_stats.clone();
-                                        let response_keypair = node_keypair.clone();
-                                        let se_h = se_handle.clone();
-                                        tokio::spawn(async move {
-                                            handle_inprocess_request(
-                                                rid2,
-                                                body,
-                                                response_public_key,
-                                                response_keypair,
-                                                engine,
-                                                tx,
-                                                Some(stats),
-                                                se_h,
-                                            )
-                                            .await;
-                                            let _ = done_tx.send((rid, false)).await;
-                                        })
-                                    }
-
-                                    #[cfg(not(feature = "python"))]
-                                    {
-                                        let _ = outbound_tx.send(
-                                            protocol::ProviderMessage::InferenceError {
-                                                request_id,
-                                                error: "private text requests require the embedded in-process engine; this build does not include it".to_string(),
-                                                status_code: 503,
-                                            }
-                                        ).await;
-                                        continue;
-                                    }
+                                    let stats = proxy_stats.clone();
+                                    let response_keypair = node_keypair.clone();
+                                    let se_h = se_handle.clone();
+                                    let spawn_rid = rid.clone();
+                                    let cancel_token_clone = cancel_token.clone();
+                                    tokio::spawn(async move {
+                                        proxy::handle_inference_request(
+                                            spawn_rid.clone(),
+                                            body,
+                                            proxy_backend_url,
+                                            tx,
+                                            Some(response_keypair),
+                                            cancel_token_clone,
+                                            Some(stats),
+                                            se_h,
+                                        )
+                                        .await;
+                                        let _ = done_tx.send((spawn_rid, false)).await;
+                                    })
                                 };
 
-                                inflight.insert(request_id, (cancel_token, handle));
+                                inflight.insert(rid, (cancel_token, handle));
                             }
                             coordinator::CoordinatorEvent::Cancel { request_id } => {
                                 if let Some((token, _handle)) = inflight.remove(&request_id) {
@@ -3756,45 +2825,10 @@ async fn cmd_serve(
                                     timestamp
                                 );
                             }
-                            coordinator::CoordinatorEvent::RuntimeOutdated { mismatches } => {
+                            coordinator::CoordinatorEvent::RuntimeOutdated { mismatches: _ } => {
                                 tracing::warn!(
-                                    "Runtime verification failed — {} component(s) need updating",
-                                    mismatches.len()
+                                    "Runtime verification failed — template mismatch reported"
                                 );
-                                for m in &mismatches {
-                                    tracing::warn!(
-                                        "  Mismatch: {} (expected={}, got={})",
-                                        m.component, m.expected, m.got
-                                    );
-                                }
-                                // Trigger self-healing in background. Don't break the event
-                                // loop — the coordinator will re-verify on the next attestation
-                                // challenge (every 5 minutes). Breaking causes a reconnect
-                                // storm if the self-heal doesn't immediately fix the hash.
-                                // Guard: only one self-heal at a time to prevent two threads
-                                // from corrupting site-packages simultaneously.
-                                if self_heal_running.compare_exchange(
-                                    false, true,
-                                    std::sync::atomic::Ordering::SeqCst,
-                                    std::sync::atomic::Ordering::SeqCst,
-                                ).is_ok() {
-                                    tracing::info!("Triggering runtime self-heal (background)...");
-                                    let heal_python = idle_python_cmd.clone();
-                                    let heal_coordinator = coordinator_http_base.clone();
-                                    let heal_flag = self_heal_running.clone();
-                                    std::thread::spawn(move || {
-                                        if !ensure_python_verified(&heal_python, &heal_coordinator) {
-                                            tracing::error!("Self-heal: Python binary is broken and could not be recovered");
-                                            heal_flag.store(false, std::sync::atomic::Ordering::SeqCst);
-                                            return;
-                                        }
-                                        ensure_runtime_updated(&heal_python, &heal_coordinator);
-                                        heal_flag.store(false, std::sync::atomic::Ordering::SeqCst);
-                                        tracing::info!("Runtime self-heal complete — next attestation challenge will re-verify");
-                                    });
-                                } else {
-                                    tracing::info!("Self-heal already in progress — skipping");
-                                }
                             }
                         }
                     }
@@ -3816,21 +2850,7 @@ async fn cmd_serve(
                              Next request will reload (~30-60s cold start).",
                             idle_timeout_mins
                         );
-                        if is_inprocess {
-                            #[cfg(feature = "python")]
-                            if let Some(ref engines) = event_inprocess_engines {
-                                unload_inprocess_engines(engines).await;
-                            }
-                            {
-                                let mut slots = shared_slots.lock().unwrap();
-                                for slot in slots.iter_mut() {
-                                    slot.healthy = false;
-                                    slot.restarting = false;
-                                }
-                            }
-                        } else {
-                            shutdown_backends(&backend_pids).await;
-                        }
+                        shutdown_backends(&backend_pids).await;
                         set_backend_state(BACKEND_IDLE_SHUTDOWN);
                     }
                 }
@@ -3864,14 +2884,7 @@ async fn cmd_serve(
                     _ = tokio::time::sleep(window_remaining) => {
                         tracing::info!("Schedule window closed — going offline");
                         // Shut down backend between windows to free GPU memory
-                        if using_inprocess {
-                            #[cfg(feature = "python")]
-                            if let Some(ref engines) = inprocess_engines {
-                                unload_inprocess_engines(engines).await;
-                            }
-                        } else {
-                            shutdown_backends(&[]).await;
-                        }
+                        shutdown_backends(&[]).await;
                         tracing::info!("Backend stopped — waiting for next schedule window");
                         continue 'schedule_loop;
                     }
@@ -3897,9 +2910,6 @@ async fn cmd_serve(
     {
         let _ = std::process::Command::new("pkill")
             .args(["-f", "mlx_lm.server"])
-            .status();
-        let _ = std::process::Command::new("pkill")
-            .args(["-f", "vllm_mlx"])
             .status();
         let pid_file = dirs::home_dir()
             .unwrap_or_default()
@@ -3931,531 +2941,12 @@ async fn shutdown_backends(pids: &[(String, Option<u32>)]) {
         #[cfg(unix)]
         {
             let _ = std::process::Command::new("pkill")
-                .args(["-f", "vllm_mlx"])
-                .status();
-            let _ = std::process::Command::new("pkill")
                 .args(["-f", "mlx_lm.server"])
                 .status();
         }
     }
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     tracing::info!("Backend processes terminated — GPU memory freed");
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TextBackendMode {
-    InProcess,
-}
-
-fn validate_private_text_runtime(local: bool) -> anyhow::Result<()> {
-    if local {
-        anyhow::bail!(
-            "local text serving is disabled in privacy mode: the local HTTP proxy path does not meet the single-process privacy guarantee"
-        );
-    }
-
-    if let Ok(raw) = std::env::var("EIGENINFERENCE_INFERENCE_BACKEND") {
-        let value = raw.trim();
-        if !value.is_empty() {
-            match value {
-                "inprocess" | "embedded" | "python" => {}
-                _ => {
-                    anyhow::bail!(
-                        "text subprocess backends are disabled for privacy; remove EIGENINFERENCE_INFERENCE_BACKEND={value} and use the embedded runtime"
-                    );
-                }
-            }
-        }
-    }
-
-    #[cfg(feature = "python")]
-    {
-        crate::inference::ensure_approved_runtime_available()
-            .context("private text runtime unavailable")?;
-        Ok(())
-    }
-
-    #[cfg(not(feature = "python"))]
-    {
-        anyhow::bail!(
-            "this build does not include the embedded Python runtime; rebuild the provider with the privacy-preserving in-process engine enabled"
-        )
-    }
-}
-
-fn preferred_text_backend_mode(local: bool) -> TextBackendMode {
-    let _ = local;
-    TextBackendMode::InProcess
-}
-
-fn backend_name_for_mode(mode: TextBackendMode) -> &'static str {
-    match mode {
-        TextBackendMode::InProcess => "inprocess-mlx",
-    }
-}
-
-#[cfg(feature = "python")]
-type SharedInprocessEngineMap = std::sync::Arc<
-    tokio::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<inference::SharedEngine>>>,
->;
-
-#[cfg(feature = "python")]
-async fn get_or_load_inprocess_engine(
-    engines: &SharedInprocessEngineMap,
-    model_id: &str,
-    model_path: &str,
-) -> anyhow::Result<(std::sync::Arc<inference::SharedEngine>, bool)> {
-    if let Some(engine) = {
-        let guard = engines.lock().await;
-        guard.get(model_id).cloned()
-    } {
-        if engine.is_loaded().await {
-            return Ok((engine, false));
-        }
-    }
-
-    let engine = std::sync::Arc::new(inference::SharedEngine::new(
-        inference::InProcessEngine::new(model_path.to_string()),
-    ));
-    engine.load().await?;
-
-    let mut guard = engines.lock().await;
-    let entry = guard
-        .entry(model_id.to_string())
-        .or_insert_with(|| engine.clone())
-        .clone();
-    Ok((entry, true))
-}
-
-#[cfg(feature = "python")]
-async fn unload_inprocess_engines(engines: &SharedInprocessEngineMap) {
-    let engines_to_unload: Vec<_> = {
-        let mut guard = engines.lock().await;
-        let values = guard.values().cloned().collect();
-        guard.clear();
-        values
-    };
-
-    for engine in engines_to_unload {
-        if let Err(e) = engine.unload().await {
-            tracing::warn!("Failed to unload in-process engine: {e}");
-        }
-    }
-}
-
-/// Spawn a log forwarder that reads lines from a stream and logs them via tracing.
-fn spawn_backend_log_forwarder(
-    stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
-    label: &'static str,
-    is_stderr: bool,
-) {
-    tokio::spawn(async move {
-        let reader = tokio::io::BufReader::new(stream);
-        let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
-        while let Ok(Some(line)) = lines.next_line().await {
-            if is_stderr {
-                tracing::warn!("[{label}] {}", line);
-            } else {
-                tracing::info!("[{label}] {}", line);
-            }
-        }
-    });
-}
-
-fn spawn_inference_backend(
-    python_cmd: &str,
-    module: &str,
-    model: &str,
-    port: u16,
-) -> std::io::Result<u32> {
-    let mut cmd = tokio::process::Command::new(python_cmd);
-    cmd.args([
-        "-m",
-        module,
-        "--model",
-        model,
-        "--port",
-        &port.to_string(),
-        "--host",
-        "127.0.0.1",
-    ]);
-
-    // Add tool call and reasoning parser flags for vllm-mlx
-    if module == "vllm_mlx.server" {
-        cmd.args(["--enable-auto-tool-choice"]);
-
-        let model_lower = model.to_lowercase();
-        let tool_parser = if model_lower.contains("gemma") {
-            "gemma4"
-        } else if model_lower.contains("deepseek") || model_lower.contains("trinity") {
-            "hermes"
-        } else if model_lower.contains("qwen") {
-            "nemotron" // Qwen 3.5 uses Nemotron-style <tool_call><function=name><parameter=k>v</parameter></function></tool_call>
-        } else {
-            "auto" // covers MiniMax and other formats
-        };
-        cmd.args(["--tool-call-parser", tool_parser]);
-
-        let reasoning_parser = if model_lower.contains("gemma") {
-            "gemma4"
-        } else if model_lower.contains("deepseek") || model_lower.contains("trinity") {
-            "deepseek_r1"
-        } else if model_lower.contains("minimax") {
-            "deepseek_r1" // MiniMax uses <think>...</think> like DeepSeek
-        } else {
-            "qwen3"
-        };
-        cmd.args(["--reasoning-parser", reasoning_parser]);
-    }
-
-    let log_target = if module.contains("vllm_mlx") {
-        "vllm_mlx"
-    } else {
-        "backend"
-    };
-
-    let mut child = cmd
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
-
-    if let Some(stdout) = child.stdout.take() {
-        spawn_backend_log_forwarder(stdout, log_target, false);
-    }
-    if let Some(stderr) = child.stderr.take() {
-        spawn_backend_log_forwarder(stderr, log_target, true);
-    }
-
-    Ok(child.id().unwrap_or(0))
-}
-
-async fn reload_backend(
-    python_cmd: &str,
-    backend_name: &str,
-    model: &str,
-    port: u16,
-) -> anyhow::Result<u32> {
-    let module = if backend_name == "vllm-mlx" || backend_name == "vllm_mlx" {
-        "vllm_mlx.server"
-    } else {
-        "mlx_lm.server"
-    };
-
-    tracing::info!("Reloading backend: {module} for model {model} on port {port}");
-
-    let new_pid = spawn_inference_backend(python_cmd, module, model, port)
-        .map_err(|e| anyhow::anyhow!("failed to spawn backend: {e}"))?;
-
-    tracing::info!(
-        "Backend process started (PID: {}), waiting for model to load...",
-        new_pid
-    );
-
-    let backend_url = format!("http://127.0.0.1:{}", port);
-
-    // Phase 1: Wait for HTTP server to start listening
-    let mut server_up = false;
-    for i in 0..150 {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        if backend::check_health(&backend_url).await {
-            tracing::info!(
-                "Backend HTTP server ready after {}s, waiting for model load...",
-                (i + 1) * 2
-            );
-            server_up = true;
-            break;
-        }
-    }
-    if !server_up {
-        anyhow::bail!("backend HTTP server did not start within 300s after reload");
-    }
-
-    // Phase 2: Wait for model to be fully loaded into GPU memory
-    let mut model_loaded = false;
-    for i in 0..150 {
-        if backend::check_model_loaded(&backend_url).await {
-            tracing::info!("Model loaded into GPU memory after {}s total", i * 2);
-            model_loaded = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    }
-    if !model_loaded {
-        anyhow::bail!("model did not load into GPU memory within 300s after reload");
-    }
-
-    // Phase 3: Warmup — run a single-token inference to prime GPU caches.
-    // Retry a few times since the model may still be finalizing even after
-    // check_model_loaded returns true (e.g. 422 Unprocessable Entity).
-    tracing::info!("Running warmup inference to prime GPU caches...");
-    let warmup_start = std::time::Instant::now();
-    let mut warmup_ok = false;
-    for attempt in 0..5 {
-        if backend::warmup_backend(&backend_url).await {
-            warmup_ok = true;
-            break;
-        }
-        if attempt < 4 {
-            tracing::info!("Warmup attempt {} failed — retrying in 5s...", attempt + 1);
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        }
-    }
-    if !warmup_ok {
-        anyhow::bail!("backend warmup failed after 5 attempts — model may not be fully loaded");
-    }
-    tracing::info!(
-        "Backend fully warm and ready (warmup took {:?})",
-        warmup_start.elapsed()
-    );
-
-    Ok(new_pid)
-}
-
-#[cfg(feature = "python")]
-async fn send_encrypted_inference_chunk(
-    outbound_tx: &tokio::sync::mpsc::Sender<protocol::ProviderMessage>,
-    request_id: &str,
-    response_public_key: &[u8; 32],
-    node_keypair: &crate::crypto::NodeKeyPair,
-    mut plaintext: String,
-) -> anyhow::Result<()> {
-    use base64::Engine;
-
-    let ciphertext = node_keypair.encrypt(response_public_key, plaintext.as_bytes());
-    security::secure_zero_string(std::mem::take(&mut plaintext));
-    let ciphertext = ciphertext.context("failed to encrypt inference chunk")?;
-    let encrypted_payload = protocol::EncryptedPayload {
-        ephemeral_public_key: node_keypair.public_key_base64(),
-        ciphertext: base64::engine::general_purpose::STANDARD.encode(ciphertext),
-    };
-
-    outbound_tx
-        .send(protocol::ProviderMessage::InferenceResponseChunk {
-            request_id: request_id.to_string(),
-            data: String::new(),
-            encrypted_data: Some(encrypted_payload),
-        })
-        .await
-        .context("failed to send encrypted inference chunk")?;
-
-    Ok(())
-}
-
-/// Handle an inference request using the in-process engine (no HTTP, no subprocess).
-#[cfg(feature = "python")]
-async fn handle_inprocess_request(
-    request_id: String,
-    mut body: serde_json::Value,
-    response_public_key: [u8; 32],
-    node_keypair: std::sync::Arc<crate::crypto::NodeKeyPair>,
-    engine: std::sync::Arc<inference::SharedEngine>,
-    outbound_tx: tokio::sync::mpsc::Sender<protocol::ProviderMessage>,
-    stats: Option<std::sync::Arc<coordinator::AtomicProviderStats>>,
-    se_handle: Option<std::sync::Arc<secure_enclave_key::SecureEnclaveHandle>>,
-) {
-    // Pre-request SIP check
-    if !security::check_sip_enabled() {
-        let _ = outbound_tx
-            .send(protocol::ProviderMessage::InferenceError {
-                request_id,
-                error: "SIP disabled".to_string(),
-                status_code: 503,
-            })
-            .await;
-        return;
-    }
-
-    // Extract only the control fields we need; the full body is passed
-    // to the engine which handles message extraction, chat templates,
-    // tool calling, and structured output internally.
-    let is_streaming = body
-        .get("stream")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    tracing::info!(
-        "Request stream={is_streaming} (raw stream field: {:?})",
-        body.get("stream")
-    );
-
-    // The body is passed to the engine which wipes it after use.
-    // No need to extract messages separately — the server handler
-    // reads them directly from the JSON.
-
-    let result = if is_streaming {
-        let (token_tx, mut token_rx) = tokio::sync::mpsc::channel::<inference::StreamToken>(4);
-        let stream_handle = engine.stream_generate_channel(body, token_tx);
-
-        let mut send_err: Option<anyhow::Error> = None;
-        let mut streamed_count: u64 = 0;
-        let mut signed_response = String::new();
-
-        // Each token.text is already a complete SSE chunk (data: {...}).
-        // Encrypt-and-send directly, then zeroize.
-        while let Some(mut token) = token_rx.recv().await {
-            signed_response.push_str(&token.text);
-
-            if let Err(err) = send_encrypted_inference_chunk(
-                &outbound_tx,
-                &request_id,
-                &response_public_key,
-                node_keypair.as_ref(),
-                std::mem::take(&mut token.text),
-            )
-            .await
-            {
-                send_err = Some(err);
-                break;
-            }
-            streamed_count += 1;
-        }
-
-        if let Some(err) = send_err {
-            drop(token_rx);
-            let _ = stream_handle.await;
-            security::secure_zero_string(std::mem::take(&mut signed_response));
-            let _ = outbound_tx
-                .send(protocol::ProviderMessage::InferenceError {
-                    request_id: request_id.clone(),
-                    error: format!("failed to encrypt streaming chunk: {err}"),
-                    status_code: 500,
-                })
-                .await;
-            return;
-        }
-
-        match stream_handle.await {
-            Ok(Ok((prompt_tokens, completion_tokens))) => {
-                if let Err(err) = send_encrypted_inference_chunk(
-                    &outbound_tx,
-                    &request_id,
-                    &response_public_key,
-                    node_keypair.as_ref(),
-                    "data: [DONE]".to_string(),
-                )
-                .await
-                {
-                    let _ = outbound_tx
-                        .send(protocol::ProviderMessage::InferenceError {
-                            request_id: request_id.clone(),
-                            error: format!("failed to encrypt terminal chunk: {err}"),
-                            status_code: 500,
-                        })
-                        .await;
-                    security::secure_zero_string(std::mem::take(&mut signed_response));
-                    return;
-                }
-
-                Ok(inference::InferenceResult {
-                    text: signed_response,
-                    prompt_tokens,
-                    completion_tokens: completion_tokens.max(streamed_count),
-                })
-            }
-            Ok(Err(e)) => {
-                security::secure_zero_string(std::mem::take(&mut signed_response));
-                Err(e)
-            }
-            Err(e) => {
-                security::secure_zero_string(std::mem::take(&mut signed_response));
-                Err(anyhow::anyhow!("stream generate task panicked: {e}"))
-            }
-        }
-    } else {
-        engine.generate(body).await
-    };
-
-    match result {
-        Ok(mut inference_result) => {
-            tracing::info!(
-                "In-process result: text_len={} prompt={} completion={}",
-                inference_result.text.len(),
-                inference_result.prompt_tokens,
-                inference_result.completion_tokens,
-            );
-            let (response_hash, se_signature) = if !is_streaming {
-                // For non-streaming, inference_result.text contains the full
-                // OpenAI-compatible JSON response from the vllm-mlx server
-                // handler. Wrap it in SSE format and send directly.
-                let payload = format!("data: {}", inference_result.text);
-                let (response_hash, se_signature) = security::compute_response_attestation(
-                    se_handle.as_deref(),
-                    &request_id,
-                    inference_result.completion_tokens,
-                    &payload,
-                );
-                security::secure_zero_string(std::mem::take(&mut inference_result.text));
-
-                if let Err(err) = send_encrypted_inference_chunk(
-                    &outbound_tx,
-                    &request_id,
-                    &response_public_key,
-                    node_keypair.as_ref(),
-                    payload,
-                )
-                .await
-                {
-                    let _ = outbound_tx
-                        .send(protocol::ProviderMessage::InferenceError {
-                            request_id: request_id.clone(),
-                            error: format!("failed to encrypt non-streaming response: {err}"),
-                            status_code: 500,
-                        })
-                        .await;
-                    return;
-                }
-                (response_hash, se_signature)
-            } else {
-                let (response_hash, se_signature) = security::compute_response_attestation(
-                    se_handle.as_deref(),
-                    &request_id,
-                    inference_result.completion_tokens,
-                    &inference_result.text,
-                );
-                security::secure_zero_string(std::mem::take(&mut inference_result.text));
-                (response_hash, se_signature)
-            };
-
-            let completion_tokens = inference_result.completion_tokens;
-            let _ = outbound_tx
-                .send(protocol::ProviderMessage::InferenceComplete {
-                    request_id,
-                    usage: protocol::UsageInfo {
-                        prompt_tokens: inference_result.prompt_tokens,
-                        completion_tokens,
-                    },
-                    se_signature,
-                    response_hash: Some(response_hash),
-                })
-                .await;
-            if let Some(s) = &stats {
-                s.requests_served
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                s.tokens_generated
-                    .fetch_add(completion_tokens, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-        Err(e) => {
-            let full_err = format!("{e:#}");
-            tracing::error!("In-process inference failed: {full_err}");
-            telemetry::emit(
-                telemetry::TelemetryEvent::new(
-                    telemetry::Source::Provider,
-                    telemetry::Severity::Error,
-                    telemetry::Kind::InferenceError,
-                    "in-process inference failed",
-                )
-                .with_request_id(&request_id)
-                .with_stack(full_err),
-            );
-            let _ = outbound_tx
-                .send(protocol::ProviderMessage::InferenceError {
-                    request_id,
-                    error: "in-process inference failed".to_string(),
-                    status_code: 500,
-                })
-                .await;
-        }
-    }
 }
 
 /// Generate a Secure Enclave attestation by calling the eigeninference-enclave CLI tool.
@@ -6431,15 +4922,14 @@ fn verify_installed_update_runtime(
 
     emit_update_status(stdout, "  Verifying Python runtime...");
     let python_cmd = bundled_python.to_string_lossy().to_string();
-    if !ensure_python_verified(&python_cmd, coordinator_http) {
+    let python_check = std::process::Command::new(&python_cmd)
+        .args(["-c", "print('ok')"])
+        .output();
+    if python_check.is_err() || !python_check.unwrap().status.success() {
         anyhow::bail!("Python runtime could not be verified after update");
     }
     verify_python_core_signature_match(eigeninference_dir)
         .context("bundled Python core still failed signature validation after reinstall")?;
-    if !ensure_runtime_updated(&python_cmd, coordinator_http) {
-        anyhow::bail!("Python site-packages could not be verified after update");
-    }
-
     Ok(())
 }
 
@@ -7231,304 +5721,6 @@ mod tests {
         assert!(parse_codesign_team_identifier(output).is_none());
     }
 
-    #[test]
-    fn test_preferred_text_backend_mode_is_inprocess() {
-        assert_eq!(
-            preferred_text_backend_mode(false),
-            TextBackendMode::InProcess
-        );
-    }
-
-    #[cfg(feature = "python")]
-    #[test]
-    fn test_validate_private_text_runtime_allows_default_and_inprocess_override() {
-        let _guard = backend_env_lock().lock().unwrap();
-        unsafe {
-            std::env::remove_var("EIGENINFERENCE_INFERENCE_BACKEND");
-        }
-        match validate_private_text_runtime(false) {
-            Ok(()) => {}
-            Err(err) => {
-                let msg = err.to_string();
-                assert!(
-                    msg.contains("private text runtime unavailable")
-                        || msg.contains("approved Python runtime roots"),
-                    "unexpected error: {msg}"
-                );
-            }
-        }
-
-        unsafe {
-            std::env::set_var("EIGENINFERENCE_INFERENCE_BACKEND", "inprocess");
-        }
-        match validate_private_text_runtime(false) {
-            Ok(()) => {}
-            Err(err) => {
-                let msg = err.to_string();
-                assert!(
-                    msg.contains("private text runtime unavailable")
-                        || msg.contains("approved Python runtime roots"),
-                    "unexpected error: {msg}"
-                );
-            }
-        }
-
-        unsafe {
-            std::env::remove_var("EIGENINFERENCE_INFERENCE_BACKEND");
-        }
-    }
-
-    #[cfg(feature = "python")]
-    #[test]
-    fn test_validate_private_text_runtime_rejects_subprocess_and_local() {
-        let _guard = backend_env_lock().lock().unwrap();
-        unsafe {
-            std::env::set_var("EIGENINFERENCE_INFERENCE_BACKEND", "vllm-mlx");
-        }
-        assert!(validate_private_text_runtime(false).is_err());
-
-        unsafe {
-            std::env::remove_var("EIGENINFERENCE_INFERENCE_BACKEND");
-        }
-        assert!(validate_private_text_runtime(true).is_err());
-    }
-
-    #[cfg(feature = "python")]
-    #[tokio::test]
-    async fn test_send_encrypted_inference_chunk_emits_ciphertext_only() {
-        use base64::Engine;
-
-        let provider = crate::crypto::NodeKeyPair::generate();
-        let consumer = crate::crypto::NodeKeyPair::generate();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let plaintext = r#"data: {"choices":[{"delta":{"content":"secret"}}]}"#;
-
-        send_encrypted_inference_chunk(
-            &tx,
-            "req-1",
-            &consumer.public_key_bytes(),
-            &provider,
-            plaintext.to_string(),
-        )
-        .await
-        .expect("encrypt chunk");
-
-        match rx.recv().await {
-            Some(protocol::ProviderMessage::InferenceResponseChunk {
-                request_id,
-                data,
-                encrypted_data,
-            }) => {
-                assert_eq!(request_id, "req-1");
-                assert!(data.is_empty(), "plaintext data field must stay empty");
-
-                let encrypted = encrypted_data.expect("encrypted payload");
-                assert_eq!(encrypted.ephemeral_public_key, provider.public_key_base64());
-
-                let ciphertext = base64::engine::general_purpose::STANDARD
-                    .decode(encrypted.ciphertext)
-                    .expect("decode ciphertext");
-                let decrypted = consumer
-                    .decrypt(&provider.public_key_bytes(), &ciphertext)
-                    .expect("decrypt ciphertext");
-                assert_eq!(
-                    String::from_utf8(decrypted).expect("utf8 plaintext"),
-                    plaintext
-                );
-            }
-            other => panic!("unexpected provider message: {other:?}"),
-        }
-    }
-
-    /// Verification: search logs for prompt/output leakage.
-    ///
-    /// Sets up a tracing subscriber that captures all log output, runs
-    /// `send_encrypted_inference_chunk` with a known secret prompt, and asserts
-    /// the plaintext never appears in any log line.
-    #[cfg(feature = "python")]
-    #[tokio::test]
-    async fn test_no_prompt_leakage_in_logs() {
-        use std::sync::{Arc, Mutex};
-        use tracing_subscriber::layer::SubscriberExt;
-
-        #[derive(Clone)]
-        struct CaptureLayer {
-            lines: Arc<Mutex<Vec<String>>>,
-        }
-        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
-            fn on_event(
-                &self,
-                event: &tracing::Event<'_>,
-                _ctx: tracing_subscriber::layer::Context<'_, S>,
-            ) {
-                let mut visitor = StringVisitor(String::new());
-                event.record(&mut visitor);
-                self.lines.lock().unwrap().push(visitor.0);
-            }
-        }
-        struct StringVisitor(String);
-        impl tracing::field::Visit for StringVisitor {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                use std::fmt::Write;
-                let _ = write!(self.0, "{}={:?} ", field.name(), value);
-            }
-        }
-
-        let captured = Arc::new(Mutex::new(Vec::<String>::new()));
-        let layer = CaptureLayer {
-            lines: captured.clone(),
-        };
-        let subscriber = tracing_subscriber::registry().with(layer);
-        let _guard = tracing::subscriber::set_default(subscriber);
-
-        let provider = crate::crypto::NodeKeyPair::generate();
-        let consumer = crate::crypto::NodeKeyPair::generate();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-
-        let secret = "TOP_SECRET_PROMPT_CONTENT_7x9k2m";
-        let plaintext = format!(r#"data: {{"choices":[{{"delta":{{"content":"{secret}"}}}}]}}"#);
-
-        send_encrypted_inference_chunk(
-            &tx,
-            "req-log-test",
-            &consumer.public_key_bytes(),
-            &provider,
-            plaintext,
-        )
-        .await
-        .expect("encrypt chunk");
-
-        let _ = rx.recv().await;
-
-        let logs = captured.lock().unwrap();
-        for line in logs.iter() {
-            assert!(
-                !line.contains(secret),
-                "prompt plaintext leaked into logs: {line}"
-            );
-        }
-    }
-
-    /// Verification: assert prompt/output are not written to temp files.
-    ///
-    /// Snapshots /tmp before and after running the encrypted chunk path, then
-    /// asserts no new file contains the secret prompt content.
-    #[cfg(feature = "python")]
-    #[tokio::test]
-    async fn test_no_prompt_in_temp_files() {
-        fn tmp_files() -> Vec<std::path::PathBuf> {
-            std::fs::read_dir("/tmp")
-                .into_iter()
-                .flatten()
-                .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| p.is_file())
-                .collect()
-        }
-
-        let before: std::collections::HashSet<_> = tmp_files().into_iter().collect();
-
-        let provider = crate::crypto::NodeKeyPair::generate();
-        let consumer = crate::crypto::NodeKeyPair::generate();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-
-        let secret = "TEMP_FILE_LEAK_CANARY_3q8w5z";
-        let plaintext = format!(r#"data: {{"choices":[{{"delta":{{"content":"{secret}"}}}}]}}"#);
-        send_encrypted_inference_chunk(
-            &tx,
-            "req-tmp-test",
-            &consumer.public_key_bytes(),
-            &provider,
-            plaintext,
-        )
-        .await
-        .expect("encrypt chunk");
-        let _ = rx.recv().await;
-
-        let after = tmp_files();
-        for path in &after {
-            if before.contains(path) {
-                continue;
-            }
-            if let Ok(contents) = std::fs::read_to_string(path) {
-                assert!(
-                    !contents.contains(secret),
-                    "prompt plaintext found in new temp file: {}",
-                    path.display()
-                );
-            }
-        }
-    }
-
-    /// Verification: no localhost text backend listening during private jobs.
-    ///
-    /// In InProcess mode the provider must NOT bind a TCP port for a text
-    /// backend subprocess. This test asserts that `preferred_text_backend_mode`
-    /// returns InProcess (no subprocess) and that the backend URL used for
-    /// text is a placeholder that no real server listens on.
-    #[test]
-    fn test_no_localhost_text_backend_in_inprocess_mode() {
-        let mode = preferred_text_backend_mode(false);
-        assert_eq!(mode, TextBackendMode::InProcess);
-
-        // In InProcess mode the backend_url for text slots is set to
-        // "inprocess://local" or similar — no real TCP listener.
-        // Verify that connecting to 127.0.0.1 on common backend ports
-        // (8000-8010) is not part of the text inference path.
-        // The proxy module's handle_inference_request is never called
-        // because the event loop dispatches text to handle_inprocess_request.
-        //
-        // Structural assertion: TextBackendMode has exactly one variant.
-        let variants = [TextBackendMode::InProcess];
-        assert_eq!(
-            variants.len(),
-            1,
-            "TextBackendMode must have only InProcess — no subprocess variant allowed"
-        );
-    }
-
-    /// Verification: no outbound local HTTP text traffic for private text.
-    ///
-    /// Asserts that `handle_inprocess_request` does not use reqwest or any HTTP
-    /// client. We verify this structurally: the function signature takes an
-    /// engine + outbound channel, not a backend_url. Any attempt to add an HTTP
-    /// call would require changing the signature, which would break this test.
-    #[cfg(feature = "python")]
-    #[tokio::test]
-    async fn test_no_outbound_http_in_text_path() {
-        // Verify send_encrypted_inference_chunk takes only a channel sender,
-        // not any URL or HTTP client. The type system enforces this:
-        // it accepts (&Sender<ProviderMessage>, &str, &[u8;32], &NodeKeyPair, String)
-        // — no reqwest::Client, no URL, no backend_url.
-        let provider = crate::crypto::NodeKeyPair::generate();
-        let consumer = crate::crypto::NodeKeyPair::generate();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-
-        // If this compiles and sends a message, the text path uses only
-        // channels — no HTTP involved.
-        send_encrypted_inference_chunk(
-            &tx,
-            "req-nohttp",
-            &consumer.public_key_bytes(),
-            &provider,
-            "data: test".to_string(),
-        )
-        .await
-        .expect("channel-only send");
-
-        let msg = rx.recv().await.expect("receive chunk");
-        match msg {
-            protocol::ProviderMessage::InferenceResponseChunk {
-                data,
-                encrypted_data,
-                ..
-            } => {
-                assert!(data.is_empty(), "plaintext data must be empty");
-                assert!(encrypted_data.is_some(), "must have encrypted payload");
-            }
-            other => panic!("unexpected message: {other:?}"),
-        }
-    }
-
     /// Verify that spawn_backend_log_forwarder captures stdout/stderr from a child
     /// process instead of dropping it to /dev/null. This is the core regression test:
     /// without log forwarding, backend errors are invisible and users see only
@@ -7674,7 +5866,7 @@ mod tests {
             return;
         };
 
-        let result = spawn_inference_backend(python, "http.server", "unused", 19999);
+        let result = spawn_inference_backend("http.server", "unused", 19999);
         match result {
             Ok(pid) => {
                 assert!(pid > 0, "PID should be non-zero");

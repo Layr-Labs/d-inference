@@ -1,10 +1,9 @@
 //! Legacy/local request proxy between the coordinator WebSocket and a local
 //! inference backend.
 //!
-//! Coordinator-delivered private text requests should stay on the embedded
-//! in-process engine path and must not call into this module. This proxy is
-//! retained for legacy/local HTTP-backed flows and non-private workloads that
-//! still require a local backend boundary.
+//! This proxy handles non-private workloads that still require a local
+//! backend boundary. Private text requests are handled by the Swift
+//! (mlx-swift) provider and do not call into this module.
 //!
 //! The provider may still receive E2E-encrypted requests from the coordinator;
 //! decryption happens before those requests reach this module.
@@ -23,7 +22,7 @@ use crate::security;
 /// Shared HTTP client for non-streaming backend calls (chat non-stream,
 /// transcription, image-gen error bodies). Bounded total timeout prevents a
 /// hung backend from pinning tokio tasks forever. `connect_timeout` bounds
-/// how long we wait for a TCP SYN-ACK — vllm-mlx binds the port eagerly but
+/// how long we wait for a TCP SYN-ACK — the backend binds the port eagerly but
 /// the process may be wedged, so the SYN succeeds while `accept` hangs.
 static BACKEND_HTTP: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()

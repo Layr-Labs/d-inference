@@ -94,7 +94,7 @@ darkbloom start --local --port N    standalone OpenAI-compatible HTTP server
 Done in v0.5.0:
 
 - [x] Coordinator accepts `backend == "mlx-swift"` releases (already wired via `registry.BackendUsesSwiftRuntime`; v0.5.0 also bumps the fallback `LatestProviderVersion` and adds `MetallibHash` to `store.Release`).
-- [x] `scripts/install.sh` rewritten as a pure Swift bundle installer (no Python, no vllm-mlx, no site-packages tarball). Same change to the coordinator-served `coordinator/internal/api/install.sh`.
+- [x] `scripts/install.sh` rewritten as a pure Swift bundle installer (no Python, no site-packages tarball). Same change to the coordinator-served `coordinator/internal/api/install.sh`.
 - [x] `darkbloom enroll` / `unenroll` / `logs` / `autoupdate` / `models download` / `models catalog` / `models remove` / `start --local` / `--check-only` for `update`.
 - [x] Telemetry pipeline wired: `TelemetryClient.shared.configure` is called in `start --foreground`, reconnect events flow from `CoordinatorClient`, `PanicHook.install` is called before telemetry setup so a crash mid-bring-up still gets captured.
 - [x] PID-file single-instance lock + `caffeinate -s -i -w <pid>` in `start --foreground` and `start --local`.
@@ -102,7 +102,7 @@ Done in v0.5.0:
 - [x] `mlx.metallib` self-hashed at startup, surfaced under `template_hashes["mlx_metallib"]` in registration + attestation responses; the release pipeline still bakes the metallib next to the binary.
 - [x] `ChatCompletionRequest` accepts `stop` (string or array) / `seed` / `tools` / `tool_choice` / `response_format` / `user`; the values round-trip through Codable (the inference engine is a no-op pass-through for tools and response_format today).
 - [x] `darkbloom doctor` and `darkbloom status` show a one-line update banner before printing state, matching the Rust provider's `check_for_update_alert` (skip with `DARKBLOOM_NO_UPDATE_CHECK=1`).
-- [x] Privacy capabilities cleaned up: `python_runtime_locked` and `dangerous_modules_blocked` now report `false` instead of lying.
+- [x] Privacy capabilities cleaned up: `text_backend_inprocess`, `python_runtime_locked`, and `dangerous_modules_blocked` removed from the wire type.
 - [x] Dead code dropped: `Inference/InferenceEngine.swift` removed; `BatchScheduler` is the single inference path.
 
 Still pending:

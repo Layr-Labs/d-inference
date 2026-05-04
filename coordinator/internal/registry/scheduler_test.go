@@ -13,7 +13,7 @@ func makeSchedulerProvider(t *testing.T, reg *Registry, id, model string, decode
 	msg := testRegisterMessage()
 	msg.Models = []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 	msg.DecodeTPS = decodeTPS
-	p := reg.Register(id, nil, msg)
+	p, _ := reg.Register(id, nil, msg)
 	p.mu.Lock()
 	p.TrustLevel = TrustHardware
 	p.RuntimeVerified = true
@@ -467,7 +467,7 @@ func TestReserveProviderUsesModelSpecificSlotState(t *testing.T) {
 		{ID: modelB, ModelType: "chat", Quantization: "4bit"},
 	}
 	msg.DecodeTPS = 100
-	p := reg.Register("multi", nil, msg)
+	p, _ := reg.Register("multi", nil, msg)
 	p.mu.Lock()
 	p.TrustLevel = TrustHardware
 	p.RuntimeVerified = true

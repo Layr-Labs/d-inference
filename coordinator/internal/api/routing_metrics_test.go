@@ -132,21 +132,18 @@ func makeRoutableProvider(t *testing.T, reg *registry.Registry, id, model string
 		Models: []protocol.ModelInfo{
 			{ID: model, SizeBytes: 5_000_000_000, ModelType: "chat", Quantization: "4bit"},
 		},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities: &protocol.PrivacyCapabilities{
-			TextBackendInprocess:    true,
-			TextProxyDisabled:       true,
-			PythonRuntimeLocked:     true,
-			DangerousModulesBlocked: true,
-			SIPEnabled:              true,
-			AntiDebugEnabled:        true,
-			CoreDumpsDisabled:       true,
-			EnvScrubbed:             true,
+			TextProxyDisabled: true,
+			SIPEnabled:        true,
+			AntiDebugEnabled:  true,
+			CoreDumpsDisabled: true,
+			EnvScrubbed:       true,
 		},
 	}
-	p := reg.Register(id, nil, msg)
+	p, _ := reg.Register(id, nil, msg)
 	p.Mu().Lock()
 	p.TrustLevel = registry.TrustHardware
 	p.RuntimeVerified = true

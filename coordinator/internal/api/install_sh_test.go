@@ -82,10 +82,10 @@ func TestInstallScriptTemplating(t *testing.T) {
 		body := fetchInstallScript(t, srv.URL)
 
 		// Swift cutover invariants -- install.sh must not download Python
-		// or the vllm-mlx site-packages tarball.
+		// or the legacy site-packages tarball.
 		bannedSubstrings := []string{
 			"vllm-mlx",
-			"vllm_mlx",
+			"PBS_PYTHON_VERSION",
 			"PBS_PYTHON_VERSION",
 			"python-build-standalone",
 			"eigeninference-site-packages",

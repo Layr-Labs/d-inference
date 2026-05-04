@@ -43,7 +43,7 @@ import Testing
     #expect(register.attestation?.rawBytes == Data(rawAttestation.utf8))
     #expect(register.runtimeHash == "runtimehash")
     #expect(register.templateHashes["chatml"] == "templatehash")
-    #expect(register.privacyCapabilities?.textBackendInprocess == true)
+    #expect(register.privacyCapabilities?.textProxyDisabled == true)
 }
 
 @Test func coordinatorOutboundMessagesUseProviderEnvelope() throws {
@@ -177,10 +177,7 @@ private func clientSampleModel() -> ModelInfo {
 
 private func clientPrivacyCapabilities() -> PrivacyCapabilities {
     PrivacyCapabilities(
-        textBackendInprocess: true,
         textProxyDisabled: true,
-        pythonRuntimeLocked: true,
-        dangerousModulesBlocked: true,
         sipEnabled: true,
         antiDebugEnabled: true,
         coreDumpsDisabled: true,

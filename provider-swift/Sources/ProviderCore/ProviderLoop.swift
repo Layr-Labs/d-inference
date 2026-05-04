@@ -258,21 +258,14 @@ public actor ProviderLoop {
     }
 
     private func privacyCapabilitiesForRegistration() -> PrivacyCapabilities {
-        // textBackendInprocess + textProxyDisabled: always true on the Swift
-        //   provider -- inference runs in-process via mlx-swift-lm, no HTTP
-        //   proxy is involved.
-        // pythonRuntimeLocked + dangerousModulesBlocked: report false. There
-        //   is no Python runtime to lock anymore. Coordinator's Swift-runtime
-        //   trust path (registry.BackendUsesSwiftRuntime) doesn't read these.
+        // textProxyDisabled: always true on the Swift provider -- inference
+        //   runs in-process via mlx-swift-lm, no HTTP proxy is involved.
         // hypervisorActive: false -- Hypervisor.framework Stage 2 page tables
         //   were dropped at the migration; trust is RDMA discipline + SE
         //   attestation.
         if let posture = securityPosture {
             return PrivacyCapabilities(
-                textBackendInprocess: true,
                 textProxyDisabled: true,
-                pythonRuntimeLocked: false,
-                dangerousModulesBlocked: false,
                 sipEnabled: posture.sipEnabled,
                 antiDebugEnabled: posture.antiDebugEnabled,
                 coreDumpsDisabled: posture.coreDumpsDisabled,
@@ -283,10 +276,7 @@ public actor ProviderLoop {
 
         // Pre-hardening fallback (DEBUG builds, or hardening failed).
         return PrivacyCapabilities(
-            textBackendInprocess: true,
             textProxyDisabled: true,
-            pythonRuntimeLocked: false,
-            dangerousModulesBlocked: false,
             sipEnabled: SecurityChecks.isSIPEnabled(),
             antiDebugEnabled: false,
             coreDumpsDisabled: false,

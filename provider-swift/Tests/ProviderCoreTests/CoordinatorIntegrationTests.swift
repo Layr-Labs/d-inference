@@ -52,7 +52,6 @@ struct CoordinatorIntegrationTests {
         #expect(r.publicKey == keys.publicKeyBase64)
         #expect(r.encryptedResponseChunks == true)
         let caps = try #require(r.privacyCapabilities)
-        #expect(caps.textBackendInprocess == true)
         #expect(caps.textProxyDisabled == true)
 
         // Drive an attestation challenge through the wire and respond from the
@@ -463,10 +462,7 @@ private func makeClient(
         heartbeatInterval: heartbeatInterval,
         publicKey: publicKey,
         privacyCapabilities: PrivacyCapabilities(
-            textBackendInprocess: true,
             textProxyDisabled: true,
-            pythonRuntimeLocked: false,
-            dangerousModulesBlocked: false,
             sipEnabled: true,
             antiDebugEnabled: false,
             coreDumpsDisabled: false,

@@ -232,10 +232,7 @@ private func sampleModel() -> ModelInfo {
 
 private func samplePrivacyCapabilities() -> PrivacyCapabilities {
     PrivacyCapabilities(
-        textBackendInprocess: true,
         textProxyDisabled: true,
-        pythonRuntimeLocked: true,
-        dangerousModulesBlocked: true,
         sipEnabled: true,
         antiDebugEnabled: true,
         coreDumpsDisabled: true,

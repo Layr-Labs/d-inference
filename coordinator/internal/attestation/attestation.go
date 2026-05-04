@@ -349,8 +349,6 @@ type StatusCanonicalInput struct {
 	SecureBootEnabled *bool
 	BinaryHash        string
 	ActiveModelHash   string
-	PythonHash        string
-	RuntimeHash       string
 	TemplateHashes    map[string]string
 	GrpcBinaryHash    string
 	ModelHashes       map[string]string
@@ -397,12 +395,6 @@ func BuildStatusCanonical(in StatusCanonicalInput) ([]byte, error) {
 	}
 	if in.ActiveModelHash != "" {
 		m["active_model_hash"] = in.ActiveModelHash
-	}
-	if in.PythonHash != "" {
-		m["python_hash"] = in.PythonHash
-	}
-	if in.RuntimeHash != "" {
-		m["runtime_hash"] = in.RuntimeHash
 	}
 	if len(in.TemplateHashes) > 0 {
 		m["template_hashes"] = in.TemplateHashes
@@ -455,8 +447,8 @@ var ErrStatusSignatureMissing = fmt.Errorf("status_signature missing — status 
 // Security note (signature scope, 2026-04-16):
 // The signed payload currently covers ONLY (nonce + timestamp). The status
 // fields the provider reports in AttestationResponseMessage — SIPEnabled,
-// SecureBootEnabled, RDMADisabled, BinaryHash, PythonHash, RuntimeHash,
-// TemplateHashes, ActiveModelHash — are NOT included in the signature. A
+// SecureBootEnabled, RDMADisabled, BinaryHash, TemplateHashes,
+// ActiveModelHash — are NOT included in the signature. A
 // provider with a valid SE key (e.g. a compromised device) can therefore
 // echo a correct signature while lying about its current security posture
 // or runtime hashes.

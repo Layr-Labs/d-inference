@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"math"
 	"math/rand"
@@ -54,9 +55,12 @@ const (
 )
 
 const (
-	BackendInprocessMLX = "inprocess-mlx"
-	BackendMLXSwift     = "mlx-swift"
+	BackendMLXSwift = "mlx-swift"
 )
+
+// ErrBackendRejected is returned when a provider attempts to register with
+// an unsupported backend type.
+var ErrBackendRejected = fmt.Errorf("provider backend 'inprocess-mlx' is no longer supported; please upgrade to the latest provider version")
 
 func BackendUsesSwiftRuntime(backend string) bool {
 	return backend == BackendMLXSwift
@@ -143,8 +147,6 @@ type Provider struct {
 	RuntimeVerified         bool   `json:"runtime_verified"`                    // true if runtime hashes match the known-good manifest
 	RuntimeManifestChecked  bool   `json:"runtime_manifest_checked"`            // true only when a manifest was present and hashes were verified (fail-closed for text)
 	EncryptedResponseChunks bool   `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are encrypted to the coordinator
-	PythonHash              string `json:"python_hash,omitempty"`
-	RuntimeHash             string `json:"runtime_hash,omitempty"`
 	TemplateHashes          map[string]string
 
 	// Phase 7: Privacy invariant attestation.
@@ -182,22 +184,18 @@ func providerSupportsPrivateTextLocked(p *Provider) bool {
 	if caps == nil {
 		return false
 	}
-	// TextBackendInprocess, TextProxyDisabled, PythonRuntimeLocked,
-	// DangerousModulesBlocked, AntiDebugEnabled, CoreDumpsDisabled, EnvScrubbed
+	// TextProxyDisabled, AntiDebugEnabled, CoreDumpsDisabled, EnvScrubbed
 	// remain provider-attested. They are gated by RuntimeManifestChecked
 	// (coordinator verifies the runtime binary hashes match known-good) and
 	// ChallengeVerifiedSIP (coordinator independently checks SIP status).
-	return caps.TextBackendInprocess &&
-		caps.TextProxyDisabled &&
-		caps.PythonRuntimeLocked &&
-		caps.DangerousModulesBlocked &&
+	return caps.TextProxyDisabled &&
 		caps.AntiDebugEnabled &&
 		caps.CoreDumpsDisabled &&
 		caps.EnvScrubbed
 }
 
 func privateTextBackendSupported(backend string) bool {
-	return backend == BackendInprocessMLX || backend == BackendMLXSwift
+	return backend == BackendMLXSwift
 }
 
 // AddPending registers a pending request on this provider.
@@ -532,8 +530,6 @@ func (r *Registry) persistProvider(p *Provider) {
 			ACMEVerified:               p.ACMEVerified,
 			Version:                    p.Version,
 			RuntimeVerified:            p.RuntimeVerified,
-			PythonHash:                 p.PythonHash,
-			RuntimeHash:                p.RuntimeHash,
 			LastChallengeVerified:      lastChallenge,
 			FailedChallenges:           p.FailedChallenges,
 			AccountID:                  p.AccountID,
@@ -738,7 +734,14 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 
 // Register adds a new provider to the registry, returning its assigned ID.
 // If a model catalog is configured, only models in the catalog are kept.
-func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.RegisterMessage) *Provider {
+func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.RegisterMessage) (*Provider, error) {
+	if msg.Backend == "inprocess-mlx" {
+		r.logger.Warn("rejecting provider with deprecated backend",
+			"provider_id", id,
+			"backend", msg.Backend,
+		)
+		return nil, ErrBackendRejected
+	}
 	// Clamp provider-reported performance stats used in routing score.
 	// Refuse to trust unbounded values — a malicious provider reporting
 	// DecodeTPS=1e9 would otherwise starve all other providers.
@@ -849,7 +852,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	// Persist provider record to store (async).
 	r.persistProvider(p)
 
-	return p
+	return p, nil
 }
 
 func CloneStringMap(in map[string]string) map[string]string {
@@ -866,7 +869,7 @@ func CloneStringMap(in map[string]string) map[string]string {
 // DisconnectDuplicatesBySerial disconnects all providers that share the same
 // serial number as the given provider, except the given provider itself.
 // This prevents multiple WebSocket connections from the same physical machine
-// from competing for the same vllm-mlx backend on localhost.
+// from competing for the same backend on localhost.
 func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
 	if serial == "" {
 		return

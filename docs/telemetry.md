@@ -35,7 +35,7 @@ field omission so they can't drift.
       "session_id": "per-process-uuid",
       "message": "backend health check failed",
       "fields": {                              // allowlisted keys only
-        "backend": "vllm-mlx",
+        "backend": "mlx-swift",
         "exit_code": 134
       },
       "stack": "at foo::bar\n…"                // optional

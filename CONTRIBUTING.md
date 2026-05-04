@@ -52,7 +52,7 @@ git config core.hooksPath .githooks   # enables pre-commit + pre-push checks
 cd coordinator && go test ./...
 
 # Legacy Rust provider
-cd provider && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo test
+cd provider && cargo test
 
 # Swift provider (CLI replacement)
 cd provider-swift && swift test

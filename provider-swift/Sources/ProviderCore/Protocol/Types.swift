@@ -171,10 +171,7 @@ public struct EncryptedPayload: Codable, Sendable, Equatable {
 }
 
 public struct PrivacyCapabilities: Codable, Sendable, Equatable {
-    public var textBackendInprocess: Bool
     public var textProxyDisabled: Bool
-    public var pythonRuntimeLocked: Bool
-    public var dangerousModulesBlocked: Bool
     public var sipEnabled: Bool
     public var antiDebugEnabled: Bool
     public var coreDumpsDisabled: Bool
@@ -182,10 +179,7 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     public var hypervisorActive: Bool
 
     enum CodingKeys: String, CodingKey {
-        case textBackendInprocess = "text_backend_inprocess"
         case textProxyDisabled = "text_proxy_disabled"
-        case pythonRuntimeLocked = "python_runtime_locked"
-        case dangerousModulesBlocked = "dangerous_modules_blocked"
         case sipEnabled = "sip_enabled"
         case antiDebugEnabled = "anti_debug_enabled"
         case coreDumpsDisabled = "core_dumps_disabled"
@@ -194,20 +188,14 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
     }
 
     public init(
-        textBackendInprocess: Bool,
         textProxyDisabled: Bool,
-        pythonRuntimeLocked: Bool,
-        dangerousModulesBlocked: Bool,
         sipEnabled: Bool,
         antiDebugEnabled: Bool,
         coreDumpsDisabled: Bool,
         envScrubbed: Bool,
         hypervisorActive: Bool = false
     ) {
-        self.textBackendInprocess = textBackendInprocess
         self.textProxyDisabled = textProxyDisabled
-        self.pythonRuntimeLocked = pythonRuntimeLocked
-        self.dangerousModulesBlocked = dangerousModulesBlocked
         self.sipEnabled = sipEnabled
         self.antiDebugEnabled = antiDebugEnabled
         self.coreDumpsDisabled = coreDumpsDisabled

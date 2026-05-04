@@ -92,7 +92,7 @@ const STEPS: StepData[] = [
       "every 5 minutes. The provider must sign the challenge with its SE key and report " +
       "fresh security posture: SIP status, Secure Boot, binary hash (self-hash of provider binary), " +
       "RDMA status, hypervisor isolation status, and runtime integrity hashes " +
-      "(Python, vllm-mlx, Jinja templates). Any mismatch triggers demotion.",
+      "(MLX metallib, Jinja templates). Any mismatch triggers demotion.",
   },
 ];
 

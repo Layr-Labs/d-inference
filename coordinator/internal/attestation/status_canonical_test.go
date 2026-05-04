@@ -30,8 +30,6 @@ func TestBuildStatusCanonicalGoldenBytes(t *testing.T) {
 		SecureBootEnabled: &True,
 		BinaryHash:        "binhash",
 		ActiveModelHash:   "activemodel",
-		PythonHash:        "pyhash",
-		RuntimeHash:       "rthash",
 		TemplateHashes: map[string]string{
 			"chatml": "tmplhash1",
 			"gemma":  "tmplhash2",
@@ -48,7 +46,7 @@ func TestBuildStatusCanonicalGoldenBytes(t *testing.T) {
 		t.Fatalf("BuildStatusCanonical: %v", err)
 	}
 
-	expected := []byte(`{"active_model_hash":"activemodel","binary_hash":"binhash","hypervisor_active":true,"model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}`)
+	expected := []byte(`{"active_model_hash":"activemodel","binary_hash":"binhash","hypervisor_active":true,"model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","rdma_disabled":true,"secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}`)
 
 	if !bytes.Equal(got, expected) {
 		t.Fatalf("canonical bytes drifted from Rust golden — protocol break\nwant: %s\ngot:  %s", expected, got)

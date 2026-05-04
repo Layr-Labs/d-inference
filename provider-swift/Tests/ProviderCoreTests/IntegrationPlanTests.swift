@@ -106,10 +106,7 @@ private func phase6Model() -> ModelInfo {
 
 private func phase6PrivacyCapabilities() -> PrivacyCapabilities {
     PrivacyCapabilities(
-        textBackendInprocess: true,
         textProxyDisabled: true,
-        pythonRuntimeLocked: true,
-        dangerousModulesBlocked: true,
         sipEnabled: true,
         antiDebugEnabled: true,
         coreDumpsDisabled: true,

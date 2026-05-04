@@ -52,19 +52,17 @@ func TestVerifyRuntimeHashesForSwiftRequiresMetallibButNotLegacyRuntime(t *testi
 	srv, _ := runtimeManifestTestServer(t)
 	metallibHash := strings.Repeat("a", 64)
 	srv.SetRuntimeManifest(&RuntimeManifest{
-		PythonHashes:   map[string]bool{"legacy-python": true},
-		RuntimeHashes:  map[string]bool{"legacy-runtime": true},
 		TemplateHashes: map[string]string{"qwen3.5": "legacy-template", "mlx_metallib": metallibHash},
 	})
 
-	ok, mismatches := srv.verifyRuntimeHashesForBackend("mlx-swift", "", "", map[string]string{
+	ok, mismatches := srv.verifyRuntimeHashesForBackend("mlx-swift", map[string]string{
 		"mlx_metallib": metallibHash,
 	})
 	if !ok {
 		t.Fatalf("swift runtime verification failed with matching metallib: %#v", mismatches)
 	}
 
-	ok, mismatches = srv.verifyRuntimeHashesForBackend("mlx-swift", "", "", map[string]string{
+	ok, mismatches = srv.verifyRuntimeHashesForBackend("mlx-swift", map[string]string{
 		"mlx_metallib": strings.Repeat("b", 64),
 	})
 	if ok {
@@ -72,22 +70,6 @@ func TestVerifyRuntimeHashesForSwiftRequiresMetallibButNotLegacyRuntime(t *testi
 	}
 	if len(mismatches) != 1 || mismatches[0].Component != "template:mlx_metallib" {
 		t.Fatalf("mismatches = %#v, want one mlx_metallib mismatch", mismatches)
-	}
-}
-
-func TestVerifyRuntimeHashesForLegacyIgnoresSwiftMetallib(t *testing.T) {
-	srv, _ := runtimeManifestTestServer(t)
-	srv.SetRuntimeManifest(&RuntimeManifest{
-		PythonHashes:   map[string]bool{"legacy-python": true},
-		RuntimeHashes:  map[string]bool{"legacy-runtime": true},
-		TemplateHashes: map[string]string{"qwen3.5": "legacy-template", "mlx_metallib": strings.Repeat("a", 64)},
-	})
-
-	ok, mismatches := srv.verifyRuntimeHashesForBackend("vllm-mlx", "legacy-python", "legacy-runtime", map[string]string{
-		"qwen3.5": "legacy-template",
-	})
-	if !ok {
-		t.Fatalf("legacy runtime verification failed due to swift metallib: %#v", mismatches)
 	}
 }
 
@@ -99,8 +81,6 @@ func TestSyncRuntimeManifestUsesLatestReleaseOnly(t *testing.T) {
 		Platform:       "macos-arm64",
 		BinaryHash:     "old-binary",
 		BundleHash:     "old-bundle",
-		PythonHash:     "old-python",
-		RuntimeHash:    "old-runtime",
 		TemplateHashes: "qwen3.5=old-template",
 		URL:            "https://example.com/old.tar.gz",
 		Active:         true,
@@ -113,8 +93,6 @@ func TestSyncRuntimeManifestUsesLatestReleaseOnly(t *testing.T) {
 		Platform:       "macos-arm64",
 		BinaryHash:     "new-binary",
 		BundleHash:     "new-bundle",
-		PythonHash:     "new-python",
-		RuntimeHash:    "new-runtime",
 		TemplateHashes: "qwen3.5=new-template,minimax=new-minimax-template",
 		URL:            "https://example.com/new.tar.gz",
 		Active:         true,
@@ -132,18 +110,6 @@ func TestSyncRuntimeManifestUsesLatestReleaseOnly(t *testing.T) {
 	}
 
 	manifest := srv.knownRuntimeManifest
-	if !manifest.PythonHashes["new-python"] {
-		t.Fatal("latest python hash missing from runtime manifest")
-	}
-	if !manifest.PythonHashes["old-python"] {
-		t.Fatal("old python hash should remain accepted so older providers still pass")
-	}
-	if !manifest.RuntimeHashes["new-runtime"] {
-		t.Fatal("latest runtime hash missing from runtime manifest")
-	}
-	if !manifest.RuntimeHashes["old-runtime"] {
-		t.Fatal("old runtime hash should remain accepted so older providers still pass")
-	}
 	if got := manifest.TemplateHashes["qwen3.5"]; got != "new-template" {
 		t.Fatalf("qwen3.5 template hash = %q, want %q", got, "new-template")
 	}
@@ -160,8 +126,6 @@ func TestSyncRuntimeManifestClearsStaleHashesWhenLatestReleaseHasNoRuntimeMetada
 		Platform:       "macos-arm64",
 		BinaryHash:     "old-binary",
 		BundleHash:     "old-bundle",
-		PythonHash:     "old-python",
-		RuntimeHash:    "old-runtime",
 		TemplateHashes: "qwen3.5=old-template",
 		URL:            "https://example.com/old.tar.gz",
 		Active:         true,
@@ -196,53 +160,38 @@ func TestSyncRuntimeManifestClearsStaleHashesWhenLatestReleaseHasNoRuntimeMetada
 	if srv.knownRuntimeManifest == nil {
 		t.Fatal("manifest should retain old release hashes")
 	}
-	if !srv.knownRuntimeManifest.PythonHashes["old-python"] {
-		t.Fatal("old python hash should still be accepted")
-	}
 }
 
 func TestVerifyRuntimeHashesRejectsMissingRequiredComponents(t *testing.T) {
 	srv, _ := runtimeManifestTestServer(t)
 	srv.SetRuntimeManifest(&RuntimeManifest{
-		PythonHashes:   map[string]bool{"py-good": true},
-		RuntimeHashes:  map[string]bool{"rt-good": true},
 		TemplateHashes: map[string]string{"qwen": "tmpl-good"},
 	})
 
-	ok, mismatches := srv.verifyRuntimeHashes("", "", nil)
+	ok, mismatches := srv.verifyRuntimeHashes(nil)
 	if ok {
 		t.Fatal("verifyRuntimeHashes should fail when required hash fields are missing")
 	}
-	if len(mismatches) != 3 {
-		t.Fatalf("mismatches = %d, want 3", len(mismatches))
+	if len(mismatches) != 1 {
+		t.Fatalf("mismatches = %d, want 1", len(mismatches))
 	}
 
-	byComponent := make(map[string]string, len(mismatches))
-	for _, mm := range mismatches {
-		byComponent[mm.Component] = mm.Got
-	}
-	for _, component := range []string{
-		"python",
-		"runtime",
-		"template:qwen",
-	} {
-		if got := byComponent[component]; got != "(missing)" {
-			t.Fatalf("%s mismatch got = %q, want %q", component, got, "(missing)")
-		}
+	if mismatches[0].Component != "template:qwen" || mismatches[0].Got != "(missing)" {
+		t.Fatalf("mismatch = %#v, want template:qwen (missing)", mismatches[0])
 	}
 }
 
 func TestSyncRuntimeManifestDeroutesLiveProvidersBelowMinVersion(t *testing.T) {
 	srv, st := runtimeManifestTestServer(t)
 
-	provider := srv.registry.Register("provider-1", nil, &protocol.RegisterMessage{
+	provider, _ := srv.registry.Register("provider-1", nil, &protocol.RegisterMessage{
 		Type: protocol.TypeRegister,
 		Hardware: protocol.Hardware{
 			ChipName: "Apple M3 Max",
 			MemoryGB: 64,
 		},
 		Models:                  []protocol.ModelInfo{{ID: "live-version-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               "bound-public-key",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -257,14 +206,12 @@ func TestSyncRuntimeManifestDeroutesLiveProvidersBelowMinVersion(t *testing.T) {
 	provider.Mu().Unlock()
 
 	if err := st.SetRelease(&store.Release{
-		Version:     "0.3.9",
-		Platform:    "macos-arm64",
-		BinaryHash:  "new-binary",
-		BundleHash:  "new-bundle",
-		PythonHash:  "new-python",
-		RuntimeHash: "new-runtime",
-		URL:         "https://example.com/new.tar.gz",
-		Active:      true,
+		Version:    "0.3.9",
+		Platform:   "macos-arm64",
+		BinaryHash: "new-binary",
+		BundleHash: "new-bundle",
+		URL:        "https://example.com/new.tar.gz",
+		Active:     true,
 	}); err != nil {
 		t.Fatalf("SetRelease(new): %v", err)
 	}
@@ -290,14 +237,14 @@ func TestSyncRuntimeManifestDeroutesLiveProvidersBelowMinVersion(t *testing.T) {
 func TestSyncRuntimeManifestDeroutesLiveProvidersWhenManifestClears(t *testing.T) {
 	srv, st := runtimeManifestTestServer(t)
 
-	provider := srv.registry.Register("provider-1", nil, &protocol.RegisterMessage{
+	provider, _ := srv.registry.Register("provider-1", nil, &protocol.RegisterMessage{
 		Type: protocol.TypeRegister,
 		Hardware: protocol.Hardware{
 			ChipName: "Apple M3 Max",
 			MemoryGB: 64,
 		},
 		Models:                  []protocol.ModelInfo{{ID: "live-manifest-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               "bound-public-key",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -343,14 +290,14 @@ func TestSyncRuntimeManifestDeroutesLiveProvidersWhenManifestClears(t *testing.T
 func TestSyncRuntimeManifestDeroutesLiveProvidersWhenHashesChangeWithoutVersionBump(t *testing.T) {
 	srv, st := runtimeManifestTestServer(t)
 
-	provider := srv.registry.Register("provider-1", nil, &protocol.RegisterMessage{
+	provider, _ := srv.registry.Register("provider-1", nil, &protocol.RegisterMessage{
 		Type: protocol.TypeRegister,
 		Hardware: protocol.Hardware{
 			ChipName: "Apple M3 Max",
 			MemoryGB: 64,
 		},
 		Models:                  []protocol.ModelInfo{{ID: "same-version-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               "bound-public-key",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
@@ -362,19 +309,18 @@ func TestSyncRuntimeManifestDeroutesLiveProvidersWhenHashesChangeWithoutVersionB
 	provider.RuntimeManifestChecked = true
 	provider.ChallengeVerifiedSIP = true
 	provider.LastChallengeVerified = time.Now()
-	provider.PythonHash = "old-python"
-	provider.RuntimeHash = "old-runtime"
+	provider.TemplateHashes = map[string]string{"mlx_metallib": strings.Repeat("a", 64)}
 	provider.Mu().Unlock()
 
+	metallibHash := strings.Repeat("b", 64)
 	if err := st.SetRelease(&store.Release{
-		Version:     "0.3.9",
-		Platform:    "macos-arm64",
-		BinaryHash:  "new-binary",
-		BundleHash:  "new-bundle",
-		PythonHash:  "new-python",
-		RuntimeHash: "new-runtime",
-		URL:         "https://example.com/new.tar.gz",
-		Active:      true,
+		Version:      "0.3.9",
+		Platform:     "macos-arm64",
+		BinaryHash:   "new-binary",
+		BundleHash:   "new-bundle",
+		MetallibHash: metallibHash,
+		URL:          "https://example.com/new.tar.gz",
+		Active:       true,
 	}); err != nil {
 		t.Fatalf("SetRelease(new): %v", err)
 	}

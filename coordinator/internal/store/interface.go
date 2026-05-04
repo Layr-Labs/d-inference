@@ -563,12 +563,10 @@ type SupportedModel struct {
 type Release struct {
 	Version        string    `json:"version"`                   // semver, e.g. "0.5.0"
 	Platform       string    `json:"platform"`                  // "macos-arm64"
-	Backend        string    `json:"backend,omitempty"`         // "mlx-swift" (post-cutover) or "vllm-mlx" (legacy)
+	Backend        string    `json:"backend,omitempty"`         // "mlx-swift"
 	BinaryHash     string    `json:"binary_hash"`               // SHA-256 of darkbloom binary (attestation verification)
 	BundleHash     string    `json:"bundle_hash"`               // SHA-256 of the bundle tarball (install.sh download verification)
 	MetallibHash   string    `json:"metallib_hash,omitempty"`   // SHA-256 of mlx.metallib (Swift backend GPU kernel set)
-	PythonHash     string    `json:"python_hash,omitempty"`     // legacy: SHA-256 of bundled Python binary (vllm-mlx backend only)
-	RuntimeHash    string    `json:"runtime_hash,omitempty"`    // legacy: SHA-256 of vllm-mlx package (vllm-mlx backend only)
 	TemplateHashes string    `json:"template_hashes,omitempty"` // comma-separated name=hash pairs
 	URL            string    `json:"url"`                       // R2 download URL for the bundle tarball
 	Changelog      string    `json:"changelog"`                 // human-readable changes in this version
@@ -683,8 +681,6 @@ type ProviderRecord struct {
 	ACMEVerified               bool            `json:"acme_verified"`
 	Version                    string          `json:"version,omitempty"`
 	RuntimeVerified            bool            `json:"runtime_verified"`
-	PythonHash                 string          `json:"python_hash,omitempty"`
-	RuntimeHash                string          `json:"runtime_hash,omitempty"`
 	LastChallengeVerified      *time.Time      `json:"last_challenge_verified,omitempty"`
 	FailedChallenges           int             `json:"failed_challenges"`
 	AccountID                  string          `json:"account_id,omitempty"`

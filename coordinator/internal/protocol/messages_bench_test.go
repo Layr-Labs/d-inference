@@ -24,7 +24,7 @@ func BenchmarkMarshalRegisterMessage(b *testing.B) {
 			{ID: "mlx-community/Qwen3.5-9B-Instruct-4bit", SizeBytes: 5_700_000_000, ModelType: "qwen3", Quantization: "4bit"},
 			{ID: "mlx-community/Trinity-Mini-8bit", SizeBytes: 14_200_000_000, ModelType: "qwen2_moe", Quantization: "8bit"},
 		},
-		Backend:       "vllm_mlx",
+		Backend:       "mlx-swift",
 		PublicKey:     "dGVzdC1wdWJsaWMta2V5LWJhc2U2NC1lbmNvZGVk",
 		WalletAddress: "0x1234567890abcdef1234567890abcdef12345678",
 		PrefillTPS:    210.5,

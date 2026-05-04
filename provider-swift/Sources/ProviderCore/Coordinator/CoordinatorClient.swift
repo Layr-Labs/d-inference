@@ -575,10 +575,7 @@ public actor CoordinatorClient {
 
     private func sendRegistration(ws: URLSessionWebSocketTask) async throws {
         let privacyCapabilities = config.privacyCapabilities ?? PrivacyCapabilities(
-            textBackendInprocess: true,
             textProxyDisabled: true,
-            pythonRuntimeLocked: true,
-            dangerousModulesBlocked: true,
             sipEnabled: SecurityChecks.isSIPEnabled(),
             antiDebugEnabled: true,
             coreDumpsDisabled: true,

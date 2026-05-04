@@ -27,12 +27,10 @@ Apple Silicon GPU (Metal)
 
 ### Provider Agent — legacy Rust (`provider/`)
 
-**Language:** Rust + Python (PyO3) — **legacy, retired at Swift cutover**
+**Language:** Rust — **legacy, retired at Swift cutover**
 
-The currently-shipping provider. Embeds the Python interpreter via PyO3 to run
-in-process MLX inference (`mlx-lm` / `vllm-mlx`). Same hardening posture as the
-Swift port. Replaced module-for-module by `provider-swift/` once the cutover
-lands.
+The previously-shipping provider. Same hardening posture as the Swift port.
+Replaced module-for-module by `provider-swift/` once the cutover lands.
 
 ### Coordinator (`coordinator/`)
 
@@ -104,7 +102,6 @@ Read process memory             Hardened Runtime (kernel denies task_for_pid)
 Sniff IPC/network               No IPC — inference is in-process
 Modify the binary               Code signing + SIP (modified binary won't launch)
 Replace with fake binary        Binary hash in attestation — coordinator verifies
-Inject malicious Python pkg     Python path locked to signed bundle
 Load kernel extension           SIP blocks unsigned kexts
 Modify kernel at runtime        KIP (hardware-enforced)
 Disable SIP                     Requires reboot → kills process → data gone
@@ -243,7 +240,6 @@ PT_DENY_ATTACH                     Working     Kernel-level anti-debug
 Hardened Runtime                   Working     Blocks external memory inspection
 In-process inference               Working     No subprocess/IPC to sniff
 Memory wiping                      Working     Volatile-zero after each request
-Python path locking                Working     Prevents malicious package injection
 Signed app bundle                  Working     Any modification breaks code signature
 MDM SecurityInfo                   Working     Hardware-verified SIP/SecureBoot/SSV
 SIP/SecureBoot attestation         Working     Self-reported + MDM-verified
@@ -253,14 +249,13 @@ User-verifiable attestation API    Working     GET /v1/providers/attestation —
 
 ## Inference
 
-EigenInference runs inference **in-process** — no subprocess architecture. The Python MLX engine is embedded directly in the Rust process via PyO3.
+EigenInference runs inference **in-process** via mlx-swift-lm — no subprocess architecture.
 
 | Backend | Mode | Features |
 |---------|------|----------|
-| **mlx-lm** | In-process (PyO3) | Primary backend, auto-installed if missing |
-| **vllm-mlx** | In-process (PyO3) | Preferred when available — continuous batching, prefix caching |
+| **mlx-swift-lm** | In-process (native Swift) | Primary backend, auto-loaded, no Python dependency |
 
-There is no subprocess fallback. If the in-process engine cannot initialize, the provider refuses to start and instructs the user to install mlx-lm.
+There is no subprocess fallback. If the in-process engine cannot initialize, the provider refuses to start.
 
 ## Payments
 

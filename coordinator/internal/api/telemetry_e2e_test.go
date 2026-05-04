@@ -39,14 +39,14 @@ func TestTelemetryE2E_FullPipeline(t *testing.T) {
 				Kind:      protocol.KindBackendCrash,
 				Version:   "0.3.10",
 				MachineID: "m-e2e",
-				Message:   "vllm-mlx died",
+				Message:   "backend died",
 				Fields: map[string]any{
-					"backend":   "vllm-mlx",
+					"backend":   "mlx-swift",
 					"exit_code": 134,
 					// Rejected — not on allowlist:
 					"prompt": "ATTACKER_LEAK",
 				},
-				Stack: "at vllm_mlx::serve\n  at main",
+				Stack: "at mlx_swift::serve\n  at main",
 			},
 			{
 				ID:        "00000000-0000-0000-0000-000000000011",

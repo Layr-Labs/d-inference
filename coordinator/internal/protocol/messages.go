@@ -107,23 +107,18 @@ type RegisterMessage struct {
 	AuthToken               string          `json:"auth_token,omitempty"`                // device-linked provider token (from darkbloom login)
 
 	// Runtime integrity hashes — used for runtime verification against known-good manifests.
-	PythonHash          string               `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
-	RuntimeHash         string               `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
 	TemplateHashes      map[string]string    `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
 	PrivacyCapabilities *PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
 }
 
 // PrivacyCapabilities describes the provider's privacy invariants at registration time.
 type PrivacyCapabilities struct {
-	TextBackendInprocess    bool `json:"text_backend_inprocess"`
-	TextProxyDisabled       bool `json:"text_proxy_disabled"`
-	PythonRuntimeLocked     bool `json:"python_runtime_locked"`
-	DangerousModulesBlocked bool `json:"dangerous_modules_blocked"`
-	SIPEnabled              bool `json:"sip_enabled"`
-	AntiDebugEnabled        bool `json:"anti_debug_enabled"`
-	CoreDumpsDisabled       bool `json:"core_dumps_disabled"`
-	EnvScrubbed             bool `json:"env_scrubbed"`
-	HypervisorActive        bool `json:"hypervisor_active"`
+	TextProxyDisabled bool `json:"text_proxy_disabled"`
+	SIPEnabled        bool `json:"sip_enabled"`
+	AntiDebugEnabled  bool `json:"anti_debug_enabled"`
+	CoreDumpsDisabled bool `json:"core_dumps_disabled"`
+	EnvScrubbed       bool `json:"env_scrubbed"`
+	HypervisorActive  bool `json:"hypervisor_active"`
 }
 
 // HeartbeatMessage is sent periodically by connected providers.
@@ -138,7 +133,7 @@ type HeartbeatMessage struct {
 }
 
 // BackendSlotCapacity describes the capacity state of a single backend slot
-// (one vllm-mlx instance serving one model).
+// (one MLX instance serving one model).
 type BackendSlotCapacity struct {
 	Model              string `json:"model"`                // model ID for this slot
 	State              string `json:"state"`                // "running", "idle_shutdown", "crashed", "reloading"
@@ -319,8 +314,6 @@ type AttestationResponseMessage struct {
 	ActiveModelHash   string `json:"active_model_hash,omitempty"`   // SHA-256 weight fingerprint of loaded model
 
 	// Runtime integrity hashes — fresh values reported at challenge time.
-	PythonHash     string            `json:"python_hash,omitempty"`     // SHA-256 of Python runtime
-	RuntimeHash    string            `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
 	TemplateHashes map[string]string `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
 	ModelHashes    map[string]string `json:"model_hashes,omitempty"`    // model_id -> SHA-256 weight hash (all active models)
 }

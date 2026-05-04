@@ -40,18 +40,15 @@ func testRegisterMessage() *protocol.RegisterMessage {
 				Quantization: "4bit",
 			},
 		},
-		Backend:                 "inprocess-mlx",
+		Backend:                 "mlx-swift",
 		PublicKey:               "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw=",
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities: &protocol.PrivacyCapabilities{
-			TextBackendInprocess:    true,
-			TextProxyDisabled:       true,
-			PythonRuntimeLocked:     true,
-			DangerousModulesBlocked: true,
-			SIPEnabled:              true,
-			AntiDebugEnabled:        true,
-			CoreDumpsDisabled:       true,
-			EnvScrubbed:             true,
+			TextProxyDisabled: true,
+			SIPEnabled:        true,
+			AntiDebugEnabled:  true,
+			CoreDumpsDisabled: true,
+			EnvScrubbed:       true,
 		},
 	}
 }
@@ -71,7 +68,7 @@ func TestRegisterAndGetProvider(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 
 	if p.ID != "p1" {
 		t.Errorf("id = %q, want %q", p.ID, "p1")
@@ -100,7 +97,7 @@ func TestProviderMissingPrivacyCapsExcludedFromTextRouting(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	msg.PrivacyCapabilities = nil
-	p := reg.Register("p-nocaps", nil, msg)
+	p, _ := reg.Register("p-nocaps", nil, msg)
 	p.ChallengeVerifiedSIP = true
 	reg.SetTrustLevel(p.ID, TrustHardware)
 	reg.RecordChallengeSuccess(p.ID)
@@ -121,7 +118,7 @@ func TestProviderMissingPrivacyCapsExcludedFromTextRouting(t *testing.T) {
 func TestProviderWithoutManifestCheckExcludedFromTextRouting(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p-nomanifest", nil, msg)
+	p, _ := reg.Register("p-nomanifest", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.LastChallengeVerified = time.Now()
 	p.ChallengeVerifiedSIP = true
@@ -137,7 +134,7 @@ func TestSwiftProviderRequiresRuntimeManifestCheck(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 	msg.Backend = BackendMLXSwift
-	p := reg.Register("p-swift", nil, msg)
+	p, _ := reg.Register("p-swift", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.LastChallengeVerified = time.Now()
 	p.ChallengeVerifiedSIP = true
@@ -159,7 +156,7 @@ func TestSwiftProviderRequiresRuntimeManifestCheck(t *testing.T) {
 func TestProviderWithoutChallengeVerifiedSIPExcluded(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p-nosip", nil, msg)
+	p, _ := reg.Register("p-nosip", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.LastChallengeVerified = time.Now()
 	p.RuntimeManifestChecked = true
@@ -174,8 +171,8 @@ func TestProviderWithoutChallengeVerifiedSIPExcluded(t *testing.T) {
 func TestProviderPartialPrivacyCapsExcluded(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	msg.PrivacyCapabilities.DangerousModulesBlocked = false
-	p := reg.Register("p-partial", nil, msg)
+	msg.PrivacyCapabilities.TextProxyDisabled = false
+	p, _ := reg.Register("p-partial", nil, msg)
 	p.ChallengeVerifiedSIP = true
 	reg.SetTrustLevel(p.ID, TrustHardware)
 	reg.RecordChallengeSuccess(p.ID)
@@ -186,10 +183,23 @@ func TestProviderPartialPrivacyCapsExcluded(t *testing.T) {
 	}
 }
 
+func TestInprocessMLXBackendRejected(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	msg.Backend = "inprocess-mlx"
+	_, err := reg.Register("p-rejected", nil, msg)
+	if err == nil {
+		t.Fatal("expected inprocess-mlx backend to be rejected")
+	}
+	if err != ErrBackendRejected {
+		t.Fatalf("expected ErrBackendRejected, got %v", err)
+	}
+}
+
 func TestHeartbeat(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
+	_, _ = reg.Register("p1", nil, msg)
 
 	hb := &protocol.HeartbeatMessage{
 		Type:   protocol.TypeHeartbeat,
@@ -211,7 +221,7 @@ func TestHeartbeat(t *testing.T) {
 func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 
 	reg.RestoreProviderState(p, &store.ProviderRecord{
 		ID:                         "persisted-p1",
@@ -276,7 +286,7 @@ func TestHeartbeatUnknownProvider(t *testing.T) {
 func TestDisconnect(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
+	_, _ = reg.Register("p1", nil, msg)
 
 	reg.Disconnect("p1")
 
@@ -297,7 +307,7 @@ func TestDisconnectUnknown(t *testing.T) {
 func TestFindProvider(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	testMakeTextRoutable(p1)
 
 	p := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -315,7 +325,7 @@ func TestFindProvider(t *testing.T) {
 func TestFindProviderNoMatch(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
+	_, _ = reg.Register("p1", nil, msg)
 
 	p := reg.FindProvider("nonexistent-model")
 	if p != nil {
@@ -326,7 +336,7 @@ func TestFindProviderNoMatch(t *testing.T) {
 func TestFindProviderSkipsAtMaxConcurrency(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	testMakeTextRoutable(p1)
 
 	// Fill up the provider to max concurrency by adding pending requests.
@@ -354,11 +364,11 @@ func TestFindProviderScoreBased(t *testing.T) {
 
 	// Register two providers with different benchmark data.
 	// p2 has higher decode_tps, so it should be preferred.
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	p1.DecodeTPS = 50.0
 	testMakeTextRoutable(p1)
 
-	p2 := reg.Register("p2", nil, msg)
+	p2, _ := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 100.0
 	testMakeTextRoutable(p2)
 
@@ -387,7 +397,7 @@ func TestFindProviderScoreBased(t *testing.T) {
 func TestSetProviderIdle(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
 	p1.ChallengeVerifiedSIP = true
@@ -408,11 +418,11 @@ func TestSetProviderIdle(t *testing.T) {
 func TestListModels(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
 	p1.ChallengeVerifiedSIP = true
-	p2 := reg.Register("p2", nil, msg)
+	p2, _ := reg.Register("p2", nil, msg)
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now()
 	p2.ChallengeVerifiedSIP = true
@@ -437,7 +447,7 @@ func TestListModelsWithAttestedProvider(t *testing.T) {
 	msg := testRegisterMessage()
 
 	// Register one attested and one unattested provider (both hardware-trusted)
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
 	p1.ChallengeVerifiedSIP = true
@@ -449,7 +459,7 @@ func TestListModelsWithAttestedProvider(t *testing.T) {
 		SecureBootEnabled:      true,
 	}
 
-	p2 := reg.Register("p2", nil, msg)
+	p2, _ := reg.Register("p2", nil, msg)
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now()
 	p2.ChallengeVerifiedSIP = true
@@ -486,7 +496,7 @@ func TestListModelsEmpty(t *testing.T) {
 func TestEviction(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 
 	// Backdate the heartbeat.
 	p.LastHeartbeat = time.Now().Add(-2 * time.Minute)
@@ -505,7 +515,7 @@ func TestEviction(t *testing.T) {
 func TestEvictionKeepsFreshProviders(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
+	_, _ = reg.Register("p1", nil, msg)
 
 	// Fresh provider — should not be evicted.
 	reg.evictStale(90 * time.Second)
@@ -533,7 +543,7 @@ func TestTrustLevels(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 	if p.TrustLevel != TrustNone {
 		t.Errorf("default trust level = %q, want %q", p.TrustLevel, TrustNone)
 	}
@@ -557,7 +567,7 @@ func TestListModelsWithTrustLevel(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
 	p1.ChallengeVerifiedSIP = true
@@ -570,7 +580,7 @@ func TestListModelsWithTrustLevel(t *testing.T) {
 	}
 
 	// self_signed provider should NOT appear in model list
-	p2 := reg.Register("p2", nil, msg)
+	p2, _ := reg.Register("p2", nil, msg)
 	p2.TrustLevel = TrustSelfSigned
 
 	models := reg.ListModels()
@@ -590,7 +600,7 @@ func TestListModelsExcludesSelfSigned(t *testing.T) {
 	msg := testRegisterMessage()
 
 	// Only self_signed provider — should NOT appear
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	p1.TrustLevel = TrustSelfSigned
 
 	models := reg.ListModels()
@@ -603,7 +613,7 @@ func TestFindProviderSkipsSelfSigned(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	p1.TrustLevel = TrustSelfSigned
 
 	p := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
@@ -615,7 +625,7 @@ func TestFindProviderSkipsSelfSigned(t *testing.T) {
 func TestMarkUntrusted(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
+	_, _ = reg.Register("p1", nil, msg)
 
 	reg.MarkUntrusted("p1")
 
@@ -628,7 +638,7 @@ func TestMarkUntrusted(t *testing.T) {
 func TestFindProviderSkipsUntrusted(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
+	_, _ = reg.Register("p1", nil, msg)
 
 	// Mark untrusted
 	reg.MarkUntrusted("p1")
@@ -643,7 +653,7 @@ func TestFindProviderSkipsUntrusted(t *testing.T) {
 func TestListModelsExcludesUntrusted(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
+	_, _ = reg.Register("p1", nil, msg)
 
 	reg.MarkUntrusted("p1")
 
@@ -656,7 +666,7 @@ func TestListModelsExcludesUntrusted(t *testing.T) {
 func TestRecordChallengeSuccess(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 
 	// Record some failures first
 	reg.RecordChallengeFailure("p1")
@@ -679,7 +689,7 @@ func TestRecordChallengeSuccess(t *testing.T) {
 func TestRecordChallengeFailure(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 	p.LastChallengeVerified = time.Now()
 	p.ChallengeVerifiedSIP = true
 
@@ -706,7 +716,7 @@ func TestRecordChallengeFailure(t *testing.T) {
 func TestChallengeFailureThreshold(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
+	_, _ = reg.Register("p1", nil, msg)
 
 	// Record failures up to the threshold
 	for range 3 {
@@ -727,13 +737,13 @@ func TestScoringHigherDecodeTPS(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	p1.DecodeTPS = 50.0
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
 	p1.ChallengeVerifiedSIP = true
 
-	p2 := reg.Register("p2", nil, msg)
+	p2, _ := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 200.0
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now()
@@ -754,12 +764,12 @@ func TestScoringTrustedPreferred(t *testing.T) {
 	msg := testRegisterMessage()
 
 	// p1 is not hardware-trusted — should be excluded entirely.
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	p1.DecodeTPS = 100.0
 	p1.TrustLevel = TrustSelfSigned // excluded from routing
 
 	// p2 is hardware-trusted — should be the only candidate.
-	p2 := reg.Register("p2", nil, msg)
+	p2, _ := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 100.0
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now()
@@ -779,13 +789,13 @@ func TestScoringIdlePreferredOverBusy(t *testing.T) {
 	msg := testRegisterMessage()
 
 	// Both providers have equal decode_tps. p1 already has pending requests.
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	p1.DecodeTPS = 100.0
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
 	p1.ChallengeVerifiedSIP = true
 
-	p2 := reg.Register("p2", nil, msg)
+	p2, _ := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 100.0
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now()
@@ -810,13 +820,13 @@ func TestScoringWarmModelPreferred(t *testing.T) {
 	msg := testRegisterMessage()
 
 	// Both have same decode_tps and trust, but p2 has the model warm.
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	p1.DecodeTPS = 100.0
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
 	p1.ChallengeVerifiedSIP = true
 
-	p2 := reg.Register("p2", nil, msg)
+	p2, _ := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 100.0
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now()
@@ -875,7 +885,7 @@ func TestTrustMultiplierValues(t *testing.T) {
 func TestRecordJobSuccessUpdatesReputation(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 
 	reg.RecordJobSuccess("p1", 500*time.Millisecond)
 	reg.RecordJobSuccess("p1", 500*time.Millisecond)
@@ -891,7 +901,7 @@ func TestRecordJobSuccessUpdatesReputation(t *testing.T) {
 func TestRecordJobFailureUpdatesReputation(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 
 	reg.RecordJobFailure("p1")
 
@@ -909,7 +919,7 @@ func TestBenchmarkFieldsInRegistration(t *testing.T) {
 	msg.PrefillTPS = 500.0
 	msg.DecodeTPS = 100.0
 
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 	if p.PrefillTPS != 500.0 {
 		t.Errorf("prefill_tps = %f, want 500.0", p.PrefillTPS)
 	}
@@ -921,7 +931,7 @@ func TestBenchmarkFieldsInRegistration(t *testing.T) {
 func TestHeartbeatUpdatesWarmModels(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
+	_, _ = reg.Register("p1", nil, msg)
 
 	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
 	hb := &protocol.HeartbeatMessage{
@@ -946,7 +956,7 @@ func TestHeartbeatUpdatesWarmModels(t *testing.T) {
 func TestSetProviderIdleDrainsQueue(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.LastChallengeVerified = time.Now()
 	p.ChallengeVerifiedSIP = true
@@ -1038,7 +1048,7 @@ func TestFindProviderPrefersHealthy(t *testing.T) {
 	reg.MinTrustLevel = TrustNone
 	msg := testRegisterMessage()
 
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	p1.DecodeTPS = 100.0
 	p1.TrustLevel = TrustHardware
 	p1.LastChallengeVerified = time.Now()
@@ -1049,7 +1059,7 @@ func TestFindProviderPrefersHealthy(t *testing.T) {
 		ThermalState:   "serious",
 	}
 
-	p2 := reg.Register("p2", nil, msg)
+	p2, _ := reg.Register("p2", nil, msg)
 	p2.DecodeTPS = 100.0
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now()
@@ -1072,7 +1082,7 @@ func TestFindProviderPrefersHealthy(t *testing.T) {
 func TestHeartbeatUpdatesSystemMetrics(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
+	_, _ = reg.Register("p1", nil, msg)
 
 	hb := &protocol.HeartbeatMessage{
 		Type:   protocol.TypeHeartbeat,
@@ -1098,7 +1108,7 @@ func TestHeartbeatUpdatesSystemMetrics(t *testing.T) {
 func TestPendingRequests(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 
 	pr := &PendingRequest{
 		RequestID:  "req-1",
@@ -1138,7 +1148,7 @@ func TestPendingRequests(t *testing.T) {
 func TestFindProviderSkipsZeroLastChallenge(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
 	// Deliberately NOT setting LastChallengeVerified — it stays zero.
 
@@ -1155,7 +1165,7 @@ func TestFindProviderSkipsZeroLastChallenge(t *testing.T) {
 func TestFindProviderSkipsStaleChallenge(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
 	// Set LastChallengeVerified to 7 minutes ago (beyond 6m threshold).
 	p.LastChallengeVerified = time.Now().Add(-7 * time.Minute)
@@ -1173,7 +1183,7 @@ func TestFindProviderAcceptsRecentChallenge(t *testing.T) {
 	msg := testRegisterMessage()
 
 	// 1 minute ago — well within the 3m30s window.
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.ChallengeVerifiedSIP = true
 	p.LastChallengeVerified = time.Now().Add(-1 * time.Minute)
@@ -1192,7 +1202,7 @@ func TestFindProviderAcceptsRecentChallenge(t *testing.T) {
 func TestFindProviderChallengeBoundaryJustInside(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.ChallengeVerifiedSIP = true
 	p.LastChallengeVerified = time.Now().Add(-5 * time.Minute)
@@ -1208,7 +1218,7 @@ func TestFindProviderChallengeBoundaryJustInside(t *testing.T) {
 func TestFindProviderChallengeBoundaryJustOutside(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.ChallengeVerifiedSIP = true
 	p.LastChallengeVerified = time.Now().Add(-6*time.Minute - 1*time.Second)
@@ -1227,19 +1237,19 @@ func TestFindProviderMixedChallengeState(t *testing.T) {
 	msg := testRegisterMessage()
 
 	// p1: verified 1 minute ago — should be routable.
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	p1.TrustLevel = TrustHardware
 	p1.ChallengeVerifiedSIP = true
 	p1.DecodeTPS = 50.0
 	p1.LastChallengeVerified = time.Now().Add(-1 * time.Minute)
 
 	// p2: never verified (just connected) — should be skipped.
-	p2 := reg.Register("p2", nil, msg)
+	p2, _ := reg.Register("p2", nil, msg)
 	p2.TrustLevel = TrustHardware
 	p2.DecodeTPS = 200.0 // Higher score, but should still be skipped.
 
 	// p3: verified 7 minutes ago — stale, should be skipped.
-	p3 := reg.Register("p3", nil, msg)
+	p3, _ := reg.Register("p3", nil, msg)
 	p3.TrustLevel = TrustHardware
 	p3.DecodeTPS = 200.0
 	p3.LastChallengeVerified = time.Now().Add(-7 * time.Minute)
@@ -1260,11 +1270,11 @@ func TestFindProviderNoVerifiedProviders(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
 
-	p1 := reg.Register("p1", nil, msg)
+	p1, _ := reg.Register("p1", nil, msg)
 	p1.TrustLevel = TrustHardware
 	// Zero LastChallengeVerified.
 
-	p2 := reg.Register("p2", nil, msg)
+	p2, _ := reg.Register("p2", nil, msg)
 	p2.TrustLevel = TrustHardware
 	p2.LastChallengeVerified = time.Now().Add(-10 * time.Minute) // Very stale.
 
@@ -1280,7 +1290,7 @@ func TestFindProviderNoVerifiedProviders(t *testing.T) {
 func TestChallengeSuccessEnablesRouting(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
 
 	// Before challenge: not routable.
@@ -1308,7 +1318,7 @@ func TestChallengeSuccessEnablesRouting(t *testing.T) {
 func TestChallengeExpirationRemovesRoutability(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.LastChallengeVerified = time.Now()
 	p.ChallengeVerifiedSIP = true
@@ -1340,7 +1350,7 @@ func TestProviderEviction(t *testing.T) {
 	msg := testRegisterMessage()
 	model := msg.Models[0].ID
 
-	p := reg.Register("evict-me", nil, msg)
+	p, _ := reg.Register("evict-me", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.LastChallengeVerified = time.Now()
 	p.ChallengeVerifiedSIP = true
@@ -1389,7 +1399,7 @@ func TestHeartbeatMetricsAffectScoring(t *testing.T) {
 	model := msg.Models[0].ID
 
 	// Register two providers with identical DecodeTPS.
-	pA := reg.Register("healthy", nil, msg)
+	pA, _ := reg.Register("healthy", nil, msg)
 	pA.DecodeTPS = 100.0
 	pA.TrustLevel = TrustHardware
 	pA.LastChallengeVerified = time.Now()
@@ -1400,7 +1410,7 @@ func TestHeartbeatMetricsAffectScoring(t *testing.T) {
 		ThermalState:   "nominal",
 	}
 
-	pB := reg.Register("stressed", nil, msg)
+	pB, _ := reg.Register("stressed", nil, msg)
 	pB.DecodeTPS = 100.0
 	pB.TrustLevel = TrustHardware
 	pB.LastChallengeVerified = time.Now()
@@ -1439,14 +1449,14 @@ func TestWarmModelBonusRouting(t *testing.T) {
 	model := msg.Models[0].ID
 
 	// Provider A: cold (no warm models).
-	pA := reg.Register("cold", nil, msg)
+	pA, _ := reg.Register("cold", nil, msg)
 	pA.DecodeTPS = 100.0
 	pA.TrustLevel = TrustHardware
 	pA.LastChallengeVerified = time.Now()
 	pA.ChallengeVerifiedSIP = true
 
 	// Provider B: warm (model already loaded).
-	pB := reg.Register("warm", nil, msg)
+	pB, _ := reg.Register("warm", nil, msg)
 	pB.DecodeTPS = 100.0
 	pB.TrustLevel = TrustHardware
 	pB.LastChallengeVerified = time.Now()
@@ -1535,7 +1545,7 @@ func TestThermalCriticalBlocksRouting(t *testing.T) {
 	// not by score threshold.
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	pReg := reg.Register("critical-provider", nil, msg)
+	pReg, _ := reg.Register("critical-provider", nil, msg)
 	pReg.DecodeTPS = 100.0
 	pReg.TrustLevel = TrustHardware
 	pReg.LastChallengeVerified = time.Now()
@@ -1560,7 +1570,7 @@ func TestThermalCriticalBlocksRouting(t *testing.T) {
 
 	// When a healthy provider is also available, it should always be preferred.
 	reg.SetProviderIdle("critical-provider")
-	pHealthy := reg.Register("healthy-provider", nil, msg)
+	pHealthy, _ := reg.Register("healthy-provider", nil, msg)
 	pHealthy.DecodeTPS = 100.0
 	pHealthy.TrustLevel = TrustHardware
 	pHealthy.LastChallengeVerified = time.Now()
@@ -1599,7 +1609,7 @@ func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 	// Register 5 providers with different stats.
 	for i := range 5 {
 		id := fmt.Sprintf("provider-%d", i)
-		p := reg.Register(id, nil, msg)
+		p, _ := reg.Register(id, nil, msg)
 		p.DecodeTPS = float64(50 + i*25)
 		p.TrustLevel = TrustHardware
 		p.LastChallengeVerified = time.Now()
@@ -1734,9 +1744,9 @@ func TestModelCatalogFilterOnRegister(t *testing.T) {
 			{ID: "mlx-community/Qwen3.5-9B-Instruct-4bit", SizeBytes: 5700000000, ModelType: "qwen3", Quantization: "4bit"},
 			{ID: "mlx-community/random-model-not-in-catalog", SizeBytes: 1000000, ModelType: "llama", Quantization: "4bit"},
 		},
-		Backend: "vllm_mlx",
+		Backend: "mlx-swift",
 	}
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 
 	if len(p.Models) != 1 {
 		t.Fatalf("expected 1 model after catalog filter, got %d", len(p.Models))
@@ -1758,9 +1768,9 @@ func TestModelCatalogFilterOnRegisterNoCatalog(t *testing.T) {
 			{ID: "model-a", SizeBytes: 1000, ModelType: "llama", Quantization: "4bit"},
 			{ID: "model-b", SizeBytes: 2000, ModelType: "qwen2", Quantization: "8bit"},
 		},
-		Backend: "vllm_mlx",
+		Backend: "mlx-swift",
 	}
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 
 	if len(p.Models) != 2 {
 		t.Fatalf("expected 2 models without catalog, got %d", len(p.Models))
@@ -1808,9 +1818,9 @@ func TestFindProviderRespectsModelCatalog(t *testing.T) {
 		Models: []protocol.ModelInfo{
 			{ID: "not-whitelisted", SizeBytes: 1000},
 		},
-		Backend: "vllm_mlx",
+		Backend: "mlx-swift",
 	}
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 	p.mu.Lock()
 	p.LastChallengeVerified = time.Now()
 	p.mu.Unlock()
@@ -1848,9 +1858,9 @@ func TestModelCatalogWeightHashVerification(t *testing.T) {
 			{ID: "model-a", SizeBytes: 1000, WeightHash: correctHash}, // correct
 			{ID: "model-b", SizeBytes: 2000, WeightHash: "anything"},  // no enforcement
 		},
-		Backend: "vllm_mlx",
+		Backend: "mlx-swift",
 	}
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 
 	if len(p.Models) != 2 {
 		t.Fatalf("expected 2 models (both valid), got %d", len(p.Models))
@@ -1864,9 +1874,9 @@ func TestModelCatalogWeightHashVerification(t *testing.T) {
 			{ID: "model-a", SizeBytes: 1000, WeightHash: wrongHash}, // mismatch
 			{ID: "model-b", SizeBytes: 2000, WeightHash: "anything"},
 		},
-		Backend: "vllm_mlx",
+		Backend: "mlx-swift",
 	}
-	p2 := reg.Register("p2", nil, msg2)
+	p2, _ := reg.Register("p2", nil, msg2)
 
 	if len(p2.Models) != 1 {
 		t.Fatalf("expected 1 model (model-a rejected), got %d", len(p2.Models))
@@ -2099,7 +2109,7 @@ func TestScoreProviderColdStartPenalty(t *testing.T) {
 func TestFindProviderDynamicConcurrency(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.LastChallengeVerified = time.Now()
 	p.ChallengeVerifiedSIP = true
@@ -2127,7 +2137,7 @@ func TestFindProviderDynamicConcurrency(t *testing.T) {
 func TestHeartbeatBackendCapacity(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	reg.Register("p1", nil, msg)
+	_, _ = reg.Register("p1", nil, msg)
 
 	cap := &protocol.BackendCapacity{
 		Slots: []protocol.BackendSlotCapacity{
@@ -2180,7 +2190,7 @@ func TestHeartbeatBackendCapacity(t *testing.T) {
 func TestBackwardCompatNoCapacity(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.LastChallengeVerified = time.Now()
 	p.ChallengeVerifiedSIP = true
@@ -2217,7 +2227,7 @@ func TestBackwardCompatNoCapacity(t *testing.T) {
 func TestSetProviderIdleDynamicCap(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()
-	p := reg.Register("p1", nil, msg)
+	p, _ := reg.Register("p1", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.LastChallengeVerified = time.Now()
 	p.ChallengeVerifiedSIP = true
@@ -2340,7 +2350,7 @@ func TestFindProviderPrefersCrashedLast(t *testing.T) {
 	msg := testRegisterMessage()
 
 	// Register two providers: one crashed, one hot.
-	crashed := reg.Register("crashed-provider", nil, msg)
+	crashed, _ := reg.Register("crashed-provider", nil, msg)
 	crashed.TrustLevel = TrustHardware
 	crashed.LastChallengeVerified = time.Now()
 	crashed.ChallengeVerifiedSIP = true
@@ -2355,7 +2365,7 @@ func TestFindProviderPrefersCrashedLast(t *testing.T) {
 	}
 	crashed.mu.Unlock()
 
-	hot := reg.Register("hot-provider", nil, msg)
+	hot, _ := reg.Register("hot-provider", nil, msg)
 	hot.TrustLevel = TrustHardware
 	hot.LastChallengeVerified = time.Now()
 	hot.ChallengeVerifiedSIP = true
@@ -2388,7 +2398,7 @@ func TestFindProviderCrashedOnlyStillRoutes(t *testing.T) {
 	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
 	msg := testRegisterMessage()
 
-	p := reg.Register("only-provider", nil, msg)
+	p, _ := reg.Register("only-provider", nil, msg)
 	p.TrustLevel = TrustHardware
 	p.LastChallengeVerified = time.Now()
 	p.ChallengeVerifiedSIP = true

@@ -180,23 +180,30 @@ func (s *Server) handleRedeemInviteCode(w http.ResponseWriter, r *http.Request) 
 
 	accountID := consumerKeyFromContext(r.Context())
 
-	// Get the invite code to know the amount
+	// Get the invite code to know the amount.
 	ic, err := s.store.GetInviteCode(code)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "invalid invite code"))
 		return
 	}
 
-	// Redeem atomically (checks active, expiry, max uses, double-redemption)
-	if err := s.store.RedeemInviteCode(code, accountID); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
-		return
-	}
-
-	// Credit the user's balance
-	if err := s.store.Credit(accountID, ic.AmountMicroUSD, store.LedgerInviteCredit, "invite:"+code); err != nil {
-		s.logger.Error("failed to credit invite balance", "account", accountID, "code", code, "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to credit balance"))
+	// Atomically redeem the invite code and credit the balance in one operation.
+	// This prevents the invite being consumed without the credit landing.
+	if err := s.store.RedeemInviteCodeAndCredit(code, accountID, ic.AmountMicroUSD, store.LedgerInviteCredit, "invite:"+code); err != nil {
+		msg := err.Error()
+		// Classify user-visible validation errors (400) vs server errors (500).
+		// The store returns these specific messages for invalid/exhausted codes.
+		isUserError := strings.Contains(msg, "already redeemed") ||
+			strings.Contains(msg, "inactive") ||
+			strings.Contains(msg, "expired") ||
+			strings.Contains(msg, "max uses") ||
+			strings.Contains(msg, "not found")
+		if isUserError {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", msg))
+		} else {
+			s.logger.Error("failed to redeem invite code", "account", accountID, "code", code, "error", err)
+			writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to apply invite credit"))
+		}
 		return
 	}
 

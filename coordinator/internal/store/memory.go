@@ -1235,6 +1235,43 @@ func (s *MemoryStore) RedeemInviteCode(code string, accountID string) error {
 	return nil
 }
 
+func (s *MemoryStore) RedeemInviteCodeAndCredit(code string, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ic, ok := s.inviteCodes[code]
+	if !ok {
+		return fmt.Errorf("invite code %q not found", code)
+	}
+	if !ic.Active {
+		return fmt.Errorf("invite code %q is inactive", code)
+	}
+	if ic.ExpiresAt != nil && time.Now().After(*ic.ExpiresAt) {
+		return fmt.Errorf("invite code %q has expired", code)
+	}
+	if ic.MaxUses > 0 && ic.UsedCount >= ic.MaxUses {
+		return fmt.Errorf("invite code %q has reached max uses", code)
+	}
+	if acctCodes, ok := s.accountRedemptions[accountID]; ok && acctCodes[code] {
+		return fmt.Errorf("account has already redeemed code %q", code)
+	}
+
+	ic.UsedCount++
+	s.inviteRedemptions[code] = append(s.inviteRedemptions[code], InviteRedemption{
+		Code:      code,
+		AccountID: accountID,
+		CreatedAt: time.Now(),
+	})
+	if s.accountRedemptions[accountID] == nil {
+		s.accountRedemptions[accountID] = make(map[string]bool)
+	}
+	s.accountRedemptions[accountID][code] = true
+
+	// Credit in the same lock scope so the two operations are atomic.
+	s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now())
+	return nil
+}
+
 func (s *MemoryStore) HasRedeemedInviteCode(code, accountID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -255,6 +255,11 @@ type Store interface {
 	// Returns error if code is inactive, expired, fully used, or already redeemed by this account.
 	RedeemInviteCode(code string, accountID string) error
 
+	// RedeemInviteCodeAndCredit atomically redeems the invite code and credits
+	// the account in a single transaction. Prevents the invite being consumed
+	// without the credit landing when the credit step fails separately.
+	RedeemInviteCodeAndCredit(code string, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
+
 	// HasRedeemedInviteCode checks if an account has already redeemed a specific code.
 	HasRedeemedInviteCode(code, accountID string) bool
 

@@ -126,16 +126,10 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case "approved":
-		// Atomically consume the device code before issuing the token.
-		// This prevents a second poll (or a race) from minting a second
-		// long-lived token for the same browser approval.
-		if err := s.store.ConsumeDeviceCode(dc.DeviceCode); err != nil {
-			// Another concurrent request already consumed it.
-			writeJSON(w, http.StatusGone, errorResponse("expired_token", "device code is no longer valid"))
-			return
-		}
-
-		// Generate a long-lived provider token.
+		// Generate and persist the provider token first, then consume the
+		// device code. This ordering ensures that a transient failure in token
+		// creation leaves the device code in "approved" state so the client
+		// can retry, rather than permanently invalidating it.
 		tokenBytes := make([]byte, 32)
 		if _, err := rand.Read(tokenBytes); err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to generate token"))
@@ -152,6 +146,22 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.store.CreateProviderToken(pt); err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to create token"))
+			return
+		}
+
+		// Consume the device code to prevent a second poll from issuing a
+		// second token. If this fails (race: another request already consumed
+		// it, or a DB error), revoke the token we just created and return the
+		// appropriate status — the device code remains in its current state
+		// and the client can retry if it was a transient error.
+		if err := s.store.ConsumeDeviceCode(dc.DeviceCode); err != nil {
+			_ = s.store.RevokeProviderToken(rawToken)
+			// Distinguish race (already consumed) from transient store failure.
+			if strings.Contains(err.Error(), "not approved") || strings.Contains(err.Error(), "consumed") {
+				writeJSON(w, http.StatusGone, errorResponse("expired_token", "device code is no longer valid"))
+			} else {
+				writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to finalize token"))
+			}
 			return
 		}
 

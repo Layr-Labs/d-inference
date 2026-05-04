@@ -72,6 +72,8 @@ json_val() { echo "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p"; }
 BUNDLE_URL=$(json_val "$RELEASE_JSON" url)
 BUNDLE_HASH=$(json_val "$RELEASE_JSON" bundle_hash)
 BINARY_HASH=$(json_val "$RELEASE_JSON" binary_hash)
+PYTHON_HASH=$(json_val "$RELEASE_JSON" python_hash)
+RUNTIME_HASH=$(json_val "$RELEASE_JSON" runtime_hash)
 VERSION=$(json_val "$RELEASE_JSON" version)
 
 echo "  Version: $VERSION"
@@ -106,12 +108,16 @@ tar xzf /tmp/eigeninference-bundle.tar.gz -C "$INSTALL_DIR"
 chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/eigeninference-enclave" 2>/dev/null || true
 rm -f /tmp/eigeninference-bundle.tar.gz
 
-# Verify code signature (codesign is part of base macOS, no CLT needed)
+# Verify code signature — fatal: an unsigned binary must never be installed.
 if codesign --verify --verbose "$BIN_DIR/darkbloom" 2>/dev/null; then
     TEAM=$(codesign -dvv "$BIN_DIR/darkbloom" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)
     echo "  Code signature verified ✓ (Team: $TEAM)"
 else
-    echo "  ⚠ Code signature could not be verified"
+    echo ""
+    echo "  ✗ Code signature verification failed — refusing to install unsigned binary."
+    echo "    The downloaded binary may have been tampered with."
+    rm -f "$BIN_DIR/darkbloom" "$BIN_DIR/eigeninference-enclave"
+    exit 1
 fi
 
 # Make available in PATH
@@ -179,6 +185,15 @@ else
     # Try R2 release artifacts first (the canonical source).
     if [ -n "$VERSION" ] && curl -f#L "$R2_CDN/releases/v${VERSION}/eigeninference-python-macos-arm64.tar.gz" -o "/tmp/eigeninference-python.tar.gz" 2>/dev/null; then
         echo ""
+        echo "  Verifying Python runtime hash..."
+        ACTUAL_PYTHON_HASH=$(shasum -a 256 /tmp/eigeninference-python.tar.gz | cut -d' ' -f1)
+        if [ -n "$PYTHON_HASH" ] && [ "$ACTUAL_PYTHON_HASH" != "$PYTHON_HASH" ]; then
+            echo "  ✗ Python runtime hash mismatch — aborting."
+            echo "    Expected: $PYTHON_HASH"
+            echo "    Got:      $ACTUAL_PYTHON_HASH"
+            rm -f /tmp/eigeninference-python.tar.gz
+            exit 1
+        fi
         echo "  Extracting Python runtime..."
         rm -rf "$INSTALL_DIR/python"
         mkdir -p "$INSTALL_DIR/python"
@@ -194,6 +209,14 @@ else
         echo "  Downloading site-packages..."
         SITE_DIR="$INSTALL_DIR/python/lib/python3.12/site-packages"
         if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/eigeninference-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
+            ACTUAL_RUNTIME_HASH=$(shasum -a 256 /tmp/eigen-site-packages.tar.gz | cut -d' ' -f1)
+            if [ -n "$RUNTIME_HASH" ] && [ "$ACTUAL_RUNTIME_HASH" != "$RUNTIME_HASH" ]; then
+                echo "  ✗ Site-packages hash mismatch — aborting."
+                echo "    Expected: $RUNTIME_HASH"
+                echo "    Got:      $ACTUAL_RUNTIME_HASH"
+                rm -f /tmp/eigen-site-packages.tar.gz
+                exit 1
+            fi
             rm -rf "$SITE_DIR"
             mkdir -p "$SITE_DIR"
             tar xzf /tmp/eigen-site-packages.tar.gz -C "$SITE_DIR"
@@ -224,14 +247,19 @@ if [ -f "$PYTHON_BIN" ] && ! "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
             SITE_DIR="$INSTALL_DIR/python/lib/python3.12/site-packages"
             R2_CDN="${R2_CDN:-__DARKBLOOM_R2_SITE_PACKAGES_CDN_URL__}"
             if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/eigeninference-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
+                ACTUAL_RUNTIME_HASH=$(shasum -a 256 /tmp/eigen-site-packages.tar.gz | cut -d' ' -f1)
+                if [ -n "$RUNTIME_HASH" ] && [ "$ACTUAL_RUNTIME_HASH" != "$RUNTIME_HASH" ]; then
+                    echo "  ✗ Site-packages hash mismatch — aborting."
+                    echo "    Expected: $RUNTIME_HASH"
+                    echo "    Got:      $ACTUAL_RUNTIME_HASH"
+                    rm -f /tmp/eigen-site-packages.tar.gz
+                    exit 1
+                fi
                 rm -rf "$SITE_DIR"
                 mkdir -p "$SITE_DIR"
                 tar xzf /tmp/eigen-site-packages.tar.gz -C "$SITE_DIR"
                 rm -f /tmp/eigen-site-packages.tar.gz
                 echo "  Packages installed from R2 ✓"
-            else
-                # Fallback: pip install from GitHub
-                "$PYTHON_BIN" -m pip install --quiet "https://github.com/Gajesh2007/vllm-mlx/archive/refs/heads/main.zip" mlx-lm 2>/dev/null || true
             fi
         else
             echo "  ✗ Portable Python also failed — please report this issue"

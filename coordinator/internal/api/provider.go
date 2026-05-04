@@ -502,7 +502,11 @@ func (s *Server) handleAttestationResponse(providerID string, provider *registry
 
 	pc := tracker.remove(msg.Nonce)
 	if pc == nil {
-		s.logger.Warn("attestation response for unknown challenge", "provider_id", providerID, "nonce", msg.Nonce[:8]+"...")
+		nonce := msg.Nonce
+		if len(nonce) > 8 {
+			nonce = nonce[:8]
+		}
+		s.logger.Warn("attestation response for unknown challenge", "provider_id", providerID, "nonce", nonce+"...")
 		return
 	}
 

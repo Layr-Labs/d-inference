@@ -219,8 +219,8 @@ func (r *ProfileRun) String() string {
 
 func (r *ProfileRun) SummaryTable() string {
 	var s string
-	s += fmt.Sprintf("%-30s %8s %8s %8s %8s %8s\n", "SEGMENT", "COUNT", "MEAN", "P95", "P99", "MAX")
-	s += fmt.Sprintf("%s\n", "─────────────────────────────────────────────────────────────────────")
+	s += fmt.Sprintf("%-30s %8s %10s %10s %10s %10s\n", "SEGMENT", "COUNT", "MEAN", "P95", "P99", "MAX")
+	s += fmt.Sprintf("%s\n", "─────────────────────────────────────────────────────────────────────────────")
 	for _, seg := range []testbed.Segment{
 		testbed.SegmentClientToCoordinator,
 		testbed.SegmentQueueWait,
@@ -233,12 +233,12 @@ func (r *ProfileRun) SummaryTable() string {
 		testbed.SegmentTotalE2E,
 	} {
 		if stats, ok := r.Aggregated[seg]; ok {
-			s += fmt.Sprintf("%-30s %8d %8s %8s %8s %8s\n",
+			s += fmt.Sprintf("%-30s %8d %10s %10s %10s %10s\n",
 				seg, stats.Count,
-				stats.Mean.Round(time.Microsecond),
-				stats.P95.Round(time.Microsecond),
-				stats.P99.Round(time.Microsecond),
-				stats.Max.Round(time.Microsecond),
+				stats.Mean.Round(time.Millisecond),
+				stats.P95.Round(time.Millisecond),
+				stats.P99.Round(time.Millisecond),
+				stats.Max.Round(time.Millisecond),
 			)
 		}
 	}

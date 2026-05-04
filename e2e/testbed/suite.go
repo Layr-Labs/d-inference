@@ -51,7 +51,7 @@ type Suite struct {
 	Pg          *deps.PostgresLifecycle
 	PgStore     store.Store
 	Coordinator *Coordinator
-	Provider    *Provider
+	Providers   []*Provider
 }
 
 type Coordinator struct {
@@ -73,7 +73,20 @@ type Provider struct {
 }
 
 type SuiteConfig struct {
-	ModelID string
+	ModelID       string
+	NumProviders  int
+	QueueCapacity int
+	QueueTimeout  time.Duration
+	SeedBalance   int64
+}
+
+func DefaultSuiteConfig() SuiteConfig {
+	return SuiteConfig{
+		NumProviders:  1,
+		QueueCapacity: 100,
+		QueueTimeout:  120 * time.Second,
+		SeedBalance:   100_000_000,
+	}
 }
 
 func NewSuite(cfg SuiteConfig) *Suite {
@@ -93,6 +106,10 @@ func NewSuite(cfg SuiteConfig) *Suite {
 		}
 	}
 
+	if cfg.NumProviders <= 0 {
+		cfg.NumProviders = 1
+	}
+
 	return &Suite{
 		Logger:  logger,
 		ModelID: modelID,
@@ -108,15 +125,15 @@ func (s *Suite) Start(ctx context.Context) error {
 	if err := s.startCoordinator(); err != nil {
 		return err
 	}
-	if err := s.startProvider(); err != nil {
+	if err := s.startProviders(); err != nil {
 		return err
 	}
 	return s.waitForProviderRegistration(3 * time.Minute)
 }
 
 func (s *Suite) Stop() {
-	if s.Provider != nil {
-		s.Provider.Stop()
+	for _, p := range s.Providers {
+		p.Stop()
 	}
 	if s.Coordinator != nil {
 		s.Coordinator.Stop()
@@ -170,21 +187,32 @@ func (s *Suite) startCoordinator() error {
 	return s.Coordinator.Start(s.Ctx, s.Logger)
 }
 
-func (s *Suite) startProvider() error {
+func (s *Suite) startProviders() error {
 	binaryPath, err := BuildProvider(s.Ctx, s.Logger)
 	if err != nil {
 		return fmt.Errorf("build provider: %w", err)
 	}
 
-	s.Provider = &Provider{
-		BinaryPath: binaryPath,
-		Logger:     s.Logger,
+	cfg := DefaultSuiteConfig()
+	numProviders := cfg.NumProviders
+	if n, _ := strconv.Atoi(os.Getenv("TESTBED_NUM_PROVIDERS")); n > 0 {
+		numProviders = n
 	}
 
-	return s.Provider.Start(s.Ctx, s.Coordinator.BaseURL(), ProviderConfig{
-		ModelID:    s.ModelID,
-		TrustLevel: TrustNone,
-	})
+	for i := 0; i < numProviders; i++ {
+		p := &Provider{
+			BinaryPath: binaryPath,
+			Logger:     s.Logger.With("provider_index", i),
+		}
+		if err := p.Start(s.Ctx, s.Coordinator.BaseURL(), ProviderConfig{
+			ModelID:    s.ModelID,
+			TrustLevel: TrustNone,
+		}); err != nil {
+			return fmt.Errorf("start provider %d: %w", i, err)
+		}
+		s.Providers = append(s.Providers, p)
+	}
+	return nil
 }
 
 func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {

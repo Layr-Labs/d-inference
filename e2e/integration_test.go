@@ -20,6 +20,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/e2e/testbed"
 	tbassert "github.com/eigeninference/d-inference/e2e/testbed/assert"
+	tbprofile "github.com/eigeninference/d-inference/e2e/testbed/profile"
 	"github.com/eigeninference/d-inference/e2e/testbed/profile"
 )
 
@@ -180,12 +181,23 @@ func sumAmounts(entries []ledgerEntry) int64 {
 func TestIntegration_NonStreamingInference(t *testing.T) {
 	s := startSuite(t)
 
+	buf := testbed.NewEventBuffer()
+	inst := testbed.NewInstrument(buf)
+	ri := inst.NewRequest()
+	timer := ri.StartSegment(testbed.SegmentClientToCoordinator)
+
 	resp := postChatCompletions(t, s, "What is 2+2? Answer with just the number.", false, 20)
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
+	timer.Stop()
+
 	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", string(respBody[:min(len(respBody), 500)]))
+	ri.EndWithDuration(0)
 	t.Logf("non-streaming response: %s", string(respBody[:min(len(respBody), 200)]))
+
+	run := tbprofile.NewProfiler(testbed.DefaultTestConfig(), buf).BuildProfile()
+	t.Logf("\n%s", run.SummaryTable())
 
 	assertAccounting(t, s)
 }
@@ -193,19 +205,31 @@ func TestIntegration_NonStreamingInference(t *testing.T) {
 func TestIntegration_StreamingInference(t *testing.T) {
 	s := startSuite(t)
 
+	buf := testbed.NewEventBuffer()
+	inst := testbed.NewInstrument(buf)
+	ri := inst.NewRequest()
+	timer := ri.StartSegment(testbed.SegmentClientToCoordinator)
+
 	resp := postChatCompletions(t, s, "Count from 1 to 5.", true, 50)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	timer.Stop()
+	ri.EndWithDuration(0)
 
 	var chunks int
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		if strings.HasPrefix(scanner.Text(), "data: ") {
 			chunks++
+			ri.StreamChunk(chunks)
 		}
 	}
 	require.Greater(t, chunks, 0, "expected at least one SSE chunk")
 	t.Logf("streaming: received %d SSE chunks", chunks)
+
+	run := tbprofile.NewProfiler(testbed.DefaultTestConfig(), buf).BuildProfile()
+	t.Logf("\n%s", run.SummaryTable())
 
 	assertAccounting(t, s)
 }
@@ -473,6 +497,9 @@ func TestIntegration_StreamingContentValidation(t *testing.T) {
 func TestIntegration_ConcurrentRequests(t *testing.T) {
 	s := startSuite(t)
 
+	buf := testbed.NewEventBuffer()
+	inst := testbed.NewInstrument(buf)
+
 	const numRequests = 5
 	type result struct {
 		statusCode int
@@ -485,10 +512,21 @@ func TestIntegration_ConcurrentRequests(t *testing.T) {
 	for i := 0; i < numRequests; i++ {
 		go func(idx int) {
 			defer wg.Done()
+			ri := inst.NewRequest()
+			timer := ri.StartSegment(testbed.SegmentClientToCoordinator)
+
 			resp := postChatCompletions(t, s, fmt.Sprintf("What is %d+%d?", idx, idx+1), false, 20)
 			defer resp.Body.Close()
 			respBody, _ := io.ReadAll(resp.Body)
+
+			timer.Stop()
 			results[idx] = result{statusCode: resp.StatusCode, body: string(respBody[:min(len(respBody), 200)])}
+
+			if resp.StatusCode == http.StatusOK {
+				ri.EndWithDuration(0)
+			} else {
+				ri.Error(fmt.Errorf("status %d", resp.StatusCode))
+			}
 		}(i)
 	}
 	wg.Wait()
@@ -502,6 +540,9 @@ func TestIntegration_ConcurrentRequests(t *testing.T) {
 		}
 	}
 	require.Greater(t, successCount, 0, "at least some concurrent requests should succeed")
+
+	run := tbprofile.NewProfiler(testbed.DefaultTestConfig(), buf).BuildProfile()
+	t.Logf("\n%s", run.SummaryTable())
 
 	assertAccounting(t, s)
 	t.Logf("concurrent: %d/%d requests succeeded", successCount, numRequests)

@@ -43,6 +43,7 @@ public struct SchedulerCapacity: Sendable {
 public actor BatchScheduler {
 
     private let maxConcurrentRequests: Int
+    private let prefillBatchSize: Int
     private let pendingTimeout: Duration
     private let defaultMaxTokens: Int
 
@@ -69,10 +70,23 @@ public actor BatchScheduler {
 
     public init(
         maxConcurrentRequests: Int = 4,
+        prefillBatchSize: Int = 0,
         pendingTimeout: Duration = .seconds(120),
         defaultMaxTokens: Int = 4096
     ) {
-        self.maxConcurrentRequests = max(1, maxConcurrentRequests)
+        var resolved = max(1, maxConcurrentRequests)
+        if let envVal = ProcessInfo.processInfo.environment["DARKBLOOM_MAX_CONCURRENT"],
+           let n = Int(envVal), n > 0 {
+            resolved = n
+        }
+        self.maxConcurrentRequests = resolved
+
+        var resolvedPrefill = prefillBatchSize > 0 ? prefillBatchSize : resolved
+        if let envVal = ProcessInfo.processInfo.environment["DARKBLOOM_PREFILL_BATCH_SIZE"],
+           let n = Int(envVal), n > 0 {
+            resolvedPrefill = n
+        }
+        self.prefillBatchSize = resolvedPrefill
         self.pendingTimeout = pendingTimeout
         self.defaultMaxTokens = defaultMaxTokens
     }
@@ -119,7 +133,7 @@ public actor BatchScheduler {
             model: snapshot.model,
             eosTokens: snapshot.eos,
             defaultMaxTokens: defaultMaxTokens,
-            prefillBatchSize: maxConcurrentRequests,
+            prefillBatchSize: prefillBatchSize,
             completionBatchSize: maxConcurrentRequests
         )
         startWorker()

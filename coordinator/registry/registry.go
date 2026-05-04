@@ -1170,11 +1170,19 @@ func TrustMultiplier(t TrustLevel) float64 {
 // DefaultMaxConcurrent is the fallback concurrency limit for providers
 // that don't report backend capacity. Providers that report BackendCapacity
 // in heartbeats get a dynamic limit based on their total memory.
-const DefaultMaxConcurrent = 4
+var DefaultMaxConcurrent = 4
+
+// SetDefaultMaxConcurrent updates the fallback concurrency limit used
+// for providers without BackendCapacity. Primarily for testing.
+func SetDefaultMaxConcurrent(n int) {
+	if n > 0 {
+		DefaultMaxConcurrent = n
+	}
+}
 
 // MaxConcurrentRequests is kept as an alias for backward compatibility
 // with tests and external code that reference the old constant name.
-const MaxConcurrentRequests = DefaultMaxConcurrent
+var MaxConcurrentRequests = DefaultMaxConcurrent
 
 // ScoreProvider calculates a routing score for a provider.
 // Higher scores indicate better routing candidates.

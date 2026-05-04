@@ -303,6 +303,7 @@ func TestBenchmark_HeavyLoad_100Concurrent_10KB(t *testing.T) {
 			QueueCapacity: 200,
 			QueueTimeout:  120 * time.Second,
 			SeedBalance:   2_000_000_000,
+			MaxConcurrent: 16,
 		},
 		testbed.RequestConfig{
 			Streaming:     true,
@@ -313,6 +314,75 @@ func TestBenchmark_HeavyLoad_100Concurrent_10KB(t *testing.T) {
 			PromptBytes:   10 * 1024,
 		},
 	)
+}
+
+func TestBenchmark_BatchConcurrency_Comparison(t *testing.T) {
+	t.Run("maxConcurrent=4", func(t *testing.T) {
+		runBenchmark(t, "3-provider-batch4",
+			testbed.SuiteConfig{
+				ModelSpecs:    []testbed.ModelSpec{{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: 3}},
+				NumUsers:      20,
+				QueueCapacity: 200,
+				QueueTimeout:  120 * time.Second,
+				SeedBalance:   2_000_000_000,
+				MaxConcurrent: 4,
+			},
+			testbed.RequestConfig{
+				Streaming:     true,
+				TotalRequests: 100,
+				Concurrency:   100,
+				MaxTokens:     32,
+				Temperature:   0.0,
+				PromptBytes:   10 * 1024,
+			},
+		)
+	})
+	t.Run("maxConcurrent=16", func(t *testing.T) {
+		runBenchmark(t, "3-provider-batch16",
+			testbed.SuiteConfig{
+				ModelSpecs:    []testbed.ModelSpec{{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: 3}},
+				NumUsers:      20,
+				QueueCapacity: 200,
+				QueueTimeout:  120 * time.Second,
+				SeedBalance:   2_000_000_000,
+				MaxConcurrent: 16,
+			},
+			testbed.RequestConfig{
+				Streaming:     true,
+				TotalRequests: 100,
+				Concurrency:   100,
+				MaxTokens:     32,
+				Temperature:   0.0,
+				PromptBytes:   10 * 1024,
+			},
+		)
+	})
+}
+
+func TestBenchmark_PrefillBatchSize_Comparison(t *testing.T) {
+	for _, prefillSize := range []int{4, 16, 32} {
+		t.Run(fmt.Sprintf("prefillBatchSize=%d", prefillSize), func(t *testing.T) {
+			runBenchmark(t, fmt.Sprintf("3-provider-prefill%d", prefillSize),
+				testbed.SuiteConfig{
+					ModelSpecs:       []testbed.ModelSpec{{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: 3}},
+					NumUsers:         20,
+					QueueCapacity:    200,
+					QueueTimeout:     120 * time.Second,
+					SeedBalance:      2_000_000_000,
+					MaxConcurrent:    16,
+					PrefillBatchSize: prefillSize,
+				},
+				testbed.RequestConfig{
+					Streaming:     true,
+					TotalRequests: 100,
+					Concurrency:   100,
+					MaxTokens:     32,
+					Temperature:   0.0,
+					PromptBytes:   10 * 1024,
+				},
+			)
+		})
+	}
 }
 
 type modelResult struct {

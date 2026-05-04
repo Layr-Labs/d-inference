@@ -48,6 +48,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var port: UInt16
     public var model: String?
     public var continuousBatching: Bool
+    public var maxConcurrentRequests: Int
     /// Which models to advertise to the network. If empty, all downloaded models
     /// are advertised. If set, only these models are offered.
     public var enabledModels: [String]
@@ -59,12 +60,14 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         port: UInt16 = 8100,
         model: String? = nil,
         continuousBatching: Bool = true,
+        maxConcurrentRequests: Int = 4,
         enabledModels: [String] = [],
         idleTimeoutMins: UInt64 = 60
     ) {
         self.port = port
         self.model = model
         self.continuousBatching = continuousBatching
+        self.maxConcurrentRequests = max(1, maxConcurrentRequests)
         self.enabledModels = enabledModels
         self.idleTimeoutMins = idleTimeoutMins
     }
@@ -73,6 +76,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case port
         case model
         case continuousBatching = "continuous_batching"
+        case maxConcurrentRequests = "max_concurrent_requests"
         case enabledModels = "enabled_models"
         case idleTimeoutMins = "idle_timeout_mins"
     }
@@ -82,6 +86,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.port = try container.decodeIfPresent(UInt16.self, forKey: .port) ?? 8100
         self.model = try container.decodeIfPresent(String.self, forKey: .model)
         self.continuousBatching = try container.decodeIfPresent(Bool.self, forKey: .continuousBatching) ?? true
+        self.maxConcurrentRequests = max(1, try container.decodeIfPresent(Int.self, forKey: .maxConcurrentRequests) ?? 4)
         self.enabledModels = try container.decodeIfPresent([String].self, forKey: .enabledModels) ?? []
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
     }

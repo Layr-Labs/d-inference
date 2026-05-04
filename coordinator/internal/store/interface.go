@@ -234,6 +234,12 @@ type Store interface {
 	// ApproveDeviceCode links a device code to an account, marking it approved.
 	ApproveDeviceCode(deviceCode, accountID string) error
 
+	// ConsumeDeviceCode atomically transitions a device code from approved to
+	// consumed. Returns an error if the code is not in the approved state.
+	// Must be called when issuing a provider token to prevent a second poll
+	// from minting an additional token for the same approval.
+	ConsumeDeviceCode(deviceCode string) error
+
 	// DeleteExpiredDeviceCodes removes device codes that have passed their expiry.
 	DeleteExpiredDeviceCodes() error
 

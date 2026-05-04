@@ -126,6 +126,15 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case "approved":
+		// Atomically consume the device code before issuing the token.
+		// This prevents a second poll (or a race) from minting a second
+		// long-lived token for the same browser approval.
+		if err := s.store.ConsumeDeviceCode(dc.DeviceCode); err != nil {
+			// Another concurrent request already consumed it.
+			writeJSON(w, http.StatusGone, errorResponse("expired_token", "device code is no longer valid"))
+			return
+		}
+
 		// Generate a long-lived provider token.
 		tokenBytes := make([]byte, 32)
 		if _, err := rand.Read(tokenBytes); err != nil {

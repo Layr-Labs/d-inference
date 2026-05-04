@@ -104,6 +104,12 @@ func NewSuite(cfg SuiteConfig) *Suite {
 	if cfg.SeedBalance <= 0 {
 		cfg.SeedBalance = 100_000_000
 	}
+	if cfg.MaxConcurrent <= 0 {
+		cfg.MaxConcurrent = 16
+	}
+	if cfg.PrefillBatchSize < 0 {
+		cfg.PrefillBatchSize = 0
+	}
 
 	return &Suite{
 		Logger: logger,
@@ -213,7 +219,7 @@ func (s *Suite) startCoordinator() error {
 	srv.SetBilling(billingSvc)
 
 	reg.SetQueue(registry.NewRequestQueue(s.Config.QueueCapacity, s.Config.QueueTimeout))
-
+	registry.SetDefaultMaxConcurrent(s.Config.MaxConcurrent)
 	s.Coordinator = &Coordinator{
 		Server:   srv,
 		Registry: reg,
@@ -240,8 +246,10 @@ func (s *Suite) startProviders() error {
 				ProviderIndex: providerIdx,
 			}
 			if err := p.Start(s.Ctx, s.Coordinator.BaseURL(), ProviderConfig{
-				ModelID:    spec.ModelID,
-				TrustLevel: TrustNone,
+				ModelID:         spec.ModelID,
+				TrustLevel:      TrustNone,
+				MaxConcurrent:   s.Config.MaxConcurrent,
+				PrefillBatchSize: s.Config.PrefillBatchSize,
 			}); err != nil {
 				return fmt.Errorf("start provider %d (%s): %w", providerIdx, spec.ModelID, err)
 			}
@@ -351,6 +359,12 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 	cmd.Env = append(os.Environ(),
 		"DARKBLOOM_PID_FILE=/tmp/darkbloom-testbed-"+strconv.Itoa(p.ProviderIndex)+".pid",
 	)
+	if cfg.MaxConcurrent > 0 {
+		cmd.Env = append(cmd.Env, "DARKBLOOM_MAX_CONCURRENT="+strconv.Itoa(cfg.MaxConcurrent))
+	}
+	if cfg.PrefillBatchSize > 0 {
+		cmd.Env = append(cmd.Env, "DARKBLOOM_PREFILL_BATCH_SIZE="+strconv.Itoa(cfg.PrefillBatchSize))
+	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start provider: %w", err)

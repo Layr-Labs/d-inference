@@ -119,7 +119,7 @@ public actor ProviderLoop {
         self.state = ProviderState()
         self.cancellationRegistry = InferenceCancellationRegistry()
         self.scheduler = BatchScheduler(
-            maxConcurrentRequests: 4,
+            maxConcurrentRequests: config.config.backend.maxConcurrentRequests,
             pendingTimeout: .seconds(120),
             defaultMaxTokens: 4096
         )

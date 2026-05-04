@@ -111,7 +111,7 @@ struct Start: AsyncParsableCommand {
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
 
         let scheduler = BatchScheduler(
-            maxConcurrentRequests: 4,
+            maxConcurrentRequests: config.backend.maxConcurrentRequests,
             pendingTimeout: .seconds(120),
             defaultMaxTokens: 4096
         )

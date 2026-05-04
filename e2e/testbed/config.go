@@ -19,6 +19,8 @@ type ProviderConfig struct {
 	TrustLevel          TrustLevel
 	ModelID             string
 	AttestationInterval time.Duration
+	MaxConcurrent       int
+	PrefillBatchSize    int
 }
 
 func DefaultProviderConfig() ProviderConfig {
@@ -84,11 +86,13 @@ type UserAccount struct {
 }
 
 type SuiteConfig struct {
-	ModelSpecs    []ModelSpec
-	NumUsers      int
-	QueueCapacity int
-	QueueTimeout  time.Duration
-	SeedBalance   int64
+	ModelSpecs       []ModelSpec
+	NumUsers         int
+	QueueCapacity    int
+	QueueTimeout     time.Duration
+	SeedBalance      int64
+	MaxConcurrent    int
+	PrefillBatchSize int
 }
 
 func DefaultSuiteConfig() SuiteConfig {

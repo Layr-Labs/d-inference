@@ -185,9 +185,6 @@ func TestBenchmark_SingleProviderNonStreaming(t *testing.T) {
 }
 
 func TestBenchmark_MultiModelMultiProvider(t *testing.T) {
-	if os.Getenv("CI") != "" {
-		t.Skip("multi-model requires gemma-3-270m-4bit which is not downloaded in CI")
-	}
 	runBenchmark(t, "7-provider-multi-model",
 		testbed.SuiteConfig{
 			ModelSpecs: []testbed.ModelSpec{

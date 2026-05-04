@@ -2011,6 +2011,60 @@ func (s *PostgresStore) RedeemInviteCode(code string, accountID string) error {
 	return tx.Commit(ctx)
 }
 
+func (s *PostgresStore) RedeemInviteCodeAndCredit(code string, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock and validate the invite code.
+	var ic InviteCode
+	err = tx.QueryRow(ctx,
+		`SELECT code, amount_micro_usd, max_uses, used_count, active, expires_at
+		 FROM invite_codes WHERE code = $1 FOR UPDATE`, code,
+	).Scan(&ic.Code, &ic.AmountMicroUSD, &ic.MaxUses, &ic.UsedCount, &ic.Active, &ic.ExpiresAt)
+	if err != nil {
+		return fmt.Errorf("invite code %q not found", code)
+	}
+	if !ic.Active {
+		return fmt.Errorf("invite code %q is inactive", code)
+	}
+	if ic.ExpiresAt != nil && time.Now().After(*ic.ExpiresAt) {
+		return fmt.Errorf("invite code %q has expired", code)
+	}
+	if ic.MaxUses > 0 && ic.UsedCount >= ic.MaxUses {
+		return fmt.Errorf("invite code %q has reached max uses", code)
+	}
+
+	// Insert redemption (PK constraint prevents double-redemption).
+	_, err = tx.Exec(ctx,
+		`INSERT INTO invite_redemptions (code, account_id) VALUES ($1, $2)`,
+		code, accountID,
+	)
+	if err != nil {
+		return fmt.Errorf("account has already redeemed code %q", code)
+	}
+
+	// Increment used_count.
+	_, err = tx.Exec(ctx,
+		`UPDATE invite_codes SET used_count = used_count + 1 WHERE code = $1`, code,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update invite code: %w", err)
+	}
+
+	// Credit the balance in the same transaction.
+	if err := creditTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
 func (s *PostgresStore) HasRedeemedInviteCode(code, accountID string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

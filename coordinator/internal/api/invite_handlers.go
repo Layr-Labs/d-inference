@@ -180,23 +180,18 @@ func (s *Server) handleRedeemInviteCode(w http.ResponseWriter, r *http.Request) 
 
 	accountID := consumerKeyFromContext(r.Context())
 
-	// Get the invite code to know the amount
+	// Get the invite code to know the amount.
 	ic, err := s.store.GetInviteCode(code)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "invalid invite code"))
 		return
 	}
 
-	// Redeem atomically (checks active, expiry, max uses, double-redemption)
-	if err := s.store.RedeemInviteCode(code, accountID); err != nil {
+	// Atomically redeem the invite code and credit the balance in one operation.
+	// This prevents the invite being consumed without the credit landing.
+	if err := s.store.RedeemInviteCodeAndCredit(code, accountID, ic.AmountMicroUSD, store.LedgerInviteCredit, "invite:"+code); err != nil {
+		s.logger.Error("failed to redeem invite code", "account", accountID, "code", code, "error", err)
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
-		return
-	}
-
-	// Credit the user's balance
-	if err := s.store.Credit(accountID, ic.AmountMicroUSD, store.LedgerInviteCredit, "invite:"+code); err != nil {
-		s.logger.Error("failed to credit invite balance", "account", accountID, "code", code, "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to credit balance"))
 		return
 	}
 

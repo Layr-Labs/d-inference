@@ -7,6 +7,11 @@ type ModelSpec struct {
 	NumProviders int
 }
 
+var KnownModelSizes = map[string]string{
+	"mlx-community/Qwen3.5-0.8B-MLX-4bit":  "0.5 GB",
+	"mlx-community/gemma-3-270m-4bit":       "0.2 GB",
+}
+
 type TrustLevel string
 
 const (

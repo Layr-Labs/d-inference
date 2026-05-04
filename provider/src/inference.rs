@@ -331,12 +331,12 @@ for _name in (
     /// OpenAI-compatible features (chat templates, tool calling, structured
     /// output) without starting an HTTP server.
     fn load_vllm_mlx(&self, py: Python<'_>) -> Result<()> {
-        // Enforce both security layers in the same GIL scope that runs vllm_mlx.
-        // lock_python_path was already called in detect_engine(), but re-running it
-        // here is safe (idempotent) and ensures the blocker is installed in the
-        // same interpreter state that will execute the model load.
+        // Lock sys.path before the model load so no extra packages can be injected.
+        // block_dangerous_modules is intentionally called AFTER _load_model completes:
+        // load_model() may download weights from HuggingFace on a cold start, which
+        // requires socket/urllib. The blocker is installed once the engine is cached
+        // and before the process begins serving inference requests.
         Self::lock_python_path(py)?;
-        Self::block_dangerous_modules(py)?;
 
         let model = serde_json::to_string(&self.model_id).context("invalid model path")?;
         let cache_key = serde_json::to_string(&self.cache_key).context("invalid cache key")?;
@@ -364,6 +364,10 @@ except Exception as _e:
         let ccode = CString::new(code).context("invalid code string")?;
         py.run(ccode.as_c_str(), None, None)
             .context("failed to initialize vllm-mlx engine via server handler")?;
+
+        // Block dangerous modules now that the model is loaded. Any attempt by
+        // inference-time Python code to import socket, subprocess, etc. will fail.
+        Self::block_dangerous_modules(py)?;
         Ok(())
     }
 

@@ -241,11 +241,19 @@ func VerifyJSON(jsonData []byte) (VerificationResult, error) {
 
 // CheckTimestamp verifies that the attestation timestamp is within the
 // given maximum age. This prevents replay of old attestations.
+// Future-dated timestamps (clock skew beyond 30 s) are also rejected to
+// prevent bypass via a far-future timestamp: time.Since is negative for
+// future times, so without the upper-bound check it would always pass.
 func CheckTimestamp(result VerificationResult, maxAge time.Duration) bool {
 	if result.Timestamp.IsZero() {
 		return false
 	}
-	return time.Since(result.Timestamp) <= maxAge
+	now := time.Now()
+	// Reject future-dated blobs (allow 30 s clock skew).
+	if result.Timestamp.After(now.Add(30 * time.Second)) {
+		return false
+	}
+	return now.Sub(result.Timestamp) <= maxAge
 }
 
 // ParseP256PublicKey parses a raw P-256 public key point.

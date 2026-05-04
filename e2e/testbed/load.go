@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,8 +28,13 @@ type RequestResult struct {
 	UserIndex  int
 	ModelID    string
 
-	QueueWaitMs      int64
-	ProviderLatencyMs int64
+	ParseUs    int64
+	ReserveUs  int64
+	RouteUs    int64
+	QueueUs    int64
+	EncryptUs  int64
+	DispatchUs int64
+	ProviderUs int64
 }
 
 type ProfileRun struct {
@@ -196,11 +200,25 @@ func (lg *LoadGenerator) Run() *LoadResult {
 				ModelID:    modelID,
 			}
 
-			if v := resp.Header.Get("X-Queue-Wait-Ms"); v != "" {
-				rr.QueueWaitMs, _ = strconv.ParseInt(v, 10, 64)
-			}
-			if v := resp.Header.Get("X-Provider-Latency-Ms"); v != "" {
-				rr.ProviderLatencyMs, _ = strconv.ParseInt(v, 10, 64)
+			if v := resp.Header.Get("X-Timing"); v != "" {
+				var tj struct {
+					ParseUs    int64 `json:"parse_us"`
+					ReserveUs  int64 `json:"reserve_us"`
+					RouteUs    int64 `json:"route_us"`
+					QueueUs    int64 `json:"queue_us"`
+					EncryptUs  int64 `json:"encrypt_us"`
+					DispatchUs int64 `json:"dispatch_us"`
+					ProviderUs int64 `json:"provider_us"`
+				}
+				if json.Unmarshal([]byte(v), &tj) == nil {
+					rr.ParseUs = tj.ParseUs
+					rr.ReserveUs = tj.ReserveUs
+					rr.RouteUs = tj.RouteUs
+					rr.QueueUs = tj.QueueUs
+					rr.EncryptUs = tj.EncryptUs
+					rr.DispatchUs = tj.DispatchUs
+					rr.ProviderUs = tj.ProviderUs
+				}
 			}
 
 			if resp.StatusCode == http.StatusOK {
@@ -208,15 +226,26 @@ func (lg *LoadGenerator) Run() *LoadResult {
 
 				timingsMu.Lock()
 				segmentTimings[SegmentTotalE2E] = append(segmentTimings[SegmentTotalE2E], e2eDuration)
-				if rr.QueueWaitMs > 0 {
-					segmentTimings[SegmentQueueWait] = append(segmentTimings[SegmentQueueWait], time.Duration(rr.QueueWaitMs)*time.Millisecond)
+				if rr.ParseUs > 0 {
+					segmentTimings[SegmentParse] = append(segmentTimings[SegmentParse], time.Duration(rr.ParseUs)*time.Microsecond)
 				}
-				if rr.ProviderLatencyMs > 0 {
-					segmentTimings[SegmentCoordinatorToProvider] = append(segmentTimings[SegmentCoordinatorToProvider], time.Duration(rr.ProviderLatencyMs)*time.Millisecond)
+				if rr.ReserveUs > 0 {
+					segmentTimings[SegmentReserve] = append(segmentTimings[SegmentReserve], time.Duration(rr.ReserveUs)*time.Microsecond)
 				}
-				coordinatorToClient := e2eDuration - time.Duration(rr.QueueWaitMs)*time.Millisecond - time.Duration(rr.ProviderLatencyMs)*time.Millisecond
-				if coordinatorToClient > 0 {
-					segmentTimings[SegmentProviderToClient] = append(segmentTimings[SegmentProviderToClient], coordinatorToClient)
+				if rr.RouteUs > 0 {
+					segmentTimings[SegmentRoute] = append(segmentTimings[SegmentRoute], time.Duration(rr.RouteUs)*time.Microsecond)
+				}
+				if rr.QueueUs > 0 {
+					segmentTimings[SegmentQueueWait] = append(segmentTimings[SegmentQueueWait], time.Duration(rr.QueueUs)*time.Microsecond)
+				}
+				if rr.EncryptUs > 0 {
+					segmentTimings[SegmentEncrypt] = append(segmentTimings[SegmentEncrypt], time.Duration(rr.EncryptUs)*time.Microsecond)
+				}
+				if rr.DispatchUs > 0 {
+					segmentTimings[SegmentDispatch] = append(segmentTimings[SegmentDispatch], time.Duration(rr.DispatchUs)*time.Microsecond)
+				}
+				if rr.ProviderUs > 0 {
+					segmentTimings[SegmentCoordinatorToProvider] = append(segmentTimings[SegmentCoordinatorToProvider], time.Duration(rr.ProviderUs)*time.Microsecond)
 				}
 				timingsMu.Unlock()
 
@@ -275,28 +304,36 @@ func (r *LoadResult) SummaryTable() string {
 
 	if r.ProfileRun != nil && len(r.ProfileRun.SegmentTimings) > 0 {
 		s.WriteString("\n")
-		s.WriteString(fmt.Sprintf("%-30s %8s %8s %8s %8s %8s\n", "SEGMENT", "COUNT", "MEAN", "P50", "P95", "MAX"))
-		s.WriteString("─────────────────────────────────────────────────────────────────────\n")
+	s.WriteString(fmt.Sprintf("%-30s %8s %8s %8s %8s %8s\n", "SEGMENT", "COUNT", "MEAN", "P50", "P95", "MAX"))
+	s.WriteString("─────────────────────────────────────────────────────────────────────\n")
 
-		for _, seg := range []Segment{
-			SegmentTotalE2E,
-			SegmentQueueWait,
-			SegmentCoordinatorToProvider,
-			SegmentProviderToClient,
-			SegmentTTFT,
-		} {
-			durations, ok := r.ProfileRun.SegmentTimings[seg]
-			if !ok || len(durations) == 0 {
-				continue
-			}
-			stats := computeStats(durations)
-			s.WriteString(fmt.Sprintf("%-30s %8d %8s %8s %8s %8s\n",
-				seg, stats.Count,
-				stats.Mean.Round(time.Millisecond),
-				stats.Median.Round(time.Millisecond),
-				stats.P95.Round(time.Millisecond),
-				stats.Max.Round(time.Millisecond),
-			))
+	for _, seg := range []Segment{
+		SegmentTotalE2E,
+		SegmentParse,
+		SegmentReserve,
+		SegmentRoute,
+		SegmentQueueWait,
+		SegmentEncrypt,
+		SegmentDispatch,
+		SegmentCoordinatorToProvider,
+		SegmentTTFT,
+	} {
+		durations, ok := r.ProfileRun.SegmentTimings[seg]
+		if !ok || len(durations) == 0 {
+			continue
+		}
+		stats := computeStats(durations)
+		precision := time.Millisecond
+		if stats.Max < time.Millisecond {
+			precision = time.Microsecond
+		}
+		s.WriteString(fmt.Sprintf("%-30s %8d %8s %8s %8s %8s\n",
+			seg, stats.Count,
+			stats.Mean.Round(precision),
+			stats.Median.Round(precision),
+			stats.P95.Round(precision),
+			stats.Max.Round(precision),
+		))
 		}
 	}
 

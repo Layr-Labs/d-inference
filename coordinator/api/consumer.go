@@ -22,7 +22,6 @@ import (
 	"io"
 	"net/http"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -522,6 +521,8 @@ func responsesRequestToChatCompletions(parsed map[string]any) (map[string]any, e
 // OpenAI-compatible fields (tools, tool_choice, response_format, top_p, etc.)
 // that would otherwise be lost if we parsed into a typed struct.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	timing := &registry.RequestTiming{ReceivedAt: time.Now()}
+
 	// Read the raw request body so we can forward it as-is to the provider.
 	// We only parse minimally to extract model/stream/messages for routing.
 	rawBody, err := io.ReadAll(r.Body)
@@ -574,6 +575,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
+	timing.ParsedAt = time.Now()
 
 	if isResponsesAPI {
 		providerParsed, err := responsesRequestToChatCompletions(parsed)
@@ -599,6 +601,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	timing.ReservedAt = time.Now()
 
 	// Refund reservation on early errors (before inference starts).
 	refundReservation := func() {
@@ -657,6 +660,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			ChunkCh:                make(chan string, chunkBufferSize),
 			CompleteCh:             make(chan protocol.UsageInfo, 1),
 			ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
+			Timing:                 timing,
 		}
 
 		var decision registry.RoutingDecision
@@ -684,7 +688,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				Pending:    pr,
 				ResponseCh: make(chan *registry.Provider, 1),
 			}
-			pr.QueuedAt = time.Now()
+			pr.Timing.QueuedAt = time.Now()
 			if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:over_capacity"})
 				refundReservation()
@@ -712,6 +716,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			decision = queuedReq.Decision
 		}
+		timing.RoutedAt = time.Now()
 		s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:selected"})
 		s.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
 		s.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model})
@@ -748,6 +753,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			lastErr = "failed to encrypt request"
 			continue
 		}
+		timing.EncryptedAt = time.Now()
 
 		wireMsg := map[string]any{
 			"type":       protocol.TypeInferenceRequest,
@@ -776,7 +782,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			lastErr = "failed to send request to provider"
 			continue
 		}
-		pr.DispatchedAt = time.Now()
+		pr.Timing.DispatchedAt = time.Now()
 
 		s.logger.Info("inference request dispatched",
 			"trace_id", requestIDFromContext(r.Context()),
@@ -799,7 +805,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			timer.Stop()
 			if ok {
 				firstChunk = chunk
-				pr.FirstChunkAt = time.Now()
+				pr.Timing.FirstChunkAt = time.Now()
 				committed = true
 			} else {
 				// Channel closed — check if an error caused it.
@@ -901,7 +907,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				chunkTimer.Stop()
 				if ok {
 					firstChunk = chunk
-					pr.FirstChunkAt = time.Now()
+					pr.Timing.FirstChunkAt = time.Now()
 					committed = true
 				} else {
 					// Closed — check for error (same race as above).
@@ -1073,12 +1079,42 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Attestation-Device-Serial", attestResult.SerialNumber)
 	}
 
-	// Latency decomposition headers for observability.
-	if !pr.QueuedAt.IsZero() && !pr.DispatchedAt.IsZero() {
-		w.Header().Set("X-Queue-Wait-Ms", strconv.FormatInt(pr.DispatchedAt.Sub(pr.QueuedAt).Milliseconds(), 10))
-	}
-	if !pr.DispatchedAt.IsZero() && !pr.FirstChunkAt.IsZero() {
-		w.Header().Set("X-Provider-Latency-Ms", strconv.FormatInt(pr.FirstChunkAt.Sub(pr.DispatchedAt).Milliseconds(), 10))
+	// Latency decomposition header for observability.
+	if timing := pr.Timing; timing != nil {
+		type timingJSON struct {
+			ParseUs    int64 `json:"parse_us"`
+			ReserveUs  int64 `json:"reserve_us"`
+			RouteUs    int64 `json:"route_us"`
+			QueueUs    int64 `json:"queue_us"`
+			EncryptUs  int64 `json:"encrypt_us"`
+			DispatchUs int64 `json:"dispatch_us"`
+			ProviderUs int64 `json:"provider_us"`
+		}
+		tj := timingJSON{}
+		if !timing.ParsedAt.IsZero() {
+			tj.ParseUs = timing.ParsedAt.Sub(timing.ReceivedAt).Microseconds()
+		}
+		if !timing.ReservedAt.IsZero() && !timing.ParsedAt.IsZero() {
+			tj.ReserveUs = timing.ReservedAt.Sub(timing.ParsedAt).Microseconds()
+		}
+		if !timing.RoutedAt.IsZero() && !timing.ReservedAt.IsZero() {
+			tj.RouteUs = timing.RoutedAt.Sub(timing.ReservedAt).Microseconds()
+		}
+		if !timing.QueuedAt.IsZero() && !timing.DispatchedAt.IsZero() {
+			tj.QueueUs = timing.DispatchedAt.Sub(timing.QueuedAt).Microseconds()
+		}
+		if !timing.EncryptedAt.IsZero() && !timing.RoutedAt.IsZero() {
+			tj.EncryptUs = timing.EncryptedAt.Sub(timing.RoutedAt).Microseconds()
+		}
+		if !timing.DispatchedAt.IsZero() && !timing.EncryptedAt.IsZero() {
+			tj.DispatchUs = timing.DispatchedAt.Sub(timing.EncryptedAt).Microseconds()
+		}
+		if !timing.FirstChunkAt.IsZero() && !timing.DispatchedAt.IsZero() {
+			tj.ProviderUs = timing.FirstChunkAt.Sub(timing.DispatchedAt).Microseconds()
+		}
+		if tjJSON, err := json.Marshal(tj); err == nil {
+			w.Header().Set("X-Timing", string(tjJSON))
+		}
 	}
 
 	// When this function returns (consumer disconnect, timeout, or completion),

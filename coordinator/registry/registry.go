@@ -96,6 +96,15 @@ type PendingRequest struct {
 	ReservedMicroUSD int64
 
 	// Timing fields for latency decomposition.
+	Timing *RequestTiming
+}
+
+type RequestTiming struct {
+	ReceivedAt   time.Time // handler entry
+	ParsedAt     time.Time // after parse + validate
+	ReservedAt   time.Time // after balance reservation
+	RoutedAt     time.Time // after provider selection (including queue wait)
+	EncryptedAt  time.Time // after E2E encryption
 	QueuedAt     time.Time // set when request enters the queue
 	DispatchedAt time.Time // set when request is sent to provider via WebSocket
 	FirstChunkAt time.Time // set when first inference chunk arrives from provider

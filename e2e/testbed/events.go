@@ -11,7 +11,12 @@ type Segment string
 
 const (
 	SegmentTotalE2E              Segment = "total_e2e"
+	SegmentParse                 Segment = "parse"
+	SegmentReserve               Segment = "reserve"
+	SegmentRoute                 Segment = "route"
 	SegmentQueueWait             Segment = "queue_wait"
+	SegmentEncrypt               Segment = "encrypt"
+	SegmentDispatch              Segment = "dispatch"
 	SegmentE2EEncrypt            Segment = "e2e_encrypt"
 	SegmentCoordinatorToProvider Segment = "coordinator_to_provider"
 	SegmentProviderToBackend     Segment = "provider_to_backend"

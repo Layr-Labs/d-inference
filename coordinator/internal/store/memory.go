@@ -1095,6 +1095,21 @@ func (s *MemoryStore) ApproveDeviceCode(deviceCode, accountID string) error {
 	return nil
 }
 
+func (s *MemoryStore) ConsumeDeviceCode(deviceCode string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	dc, ok := s.deviceCodesByCode[deviceCode]
+	if !ok {
+		return errors.New("device code not found")
+	}
+	if dc.Status != "approved" {
+		return fmt.Errorf("device code is %s, not approved", dc.Status)
+	}
+	dc.Status = "consumed"
+	return nil
+}
+
 func (s *MemoryStore) DeleteExpiredDeviceCodes() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

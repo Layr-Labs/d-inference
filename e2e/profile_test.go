@@ -134,7 +134,7 @@ func postChatCompletionsWithConfig(t *testing.T, s *testbed.Suite, cfg testbed.R
 	t.Helper()
 
 	body := map[string]any{
-		"model":       s.ModelID,
+		"model":       s.PrimaryModelID(),
 		"messages":    []map[string]string{{"role": "user", "content": prompt}},
 		"stream":      cfg.Streaming,
 		"max_tokens":  cfg.MaxTokens,

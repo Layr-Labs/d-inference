@@ -18,6 +18,7 @@ const (
 	SegmentTTFT                  Segment = "ttft"
 	SegmentDecodeTPS             Segment = "decode_tps"
 	SegmentProviderToCoordinator Segment = "provider_to_coordinator"
+	SegmentProviderToClient      Segment = "provider_to_client"
 	SegmentTotalE2E              Segment = "total_e2e"
 )
 

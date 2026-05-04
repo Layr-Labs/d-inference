@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,11 @@ type RequestResult struct {
 	StatusCode int
 	Error      error
 	Duration   time.Duration
+	UserIndex  int
+	ModelID    string
+
+	QueueWaitMs      int64
+	ProviderLatencyMs int64
 }
 
 type ProfileRun struct {
@@ -32,22 +38,76 @@ type ProfileRun struct {
 	TTFTs          []time.Duration
 }
 
+type UserPool struct {
+	users []UserAccount
+	next  atomic.Int64
+}
+
+func NewUserPool(users []UserAccount) *UserPool {
+	return &UserPool{users: users}
+}
+
+func (up *UserPool) Next() UserAccount {
+	idx := int(up.next.Add(1)-1) % len(up.users)
+	return up.users[idx]
+}
+
+func (up *UserPool) Count() int {
+	return len(up.users)
+}
+
+type ModelSelector struct {
+	models []string
+	next   atomic.Int64
+}
+
+func NewModelSelector(modelIDs []string) *ModelSelector {
+	return &ModelSelector{models: modelIDs}
+}
+
+func (ms *ModelSelector) Next() string {
+	if len(ms.models) == 0 {
+		return ""
+	}
+	idx := int(ms.next.Add(1)-1) % len(ms.models)
+	return ms.models[idx]
+}
+
 type LoadGenerator struct {
-	Suite  *Suite
-	Config RequestConfig
-	Auth   string
+	Suite         *Suite
+	Config        RequestConfig
+	Auth          string
+	UserPool      *UserPool
+	ModelSelector *ModelSelector
 }
 
 func NewLoadGenerator(suite *Suite, cfg RequestConfig) *LoadGenerator {
-	return &LoadGenerator{
+	lg := &LoadGenerator{
 		Suite:  suite,
 		Config: cfg,
 		Auth:   "testbed-admin-key",
 	}
+	if len(suite.Users) > 0 {
+		lg.UserPool = NewUserPool(suite.Users)
+	}
+	if len(suite.Config.AllModelIDs()) > 0 {
+		lg.ModelSelector = NewModelSelector(suite.Config.AllModelIDs())
+	}
+	return lg
 }
 
 func (lg *LoadGenerator) WithAuth(apiKey string) *LoadGenerator {
 	lg.Auth = apiKey
+	return lg
+}
+
+func (lg *LoadGenerator) WithUserPool(pool *UserPool) *LoadGenerator {
+	lg.UserPool = pool
+	return lg
+}
+
+func (lg *LoadGenerator) WithModelSelector(selector *ModelSelector) *LoadGenerator {
+	lg.ModelSelector = selector
 	return lg
 }
 
@@ -76,8 +136,29 @@ func (lg *LoadGenerator) Run() *LoadResult {
 
 			reqStart := time.Now()
 
+			modelID := lg.Config.ModelID
+			if modelID == "" && lg.ModelSelector != nil {
+				modelID = lg.ModelSelector.Next()
+			}
+			if modelID == "" {
+				modelID = lg.Suite.PrimaryModelID()
+			}
+
+			auth := lg.Auth
+			var userIndex int
+			if lg.UserPool != nil {
+				user := lg.UserPool.Next()
+				auth = user.APIKey
+				for ui, u := range lg.Suite.Users {
+					if u.AccountID == user.AccountID {
+						userIndex = ui
+						break
+					}
+				}
+			}
+
 			body := map[string]any{
-				"model":       lg.Suite.ModelID,
+				"model":       modelID,
 				"messages":    []map[string]string{{"role": "user", "content": fmt.Sprintf("What is %d+%d? Answer with just the number.", idx, idx+1)}},
 				"stream":      lg.Config.Streaming,
 				"max_tokens":  lg.Config.MaxTokens,
@@ -89,10 +170,10 @@ func (lg *LoadGenerator) Run() *LoadResult {
 				lg.Suite.Coordinator.BaseURL()+"/v1/chat/completions", strings.NewReader(string(bodyJSON)))
 			if err != nil {
 				errorCount.Add(1)
-				requestResults[idx] = RequestResult{Index: idx, Error: err}
+				requestResults[idx] = RequestResult{Index: idx, Error: err, UserIndex: userIndex, ModelID: modelID}
 				return
 			}
-			req.Header.Set("Authorization", "Bearer "+lg.Auth)
+			req.Header.Set("Authorization", "Bearer "+auth)
 			req.Header.Set("Content-Type", "application/json")
 
 			resp, err := (&http.Client{Timeout: 300 * time.Second}).Do(req)
@@ -100,7 +181,7 @@ func (lg *LoadGenerator) Run() *LoadResult {
 
 			if err != nil {
 				errorCount.Add(1)
-				requestResults[idx] = RequestResult{Index: idx, Error: err, Duration: e2eDuration}
+				requestResults[idx] = RequestResult{Index: idx, Error: err, Duration: e2eDuration, UserIndex: userIndex, ModelID: modelID}
 				return
 			}
 
@@ -111,6 +192,15 @@ func (lg *LoadGenerator) Run() *LoadResult {
 				Index:      idx,
 				StatusCode: resp.StatusCode,
 				Duration:   e2eDuration,
+				UserIndex:  userIndex,
+				ModelID:    modelID,
+			}
+
+			if v := resp.Header.Get("X-Queue-Wait-Ms"); v != "" {
+				rr.QueueWaitMs, _ = strconv.ParseInt(v, 10, 64)
+			}
+			if v := resp.Header.Get("X-Provider-Latency-Ms"); v != "" {
+				rr.ProviderLatencyMs, _ = strconv.ParseInt(v, 10, 64)
 			}
 
 			if resp.StatusCode == http.StatusOK {
@@ -118,6 +208,16 @@ func (lg *LoadGenerator) Run() *LoadResult {
 
 				timingsMu.Lock()
 				segmentTimings[SegmentClientToCoordinator] = append(segmentTimings[SegmentClientToCoordinator], e2eDuration)
+				if rr.QueueWaitMs > 0 {
+					segmentTimings[SegmentQueueWait] = append(segmentTimings[SegmentQueueWait], time.Duration(rr.QueueWaitMs)*time.Millisecond)
+				}
+				if rr.ProviderLatencyMs > 0 {
+					segmentTimings[SegmentCoordinatorToProvider] = append(segmentTimings[SegmentCoordinatorToProvider], time.Duration(rr.ProviderLatencyMs)*time.Millisecond)
+				}
+				coordinatorToClient := e2eDuration - time.Duration(rr.QueueWaitMs)*time.Millisecond - time.Duration(rr.ProviderLatencyMs)*time.Millisecond
+				if coordinatorToClient > 0 {
+					segmentTimings[SegmentProviderToClient] = append(segmentTimings[SegmentProviderToClient], coordinatorToClient)
+				}
 				timingsMu.Unlock()
 
 				if lg.Config.Streaming {
@@ -180,6 +280,9 @@ func (r *LoadResult) SummaryTable() string {
 
 		for _, seg := range []Segment{
 			SegmentClientToCoordinator,
+			SegmentQueueWait,
+			SegmentCoordinatorToProvider,
+			SegmentProviderToClient,
 			SegmentTTFT,
 		} {
 			durations, ok := r.ProfileRun.SegmentTimings[seg]

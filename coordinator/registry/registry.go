@@ -94,6 +94,11 @@ type PendingRequest struct {
 	// The post-inference charge adjusts for the difference between the
 	// actual cost and this reservation, preventing billing race conditions.
 	ReservedMicroUSD int64
+
+	// Timing fields for latency decomposition.
+	QueuedAt     time.Time // set when request enters the queue
+	DispatchedAt time.Time // set when request is sent to provider via WebSocket
+	FirstChunkAt time.Time // set when first inference chunk arrives from provider
 }
 
 // Provider represents a connected provider agent.

@@ -46,12 +46,13 @@ func execCommandContext(ctx context.Context, name string, args ...string) *exec.
 type Suite struct {
 	Ctx     context.Context
 	Logger  *slog.Logger
-	ModelID string
+	Config  SuiteConfig
 
 	Pg          *deps.PostgresLifecycle
 	PgStore     store.Store
 	Coordinator *Coordinator
 	Providers   []*Provider
+	Users       []UserAccount
 }
 
 type Coordinator struct {
@@ -65,40 +66,16 @@ type Coordinator struct {
 }
 
 type Provider struct {
-	BinaryPath string
-	Logger     *slog.Logger
+	BinaryPath    string
+	Logger        *slog.Logger
+	ProviderIndex int
 
 	cmd    *os.Process
 	cancel context.CancelFunc
 }
 
-type SuiteConfig struct {
-	ModelID       string
-	NumProviders  int
-	QueueCapacity int
-	QueueTimeout  time.Duration
-	SeedBalance   int64
-}
-
-func DefaultSuiteConfig() SuiteConfig {
-	return SuiteConfig{
-		NumProviders:  1,
-		QueueCapacity: 100,
-		QueueTimeout:  120 * time.Second,
-		SeedBalance:   100_000_000,
-	}
-}
-
 func NewSuite(cfg SuiteConfig) *Suite {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
-	modelID := cfg.ModelID
-	if modelID == "" {
-		modelID = os.Getenv("TESTBED_MODEL_ID")
-	}
-	if modelID == "" {
-		modelID = "mlx-community/Qwen3.5-0.8B-MLX-4bit"
-	}
 
 	if os.Getenv("DARKBLOOM_REPO_ROOT") == "" {
 		if cwd, err := os.Getwd(); err == nil {
@@ -106,20 +83,55 @@ func NewSuite(cfg SuiteConfig) *Suite {
 		}
 	}
 
-	if cfg.NumProviders <= 0 {
-		cfg.NumProviders = 1
+	if len(cfg.ModelSpecs) == 0 {
+		cfg.ModelSpecs = []ModelSpec{{ModelID: resolveModelID(""), NumProviders: 1}}
+	}
+	for i := range cfg.ModelSpecs {
+		cfg.ModelSpecs[i].ModelID = resolveModelID(cfg.ModelSpecs[i].ModelID)
+		if cfg.ModelSpecs[i].NumProviders <= 0 {
+			cfg.ModelSpecs[i].NumProviders = 1
+		}
+	}
+	if cfg.NumUsers <= 0 {
+		cfg.NumUsers = 1
+	}
+	if cfg.QueueCapacity <= 0 {
+		cfg.QueueCapacity = 100
+	}
+	if cfg.QueueTimeout <= 0 {
+		cfg.QueueTimeout = 120 * time.Second
+	}
+	if cfg.SeedBalance <= 0 {
+		cfg.SeedBalance = 100_000_000
 	}
 
 	return &Suite{
-		Logger:  logger,
-		ModelID: modelID,
+		Logger: logger,
+		Config: cfg,
 	}
+}
+
+func resolveModelID(modelID string) string {
+	if modelID != "" {
+		return modelID
+	}
+	if env := os.Getenv("TESTBED_MODEL_ID"); env != "" {
+		return env
+	}
+	return "mlx-community/Qwen3.5-0.8B-MLX-4bit"
+}
+
+func (s *Suite) PrimaryModelID() string {
+	return s.Config.PrimaryModelID()
 }
 
 func (s *Suite) Start(ctx context.Context) error {
 	s.Ctx = ctx
 
 	if err := s.startPostgres(); err != nil {
+		return err
+	}
+	if err := s.createUserPool(); err != nil {
 		return err
 	}
 	if err := s.startCoordinator(); err != nil {
@@ -155,29 +167,52 @@ func (s *Suite) startPostgres() error {
 	if err != nil {
 		return fmt.Errorf("postgres store: %w", err)
 	}
-	if err := s.PgStore.Credit("admin", 100_000_000, store.LedgerDeposit, "test-seed"); err != nil {
+	if err := s.PgStore.Credit("admin", s.Config.SeedBalance, store.LedgerDeposit, "test-seed"); err != nil {
 		return fmt.Errorf("seed balance: %w", err)
 	}
+	return nil
+}
+
+func (s *Suite) createUserPool() error {
+	for i := 0; i < s.Config.NumUsers; i++ {
+		accountID := fmt.Sprintf("testbed-user-%d", i)
+		apiKey, err := s.PgStore.CreateKeyForAccount(accountID)
+		if err != nil {
+			return fmt.Errorf("create key for user %d: %w", i, err)
+		}
+		if err := s.PgStore.Credit(accountID, s.Config.SeedBalance, store.LedgerDeposit, "test-seed"); err != nil {
+			return fmt.Errorf("credit user %d: %w", i, err)
+		}
+		s.Users = append(s.Users, UserAccount{
+			AccountID: accountID,
+			APIKey:    apiKey,
+		})
+	}
+	s.Logger.Info("user pool created", "count", len(s.Users))
 	return nil
 }
 
 func (s *Suite) startCoordinator() error {
 	reg := registry.New(s.Logger)
 	reg.MinTrustLevel = registry.TrustLevel(TrustNone)
-	reg.SetModelCatalog([]registry.CatalogEntry{
-		{ID: s.ModelID},
-	})
+
+	var catalog []registry.CatalogEntry
+	for _, id := range s.Config.AllModelIDs() {
+		catalog = append(catalog, registry.CatalogEntry{ID: id})
+	}
+	reg.SetModelCatalog(catalog)
 
 	srv := api.NewServer(reg, s.PgStore, s.Logger)
 	srv.SetAdminKey("testbed-admin-key")
 	srv.SetRuntimeManifest(&api.RuntimeManifest{})
 	srv.SetChallengeInterval(1 * time.Hour)
+	srv.SetSkipChallenge(true)
 
 	ledger := payments.NewLedger(s.PgStore)
 	billingSvc := billing.NewService(s.PgStore, ledger, s.Logger, billing.Config{MockMode: true})
 	srv.SetBilling(billingSvc)
 
-	reg.SetQueue(registry.NewRequestQueue(100, 120*time.Second))
+	reg.SetQueue(registry.NewRequestQueue(s.Config.QueueCapacity, s.Config.QueueTimeout))
 
 	s.Coordinator = &Coordinator{
 		Server:   srv,
@@ -193,47 +228,50 @@ func (s *Suite) startProviders() error {
 		return fmt.Errorf("build provider: %w", err)
 	}
 
-	cfg := DefaultSuiteConfig()
-	numProviders := cfg.NumProviders
-	if n, _ := strconv.Atoi(os.Getenv("TESTBED_NUM_PROVIDERS")); n > 0 {
-		numProviders = n
-	}
-
-	for i := 0; i < numProviders; i++ {
-		p := &Provider{
-			BinaryPath: binaryPath,
-			Logger:     s.Logger.With("provider_index", i),
+	providerIdx := 0
+	for _, spec := range s.Config.ModelSpecs {
+		for j := 0; j < spec.NumProviders; j++ {
+			if providerIdx > 0 {
+				time.Sleep(500 * time.Millisecond)
+			}
+			p := &Provider{
+				BinaryPath:    binaryPath,
+				Logger:        s.Logger.With("provider_index", providerIdx, "model", spec.ModelID),
+				ProviderIndex: providerIdx,
+			}
+			if err := p.Start(s.Ctx, s.Coordinator.BaseURL(), ProviderConfig{
+				ModelID:    spec.ModelID,
+				TrustLevel: TrustNone,
+			}); err != nil {
+				return fmt.Errorf("start provider %d (%s): %w", providerIdx, spec.ModelID, err)
+			}
+			s.Providers = append(s.Providers, p)
+			providerIdx++
 		}
-		if err := p.Start(s.Ctx, s.Coordinator.BaseURL(), ProviderConfig{
-			ModelID:    s.ModelID,
-			TrustLevel: TrustNone,
-		}); err != nil {
-			return fmt.Errorf("start provider %d: %w", i, err)
-		}
-		s.Providers = append(s.Providers, p)
 	}
 	return nil
 }
 
 func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
+	expectedCount := s.Config.TotalProviders()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if s.Coordinator.Registry.ProviderCount() > 0 {
+		if s.Coordinator.Registry.ProviderCount() >= expectedCount {
 			break
 		}
 		time.Sleep(1 * time.Second)
 	}
-	if s.Coordinator.Registry.ProviderCount() == 0 {
-		return fmt.Errorf("no providers registered after %v", timeout)
+	if s.Coordinator.Registry.ProviderCount() < expectedCount {
+		return fmt.Errorf("only %d/%d providers registered after %v", s.Coordinator.Registry.ProviderCount(), expectedCount, timeout)
 	}
-	s.Logger.Info("provider registered", "count", s.Coordinator.Registry.ProviderCount())
+	s.Logger.Info("providers registered", "count", s.Coordinator.Registry.ProviderCount())
 
 	time.Sleep(3 * time.Second)
 
 	for _, id := range s.Coordinator.Registry.ProviderIDs() {
 		s.Coordinator.Registry.ForceTrustProvider(id)
 	}
-	s.Logger.Info("provider force-trusted for testing")
+	s.Logger.Info("providers force-trusted for testing")
 	return nil
 }
 
@@ -260,7 +298,7 @@ func (c *Coordinator) Start(ctx context.Context, logger *slog.Logger) error {
 		}
 	}()
 
-	c.Registry.StartEvictionLoop(ctx, 90*time.Second)
+	c.Registry.StartEvictionLoop(ctx, 1*time.Hour)
 	logger.Info("test coordinator started", "port", c.port, "base_url", c.baseURL)
 	return nil
 }
@@ -310,6 +348,9 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 	cmd := execCommandContext(ctx, p.BinaryPath, args...)
 	cmd.Stdout = &logWriter{logger: p.Logger, prefix: "provider:stdout"}
 	cmd.Stderr = &logWriter{logger: p.Logger, prefix: "provider:stderr"}
+	cmd.Env = append(os.Environ(),
+		"DARKBLOOM_PID_FILE=/tmp/darkbloom-testbed-"+strconv.Itoa(p.ProviderIndex)+".pid",
+	)
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start provider: %w", err)
@@ -317,6 +358,14 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 
 	p.cmd = cmd.Process
 	p.Logger.Info("provider started", "binary", p.BinaryPath, "pid", p.cmd.Pid)
+
+	go func() {
+		state, _ := cmd.Process.Wait()
+		if state != nil && state.ExitCode() >= 0 {
+			p.Logger.Warn("provider process exited", "exit_code", state.ExitCode())
+		}
+	}()
+
 	return nil
 }
 

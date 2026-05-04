@@ -87,4 +87,24 @@ func TestDefaultConfigs(t *testing.T) {
 	assert.True(t, cfg.Request.Streaming)
 	assert.Equal(t, 1, cfg.Request.Concurrency)
 	assert.Equal(t, 10, cfg.Request.TotalRequests)
+
+	sc := DefaultSuiteConfig()
+	assert.Equal(t, 1, len(sc.ModelSpecs))
+	assert.Equal(t, "mlx-community/Qwen3.5-0.8B-MLX-4bit", sc.ModelSpecs[0].ModelID)
+	assert.Equal(t, 1, sc.ModelSpecs[0].NumProviders)
+	assert.Equal(t, 1, sc.NumUsers)
+	assert.Equal(t, 1, sc.TotalProviders())
+	assert.Equal(t, "mlx-community/Qwen3.5-0.8B-MLX-4bit", sc.PrimaryModelID())
+	assert.Equal(t, []string{"mlx-community/Qwen3.5-0.8B-MLX-4bit"}, sc.AllModelIDs())
+
+	multiSpec := SuiteConfig{
+		ModelSpecs: []ModelSpec{
+			{ModelID: "model-a", NumProviders: 4},
+			{ModelID: "model-b", NumProviders: 3},
+		},
+		NumUsers: 5,
+	}
+	assert.Equal(t, 7, multiSpec.TotalProviders())
+	assert.Equal(t, []string{"model-a", "model-b"}, multiSpec.AllModelIDs())
+	assert.Equal(t, "model-a", multiSpec.PrimaryModelID())
 }

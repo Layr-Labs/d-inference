@@ -42,7 +42,7 @@ func TestMain(m *testing.M) {
 
 func postChatCompletions(t *testing.T, s *testbed.Suite, prompt string, stream bool, maxTokens int) *http.Response {
 	t.Helper()
-	return postChatCompletionsWithModel(t, s, s.ModelID, prompt, stream, maxTokens)
+	return postChatCompletionsWithModel(t, s, s.PrimaryModelID(), prompt, stream, maxTokens)
 }
 
 func postChatCompletionsWithModel(t *testing.T, s *testbed.Suite, model, prompt string, stream bool, maxTokens int) *http.Response {
@@ -72,7 +72,7 @@ func postChatCompletionsWithAuth(t *testing.T, s *testbed.Suite, apiKey, prompt 
 	t.Helper()
 
 	body := map[string]any{
-		"model":       s.ModelID,
+		"model":       s.PrimaryModelID(),
 		"messages":    []map[string]string{{"role": "user", "content": prompt}},
 		"stream":      stream,
 		"max_tokens":  maxTokens,

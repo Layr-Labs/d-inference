@@ -2,18 +2,9 @@ package testbed
 
 import "time"
 
-type ModelConfig struct {
-	ModelID            string
-	Quantization       string
-	BackendPort        int
-	ContinuousBatching bool
-}
-
-func DefaultModelConfig() ModelConfig {
-	return ModelConfig{
-		ModelID:     "mlx-community/gemma-3-270m",
-		BackendPort: 8000,
-	}
+type ModelSpec struct {
+	ModelID      string
+	NumProviders int
 }
 
 type TrustLevel string
@@ -25,7 +16,6 @@ const (
 )
 
 type ProviderConfig struct {
-	NumProviders        int
 	TrustLevel          TrustLevel
 	ModelID             string
 	AttestationInterval time.Duration
@@ -33,7 +23,6 @@ type ProviderConfig struct {
 
 func DefaultProviderConfig() ProviderConfig {
 	return ProviderConfig{
-		NumProviders:        1,
 		TrustLevel:          TrustNone,
 		AttestationInterval: 5 * time.Minute,
 	}
@@ -46,6 +35,7 @@ type RequestConfig struct {
 	Temperature   float64
 	Concurrency   int
 	TotalRequests int
+	ModelID       string
 }
 
 func DefaultRequestConfig() RequestConfig {
@@ -71,4 +61,68 @@ func DefaultTestConfig() TestConfig {
 		Provider: DefaultProviderConfig(),
 		Request:  DefaultRequestConfig(),
 	}
+}
+
+type ModelConfig struct {
+	ModelID            string
+	Quantization       string
+	BackendPort        int
+	ContinuousBatching bool
+}
+
+func DefaultModelConfig() ModelConfig {
+	return ModelConfig{
+		ModelID:     "mlx-community/gemma-3-270m",
+		BackendPort: 8000,
+	}
+}
+
+type UserAccount struct {
+	AccountID string
+	APIKey    string
+}
+
+type SuiteConfig struct {
+	ModelSpecs    []ModelSpec
+	NumUsers      int
+	QueueCapacity int
+	QueueTimeout  time.Duration
+	SeedBalance   int64
+}
+
+func DefaultSuiteConfig() SuiteConfig {
+	return SuiteConfig{
+		ModelSpecs:    []ModelSpec{{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: 1}},
+		NumUsers:      1,
+		QueueCapacity: 100,
+		QueueTimeout:  120 * time.Second,
+		SeedBalance:   100_000_000,
+	}
+}
+
+func (sc SuiteConfig) AllModelIDs() []string {
+	seen := make(map[string]bool)
+	var ids []string
+	for _, spec := range sc.ModelSpecs {
+		if !seen[spec.ModelID] {
+			seen[spec.ModelID] = true
+			ids = append(ids, spec.ModelID)
+		}
+	}
+	return ids
+}
+
+func (sc SuiteConfig) TotalProviders() int {
+	total := 0
+	for _, spec := range sc.ModelSpecs {
+		total += spec.NumProviders
+	}
+	return total
+}
+
+func (sc SuiteConfig) PrimaryModelID() string {
+	if len(sc.ModelSpecs) > 0 {
+		return sc.ModelSpecs[0].ModelID
+	}
+	return "mlx-community/Qwen3.5-0.8B-MLX-4bit"
 }

@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -683,6 +684,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				Pending:    pr,
 				ResponseCh: make(chan *registry.Provider, 1),
 			}
+			pr.QueuedAt = time.Now()
 			if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:over_capacity"})
 				refundReservation()
@@ -774,6 +776,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			lastErr = "failed to send request to provider"
 			continue
 		}
+		pr.DispatchedAt = time.Now()
 
 		s.logger.Info("inference request dispatched",
 			"trace_id", requestIDFromContext(r.Context()),
@@ -796,6 +799,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			timer.Stop()
 			if ok {
 				firstChunk = chunk
+				pr.FirstChunkAt = time.Now()
 				committed = true
 			} else {
 				// Channel closed — check if an error caused it.
@@ -897,6 +901,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				chunkTimer.Stop()
 				if ok {
 					firstChunk = chunk
+					pr.FirstChunkAt = time.Now()
 					committed = true
 				} else {
 					// Closed — check for error (same race as above).
@@ -1066,6 +1071,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if attestResult != nil && attestResult.PublicKey != "" {
 		w.Header().Set("X-Attestation-Se-Public-Key", attestResult.PublicKey)
 		w.Header().Set("X-Attestation-Device-Serial", attestResult.SerialNumber)
+	}
+
+	// Latency decomposition headers for observability.
+	if !pr.QueuedAt.IsZero() && !pr.DispatchedAt.IsZero() {
+		w.Header().Set("X-Queue-Wait-Ms", strconv.FormatInt(pr.DispatchedAt.Sub(pr.QueuedAt).Milliseconds(), 10))
+	}
+	if !pr.DispatchedAt.IsZero() && !pr.FirstChunkAt.IsZero() {
+		w.Header().Set("X-Provider-Latency-Ms", strconv.FormatInt(pr.FirstChunkAt.Sub(pr.DispatchedAt).Milliseconds(), 10))
 	}
 
 	// When this function returns (consumer disconnect, timeout, or completion),

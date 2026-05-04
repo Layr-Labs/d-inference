@@ -111,6 +111,7 @@ type Server struct {
 	logger                 *slog.Logger
 	mux                    *http.ServeMux
 	challengeInterval      time.Duration     // 0 means use DefaultChallengeInterval
+	skipChallenge          bool              // if true, skip attestation challenges entirely (testing only)
 	privyAuth              *auth.PrivyAuth   // Privy JWT authentication (nil if not configured)
 	adminEmails            map[string]bool   // emails that have admin access
 	adminKey               string            // EIGENINFERENCE_ADMIN_KEY for admin endpoints
@@ -384,6 +385,10 @@ func (s *Server) Billing() *billing.Service {
 
 func (s *Server) SetChallengeInterval(d time.Duration) {
 	s.challengeInterval = d
+}
+
+func (s *Server) SetSkipChallenge(skip bool) {
+	s.skipChallenge = skip
 }
 
 // SetPrivyAuth configures Privy JWT authentication for consumer endpoints.

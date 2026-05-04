@@ -1208,6 +1208,22 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		return
 	}
 
+	// Reject stale attestation blobs. A replayed blob from a previously-valid
+	// provider could otherwise grant trust to a new connection without fresh
+	// hardware verification. 5 minutes matches the challenge cycle interval.
+	const attestationMaxAge = 5 * time.Minute
+	if !attestation.CheckTimestamp(result, attestationMaxAge) {
+		s.logger.Warn("provider attestation timestamp out of range — rejecting stale or future-dated blob",
+			"provider_id", providerID,
+			"attestation_time", result.Timestamp,
+		)
+		result.Valid = false
+		result.Error = "attestation timestamp out of acceptable range"
+		provider.SetAttestationResult(&result)
+		s.registry.MarkUntrusted(providerID)
+		return
+	}
+
 	// Bind the WebSocket X25519 key used for E2E text encryption to the
 	// attested Secure Enclave identity. If a provider wants to serve private
 	// text, the attestation must carry the same encryption public key.

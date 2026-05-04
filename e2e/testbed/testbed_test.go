@@ -11,8 +11,8 @@ func TestEventBufferByKind(t *testing.T) {
 	buf := NewEventBuffer()
 
 	buf.Consume(Event{Kind: EventRequestStart, RequestID: "r1"})
-	buf.Consume(Event{Kind: EventSegmentStart, RequestID: "r1", Segment: SegmentClientToCoordinator})
-	buf.Consume(Event{Kind: EventSegmentEnd, RequestID: "r1", Segment: SegmentClientToCoordinator, Duration: 10 * time.Millisecond})
+	buf.Consume(Event{Kind: EventSegmentStart, RequestID: "r1", Segment: SegmentTotalE2E})
+	buf.Consume(Event{Kind: EventSegmentEnd, RequestID: "r1", Segment: SegmentTotalE2E, Duration: 10 * time.Millisecond})
 	buf.Consume(Event{Kind: EventRequestEnd, RequestID: "r1"})
 
 	starts := buf.ByKind(EventRequestStart)

@@ -34,7 +34,7 @@ func TestProfile_SingleProviderStreaming(t *testing.T) {
 
 	for i := 0; i < cfg.TotalRequests; i++ {
 		ri := inst.NewRequest()
-		timer := ri.StartSegment(testbed.SegmentClientToCoordinator)
+		timer := ri.StartSegment(testbed.SegmentTotalE2E)
 
 		resp := postChatCompletionsWithConfig(t, s, cfg, fmt.Sprintf("What is %d*%d?", i, i+1))
 		respBody, _ := io.ReadAll(resp.Body)

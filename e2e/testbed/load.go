@@ -207,7 +207,7 @@ func (lg *LoadGenerator) Run() *LoadResult {
 				successCount.Add(1)
 
 				timingsMu.Lock()
-				segmentTimings[SegmentClientToCoordinator] = append(segmentTimings[SegmentClientToCoordinator], e2eDuration)
+				segmentTimings[SegmentTotalE2E] = append(segmentTimings[SegmentTotalE2E], e2eDuration)
 				if rr.QueueWaitMs > 0 {
 					segmentTimings[SegmentQueueWait] = append(segmentTimings[SegmentQueueWait], time.Duration(rr.QueueWaitMs)*time.Millisecond)
 				}
@@ -279,7 +279,7 @@ func (r *LoadResult) SummaryTable() string {
 		s.WriteString("─────────────────────────────────────────────────────────────────────\n")
 
 		for _, seg := range []Segment{
-			SegmentClientToCoordinator,
+			SegmentTotalE2E,
 			SegmentQueueWait,
 			SegmentCoordinatorToProvider,
 			SegmentProviderToClient,

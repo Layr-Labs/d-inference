@@ -184,7 +184,7 @@ func TestIntegration_NonStreamingInference(t *testing.T) {
 	buf := testbed.NewEventBuffer()
 	inst := testbed.NewInstrument(buf)
 	ri := inst.NewRequest()
-	timer := ri.StartSegment(testbed.SegmentClientToCoordinator)
+	timer := ri.StartSegment(testbed.SegmentTotalE2E)
 
 	resp := postChatCompletions(t, s, "What is 2+2? Answer with just the number.", false, 20)
 	defer resp.Body.Close()
@@ -208,7 +208,7 @@ func TestIntegration_StreamingInference(t *testing.T) {
 	buf := testbed.NewEventBuffer()
 	inst := testbed.NewInstrument(buf)
 	ri := inst.NewRequest()
-	timer := ri.StartSegment(testbed.SegmentClientToCoordinator)
+	timer := ri.StartSegment(testbed.SegmentTotalE2E)
 
 	resp := postChatCompletions(t, s, "Count from 1 to 5.", true, 50)
 	defer resp.Body.Close()
@@ -244,7 +244,7 @@ func TestIntegration_MultipleRequestsAccounting(t *testing.T) {
 	var successCount int
 	for i := 0; i < totalRequests; i++ {
 		ri := inst.NewRequest()
-		clientTimer := ri.StartSegment(testbed.SegmentClientToCoordinator)
+		clientTimer := ri.StartSegment(testbed.SegmentTotalE2E)
 
 		resp := postChatCompletions(t, s, "What is 2+2?", false, 20)
 		respBody, _ := io.ReadAll(resp.Body)
@@ -513,7 +513,7 @@ func TestIntegration_ConcurrentRequests(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			ri := inst.NewRequest()
-			timer := ri.StartSegment(testbed.SegmentClientToCoordinator)
+			timer := ri.StartSegment(testbed.SegmentTotalE2E)
 
 			resp := postChatCompletions(t, s, fmt.Sprintf("What is %d+%d?", idx, idx+1), false, 20)
 			defer resp.Body.Close()

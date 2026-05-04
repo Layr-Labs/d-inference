@@ -15,7 +15,7 @@ func TestInstrumentRequestLifecycle(t *testing.T) {
 	rid := inst.NewRequestID()
 	inst.RequestStart(rid)
 
-	timer := inst.StartSegment(rid, SegmentClientToCoordinator)
+	timer := inst.StartSegment(rid, SegmentTotalE2E)
 	time.Sleep(1 * time.Millisecond)
 	timer.Stop()
 

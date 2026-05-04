@@ -222,7 +222,7 @@ func (r *ProfileRun) SummaryTable() string {
 	s += fmt.Sprintf("%-30s %8s %10s %10s %10s %10s\n", "SEGMENT", "COUNT", "MEAN", "P95", "P99", "MAX")
 	s += fmt.Sprintf("%s\n", "─────────────────────────────────────────────────────────────────────────────")
 	for _, seg := range []testbed.Segment{
-		testbed.SegmentClientToCoordinator,
+		testbed.SegmentTotalE2E,
 		testbed.SegmentQueueWait,
 		testbed.SegmentE2EEncrypt,
 		testbed.SegmentCoordinatorToProvider,

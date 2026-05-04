@@ -10,7 +10,7 @@ const SchemaVersion = "1.0.0"
 type Segment string
 
 const (
-	SegmentClientToCoordinator   Segment = "client_to_coordinator"
+	SegmentTotalE2E              Segment = "total_e2e"
 	SegmentQueueWait             Segment = "queue_wait"
 	SegmentE2EEncrypt            Segment = "e2e_encrypt"
 	SegmentCoordinatorToProvider Segment = "coordinator_to_provider"
@@ -19,7 +19,6 @@ const (
 	SegmentDecodeTPS             Segment = "decode_tps"
 	SegmentProviderToCoordinator Segment = "provider_to_coordinator"
 	SegmentProviderToClient      Segment = "provider_to_client"
-	SegmentTotalE2E              Segment = "total_e2e"
 )
 
 type EventKind string

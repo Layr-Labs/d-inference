@@ -120,6 +120,23 @@ func (a *Asserter) Evaluate(stats map[testbed.Segment]*SegmentStatsView) *Assert
 	return report
 }
 
+func (r *AssertionReport) SummaryMarkdown() string {
+	status := "PASS"
+	if !r.Passed {
+		status = "FAIL"
+	}
+	s := fmt.Sprintf("### Assertion Report: %s\n\n", status)
+	s += "| Assertion | Result | Detail |\n|---|---|---|\n"
+	for _, result := range r.Results {
+		icon := "PASS"
+		if !result.Passed {
+			icon = "FAIL"
+		}
+		s += fmt.Sprintf("| %s | %s | %s |\n", result.Name, icon, result.Message)
+	}
+	return s
+}
+
 func (r *AssertionReport) SummaryTable() string {
 	status := "PASS"
 	if !r.Passed {

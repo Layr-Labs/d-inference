@@ -358,6 +358,55 @@ type SegmentStatsView struct {
 	Max    time.Duration
 }
 
+func (r *LoadResult) SummaryMarkdown() string {
+	var s strings.Builder
+
+	s.WriteString(fmt.Sprintf("| Metric | Value |\n|---|---|\n"))
+	s.WriteString(fmt.Sprintf("| Total Requests | %d |\n", r.TotalRequests))
+	s.WriteString(fmt.Sprintf("| Success | %d |\n", r.SuccessCount))
+	s.WriteString(fmt.Sprintf("| Errors | %d |\n", r.ErrorCount))
+	s.WriteString(fmt.Sprintf("| Total Duration | %s |\n", r.TotalDuration.Round(time.Millisecond)))
+	if r.SuccessCount > 0 {
+		s.WriteString(fmt.Sprintf("| Throughput | %.1f req/s |\n", float64(r.SuccessCount)/r.TotalDuration.Seconds()))
+	}
+
+	if r.ProfileRun != nil && len(r.ProfileRun.SegmentTimings) > 0 {
+		s.WriteString("\n### Latency Decomposition\n\n")
+		s.WriteString("| Segment | Count | Mean | P50 | P95 | Max |\n|---|---|---|---|---|---|\n")
+
+		for _, seg := range []Segment{
+			SegmentTotalE2E,
+			SegmentParse,
+			SegmentReserve,
+			SegmentRoute,
+			SegmentQueueWait,
+			SegmentEncrypt,
+			SegmentDispatch,
+			SegmentCoordinatorToProvider,
+			SegmentTTFT,
+		} {
+			durations, ok := r.ProfileRun.SegmentTimings[seg]
+			if !ok || len(durations) == 0 {
+				continue
+			}
+			stats := computeStats(durations)
+			precision := time.Millisecond
+			if stats.Max < time.Millisecond {
+				precision = time.Microsecond
+			}
+			s.WriteString(fmt.Sprintf("| %s | %d | %s | %s | %s | %s |\n",
+				seg, stats.Count,
+				stats.Mean.Round(precision),
+				stats.Median.Round(precision),
+				stats.P95.Round(precision),
+				stats.Max.Round(precision),
+			))
+		}
+	}
+
+	return s.String()
+}
+
 func (r *LoadResult) SegmentStatsMap() map[Segment]*SegmentStatsView {
 	if r.ProfileRun == nil {
 		return nil

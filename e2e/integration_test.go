@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -34,10 +33,6 @@ func startSuite(t *testing.T) *testbed.Suite {
 	require.NoError(t, s.Start(ctx), "suite startup failed")
 	t.Cleanup(s.Stop)
 	return s
-}
-
-func TestMain(m *testing.M) {
-	os.Exit(m.Run())
 }
 
 func postChatCompletions(t *testing.T, s *testbed.Suite, prompt string, stream bool, maxTokens int) *http.Response {

@@ -3,6 +3,9 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +14,25 @@ import (
 	"github.com/eigeninference/d-inference/e2e/testbed"
 	tbassert "github.com/eigeninference/d-inference/e2e/testbed/assert"
 )
+
+var (
+	benchmarkMarkdownMu sync.Mutex
+	benchmarkMarkdown   strings.Builder
+)
+
+func init() {
+	benchmarkMarkdown.WriteString("# Benchmark Results\n\n")
+	benchmarkMarkdown.WriteString(fmt.Sprintf("Runner: `%s` | Date: %s\n\n",
+		envOr("RUNNER_DESC", "local"),
+		time.Now().UTC().Format("2006-01-02 15:04 UTC")))
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
 
 func runBenchmark(t *testing.T, name string, suiteCfg testbed.SuiteConfig, reqCfg testbed.RequestConfig) {
 	t.Helper()
@@ -96,6 +118,32 @@ func runBenchmark(t *testing.T, name string, suiteCfg testbed.SuiteConfig, reqCf
 			t.Logf("WARNING: %s — %s", r.Name, r.Message)
 		}
 	}
+
+	benchmarkMarkdownMu.Lock()
+	benchmarkMarkdown.WriteString(fmt.Sprintf("## %s\n\n", name))
+	benchmarkMarkdown.WriteString(fmt.Sprintf("%d providers, %d users, %d requests, concurrency=%d, streaming=%v\n\n",
+		suiteCfg.TotalProviders(), suiteCfg.NumUsers, reqCfg.TotalRequests, reqCfg.Concurrency, reqCfg.Streaming))
+	benchmarkMarkdown.WriteString(result.SummaryMarkdown())
+	benchmarkMarkdown.WriteString("\n")
+	benchmarkMarkdown.WriteString(assertReport.SummaryMarkdown())
+	benchmarkMarkdown.WriteString("\n\n")
+	benchmarkMarkdownMu.Unlock()
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+
+	if code == 0 {
+		benchmarkMarkdownMu.Lock()
+		md := benchmarkMarkdown.String()
+		benchmarkMarkdownMu.Unlock()
+
+		if outPath := os.Getenv("BENCHMARK_MD_PATH"); outPath != "" && md != "" {
+			_ = os.WriteFile(outPath, []byte(md), 0644)
+		}
+	}
+
+	os.Exit(code)
 }
 
 func TestBenchmark_SingleProviderStreaming(t *testing.T) {

@@ -221,7 +221,8 @@ func TestVerifyMDACertChainWrongRoot(t *testing.T) {
 }
 
 func TestVerifyMDACertChainNilRoot(t *testing.T) {
-	// Without a root CA, the function should still parse OIDs but skip chain verification.
+	// Without a root CA no trust anchor is available; the result must be
+	// invalid so callers cannot treat an unverified chain as trusted.
 	certPEM, _ := createTestMDACert(t, false, true, true)
 
 	result, err := VerifyMDACertChain(certPEM, nil)
@@ -229,18 +230,11 @@ func TestVerifyMDACertChainNilRoot(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !result.Valid {
-		t.Fatalf("expected valid result without root CA, got error: %s", result.Error)
+	if result.Valid {
+		t.Fatal("expected Valid=false when no root CA is provided")
 	}
-
-	if result.SIPEnabled {
-		t.Error("expected SIPEnabled = false")
-	}
-	if !result.SecureBootEnabled {
-		t.Error("expected SecureBootEnabled = true")
-	}
-	if !result.ThirdPartyKexts {
-		t.Error("expected ThirdPartyKexts = true")
+	if result.Error == "" {
+		t.Error("expected a non-empty Error explaining why validation was skipped")
 	}
 }
 

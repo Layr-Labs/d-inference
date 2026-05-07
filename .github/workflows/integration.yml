@@ -43,6 +43,9 @@ jobs:
           /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/Qwen3.5-0.8B-MLX-4bit')"
           /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-3-270m-4bit')"
 
+      - name: Run testbed unit tests
+        run: go test ./e2e/testbed/... -count=1 -v -timeout 5m
+
       - name: Run integration + profile tests
         run: |
           export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
@@ -54,6 +57,8 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     if: github.event_name == 'pull_request'
+    permissions:
+      pull-requests: write
     env:
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       TESTBED_PROVIDER_CONFIG: debug
@@ -102,11 +107,10 @@ jobs:
             echo "No benchmark results file found"
             exit 0
           fi
-          BODY=$(cat /tmp/benchmark-results.md)
           gh pr comment ${{ github.event.pull_request.number }} \
-            --body "$BODY" \
+            --body-file /tmp/benchmark-results.md \
             --edit-last \
             || gh pr comment ${{ github.event.pull_request.number }} \
-            --body "$BODY"
+            --body-file /tmp/benchmark-results.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

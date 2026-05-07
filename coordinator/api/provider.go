@@ -397,11 +397,11 @@ func providerAttestationMatchesACMEKey(provider *registry.Provider, acmeResult *
 
 // challengeLoop periodically sends attestation challenges to a provider.
 func (s *Server) challengeLoop(ctx context.Context, conn *websocket.Conn, providerID string, provider *registry.Provider, tracker *challengeTracker) {
-	if s.skipChallenge {
+	if s.skipChallenge.Load() {
 		return
 	}
 
-	interval := s.challengeInterval
+	interval := time.Duration(s.challengeInterval.Load())
 	if interval == 0 {
 		interval = DefaultChallengeInterval
 	}

@@ -158,7 +158,7 @@ func TestIntegration_ProviderReconnectRequiresChallenge(t *testing.T) {
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 100 * time.Millisecond
+	srv.SetChallengeInterval(100 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -282,7 +282,7 @@ func TestIntegration_ChallengeFailureBlocksRouting(t *testing.T) {
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -390,7 +390,7 @@ func TestIntegration_E2EEncryptionRoundtrip(t *testing.T) {
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -551,7 +551,7 @@ func TestIntegration_AccountLinkedEarnings(t *testing.T) {
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -700,7 +700,7 @@ func TestIntegration_RequestQueueDrain(t *testing.T) {
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

@@ -37,6 +37,7 @@ func NewAsserter(thresholds []Threshold) *Asserter {
 
 func DefaultThresholds() []Threshold {
 	return []Threshold{
+		{Segment: testbed.SegmentTotalE2E, MaxMean: 30 * time.Second, MaxP95: 60 * time.Second},
 		{Segment: testbed.SegmentParse, MaxMean: 1 * time.Millisecond, MaxP95: 5 * time.Millisecond},
 		{Segment: testbed.SegmentReserve, MaxMean: 50 * time.Millisecond, MaxP95: 200 * time.Millisecond},
 		{Segment: testbed.SegmentEncrypt, MaxMean: 5 * time.Millisecond, MaxP95: 50 * time.Millisecond},

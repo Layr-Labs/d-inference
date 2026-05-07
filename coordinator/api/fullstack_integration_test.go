@@ -467,7 +467,7 @@ func TestFullStack_MultiProviderInference(t *testing.T) {
 	reg.MinTrustLevel = registry.TrustNone // no attestation for testing
 	reg.SetQueue(registry.NewRequestQueue(100, 60*time.Second))
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 30 * time.Second
+	srv.SetChallengeInterval(30 * time.Second)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -740,7 +740,7 @@ func TestFullStack_TenProviderStress(t *testing.T) {
 	reg.MinTrustLevel = registry.TrustNone
 	reg.SetQueue(registry.NewRequestQueue(200, 60*time.Second))
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 30 * time.Second
+	srv.SetChallengeInterval(30 * time.Second)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -903,7 +903,7 @@ func runBatchingBenchmark(t *testing.T, numProviders, numRequests int, continuou
 	reg.MinTrustLevel = registry.TrustNone
 	reg.SetQueue(registry.NewRequestQueue(200, 120*time.Second))
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 60 * time.Second
+	srv.SetChallengeInterval(60 * time.Second)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -1053,7 +1053,7 @@ func TestFullStack_LargeModelInference(t *testing.T) {
 	reg.MinTrustLevel = registry.TrustNone
 	reg.SetQueue(registry.NewRequestQueue(10, 120*time.Second))
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 60 * time.Second
+	srv.SetChallengeInterval(60 * time.Second)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

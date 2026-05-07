@@ -154,7 +154,7 @@ func setupTestServer(t *testing.T) (*Server, *registry.Registry, store.Store, *h
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 	ts := httptest.NewServer(srv.Handler())
 	return srv, reg, st, ts
 }

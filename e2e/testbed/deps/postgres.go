@@ -18,8 +18,9 @@ type PostgresLifecycle struct {
 	DatabaseURL string
 	Logger      *slog.Logger
 
-	dataDir string
-	native  bool
+	dataDir   string
+	native    bool
+	nativeCmd *exec.Cmd
 }
 
 func NewPostgresLifecycle(logger *slog.Logger, port int) *PostgresLifecycle {
@@ -123,6 +124,7 @@ func (p *PostgresLifecycle) startNative(ctx context.Context) error {
 
 	p.ContainerID = fmt.Sprintf("native:%d", cmd.Process.Pid)
 	p.native = true
+	p.nativeCmd = cmd
 
 	if err := p.waitForReadyNative(ctx); err != nil {
 		p.Stop()
@@ -207,14 +209,28 @@ func (p *PostgresLifecycle) stopNative() {
 	if p.ContainerID == "" {
 		return
 	}
-	var pid int
-	fmt.Sscanf(p.ContainerID, "native:%d", &pid)
-	if pid > 0 {
-		proc, err := os.FindProcess(pid)
-		if err == nil {
+	if p.nativeCmd != nil {
+		p.nativeCmd.Process.Signal(os.Interrupt)
+		done := make(chan error, 1)
+		go func() {
+			_, _ = p.nativeCmd.Process.Wait()
+			done <- nil
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			p.nativeCmd.Process.Kill()
+			_, _ = p.nativeCmd.Process.Wait()
+		}
+	} else {
+		var pid int
+		fmt.Sscanf(p.ContainerID, "native:%d", &pid)
+		if pid > 0 {
+			proc, _ := os.FindProcess(pid)
 			proc.Signal(os.Interrupt)
 			time.Sleep(500 * time.Millisecond)
 			proc.Kill()
+			proc.Wait()
 		}
 	}
 	if p.dataDir != "" {

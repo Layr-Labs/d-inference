@@ -2,6 +2,7 @@ package testbed
 
 import (
 	"encoding/json"
+	"sync"
 	"time"
 )
 
@@ -60,6 +61,7 @@ func (f EventFan) Consume(event Event) {
 }
 
 type EventBuffer struct {
+	mu     sync.Mutex
 	events []Event
 }
 
@@ -70,20 +72,28 @@ func NewEventBuffer() *EventBuffer {
 }
 
 func (b *EventBuffer) Consume(event Event) {
+	b.mu.Lock()
 	b.events = append(b.events, event)
+	b.mu.Unlock()
 }
 
 func (b *EventBuffer) Events() []Event {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	out := make([]Event, len(b.events))
 	copy(out, b.events)
 	return out
 }
 
 func (b *EventBuffer) Reset() {
+	b.mu.Lock()
 	b.events = b.events[:0]
+	b.mu.Unlock()
 }
 
 func (b *EventBuffer) ByKind(kind EventKind) []Event {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	var out []Event
 	for _, e := range b.events {
 		if e.Kind == kind {
@@ -94,6 +104,8 @@ func (b *EventBuffer) ByKind(kind EventKind) []Event {
 }
 
 func (b *EventBuffer) BySegment(seg Segment) []Event {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	var out []Event
 	for _, e := range b.events {
 		if e.Segment == seg {
@@ -104,6 +116,8 @@ func (b *EventBuffer) BySegment(seg Segment) []Event {
 }
 
 func (b *EventBuffer) ByRequest(requestID string) []Event {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	var out []Event
 	for _, e := range b.events {
 		if e.RequestID == requestID {

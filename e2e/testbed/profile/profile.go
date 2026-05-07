@@ -223,14 +223,17 @@ func (r *ProfileRun) SummaryTable() string {
 	s += fmt.Sprintf("%s\n", "─────────────────────────────────────────────────────────────────────────────")
 	for _, seg := range []testbed.Segment{
 		testbed.SegmentTotalE2E,
+		testbed.SegmentParse,
+		testbed.SegmentReserve,
 		testbed.SegmentQueueWait,
 		testbed.SegmentE2EEncrypt,
+		testbed.SegmentEncrypt,
+		testbed.SegmentDispatch,
 		testbed.SegmentCoordinatorToProvider,
 		testbed.SegmentProviderToBackend,
 		testbed.SegmentTTFT,
 		testbed.SegmentDecodeTPS,
 		testbed.SegmentProviderToCoordinator,
-		testbed.SegmentTotalE2E,
 	} {
 		if stats, ok := r.Aggregated[seg]; ok {
 			s += fmt.Sprintf("%-30s %8d %10s %10s %10s %10s\n",

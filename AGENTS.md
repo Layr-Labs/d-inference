@@ -30,20 +30,21 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── registry/         provider registry, queueing, routing, reputation
 └── store/            in-memory or Postgres persistence
 
-testbed/              System-level testing framework (shared Go module with coordinator)
-├── coordinator.go    Coordinator lifecycle (start/stop, Postgres helpers)
-├── provider.go       Provider lifecycle (binary discovery, start/stop)
+e2e/testbed/          System-level testing framework (shared Go module with coordinator)
+├── suite.go          Test suite lifecycle (start/stop, Postgres, coordinator, providers)
+├── coordinator.go    Coordinator store factories (in-memory, Postgres)
+├── provider.go       Provider lifecycle (binary discovery, build)
 ├── config.go         Test configuration (model, provider, request settings)
 ├── events.go         Event system (segments, buffers, fan-out)
 ├── instrument.go     Request-level instrumentation
+├── load.go           Load generator, user pool, result aggregation
 ├── assert/           Assertion framework
 │   ├── assert.go           Latency threshold assertions
 │   └── accounting.go       Postgres-backed accounting integrity checks
 ├── deps/             External dependency lifecycle
-│   └── postgres.go         Ephemeral Docker Postgres
-├── profile/          Profiling and regression detection
-│   └── profile.go          Segment stats aggregation, diffing, JSON export
-└── integration/      Integration test suite (Docker Postgres + real coordinator)
+│   └── postgres.go         Ephemeral Docker/native Postgres
+└── profile/          Profiling and regression detection
+    └── profile.go          Segment stats aggregation, diffing, JSON export
 
 provider/             Rust provider agent for Apple Silicon Macs
 ├── src/

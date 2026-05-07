@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api"
@@ -70,16 +71,20 @@ type Provider struct {
 	Logger        *slog.Logger
 	ProviderIndex int
 
-	cmd    *os.Process
+	cmd    *exec.Cmd
 	cancel context.CancelFunc
+	waited sync.Once
 }
 
 func NewSuite(cfg SuiteConfig) *Suite {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	if os.Getenv("DARKBLOOM_REPO_ROOT") == "" {
+	if cfg.RepoRoot == "" {
+		cfg.RepoRoot = os.Getenv("DARKBLOOM_REPO_ROOT")
+	}
+	if cfg.RepoRoot == "" {
 		if cwd, err := os.Getwd(); err == nil {
-			os.Setenv("DARKBLOOM_REPO_ROOT", cwd+"/../..")
+			cfg.RepoRoot = cwd + "/.."
 		}
 	}
 
@@ -129,15 +134,19 @@ func (s *Suite) Start(ctx context.Context) error {
 	s.Ctx = ctx
 
 	if err := s.startPostgres(); err != nil {
+		s.Stop()
 		return err
 	}
 	if err := s.createUserPool(); err != nil {
+		s.Stop()
 		return err
 	}
 	if err := s.startCoordinator(); err != nil {
+		s.Stop()
 		return err
 	}
 	if err := s.startProviders(); err != nil {
+		s.Stop()
 		return err
 	}
 	return s.waitForProviderRegistration(3 * time.Minute)
@@ -205,7 +214,6 @@ func (s *Suite) startCoordinator() error {
 	srv := api.NewServer(reg, s.PgStore, s.Logger)
 	srv.SetAdminKey("testbed-admin-key")
 	srv.SetRuntimeManifest(&api.RuntimeManifest{})
-	srv.SetChallengeInterval(1 * time.Hour)
 	srv.SetSkipChallenge(true)
 
 	ledger := payments.NewLedger(s.PgStore)
@@ -266,10 +274,8 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 	}
 	s.Logger.Info("providers registered", "count", s.Coordinator.Registry.ProviderCount())
 
-	time.Sleep(3 * time.Second)
-
 	for _, id := range s.Coordinator.Registry.ProviderIDs() {
-		s.Coordinator.Registry.ForceTrustProvider(id)
+		s.Coordinator.Registry.ForceTrustProvider(id, s.Config.PrivacyCapabilities)
 	}
 	s.Logger.Info("providers force-trusted for testing")
 	return nil
@@ -356,15 +362,8 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 		return fmt.Errorf("start provider: %w", err)
 	}
 
-	p.cmd = cmd.Process
-	p.Logger.Info("provider started", "binary", p.BinaryPath, "pid", p.cmd.Pid)
-
-	go func() {
-		state, _ := cmd.Process.Wait()
-		if state != nil && state.ExitCode() >= 0 {
-			p.Logger.Warn("provider process exited", "exit_code", state.ExitCode())
-		}
-	}()
+	p.cmd = cmd
+	p.Logger.Info("provider started", "binary", p.BinaryPath, "pid", cmd.Process.Pid)
 
 	return nil
 }
@@ -373,19 +372,24 @@ func (p *Provider) Stop() {
 	if p.cancel != nil {
 		p.cancel()
 	}
-	if p.cmd != nil {
-		if err := p.cmd.Signal(os.Interrupt); err != nil {
-			p.cmd.Kill()
+	if p.cmd != nil && p.cmd.Process != nil {
+		if err := p.cmd.Process.Signal(os.Interrupt); err != nil {
+			p.cmd.Process.Kill()
 		}
 		done := make(chan error, 1)
 		go func() {
-			_, _ = p.cmd.Wait()
+			p.waited.Do(func() {
+				_, _ = p.cmd.Process.Wait()
+			})
 			done <- nil
 		}()
 		select {
 		case <-done:
 		case <-time.After(10 * time.Second):
-			p.cmd.Kill()
+			p.cmd.Process.Kill()
+			p.waited.Do(func() {
+				_, _ = p.cmd.Process.Wait()
+			})
 		}
 	}
 	p.Logger.Info("provider stopped")

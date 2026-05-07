@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -287,16 +288,6 @@ func (lg *LoadGenerator) Run() *LoadResult {
 }
 
 func (lg *LoadGenerator) extractTTFT(body []byte) time.Duration {
-	var resp struct {
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-		} `json:"usage"`
-	}
-	json.Unmarshal(body, &resp)
-	if resp.Usage.CompletionTokens > 0 {
-		return 0
-	}
 	return 0
 }
 
@@ -426,14 +417,14 @@ func (r *LoadResult) SegmentStatsMap() map[Segment]*SegmentStatsView {
 		}
 		mean := total / time.Duration(len(sorted))
 		median := sorted[len(sorted)/2]
-		p95Idx := len(sorted) * 95 / 100
-		if p95Idx >= len(sorted) {
-			p95Idx = len(sorted) - 1
-		}
-		p99Idx := len(sorted) * 99 / 100
-		if p99Idx >= len(sorted) {
-			p99Idx = len(sorted) - 1
-		}
+	p95Idx := int(math.Ceil(float64(len(sorted))*0.95)) - 1
+	if p95Idx >= len(sorted) {
+		p95Idx = len(sorted) - 1
+	}
+	p99Idx := int(math.Ceil(float64(len(sorted))*0.99)) - 1
+	if p99Idx >= len(sorted) {
+		p99Idx = len(sorted) - 1
+	}
 
 		out[seg] = &SegmentStatsView{
 			Count:  len(sorted),
@@ -470,7 +461,7 @@ func computeStats(durations []time.Duration) simpleStats {
 	}
 	mean := total / time.Duration(len(sorted))
 	median := sorted[len(sorted)/2]
-	p95Idx := len(sorted) * 95 / 100
+	p95Idx := int(math.Ceil(float64(len(sorted))*0.95)) - 1
 	if p95Idx >= len(sorted) {
 		p95Idx = len(sorted) - 1
 	}

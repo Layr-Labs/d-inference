@@ -34,6 +34,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/auth"
@@ -110,8 +111,8 @@ type Server struct {
 	billing                *billing.Service
 	logger                 *slog.Logger
 	mux                    *http.ServeMux
-	challengeInterval      time.Duration     // 0 means use DefaultChallengeInterval
-	skipChallenge          bool              // if true, skip attestation challenges entirely (testing only)
+	challengeInterval      atomic.Int64      // time.Duration stored as int64; 0 means use DefaultChallengeInterval
+	skipChallenge          atomic.Bool       // if true, skip attestation challenges entirely (testing only)
 	privyAuth              *auth.PrivyAuth   // Privy JWT authentication (nil if not configured)
 	adminEmails            map[string]bool   // emails that have admin access
 	adminKey               string            // EIGENINFERENCE_ADMIN_KEY for admin endpoints
@@ -384,11 +385,11 @@ func (s *Server) Billing() *billing.Service {
 }
 
 func (s *Server) SetChallengeInterval(d time.Duration) {
-	s.challengeInterval = d
+	s.challengeInterval.Store(int64(d))
 }
 
 func (s *Server) SetSkipChallenge(skip bool) {
-	s.skipChallenge = skip
+	s.skipChallenge.Store(skip)
 }
 
 // SetPrivyAuth configures Privy JWT authentication for consumer endpoints.

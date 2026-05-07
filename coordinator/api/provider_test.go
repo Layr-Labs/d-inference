@@ -786,7 +786,7 @@ func TestChallengeResponseSuccess(t *testing.T) {
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
 	// Use a very short challenge interval for testing.
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -864,7 +864,7 @@ func TestChallengeResponseAllowsRDMAEnabledWithoutHypervisor(t *testing.T) {
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -1105,7 +1105,7 @@ func TestChallengeResponseRejectsMissingSIPStatus(t *testing.T) {
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -1191,7 +1191,7 @@ func TestChallengeResponseMissingSIPClearsExistingRoutingEligibility(t *testing.
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -1441,7 +1441,7 @@ func TestProviderBelowMinVersionStaysHiddenFromModelsAfterChallenge(t *testing.T
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 	srv.minProviderVersion = "0.3.9"
 	srv.SetRuntimeManifest(&RuntimeManifest{})
 
@@ -1522,7 +1522,7 @@ func TestChallengeResponseWrongKey(t *testing.T) {
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

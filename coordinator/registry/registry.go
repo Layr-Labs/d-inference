@@ -1052,7 +1052,7 @@ func (r *Registry) MarkUntrusted(providerID string) {
 	)
 }
 
-func (r *Registry) ForceTrustProvider(providerID string) {
+func (r *Registry) ForceTrustProvider(providerID string, privacyCaps *protocol.PrivacyCapabilities) {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
 	r.mu.RUnlock()
@@ -1068,16 +1068,11 @@ func (r *Registry) ForceTrustProvider(providerID string) {
 	p.FailedChallenges = 0
 	p.RuntimeVerified = true
 	p.RuntimeManifestChecked = true
-	if p.PrivacyCapabilities == nil {
+	if privacyCaps != nil {
+		p.PrivacyCapabilities = privacyCaps
+	} else if p.PrivacyCapabilities == nil {
 		p.PrivacyCapabilities = &protocol.PrivacyCapabilities{}
 	}
-	p.PrivacyCapabilities.TextBackendInprocess = true
-	p.PrivacyCapabilities.TextProxyDisabled = true
-	p.PrivacyCapabilities.PythonRuntimeLocked = true
-	p.PrivacyCapabilities.DangerousModulesBlocked = true
-	p.PrivacyCapabilities.AntiDebugEnabled = true
-	p.PrivacyCapabilities.CoreDumpsDisabled = true
-	p.PrivacyCapabilities.EnvScrubbed = true
 	p.mu.Unlock()
 
 	r.drainQueuedRequestsForModels(providerModelIDs(p))

@@ -104,7 +104,7 @@ func TestStress_QueueDrainsWhenProviderAppears(t *testing.T) {
 	reg := registry.New(logger)
 	reg.SetQueue(registry.NewRequestQueue(10, 10*time.Second))
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -179,7 +179,7 @@ func TestStress_ProviderCrashDuringMultipleInFlightRequests(t *testing.T) {
 	reg := registry.New(logger)
 	reg.SetQueue(registry.NewRequestQueue(50, 30*time.Second))
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 1 * time.Second
+	srv.SetChallengeInterval(1 * time.Second)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -271,7 +271,7 @@ func TestStress_ConsumerDisconnectSendsCancelToProvider(t *testing.T) {
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 1 * time.Second
+	srv.SetChallengeInterval(1 * time.Second)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -372,7 +372,7 @@ func TestStress_BillingBalanceExhaustion(t *testing.T) {
 	srv := NewServer(reg, st, logger)
 	srv.SetBilling(billingSvc)
 	srv.SetAdminKey("billing-key")
-	srv.challengeInterval = 500 * time.Millisecond
+	srv.SetChallengeInterval(500 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -548,7 +548,7 @@ func TestStress_HeterogeneousProviderScoring(t *testing.T) {
 	reg := registry.New(logger)
 	reg.SetQueue(registry.NewRequestQueue(50, 10*time.Second))
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 1 * time.Second
+	srv.SetChallengeInterval(1 * time.Second)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -741,7 +741,7 @@ func TestStress_ProviderBecomesIdleAfterRequest(t *testing.T) {
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 500 * time.Millisecond
+	srv.SetChallengeInterval(500 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

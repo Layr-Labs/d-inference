@@ -403,7 +403,7 @@ func TestEdge_CatalogChangeDuringActiveProvider(t *testing.T) {
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 100 * time.Millisecond
+	srv.SetChallengeInterval(100 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -533,7 +533,7 @@ func TestEdge_ConcurrentRequestsSameProvider(t *testing.T) {
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 500 * time.Millisecond
+	srv.SetChallengeInterval(500 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

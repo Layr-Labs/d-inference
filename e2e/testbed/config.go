@@ -1,6 +1,10 @@
 package testbed
 
-import "time"
+import (
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+)
 
 type ModelSpec struct {
 	ModelID      string
@@ -89,11 +93,13 @@ type UserAccount struct {
 }
 
 type SuiteConfig struct {
-	ModelSpecs    []ModelSpec
-	NumUsers      int
-	QueueCapacity int
-	QueueTimeout  time.Duration
-	SeedBalance   int64
+	RepoRoot            string
+	ModelSpecs          []ModelSpec
+	NumUsers            int
+	QueueCapacity       int
+	QueueTimeout        time.Duration
+	SeedBalance         int64
+	PrivacyCapabilities *protocol.PrivacyCapabilities
 }
 
 func DefaultSuiteConfig() SuiteConfig {

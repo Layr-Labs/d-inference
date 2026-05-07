@@ -384,7 +384,7 @@ func TestSecurity_AuthBypass(t *testing.T) {
 func TestSecurity_ChallengeNonceReplay(t *testing.T) {
 	srv, _ := securityTestServer(t)
 	// Use a very fast challenge interval for this test.
-	srv.challengeInterval = 500 * time.Millisecond
+	srv.SetChallengeInterval(500 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

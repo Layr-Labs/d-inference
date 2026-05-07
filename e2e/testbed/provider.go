@@ -22,12 +22,12 @@ func BuildProvider(ctx context.Context, logger *slog.Logger) (string, error) {
 	if repoRoot == "" {
 		repoRoot = "."
 	}
-	providerDir := repoRoot + "/provider-swift"
+	providerDir := filepath.Join(repoRoot, "provider-swift")
 	cfg := providerBuildConfig()
 
-	binaryPath := providerDir + "/.build/" + cfg + "/darkbloom"
+	binaryPath := filepath.Join(providerDir, ".build", cfg, "darkbloom")
 	if _, err := os.Stat(binaryPath); err == nil {
-		metallibPath := providerDir + "/.build/" + cfg + "/mlx.metallib"
+		metallibPath := filepath.Join(providerDir, ".build", cfg, "mlx.metallib")
 		if _, err2 := os.Stat(metallibPath); err2 == nil {
 			logger.Info("using cached provider binary", "path", binaryPath)
 			return binaryPath, nil
@@ -58,7 +58,7 @@ func BuildProvider(ctx context.Context, logger *slog.Logger) (string, error) {
 
 func ensureMetallib(providerDir string, logger *slog.Logger) error {
 	cfg := providerBuildConfig()
-	metallibPath := providerDir + "/.build/" + cfg + "/mlx.metallib"
+	metallibPath := filepath.Join(providerDir, ".build", cfg, "mlx.metallib")
 	if _, err := os.Stat(metallibPath); err == nil {
 		return nil
 	}

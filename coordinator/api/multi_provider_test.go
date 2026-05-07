@@ -34,7 +34,7 @@ func TestMultiProvider_TwoProvidersSameModel(t *testing.T) {
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 500 * time.Millisecond
+	srv.SetChallengeInterval(500 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -231,7 +231,7 @@ func TestMultiProvider_ProviderJoinsLate(t *testing.T) {
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, logger)
-	srv.challengeInterval = 200 * time.Millisecond
+	srv.SetChallengeInterval(200 * time.Millisecond)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

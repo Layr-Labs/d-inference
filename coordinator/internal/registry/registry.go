@@ -988,10 +988,12 @@ func (r *Registry) Disconnect(id string) {
 	p, ok := r.providers[id]
 	if ok {
 		delete(r.providers, id)
-		r.onlineCount.Add(-1)
 		p.mu.Lock()
-		for _, m := range p.Models {
-			r.modelProviderDec(m.ID)
+		if p.Status != StatusUntrusted {
+			r.onlineCount.Add(-1)
+			for _, m := range p.Models {
+				r.modelProviderDec(m.ID)
+			}
 		}
 		p.mu.Unlock()
 	}

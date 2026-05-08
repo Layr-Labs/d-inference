@@ -147,6 +147,14 @@ func (c *Client) Incr(name string, tags []string) {
 	_ = c.Statsd.Incr(name, tags, 1)
 }
 
+// Count increments a DogStatsD counter by the given value.
+func (c *Client) Count(name string, value int64, tags []string) {
+	if c == nil || c.Statsd == nil {
+		return
+	}
+	_ = c.Statsd.Count(name, value, tags, 1)
+}
+
 // Histogram records a histogram value.
 func (c *Client) Histogram(name string, value float64, tags []string) {
 	if c == nil || c.Statsd == nil {

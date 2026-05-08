@@ -25,6 +25,7 @@ import (
 	"math"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eigeninference/coordinator/internal/attestation"
@@ -332,32 +333,29 @@ type Registry struct {
 	mu        sync.RWMutex
 	providers map[string]*Provider
 
-	// queue manages requests waiting for a provider to become available.
 	queue *RequestQueue
 
-	// MinTrustLevel is the minimum trust level required for routing.
-	// Defaults to TrustHardware. Set to TrustNone for testing.
 	MinTrustLevel TrustLevel
 
-	// modelCatalog maps active model IDs to their catalog metadata (including
-	// expected weight hashes). When non-empty, only models in this map are
-	// accepted from providers and routable by consumers. Updated via SetModelCatalog.
 	modelCatalog map[string]CatalogEntry
 
-	// store provides persistence for provider fleet state. When non-nil,
-	// provider records and reputation are persisted across coordinator restarts.
 	store store.Store
 
 	logger *slog.Logger
+
+	onlineCount     atomic.Int64
+	modelProviders  map[string]*atomic.Int64
+	modelProvidersMu sync.Mutex
 }
 
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
-		providers:     make(map[string]*Provider),
-		queue:         NewRequestQueue(10, 120*time.Second),
-		MinTrustLevel: TrustHardware,
-		logger:        logger,
+		providers:      make(map[string]*Provider),
+		queue:          NewRequestQueue(10, 120*time.Second),
+		MinTrustLevel:  TrustHardware,
+		modelProviders: make(map[string]*atomic.Int64),
+		logger:         logger,
 	}
 }
 
@@ -599,6 +597,27 @@ func (r *Registry) SetModelCatalog(entries []CatalogEntry) {
 	r.modelCatalog = catalog
 }
 
+// ModelType returns the model type string for the given model ID, or
+// "unknown" if no provider is currently serving it.
+func (r *Registry) ModelType(model string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		if p.Status == StatusOffline || p.Status == StatusUntrusted {
+			continue
+		}
+		p.mu.Lock()
+		for _, m := range p.Models {
+			if m.ID == model && m.ModelType != "" {
+				p.mu.Unlock()
+				return m.ModelType
+			}
+		}
+		p.mu.Unlock()
+	}
+	return "unknown"
+}
+
 // IsModelInCatalog returns true if the model is in the active catalog,
 // or if no catalog is configured (all models allowed).
 func (r *Registry) IsModelInCatalog(model string) bool {
@@ -821,6 +840,10 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 
 	r.mu.Lock()
 	r.providers[id] = p
+	r.onlineCount.Add(1)
+	for _, m := range models {
+		r.modelProviderInc(m.ID)
+	}
 	r.mu.Unlock()
 
 	r.logger.Info("provider registered",
@@ -965,6 +988,12 @@ func (r *Registry) Disconnect(id string) {
 	p, ok := r.providers[id]
 	if ok {
 		delete(r.providers, id)
+		r.onlineCount.Add(-1)
+		p.mu.Lock()
+		for _, m := range p.Models {
+			r.modelProviderDec(m.ID)
+		}
+		p.mu.Unlock()
 	}
 	r.mu.Unlock()
 
@@ -1010,6 +1039,12 @@ func (r *Registry) MarkUntrusted(providerID string) {
 	}
 
 	p.mu.Lock()
+	if p.Status != StatusUntrusted {
+		r.onlineCount.Add(-1)
+		for _, m := range p.Models {
+			r.modelProviderDec(m.ID)
+		}
+	}
 	p.Status = StatusUntrusted
 	p.mu.Unlock()
 
@@ -1534,6 +1569,84 @@ func (r *Registry) RecordJobFailure(providerID string) {
 }
 
 // ProviderCount returns the number of registered providers.
+// modelProviderInc increments the provider count for a model. Must be called
+// with r.mu held.
+func (r *Registry) modelProviderInc(model string) {
+	r.modelProvidersMu.Lock()
+	c, ok := r.modelProviders[model]
+	if !ok {
+		c = &atomic.Int64{}
+		r.modelProviders[model] = c
+	}
+	r.modelProvidersMu.Unlock()
+	c.Add(1)
+}
+
+// modelProviderDec decrements the provider count for a model. Must be called
+// with r.mu held.
+func (r *Registry) modelProviderDec(model string) {
+	r.modelProvidersMu.Lock()
+	c, ok := r.modelProviders[model]
+	r.modelProvidersMu.Unlock()
+	if ok {
+		v := c.Add(-1)
+		if v <= 0 {
+			r.modelProvidersMu.Lock()
+			delete(r.modelProviders, model)
+			r.modelProvidersMu.Unlock()
+		}
+	}
+}
+
+// OnlineCount returns the number of online providers.
+func (r *Registry) OnlineCount() int64 {
+	return r.onlineCount.Load()
+}
+
+// ModelProviderSnapshot returns a snapshot of model_id -> provider count.
+func (r *Registry) ModelProviderSnapshot() map[string]int64 {
+	r.modelProvidersMu.Lock()
+	snap := make(map[string]int64, len(r.modelProviders))
+	for model, c := range r.modelProviders {
+		if v := c.Load(); v > 0 {
+			snap[model] = v
+		}
+	}
+	r.modelProvidersMu.Unlock()
+	return snap
+}
+
+// ProviderCountByChip returns a map of chip_name -> count of online providers.
+func (r *Registry) ProviderCountByChip() map[string]int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	counts := make(map[string]int)
+	for _, p := range r.providers {
+		p.mu.Lock()
+		online := p.Status != StatusOffline && p.Status != StatusUntrusted
+		p.mu.Unlock()
+		if online {
+			chip := p.Hardware.ChipName
+			if chip == "" {
+				chip = "unknown"
+			}
+			counts[chip]++
+		}
+	}
+	return counts
+}
+
+// ModelProviderCounts returns a map of model_id -> count of online providers
+// serving that model.
+func (r *Registry) ModelProviderCounts() map[string]int {
+	snap := r.ModelProviderSnapshot()
+	out := make(map[string]int, len(snap))
+	for k, v := range snap {
+		out[k] = int(v)
+	}
+	return out
+}
+
 func (r *Registry) ProviderCount() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

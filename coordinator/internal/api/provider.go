@@ -469,7 +469,7 @@ func (s *Server) sendChallenge(ctx context.Context, conn *websocket.Conn, provid
 		tracker.remove(nonce)
 		return
 	}
-	s.ddIncr("attestation.challenges", []string{"outcome:sent"})
+	s.ddIncr("attestation.challenges_sent", nil)
 
 	s.logger.Debug("sent attestation challenge", "provider_id", providerID, "nonce", nonce[:8]+"...")
 
@@ -1066,6 +1066,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	})
 	s.store.RecordUsageWithCost(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost)
 	s.ddIncr("inference.completions", []string{"model:" + pr.Model})
+	s.ddCount("inference.completion_tokens_total", int64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
 	s.ddHistogram("inference.completion_tokens", float64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
 
 	// Credit the provider's pending payout.

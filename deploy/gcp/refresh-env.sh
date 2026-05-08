@@ -57,6 +57,7 @@ DD_API_KEY=$(fetch eigeninference-dd-api-key)
 DD_SITE=$(fetch eigeninference-dd-site)
 DD_ENV=development
 DD_SERVICE=d-inference-coordinator
+DD_AGENT_HOST=localhost
 EOF
 
 # Validate critical secrets before overwriting the live env file.

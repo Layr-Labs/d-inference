@@ -673,7 +673,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					// "fleet over-subscribed for this model size".
 					outcome = "over_capacity"
 				}
-				s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:" + outcome})
+				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:" + outcome})
 				break
 			}
 			// No idle provider — try queueing.
@@ -684,12 +684,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				ResponseCh: make(chan *registry.Provider, 1),
 			}
 			if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
-				s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:over_capacity"})
+s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:over_capacity"})
 				refundReservation()
 				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider available for model %q and queue is full", model)))
 				return
 			}
-			s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:queued"})
+s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:queued"})
 
 			s.logger.Info("request queued, waiting for provider",
 				"model", model,
@@ -704,7 +704,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				refundReservation()
-				s.ddIncr("request_queue.timeout", []string{"model:" + model})
+				s.ddIncr("request_queue.timeout", []string{"model:" + model, "model_type:" + s.registry.ModelType(model)})
 				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider became available for model %q (queue timeout)", model)))
 				return
 			}
@@ -2441,12 +2441,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
 			refundReservation()
-			s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:over_capacity"})
+			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:over_capacity"})
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
 				fmt.Sprintf("no provider available for model %q", model)))
 			return
 		}
-		s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:queued"})
+		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:queued"})
 		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -2460,7 +2460,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 		decision = queuedReq.Decision
 	}
-	s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:selected"})
+	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:selected"})
 	s.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
 	s.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model})
 	if decision.EffectiveTPS > 0 {

@@ -415,17 +415,21 @@ func TestAttestationMetrics_AllOutcomes(t *testing.T) {
 	defer ddClient.Close()
 	srv.SetDatadog(ddClient)
 
-	for _, outcome := range []string{"sent", "passed", "failed", "status_sig_missing"} {
+	for _, outcome := range []string{"passed", "failed", "status_sig_missing"} {
 		srv.ddIncr("attestation.challenges", []string{"outcome:" + outcome})
 	}
+	srv.ddIncr("attestation.challenges_sent", nil)
 
 	_ = ddClient.Statsd.Flush()
 	packets := collector.drain()
 
-	for _, outcome := range []string{"sent", "passed", "failed", "status_sig_missing"} {
+	for _, outcome := range []string{"passed", "failed", "status_sig_missing"} {
 		if !hasMetric(packets, "outcome:"+outcome) {
 			t.Errorf("missing attestation.challenges{outcome:%s}; got packets: %v", outcome, packets)
 		}
+	}
+	if !hasMetric(packets, "attestation.challenges_sent") {
+		t.Errorf("missing attestation.challenges_sent; got packets: %v", packets)
 	}
 }
 

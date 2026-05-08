@@ -9,6 +9,7 @@
 #   3. Install a systemd unit for cloud-sql-proxy (Cloud SQL on 127.0.0.1:5432)
 #   4. Install a systemd unit for the coordinator container
 #   5. Fetch secrets from Secret Manager, write /etc/d-inference/env
+#   6. Install Datadog Agent (metrics + traces + journald log collection)
 #
 # On subsequent boots:
 #   - Re-fetch secrets (picks up rotations)
@@ -138,6 +139,7 @@ DD_API_KEY=$(fetch eigeninference-dd-api-key)
 DD_SITE=$(fetch eigeninference-dd-site)
 DD_ENV=development
 DD_SERVICE=d-inference-coordinator
+DD_AGENT_HOST=localhost
 EOF
 chmod 600 "$ENV_FILE"
 
@@ -190,8 +192,9 @@ chmod +x /usr/local/bin/d-inference-run.sh
 cat > /etc/systemd/system/d-inference-coordinator.service <<EOF
 [Unit]
 Description=d-inference dev coordinator
-After=docker.service cloud-sql-proxy.service
+After=docker.service cloud-sql-proxy.service datadog-agent.service
 Requires=docker.service cloud-sql-proxy.service
+Wants=datadog-agent.service
 
 [Service]
 Restart=always
@@ -206,7 +209,53 @@ ExecStop=/usr/bin/docker stop -t 30 d-inference-coordinator
 WantedBy=multi-user.target
 EOF
 
-# ---- 6. Caddy config (TLS terminator + path routing for coordinator/step-ca/MicroMDM) ----
+# ---- 6. Datadog Agent ----
+# Install the DD Agent as a host-level service so the coordinator gets proper
+# DogStatsD (8125), APM trace (8126), and journald log collection.  The agent
+# handles batching, compression, retries, and back-pressure — replacing the
+# coordinator's DIY HTTP log forwarder for general logs.
+DD_API_KEY_VAL=$(fetch eigeninference-dd-api-key)
+DD_SITE_VAL=$(fetch eigeninference-dd-site)
+if [ -n "$DD_API_KEY_VAL" ]; then
+  if ! command -v datadog-agent >/dev/null 2>&1 && ! dpkg -l datadog-agent >/dev/null 2>&1; then
+    DD_API_KEY="$DD_API_KEY_VAL" \
+    DD_SITE="${DD_SITE_VAL:-datadoghq.com}" \
+    bash -c "$(curl -fsSL https://s3.amazonaws.com/dd-agent/scripts/install_script_agent7.sh)"
+  fi
+
+  # Ensure the agent is configured for this environment.
+  mkdir -p /etc/datadog-agent
+  cat > /etc/datadog-agent/datadog.yaml <<DDYAML
+api_key: ${DD_API_KEY_VAL}
+site: ${DD_SITE_VAL:-datadoghq.com}
+env: development
+hostname: d-inference-dev
+
+logs_enabled: true
+apm_config:
+  enabled: true
+  receiver_socket: ""
+dogstatsd_socket: ""
+DDYAML
+
+  # Journald log collection for the coordinator container.
+  usermod -a -G systemd-journal dd-agent
+  mkdir -p /etc/datadog-agent/conf.d/journald.d
+  cat > /etc/datadog-agent/conf.d/journald.d/conf.yaml <<JYAML
+logs:
+  - type: journald
+    include_units:
+      - d-inference-coordinator.service
+    service: d-inference-coordinator
+    source: coordinator
+    tags:
+      - env:development
+JYAML
+else
+  echo "DD_API_KEY empty — skipping Datadog Agent install"
+fi
+
+# ---- 7. Caddy config (TLS terminator + path routing for coordinator/step-ca/MicroMDM) ----
 # Mirrors the prod coordinator/Caddyfile routes:
 #   /scep, /mdm/*  -> MicroMDM (127.0.0.1:9002, HTTPS self-signed)
 #   /acme/*        -> step-ca  (127.0.0.1:9000, HTTPS self-signed)
@@ -261,8 +310,9 @@ api.dev.darkbloom.xyz {
 CADDYFILE
 
 systemctl daemon-reload
-systemctl enable cloud-sql-proxy.service d-inference-coordinator.service caddy.service
+systemctl enable cloud-sql-proxy.service datadog-agent.service d-inference-coordinator.service caddy.service
 systemctl restart cloud-sql-proxy.service
+systemctl restart datadog-agent.service
 systemctl restart d-inference-coordinator.service
 systemctl restart caddy.service
 

@@ -8,7 +8,7 @@ func TestHTTPPathLabel_UsesBoundedRouteLabel(t *testing.T) {
 		route string
 		want  string
 	}{
-		{name: "matched route", route: "POST /v1/chat/completions", want: "POST /v1/chat/completions"},
+		{name: "matched route", route: "POST /v1/chat/completions", want: "POST-/v1/chat/completions"},
 		{name: "empty route", route: "", want: "unmatched"},
 	}
 

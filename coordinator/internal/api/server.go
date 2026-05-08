@@ -340,6 +340,13 @@ func (s *Server) ddIncr(name string, tags []string) {
 	}
 }
 
+// ddCount increments a DogStatsD counter by the given value. No-op if DD is not configured.
+func (s *Server) ddCount(name string, value int64, tags []string) {
+	if s.dd != nil {
+		s.dd.Count(name, value, tags)
+	}
+}
+
 // ddHistogram records a DogStatsD histogram value. No-op if DD is not configured.
 func (s *Server) ddHistogram(name string, value float64, tags []string) {
 	if s.dd != nil {
@@ -352,6 +359,13 @@ func (s *Server) ddGauge(name string, value float64, tags []string) {
 	if s.dd != nil {
 		s.dd.Gauge(name, value, tags)
 	}
+}
+
+// modelTypeTag returns a DogStatsD tag "model_type:<type>" for the given
+// model ID, resolved from the registry. Returns "model_type:unknown" if
+// the model is not found.
+func (s *Server) modelTypeTag(model string) string {
+	return "model_type:" + s.registry.ModelType(model)
 }
 
 // emitPanic is the panic-specific emit helper. Captures stack separately.
@@ -1042,7 +1056,10 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.ddGauge("providers.online", float64(s.registry.ProviderCount()), nil)
+			s.ddGauge("providers.online", float64(s.registry.OnlineCount()), nil)
+			for model, count := range s.registry.ModelProviderSnapshot() {
+				s.ddGauge("providers.per_model", float64(count), []string{"model:" + model})
+			}
 			if q := s.registry.Queue(); q != nil {
 				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
 			}
@@ -1368,14 +1385,15 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 }
 
 // httpPathLabel returns a bounded label for HTTP metrics.
-// We use the mux route pattern (e.g. "POST /v1/chat/completions")
+// We use the mux route pattern (e.g. "POST-/v1/chat/completions")
 // instead of URL.Path so attacker-controlled unmatched paths cannot create
-// unbounded metric cardinality.
+// unbounded metric cardinality. Dashes replace spaces so DogStatsD tags
+// parse cleanly (spaces break tag parsing).
 func httpPathLabel(route string) string {
 	if route == "" {
 		return "unmatched"
 	}
-	return route
+	return strings.ReplaceAll(route, " ", "-")
 }
 
 // strconvItoa is a shim to avoid pulling strconv into every middleware file.

@@ -234,41 +234,92 @@ jobs:
       # Stage the bundle: bin/darkbloom, bin/darkbloom-enclave, bin/mlx.metallib
       # ----------------------------------------------------------------------
 
+      - name: Embed provisioning profile
+        env:
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PROVISIONING_PROFILE_BASE64:-}" ]; then
+            echo "::warning::PROVISIONING_PROFILE_BASE64 not set — persistent SE key will fall back to ephemeral"
+            echo "profile_available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$PROVISIONING_PROFILE_BASE64" | base64 --decode > /tmp/embedded.provisionprofile
+            security cms -D -i /tmp/embedded.provisionprofile | head -20
+            echo "profile_available=true" >> "$GITHUB_OUTPUT"
+          fi
+        id: profile
+
       - name: Stage and sign bundle
         id: bundle
         run: |
           set -euo pipefail
           STAGE=/tmp/darkbloom-bundle
           rm -rf "$STAGE"
+
+          # Wrap the CLI in a minimal .app bundle so the provisioning profile
+          # authorizes keychain-access-groups for the persistent SE key.
+          APP="$STAGE/Darkbloom.app"
+          mkdir -p "$APP/Contents/MacOS"
+
+          cp "$BIN_DIR/$CLI_NAME" "$APP/Contents/MacOS/"
+          cp "$BIN_DIR/$ENCLAVE_NAME" "$APP/Contents/MacOS/"
+          cp "${{ steps.metallib.outputs.metallib }}" "$APP/Contents/MacOS/mlx.metallib"
+
+          cat > "$APP/Contents/Info.plist" << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleIdentifier</key>
+              <string>io.darkbloom.provider</string>
+              <key>CFBundleExecutable</key>
+              <string>${CLI_NAME}</string>
+              <key>CFBundleName</key>
+              <string>Darkbloom</string>
+              <key>CFBundleVersion</key>
+              <string>${VERSION}</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${VERSION}</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>14.0</string>
+          </dict>
+          </plist>
+          PLIST
+
+          if [ "${{ steps.profile.outputs.profile_available }}" = "true" ]; then
+            cp /tmp/embedded.provisionprofile "$APP/Contents/embedded.provisionprofile"
+            echo "Provisioning profile embedded in app bundle"
+          fi
+
+          # Hardened-runtime sign each binary, then the bundle.
+          codesign --force --options runtime --timestamp \
+            --entitlements provider-swift/entitlements.plist \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$ENCLAVE_NAME"
+          codesign --force --options runtime --timestamp \
+            --entitlements provider-swift/entitlements.plist \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$CLI_NAME"
+          codesign --force --options runtime --timestamp \
+            --entitlements provider-swift/entitlements.plist \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$DEVELOPER_ID" "$APP"
+
+          codesign --verify --verbose=2 "$APP"
+          codesign --verify --verbose=2 "$APP/Contents/MacOS/$CLI_NAME"
+
+          # Backward-compatible flat layout alongside the .app bundle.
           mkdir -p "$STAGE/bin"
-
-          cp "$BIN_DIR/$CLI_NAME" "$STAGE/bin/"
-          cp "$BIN_DIR/$ENCLAVE_NAME" "$STAGE/bin/"
-
-          # The MLX C++ runtime checks for a colocated mlx.metallib first;
-          # placing it in bin/ next to darkbloom satisfies that lookup.
-          cp "${{ steps.metallib.outputs.metallib }}" "$STAGE/bin/mlx.metallib"
-
-          # Hardened-runtime sign each Mach-O binary.
-          codesign --force --options runtime --timestamp \
-            --entitlements scripts/entitlements.plist \
-            --keychain "$KEYCHAIN_PATH" \
-            --sign "$DEVELOPER_ID" "$STAGE/bin/$CLI_NAME"
-          codesign --force --options runtime --timestamp \
-            --entitlements scripts/entitlements.plist \
-            --keychain "$KEYCHAIN_PATH" \
-            --sign "$DEVELOPER_ID" "$STAGE/bin/$ENCLAVE_NAME"
-
-          codesign --verify --verbose=2 "$STAGE/bin/$CLI_NAME"
-          codesign --verify --verbose=2 "$STAGE/bin/$ENCLAVE_NAME"
+          ln -s "../Darkbloom.app/Contents/MacOS/$CLI_NAME" "$STAGE/bin/$CLI_NAME"
+          ln -s "../Darkbloom.app/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$ENCLAVE_NAME"
+          ln -s "../Darkbloom.app/Contents/MacOS/mlx.metallib" "$STAGE/bin/mlx.metallib"
 
           # Two artifact shapes: zip for notarization, tar.gz for distribution.
           ditto -c -k --keepParent "$STAGE" /tmp/darkbloom-notarize.zip
           tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$STAGE" .
           tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
-          grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
-          grep -qx './bin/darkbloom-enclave' /tmp/darkbloom-bundle-files.txt
-          grep -qx './bin/mlx.metallib' /tmp/darkbloom-bundle-files.txt
           echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
           ls -lh /tmp/darkbloom-bundle-macos-arm64.tar.gz
 

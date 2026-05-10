@@ -104,20 +104,32 @@ fi
 echo "  Bundle hash verified ✓"
 
 echo "  Installing into $INSTALL_DIR ..."
-# The bundle ships as bin/{darkbloom,darkbloom-enclave,mlx.metallib}.
-# Older bundles named the helper `eigeninference-enclave`; accept either,
-# install as the canonical `darkbloom-enclave`, and leave a backward-compat
-# symlink for the old name so already-deployed scripts keep working.
+# The bundle ships as Darkbloom.app/ (contains provisioning profile for
+# keychain-access-groups) with bin/ symlinks for backward compatibility.
+# Older flat bundles (bin/darkbloom directly) are also handled.
 tar xzf "$TARBALL" -C "$INSTALL_DIR"
-[ -f "$INSTALL_DIR/darkbloom" ]               && mv -f "$INSTALL_DIR/darkbloom" "$BIN_DIR/darkbloom"
-[ -f "$INSTALL_DIR/darkbloom-enclave" ]       && mv -f "$INSTALL_DIR/darkbloom-enclave" "$BIN_DIR/darkbloom-enclave"
-if [ -f "$INSTALL_DIR/eigeninference-enclave" ] && [ ! -f "$BIN_DIR/darkbloom-enclave" ]; then
-    mv -f "$INSTALL_DIR/eigeninference-enclave" "$BIN_DIR/darkbloom-enclave"
-fi
-[ -f "$INSTALL_DIR/mlx.metallib" ]            && mv -f "$INSTALL_DIR/mlx.metallib" "$BIN_DIR/mlx.metallib"
 
-chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/darkbloom-enclave" 2>/dev/null || true
-# Backward-compat: keep the legacy helper name resolvable.
+# New .app bundle layout: Darkbloom.app/Contents/MacOS/{darkbloom,darkbloom-enclave,mlx.metallib}
+if [ -d "$INSTALL_DIR/Darkbloom.app" ]; then
+    APP_BIN="$INSTALL_DIR/Darkbloom.app/Contents/MacOS"
+    chmod +x "$APP_BIN/darkbloom" "$APP_BIN/darkbloom-enclave" 2>/dev/null || true
+    # bin/ gets symlinks pointing into the .app bundle
+    mkdir -p "$BIN_DIR"
+    ln -sfn "$APP_BIN/darkbloom" "$BIN_DIR/darkbloom"
+    ln -sfn "$APP_BIN/darkbloom-enclave" "$BIN_DIR/darkbloom-enclave"
+    ln -sfn "$APP_BIN/mlx.metallib" "$BIN_DIR/mlx.metallib" 2>/dev/null || true
+    echo "  Installed .app bundle with provisioning profile"
+else
+    # Legacy flat layout fallback
+    [ -f "$INSTALL_DIR/darkbloom" ]               && mv -f "$INSTALL_DIR/darkbloom" "$BIN_DIR/darkbloom"
+    [ -f "$INSTALL_DIR/darkbloom-enclave" ]       && mv -f "$INSTALL_DIR/darkbloom-enclave" "$BIN_DIR/darkbloom-enclave"
+    if [ -f "$INSTALL_DIR/eigeninference-enclave" ] && [ ! -f "$BIN_DIR/darkbloom-enclave" ]; then
+        mv -f "$INSTALL_DIR/eigeninference-enclave" "$BIN_DIR/darkbloom-enclave"
+    fi
+    [ -f "$INSTALL_DIR/mlx.metallib" ]            && mv -f "$INSTALL_DIR/mlx.metallib" "$BIN_DIR/mlx.metallib"
+    chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/darkbloom-enclave" 2>/dev/null || true
+fi
+
 ln -sfn "$BIN_DIR/darkbloom-enclave" "$BIN_DIR/eigeninference-enclave" 2>/dev/null || true
 rm -f "$TARBALL"
 

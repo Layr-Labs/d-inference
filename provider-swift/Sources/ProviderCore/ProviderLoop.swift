@@ -79,7 +79,7 @@ public struct ProviderLoopConfig: Sendable {
 public actor ProviderLoop {
     private let loopConfig: ProviderLoopConfig
     private let keyPair: NodeKeyPair
-    private let seIdentity: SecureEnclaveIdentity?
+    private let signer: (any AttestationSigner)?
     private let attestationBuilder: AttestationBuilder?
     private let scheduler: BatchScheduler
     private let stats: AtomicProviderStats
@@ -113,8 +113,8 @@ public actor ProviderLoop {
         self.loopConfig = config
         NodeKeyPair.purgeLegacyFiles()
         self.keyPair = NodeKeyPair.generate()
-        self.seIdentity = try SecureEnclaveIdentity.createEphemeral()
-        self.attestationBuilder = seIdentity.map { AttestationBuilder(identity: $0) }
+        self.signer = Self.createAttestationSigner()
+        self.attestationBuilder = signer.map { AttestationBuilder(identity: $0) }
         self.stats = AtomicProviderStats()
         self.state = ProviderState()
         self.cancellationRegistry = InferenceCancellationRegistry()
@@ -123,6 +123,28 @@ public actor ProviderLoop {
             pendingTimeout: .seconds(120),
             defaultMaxTokens: 4096
         )
+    }
+
+    /// Try persistent keychain-backed SE key first; fall back to ephemeral CryptoKit key.
+    private static func createAttestationSigner() -> (any AttestationSigner)? {
+        let log = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
+
+        if PersistentEnclaveKey.isAvailable {
+            do {
+                let key = try PersistentEnclaveKey.loadOrCreate()
+                log.info("Using persistent keychain-backed Secure Enclave key for attestation")
+                return key
+            } catch {
+                log.warning("Persistent SE key unavailable (\(error)), falling back to ephemeral")
+            }
+        }
+
+        do {
+            return try SecureEnclaveIdentity.createEphemeral()
+        } catch {
+            log.warning("Ephemeral SE identity also unavailable: \(error)")
+            return nil
+        }
     }
 
     // MARK: - Main Run Loop
@@ -416,7 +438,7 @@ public actor ProviderLoop {
         let providerStats = self.stats
         let providerState = self.state
         let registry = self.cancellationRegistry
-        let signingIdentity = self.seIdentity
+        let signingIdentity = self.signer
         let log = self.logger
 
         // 7. Spawn inference task

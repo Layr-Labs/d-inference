@@ -144,17 +144,21 @@ public enum StatusCanonical {
 
 // MARK: - Builder
 
-/// Builds and signs attestation blobs using a Secure Enclave identity.
+/// Builds and signs attestation blobs using a Secure Enclave signing key.
+///
+/// Accepts any `AttestationSigner` -- either the ephemeral
+/// `SecureEnclaveIdentity` (CryptoKit) or the persistent
+/// `PersistentEnclaveKey` (Security framework, keychain-backed).
 ///
 /// Usage:
-///   1. Create or load a SecureEnclaveIdentity
-///   2. Create an AttestationBuilder with that identity
+///   1. Create or load a signing key (ephemeral or persistent)
+///   2. Create an AttestationBuilder with that signer
 ///   3. Call `buildAttestation()` to get a SignedAttestation
 ///   4. Serialize to JSON and include in the Register message
 public final class AttestationBuilder: @unchecked Sendable {
-    private let identity: SecureEnclaveIdentity
+    private let identity: any AttestationSigner
 
-    public init(identity: SecureEnclaveIdentity) {
+    public init(identity: any AttestationSigner) {
         self.identity = identity
     }
 

@@ -496,7 +496,7 @@ public func verifySecurityPosture(hypervisorActive _: Bool = false) throws -> Se
 /// The hash covers `requestId:completionTokens:responseBody` -- identical
 /// to the Rust provider's `compute_response_attestation`.
 public func computeResponseAttestation(
-    identity: SecureEnclaveIdentity?,
+    identity: (any AttestationSigner)?,
     requestId: String,
     completionTokens: UInt64,
     responseBody: String

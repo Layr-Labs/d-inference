@@ -211,6 +211,11 @@ type Server struct {
 	// targets for spam/abuse than inference, so we throttle them harder.
 	// Nil means unlimited.
 	financialRateLimiter *ratelimit.Limiter
+
+	// versionCompatMode controls the /api/version response format.
+	// "legacy" omits backend, binary_hash, metallib_hash (simulates pre-migration coordinator).
+	// "current" includes all fields (default). Test-only.
+	versionCompatMode string
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to
@@ -223,6 +228,14 @@ func (s *Server) SetRateLimiter(rl *ratelimit.Limiter) {
 // balance-mutating endpoints. Pass nil to disable.
 func (s *Server) SetFinancialRateLimiter(rl *ratelimit.Limiter) {
 	s.financialRateLimiter = rl
+}
+
+// SetVersionCompatMode controls the /api/version response format.
+// "legacy" omits backend/binary_hash/metallib_hash to simulate a
+// pre-migration coordinator. Test-only.
+func (s *Server) SetVersionCompatMode(mode string) {
+	s.versionCompatMode = mode
+	s.readCache.Invalidate("api_version:v1")
 }
 
 // NewServer creates a configured Server with all routes mounted.

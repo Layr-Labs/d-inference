@@ -2231,14 +2231,16 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	// Try release table first.
 	if release := s.store.GetLatestRelease("macos-arm64"); release != nil {
 		resp = map[string]any{
-			"version":       release.Version,
-			"platform":      release.Platform,
-			"backend":       release.Backend,
-			"download_url":  release.URL,
-			"binary_hash":   release.BinaryHash,
-			"bundle_hash":   release.BundleHash,
-			"metallib_hash": release.MetallibHash,
-			"changelog":     release.Changelog,
+			"version":      release.Version,
+			"platform":     release.Platform,
+			"backend":      release.Backend,
+			"download_url": release.URL,
+			"bundle_hash":  release.BundleHash,
+			"changelog":    release.Changelog,
+		}
+		if s.versionCompatMode != "legacy" {
+			resp["binary_hash"] = release.BinaryHash
+			resp["metallib_hash"] = release.MetallibHash
 		}
 	} else {
 		// Fallback to hardcoded version + coordinator download.

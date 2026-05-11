@@ -255,6 +255,77 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	rustBinPath, err := buildRustProvider(s.Ctx, s.Logger)
 	require.NoError(t, err, "build Rust provider")
 
+	coordinatorHTTP := s.Coordinator.BaseURL()
+
+	// ========================================================================
+	// Phase 1: Old coordinator (legacy /api/version — no binary_hash/metallib_hash)
+	// ========================================================================
+	s.Coordinator.Server.SetVersionCompatMode("legacy")
+
+	bundle := createSwiftReleaseBundle(t, s, swiftBinPath)
+	regBody, _ := json.Marshal(store.Release{
+		Version:      "0.5.0",
+		Platform:     "macos-arm64",
+		Backend:      "mlx-swift",
+		BinaryHash:   bundle.binaryHash,
+		BundleHash:   bundle.bundleHash,
+		MetallibHash: bundle.metallibHash,
+		URL:          bundle.bundleURL,
+		Changelog:    "Swift provider migration",
+	})
+	req, _ := http.NewRequestWithContext(s.Ctx, http.MethodPost,
+		coordinatorHTTP+"/v1/releases", strings.NewReader(string(regBody)))
+	req.Header.Set("Authorization", "Bearer testbed-release-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	versionReq, _ := http.NewRequestWithContext(s.Ctx, http.MethodGet,
+		coordinatorHTTP+"/api/version", nil)
+	versionResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(versionReq)
+	require.NoError(t, err)
+	var versionOld map[string]any
+	require.NoError(t, json.NewDecoder(versionResp.Body).Decode(&versionOld))
+	versionResp.Body.Close()
+	require.Equal(t, "0.5.0", versionOld["version"])
+	_, hasBinaryHash := versionOld["binary_hash"]
+	_, hasMetallibHash := versionOld["metallib_hash"]
+	require.False(t, hasBinaryHash, "legacy coordinator should NOT expose binary_hash")
+	require.False(t, hasMetallibHash, "legacy coordinator should NOT expose metallib_hash")
+	t.Logf("phase 1 (legacy coordinator): /api/version has version+download_url but no binary_hash/metallib_hash")
+
+	updateCtx, updateCancel := context.WithTimeout(s.Ctx, 120*time.Second)
+	defer updateCancel()
+	cmd := exec.CommandContext(updateCtx, rustBinPath, "update", "--coordinator", coordinatorHTTP, "--force")
+	cmd.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"))
+	out, err := cmd.CombinedOutput()
+	outStr := string(out)
+	t.Logf("phase 1 rust update output:\n%s", outStr)
+	require.Error(t, err, "rust update should FAIL under legacy coordinator (no binary_hash for hash verification)")
+	require.Contains(t, outStr, "Hash verified", "bundle_hash should still be verified even in legacy mode")
+	t.Logf("phase 1: Rust update downloaded and verified bundle_hash but failed on runtime verification (expected)")
+
+	// ========================================================================
+	// Phase 2: Deploy new coordinator (current /api/version — with binary_hash/metallib_hash)
+	// ========================================================================
+	s.Coordinator.Server.SetVersionCompatMode("current")
+	t.Logf("phase 2: coordinator updated — /api/version now includes binary_hash/metallib_hash")
+
+	versionReq2, _ := http.NewRequestWithContext(s.Ctx, http.MethodGet,
+		coordinatorHTTP+"/api/version", nil)
+	versionResp2, err := (&http.Client{Timeout: 10 * time.Second}).Do(versionReq2)
+	require.NoError(t, err)
+	var versionNew map[string]any
+	require.NoError(t, json.NewDecoder(versionResp2.Body).Decode(&versionNew))
+	versionResp2.Body.Close()
+	require.Equal(t, "0.5.0", versionNew["version"])
+	require.Equal(t, bundle.binaryHash, versionNew["binary_hash"], "new coordinator should expose binary_hash")
+	require.Equal(t, bundle.metallibHash, versionNew["metallib_hash"], "new coordinator should expose metallib_hash")
+	t.Logf("phase 2: /api/version now returns binary_hash=%s metallib_hash=%s",
+		bundle.binaryHash[:16], bundle.metallibHash[:16])
+
 	installDir := filepath.Join(os.Getenv("HOME"), ".darkbloom")
 	binDir := filepath.Join(installDir, "bin")
 	_ = os.RemoveAll(installDir)
@@ -268,38 +339,17 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	enclaveInBin := filepath.Join(binDir, "eigeninference-enclave")
 	require.NoError(t, os.WriteFile(enclaveInBin, []byte("#!/bin/sh\nexit 0\n"), 0755))
 
-	bundle := createSwiftReleaseBundle(t, s, swiftBinPath)
+	updateCtx2, updateCancel2 := context.WithTimeout(s.Ctx, 120*time.Second)
+	defer updateCancel2()
 
-	regBody, _ := json.Marshal(store.Release{
-		Version:      "0.5.0",
-		Platform:     "macos-arm64",
-		Backend:      "mlx-swift",
-		BinaryHash:   bundle.binaryHash,
-		BundleHash:   bundle.bundleHash,
-		MetallibHash: bundle.metallibHash,
-		URL:          bundle.bundleURL,
-		Changelog:    "Swift provider migration",
-	})
-	req, _ := http.NewRequestWithContext(s.Ctx, http.MethodPost,
-		s.Coordinator.BaseURL()+"/v1/releases", strings.NewReader(string(regBody)))
-	req.Header.Set("Authorization", "Bearer testbed-release-key")
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
-	require.NoError(t, err)
-	resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	coordinatorHTTP := s.Coordinator.BaseURL()
-	updateCtx, updateCancel := context.WithTimeout(s.Ctx, 120*time.Second)
-	defer updateCancel()
-
-	cmd := exec.CommandContext(updateCtx, rustBinPath, "update", "--coordinator", coordinatorHTTP, "--force")
-	cmd.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"))
-	out, err := cmd.CombinedOutput()
-	outStr := string(out)
-	t.Logf("rust update output:\n%s", outStr)
-	require.NoError(t, err, "rust darkbloom update should succeed: %s", outStr)
-	require.Contains(t, outStr, "Updated to 0.5.0", "update should report success")
+	cmd2 := exec.CommandContext(updateCtx2, rustBinPath, "update", "--coordinator", coordinatorHTTP, "--force")
+	cmd2.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"))
+	out2, err := cmd2.CombinedOutput()
+	outStr2 := string(out2)
+	t.Logf("phase 2 rust update output:\n%s", outStr2)
+	require.NoError(t, err, "rust darkbloom update should succeed with new coordinator: %s", outStr2)
+	require.Contains(t, outStr2, "Updated to 0.5.0", "update should report success")
+	require.Contains(t, outStr2, "Swift", "should detect Swift runtime bundle")
 
 	installedDarkbloom := filepath.Join(binDir, "darkbloom")
 	data, err := os.ReadFile(installedDarkbloom)
@@ -329,7 +379,7 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	require.NoError(t, err, "swift darkbloom update --check-only should succeed: %s", string(swiftOut))
 	require.Contains(t, string(swiftOut), "Up to date", "swift provider should report up to date after upgrade")
 
-	t.Logf("fleet upgrade: Rust → Swift complete, binary=%s metallib=%s enclave=%s",
+	t.Logf("fleet upgrade: legacy coordinator → new coordinator → Rust→Swift, binary=%s metallib=%s enclave=%s",
 		bundle.binaryHash[:16], bundle.metallibHash[:16], bundle.enclaveHash[:16])
 }
 

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -245,6 +246,93 @@ func TestIntegration_ModelWeightDownload(t *testing.T) {
 	t.Logf("model download: %d files cached in %s", 3, snapDir)
 }
 
+func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
+	s := startSuiteWithBucket(t)
+
+	swiftBinPath, err := testbed.BuildProvider(s.Ctx, s.Logger)
+	require.NoError(t, err, "build Swift provider")
+
+	rustBinPath, err := buildRustProvider(s.Ctx, s.Logger)
+	require.NoError(t, err, "build Rust provider")
+
+	installDir := filepath.Join(os.Getenv("HOME"), ".darkbloom")
+	binDir := filepath.Join(installDir, "bin")
+	_ = os.RemoveAll(installDir)
+	require.NoError(t, os.MkdirAll(binDir, 0755))
+
+	rustInBin := filepath.Join(binDir, "darkbloom")
+	cpCmd := exec.CommandContext(s.Ctx, "cp", rustBinPath, rustInBin)
+	require.NoError(t, cpCmd.Run())
+	require.NoError(t, os.Chmod(rustInBin, 0755))
+
+	enclaveInBin := filepath.Join(binDir, "eigeninference-enclave")
+	require.NoError(t, os.WriteFile(enclaveInBin, []byte("#!/bin/sh\nexit 0\n"), 0755))
+
+	bundle := createSwiftReleaseBundle(t, s, swiftBinPath)
+
+	regBody, _ := json.Marshal(store.Release{
+		Version:      "0.5.0",
+		Platform:     "macos-arm64",
+		Backend:      "mlx-swift",
+		BinaryHash:   bundle.binaryHash,
+		BundleHash:   bundle.bundleHash,
+		MetallibHash: bundle.metallibHash,
+		URL:          bundle.bundleURL,
+		Changelog:    "Swift provider migration",
+	})
+	req, _ := http.NewRequestWithContext(s.Ctx, http.MethodPost,
+		s.Coordinator.BaseURL()+"/v1/releases", strings.NewReader(string(regBody)))
+	req.Header.Set("Authorization", "Bearer testbed-release-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	coordinatorHTTP := s.Coordinator.BaseURL()
+	updateCtx, updateCancel := context.WithTimeout(s.Ctx, 120*time.Second)
+	defer updateCancel()
+
+	cmd := exec.CommandContext(updateCtx, rustBinPath, "update", "--coordinator", coordinatorHTTP, "--force")
+	cmd.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"))
+	out, err := cmd.CombinedOutput()
+	outStr := string(out)
+	t.Logf("rust update output:\n%s", outStr)
+	require.NoError(t, err, "rust darkbloom update should succeed: %s", outStr)
+	require.Contains(t, outStr, "Updated to 0.5.0", "update should report success")
+
+	installedDarkbloom := filepath.Join(binDir, "darkbloom")
+	data, err := os.ReadFile(installedDarkbloom)
+	require.NoError(t, err, "~/.darkbloom/bin/darkbloom should exist after update")
+	require.Equal(t, bundle.binaryHash, sha256Hex(data),
+		"installed darkbloom hash must match release binary_hash")
+
+	metallibData, err := os.ReadFile(filepath.Join(binDir, "mlx.metallib"))
+	require.NoError(t, err, "~/.darkbloom/bin/mlx.metallib should exist after update")
+	require.Equal(t, bundle.metallibHash, sha256Hex(metallibData),
+		"installed mlx.metallib hash must match release metallib_hash")
+
+	enclaveData, err := os.ReadFile(filepath.Join(binDir, "darkbloom-enclave"))
+	require.NoError(t, err, "~/.darkbloom/bin/darkbloom-enclave should exist after update")
+	require.Equal(t, bundle.enclaveHash, sha256Hex(enclaveData),
+		"installed darkbloom-enclave hash must match release")
+
+	swiftCheckCtx, swiftCheckCancel := context.WithTimeout(s.Ctx, 60*time.Second)
+	defer swiftCheckCancel()
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "provider.toml")
+	cfgContent := fmt.Sprintf("[coordinator]\nurl = %q\n", coordinatorHTTP)
+	require.NoError(t, os.WriteFile(cfgPath, []byte(cfgContent), 0644))
+
+	checkCmd := exec.CommandContext(swiftCheckCtx, installedDarkbloom, "update", "--check-only", "--config", cfgPath)
+	swiftOut, err := checkCmd.CombinedOutput()
+	require.NoError(t, err, "swift darkbloom update --check-only should succeed: %s", string(swiftOut))
+	require.Contains(t, string(swiftOut), "Up to date", "swift provider should report up to date after upgrade")
+
+	t.Logf("fleet upgrade: Rust → Swift complete, binary=%s metallib=%s enclave=%s",
+		bundle.binaryHash[:16], bundle.metallibHash[:16], bundle.enclaveHash[:16])
+}
+
 type releaseBundleArtifacts struct {
 	binaryHash   string
 	bundleHash   string
@@ -297,4 +385,101 @@ func createReleaseBundle(t *testing.T, s *testbed.Suite) releaseBundleArtifacts 
 		metallibHash: hex.EncodeToString(metallibHash[:]),
 		bundleURL:    fmt.Sprintf("%s/%s", s.Bucket.CDNURL(), s3Key),
 	}
+}
+
+type swiftReleaseArtifacts struct {
+	binaryHash   string
+	bundleHash   string
+	metallibHash string
+	enclaveHash  string
+	bundleURL    string
+}
+
+func createSwiftReleaseBundle(t *testing.T, s *testbed.Suite, swiftBinPath string) swiftReleaseArtifacts {
+	t.Helper()
+	ctx := s.Ctx
+
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	require.NoError(t, os.MkdirAll(binDir, 0755))
+
+	darkbloomDst := filepath.Join(binDir, "darkbloom")
+	cpCmd := exec.CommandContext(ctx, "cp", swiftBinPath, darkbloomDst)
+	require.NoError(t, cpCmd.Run())
+
+	enclaveContent := []byte("#!/bin/sh\nexit 0\n")
+	enclaveDst := filepath.Join(binDir, "darkbloom-enclave")
+	require.NoError(t, os.WriteFile(enclaveDst, enclaveContent, 0755))
+
+	metallibSrc := filepath.Join(filepath.Dir(swiftBinPath), "mlx.metallib")
+	metallibDst := filepath.Join(binDir, "mlx.metallib")
+	cpMeta := exec.CommandContext(ctx, "cp", metallibSrc, metallibDst)
+	require.NoError(t, cpMeta.Run(), "copy mlx.metallib from %s", metallibSrc)
+
+	tarPath := filepath.Join(tmpDir, "darkbloom-0.5.0-macos-arm64.tar.gz")
+	tarCmd := exec.CommandContext(ctx, "tar", "czf", tarPath, "-C", tmpDir, "bin")
+	tarCmd.Env = append(os.Environ(), "COPYFILE_DISABLE=1")
+	require.NoError(t, tarCmd.Run())
+
+	tarData, err := os.ReadFile(tarPath)
+	require.NoError(t, err)
+	bundleHash := sha256.Sum256(tarData)
+
+	binaryData, err := os.ReadFile(darkbloomDst)
+	require.NoError(t, err)
+	binaryHash := sha256.Sum256(binaryData)
+
+	metallibData, err := os.ReadFile(metallibDst)
+	require.NoError(t, err)
+	metallibHash := sha256.Sum256(metallibData)
+
+	enclaveHash := sha256.Sum256(enclaveContent)
+
+	s3Key := "releases/darkbloom-0.5.0-macos-arm64.tar.gz"
+	require.NoError(t, s.Bucket.PutObject(ctx, s3Key, tarData))
+
+	return swiftReleaseArtifacts{
+		binaryHash:   hex.EncodeToString(binaryHash[:]),
+		bundleHash:   hex.EncodeToString(bundleHash[:]),
+		metallibHash: hex.EncodeToString(metallibHash[:]),
+		enclaveHash:  hex.EncodeToString(enclaveHash[:]),
+		bundleURL:    fmt.Sprintf("%s/%s", s.Bucket.CDNURL(), s3Key),
+	}
+}
+
+func buildRustProvider(ctx context.Context, logger *slog.Logger) (string, error) {
+	repoRoot := os.Getenv("DARKBLOOM_REPO_ROOT")
+	if repoRoot == "" {
+		repoRoot = "."
+	}
+	providerDir := repoRoot + "/provider"
+
+	binaryPath := providerDir + "/target/release/darkbloom"
+	if _, err := os.Stat(binaryPath); err == nil {
+		logger.Info("using cached Rust provider binary", "path", binaryPath)
+		return binaryPath, nil
+	}
+
+	logger.Info("building Rust provider binary", "dir", providerDir)
+
+	cmd := exec.CommandContext(ctx, "cargo", "build", "--release")
+	cmd.Dir = providerDir
+	cmd.Env = append(os.Environ(), "PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1")
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("cargo build provider: %w: %s", err, string(out))
+	}
+
+	if _, err := os.Stat(binaryPath); err != nil {
+		return "", fmt.Errorf("Rust provider binary not found after build: %s", binaryPath)
+	}
+
+	logger.Info("Rust provider binary built", "path", binaryPath)
+	return binaryPath, nil
+}
+
+func sha256Hex(data []byte) string {
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
 }

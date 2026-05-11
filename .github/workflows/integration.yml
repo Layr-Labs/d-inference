@@ -47,7 +47,13 @@ jobs:
         run: |
           export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
           go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
-            -run 'TestIntegration|TestProfile'
+            -run 'TestIntegration_(Non|Stream|Multiple|E2E|Billing|Provider|Insufficient|Invalid|Concurrent|Attestation|Referral)|TestProfile'
+
+      - name: Run bucket/storage tests (requires Docker for LocalStack)
+        run: |
+          export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
+          go test ./e2e/ -count=1 -v -timeout 10m -p=1 \
+            -run 'TestIntegration_Release|TestIntegration_ModelWeight'
 
   benchmark:
     name: E2E Benchmarks

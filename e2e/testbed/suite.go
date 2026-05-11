@@ -53,6 +53,8 @@ type Suite struct {
 	Coordinator *Coordinator
 	Providers   []*Provider
 	Users       []UserAccount
+	Bucket      *deps.BucketClient
+	ls          *deps.LocalStackLifecycle
 }
 
 type Coordinator struct {
@@ -88,7 +90,7 @@ func NewSuite(cfg SuiteConfig) *Suite {
 	}
 	for i := range cfg.ModelSpecs {
 		cfg.ModelSpecs[i].ModelID = resolveModelID(cfg.ModelSpecs[i].ModelID)
-		if cfg.ModelSpecs[i].NumProviders <= 0 {
+		if cfg.ModelSpecs[i].NumProviders < 0 {
 			cfg.ModelSpecs[i].NumProviders = 1
 		}
 	}
@@ -128,6 +130,11 @@ func (s *Suite) PrimaryModelID() string {
 func (s *Suite) Start(ctx context.Context) error {
 	s.Ctx = ctx
 
+	if s.Config.LocalStack {
+		if err := s.startLocalStack(); err != nil {
+			return err
+		}
+	}
 	if err := s.startPostgres(); err != nil {
 		return err
 	}
@@ -153,6 +160,25 @@ func (s *Suite) Stop() {
 	if s.Pg != nil {
 		s.Pg.Stop()
 	}
+	if s.ls != nil {
+		s.ls.Stop()
+	}
+}
+
+func (s *Suite) startLocalStack() error {
+	s.ls = deps.NewLocalStackLifecycle(s.Logger, 0)
+	if err := s.ls.Start(s.Ctx); err != nil {
+		return fmt.Errorf("localstack: %w", err)
+	}
+
+	bc, err := deps.NewBucketClient(s.Ctx, s.ls.EndpointURL, "darkbloom-cdn")
+	if err != nil {
+		return fmt.Errorf("localstack bucket: %w", err)
+	}
+	s.Bucket = bc
+
+	s.Logger.Info("localstack bucket ready", "cdn_url", s.Bucket.CDNURL())
+	return nil
 }
 
 func (s *Suite) startPostgres() error {
@@ -204,9 +230,16 @@ func (s *Suite) startCoordinator() error {
 
 	srv := api.NewServer(reg, s.PgStore, s.Logger)
 	srv.SetAdminKey("testbed-admin-key")
+	srv.SetReleaseKey("testbed-release-key")
 	srv.SetRuntimeManifest(&api.RuntimeManifest{})
 	srv.SetChallengeInterval(1 * time.Hour)
 	srv.SetSkipChallenge(true)
+
+	if s.Bucket != nil {
+		cdnURL := s.Bucket.CDNURL()
+		srv.SetR2CDNURL(cdnURL)
+		srv.SetR2SitePackagesCDNURL(cdnURL)
+	}
 
 	ledger := payments.NewLedger(s.PgStore)
 	billingSvc := billing.NewService(s.PgStore, ledger, s.Logger, billing.Config{MockMode: true})
@@ -223,6 +256,11 @@ func (s *Suite) startCoordinator() error {
 }
 
 func (s *Suite) startProviders() error {
+	if s.Config.TotalProviders() == 0 {
+		s.Logger.Info("no providers configured, skipping provider startup")
+		return nil
+	}
+
 	binaryPath, err := BuildProvider(s.Ctx, s.Logger)
 	if err != nil {
 		return fmt.Errorf("build provider: %w", err)

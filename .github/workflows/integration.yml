@@ -49,6 +49,17 @@ jobs:
           go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
             -run 'TestIntegration_(Non|Stream|Multiple|E2E|Billing|Provider|Insufficient|Invalid|Concurrent|Attestation|Referral)|TestProfile'
 
+      - name: Install Docker runtime (Colima)
+        run: |
+          brew install colima docker docker-credential-helper
+          colima start --cpu 2 --memory 2 --disk 10 --no-profile
+          # Wait for Docker daemon to be ready
+          for i in $(seq 1 30); do
+            docker info >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker info
+
       - name: Run bucket/storage tests (requires Docker for LocalStack)
         run: |
           export PATH="$(brew --prefix postgresql@16)/bin:$PATH"

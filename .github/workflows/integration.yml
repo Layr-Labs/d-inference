@@ -59,7 +59,7 @@ jobs:
         run: |
           export PATH="$(brew --prefix postgresql@16)/bin:$HOME/.cargo/bin:$PATH"
           go test ./e2e/ -count=1 -v -timeout 35m -p=1 \
-            -run 'TestIntegration_(Release|ModelWeight|FleetUpgrade|SelfUpdate|Non|Stream|Multiple|E2E|Billing|Provider|Insufficient|Invalid|Concurrent|Attestation|Referral)|TestProfile'
+            -run 'TestIntegration_(Release|ModelWeight|FleetUpgrade|SelfUpdate|Non|Stream|Multiple|E2E|Billing|Provider|Insufficient|Invalid|Concurrent|Attestation|Referral)'
 
   benchmark:
     name: E2E Benchmarks

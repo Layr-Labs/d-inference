@@ -346,7 +346,7 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	updateCtx, updateCancel := context.WithTimeout(s.Ctx, 180*time.Second)
 	defer updateCancel()
 	cmd := exec.CommandContext(updateCtx, oldInBin, "update", "--coordinator", oldCoord.BaseURL, "--force")
-	cmd.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"))
+	cmd.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"), "PIP_BREAK_SYSTEM_PACKAGES=1")
 	out, err := cmd.CombinedOutput()
 	outStr := string(out)
 	t.Logf("hop 1 old provider update output:\n%s", outStr)
@@ -394,7 +394,7 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	updateCtx2, updateCancel2 := context.WithTimeout(s.Ctx, 120*time.Second)
 	defer updateCancel2()
 	cmd2 := exec.CommandContext(updateCtx2, installedBridge, "update", "--coordinator", oldCoord2.BaseURL, "--force")
-	cmd2.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"))
+	cmd2.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"), "PIP_BREAK_SYSTEM_PACKAGES=1")
 	out2, err := cmd2.CombinedOutput()
 	outStr2 := string(out2)
 	t.Logf("hop 2 bridge update output:\n%s", outStr2)
@@ -642,8 +642,11 @@ func createBridgeReleaseBundle(t *testing.T, s *testbed.Suite, bridgeBinPath str
 	t.Helper()
 	ctx := s.Ctx
 
-	systemPython, err := exec.LookPath("python3")
-	require.NoError(t, err, "find system python3")
+	systemPython, err := exec.LookPath("python3.12")
+	if err != nil {
+		systemPython, err = exec.LookPath("python3")
+		require.NoError(t, err, "find system python3")
+	}
 
 	pyTmpDir := t.TempDir()
 	pyBinDir := filepath.Join(pyTmpDir, "bin")

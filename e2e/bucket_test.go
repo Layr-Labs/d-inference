@@ -22,8 +22,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/eigeninference/d-inference/e2e/testbed"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/e2e/testbed"
 )
 
 func startSuiteWithBucket(t *testing.T) *testbed.Suite {
@@ -302,7 +302,7 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	require.NoError(t, err, "start old coordinator")
 
 	// Register bridge release on old coordinator
- 	regBody, _ := json.Marshal(store.Release{
+	regBody, _ := json.Marshal(store.Release{
 		Version:    "0.4.8",
 		Platform:   "macos-arm64",
 		BinaryHash: bridgeBundle.binaryHash,
@@ -342,29 +342,51 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	enclaveInBin := filepath.Join(binDir, "eigeninference-enclave")
 	require.NoError(t, os.WriteFile(enclaveInBin, []byte("#!/bin/sh\nexit 0\n"), 0755))
 
-	// Pre-seed vllm_mlx into ~/.darkbloom/python/ so v0.4.7's runtime smoke test
-	// passes and it skips the pip install that fails on CI (typing_extensions
-	// no RECORD file in python-build-standalone).
+	// Pre-seed a complete Python 3.12 installation at ~/.darkbloom/python/ so
+	// v0.4.7's verify_installed_update_runtime smoke test passes.  The smoke
+	// test runs: "import mlx_lm, vllm_mlx; from vllm_mlx.server import app"
+	// which requires a full stdlib + site-packages accessible via PYTHONHOME.
+	// The bundle extraction only replaces python/bin/ — python/lib/ survives.
 	py312, _ := exec.LookPath("python3.12")
 	if py312 == "" {
 		py312, _ = exec.LookPath("python3")
 	}
-	pythonDir := filepath.Join(installDir, "python", "bin")
-	require.NoError(t, os.MkdirAll(pythonDir, 0755))
-	cpPy := exec.CommandContext(s.Ctx, "cp", py312, filepath.Join(pythonDir, "python3.12"))
+
+	pythonDir := filepath.Join(installDir, "python")
+	pythonBinDir := filepath.Join(pythonDir, "bin")
+	require.NoError(t, os.MkdirAll(pythonBinDir, 0755))
+	cpPy := exec.CommandContext(s.Ctx, "cp", py312, filepath.Join(pythonBinDir, "python3.12"))
 	require.NoError(t, cpPy.Run(), "copy python3.12 to ~/.darkbloom/python/bin/")
-	require.NoError(t, os.Chmod(filepath.Join(pythonDir, "python3.12"), 0755))
-	sitePkgDir := filepath.Join(installDir, "python", "lib", "python3.12", "site-packages")
-	require.NoError(t, os.MkdirAll(sitePkgDir, 0755))
+	require.NoError(t, os.Chmod(filepath.Join(pythonBinDir, "python3.12"), 0755))
+
+	stdlibDirCmd := exec.CommandContext(s.Ctx, py312, "-c",
+		"import sysconfig; print(sysconfig.get_path('stdlib'))")
+	stdlibOut, err := stdlibDirCmd.Output()
+	require.NoError(t, err, "find Python stdlib directory")
+	stdlibSrc := strings.TrimSpace(string(stdlibOut))
+
+	pythonLibDir := filepath.Join(pythonDir, "lib", "python3.12")
+	require.NoError(t, os.MkdirAll(filepath.Join(pythonDir, "lib"), 0755))
+	cpStdlib := exec.CommandContext(s.Ctx, "cp", "-R", stdlibSrc, pythonLibDir)
+	require.NoError(t, cpStdlib.Run(), "copy Python stdlib to ~/.darkbloom/python/lib/python3.12/")
+
+	_ = os.RemoveAll(filepath.Join(pythonLibDir, "site-packages"))
+	require.NoError(t, os.MkdirAll(filepath.Join(pythonLibDir, "site-packages"), 0755))
+
 	pipInstall := exec.CommandContext(s.Ctx, py312, "-m", "pip", "install",
-		"--target", sitePkgDir, "--no-deps", "vllm_mlx==0.2.7")
+		"--target", filepath.Join(pythonLibDir, "site-packages"),
+		"vllm_mlx==0.2.7", "mlx-lm>=0.31.2")
 	pipInstall.Env = append(os.Environ(), "PIP_BREAK_SYSTEM_PACKAGES=1")
-	require.NoError(t, pipInstall.Run(), "pre-install vllm_mlx for v0.4.7 runtime smoke test")
+	require.NoError(t, pipInstall.Run(), "pip install vllm_mlx + mlx-lm into ~/.darkbloom/python/")
 
 	updateCtx, updateCancel := context.WithTimeout(s.Ctx, 180*time.Second)
 	defer updateCancel()
 	cmd := exec.CommandContext(updateCtx, oldInBin, "update", "--coordinator", oldCoord.BaseURL, "--force")
-	cmd.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"), "PIP_BREAK_SYSTEM_PACKAGES=1")
+	cmd.Env = append(os.Environ(),
+		"HOME="+os.Getenv("HOME"),
+		"PIP_BREAK_SYSTEM_PACKAGES=1",
+		"PYTHONHOME="+pythonDir,
+	)
 	out, err := cmd.CombinedOutput()
 	outStr := string(out)
 	t.Logf("hop 1 old provider update output:\n%s", outStr)
@@ -445,8 +467,8 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 		err        error
 	}
 	var (
-		results    []trafficResult
-		resultsMu  sync.Mutex
+		results     []trafficResult
+		resultsMu   sync.Mutex
 		stopTraffic atomic.Bool
 	)
 
@@ -793,7 +815,7 @@ func createSwiftReleaseBundle(t *testing.T, s *testbed.Suite, swiftBinPath strin
 	vllmMlxDir := filepath.Join(spStagingDir, "vllm_mlx")
 	require.NoError(t, os.MkdirAll(vllmMlxDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(vllmMlxDir, "__init__.py"), []byte("__version__ = '0.2.7'\n"), 0644))
-	spTarPath := filepath.Join(t.TempDir(), "eigeninference-site-packages.tar.gz")
+	spTarPath := filepath.Join(t.TempDir(), "eigeninference-site-packages-swift.tar.gz")
 	spTarCmd := exec.CommandContext(ctx, "tar", "czf", spTarPath, "-C", spStagingDir, "vllm_mlx")
 	spTarCmd.Env = append(os.Environ(), "COPYFILE_DISABLE=1")
 	require.NoError(t, spTarCmd.Run())
@@ -850,12 +872,19 @@ func createBridgeReleaseBundle(t *testing.T, s *testbed.Suite, bridgeBinPath str
 	pythonHash := sha256.Sum256(pyCanonicalData)
 
 	sitePackagesKey := "releases/v0.4.8/eigeninference-site-packages.tar.gz"
-	sitePackagesDir := filepath.Join(t.TempDir(), "site-packages-staging")
-	vllmMlxDir := filepath.Join(sitePackagesDir, "vllm_mlx")
-	require.NoError(t, os.MkdirAll(vllmMlxDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(vllmMlxDir, "__init__.py"), []byte("__version__ = '0.2.7'\n"), 0644))
+	spVenvDir := filepath.Join(t.TempDir(), "sp-venv")
+	spVenvCmd := exec.CommandContext(ctx, systemPython, "-m", "venv", "--copies", spVenvDir)
+	require.NoError(t, spVenvCmd.Run(), "create venv for site-packages tarball")
+	spPip := filepath.Join(spVenvDir, "bin", "pip3.12")
+	if _, err := os.Stat(spPip); err != nil {
+		spPip = filepath.Join(spVenvDir, "bin", "pip")
+	}
+	spPipCmd := exec.CommandContext(ctx, spPip, "install", "vllm_mlx==0.2.7", "mlx-lm>=0.31.2")
+	spPipCmd.Env = append(os.Environ(), "PIP_BREAK_SYSTEM_PACKAGES=1")
+	require.NoError(t, spPipCmd.Run(), "pip install vllm_mlx + mlx-lm for site-packages tarball")
+	spSitePackages := filepath.Join(spVenvDir, "lib", "python3.12", "site-packages")
 	spTarPath := filepath.Join(t.TempDir(), "eigeninference-site-packages.tar.gz")
-	spTarCmd := exec.CommandContext(ctx, "tar", "czf", spTarPath, "-C", sitePackagesDir, "vllm_mlx")
+	spTarCmd := exec.CommandContext(ctx, "tar", "czf", spTarPath, "-C", spSitePackages, ".")
 	spTarCmd.Env = append(os.Environ(), "COPYFILE_DISABLE=1")
 	require.NoError(t, spTarCmd.Run())
 	spTarData, err := os.ReadFile(spTarPath)

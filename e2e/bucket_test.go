@@ -302,12 +302,11 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	require.NoError(t, err, "start old coordinator")
 
 	// Register bridge release on old coordinator
-	regBody, _ := json.Marshal(store.Release{
+ 	regBody, _ := json.Marshal(store.Release{
 		Version:    "0.4.8",
 		Platform:   "macos-arm64",
 		BinaryHash: bridgeBundle.binaryHash,
 		BundleHash: bridgeBundle.bundleHash,
-		PythonHash: bridgeBundle.pythonHash,
 		URL:        bridgeBundle.bundleURL,
 		Changelog:  "Bridge release for Swift migration",
 	})

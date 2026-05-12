@@ -2,8 +2,8 @@ FROM golang:1.25-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
-COPY coordinator/ ./coordinator/
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o coordinator ./coordinator/cmd/coordinator && chmod +x coordinator
+COPY coordinator/ ./coordinator-src/
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o /app/coordinator ./coordinator-src/cmd/coordinator && chmod +x /app/coordinator
 
 # Pre-built base with MicroMDM v1.13.1, step-ca v0.28.3, step CLI v0.28.3.
 # Rebuild base only when tool versions change: docker build -f Dockerfile.base -t eigengajesh/d-inference-base:latest . && docker push

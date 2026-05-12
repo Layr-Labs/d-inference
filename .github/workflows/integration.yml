@@ -57,7 +57,7 @@ jobs:
         run: |
           export PATH="$(brew --prefix postgresql@16)/bin:$HOME/.cargo/bin:$PATH"
           go test ./e2e/ -count=1 -v -timeout 15m -p=1 \
-            -run 'TestIntegration_Release|TestIntegration_ModelWeight|TestIntegration_FleetUpgrade|TestIntegration_SelfUpdate|TestIntegration_FleetUpgradeStability'
+            -run 'TestIntegration_Release|TestIntegration_ModelWeight|TestIntegration_FleetUpgrade|TestIntegration_SelfUpdate'
 
   integration-tests:
     name: E2E Integration Tests

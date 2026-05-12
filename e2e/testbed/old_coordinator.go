@@ -2,6 +2,7 @@ package testbed
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -22,6 +23,29 @@ type OldCoordinatorProcess struct {
 	cmd     *exec.Cmd
 	cancel  context.CancelFunc
 	waitCh  chan error
+}
+
+func (oc *OldCoordinatorProcess) ProviderCount() int {
+	req, err := http.NewRequest(http.MethodGet, oc.BaseURL+"/v1/models", nil)
+	if err != nil {
+		return 0
+	}
+	req.Header.Set("Authorization", "Bearer testbed-admin-key")
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return 0
+	}
+	var body struct {
+		Data []struct{} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return 0
+	}
+	return len(body.Data)
 }
 
 func BuildOldCoordinator(ctx context.Context, logger *slog.Logger) (string, error) {

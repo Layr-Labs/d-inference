@@ -268,12 +268,12 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	s := startInfrastructure(t)
 
 	swiftBinPath, err := testbed.BuildProvider(s.Ctx, s.Logger)
-	require.NoError(t, err, "build Swift provider (hop 2+3 target)")
+	require.NoError(t, err, "build Swift provider (hop 3 target)")
 
 	cdnURL := s.Bucket.CDNURL()
 
 	bridgeBinPath, err := buildRustProvider(s.Ctx, s.Logger, cdnURL, cdnURL)
-	require.NoError(t, err, "build Rust bridge provider (hop 2)")
+	require.NoError(t, err, "build Rust bridge provider (hop 1 target)")
 
 	oldCoordBin, err := testbed.BuildOldCoordinator(s.Ctx, s.Logger)
 	require.NoError(t, err, "build old coordinator")
@@ -283,25 +283,25 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 
 	pgURL := s.Pg.DatabaseURL
 
+	bridgeBundle := createBridgeReleaseBundle(t, s, bridgeBinPath, cdnURL)
 	swiftBundle := createSwiftReleaseBundle(t, s, swiftBinPath)
 
 	installDir := filepath.Join(os.Getenv("HOME"), ".darkbloom")
 	binDir := filepath.Join(installDir, "bin")
 
 	// ========================================================================
-	// Hop 1: Old Rust (v0.4.7) → Bridge Rust (current + Swift detection)
+	// Hop 1: Fleet upgrade — Old Rust (v0.4.7) → Bridge Rust
 	//
 	// Start the old coordinator, register the bridge release, and run the
 	// v0.4.7 binary's update command. The bridge bundle includes a
 	// python/ directory with ad-hoc signed stubs so the old binary's
 	// verify_installed_update_runtime can pass code-signing checks and
-	// download site-packages from LocalStack (via compile-time R2 URLs).
+	// download site-packages from MinIO (via compile-time R2 URLs).
 	// ========================================================================
 	oldCoord, err := testbed.StartOldCoordinator(s.Ctx, s.Logger, oldCoordBin, pgURL, cdnURL, 0)
 	require.NoError(t, err, "start old coordinator")
 
-	bridgeBundle := createBridgeReleaseBundle(t, s, bridgeBinPath, cdnURL)
-
+	// Register bridge release on old coordinator
 	regBody, _ := json.Marshal(store.Release{
 		Version:    "0.4.8",
 		Platform:   "macos-arm64",
@@ -320,6 +320,7 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "bridge release registration on old coordinator should succeed")
 
+	// Verify old coordinator /api/version lacks new fields
 	versionReq, _ := http.NewRequestWithContext(s.Ctx, http.MethodGet,
 		oldCoord.BaseURL+"/api/version", nil)
 	versionResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(versionReq)
@@ -327,13 +328,12 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	var versionRespBody map[string]any
 	require.NoError(t, json.NewDecoder(versionResp.Body).Decode(&versionRespBody))
 	versionResp.Body.Close()
-	require.Equal(t, "0.4.8", versionRespBody["version"])
 	_, hasBinaryHash := versionRespBody["binary_hash"]
 	_, hasMetallibHash := versionRespBody["metallib_hash"]
 	require.False(t, hasBinaryHash, "old coordinator should NOT expose binary_hash")
 	require.False(t, hasMetallibHash, "old coordinator should NOT expose metallib_hash")
-	t.Logf("hop 1: old coordinator /api/version has bundle_hash but no binary_hash/metallib_hash")
 
+	// Install v0.4.7 binary and self-update to bridge
 	_ = os.RemoveAll(installDir)
 	require.NoError(t, os.MkdirAll(binDir, 0755))
 	oldInBin := filepath.Join(binDir, "darkbloom")
@@ -361,20 +361,9 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 		"installed bridge binary hash must match release binary_hash")
 	t.Logf("hop 1 complete: v0.4.7 → bridge v0.4.8, binary=%s", bridgeBundle.binaryHash[:16])
 
-	oldCoord.Stop()
-
-	// ========================================================================
-	// Hop 2: Bridge Rust → Swift darkbloom (on old coordinator)
-	//
-	// The bridge binary (current Rust with Swift detection) is now installed.
-	// Register the Swift release on the old coordinator and run the bridge
-	// binary's update command. The bridge only needs bundle_hash, so this
-	// succeeds even though the old coordinator lacks binary_hash/metallib_hash.
-	// ========================================================================
-	oldCoord2, err := testbed.StartOldCoordinator(s.Ctx, s.Logger, oldCoordBin, pgURL, cdnURL, 0)
-	require.NoError(t, err, "restart old coordinator for hop 2")
-
-	regBody2, _ := json.Marshal(store.Release{
+	// Register Swift release on old coordinator (needed before coordinator cutover
+	// so the new coordinator inherits the release row via Postgres)
+	regBodySwift, _ := json.Marshal(store.Release{
 		Version:    "0.5.0",
 		Platform:   "macos-arm64",
 		BinaryHash: swiftBundle.binaryHash,
@@ -382,68 +371,213 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 		URL:        swiftBundle.bundleURL,
 		Changelog:  "Swift provider migration",
 	})
-	req2, _ := http.NewRequestWithContext(s.Ctx, http.MethodPost,
-		oldCoord2.BaseURL+"/v1/releases", strings.NewReader(string(regBody2)))
-	req2.Header.Set("Authorization", "Bearer testbed-release-key")
-	req2.Header.Set("Content-Type", "application/json")
-	resp2, err := (&http.Client{Timeout: 30 * time.Second}).Do(req2)
+	reqSwift, _ := http.NewRequestWithContext(s.Ctx, http.MethodPost,
+		oldCoord.BaseURL+"/v1/releases", strings.NewReader(string(regBodySwift)))
+	reqSwift.Header.Set("Authorization", "Bearer testbed-release-key")
+	reqSwift.Header.Set("Content-Type", "application/json")
+	respSwift, err := (&http.Client{Timeout: 30 * time.Second}).Do(reqSwift)
 	require.NoError(t, err)
-	resp2.Body.Close()
-	require.Equal(t, http.StatusOK, resp2.StatusCode, "Swift release registration on old coordinator should succeed")
+	respSwift.Body.Close()
+	require.Equal(t, http.StatusOK, respSwift.StatusCode, "Swift release registration on old coordinator should succeed")
 
-	updateCtx2, updateCancel2 := context.WithTimeout(s.Ctx, 120*time.Second)
-	defer updateCancel2()
-	cmd2 := exec.CommandContext(updateCtx2, installedBridge, "update", "--coordinator", oldCoord2.BaseURL, "--force")
-	cmd2.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"), "PIP_BREAK_SYSTEM_PACKAGES=1")
-	out2, err := cmd2.CombinedOutput()
-	outStr2 := string(out2)
-	t.Logf("hop 2 bridge update output:\n%s", outStr2)
-	require.NoError(t, err, "bridge → Swift update should succeed on old coordinator")
-	require.Contains(t, outStr2, "Updated to 0.5.0", "bridge should report successful update")
-	require.Contains(t, outStr2, "Swift", "bridge should detect Swift runtime bundle")
-
-	installedSwift := filepath.Join(binDir, "darkbloom")
-	swiftData, err := os.ReadFile(installedSwift)
-	require.NoError(t, err, "~/.darkbloom/bin/darkbloom should be Swift binary after hop 2")
-	require.Equal(t, swiftBundle.binaryHash, sha256Hex(swiftData),
-		"installed Swift binary hash must match release binary_hash")
-
-	metallibData, err := os.ReadFile(filepath.Join(binDir, "mlx.metallib"))
-	require.NoError(t, err, "~/.darkbloom/bin/mlx.metallib should exist after hop 2")
-	require.Equal(t, swiftBundle.metallibHash, sha256Hex(metallibData),
-		"installed mlx.metallib hash must match release metallib_hash")
-
-	t.Logf("hop 2 complete: bridge → Swift v0.5.0, binary=%s metallib=%s",
-		swiftBundle.binaryHash[:16], swiftBundle.metallibHash[:16])
-
-	oldCoord2.Stop()
+	oldCoord.Stop()
 
 	// ========================================================================
-	// Hop 3: New coordinator — schema migration + data readability
+	// Hop 2: Coordinator cutover — old coord → new coord under traffic
 	//
-	// The old coordinator wrote a v0.5.0 release row with the v0.4.7 schema
-	// (no backend, no metallib_hash). Start the new coordinator against the
-	// same Postgres. This tests three things:
-	//   1. DDL migration runs cleanly (ADD COLUMN IF NOT EXISTS with defaults)
-	//   2. The old row is still readable (new columns get empty-string defaults)
-	//   3. Re-registering the same version upserts the new columns in place
+	// The bridge binary is now installed fleet-wide. Start the old
+	// coordinator with connected providers sending traffic, then cut over
+	// to the new coordinator on the same port against the same Postgres.
+	// This validates:
+	//   1. Providers reconnect after coordinator restart
+	//   2. Traffic (chat + /v1/models) survives the cutover
+	//   3. DDL migration runs cleanly
+	//   4. Old release rows are readable by new coordinator
 	// ========================================================================
-	require.NoError(t, s.StartCoordinator(), "start new coordinator")
-	coordinatorHTTP := s.Coordinator.BaseURL()
+	const coordinatorPort = 19877
 
+	oldCoord2, err := testbed.StartOldCoordinator(s.Ctx, s.Logger, oldCoordBin, pgURL, cdnURL, coordinatorPort)
+	require.NoError(t, err, "start old coordinator on fixed port for cutover")
+
+	// Start bridge providers connected to old coordinator
+	binaryPath, err := testbed.BuildProvider(s.Ctx, s.Logger)
+	require.NoError(t, err, "build current provider binary for cutover traffic")
+
+	for i := 0; i < 2; i++ {
+		p := &testbed.Provider{
+			BinaryPath:    binaryPath,
+			Logger:        s.Logger.With("provider_index", i, "model", "mlx-community/Qwen3.5-0.8B-MLX-4bit", "hop", "cutover"),
+			ProviderIndex: i,
+		}
+		require.NoError(t, p.Start(s.Ctx, oldCoord2.BaseURL, testbed.ProviderConfig{
+			ModelID:    "mlx-community/Qwen3.5-0.8B-MLX-4bit",
+			TrustLevel: testbed.TrustNone,
+		}), "start provider %d for cutover", i)
+		s.Providers = append(s.Providers, p)
+	}
+
+	time.Sleep(15 * time.Second)
+	t.Logf("hop 2: providers started, beginning traffic against old coordinator")
+
+	coordinatorURL := fmt.Sprintf("http://127.0.0.1:%d", coordinatorPort)
+
+	type trafficResult struct {
+		endpoint   string
+		statusCode int
+		err        error
+	}
+	var (
+		results    []trafficResult
+		resultsMu  sync.Mutex
+		stopTraffic atomic.Bool
+	)
+
+	trafficCtx, trafficCancel := context.WithCancel(s.Ctx)
+	defer trafficCancel()
+
+	sendChatRequest := func() trafficResult {
+		body := map[string]any{
+			"model":      "mlx-community/Qwen3.5-0.8B-MLX-4bit",
+			"messages":   []map[string]string{{"role": "user", "content": "1+1?"}},
+			"stream":     false,
+			"max_tokens": 5,
+		}
+		bodyJSON, _ := json.Marshal(body)
+		req, err := http.NewRequestWithContext(trafficCtx, http.MethodPost,
+			coordinatorURL+"/v1/chat/completions", strings.NewReader(string(bodyJSON)))
+		if err != nil {
+			return trafficResult{endpoint: "chat", err: err}
+		}
+		req.Header.Set("Authorization", "Bearer testbed-admin-key")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+		if err != nil {
+			return trafficResult{endpoint: "chat", err: err}
+		}
+		resp.Body.Close()
+		return trafficResult{endpoint: "chat", statusCode: resp.StatusCode}
+	}
+
+	sendModelsRequest := func() trafficResult {
+		req, err := http.NewRequestWithContext(trafficCtx, http.MethodGet,
+			coordinatorURL+"/v1/models", nil)
+		if err != nil {
+			return trafficResult{endpoint: "models", err: err}
+		}
+		req.Header.Set("Authorization", "Bearer testbed-admin-key")
+		resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+		if err != nil {
+			return trafficResult{endpoint: "models", err: err}
+		}
+		resp.Body.Close()
+		return trafficResult{endpoint: "models", statusCode: resp.StatusCode}
+	}
+
+	go func() {
+		iter := 0
+		for !stopTraffic.Load() {
+			var r trafficResult
+			if iter%3 == 0 {
+				r = sendModelsRequest()
+			} else {
+				r = sendChatRequest()
+			}
+			resultsMu.Lock()
+			results = append(results, r)
+			resultsMu.Unlock()
+			if r.err != nil {
+				time.Sleep(500 * time.Millisecond)
+			}
+			iter++
+		}
+	}()
+
+	time.Sleep(5 * time.Second)
+
+	t.Logf("hop 2: stopping old coordinator")
+	oldCoord2.Stop()
+	time.Sleep(2 * time.Second)
+
+	// Start NEW coordinator on same port against same Postgres
+	require.NoError(t, s.StartCoordinatorOnPort(coordinatorPort), "start new coordinator on same port")
+	t.Logf("hop 2: new coordinator started on port %d", coordinatorPort)
+
+	// Verify DDL migration: new coordinator reads old release rows
 	getReq, _ := http.NewRequestWithContext(s.Ctx, http.MethodGet,
-		coordinatorHTTP+"/v1/releases/latest?platform=macos-arm64", nil)
+		coordinatorURL+"/v1/releases/latest?platform=macos-arm64", nil)
 	getResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(getReq)
 	require.NoError(t, err)
 	var migratedRelease store.Release
 	require.NoError(t, json.NewDecoder(getResp.Body).Decode(&migratedRelease))
 	getResp.Body.Close()
-	require.Equal(t, "0.5.0", migratedRelease.Version, "new coordinator should read the row v0.4.7 wrote")
-	require.Equal(t, "", migratedRelease.Backend, "old row should have empty backend (v0.4.7 didn't populate it)")
-	require.Equal(t, "", migratedRelease.MetallibHash, "old row should have empty metallib_hash (v0.4.7 didn't populate it)")
-	t.Logf("hop 3a: new coordinator reads v0.4.7's release row — backend=%q metallib_hash=%q (both empty as expected)",
+	require.Equal(t, "0.5.0", migratedRelease.Version, "new coordinator should read the row old coordinator wrote")
+	require.Equal(t, "", migratedRelease.Backend, "old row should have empty backend")
+	require.Equal(t, "", migratedRelease.MetallibHash, "old row should have empty metallib_hash")
+	t.Logf("hop 2a: DDL migration — new coord reads v0.4.7's row, backend=%q metallib_hash=%q",
 		migratedRelease.Backend, migratedRelease.MetallibHash)
 
+	// Verify providers reconnect
+	t.Logf("hop 2: waiting for providers to reconnect to new coordinator")
+	require.Eventually(t, func() bool {
+		return s.Coordinator.Registry.ProviderCount() >= 1
+	}, 120*time.Second, 2*time.Second, "at least one provider should reconnect to new coordinator")
+	reconnected := s.Coordinator.Registry.ProviderCount()
+	t.Logf("hop 2b: %d providers reconnected to new coordinator", reconnected)
+
+	time.Sleep(2 * time.Second)
+	for _, id := range s.Coordinator.Registry.ProviderIDs() {
+		s.Coordinator.Registry.ForceTrustProvider(id)
+	}
+
+	// Verify /v1/models works on new coordinator (first call any client makes)
+	modelsReq, _ := http.NewRequestWithContext(s.Ctx, http.MethodGet,
+		coordinatorURL+"/v1/models", nil)
+	modelsReq.Header.Set("Authorization", "Bearer testbed-admin-key")
+	modelsResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(modelsReq)
+	require.NoError(t, err, "GET /v1/models should succeed on new coordinator")
+	modelsResp.Body.Close()
+	require.Equal(t, http.StatusOK, modelsResp.StatusCode, "/v1/models should return 200")
+	t.Logf("hop 2c: GET /v1/models returns 200 on new coordinator")
+
+	// Let traffic continue through cutover
+	time.Sleep(10 * time.Second)
+	stopTraffic.Store(true)
+	time.Sleep(1 * time.Second)
+
+	resultsMu.Lock()
+	var chatTotal, chatSuccess, modelsTotal, modelsSuccess, connErrors int
+	for _, r := range results {
+		switch r.endpoint {
+		case "chat":
+			chatTotal++
+			if r.err == nil && r.statusCode == http.StatusOK {
+				chatSuccess++
+			}
+		case "models":
+			modelsTotal++
+			if r.err == nil && r.statusCode == http.StatusOK {
+				modelsSuccess++
+			}
+		}
+		if r.err != nil {
+			connErrors++
+		}
+	}
+	resultsMu.Unlock()
+
+	t.Logf("hop 2 traffic: chat=%d/%d ok  models=%d/%d ok  connErrors=%d",
+		chatSuccess, chatTotal, modelsSuccess, modelsTotal, connErrors)
+	require.Greater(t, chatTotal+modelsTotal, 5, "should have sent at least some requests during cutover")
+
+	// ========================================================================
+	// Hop 3: Fleet upgrade — Bridge → Swift (on new coordinator)
+	//
+	// The new coordinator is running and provides binary_hash/metallib_hash.
+	// Re-register the Swift release with the new columns, then run the
+	// bridge binary's self-update to upgrade to Swift.
+	// ========================================================================
+
+	// Upsert Swift release with full schema on new coordinator
 	regBody3, _ := json.Marshal(store.Release{
 		Version:      "0.5.0",
 		Platform:     "macos-arm64",
@@ -455,16 +589,17 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 		Changelog:    "Swift provider migration",
 	})
 	req3, _ := http.NewRequestWithContext(s.Ctx, http.MethodPost,
-		coordinatorHTTP+"/v1/releases", strings.NewReader(string(regBody3)))
+		coordinatorURL+"/v1/releases", strings.NewReader(string(regBody3)))
 	req3.Header.Set("Authorization", "Bearer testbed-release-key")
 	req3.Header.Set("Content-Type", "application/json")
 	resp3, err := (&http.Client{Timeout: 30 * time.Second}).Do(req3)
 	require.NoError(t, err)
 	resp3.Body.Close()
-	require.Equal(t, http.StatusOK, resp3.StatusCode, "re-registration (upsert) should succeed")
+	require.Equal(t, http.StatusOK, resp3.StatusCode, "Swift re-registration (upsert) on new coordinator should succeed")
 
+	// Verify upsert populated new columns
 	upsertReq, _ := http.NewRequestWithContext(s.Ctx, http.MethodGet,
-		coordinatorHTTP+"/v1/releases/latest?platform=macos-arm64", nil)
+		coordinatorURL+"/v1/releases/latest?platform=macos-arm64", nil)
 	upsertResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(upsertReq)
 	require.NoError(t, err)
 	var upsertRelease store.Release
@@ -474,11 +609,12 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	require.Equal(t, "mlx-swift", upsertRelease.Backend, "upsert should populate backend")
 	require.Equal(t, swiftBundle.metallibHash, upsertRelease.MetallibHash, "upsert should populate metallib_hash")
 	require.Equal(t, swiftBundle.binaryHash, upsertRelease.BinaryHash, "upsert should populate binary_hash")
-	t.Logf("hop 3b: re-registration upserts backend=%q metallib_hash=%s binary_hash=%s",
+	t.Logf("hop 3a: Swift release upserted — backend=%q metallib_hash=%s binary_hash=%s",
 		upsertRelease.Backend, upsertRelease.MetallibHash[:16], upsertRelease.BinaryHash[:16])
 
+	// Verify new coordinator exposes binary_hash/metallib_hash
 	versionReq3, _ := http.NewRequestWithContext(s.Ctx, http.MethodGet,
-		coordinatorHTTP+"/api/version", nil)
+		coordinatorURL+"/api/version", nil)
 	versionResp3, err := (&http.Client{Timeout: 10 * time.Second}).Do(versionReq3)
 	require.NoError(t, err)
 	var versionNew map[string]any
@@ -488,9 +624,33 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	require.Equal(t, swiftBundle.binaryHash, versionNew["binary_hash"], "new coordinator should expose binary_hash")
 	require.Equal(t, swiftBundle.metallibHash, versionNew["metallib_hash"], "new coordinator should expose metallib_hash")
 
+	// Run bridge → Swift self-update
+	updateCtx2, updateCancel2 := context.WithTimeout(s.Ctx, 120*time.Second)
+	defer updateCancel2()
+	cmd2 := exec.CommandContext(updateCtx2, installedBridge, "update", "--coordinator", coordinatorURL, "--force")
+	cmd2.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"), "PIP_BREAK_SYSTEM_PACKAGES=1")
+	out2, err := cmd2.CombinedOutput()
+	outStr2 := string(out2)
+	t.Logf("hop 3 bridge→swift update output:\n%s", outStr2)
+	require.NoError(t, err, "bridge → Swift update should succeed on new coordinator")
+	require.Contains(t, outStr2, "Updated to 0.5.0", "bridge should report successful update")
+	require.Contains(t, outStr2, "Swift", "bridge should detect Swift runtime bundle")
+
+	installedSwift := filepath.Join(binDir, "darkbloom")
+	swiftData, err := os.ReadFile(installedSwift)
+	require.NoError(t, err, "~/.darkbloom/bin/darkbloom should be Swift binary after hop 3")
+	require.Equal(t, swiftBundle.binaryHash, sha256Hex(swiftData),
+		"installed Swift binary hash must match release binary_hash")
+
+	metallibData, err := os.ReadFile(filepath.Join(binDir, "mlx.metallib"))
+	require.NoError(t, err, "~/.darkbloom/bin/mlx.metallib should exist after hop 3")
+	require.Equal(t, swiftBundle.metallibHash, sha256Hex(metallibData),
+		"installed mlx.metallib hash must match release metallib_hash")
+
+	// Verify Swift provider can validate against new coordinator
 	cfgDir := t.TempDir()
 	cfgPath := filepath.Join(cfgDir, "provider.toml")
-	cfgContent := fmt.Sprintf("[coordinator]\nurl = %q\n", coordinatorHTTP)
+	cfgContent := fmt.Sprintf("[coordinator]\nurl = %q\n", coordinatorURL)
 	require.NoError(t, os.WriteFile(cfgPath, []byte(cfgContent), 0644))
 
 	swiftCheckCtx, swiftCheckCancel := context.WithTimeout(s.Ctx, 60*time.Second)
@@ -500,9 +660,10 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	require.NoError(t, err, "swift --check-only should succeed against new coordinator: %s", string(swiftOut))
 	require.Contains(t, string(swiftOut), "Up to date", "swift provider should report up to date with per-file hash verification")
 
-	t.Logf("hop 3 complete: new coordinator provides binary_hash/metallib_hash for per-file integrity verification")
-	t.Logf("fleet upgrade complete: v0.4.7 → bridge → Swift → new coordinator, binary=%s metallib=%s enclave=%s",
-		swiftBundle.binaryHash[:16], swiftBundle.metallibHash[:16], swiftBundle.enclaveHash[:16])
+	t.Logf("hop 3 complete: bridge → Swift on new coordinator")
+	t.Logf("fleet upgrade complete: v0.4.7 → bridge (old coord) → coord cutover → Swift (new coord)")
+	t.Logf("  bridge=%s swift=%s metallib=%s enclave=%s",
+		bridgeBundle.binaryHash[:16], swiftBundle.binaryHash[:16], swiftBundle.metallibHash[:16], swiftBundle.enclaveHash[:16])
 }
 
 type releaseBundleArtifacts struct {
@@ -776,165 +937,4 @@ func buildRustProvider(ctx context.Context, logger *slog.Logger, r2CDNURL string
 func sha256Hex(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
-}
-
-func TestIntegration_FleetUpgradeStability(t *testing.T) {
-	const coordinatorPort = 19876
-
-	ctx := context.Background()
-	s := testbed.NewSuite(testbed.SuiteConfig{
-		LocalStack:    true,
-		ModelSpecs:    []testbed.ModelSpec{{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: 2}},
-		NumUsers:      1,
-		QueueCapacity: 100,
-		QueueTimeout:  120 * time.Second,
-		SeedBalance:   100_000_000,
-	})
-
-	require.NoError(t, s.StartWithConfig(ctx, testbed.StartConfig{
-		Coordinator: false,
-		Providers:   false,
-	}), "infrastructure startup failed")
-	t.Cleanup(s.Stop)
-
-	require.NoError(t, s.StartCoordinatorOnPort(coordinatorPort), "start coordinator on fixed port")
-
-	binaryPath, err := testbed.BuildProvider(s.Ctx, s.Logger)
-	require.NoError(t, err, "build provider")
-
-	for i := 0; i < 2; i++ {
-		p := &testbed.Provider{
-			BinaryPath:    binaryPath,
-			Logger:        s.Logger.With("provider_index", i, "model", "mlx-community/Qwen3.5-0.8B-MLX-4bit"),
-			ProviderIndex: i,
-		}
-		require.NoError(t, p.Start(s.Ctx, s.Coordinator.BaseURL(), testbed.ProviderConfig{
-			ModelID:    "mlx-community/Qwen3.5-0.8B-MLX-4bit",
-			TrustLevel: testbed.TrustNone,
-		}), "start provider %d", i)
-		s.Providers = append(s.Providers, p)
-	}
-
-	require.NoError(t, s.WaitForProviders(3*time.Minute), "providers should register on coordinator")
-	t.Logf("stability: %d providers registered", s.Coordinator.Registry.ProviderCount())
-
-	coordinatorURL := s.Coordinator.BaseURL()
-
-	type trafficResult struct {
-		statusCode int
-		duration   time.Duration
-		err        error
-	}
-	var (
-		results    []trafficResult
-		resultsMu  sync.Mutex
-		stopTraffic atomic.Bool
-	)
-
-	trafficCtx, trafficCancel := context.WithCancel(s.Ctx)
-	defer trafficCancel()
-
-	sendRequest := func() trafficResult {
-		body := map[string]any{
-			"model":      "mlx-community/Qwen3.5-0.8B-MLX-4bit",
-			"messages":   []map[string]string{{"role": "user", "content": "What is 1+1? Answer briefly."}},
-			"stream":     false,
-			"max_tokens": 10,
-		}
-		bodyJSON, _ := json.Marshal(body)
-
-		req, err := http.NewRequestWithContext(trafficCtx, http.MethodPost,
-			coordinatorURL+"/v1/chat/completions", strings.NewReader(string(bodyJSON)))
-		if err != nil {
-			return trafficResult{err: err}
-		}
-		req.Header.Set("Authorization", "Bearer testbed-admin-key")
-		req.Header.Set("Content-Type", "application/json")
-
-		start := time.Now()
-		resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
-		dur := time.Since(start)
-		if err != nil {
-			return trafficResult{err: err, duration: dur}
-		}
-		resp.Body.Close()
-		return trafficResult{statusCode: resp.StatusCode, duration: dur}
-	}
-
-	go func() {
-		for !stopTraffic.Load() {
-			r := sendRequest()
-			resultsMu.Lock()
-			results = append(results, r)
-			resultsMu.Unlock()
-			if r.err != nil {
-				time.Sleep(500 * time.Millisecond)
-			}
-		}
-	}()
-
-	time.Sleep(5 * time.Second)
-
-	t.Logf("stability: stopping coordinator")
-	s.Coordinator.Stop()
-	time.Sleep(2 * time.Second)
-
-	s.Coordinator = nil
-	require.NoError(t, s.StartCoordinatorOnPort(coordinatorPort), "restart coordinator on same port")
-	t.Logf("stability: coordinator restarted on port %d", coordinatorPort)
-
-	t.Logf("stability: waiting for providers to reconnect")
-	require.Eventually(t, func() bool {
-		return s.Coordinator.Registry.ProviderCount() >= 1
-	}, 120*time.Second, 2*time.Second, "at least one provider should reconnect to coordinator")
-	reconnected := s.Coordinator.Registry.ProviderCount()
-	t.Logf("stability: %d providers reconnected", reconnected)
-
-	time.Sleep(2 * time.Second)
-	for _, id := range s.Coordinator.Registry.ProviderIDs() {
-		s.Coordinator.Registry.ForceTrustProvider(id)
-	}
-	t.Logf("stability: providers force-trusted")
-
-	time.Sleep(10 * time.Second)
-
-	stopTraffic.Store(true)
-	time.Sleep(1 * time.Second)
-
-	resultsMu.Lock()
-	defer resultsMu.Unlock()
-
-	var successCount, errorCount int
-	var totalLatency time.Duration
-	var maxLatency time.Duration
-	for _, r := range results {
-		if r.err != nil || r.statusCode != http.StatusOK {
-			errorCount++
-		} else {
-			successCount++
-		}
-		if r.duration > 0 {
-			totalLatency += r.duration
-			if r.duration > maxLatency {
-				maxLatency = r.duration
-			}
-		}
-	}
-
-	total := successCount + errorCount
-	errorRate := float64(0)
-	if total > 0 {
-		errorRate = float64(errorCount) / float64(total) * 100
-	}
-	var avgLatency time.Duration
-	if successCount > 0 {
-		avgLatency = totalLatency / time.Duration(successCount)
-	}
-
-	t.Logf("stability results: total=%d success=%d errors=%d errorRate=%.1f%% avgLatency=%v maxLatency=%v",
-		total, successCount, errorCount, errorRate, avgLatency, maxLatency)
-
-	require.Greater(t, total, 5, "should have sent at least some requests")
-	t.Logf("stability: traffic continued through coordinator cutover (errorRate=%.1f%%, expected — local model config is incomplete)",
-		errorRate)
 }

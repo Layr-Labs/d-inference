@@ -10,6 +10,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o coordinator ./coordinat
 FROM eigengajesh/d-inference-base:v1-amd64
 
 COPY --from=builder /app/coordinator /usr/local/bin/coordinator
+RUN chmod +x /usr/local/bin/coordinator
 
 RUN mkdir -p /var/www/html/dl
 

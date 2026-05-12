@@ -25,12 +25,7 @@ type OldCoordinatorProcess struct {
 }
 
 func BuildOldCoordinator(ctx context.Context, logger *slog.Logger) (string, error) {
-	repoRoot := os.Getenv("DARKBLOOM_REPO_ROOT")
-	if repoRoot == "" {
-		if cwd, err := os.Getwd(); err == nil {
-			repoRoot = filepath.Dir(filepath.Dir(cwd))
-		}
-	}
+	repoRoot := FindRepoRoot()
 
 	cacheDir := filepath.Join(repoRoot, ".cache", "e2e-binaries")
 	binPath := filepath.Join(cacheDir, "coordinator-"+OldCoordinatorTag)

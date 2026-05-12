@@ -10,6 +10,33 @@ import (
 	"strings"
 )
 
+func FindRepoRoot() string {
+	if root := os.Getenv("DARKBLOOM_REPO_ROOT"); root != "" {
+		return root
+	}
+	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
+		if root := strings.TrimSpace(string(out)); root != "" {
+			os.Setenv("DARKBLOOM_REPO_ROOT", root)
+			return root
+		}
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		dir := cwd
+		for {
+			if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+				os.Setenv("DARKBLOOM_REPO_ROOT", dir)
+				return dir
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
+	return "."
+}
+
 func providerBuildConfig() string {
 	if cfg := os.Getenv("TESTBED_PROVIDER_CONFIG"); cfg != "" {
 		return cfg
@@ -18,10 +45,7 @@ func providerBuildConfig() string {
 }
 
 func BuildProvider(ctx context.Context, logger *slog.Logger) (string, error) {
-	repoRoot := os.Getenv("DARKBLOOM_REPO_ROOT")
-	if repoRoot == "" {
-		repoRoot = "."
-	}
+	repoRoot := FindRepoRoot()
 	providerDir := repoRoot + "/provider-swift"
 	cfg := providerBuildConfig()
 

@@ -79,11 +79,7 @@ type Provider struct {
 func NewSuite(cfg SuiteConfig) *Suite {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	if os.Getenv("DARKBLOOM_REPO_ROOT") == "" {
-		if cwd, err := os.Getwd(); err == nil {
-			os.Setenv("DARKBLOOM_REPO_ROOT", cwd+"/../..")
-		}
-	}
+	FindRepoRoot()
 
 	if len(cfg.ModelSpecs) == 0 {
 		cfg.ModelSpecs = []ModelSpec{{ModelID: resolveModelID(""), NumProviders: 1}}
@@ -163,7 +159,10 @@ func (s *Suite) StartWithConfig(ctx context.Context, cfg StartConfig) error {
 			return err
 		}
 	}
-	return s.waitForProviderRegistration(3 * time.Minute)
+	if s.Coordinator != nil && s.Config.TotalProviders() > 0 {
+		return s.waitForProviderRegistration(3 * time.Minute)
+	}
+	return nil
 }
 
 func (s *Suite) StartCoordinator() error {

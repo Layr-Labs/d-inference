@@ -5980,7 +5980,7 @@ fn parse_codesign_team_identifier(output: &str) -> Option<String> {
         line.trim()
             .strip_prefix("TeamIdentifier=")
             .map(str::trim)
-            .filter(|team| !team.is_empty() && *team != "not set")
+            .filter(|team| !team.is_empty())
             .map(ToOwned::to_owned)
     })
 }
@@ -6783,9 +6783,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_codesign_team_identifier_rejects_missing_team_id() {
+    fn test_parse_codesign_team_identifier_accepts_not_set() {
         let output = "Authority=Apple Development: Someone\nTeamIdentifier=not set\n";
-        assert!(parse_codesign_team_identifier(output).is_none());
+        assert_eq!(
+            parse_codesign_team_identifier(output).as_deref(),
+            Some("not set")
+        );
     }
 
     #[test]

@@ -88,3 +88,4 @@ coordinator/internal/e2e/testdata/decrypt/target/
 coordinator/coordinator
 coordinator/eigeninference-coordinator-linux
 docs/RUNBOOK.md
+.cache/e2e-binaries/

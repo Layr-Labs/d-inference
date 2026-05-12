@@ -418,6 +418,9 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	// Ad-hoc sign all .dylib/.so files so v0.4.7's
 	// verify_python_core_signature_match passes.  The patched v0.4.7 accepts
 	// TeamIdentifier=not set, which is what ad-hoc signing produces.
+	// Remove broken symlinks first (e.g. config-3.12-darwin/libpython3.12.dylib
+	// is a relative symlink that breaks on copy).
+	removeBrokenSymlinks(t, pythonLibDir)
 	adHocSignDir(t, pythonLibDir)
 
 	pipInstall := exec.CommandContext(s.Ctx, py312, "-m", "pip", "install",
@@ -975,6 +978,24 @@ func adHocSign(t *testing.T, path string) {
 	require.NoError(t, err, "ad-hoc sign %s: %s", path, string(out))
 }
 
+func removeBrokenSymlinks(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		path := filepath.Join(dir, e.Name())
+		if e.IsDir() {
+			removeBrokenSymlinks(t, path)
+			continue
+		}
+		if e.Type()&os.ModeSymlink != 0 {
+			if _, err := os.Stat(path); err != nil {
+				os.Remove(path)
+			}
+		}
+	}
+}
+
 func adHocSignDir(t *testing.T, dir string) {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
@@ -987,7 +1008,9 @@ func adHocSignDir(t *testing.T, dir string) {
 		}
 		switch filepath.Ext(path) {
 		case ".dylib", ".so":
-			adHocSign(t, path)
+			if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() {
+				adHocSign(t, path)
+			}
 		}
 	}
 }

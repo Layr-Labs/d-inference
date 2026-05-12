@@ -826,61 +826,12 @@ func createSwiftReleaseBundle(t *testing.T, s *testbed.Suite, swiftBinPath strin
 type bridgeReleaseArtifacts struct {
 	binaryHash string
 	bundleHash string
-	pythonHash string
 	bundleURL  string
 }
 
 func createBridgeReleaseBundle(t *testing.T, s *testbed.Suite, bridgeBinPath string, cdnURL string) bridgeReleaseArtifacts {
 	t.Helper()
 	ctx := s.Ctx
-
-	systemPython, err := exec.LookPath("python3.12")
-	if err != nil {
-		systemPython, err = exec.LookPath("python3")
-		require.NoError(t, err, "find system python3")
-	}
-
-	pyTmpDir := t.TempDir()
-	pyBinDir := filepath.Join(pyTmpDir, "bin")
-	require.NoError(t, os.MkdirAll(pyBinDir, 0755))
-	pyCanonical := filepath.Join(pyBinDir, "python3.12")
-	cpPy := exec.CommandContext(ctx, "cp", systemPython, pyCanonical)
-	require.NoError(t, cpPy.Run(), "copy system python3 for canonical tarball")
-	require.NoError(t, os.Chmod(pyCanonical, 0755))
-
-	pyTarPath := filepath.Join(pyTmpDir, "eigeninference-python-macos-arm64.tar.gz")
-	pyTarCmd := exec.CommandContext(ctx, "tar", "czf", pyTarPath, "-C", pyTmpDir, "bin")
-	pyTarCmd.Env = append(os.Environ(), "COPYFILE_DISABLE=1")
-	require.NoError(t, pyTarCmd.Run())
-
-	pyS3Key := "releases/v0.4.8/eigeninference-python-macos-arm64.tar.gz"
-	pyTarData, err := os.ReadFile(pyTarPath)
-	require.NoError(t, err)
-	require.NoError(t, s.Bucket.PutObject(ctx, pyS3Key, pyTarData))
-
-	pyCanonicalData, err := os.ReadFile(pyCanonical)
-	require.NoError(t, err)
-	pythonHash := sha256.Sum256(pyCanonicalData)
-
-	sitePackagesKey := "releases/v0.4.8/eigeninference-site-packages.tar.gz"
-	spVenvDir := filepath.Join(t.TempDir(), "sp-venv")
-	spVenvCmd := exec.CommandContext(ctx, systemPython, "-m", "venv", "--copies", spVenvDir)
-	require.NoError(t, spVenvCmd.Run(), "create venv for site-packages tarball")
-	spPip := filepath.Join(spVenvDir, "bin", "pip3.12")
-	if _, err := os.Stat(spPip); err != nil {
-		spPip = filepath.Join(spVenvDir, "bin", "pip")
-	}
-	spPipCmd := exec.CommandContext(ctx, spPip, "install", "vllm_mlx==0.2.7", "mlx-lm>=0.31.2")
-	spPipCmd.Env = append(os.Environ(), "PIP_BREAK_SYSTEM_PACKAGES=1")
-	require.NoError(t, spPipCmd.Run(), "pip install vllm_mlx + mlx-lm for site-packages tarball")
-	spSitePackages := filepath.Join(spVenvDir, "lib", "python3.12", "site-packages")
-	spTarPath := filepath.Join(t.TempDir(), "eigeninference-site-packages.tar.gz")
-	spTarCmd := exec.CommandContext(ctx, "tar", "czf", spTarPath, "-C", spSitePackages, ".")
-	spTarCmd.Env = append(os.Environ(), "COPYFILE_DISABLE=1")
-	require.NoError(t, spTarCmd.Run())
-	spTarData, err := os.ReadFile(spTarPath)
-	require.NoError(t, err)
-	require.NoError(t, s.Bucket.PutObject(ctx, sitePackagesKey, spTarData))
 
 	bundleTmpDir := t.TempDir()
 	binDir := filepath.Join(bundleTmpDir, "bin")
@@ -894,16 +845,8 @@ func createBridgeReleaseBundle(t *testing.T, s *testbed.Suite, bridgeBinPath str
 	enclaveDst := filepath.Join(binDir, "eigeninference-enclave")
 	require.NoError(t, os.WriteFile(enclaveDst, []byte("#!/bin/sh\nexit 0\n"), 0755))
 
-	pythonDir := filepath.Join(bundleTmpDir, "python")
-	pythonBinDir2 := filepath.Join(pythonDir, "bin")
-	require.NoError(t, os.MkdirAll(pythonBinDir2, 0755))
-	bundlePyStub := filepath.Join(pythonBinDir2, "python3.12")
-	cpPy2 := exec.CommandContext(ctx, "cp", pyCanonical, bundlePyStub)
-	require.NoError(t, cpPy2.Run())
-	require.NoError(t, os.Chmod(bundlePyStub, 0755))
-
 	bundleTarPath := filepath.Join(bundleTmpDir, "eigeninference-bundle-macos-arm64.tar.gz")
-	tarCmd := exec.CommandContext(ctx, "tar", "czf", bundleTarPath, "-C", bundleTmpDir, "bin", "python")
+	tarCmd := exec.CommandContext(ctx, "tar", "czf", bundleTarPath, "-C", bundleTmpDir, "bin")
 	tarCmd.Env = append(os.Environ(), "COPYFILE_DISABLE=1")
 	require.NoError(t, tarCmd.Run())
 
@@ -921,7 +864,6 @@ func createBridgeReleaseBundle(t *testing.T, s *testbed.Suite, bridgeBinPath str
 	return bridgeReleaseArtifacts{
 		binaryHash: hex.EncodeToString(binaryHash[:]),
 		bundleHash: hex.EncodeToString(bundleHash[:]),
-		pythonHash: hex.EncodeToString(pythonHash[:]),
 		bundleURL:  fmt.Sprintf("%s/%s", cdnURL, bundleS3Key),
 	}
 }

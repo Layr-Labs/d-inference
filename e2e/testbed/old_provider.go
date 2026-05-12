@@ -68,13 +68,18 @@ func BuildOldProvider(ctx context.Context, logger *slog.Logger, r2CDNURL string,
 		[]byte(`.filter(|team| !team.is_empty())`),
 		1,
 	)
+	patched = bytes.Replace(patched,
+		[]byte("let bundled_python = eigeninference_dir.join(\"python/bin/python3.12\");\n\n    if let Err(err) = verify_python_core_signature_match(eigeninference_dir) {"),
+		[]byte("return Ok(()); let bundled_python = eigeninference_dir.join(\"python/bin/python3.12\");\n\n    if let Err(err) = verify_python_core_signature_match(eigeninference_dir) {"),
+		1,
+	)
 	if bytes.Equal(patched, mainRs) {
-		logger.Warn("TeamID patch did not apply — build may fail with ad-hoc signed binaries")
+		logger.Warn("TeamID/runtime patches did not apply — build may fail")
 	} else {
 		if err := os.WriteFile(origFn, patched, 0644); err != nil {
 			return "", fmt.Errorf("write patched main.rs: %w", err)
 		}
-		logger.Info("patched v0.4.7 main.rs to accept ad-hoc TeamIdentifier")
+		logger.Info("patched v0.4.7 main.rs to accept ad-hoc TeamIdentifier and skip runtime verification")
 	}
 
 	buildCmd := exec.CommandContext(ctx, "cargo", "build", "--release", "--no-default-features")

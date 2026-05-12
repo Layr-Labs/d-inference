@@ -374,7 +374,11 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	require.False(t, hasBinaryHash, "old coordinator should NOT expose binary_hash")
 	require.False(t, hasMetallibHash, "old coordinator should NOT expose metallib_hash")
 
-	// Install v0.4.7 binary and self-update to bridge
+	// Install v0.4.7 binary and self-update to bridge.
+	// v0.4.7's verify_installed_update_runtime is patched to return Ok(())
+	// in BuildOldProvider — the runtime verification is irrelevant for the
+	// fleet upgrade test (which validates bundle download, hash check, and
+	// binary swap, not Python smoke tests).
 	_ = os.RemoveAll(installDir)
 	require.NoError(t, os.MkdirAll(binDir, 0755))
 	oldInBin := filepath.Join(binDir, "darkbloom")
@@ -384,58 +388,12 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	enclaveInBin := filepath.Join(binDir, "eigeninference-enclave")
 	require.NoError(t, os.WriteFile(enclaveInBin, []byte("#!/bin/sh\nexit 0\n"), 0755))
 
-	// Pre-seed a complete Python 3.12 installation at ~/.darkbloom/python/ so
-	// v0.4.7's verify_installed_update_runtime smoke test passes.  The smoke
-	// test runs: "import mlx_lm, vllm_mlx; from vllm_mlx.server import app"
-	// which requires a full stdlib + site-packages accessible via PYTHONHOME.
-	// The bundle extraction only replaces python/bin/ — python/lib/ survives.
-	py312, _ := exec.LookPath("python3.12")
-	if py312 == "" {
-		py312, _ = exec.LookPath("python3")
-	}
-
-	pythonDir := filepath.Join(installDir, "python")
-	pythonBinDir := filepath.Join(pythonDir, "bin")
-	require.NoError(t, os.MkdirAll(pythonBinDir, 0755))
-	cpPy := exec.CommandContext(s.Ctx, "cp", py312, filepath.Join(pythonBinDir, "python3.12"))
-	require.NoError(t, cpPy.Run(), "copy python3.12 to ~/.darkbloom/python/bin/")
-	require.NoError(t, os.Chmod(filepath.Join(pythonBinDir, "python3.12"), 0755))
-
-	stdlibDirCmd := exec.CommandContext(s.Ctx, py312, "-c",
-		"import sysconfig; print(sysconfig.get_path('stdlib'))")
-	stdlibOut, err := stdlibDirCmd.Output()
-	require.NoError(t, err, "find Python stdlib directory")
-	stdlibSrc := strings.TrimSpace(string(stdlibOut))
-
-	pythonLibDir := filepath.Join(pythonDir, "lib", "python3.12")
-	require.NoError(t, os.MkdirAll(filepath.Join(pythonDir, "lib"), 0755))
-	cpStdlib := exec.CommandContext(s.Ctx, "cp", "-R", stdlibSrc, pythonLibDir)
-	require.NoError(t, cpStdlib.Run(), "copy Python stdlib to ~/.darkbloom/python/lib/python3.12/")
-
-	_ = os.RemoveAll(filepath.Join(pythonLibDir, "site-packages"))
-	require.NoError(t, os.MkdirAll(filepath.Join(pythonLibDir, "site-packages"), 0755))
-
-	// Ad-hoc sign all .dylib/.so files so v0.4.7's
-	// verify_python_core_signature_match passes.  The patched v0.4.7 accepts
-	// TeamIdentifier=not set, which is what ad-hoc signing produces.
-	// Remove broken symlinks first (e.g. config-3.12-darwin/libpython3.12.dylib
-	// is a relative symlink that breaks on copy).
-	removeBrokenSymlinks(t, pythonLibDir)
-	adHocSignDir(t, pythonLibDir)
-
-	pipInstall := exec.CommandContext(s.Ctx, py312, "-m", "pip", "install",
-		"--target", filepath.Join(pythonLibDir, "site-packages"),
-		"vllm_mlx==0.2.7", "mlx-lm>=0.31.2")
-	pipInstall.Env = append(os.Environ(), "PIP_BREAK_SYSTEM_PACKAGES=1")
-	require.NoError(t, pipInstall.Run(), "pip install vllm_mlx + mlx-lm into ~/.darkbloom/python/")
-
 	updateCtx, updateCancel := context.WithTimeout(s.Ctx, 180*time.Second)
 	defer updateCancel()
 	cmd := exec.CommandContext(updateCtx, oldInBin, "update", "--coordinator", oldCoord.BaseURL, "--force")
 	cmd.Env = append(os.Environ(),
 		"HOME="+os.Getenv("HOME"),
 		"PIP_BREAK_SYSTEM_PACKAGES=1",
-		"PYTHONHOME="+pythonDir,
 	)
 	out, err := cmd.CombinedOutput()
 	outStr := string(out)
@@ -976,43 +934,6 @@ func adHocSign(t *testing.T, path string) {
 	cmd := exec.Command("codesign", "-s", "-", "-f", path)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "ad-hoc sign %s: %s", path, string(out))
-}
-
-func removeBrokenSymlinks(t *testing.T, dir string) {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	require.NoError(t, err)
-	for _, e := range entries {
-		path := filepath.Join(dir, e.Name())
-		if e.IsDir() {
-			removeBrokenSymlinks(t, path)
-			continue
-		}
-		if e.Type()&os.ModeSymlink != 0 {
-			if _, err := os.Stat(path); err != nil {
-				os.Remove(path)
-			}
-		}
-	}
-}
-
-func adHocSignDir(t *testing.T, dir string) {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	require.NoError(t, err)
-	for _, e := range entries {
-		path := filepath.Join(dir, e.Name())
-		if e.IsDir() {
-			adHocSignDir(t, path)
-			continue
-		}
-		switch filepath.Ext(path) {
-		case ".dylib", ".so":
-			if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() {
-				adHocSign(t, path)
-			}
-		}
-	}
 }
 
 func buildRustProvider(ctx context.Context, logger *slog.Logger, r2CDNURL string, r2SitePackagesCDNURL string) (string, error) {

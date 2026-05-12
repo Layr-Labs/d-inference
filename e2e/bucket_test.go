@@ -188,9 +188,9 @@ func TestIntegration_ModelWeightDownload(t *testing.T) {
 	s := startSuiteWithBucket(t)
 
 	s3Name := "Qwen3.5-0.8B-MLX-4bit"
-	modelID := "test-org/Qwen3.5-0.8B-MLX-4bit"
+	modelID := "mlx-community/Qwen3.5-0.8B-MLX-4bit"
 
-	configJSON := []byte(`{"model_type":"qwen3","hidden_size":1024,"num_hidden_layers":24,"vocab_size":151936}`)
+	configJSON := []byte(`{"model_type":"qwen3","hidden_size":1024,"num_hidden_layers":24,"intermediate_size":3584,"num_attention_heads":8,"rms_norm_eps":1e-06,"vocab_size":151936,"num_key_value_heads":2,"head_dim":128,"rope_theta":1000000}`)
 	tokenizerJSON := []byte(`{"version":1,"truncation":null}`)
 	tokenizerCfgJSON := []byte(`{"tokenizer_class":"PreTrainedTokenizerFast","model_max_length":32768}`)
 
@@ -232,7 +232,7 @@ func TestIntegration_ModelWeightDownload(t *testing.T) {
 	require.NoError(t, err, "build provider for model download")
 
 	cacheDir := filepath.Join(os.Getenv("HOME"), ".cache", "huggingface", "hub",
-		"models--test-org--Qwen3.5-0.8B-MLX-4bit")
+		"models--mlx-community--Qwen3.5-0.8B-MLX-4bit")
 	_ = os.RemoveAll(cacheDir)
 
 	cmdCtx, cmdCancel := context.WithTimeout(ctx, 120*time.Second)

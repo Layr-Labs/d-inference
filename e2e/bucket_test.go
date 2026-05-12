@@ -343,6 +343,25 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	enclaveInBin := filepath.Join(binDir, "eigeninference-enclave")
 	require.NoError(t, os.WriteFile(enclaveInBin, []byte("#!/bin/sh\nexit 0\n"), 0755))
 
+	// Pre-seed vllm_mlx into ~/.darkbloom/python/ so v0.4.7's runtime smoke test
+	// passes and it skips the pip install that fails on CI (typing_extensions
+	// no RECORD file in python-build-standalone).
+	py312, _ := exec.LookPath("python3.12")
+	if py312 == "" {
+		py312, _ = exec.LookPath("python3")
+	}
+	pythonDir := filepath.Join(installDir, "python", "bin")
+	require.NoError(t, os.MkdirAll(pythonDir, 0755))
+	cpPy := exec.CommandContext(s.Ctx, "cp", py312, filepath.Join(pythonDir, "python3.12"))
+	require.NoError(t, cpPy.Run(), "copy python3.12 to ~/.darkbloom/python/bin/")
+	require.NoError(t, os.Chmod(filepath.Join(pythonDir, "python3.12"), 0755))
+	sitePkgDir := filepath.Join(installDir, "python", "lib", "python3.12", "site-packages")
+	require.NoError(t, os.MkdirAll(sitePkgDir, 0755))
+	pipInstall := exec.CommandContext(s.Ctx, py312, "-m", "pip", "install",
+		"--target", sitePkgDir, "--no-deps", "vllm_mlx==0.2.7")
+	pipInstall.Env = append(os.Environ(), "PIP_BREAK_SYSTEM_PACKAGES=1")
+	require.NoError(t, pipInstall.Run(), "pre-install vllm_mlx for v0.4.7 runtime smoke test")
+
 	updateCtx, updateCancel := context.WithTimeout(s.Ctx, 180*time.Second)
 	defer updateCancel()
 	cmd := exec.CommandContext(updateCtx, oldInBin, "update", "--coordinator", oldCoord.BaseURL, "--force")

@@ -264,6 +264,56 @@ func TestIntegration_ModelWeightDownload(t *testing.T) {
 	t.Logf("model download: %d files cached in %s", 3, snapDir)
 }
 
+// TestIntegration_FleetUpgradeToSwift validates the three-hop fleet migration path
+// from the last Rust/Python provider (v0.4.7) to the Swift/MLX provider (v0.5.0).
+//
+// Once every provider has upgraded past v0.4.7, this test becomes obsolete and
+// should be removed. The bridge release (v0.4.8) exists solely so that v0.4.7
+// can self-update to a binary that understands the new release schema
+// (binary_hash, metallib_hash). After fleet turnover, v0.4.7 is gone and no
+// provider needs the bridge hop anymore.
+//
+// Version ladder and firing order:
+//
+//	v0.4.7  last Rust/Python provider — fleet starting point
+//	v0.4.8  bridge release (still Rust, still Python runtime)
+//	        — understands new release schema (binary_hash, metallib_hash)
+//	        — accepts "not set" TeamIdentifier for ad-hoc signed binaries
+//	        — skips verify_installed_update_runtime when python/ absent (Swift)
+//	v0.5.0  Swift/MLX provider — target, no Python runtime
+//
+//	┌─────────────────────────────────────────────────────────────────────┐
+//	│ Hop 1: v0.4.7 → v0.4.8   (on OLD coordinator)                    │
+//	│   Fleet self-updates to bridge. Old coordinator only exposes       │
+//	│   bundle_hash in /api/version; no binary_hash/metallib_hash.       │
+//	│   v0.4.7's verify_installed_update_runtime requires Python         │
+//	│   runtime (stdlib + vllm_mlx + mlx_lm). PYTHONHOME is set so      │
+//	│   the copied Python binary finds ~/.darkbloom/python/lib/.         │
+//	│   Bridge bundle includes python/bin/ so the runtime check passes;  │
+//	│   python/lib/ (with pre-seeded stdlib + site-packages) survives    │
+//	│   extraction since the tarball only contains bin/ and python/bin/. │
+//	├─────────────────────────────────────────────────────────────────────┤
+//	│ Hop 2: coordinator cutover   (old coord → new coord, same port)   │
+//	│   Bridge binary is fleet-wide. Old coordinator is still running   │
+//	│   the pre-migration schema (no binary_hash column). Under live    │
+//	│   traffic (chat + /v1/models), stop old coordinator, start new    │
+//	│   coordinator on the same port against the same Postgres.          │
+//	│   Validates:                                                       │
+//	│     1. Providers reconnect after coordinator restart               │
+//	│     2. Traffic survives the cutover window                         │
+//	│     3. DDL migration runs cleanly (new columns default to empty)   │
+//	│     4. New coordinator reads old release rows from Postgres        │
+//	├─────────────────────────────────────────────────────────────────────┤
+//	│ Hop 3: v0.4.8 → v0.5.0   (on NEW coordinator)                    │
+//	│   New coordinator exposes binary_hash + metallib_hash in           │
+//	│   /api/version. Re-register Swift release with full schema         │
+//	│   (upsert populates new columns). Bridge's update command sees     │
+//	│   Swift bundle (no python/bin/ in tarball), detects Swift runtime, │
+//	│   and skips Python verification entirely. Verifies:                │
+//	│     - Per-file hash checks (binary_hash, metallib_hash)           │
+//	│     - mlx.metallib extracted alongside the binary                 │
+//	│     - update --check-only reports "Up to date"                    │
+//	└─────────────────────────────────────────────────────────────────────┘
 func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	s := startInfrastructure(t)
 
@@ -289,15 +339,7 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	installDir := filepath.Join(os.Getenv("HOME"), ".darkbloom")
 	binDir := filepath.Join(installDir, "bin")
 
-	// ========================================================================
-	// Hop 1: Fleet upgrade — Old Rust (v0.4.7) → Bridge Rust
-	//
-	// Start the old coordinator, register the bridge release, and run the
-	// v0.4.7 binary's update command. The bridge bundle includes a
-	// python/ directory with ad-hoc signed stubs so the old binary's
-	// verify_installed_update_runtime can pass code-signing checks and
-	// download site-packages from MinIO (via compile-time R2 URLs).
-	// ========================================================================
+	// Hop 1: v0.4.7 → v0.4.8 (bridge) on old coordinator
 	oldCoord, err := testbed.StartOldCoordinator(s.Ctx, s.Logger, oldCoordBin, pgURL, cdnURL, 0)
 	require.NoError(t, err, "start old coordinator")
 
@@ -422,18 +464,7 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 
 	oldCoord.Stop()
 
-	// ========================================================================
-	// Hop 2: Coordinator cutover — old coord → new coord under traffic
-	//
-	// The bridge binary is now installed fleet-wide. Start the old
-	// coordinator with connected providers sending traffic, then cut over
-	// to the new coordinator on the same port against the same Postgres.
-	// This validates:
-	//   1. Providers reconnect after coordinator restart
-	//   2. Traffic (chat + /v1/models) survives the cutover
-	//   3. DDL migration runs cleanly
-	//   4. Old release rows are readable by new coordinator
-	// ========================================================================
+	// Hop 2: coordinator cutover under traffic (old → new, same port + Postgres)
 	const coordinatorPort = 19877
 
 	oldCoord2, err := testbed.StartOldCoordinator(s.Ctx, s.Logger, oldCoordBin, pgURL, cdnURL, coordinatorPort)
@@ -609,13 +640,7 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 		chatSuccess, chatTotal, modelsSuccess, modelsTotal, connErrors)
 	require.Greater(t, chatTotal+modelsTotal, 5, "should have sent at least some requests during cutover")
 
-	// ========================================================================
-	// Hop 3: Fleet upgrade — Bridge → Swift (on new coordinator)
-	//
-	// The new coordinator is running and provides binary_hash/metallib_hash.
-	// Re-register the Swift release with the new columns, then run the
-	// bridge binary's self-update to upgrade to Swift.
-	// ========================================================================
+	// Hop 3: v0.4.8 → v0.5.0 (Swift) on new coordinator
 
 	// Upsert Swift release with full schema on new coordinator
 	regBody3, _ := json.Marshal(store.Release{

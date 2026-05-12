@@ -25,6 +25,11 @@ func BuildOldProvider(ctx context.Context, logger *slog.Logger, r2CDNURL string,
 		if err := os.MkdirAll(sourceDir, 0755); err != nil {
 			return "", fmt.Errorf("create provider source dir: %w", err)
 		}
+		fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", "tag", OldCoordinatorTag, "--no-tags")
+		fetchCmd.Dir = repoRoot
+		if out, err := fetchCmd.CombinedOutput(); err != nil {
+			logger.Warn("git fetch tag failed (may already exist locally)", "error", err, "output", string(out))
+		}
 		for _, dir := range []string{"provider/", "enclave/"} {
 			archiveCmd := exec.CommandContext(ctx, "git", "archive", OldCoordinatorTag, "--", dir)
 			archiveCmd.Dir = repoRoot

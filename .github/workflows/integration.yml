@@ -28,6 +28,10 @@ jobs:
       - name: Install MinIO
         run: brew install minio/stable/minio
 
+      - name: Install Rust
+        run: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        shell: bash
+
       - name: Build provider (Swift)
         run: |
           cd provider-swift
@@ -48,7 +52,7 @@ jobs:
 
       - name: Run bucket/storage and fleet upgrade tests
         run: |
-          export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
+          export PATH="$(brew --prefix postgresql@16)/bin:$HOME/.cargo/bin:$PATH"
           go test ./e2e/ -count=1 -v -timeout 15m -p=1 \
             -run 'TestIntegration_Release|TestIntegration_ModelWeight|TestIntegration_FleetUpgrade|TestIntegration_SelfUpdate|TestIntegration_FleetUpgradeStability'
 

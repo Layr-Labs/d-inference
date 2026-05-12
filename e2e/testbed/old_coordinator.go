@@ -39,6 +39,11 @@ func BuildOldCoordinator(ctx context.Context, logger *slog.Logger) (string, erro
 		if err := os.MkdirAll(sourceDir, 0755); err != nil {
 			return "", fmt.Errorf("create source dir: %w", err)
 		}
+		fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", "tag", OldCoordinatorTag, "--no-tags")
+		fetchCmd.Dir = repoRoot
+		if out, err := fetchCmd.CombinedOutput(); err != nil {
+			logger.Warn("git fetch tag failed (may already exist locally)", "error", err, "output", string(out))
+		}
 		archiveCmd := exec.CommandContext(ctx, "git", "archive", OldCoordinatorTag, "--", "coordinator/")
 		archiveCmd.Dir = repoRoot
 		tarCmd := exec.CommandContext(ctx, "tar", "x", "-C", sourceDir)

@@ -415,6 +415,11 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	_ = os.RemoveAll(filepath.Join(pythonLibDir, "site-packages"))
 	require.NoError(t, os.MkdirAll(filepath.Join(pythonLibDir, "site-packages"), 0755))
 
+	// Ad-hoc sign all .dylib/.so files so v0.4.7's
+	// verify_python_core_signature_match passes.  The patched v0.4.7 accepts
+	// TeamIdentifier=not set, which is what ad-hoc signing produces.
+	adHocSignDir(t, pythonLibDir)
+
 	pipInstall := exec.CommandContext(s.Ctx, py312, "-m", "pip", "install",
 		"--target", filepath.Join(pythonLibDir, "site-packages"),
 		"vllm_mlx==0.2.7", "mlx-lm>=0.31.2")
@@ -968,6 +973,23 @@ func adHocSign(t *testing.T, path string) {
 	cmd := exec.Command("codesign", "-s", "-", "-f", path)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "ad-hoc sign %s: %s", path, string(out))
+}
+
+func adHocSignDir(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		path := filepath.Join(dir, e.Name())
+		if e.IsDir() {
+			adHocSignDir(t, path)
+			continue
+		}
+		switch filepath.Ext(path) {
+		case ".dylib", ".so":
+			adHocSign(t, path)
+		}
+	}
 }
 
 func buildRustProvider(ctx context.Context, logger *slog.Logger, r2CDNURL string, r2SitePackagesCDNURL string) (string, error) {

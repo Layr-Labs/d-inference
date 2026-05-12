@@ -2,7 +2,7 @@ FROM golang:1.25-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . .
+COPY coordinator/ ./coordinator/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o coordinator ./coordinator/cmd/coordinator
 
 # Pre-built base with MicroMDM v1.13.1, step-ca v0.28.3, step CLI v0.28.3.

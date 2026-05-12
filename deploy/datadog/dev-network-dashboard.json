@@ -92,7 +92,7 @@
             "definition": {
               "type": "query_table",
               "title": "Providers per Model",
-              "has_search_bar": true,
+              "has_search_bar": "auto",
               "requests": [
                 {
                   "response_format": "scalar",

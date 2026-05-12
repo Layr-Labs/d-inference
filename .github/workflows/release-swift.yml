@@ -1,0 +1,419 @@
+name: Release Provider Bundle (Swift)
+
+# CLI-only Swift release pipeline.
+#
+# Builds and ships:
+#   - bin/darkbloom          (provider CLI)
+#   - bin/darkbloom-enclave  (Secure Enclave attestation/sign helper)
+#   - bin/mlx.metallib       (compiled Metal kernels for the matching MLX)
+#
+# install.sh creates a backward-compatibility symlink from the legacy
+# `eigeninference-enclave` name to `darkbloom-enclave` for existing
+# installations that referenced the old binary name.
+#
+# No SwiftUI app, no DMG, no Rust toolchain, no Python runtime. The legacy
+# `release.yml` was deleted alongside `app/` and `enclave/` once we committed
+# to a CLI-only migration.
+#
+# Swift cutover tag conventions:
+#   - vX.Y.Z           -> prod Swift release (reviewer approval required)
+#   - vX.Y.Z-dev.N     -> dev Swift release
+#   - vX.Y.Z-swift     -> accepted alias while the migration is in progress
+#   - vX.Y.Z-swift.N   -> accepted alias while the migration is in progress
+#
+# The one-time Rust migration bridge intentionally uses `rust-bridge-vX.Y.Z`
+# so it cannot be confused with the Swift cutover tags above.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'v*-swift'
+      - 'v*-swift.*'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options: [dev, prod]
+        default: dev
+      version_override:
+        description: 'Optional version string when running manually (otherwise derived from tag)'
+        required: false
+        type: string
+
+permissions:
+  contents: write   # gh release create
+
+env:
+  DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
+  APPLE_TEAM_ID: 'SLDQ2GJ6TL'
+  CLI_NAME: 'darkbloom'
+  ENCLAVE_NAME: 'darkbloom-enclave'
+  MIN_MACOS: '14.0'
+  # mlx-swift currently pins MLX 0.31.x. The .metallib must come from a wheel
+  # matching that ABI. Bump together with libs/mlx-swift's MLX_VERSION.
+  MLX_PYTHON_PIN: 'mlx==0.31.2'
+
+jobs:
+  resolve-env:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.pick.outputs.environment }}
+      version: ${{ steps.pick.outputs.version }}
+    steps:
+      - id: pick
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.environment }}" ]; then
+            ENV="${{ inputs.environment }}"
+          elif [[ "${{ github.ref_name }}" == *-dev.* ]]; then
+            ENV="dev"
+          else
+            ENV="prod"
+          fi
+          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
+
+          if [ -n "${{ inputs.version_override }}" ]; then
+            VERSION="${{ inputs.version_override }}"
+          else
+            REF="${GITHUB_REF_NAME#v}"
+            VERSION="${REF%-swift*}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved env=$ENV version=$VERSION"
+
+  build-and-release:
+    name: Build, sign, notarize, upload, register
+    needs: [resolve-env]
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    runs-on: macos-26-xlarge
+
+    env:
+      VERSION: ${{ needs.resolve-env.outputs.version }}
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          fetch-depth: 0   # gh release --generate-notes wants full history
+
+      - name: Show toolchain versions
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          swift --version
+          xcrun --sdk macosx --show-sdk-version
+          uname -a
+
+      - name: Import Developer ID certificate
+        env:
+          P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          echo "$P12_BASE64" | base64 --decode > /tmp/cert.p12
+
+          security create-keychain -p "build" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "build" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security import /tmp/cert.p12 -k "$KEYCHAIN_PATH" \
+            -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productsign -f pkcs12
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "build" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          rm -f /tmp/cert.p12
+
+      - name: Install awscli (R2)
+        run: |
+          if ! command -v aws >/dev/null 2>&1; then
+            brew install awscli >/dev/null 2>&1 || true
+          fi
+          aws --version
+
+      - name: Cache SwiftPM artifacts
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/org.swift.swiftpm
+            provider-swift/.build
+          key: spm-v1-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+          restore-keys: |
+            spm-v1-${{ runner.os }}-
+
+      # ----------------------------------------------------------------------
+      # Fetch the mlx.metallib for the matching MLX version.
+      #
+      # mlx-swift's Cmlx target does not auto-build .metal kernels via SwiftPM
+      # (see swift-migration-plan.md Phase 0). We ship the .metallib from the
+      # MLX Python wheel that matches the MLX C++ version pinned in the fork.
+      # ----------------------------------------------------------------------
+
+      - name: Fetch matching mlx.metallib
+        id: metallib
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/mlxvenv
+          /tmp/mlxvenv/bin/pip install --quiet --no-cache-dir "$MLX_PYTHON_PIN"
+          # mlx 0.31+ became a namespace package, so `mlx.__file__` is None;
+          # find the metallib by walking site-packages instead.
+          METALLIB=$(/tmp/mlxvenv/bin/python - <<'PY'
+          import os, sys, glob
+          for sp in sys.path:
+              for cand in glob.glob(os.path.join(sp, "mlx", "lib", "mlx.metallib")):
+                  print(cand); raise SystemExit(0)
+          raise SystemExit("mlx.metallib not found in venv site-packages")
+          PY
+          )
+          test -s "$METALLIB" || { echo "metallib not found at $METALLIB"; exit 1; }
+          echo "metallib=$METALLIB" >> "$GITHUB_OUTPUT"
+          ls -lh "$METALLIB"
+
+      # ----------------------------------------------------------------------
+      # Download the tiny test model used by InferenceLiveTests. The
+      # `mlx-community/Qwen3-0.6B-8bit` model is ~600 MB and seeds
+      # ~/.cache/huggingface/hub so `ModelScanner.resolveLocalPath` finds
+      # it. We pin the snapshot to keep CI deterministic across reruns.
+      # ----------------------------------------------------------------------
+      - name: Download tiny test model for live MLX tests
+        run: |
+          set -euo pipefail
+          /tmp/mlxvenv/bin/pip install --quiet --no-cache-dir 'huggingface_hub[cli]'
+          /tmp/mlxvenv/bin/hf download mlx-community/Qwen3-0.6B-8bit \
+            --revision main \
+            --include "*.json" "*.safetensors" "*.txt" "*.model" \
+            > /dev/null
+          ls "${HOME}/.cache/huggingface/hub/" | head -20
+
+      # ----------------------------------------------------------------------
+      # Build + test in one shot.
+      # ----------------------------------------------------------------------
+
+      - name: Build provider-swift (release)
+        working-directory: provider-swift
+        run: |
+          set -euo pipefail
+          swift build -c release --product darkbloom
+          swift build -c release --product darkbloom-enclave
+          BIN_DIR=$(swift build -c release --show-bin-path)
+          test -x "$BIN_DIR/$CLI_NAME"
+          test -x "$BIN_DIR/$ENCLAVE_NAME"
+          echo "BIN_DIR=$BIN_DIR" >> "$GITHUB_ENV"
+          ls -la "$BIN_DIR" | head -50
+
+      - name: Run unit tests
+        working-directory: provider-swift
+        env:
+          # Opt the macos-26-xlarge runner into the live MLX inference
+          # suite. The runner has the tiny `mlx-community/Qwen3-0.6B-8bit`
+          # model bundled (or pre-downloaded) and we colocate the metallib
+          # in the staging step above. The Gemma 27 GB test is left
+          # off — DARKBLOOM_LIVE_MLX_GEMMA is intentionally unset because
+          # the runner does not have the weights cached.
+          DARKBLOOM_LIVE_MLX_TESTS: "1"
+          # Point the live test fixture at the metallib we just fetched
+          # from the matching MLX wheel, instead of relying on the
+          # `.build/...` walk-up (release builds use a different layout).
+          MLX_METALLIB_SOURCE: ${{ steps.metallib.outputs.metallib }}
+        run: |
+          set -euo pipefail
+          # Run the full Swift provider suite, including the mock-coordinator
+          # integration tests that pin release/update and provider protocol
+          # behavior. Live MLX inference tests run with the env var above; the
+          # Gemma case is internally gated by a second flag.
+          swift test -c release
+
+      # ----------------------------------------------------------------------
+      # Stage the bundle: bin/darkbloom, bin/darkbloom-enclave, bin/mlx.metallib
+      # ----------------------------------------------------------------------
+
+      - name: Stage and sign bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          STAGE=/tmp/darkbloom-bundle
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/bin"
+
+          cp "$BIN_DIR/$CLI_NAME" "$STAGE/bin/"
+          cp "$BIN_DIR/$ENCLAVE_NAME" "$STAGE/bin/"
+
+          # The MLX C++ runtime checks for a colocated mlx.metallib first;
+          # placing it in bin/ next to darkbloom satisfies that lookup.
+          cp "${{ steps.metallib.outputs.metallib }}" "$STAGE/bin/mlx.metallib"
+
+          # Hardened-runtime sign each Mach-O binary.
+          codesign --force --options runtime --timestamp \
+            --entitlements scripts/entitlements.plist \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$DEVELOPER_ID" "$STAGE/bin/$CLI_NAME"
+          codesign --force --options runtime --timestamp \
+            --entitlements scripts/entitlements.plist \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$DEVELOPER_ID" "$STAGE/bin/$ENCLAVE_NAME"
+
+          codesign --verify --verbose=2 "$STAGE/bin/$CLI_NAME"
+          codesign --verify --verbose=2 "$STAGE/bin/$ENCLAVE_NAME"
+
+          # Two artifact shapes: zip for notarization, tar.gz for distribution.
+          ditto -c -k --keepParent "$STAGE" /tmp/darkbloom-notarize.zip
+          tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$STAGE" .
+          tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
+          grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
+          grep -qx './bin/darkbloom-enclave' /tmp/darkbloom-bundle-files.txt
+          grep -qx './bin/mlx.metallib' /tmp/darkbloom-bundle-files.txt
+          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
+          ls -lh /tmp/darkbloom-bundle-macos-arm64.tar.gz
+
+      - name: Notarize bundle
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          xcrun notarytool submit /tmp/darkbloom-notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 15m
+
+          # Staple per Mach-O. Re-tar after stapling so the distribution
+          # tarball ships stapled binaries (avoids a network round trip on
+          # first launch with strict Gatekeeper).
+          xcrun stapler staple "${{ steps.bundle.outputs.stage }}/bin/$CLI_NAME" || true
+          xcrun stapler staple "${{ steps.bundle.outputs.stage }}/bin/$ENCLAVE_NAME" || true
+
+          tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "${{ steps.bundle.outputs.stage }}" .
+          tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
+          grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
+          grep -qx './bin/darkbloom-enclave' /tmp/darkbloom-bundle-files.txt
+          grep -qx './bin/mlx.metallib' /tmp/darkbloom-bundle-files.txt
+
+          BINARY_HASH=$(shasum -a 256 "${{ steps.bundle.outputs.stage }}/bin/$CLI_NAME" | cut -d' ' -f1)
+          BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
+          METALLIB_HASH=$(shasum -a 256 "${{ steps.bundle.outputs.stage }}/bin/mlx.metallib" | cut -d' ' -f1)
+          echo "BINARY_HASH=$BINARY_HASH" >> "$GITHUB_ENV"
+          echo "BUNDLE_HASH=$BUNDLE_HASH" >> "$GITHUB_ENV"
+          echo "METALLIB_HASH=$METALLIB_HASH" >> "$GITHUB_ENV"
+          echo "Binary hash:   $BINARY_HASH"
+          echo "Bundle hash:   $BUNDLE_HASH"
+          echo "Metallib hash: $METALLIB_HASH"
+
+      - name: Upload bundle to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          PREFIX="s3://${R2_BUCKET}/releases/v${VERSION}"
+          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+            "${PREFIX}/darkbloom-bundle-macos-arm64.tar.gz" \
+            --endpoint-url "$R2_ENDPOINT" --only-show-errors
+
+          # Latest pointer for `install.sh` discovery. Publish under both
+          # the canonical `darkbloom-bundle` name and the legacy
+          # `eigeninference-bundle` name for backward compatibility with
+          # any caller that hardcoded the old filename.
+          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+            "s3://${R2_BUCKET}/releases/latest/darkbloom-bundle-macos-arm64.tar.gz" \
+            --endpoint-url "$R2_ENDPOINT" --only-show-errors
+          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+            "s3://${R2_BUCKET}/releases/latest/eigeninference-bundle-macos-arm64.tar.gz" \
+            --endpoint-url "$R2_ENDPOINT" --only-show-errors
+
+      - name: Compute template hashes
+        run: |
+          set -euo pipefail
+          MODELS_CDN="https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev"
+          TEMPLATE_HASHES=""
+          for name in qwen3.5 trinity gemma4 minimax; do
+            HASH=$(curl -fsSL "$MODELS_CDN/templates/${name}.jinja" 2>/dev/null | shasum -a 256 | cut -d' ' -f1 || true)
+            # ignore the empty-string SHA (which means the file 404'd)
+            if [ -n "$HASH" ] && [ "$HASH" != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]; then
+              [ -n "$TEMPLATE_HASHES" ] && TEMPLATE_HASHES+=","
+              TEMPLATE_HASHES+="${name}=${HASH}"
+              echo "Template $name: ${HASH:0:16}…"
+            fi
+          done
+          echo "TEMPLATE_HASHES=$TEMPLATE_HASHES" >> "$GITHUB_ENV"
+
+      - name: Register release with coordinator
+        env:
+          COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
+          RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+        run: |
+          set -euo pipefail
+          BUNDLE_URL="${R2_PUBLIC_URL}/releases/v${VERSION}/darkbloom-bundle-macos-arm64.tar.gz"
+
+          TAG_MSG=$(git tag -l --format='%(contents:subject)%0a%(contents:body)' "$GITHUB_REF_NAME" 2>/dev/null || echo "")
+          if [ -z "$TAG_MSG" ] || [ "$TAG_MSG" = $'\n' ]; then
+            TAG_MSG="Release v${VERSION}"
+          fi
+
+          # The Swift provider does NOT expose python_hash / runtime_hash —
+          # those fields are dropped post-cutover. Coordinator should accept
+          # releases without them when backend == "mlx-swift".
+          python3 - <<PY > /tmp/release-payload.json
+          import json, os
+          payload = {
+              "version":         os.environ["VERSION"],
+              "platform":        "macos-arm64",
+              "backend":         "mlx-swift",
+              "binary_hash":     os.environ["BINARY_HASH"],
+              "bundle_hash":     os.environ["BUNDLE_HASH"],
+              "metallib_hash":   os.environ["METALLIB_HASH"],
+              "template_hashes": os.environ.get("TEMPLATE_HASHES", ""),
+              "url":             "${BUNDLE_URL}",
+              "changelog":       """${TAG_MSG}""".strip(),
+          }
+          print(json.dumps(payload))
+          PY
+          curl -fsSL -X POST "${COORDINATOR_URL}/v1/releases" \
+            -H "Authorization: Bearer ${RELEASE_KEY}" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/release-payload.json
+          echo
+          echo "Release v${VERSION} registered with coordinator"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/release-notes.md <<NOTES
+          ## Provider v${VERSION} (Swift CLI)
+
+          **Binary hash:**   \`${BINARY_HASH}\`
+          **Bundle hash:**   \`${BUNDLE_HASH}\`
+          **Metallib hash:** \`${METALLIB_HASH}\` (\`${MLX_PYTHON_PIN}\`)
+          **Signed by:**     \`${DEVELOPER_ID}\`
+          **Notarized:**     yes
+          **Min macOS:**     ${MIN_MACOS}
+
+          ### Install
+
+          \`\`\`bash
+          curl -fsSL ${{ secrets.COORDINATOR_URL }}/install.sh | bash
+          \`\`\`
+
+          NOTES
+          gh release create "${{ github.ref_name }}" \
+            /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+            --title "${{ github.ref_name }}" \
+            --notes-file /tmp/release-notes.md \
+            --generate-notes
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true

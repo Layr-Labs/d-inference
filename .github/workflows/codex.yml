@@ -85,7 +85,7 @@ jobs:
               git diff ${{ steps.meta.outputs.base_sha }}...${{ steps.meta.outputs.head_sha }}
 
             Focus on, in order of importance:
-            1. Correctness and regressions — broken imports, missing protocol symmetry between `provider/src/protocol.rs` (Rust) and `coordinator/internal/protocol/messages.go` (Go), release-bundle consistency across `scripts/build-bundle.sh` / `scripts/install.sh` / `LatestProviderVersion`, untested edge cases.
+            1. Correctness and regressions — broken imports, missing protocol symmetry between `provider/src/protocol.rs` (Rust) / `provider-swift/Sources/ProviderCore/Protocol/Messages.swift` (Swift) / `coordinator/internal/protocol/messages.go` (Go), release-bundle consistency across `.github/workflows/release-swift.yml` / `scripts/install.sh` / `LatestProviderVersion`, untested edge cases.
             2. Security — leaked secrets, skipped attestation or auth, unsafe eval of user input, weakened sandboxing.
             3. Test coverage — per CLAUDE.md every non-trivial change ships with a test; bug fixes ship with a regression test.
             4. Adherence to project conventions in `CLAUDE.md` and `CONTRIBUTING.md`.

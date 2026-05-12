@@ -17,10 +17,9 @@ body:
       description: Which part of the system is affected?
       options:
         - coordinator (Go)
-        - provider (Rust)
+        - provider (Rust, legacy)
+        - provider-swift (Swift CLI)
         - console-ui (Next.js)
-        - image-bridge (Python)
-        - app (macOS Swift)
         - enclave (Swift Secure Enclave helper)
         - infra / deploy / CI
         - docs

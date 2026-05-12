@@ -12,8 +12,8 @@ This Privacy Policy applies when you:
 
 - visit our websites or console;
 - create or use an account, API key, wallet-linked session, or device-link flow;
-- submit prompts, files, images, or audio to the Services;
-- install or operate provider software or the macOS app;
+- submit prompts to the Services;
+- install or operate provider software;
 - communicate with us about the Services.
 
 Additional notices may apply to specific products, integrations, or enterprise relationships.
@@ -47,7 +47,7 @@ We generally do not receive full payment card numbers from Stripe or similar pay
 - request identifiers;
 - account and provider identifiers;
 - selected model or feature;
-- token counts, audio duration, image count, or similar usage measures;
+- token counts, request count, and similar usage measures;
 - timestamps;
 - per-request cost or billing metadata;
 - API route, status code, and related operational metrics.
@@ -55,9 +55,6 @@ We generally do not receive full payment card numbers from Stripe or similar pay
 **2.4 Content you submit and receive.** Depending on the feature you use, we may process:
 
 - prompts, messages, and instructions;
-- files and attachments;
-- audio submitted for transcription;
-- image-generation prompts and generated images;
 - model outputs and responses.
 
 We refer to this material as "Content."
@@ -121,9 +118,7 @@ Because Darkbloom is an inference platform, Content handling is central to how t
 
 **5.4 Selected providers.** To fulfill inference requests, we disclose relevant Content to the provider selected to process the request. If you operate provider software, that means customer requests may be routed to your device subject to the Services' security and attestation controls.
 
-**5.5 Images and uploads.** Generated images may be temporarily stored in service memory pending retrieval and delivery to the requesting user. These in-memory image uploads are removed after retrieval, but no system can guarantee perfect deletion or eliminate all risk.
-
-**5.6 Training.** This Privacy Policy does not grant us a right to use your Content for general-purpose model training. If we decide to do so in the future, we will update this Privacy Policy and any related contractual terms before doing so, to the extent required by law.
+**5.5 Training.** This Privacy Policy does not grant us a right to use your Content for general-purpose model training. If we decide to do so in the future, we will update this Privacy Policy and any related contractual terms before doing so, to the extent required by law.
 
 ## 6. How We Disclose Personal Information
 

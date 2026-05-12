@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/eigeninference/coordinator/internal/attestation"
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 )
 
 func main() {

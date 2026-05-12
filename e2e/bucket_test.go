@@ -416,15 +416,30 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	oldCoord2.Stop()
 
 	// ========================================================================
-	// Hop 3: New coordinator enables per-file hash verification
+	// Hop 3: New coordinator — schema migration + data readability
 	//
-	// The Swift provider is now installed. Deploy the new coordinator which
-	// exposes binary_hash/metallib_hash in /api/version. The Swift provider
-	// can now verify individual file hashes on every update check — a
-	// security upgrade that justifies deploying the new coordinator first.
+	// The old coordinator wrote a v0.5.0 release row with the v0.4.7 schema
+	// (no backend, no metallib_hash). Start the new coordinator against the
+	// same Postgres. This tests three things:
+	//   1. DDL migration runs cleanly (ADD COLUMN IF NOT EXISTS with defaults)
+	//   2. The old row is still readable (new columns get empty-string defaults)
+	//   3. Re-registering the same version upserts the new columns in place
 	// ========================================================================
 	require.NoError(t, s.StartCoordinator(), "start new coordinator")
 	coordinatorHTTP := s.Coordinator.BaseURL()
+
+	getReq, _ := http.NewRequestWithContext(s.Ctx, http.MethodGet,
+		coordinatorHTTP+"/v1/releases/latest?platform=macos-arm64", nil)
+	getResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(getReq)
+	require.NoError(t, err)
+	var migratedRelease store.Release
+	require.NoError(t, json.NewDecoder(getResp.Body).Decode(&migratedRelease))
+	getResp.Body.Close()
+	require.Equal(t, "0.5.0", migratedRelease.Version, "new coordinator should read the row v0.4.7 wrote")
+	require.Equal(t, "", migratedRelease.Backend, "old row should have empty backend (v0.4.7 didn't populate it)")
+	require.Equal(t, "", migratedRelease.MetallibHash, "old row should have empty metallib_hash (v0.4.7 didn't populate it)")
+	t.Logf("hop 3a: new coordinator reads v0.4.7's release row — backend=%q metallib_hash=%q (both empty as expected)",
+		migratedRelease.Backend, migratedRelease.MetallibHash)
 
 	regBody3, _ := json.Marshal(store.Release{
 		Version:      "0.5.0",
@@ -443,7 +458,21 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	resp3, err := (&http.Client{Timeout: 30 * time.Second}).Do(req3)
 	require.NoError(t, err)
 	resp3.Body.Close()
-	require.Equal(t, http.StatusOK, resp3.StatusCode, "Swift release registration on new coordinator should succeed")
+	require.Equal(t, http.StatusOK, resp3.StatusCode, "re-registration (upsert) should succeed")
+
+	upsertReq, _ := http.NewRequestWithContext(s.Ctx, http.MethodGet,
+		coordinatorHTTP+"/v1/releases/latest?platform=macos-arm64", nil)
+	upsertResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(upsertReq)
+	require.NoError(t, err)
+	var upsertRelease store.Release
+	require.NoError(t, json.NewDecoder(upsertResp.Body).Decode(&upsertRelease))
+	upsertResp.Body.Close()
+	require.Equal(t, "0.5.0", upsertRelease.Version)
+	require.Equal(t, "mlx-swift", upsertRelease.Backend, "upsert should populate backend")
+	require.Equal(t, swiftBundle.metallibHash, upsertRelease.MetallibHash, "upsert should populate metallib_hash")
+	require.Equal(t, swiftBundle.binaryHash, upsertRelease.BinaryHash, "upsert should populate binary_hash")
+	t.Logf("hop 3b: re-registration upserts backend=%q metallib_hash=%s binary_hash=%s",
+		upsertRelease.Backend, upsertRelease.MetallibHash[:16], upsertRelease.BinaryHash[:16])
 
 	versionReq3, _ := http.NewRequestWithContext(s.Ctx, http.MethodGet,
 		coordinatorHTTP+"/api/version", nil)

@@ -288,6 +288,12 @@ func (s *Suite) startProviders() error {
 		return nil
 	}
 
+	for _, spec := range s.Config.ModelSpecs {
+		if err := EnsureModelCached(s.Ctx, s.Logger, spec.ModelID); err != nil {
+			return fmt.Errorf("cache model %s: %w", spec.ModelID, err)
+		}
+	}
+
 	binaryPath, err := BuildProvider(s.Ctx, s.Logger)
 	if err != nil {
 		return fmt.Errorf("build provider: %w", err)

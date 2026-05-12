@@ -3,7 +3,9 @@ package testbed
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,6 +105,74 @@ func ensureMetallib(providerDir string, logger *slog.Logger) error {
 	}
 
 	return fmt.Errorf("mlx.metallib not found; install mlx==0.31.2 Python wheel and copy to %s or set MLX_METALLIB_PATH", metallibPath)
+}
+
+func ModelCacheDir(modelID string) string {
+	home, _ := os.UserHomeDir()
+	parts := strings.SplitN(modelID, "/", 2)
+	if len(parts) == 2 {
+		return filepath.Join(home, ".cache", "huggingface", "hub",
+			"models--"+parts[0]+"--"+parts[1])
+	}
+	return filepath.Join(home, ".cache", "huggingface", "hub",
+		"models--"+modelID)
+}
+
+func EnsureModelCached(ctx context.Context, logger *slog.Logger, modelID string) error {
+	cacheDir := ModelCacheDir(modelID)
+	snapDir := filepath.Join(cacheDir, "snapshots", "local")
+	configPath := filepath.Join(snapDir, "config.json")
+
+	if _, err := os.Stat(configPath); err == nil {
+		logger.Info("model already cached", "model", modelID, "path", snapDir)
+		return nil
+	}
+
+	logger.Info("downloading model from HuggingFace", "model", modelID)
+
+	_ = os.RemoveAll(cacheDir)
+	_ = os.MkdirAll(snapDir, 0755)
+
+	slug := strings.ReplaceAll(modelID, "/", "/")
+	urlBase := "https://huggingface.co/" + slug + "/resolve/main"
+	for _, file := range []string{"config.json", "tokenizer.json", "tokenizer_config.json", "model.safetensors"} {
+		url := urlBase + "/" + file
+		dst := filepath.Join(snapDir, file)
+		if err := downloadFile(ctx, url, dst); err != nil {
+			return fmt.Errorf("download %s: %w", file, err)
+		}
+	}
+
+	refsDir := filepath.Join(cacheDir, "refs")
+	_ = os.MkdirAll(refsDir, 0755)
+	if err := os.WriteFile(filepath.Join(refsDir, "main"), []byte("local\n"), 0644); err != nil {
+		return fmt.Errorf("write refs/main: %w", err)
+	}
+
+	logger.Info("model cached", "model", modelID, "path", snapDir)
+	return nil
+}
+
+func downloadFile(ctx context.Context, url, dst string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	f, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, resp.Body)
+	return err
 }
 
 func copyFile(src, dst string) error {

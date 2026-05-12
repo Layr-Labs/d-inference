@@ -51,9 +51,8 @@ jobs:
 
       - name: Install Docker runtime (Colima)
         run: |
-          brew install colima docker docker-credential-helper
-          # Try QEMU driver first (more compatible with CI), fall back to default
-          colima start --cpu 2 --memory 2 --disk 10 --vm-type=qemu || colima start --cpu 2 --memory 2 --disk 10
+          brew install colima docker docker-credential-helper qemu
+          colima start --cpu 2 --memory 2 --disk 10 --vm-type=qemu
           # Wait for Docker daemon to be ready
           for i in $(seq 1 30); do
             docker info >/dev/null 2>&1 && break

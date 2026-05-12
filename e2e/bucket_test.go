@@ -188,7 +188,7 @@ func TestIntegration_ModelWeightDownload(t *testing.T) {
 	s := startSuiteWithBucket(t)
 
 	s3Name := "Qwen3.5-0.8B-MLX-4bit"
-	modelID := "mlx-community/Qwen3.5-0.8B-MLX-4bit"
+	modelID := "test-org/Qwen3.5-0.8B-MLX-4bit"
 
 	configJSON := []byte(`{"model_type":"qwen3","hidden_size":1024,"num_hidden_layers":24,"vocab_size":151936}`)
 	tokenizerJSON := []byte(`{"version":1,"truncation":null}`)
@@ -232,7 +232,7 @@ func TestIntegration_ModelWeightDownload(t *testing.T) {
 	require.NoError(t, err, "build provider for model download")
 
 	cacheDir := filepath.Join(os.Getenv("HOME"), ".cache", "huggingface", "hub",
-		"models--mlx-community--Qwen3.5-0.8B-MLX-4bit")
+		"models--test-org--Qwen3.5-0.8B-MLX-4bit")
 	_ = os.RemoveAll(cacheDir)
 
 	cmdCtx, cmdCancel := context.WithTimeout(ctx, 120*time.Second)

@@ -54,7 +54,7 @@ type Suite struct {
 	Providers   []*Provider
 	Users       []UserAccount
 	Bucket      *deps.BucketClient
-	ls          *deps.LocalStackLifecycle
+	minio       *deps.MinIOLifecycle
 }
 
 type Coordinator struct {
@@ -139,7 +139,7 @@ func (s *Suite) StartWithConfig(ctx context.Context, cfg StartConfig) error {
 	s.Ctx = ctx
 
 	if s.Config.LocalStack {
-		if err := s.startLocalStack(); err != nil {
+		if err := s.startMinIO(); err != nil {
 			return err
 		}
 	}
@@ -187,20 +187,20 @@ func (s *Suite) Stop() {
 	if s.Pg != nil {
 		s.Pg.Stop()
 	}
-	if s.ls != nil {
-		s.ls.Stop()
+	if s.minio != nil {
+		s.minio.Stop()
 	}
 }
 
-func (s *Suite) startLocalStack() error {
-	s.ls = deps.NewLocalStackLifecycle(s.Logger, 0)
-	if err := s.ls.Start(s.Ctx); err != nil {
-		return fmt.Errorf("localstack: %w", err)
+func (s *Suite) startMinIO() error {
+	s.minio = deps.NewMinIOLifecycle(s.Logger, 0)
+	if err := s.minio.Start(s.Ctx); err != nil {
+		return fmt.Errorf("minio: %w", err)
 	}
 
-	bc, err := deps.NewBucketClient(s.Ctx, s.ls.EndpointURL, "darkbloom-cdn")
+	bc, err := deps.NewBucketClient(s.Ctx, s.minio.EndpointURL, "darkbloom-cdn")
 	if err != nil {
-		return fmt.Errorf("localstack bucket: %w", err)
+		return fmt.Errorf("minio bucket: %w", err)
 	}
 	s.Bucket = bc
 

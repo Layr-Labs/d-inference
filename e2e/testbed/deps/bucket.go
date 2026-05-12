@@ -23,7 +23,7 @@ type BucketClient struct {
 func NewBucketClient(ctx context.Context, endpoint, bucket string) (*BucketClient, error) {
 	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			"test", "test", "",
+			"test", "testtest", "",
 		)),
 		config.WithRegion("us-east-1"),
 	)
@@ -45,6 +45,23 @@ func NewBucketClient(ctx context.Context, endpoint, bucket string) (*BucketClien
 		if alreadyOwned == nil && alreadyOwnedByYou == nil {
 			return nil, fmt.Errorf("testbed/bucket: create bucket: %w", err)
 		}
+	}
+
+	policy := fmt.Sprintf(`{
+		"Version": "2012-10-17",
+		"Statement": [{
+			"Effect": "Allow",
+			"Principal": {"AWS": ["*"]},
+			"Action": ["s3:GetObject"],
+			"Resource": ["arn:aws:s3:::%s/*"]
+		}]
+	}`, bucket)
+	_, err = client.PutBucketPolicy(ctx, &s3.PutBucketPolicyInput{
+		Bucket: aws.String(bucket),
+		Policy: aws.String(policy),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("testbed/bucket: set bucket policy: %w", err)
 	}
 
 	return &BucketClient{

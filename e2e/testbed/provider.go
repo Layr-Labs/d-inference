@@ -135,7 +135,7 @@ func EnsureModelCached(ctx context.Context, logger *slog.Logger, modelID string)
 
 	slug := strings.ReplaceAll(modelID, "/", "/")
 	urlBase := "https://huggingface.co/" + slug + "/resolve/main"
-	for _, file := range []string{"config.json", "tokenizer.json", "tokenizer_config.json", "model.safetensors"} {
+	for _, file := range []string{"config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "model.safetensors"} {
 		url := urlBase + "/" + file
 		dst := filepath.Join(snapDir, file)
 		if err := downloadFile(ctx, url, dst); err != nil {

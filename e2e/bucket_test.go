@@ -196,7 +196,7 @@ func TestIntegration_ModelWeightDownload(t *testing.T) {
 	snapDir := filepath.Join(cacheDir, "snapshots", "local")
 
 	ctx := s.Ctx
-	for _, file := range []string{"config.json", "tokenizer.json", "tokenizer_config.json", "model.safetensors"} {
+	for _, file := range []string{"config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "model.safetensors"} {
 		p := filepath.Join(snapDir, file)
 		data, err := os.ReadFile(p)
 		require.NoError(t, err, "%s must exist in HuggingFace cache", file)

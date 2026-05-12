@@ -902,9 +902,6 @@ func createBridgeReleaseBundle(t *testing.T, s *testbed.Suite, bridgeBinPath str
 	require.NoError(t, cpPy2.Run())
 	require.NoError(t, os.Chmod(bundlePyStub, 0755))
 
-	adHocSign(t, darkbloomDst)
-	adHocSign(t, enclaveDst)
-
 	bundleTarPath := filepath.Join(bundleTmpDir, "eigeninference-bundle-macos-arm64.tar.gz")
 	tarCmd := exec.CommandContext(ctx, "tar", "czf", bundleTarPath, "-C", bundleTmpDir, "bin", "python")
 	tarCmd.Env = append(os.Environ(), "COPYFILE_DISABLE=1")
@@ -927,13 +924,6 @@ func createBridgeReleaseBundle(t *testing.T, s *testbed.Suite, bridgeBinPath str
 		pythonHash: hex.EncodeToString(pythonHash[:]),
 		bundleURL:  fmt.Sprintf("%s/%s", cdnURL, bundleS3Key),
 	}
-}
-
-func adHocSign(t *testing.T, path string) {
-	t.Helper()
-	cmd := exec.Command("codesign", "-s", "-", "-f", path)
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "ad-hoc sign %s: %s", path, string(out))
 }
 
 func buildRustProvider(ctx context.Context, logger *slog.Logger, r2CDNURL string, r2SitePackagesCDNURL string) (string, error) {

@@ -673,6 +673,7 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 			semverLess(version, s.minProviderVersion):
 			provider.RuntimeVerified = false
 			provider.RuntimeManifestChecked = false
+			s.ddIncr("provider_version_below_minimum", []string{"gate:manifest_sync", "version:" + version})
 		default:
 			runtimeOK, _ := s.verifyRuntimeHashesForBackend(
 				backend,
@@ -1102,6 +1103,12 @@ func (s *Server) registerDefaultGauges() {
 	s.metrics.RegisterGauge("providers_online", func() float64 {
 		return float64(s.registry.ProviderCount())
 	})
+	s.metrics.RegisterGauge("min_provider_version_set", func() float64 {
+		if s.minProviderVersion != "" {
+			return 1
+		}
+		return 0
+	})
 }
 
 // StartDDGaugeLoop periodically pushes gauge values to DogStatsD. Gauges
@@ -1121,6 +1128,15 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 			s.ddGauge("providers.online", float64(s.registry.OnlineCount()), nil)
 			for model, count := range s.registry.ModelProviderSnapshot() {
 				s.ddGauge("providers.per_model", float64(count), []string{"model:" + model})
+			}
+			for ver, count := range s.registry.ProviderCountByVersion() {
+				s.ddGauge("providers.per_version", float64(count), []string{"version:" + ver})
+			}
+			for hash, count := range s.registry.ProviderCountByBinaryHash() {
+				s.ddGauge("providers.per_binary_hash", float64(count), []string{"binary_hash:" + hash})
+			}
+			if s.minProviderVersion != "" {
+				s.ddGauge("coordinator.min_provider_version_set", 1, []string{"min_version:" + s.minProviderVersion})
 			}
 			if q := s.registry.Queue(); q != nil {
 				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)

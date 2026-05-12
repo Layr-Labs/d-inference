@@ -52,7 +52,7 @@ jobs:
       - name: Install Docker runtime (Colima)
         run: |
           brew install colima docker docker-credential-helper
-          colima start --cpu 2 --memory 2 --disk 10 --no-profile
+          colima start --cpu 2 --memory 2 --disk 10
           # Wait for Docker daemon to be ready
           for i in $(seq 1 30); do
             docker info >/dev/null 2>&1 && break
@@ -64,7 +64,7 @@ jobs:
         run: |
           export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
           go test ./e2e/ -count=1 -v -timeout 10m -p=1 \
-            -run 'TestIntegration_Release|TestIntegration_ModelWeight'
+            -run 'TestIntegration_Release|TestIntegration_ModelWeight|TestIntegration_FleetUpgrade|TestIntegration_SelfUpdate'
 
   benchmark:
     name: E2E Benchmarks

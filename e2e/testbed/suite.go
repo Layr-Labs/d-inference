@@ -154,7 +154,7 @@ func (s *Suite) StartWithConfig(ctx context.Context, cfg StartConfig) error {
 		return err
 	}
 	if cfg.Coordinator {
-		if err := s.startCoordinator(); err != nil {
+		if err := s.startCoordinatorOnPort(0); err != nil {
 			return err
 		}
 	}
@@ -167,7 +167,11 @@ func (s *Suite) StartWithConfig(ctx context.Context, cfg StartConfig) error {
 }
 
 func (s *Suite) StartCoordinator() error {
-	return s.startCoordinator()
+	return s.startCoordinatorOnPort(0)
+}
+
+func (s *Suite) StartCoordinatorOnPort(port int) error {
+	return s.startCoordinatorOnPort(port)
 }
 
 func (s *Suite) WaitForProviders(timeout time.Duration) error {
@@ -242,7 +246,7 @@ func (s *Suite) createUserPool() error {
 	return nil
 }
 
-func (s *Suite) startCoordinator() error {
+func (s *Suite) startCoordinatorOnPort(port int) error {
 	reg := registry.New(s.Logger)
 	reg.MinTrustLevel = registry.TrustLevel(TrustNone)
 
@@ -276,7 +280,7 @@ func (s *Suite) startCoordinator() error {
 		Registry: reg,
 	}
 
-	return s.Coordinator.Start(s.Ctx, s.Logger)
+	return s.Coordinator.StartOnPort(s.Ctx, s.Logger, port)
 }
 
 func (s *Suite) startProviders() error {
@@ -338,9 +342,28 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 }
 
 func (c *Coordinator) Start(ctx context.Context, logger *slog.Logger) error {
-	listener, err := netListen()
-	if err != nil {
-		return fmt.Errorf("listen: %w", err)
+	return c.startOnPort(ctx, logger, 0)
+}
+
+func (c *Coordinator) StartOnPort(ctx context.Context, logger *slog.Logger, port int) error {
+	return c.startOnPort(ctx, logger, port)
+}
+
+func (c *Coordinator) startOnPort(ctx context.Context, logger *slog.Logger, port int) error {
+	var listener *tcpListener
+	var err error
+	if port > 0 {
+		l, e := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if e != nil {
+			return fmt.Errorf("listen on port %d: %w", port, e)
+		}
+		p := l.Addr().(*net.TCPAddr).Port
+		listener = &tcpListener{inner: l, port: p, baseURL: "http://127.0.0.1:" + strconv.Itoa(p)}
+	} else {
+		listener, err = netListen()
+		if err != nil {
+			return fmt.Errorf("listen: %w", err)
+		}
 	}
 	c.port = listener.port
 	c.baseURL = listener.baseURL

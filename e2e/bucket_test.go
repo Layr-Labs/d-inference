@@ -15,6 +15,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -295,7 +297,7 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	// verify_installed_update_runtime can pass code-signing checks and
 	// download site-packages from LocalStack (via compile-time R2 URLs).
 	// ========================================================================
-	oldCoord, err := testbed.StartOldCoordinator(s.Ctx, s.Logger, oldCoordBin, pgURL, cdnURL)
+	oldCoord, err := testbed.StartOldCoordinator(s.Ctx, s.Logger, oldCoordBin, pgURL, cdnURL, 0)
 	require.NoError(t, err, "start old coordinator")
 
 	bridgeBundle := createBridgeReleaseBundle(t, s, bridgeBinPath, cdnURL)
@@ -368,7 +370,7 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	// binary's update command. The bridge only needs bundle_hash, so this
 	// succeeds even though the old coordinator lacks binary_hash/metallib_hash.
 	// ========================================================================
-	oldCoord2, err := testbed.StartOldCoordinator(s.Ctx, s.Logger, oldCoordBin, pgURL, cdnURL)
+	oldCoord2, err := testbed.StartOldCoordinator(s.Ctx, s.Logger, oldCoordBin, pgURL, cdnURL, 0)
 	require.NoError(t, err, "restart old coordinator for hop 2")
 
 	regBody2, _ := json.Marshal(store.Release{
@@ -724,4 +726,176 @@ func buildRustProvider(ctx context.Context, logger *slog.Logger) (string, error)
 func sha256Hex(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
+}
+
+func TestIntegration_FleetUpgradeStability(t *testing.T) {
+	s := startInfrastructure(t)
+
+	oldCoordBin, err := testbed.BuildOldCoordinator(s.Ctx, s.Logger)
+	require.NoError(t, err, "build old coordinator")
+
+	_, err = testbed.BuildProvider(s.Ctx, s.Logger)
+	require.NoError(t, err, "build Swift provider")
+
+	pgURL := s.Pg.DatabaseURL
+	cdnURL := s.Bucket.CDNURL()
+
+	const coordinatorPort = 19876
+
+	// Start old coordinator on a fixed port so providers can reconnect to
+	// the same address after the new coordinator takes over.
+	oldCoord, err := testbed.StartOldCoordinator(s.Ctx, s.Logger, oldCoordBin, pgURL, cdnURL, coordinatorPort)
+	require.NoError(t, err, "start old coordinator")
+	t.Cleanup(oldCoord.Stop)
+
+	coordinatorURL := oldCoord.BaseURL
+
+	swiftBinaryPath, err := testbed.BuildProvider(s.Ctx, s.Logger)
+	require.NoError(t, err)
+
+	for i := 0; i < 2; i++ {
+		p := &testbed.Provider{
+			BinaryPath:    swiftBinaryPath,
+			Logger:        s.Logger.With("provider_index", i, "model", "mlx-community/Qwen3.5-0.8B-MLX-4bit"),
+			ProviderIndex: i,
+		}
+		require.NoError(t, p.Start(s.Ctx, coordinatorURL, testbed.ProviderConfig{
+			ModelID:    "mlx-community/Qwen3.5-0.8B-MLX-4bit",
+			TrustLevel: testbed.TrustNone,
+		}), "start provider %d", i)
+		s.Providers = append(s.Providers, p)
+	}
+
+	require.NoError(t, s.WaitForProviders(3*time.Minute), "providers should register on old coordinator")
+	t.Logf("stability: %d providers registered on old coordinator", s.Coordinator.Registry.ProviderCount())
+
+	// Start background traffic goroutine.
+	type trafficResult struct {
+		statusCode int
+		duration   time.Duration
+		err        error
+	}
+	var (
+		results   []trafficResult
+		resultsMu sync.Mutex
+		stopTraffic atomic.Bool
+	)
+
+	trafficCtx, trafficCancel := context.WithCancel(s.Ctx)
+	defer trafficCancel()
+
+	sendRequest := func() trafficResult {
+		body := map[string]any{
+			"model":      "mlx-community/Qwen3.5-0.8B-MLX-4bit",
+			"messages":   []map[string]string{{"role": "user", "content": "What is 1+1? Answer briefly."}},
+			"stream":     false,
+			"max_tokens": 10,
+		}
+		bodyJSON, _ := json.Marshal(body)
+
+		req, err := http.NewRequestWithContext(trafficCtx, http.MethodPost,
+			coordinatorURL+"/v1/chat/completions", strings.NewReader(string(bodyJSON)))
+		if err != nil {
+			return trafficResult{err: err}
+		}
+		req.Header.Set("Authorization", "Bearer testbed-admin-key")
+		req.Header.Set("Content-Type", "application/json")
+
+		start := time.Now()
+		resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+		dur := time.Since(start)
+		if err != nil {
+			return trafficResult{err: err, duration: dur}
+		}
+		resp.Body.Close()
+		return trafficResult{statusCode: resp.StatusCode, duration: dur}
+	}
+
+	go func() {
+		for !stopTraffic.Load() {
+			r := sendRequest()
+			resultsMu.Lock()
+			results = append(results, r)
+			resultsMu.Unlock()
+			if r.err != nil {
+				time.Sleep(500 * time.Millisecond)
+			}
+		}
+	}()
+
+	// Let some traffic flow through the old coordinator.
+	time.Sleep(5 * time.Second)
+
+	// Phase 1: Stop the old coordinator.
+	t.Logf("stability: stopping old coordinator")
+	oldCoord.Stop()
+	time.Sleep(2 * time.Second)
+
+	// Phase 2: Start the new coordinator on the SAME port against the SAME Postgres.
+	require.NoError(t, s.StartCoordinatorOnPort(coordinatorPort), "start new coordinator on same port")
+	t.Logf("stability: new coordinator started on port %d", coordinatorPort)
+
+	// Wait for providers to reconnect (they auto-reconnect with exponential backoff).
+	t.Logf("stability: waiting for providers to reconnect")
+	reconnectDeadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(reconnectDeadline) {
+		count := s.Coordinator.Registry.ProviderCount()
+		if count >= 2 {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	require.Eventually(t, func() bool {
+		return s.Coordinator.Registry.ProviderCount() >= 2
+	}, 90*time.Second, 2*time.Second, "providers should reconnect to new coordinator")
+	t.Logf("stability: %d providers reconnected", s.Coordinator.Registry.ProviderCount())
+
+	// Trust the reconnected providers.
+	time.Sleep(2 * time.Second)
+	for _, id := range s.Coordinator.Registry.ProviderIDs() {
+		s.Coordinator.Registry.ForceTrustProvider(id)
+	}
+	t.Logf("stability: providers force-trusted on new coordinator")
+
+	// Let traffic continue for a bit on the new coordinator.
+	time.Sleep(10 * time.Second)
+
+	// Stop background traffic.
+	stopTraffic.Store(true)
+	time.Sleep(1 * time.Second)
+
+	// Analyze results.
+	resultsMu.Lock()
+	defer resultsMu.Unlock()
+
+	var successCount, errorCount int
+	var totalLatency time.Duration
+	var maxLatency time.Duration
+	for _, r := range results {
+		if r.err != nil || r.statusCode != http.StatusOK {
+			errorCount++
+		} else {
+			successCount++
+		}
+		if r.duration > 0 {
+			totalLatency += r.duration
+			if r.duration > maxLatency {
+				maxLatency = r.duration
+			}
+		}
+	}
+
+	total := successCount + errorCount
+	errorRate := float64(errorCount) / float64(total) * 100
+	var avgLatency time.Duration
+	if successCount > 0 {
+		avgLatency = totalLatency / time.Duration(successCount)
+	}
+
+	t.Logf("stability results: total=%d success=%d errors=%d errorRate=%.1f%% avgLatency=%v maxLatency=%v",
+		total, successCount, errorCount, errorRate, avgLatency, maxLatency)
+
+	require.Greater(t, total, 5, "should have sent at least some requests")
+	require.Less(t, errorRate, 50.0, "error rate should be under 50%% during cutover (got %.1f%%)", errorRate)
+	require.Greater(t, successCount, 0, "at least some requests should succeed")
 }

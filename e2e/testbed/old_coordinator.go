@@ -81,13 +81,15 @@ func BuildOldCoordinator(ctx context.Context, logger *slog.Logger) (string, erro
 	return binPath, nil
 }
 
-func StartOldCoordinator(ctx context.Context, logger *slog.Logger, binPath string, pgURL string, bucketCDNURL string) (*OldCoordinatorProcess, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, fmt.Errorf("listen: %w", err)
+func StartOldCoordinator(ctx context.Context, logger *slog.Logger, binPath string, pgURL string, bucketCDNURL string, port int) (*OldCoordinatorProcess, error) {
+	if port <= 0 {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, fmt.Errorf("listen: %w", err)
+		}
+		port = listener.Addr().(*net.TCPAddr).Port
+		listener.Close()
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	listener.Close()
 
 	baseURL := "http://127.0.0.1:" + strconv.Itoa(port)
 

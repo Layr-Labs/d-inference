@@ -269,7 +269,7 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	require.NoError(t, err, "build Swift provider")
 
 	rustBinPath, err := buildRustProvider(s.Ctx, s.Logger)
-	require.NoError(t, err, "build Rust provider")
+	require.NoError(t, err, "build Rust provider (bridge)")
 
 	oldCoordBin, err := testbed.BuildOldCoordinator(s.Ctx, s.Logger)
 	require.NoError(t, err, "build old coordinator")
@@ -279,21 +279,28 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 
 	bundle := createSwiftReleaseBundle(t, s, swiftBinPath)
 
+	installDir := filepath.Join(os.Getenv("HOME"), ".darkbloom")
+	binDir := filepath.Join(installDir, "bin")
+
 	// ========================================================================
-	// Phase 1: Run OLD coordinator (v0.4.7 — /api/version lacks binary_hash/metallib_hash)
+	// Phase 0: Old coordinator + bridge update to Swift
+	//
+	// Simulates the state after v0.4.7→bridge auto-update. The bridge binary
+	// (current Rust with Swift detection) is already installed. The old
+	// coordinator (v0.4.7) is running — its /api/version lacks
+	// binary_hash/metallib_hash, but the bridge only checks bundle_hash, so
+	// it can successfully install the Swift bundle.
 	// ========================================================================
 	oldCoord, err := testbed.StartOldCoordinator(s.Ctx, s.Logger, oldCoordBin, pgURL, cdnURL)
 	require.NoError(t, err, "start old coordinator")
-	t.Cleanup(oldCoord.Stop)
 
 	regBody, _ := json.Marshal(store.Release{
-		Version:      "0.5.0",
-		Platform:     "macos-arm64",
-		BinaryHash:   bundle.binaryHash,
-		BundleHash:   bundle.bundleHash,
-		MetallibHash: bundle.metallibHash,
-		URL:          bundle.bundleURL,
-		Changelog:    "Swift provider migration",
+		Version:    "0.5.0",
+		Platform:   "macos-arm64",
+		BinaryHash: bundle.binaryHash,
+		BundleHash: bundle.bundleHash,
+		URL:        bundle.bundleURL,
+		Changelog:  "Swift provider migration",
 	})
 	req, _ := http.NewRequestWithContext(s.Ctx, http.MethodPost,
 		oldCoord.BaseURL+"/v1/releases", strings.NewReader(string(regBody)))
@@ -316,7 +323,16 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	_, hasMetallibHash := versionOld["metallib_hash"]
 	require.False(t, hasBinaryHash, "old coordinator should NOT expose binary_hash")
 	require.False(t, hasMetallibHash, "old coordinator should NOT expose metallib_hash")
-	t.Logf("phase 1 (old coordinator v0.4.7): /api/version has version+download_url but no binary_hash/metallib_hash")
+	t.Logf("phase 0 (old coordinator v0.4.7): /api/version has version+download_url+bundle_hash but no binary_hash/metallib_hash")
+
+	_ = os.RemoveAll(installDir)
+	require.NoError(t, os.MkdirAll(binDir, 0755))
+	rustInBin := filepath.Join(binDir, "darkbloom")
+	cpCmd := exec.CommandContext(s.Ctx, "cp", rustBinPath, rustInBin)
+	require.NoError(t, cpCmd.Run())
+	require.NoError(t, os.Chmod(rustInBin, 0755))
+	enclaveInBin := filepath.Join(binDir, "eigeninference-enclave")
+	require.NoError(t, os.WriteFile(enclaveInBin, []byte("#!/bin/sh\nexit 0\n"), 0755))
 
 	updateCtx, updateCancel := context.WithTimeout(s.Ctx, 120*time.Second)
 	defer updateCancel()
@@ -324,18 +340,46 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	cmd.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"))
 	out, err := cmd.CombinedOutput()
 	outStr := string(out)
-	t.Logf("phase 1 rust update output:\n%s", outStr)
-	require.Error(t, err, "rust update should FAIL under old coordinator (no binary_hash for hash verification)")
-	t.Logf("phase 1: Rust update failed as expected — cannot verify Swift binary without binary_hash")
+	t.Logf("phase 0 bridge update output:\n%s", outStr)
+	require.NoError(t, err, "bridge should successfully update to Swift on old coordinator (only needs bundle_hash)")
+	require.Contains(t, outStr, "Updated to 0.5.0", "bridge update should report success")
+	require.Contains(t, outStr, "Swift", "bridge should detect Swift runtime bundle")
 
-	// Stop old coordinator before starting new one (same port space)
+	installedDarkbloom := filepath.Join(binDir, "darkbloom")
+	data, err := os.ReadFile(installedDarkbloom)
+	require.NoError(t, err, "~/.darkbloom/bin/darkbloom should exist after update")
+	require.Equal(t, bundle.binaryHash, sha256Hex(data), "installed darkbloom hash must match release binary_hash")
+
+	metallibData, err := os.ReadFile(filepath.Join(binDir, "mlx.metallib"))
+	require.NoError(t, err, "~/.darkbloom/bin/mlx.metallib should exist after update")
+	require.Equal(t, bundle.metallibHash, sha256Hex(metallibData), "installed mlx.metallib hash must match release metallib_hash")
+
+	// Verify the Swift binary's --check-only against old coordinator reports "Up to date"
+	// but without per-file hash verification (no binary_hash/metallib_hash available).
+	swiftCheckCtx, swiftCheckCancel := context.WithTimeout(s.Ctx, 60*time.Second)
+	defer swiftCheckCancel()
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "provider.toml")
+	cfgContent := fmt.Sprintf("[coordinator]\nurl = %q\n", oldCoord.BaseURL)
+	require.NoError(t, os.WriteFile(cfgPath, []byte(cfgContent), 0644))
+	checkCmd := exec.CommandContext(swiftCheckCtx, installedDarkbloom, "update", "--check-only", "--config", cfgPath)
+	swiftOut, err := checkCmd.CombinedOutput()
+	require.NoError(t, err, "swift --check-only should succeed against old coordinator: %s", string(swiftOut))
+	require.Contains(t, string(swiftOut), "Up to date", "swift provider should report up to date")
+	t.Logf("phase 0: Swift provider reports 'Up to date' on old coordinator (but without per-file hash verification)")
+
 	oldCoord.Stop()
 
 	// ========================================================================
-	// Phase 2: Deploy NEW coordinator (in-process — /api/version includes binary_hash/metallib_hash)
+	// Phase 1: Deploy NEW coordinator (in-process — /api/version includes binary_hash/metallib_hash)
+	//
+	// The Swift provider now gets per-file hash verification when checking
+	// for updates. This is the security upgrade that justifies the migration
+	// order: deploy new coordinator first, then Swift providers can verify
+	// individual binary/metallib hashes on every update check.
 	// ========================================================================
 	require.NoError(t, s.StartCoordinator(), "start new coordinator")
-	t.Logf("phase 2: new coordinator started — /api/version includes binary_hash/metallib_hash")
+	t.Logf("phase 1: new coordinator started — /api/version includes binary_hash/metallib_hash")
 
 	coordinatorHTTP := s.Coordinator.BaseURL()
 
@@ -368,63 +412,22 @@ func TestIntegration_FleetUpgradeToSwift(t *testing.T) {
 	require.Equal(t, "0.5.0", versionNew["version"])
 	require.Equal(t, bundle.binaryHash, versionNew["binary_hash"], "new coordinator should expose binary_hash")
 	require.Equal(t, bundle.metallibHash, versionNew["metallib_hash"], "new coordinator should expose metallib_hash")
-	t.Logf("phase 2: /api/version returns binary_hash=%s metallib_hash=%s",
+	t.Logf("phase 1: /api/version returns binary_hash=%s metallib_hash=%s",
 		bundle.binaryHash[:16], bundle.metallibHash[:16])
 
-	installDir := filepath.Join(os.Getenv("HOME"), ".darkbloom")
-	binDir := filepath.Join(installDir, "bin")
-	_ = os.RemoveAll(installDir)
-	require.NoError(t, os.MkdirAll(binDir, 0755))
+	cfgContent2 := fmt.Sprintf("[coordinator]\nurl = %q\n", coordinatorHTTP)
+	cfgPath2 := filepath.Join(t.TempDir(), "provider.toml")
+	require.NoError(t, os.WriteFile(cfgPath2, []byte(cfgContent2), 0644))
 
-	rustInBin := filepath.Join(binDir, "darkbloom")
-	cpCmd := exec.CommandContext(s.Ctx, "cp", rustBinPath, rustInBin)
-	require.NoError(t, cpCmd.Run())
-	require.NoError(t, os.Chmod(rustInBin, 0755))
+	swiftCheckCtx2, swiftCheckCancel2 := context.WithTimeout(s.Ctx, 60*time.Second)
+	defer swiftCheckCancel2()
+	checkCmd2 := exec.CommandContext(swiftCheckCtx2, installedDarkbloom, "update", "--check-only", "--config", cfgPath2)
+	swiftOut2, err := checkCmd2.CombinedOutput()
+	require.NoError(t, err, "swift --check-only should succeed against new coordinator: %s", string(swiftOut2))
+	require.Contains(t, string(swiftOut2), "Up to date", "swift provider should report up to date on new coordinator")
+	t.Logf("phase 1: Swift provider reports 'Up to date' on new coordinator (with per-file hash verification via binary_hash/metallib_hash)")
 
-	enclaveInBin := filepath.Join(binDir, "eigeninference-enclave")
-	require.NoError(t, os.WriteFile(enclaveInBin, []byte("#!/bin/sh\nexit 0\n"), 0755))
-
-	updateCtx2, updateCancel2 := context.WithTimeout(s.Ctx, 120*time.Second)
-	defer updateCancel2()
-
-	cmd2 := exec.CommandContext(updateCtx2, rustBinPath, "update", "--coordinator", coordinatorHTTP, "--force")
-	cmd2.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"))
-	out2, err := cmd2.CombinedOutput()
-	outStr2 := string(out2)
-	t.Logf("phase 2 rust update output:\n%s", outStr2)
-	require.NoError(t, err, "rust darkbloom update should succeed with new coordinator: %s", outStr2)
-	require.Contains(t, outStr2, "Updated to 0.5.0", "update should report success")
-	require.Contains(t, outStr2, "Swift", "should detect Swift runtime bundle")
-
-	installedDarkbloom := filepath.Join(binDir, "darkbloom")
-	data, err := os.ReadFile(installedDarkbloom)
-	require.NoError(t, err, "~/.darkbloom/bin/darkbloom should exist after update")
-	require.Equal(t, bundle.binaryHash, sha256Hex(data),
-		"installed darkbloom hash must match release binary_hash")
-
-	metallibData, err := os.ReadFile(filepath.Join(binDir, "mlx.metallib"))
-	require.NoError(t, err, "~/.darkbloom/bin/mlx.metallib should exist after update")
-	require.Equal(t, bundle.metallibHash, sha256Hex(metallibData),
-		"installed mlx.metallib hash must match release metallib_hash")
-
-	enclaveData, err := os.ReadFile(filepath.Join(binDir, "darkbloom-enclave"))
-	require.NoError(t, err, "~/.darkbloom/bin/darkbloom-enclave should exist after update")
-	require.Equal(t, bundle.enclaveHash, sha256Hex(enclaveData),
-		"installed darkbloom-enclave hash must match release")
-
-	swiftCheckCtx, swiftCheckCancel := context.WithTimeout(s.Ctx, 60*time.Second)
-	defer swiftCheckCancel()
-	cfgDir := t.TempDir()
-	cfgPath := filepath.Join(cfgDir, "provider.toml")
-	cfgContent := fmt.Sprintf("[coordinator]\nurl = %q\n", coordinatorHTTP)
-	require.NoError(t, os.WriteFile(cfgPath, []byte(cfgContent), 0644))
-
-	checkCmd := exec.CommandContext(swiftCheckCtx, installedDarkbloom, "update", "--check-only", "--config", cfgPath)
-	swiftOut, err := checkCmd.CombinedOutput()
-	require.NoError(t, err, "swift darkbloom update --check-only should succeed: %s", string(swiftOut))
-	require.Contains(t, string(swiftOut), "Up to date", "swift provider should report up to date after upgrade")
-
-	t.Logf("fleet upgrade: old coordinator v0.4.7 → new coordinator → Rust→Swift, binary=%s metallib=%s enclave=%s",
+	t.Logf("fleet upgrade complete: old coordinator v0.4.7 → bridge → Swift → new coordinator, binary=%s metallib=%s enclave=%s",
 		bundle.binaryHash[:16], bundle.metallibHash[:16], bundle.enclaveHash[:16])
 }
 

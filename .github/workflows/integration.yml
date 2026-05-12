@@ -7,57 +7,15 @@ on:
 
 jobs:
   bucket-tests:
-    name: E2E Bucket Tests (Docker)
-    runs-on: macos-15
+    name: E2E Bucket Tests (local-only, requires Docker)
+    runs-on: macos-26-xlarge
     timeout-minutes: 30
+    if: false # Requires Docker for LocalStack; GitHub macOS runners lack nested VM support. Run locally with: go test ./e2e/ -run 'TestIntegration_Release|TestIntegration_ModelWeight|TestIntegration_FleetUpgrade|TestIntegration_SelfUpdate|TestIntegration_FleetUpgradeStability'
     env:
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       TESTBED_PROVIDER_CONFIG: debug
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: recursive
-
-      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
-        with:
-          go-version-file: go.mod
-
-      - name: Install Postgres
-        run: brew install postgresql@16
-
-      - name: Build provider (Swift)
-        run: |
-          cd provider-swift
-          swift build -c debug
-
-      - name: Extract mlx.metallib
-        run: |
-          python3 -m venv /tmp/mlxvenv
-          /tmp/mlxvenv/bin/pip install 'mlx==0.31.2'
-          cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
-             provider-swift/.build/debug/mlx.metallib
-
-      - name: Download model
-        run: |
-          /tmp/mlxvenv/bin/pip install huggingface_hub
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/Qwen3.5-0.8B-MLX-4bit')"
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-3-270m-4bit')"
-
-      - name: Install Docker runtime (Colima)
-        run: |
-          brew install colima docker docker-credential-helper qemu
-          colima start --cpu 2 --memory 2 --disk 10 --vm-type=qemu
-          for i in $(seq 1 30); do
-            docker info >/dev/null 2>&1 && break
-            sleep 2
-          done
-          docker info
-
-      - name: Run bucket/storage and fleet upgrade tests
-        run: |
-          export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
-          go test ./e2e/ -count=1 -v -timeout 15m -p=1 \
-            -run 'TestIntegration_Release|TestIntegration_ModelWeight|TestIntegration_FleetUpgrade|TestIntegration_SelfUpdate|TestIntegration_FleetUpgradeStability'
+      - run: echo "Skipped — bucket tests require Docker (LocalStack). Run locally."
 
   integration-tests:
     name: E2E Integration Tests

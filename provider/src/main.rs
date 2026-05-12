@@ -5899,16 +5899,6 @@ async fn cmd_update(coordinator: String, force: bool) -> Result<()> {
         .replace("/ws/provider", "");
     verify_installed_update_runtime(&eigeninference_dir, &coordinator_http, true)?;
 
-    // If a Swift bundle was installed (bin/mlx.metallib present), rewrite the
-    // launchd plist to replace `serve` with `start` so the Swift binary's
-    // subcommand is used on restart.
-    let swift_metallib = bin_dir.join("mlx.metallib");
-    if swift_metallib.exists() {
-        if let Err(err) = migrate_plist_serve_to_start() {
-            println!("  ⚠ plist migration: {err}");
-        }
-    }
-
     // Verify manifest if included in bundle
     let manifest_path = eigeninference_dir.join("manifest.json");
     if manifest_path.exists() {
@@ -5980,7 +5970,7 @@ fn parse_codesign_team_identifier(output: &str) -> Option<String> {
         line.trim()
             .strip_prefix("TeamIdentifier=")
             .map(str::trim)
-            .filter(|team| !team.is_empty())
+            .filter(|team| !team.is_empty() && *team != "not set")
             .map(ToOwned::to_owned)
     })
 }
@@ -6077,22 +6067,6 @@ fn verify_installed_update_runtime(
     stdout: bool,
 ) -> Result<()> {
     let bundled_python = eigeninference_dir.join("python/bin/python3.12");
-
-    // Swift bundle: no Python runtime. Skip verification entirely.
-    if !bundled_python.exists() {
-        let swift_binary = eigeninference_dir.join("bin/darkbloom");
-        let metallib = eigeninference_dir.join("bin/mlx.metallib");
-        if swift_binary.exists() {
-            emit_update_status(
-                stdout,
-                "  Swift backend detected — skipping Python runtime verification",
-            );
-            if metallib.exists() {
-                emit_update_status(stdout, "  mlx.metallib: present ✓");
-            }
-            return Ok(());
-        }
-    }
 
     if let Err(err) = verify_python_core_signature_match(eigeninference_dir) {
         emit_update_warning(
@@ -6282,15 +6256,6 @@ async fn auto_update_check(coordinator_base_url: &str) -> Result<bool> {
     }
     remove_binary_backup(darkbloom_backup.as_deref());
     remove_binary_backup(enclave_backup.as_deref());
-
-    // Swift bundle installed — rewrite launchd plist to use `start` instead of `serve`.
-    let swift_metallib = bin_dir.join("mlx.metallib");
-    if swift_metallib.exists() {
-        if let Err(err) = migrate_plist_serve_to_start() {
-            tracing::warn!("plist migration failed after Swift upgrade: {err}");
-        }
-    }
-
     tracing::info!("Update installed: {current_version} → {latest}");
     Ok(true)
 }
@@ -6335,35 +6300,6 @@ fn auto_update_restart() -> Result<()> {
             .args(["kickstart", &target])
             .output();
     }
-    Ok(())
-}
-
-/// Rewrite the launchd plist to replace `serve` with `start` after upgrading
-/// from the Rust provider to the Swift provider. The Swift binary uses
-/// `darkbloom start` instead of `darkbloom serve`. Also updates the binary
-/// path from the old install location to `~/.darkbloom/bin/darkbloom`.
-fn migrate_plist_serve_to_start() -> Result<()> {
-    let plist_path = dirs::home_dir()
-        .unwrap_or_default()
-        .join("Library/LaunchAgents/io.darkbloom.provider.plist");
-
-    if !plist_path.exists() {
-        return Ok(());
-    }
-
-    let content = std::fs::read_to_string(&plist_path)
-        .context("failed to read launchd plist for migration")?;
-
-    if !content.contains("<string>serve</string>") {
-        return Ok(());
-    }
-
-    let migrated = content.replace("<string>serve</string>", "<string>start</string>");
-
-    std::fs::write(&plist_path, migrated)
-        .context("failed to write migrated launchd plist")?;
-
-    tracing::info!("Migrated launchd plist: serve → start");
     Ok(())
 }
 
@@ -6783,12 +6719,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_codesign_team_identifier_accepts_not_set() {
+    fn test_parse_codesign_team_identifier_rejects_missing_team_id() {
         let output = "Authority=Apple Development: Someone\nTeamIdentifier=not set\n";
-        assert_eq!(
-            parse_codesign_team_identifier(output).as_deref(),
-            Some("not set")
-        );
+        assert!(parse_codesign_team_identifier(output).is_none());
     }
 
     #[test]

@@ -1722,6 +1722,46 @@ func (r *Registry) ProviderCount() int {
 	return len(r.providers)
 }
 
+func (r *Registry) ProviderCountByVersion() map[string]int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	counts := make(map[string]int)
+	for _, p := range r.providers {
+		p.mu.Lock()
+		online := p.Status != StatusOffline && p.Status != StatusUntrusted
+		p.mu.Unlock()
+		if !online {
+			continue
+		}
+		ver := p.Version
+		if ver == "" {
+			ver = "unknown"
+		}
+		counts[ver]++
+	}
+	return counts
+}
+
+func (r *Registry) ProviderCountByBinaryHash() map[string]int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	counts := make(map[string]int)
+	for _, p := range r.providers {
+		p.mu.Lock()
+		online := p.Status != StatusOffline && p.Status != StatusUntrusted
+		p.mu.Unlock()
+		if !online {
+			continue
+		}
+		hash := "unknown"
+		if p.AttestationResult != nil && p.AttestationResult.BinaryHash != "" {
+			hash = p.AttestationResult.BinaryHash
+		}
+		counts[hash]++
+	}
+	return counts
+}
+
 // FleetSnapshot is the read-only summary used by metrics polling. We
 // don't lock individual providers — counts may be off-by-one under
 // heavy churn — that's acceptable for gauges.

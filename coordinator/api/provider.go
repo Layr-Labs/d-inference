@@ -265,6 +265,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					"version", regMsg.Version,
 					"min_version", s.minProviderVersion,
 				)
+				s.ddIncr("provider_version_below_minimum", []string{"gate:registration", "version:" + regMsg.Version})
 				provider.Mu().Lock()
 				provider.RuntimeVerified = false
 				provider.RuntimeManifestChecked = false
@@ -814,6 +815,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			"version", version,
 			"min_version", s.minProviderVersion,
 		)
+		s.ddIncr("provider_version_below_minimum", []string{"gate:challenge_revalidation", "version:" + version})
 		provider.Mu().Lock()
 		provider.RuntimeVerified = false
 		provider.RuntimeManifestChecked = false

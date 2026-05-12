@@ -128,6 +128,18 @@ func (s *Suite) PrimaryModelID() string {
 }
 
 func (s *Suite) Start(ctx context.Context) error {
+	return s.StartWithConfig(ctx, StartConfig{
+		Coordinator: true,
+		Providers:   true,
+	})
+}
+
+type StartConfig struct {
+	Coordinator bool
+	Providers   bool
+}
+
+func (s *Suite) StartWithConfig(ctx context.Context, cfg StartConfig) error {
 	s.Ctx = ctx
 
 	if s.Config.LocalStack {
@@ -141,13 +153,25 @@ func (s *Suite) Start(ctx context.Context) error {
 	if err := s.createUserPool(); err != nil {
 		return err
 	}
-	if err := s.startCoordinator(); err != nil {
-		return err
+	if cfg.Coordinator {
+		if err := s.startCoordinator(); err != nil {
+			return err
+		}
 	}
-	if err := s.startProviders(); err != nil {
-		return err
+	if cfg.Providers {
+		if err := s.startProviders(); err != nil {
+			return err
+		}
 	}
 	return s.waitForProviderRegistration(3 * time.Minute)
+}
+
+func (s *Suite) StartCoordinator() error {
+	return s.startCoordinator()
+}
+
+func (s *Suite) WaitForProviders(timeout time.Duration) error {
+	return s.waitForProviderRegistration(timeout)
 }
 
 func (s *Suite) Stop() {

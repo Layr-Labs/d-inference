@@ -376,8 +376,8 @@ type Registry struct {
 
 	logger *slog.Logger
 
-	onlineCount     atomic.Int64
-	modelProviders  map[string]*atomic.Int64
+	onlineCount      atomic.Int64
+	modelProviders   map[string]*atomic.Int64
 	modelProvidersMu sync.Mutex
 }
 

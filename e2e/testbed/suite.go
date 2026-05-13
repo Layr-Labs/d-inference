@@ -44,9 +44,9 @@ func execCommandContext(ctx context.Context, name string, args ...string) *exec.
 }
 
 type Suite struct {
-	Ctx     context.Context
-	Logger  *slog.Logger
-	Config  SuiteConfig
+	Ctx    context.Context
+	Logger *slog.Logger
+	Config SuiteConfig
 
 	Pg          *deps.PostgresLifecycle
 	PgStore     store.Store

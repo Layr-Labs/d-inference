@@ -313,36 +313,36 @@ func (r *LoadResult) SummaryTable() string {
 
 	if r.ProfileRun != nil && len(r.ProfileRun.SegmentTimings) > 0 {
 		s.WriteString("\n")
-	s.WriteString(fmt.Sprintf("%-30s %8s %8s %8s %8s %8s\n", "SEGMENT", "COUNT", "MEAN", "P50", "P95", "MAX"))
-	s.WriteString("─────────────────────────────────────────────────────────────────────\n")
+		s.WriteString(fmt.Sprintf("%-30s %8s %8s %8s %8s %8s\n", "SEGMENT", "COUNT", "MEAN", "P50", "P95", "MAX"))
+		s.WriteString("─────────────────────────────────────────────────────────────────────\n")
 
-	for _, seg := range []Segment{
-		SegmentTotalE2E,
-		SegmentParse,
-		SegmentReserve,
-		SegmentRoute,
-		SegmentQueueWait,
-		SegmentEncrypt,
-		SegmentDispatch,
-		SegmentCoordinatorToProvider,
-		SegmentTTFT,
-	} {
-		durations, ok := r.ProfileRun.SegmentTimings[seg]
-		if !ok || len(durations) == 0 {
-			continue
-		}
-		stats := computeStats(durations)
-		precision := time.Millisecond
-		if stats.Max < time.Millisecond {
-			precision = time.Microsecond
-		}
-		s.WriteString(fmt.Sprintf("%-30s %8d %8s %8s %8s %8s\n",
-			seg, stats.Count,
-			stats.Mean.Round(precision),
-			stats.Median.Round(precision),
-			stats.P95.Round(precision),
-			stats.Max.Round(precision),
-		))
+		for _, seg := range []Segment{
+			SegmentTotalE2E,
+			SegmentParse,
+			SegmentReserve,
+			SegmentRoute,
+			SegmentQueueWait,
+			SegmentEncrypt,
+			SegmentDispatch,
+			SegmentCoordinatorToProvider,
+			SegmentTTFT,
+		} {
+			durations, ok := r.ProfileRun.SegmentTimings[seg]
+			if !ok || len(durations) == 0 {
+				continue
+			}
+			stats := computeStats(durations)
+			precision := time.Millisecond
+			if stats.Max < time.Millisecond {
+				precision = time.Microsecond
+			}
+			s.WriteString(fmt.Sprintf("%-30s %8d %8s %8s %8s %8s\n",
+				seg, stats.Count,
+				stats.Mean.Round(precision),
+				stats.Median.Round(precision),
+				stats.P95.Round(precision),
+				stats.Max.Round(precision),
+			))
 		}
 	}
 

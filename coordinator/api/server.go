@@ -362,11 +362,6 @@ func (s *Server) ddGauge(name string, value float64, tags []string) {
 // modelTypeTag returns a DogStatsD tag "model_type:<type>" for the given
 // model ID, resolved from the registry. Returns "model_type:unknown" if
 // the model is not found.
-func (s *Server) modelTypeTag(model string) string {
-	return "model_type:" + s.registry.ModelType(model)
-}
-
-// emitPanic is the panic-specific emit helper. Captures stack separately.
 func (s *Server) emitPanic(ctx context.Context, message, stack string, fields map[string]any) {
 	if s.emitter == nil {
 		return

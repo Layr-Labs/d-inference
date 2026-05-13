@@ -3,6 +3,7 @@ package deps
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -40,11 +41,11 @@ func NewBucketClient(ctx context.Context, endpoint, bucket string) (*BucketClien
 		Bucket: aws.String(bucket),
 	})
 	if err != nil {
-		var alreadyOwned *types.BucketAlreadyExists
-		var alreadyOwnedByYou *types.BucketAlreadyOwnedByYou
-		if alreadyOwned == nil && alreadyOwnedByYou == nil {
-			return nil, fmt.Errorf("testbed/bucket: create bucket: %w", err)
-		}
+	var alreadyOwned *types.BucketAlreadyExists
+	var alreadyOwnedByYou *types.BucketAlreadyOwnedByYou
+	if !errors.As(err, &alreadyOwned) && !errors.As(err, &alreadyOwnedByYou) {
+		return nil, fmt.Errorf("testbed/bucket: create bucket: %w", err)
+	}
 	}
 
 	policy := fmt.Sprintf(`{

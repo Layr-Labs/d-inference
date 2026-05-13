@@ -193,22 +193,22 @@ func providerSupportsPrivateTextLocked(p *Provider) bool {
 	if !p.ChallengeVerifiedSIP {
 		return false
 	}
+	swiftRuntime := BackendUsesSwiftRuntime(p.Backend)
 	caps := p.PrivacyCapabilities
 	if caps == nil {
 		return false
 	}
-	// TextBackendInprocess, TextProxyDisabled, PythonRuntimeLocked,
-	// DangerousModulesBlocked, AntiDebugEnabled, CoreDumpsDisabled, EnvScrubbed
-	// remain provider-attested. They are gated by RuntimeManifestChecked
-	// (coordinator verifies the runtime binary hashes match known-good) and
-	// ChallengeVerifiedSIP (coordinator independently checks SIP status).
-	return caps.TextBackendInprocess &&
+	base := caps.TextBackendInprocess &&
 		caps.TextProxyDisabled &&
-		caps.PythonRuntimeLocked &&
-		caps.DangerousModulesBlocked &&
 		caps.AntiDebugEnabled &&
 		caps.CoreDumpsDisabled &&
 		caps.EnvScrubbed
+	if swiftRuntime {
+		return base
+	}
+	return base &&
+		caps.PythonRuntimeLocked &&
+		caps.DangerousModulesBlocked
 }
 
 func privateTextBackendSupported(backend string) bool {

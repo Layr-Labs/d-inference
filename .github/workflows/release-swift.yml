@@ -287,13 +287,13 @@ jobs:
 
           # Two artifact shapes: zip for notarization, tar.gz for distribution.
           ditto -c -k --keepParent "$STAGE" /tmp/darkbloom-notarize.zip
-          tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$STAGE" .
-          tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
+          tar czf /tmp/eigeninference-bundle-macos-arm64.tar.gz -C "$STAGE" .
+          tar tzf /tmp/eigeninference-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/darkbloom-enclave' /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/mlx.metallib' /tmp/darkbloom-bundle-files.txt
           echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
-          ls -lh /tmp/darkbloom-bundle-macos-arm64.tar.gz
+          ls -lh /tmp/eigeninference-bundle-macos-arm64.tar.gz
 
       - name: Notarize bundle
         env:
@@ -313,14 +313,14 @@ jobs:
           xcrun stapler staple "${{ steps.bundle.outputs.stage }}/bin/$CLI_NAME" || true
           xcrun stapler staple "${{ steps.bundle.outputs.stage }}/bin/$ENCLAVE_NAME" || true
 
-          tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "${{ steps.bundle.outputs.stage }}" .
-          tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
+          tar czf /tmp/eigeninference-bundle-macos-arm64.tar.gz -C "${{ steps.bundle.outputs.stage }}" .
+          tar tzf /tmp/eigeninference-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/darkbloom-enclave' /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/mlx.metallib' /tmp/darkbloom-bundle-files.txt
 
           BINARY_HASH=$(shasum -a 256 "${{ steps.bundle.outputs.stage }}/bin/$CLI_NAME" | cut -d' ' -f1)
-          BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
+          BUNDLE_HASH=$(shasum -a 256 /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
           METALLIB_HASH=$(shasum -a 256 "${{ steps.bundle.outputs.stage }}/bin/mlx.metallib" | cut -d' ' -f1)
           echo "BINARY_HASH=$BINARY_HASH" >> "$GITHUB_ENV"
           echo "BUNDLE_HASH=$BUNDLE_HASH" >> "$GITHUB_ENV"
@@ -338,18 +338,18 @@ jobs:
         run: |
           set -euo pipefail
           PREFIX="s3://${R2_BUCKET}/releases/v${VERSION}"
-          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
-            "${PREFIX}/darkbloom-bundle-macos-arm64.tar.gz" \
+          aws s3 cp /tmp/eigeninference-bundle-macos-arm64.tar.gz \
+            "${PREFIX}/eigeninference-bundle-macos-arm64.tar.gz" \
             --endpoint-url "$R2_ENDPOINT" --only-show-errors
 
           # Latest pointer for `install.sh` discovery. Publish under both
           # the canonical `darkbloom-bundle` name and the legacy
           # `eigeninference-bundle` name for backward compatibility with
           # any caller that hardcoded the old filename.
-          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
-            "s3://${R2_BUCKET}/releases/latest/darkbloom-bundle-macos-arm64.tar.gz" \
+          aws s3 cp /tmp/eigeninference-bundle-macos-arm64.tar.gz \
+            "s3://${R2_BUCKET}/releases/latest/eigeninference-bundle-macos-arm64.tar.gz" \
             --endpoint-url "$R2_ENDPOINT" --only-show-errors
-          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+          aws s3 cp /tmp/eigeninference-bundle-macos-arm64.tar.gz \
             "s3://${R2_BUCKET}/releases/latest/eigeninference-bundle-macos-arm64.tar.gz" \
             --endpoint-url "$R2_ENDPOINT" --only-show-errors
 
@@ -376,7 +376,7 @@ jobs:
           R2_PUBLIC_URL: ${{ env.r2_public_url }}
         run: |
           set -euo pipefail
-          BUNDLE_URL="${R2_PUBLIC_URL}/releases/v${VERSION}/darkbloom-bundle-macos-arm64.tar.gz"
+          BUNDLE_URL="${R2_PUBLIC_URL}/releases/v${VERSION}/eigeninference-bundle-macos-arm64.tar.gz"
 
           TAG_MSG=$(git tag -l --format='%(contents:subject)%0a%(contents:body)' "$GITHUB_REF_NAME" 2>/dev/null || echo "")
           if [ -z "$TAG_MSG" ] || [ "$TAG_MSG" = $'\n' ]; then
@@ -401,10 +401,17 @@ jobs:
           }
           print(json.dumps(payload))
           PY
-          curl -fsSL -X POST "${COORDINATOR_URL}/v1/releases" \
+          HTTP_CODE=$(curl -sSL -o /tmp/register-response.json -w "%{http_code}" \
+            -X POST "${COORDINATOR_URL}/v1/releases" \
             -H "Authorization: Bearer ${RELEASE_KEY}" \
             -H "Content-Type: application/json" \
-            -d @/tmp/release-payload.json
+            -d @/tmp/release-payload.json)
+          if [ "$HTTP_CODE" -ge 400 ]; then
+            echo "::error::Release registration failed (HTTP $HTTP_CODE)"
+            cat /tmp/register-response.json
+            exit 1
+          fi
+          cat /tmp/register-response.json
           echo
           echo "Release v${VERSION} registered with coordinator"
 
@@ -431,7 +438,7 @@ jobs:
 
           NOTES
           gh release create "${{ github.ref_name }}" \
-            /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+            /tmp/eigeninference-bundle-macos-arm64.tar.gz \
             --title "${{ github.ref_name }}" \
             --notes-file /tmp/release-notes.md \
             --generate-notes

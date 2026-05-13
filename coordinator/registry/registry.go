@@ -1066,10 +1066,10 @@ func (r *Registry) GetProvider(id string) *Provider {
 // receiving new jobs. This is called when a provider fails too many
 // challenge-response verifications.
 func (r *Registry) MarkUntrusted(providerID string) {
-	r.mu.RLock()
+	r.mu.Lock()
 	p, ok := r.providers[providerID]
-	r.mu.RUnlock()
 	if !ok {
+		r.mu.Unlock()
 		return
 	}
 
@@ -1082,6 +1082,7 @@ func (r *Registry) MarkUntrusted(providerID string) {
 	}
 	p.Status = StatusUntrusted
 	p.mu.Unlock()
+	r.mu.Unlock()
 
 	r.logger.Warn("provider marked as untrusted",
 		"provider_id", providerID,

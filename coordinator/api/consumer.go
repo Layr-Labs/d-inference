@@ -595,11 +595,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if s.billing != nil {
 		consumerKey := consumerKeyFromContext(r.Context())
 		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
+		start := time.Now()
 		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 				"your balance is too low for this request — add funds at /billing or lower max_tokens"))
 			return
 		}
+		s.ddHistogram("billing.reserved_micro_usd", float64(reservedMicroUSD), []string{"model:" + model})
+		s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reserve"})
 	}
 	timing.ReservedAt = time.Now()
 
@@ -607,7 +610,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	refundReservation := func() {
 		if reservedMicroUSD > 0 {
 			consumerKey := consumerKeyFromContext(r.Context())
+			start := time.Now()
 			_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "reservation_refund")
+			s.ddIncr("billing.reservation_refunds", []string{"model:" + model})
+			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
 		}
 	}
 
@@ -2457,16 +2463,21 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	var reservedMicroUSD int64
 	if s.billing != nil {
 		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
+		start := time.Now()
 		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 				"your balance is too low for this request — add funds at /billing or lower max_tokens"))
 			return
 		}
+		s.ddHistogram("billing.reserved_micro_usd", float64(reservedMicroUSD), []string{"model:" + model})
+		s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reserve"})
 	}
-	// Refund the reservation on any early failure before dispatch.
 	refundReservation := func() {
 		if reservedMicroUSD > 0 {
+			start := time.Now()
 			_ = s.store.Credit(consumerKey, reservedMicroUSD, store.LedgerRefund, "reservation_refund")
+			s.ddIncr("billing.reservation_refunds", []string{"model:" + model})
+			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
 		}
 	}
 

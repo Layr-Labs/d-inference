@@ -1097,6 +1097,268 @@
     {
       "definition": {
         "type": "group",
+        "title": "Billing & Store",
+        "layout_type": "ordered",
+        "show_title": true,
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Reservation Amount (p50/p95/p99)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "p50",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.billing.reserved_micro_usd.50percentile{$env,model:$model}"
+                    },
+                    {
+                      "name": "p95",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.billing.reserved_micro_usd.95percentile{$env,model:$model}"
+                    },
+                    {
+                      "name": "p99",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.billing.reserved_micro_usd.99percentile{$env,model:$model}"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "p50" },
+                    { "formula": "p95" },
+                    { "formula": "p99" }
+                  ],
+                  "style": { "palette": "warm" }
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Settlement Refund Amount (p50/p95/p99)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "p50",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.billing.settlement_refund_micro_usd.50percentile{$env,model:$model}"
+                    },
+                    {
+                      "name": "p95",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.billing.settlement_refund_micro_usd.95percentile{$env,model:$model}"
+                    },
+                    {
+                      "name": "p99",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.billing.settlement_refund_micro_usd.99percentile{$env,model:$model}"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "p50" },
+                    { "formula": "p95" },
+                    { "formula": "p99" }
+                  ],
+                  "style": { "palette": "cool" }
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Provider Credits by Model & Type",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.billing.provider_credits_micro_usd{$env,model:$model} by {model,type}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "query1" }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Platform Fees by Model",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.billing.platform_fees_micro_usd{$env,model:$model} by {model}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "query1" }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Cost Clamped Events",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.billing.cost_clamped{$env,model:$model}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "query1" }
+                  ],
+                  "style": { "palette": "warm" }
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Reservation Refunds",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.billing.reservation_refunds{$env,model:$model}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "query1" }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Store Operation Latency (p50/p95/p99)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "p50",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.debit.latency_ms.50percentile{$env} by {op}"
+                    },
+                    {
+                      "name": "p95",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.debit.latency_ms.95percentile{$env} by {op}"
+                    },
+                    {
+                      "name": "p99",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.debit.latency_ms.99percentile{$env} by {op}"
+                    },
+                    {
+                      "name": "c50",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.credit.latency_ms.50percentile{$env} by {op}"
+                    },
+                    {
+                      "name": "c95",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.credit.latency_ms.95percentile{$env} by {op}"
+                    },
+                    {
+                      "name": "c99",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.credit.latency_ms.99percentile{$env} by {op}"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "p50" },
+                    { "formula": "p95" },
+                    { "formula": "p99" },
+                    { "formula": "c50" },
+                    { "formula": "c95" },
+                    { "formula": "c99" }
+                  ],
+                  "style": { "palette": "warm" }
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_table",
+              "title": "Store Latency by Operation (p99)",
+              "has_search_bar": "auto",
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    {
+                      "name": "debit",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.debit.latency_ms.99percentile{$env} by {op}",
+                      "aggregator": "last"
+                    },
+                    {
+                      "name": "credit",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.credit.latency_ms.99percentile{$env} by {op}",
+                      "aggregator": "last"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "debit", "alias": "Debit p99 (ms)" },
+                    { "formula": "credit", "alias": "Credit p99 (ms)" }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
         "title": "Fleet Version & Binary Hash",
         "layout_type": "ordered",
         "show_title": true,

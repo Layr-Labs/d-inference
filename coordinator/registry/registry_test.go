@@ -171,6 +171,67 @@ func TestProviderWithoutChallengeVerifiedSIPExcluded(t *testing.T) {
 	}
 }
 
+func TestSwiftProviderPrivateTextWithoutPythonCaps(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	msg.Backend = BackendMLXSwift
+	msg.PrivacyCapabilities.PythonRuntimeLocked = false
+	msg.PrivacyCapabilities.DangerousModulesBlocked = false
+
+	p := reg.Register("p-swift-nopython", nil, msg)
+	testMakeTextRoutable(p)
+
+	if !providerSupportsPrivateTextLocked(p) {
+		t.Fatal("Swift provider should support private text without PythonRuntimeLocked/DangerousModulesBlocked")
+	}
+
+	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if found == nil {
+		t.Fatal("Swift provider without Python caps should be routable for text models")
+	}
+}
+
+func TestPythonProviderRequiresPythonCaps(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	msg.Backend = BackendInprocessMLX
+	msg.PrivacyCapabilities.PythonRuntimeLocked = false
+	msg.PrivacyCapabilities.DangerousModulesBlocked = false
+
+	p := reg.Register("p-python-nocaps", nil, msg)
+	testMakeTextRoutable(p)
+
+	if providerSupportsPrivateTextLocked(p) {
+		t.Fatal("Python (inprocess-mlx) provider without PythonRuntimeLocked/DangerousModulesBlocked should NOT support private text")
+	}
+
+	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if found != nil {
+		t.Fatal("Python provider without Python caps should not be routable for text models")
+	}
+}
+
+func TestSwiftProviderMissingBaseCapsExcluded(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	msg.Backend = BackendMLXSwift
+	msg.PrivacyCapabilities.PythonRuntimeLocked = false
+	msg.PrivacyCapabilities.DangerousModulesBlocked = false
+	msg.PrivacyCapabilities.AntiDebugEnabled = false
+
+	p := reg.Register("p-swift-no-antidebug", nil, msg)
+	testMakeTextRoutable(p)
+
+	if providerSupportsPrivateTextLocked(p) {
+		t.Fatal("Swift provider without AntiDebugEnabled should NOT support private text")
+	}
+
+	found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit")
+	if found != nil {
+		t.Fatal("Swift provider without base privacy caps should not be routable")
+	}
+}
+
 func TestProviderPartialPrivacyCapsExcluded(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()

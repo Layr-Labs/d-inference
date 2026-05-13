@@ -1032,6 +1032,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			"prompt_tokens", msg.Usage.PromptTokens,
 			"completion_tokens", msg.Usage.CompletionTokens,
 		)
+		s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
 		totalCost = pr.ReservedMicroUSD
 	}
 	providerPayout := payments.ProviderPayout(totalCost)
@@ -1043,7 +1044,10 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	if pr.ReservedMicroUSD > 0 {
 		if totalCost < pr.ReservedMicroUSD {
 			refund := pr.ReservedMicroUSD - totalCost
+			start := time.Now()
 			_ = s.store.Credit(pr.ConsumerKey, refund, store.LedgerRefund, msg.RequestID)
+			s.ddHistogram("billing.settlement_refund_micro_usd", float64(refund), []string{"model:" + pr.Model})
+			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:settlement_refund"})
 		}
 	} else {
 		// No reservation (billing not configured). Charge best-effort.
@@ -1076,8 +1080,6 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// Otherwise, fall back to the provider's self-reported wallet address.
 	if p := s.registry.GetProvider(providerID); p != nil {
 		if p.AccountID != "" {
-			// Provider is linked to a Privy account — atomically credit the
-			// account and record the per-node earning in one store transaction.
 			if err := s.store.CreditProviderAccount(&store.ProviderEarning{
 				AccountID:        p.AccountID,
 				ProviderID:       providerID,
@@ -1096,8 +1098,8 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 					"error", err,
 				)
 			}
+			s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
 		} else if p.WalletAddress != "" {
-			// Unlinked provider — atomically credit the wallet and record payout history.
 			if err := s.ledger.CreditProvider(p.WalletAddress, providerPayout, pr.Model, msg.RequestID); err != nil {
 				s.logger.Error("failed to credit provider wallet payout",
 					"provider_id", providerID,
@@ -1106,6 +1108,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 					"error", err,
 				)
 			}
+			s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:wallet"})
 		}
 	}
 
@@ -1118,6 +1121,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
 		}
 		_ = s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID)
+		s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
 	}
 
 	// Signal completion to the consumer response handler. This must happen

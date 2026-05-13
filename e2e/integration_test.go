@@ -573,6 +573,32 @@ func TestIntegration_AttestationHeaders(t *testing.T) {
 	)
 }
 
+func TestIntegration_SwiftProviderRealRoutingGates(t *testing.T) {
+	ctx := context.Background()
+	s := testbed.NewSuite(testbed.SuiteConfig{})
+	require.NoError(t, s.Start(ctx), "suite startup failed")
+	t.Cleanup(s.Stop)
+
+	for _, id := range s.Coordinator.Registry.ProviderIDs() {
+		p := s.Coordinator.Registry.GetProvider(id)
+		require.NotNil(t, p)
+		p.ChallengeVerifiedSIP = true
+		p.RuntimeManifestChecked = true
+		s.Coordinator.Registry.RecordChallengeSuccess(id)
+	}
+
+	model := s.PrimaryModelID()
+	found := s.Coordinator.Registry.FindProvider(model)
+	require.NotNil(t, found, "Swift provider should be routable after challenge success without ForceTrustProvider")
+
+	resp := postChatCompletions(t, s, "What is 1+1? Answer with just the number.", false, 20)
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", string(respBody[:min(len(respBody), 500)]))
+
+	t.Logf("Swift provider real routing: status=200 via challenge-verified path")
+}
+
 func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 	s := startSuite(t)
 

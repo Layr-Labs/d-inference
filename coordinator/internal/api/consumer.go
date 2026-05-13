@@ -583,6 +583,31 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		rawBody, _ = json.Marshal(providerParsed)
 	}
 
+	if weaverConfig, ok, err := parseWeaverConfig(parsed); ok || err != nil {
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+			return
+		}
+		if isResponsesAPI {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "weaver is only supported with chat messages"))
+			return
+		}
+		if !stream {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "weaver requires stream=true"))
+			return
+		}
+		if !s.registry.IsModelInCatalog(model) {
+			writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
+				fmt.Sprintf("model %q is not available — see /v1/models for supported models", model)))
+			return
+		}
+		delete(parsed, "weaver")
+		parsed["stream"] = true
+		rawBody, _ = json.Marshal(parsed)
+		s.handleWeaverChatCompletions(w, r, weaverConfig, rawBody, model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials)
+		return
+	}
+
 	// Pre-flight balance reservation — atomically debit the worst-case cost
 	// (prompt tokens already consumed + max_tokens we just bounded the
 	// generation to) before routing to a provider. The post-inference charge
@@ -2087,6 +2112,10 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		}
 		if inCatalog && cm.DisplayName != "" {
 			metadata["display_name"] = cm.DisplayName
+		}
+		if inCatalog {
+			metadata["family"] = cm.Family
+			metadata["can_verify"] = cm.CanVerify
 		}
 		data = append(data, map[string]any{
 			"id":       m.ID,

@@ -189,6 +189,8 @@ func TestSupportedModels(t *testing.T) {
 		DisplayName:  "Qwen2.5 0.5B",
 		ModelType:    "text",
 		SizeGB:       0.5,
+		Family:       "qwen",
+		CanVerify:    true,
 		Architecture: "0.5B dense",
 		Description:  "Lightweight chat model",
 		MinRAMGB:     8,
@@ -200,6 +202,8 @@ func TestSupportedModels(t *testing.T) {
 		DisplayName:  "Qwen3.5 9B",
 		ModelType:    "text",
 		SizeGB:       6.0,
+		Family:       "qwen",
+		CanVerify:    true,
 		Architecture: "9B dense",
 		Description:  "Balanced",
 		MinRAMGB:     16,
@@ -230,7 +234,10 @@ func TestSupportedModels(t *testing.T) {
 		ID:           m1.ID,
 		S3Name:       m1.S3Name,
 		DisplayName:  "Qwen2.5 0.5B (updated)",
+		ModelType:    "text",
 		SizeGB:       0.5,
+		Family:       "qwen",
+		CanVerify:    true,
 		Architecture: m1.Architecture,
 		Description:  "Updated description",
 		MinRAMGB:     8,
@@ -251,6 +258,12 @@ func TestSupportedModels(t *testing.T) {
 			}
 			if m.Active {
 				t.Error("model should be inactive after update")
+			}
+			if m.Family != "qwen" {
+				t.Errorf("family = %q, want qwen", m.Family)
+			}
+			if !m.CanVerify {
+				t.Error("can_verify should persist through update")
 			}
 		}
 	}

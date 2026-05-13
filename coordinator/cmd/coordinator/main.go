@@ -18,6 +18,13 @@
 //	                                       production; omit + EIGENINFERENCE_ALLOW_MEMORY_STORE=true for dev)
 //	EIGENINFERENCE_ALLOW_MEMORY_STORE    - Set to "true" to permit MemoryStore boot
 //	                                       when DATABASE_URL is unset (dev/test only)
+//	EIGENINFERENCE_ALLOW_UNCATALOGUED_MODELS
+//	                                     - Set to "true" for local dev to permit
+//	                                       ad-hoc downloaded models outside the
+//	                                       production model catalog
+//	EIGENINFERENCE_DEV_PROFILE           - Set to "true" to enable local dev defaults:
+//	                                       memory store, uncatalogued models,
+//	                                       TrustNone routing, and env runtime hashes
 //
 // Graceful shutdown: The coordinator handles SIGINT/SIGTERM, stops the
 // eviction loop, and drains active connections with a 15-second deadline.
@@ -70,9 +77,13 @@ func main() {
 	// Configuration from environment.
 	port := envOr("EIGENINFERENCE_PORT", "8080")
 	adminKey := os.Getenv("EIGENINFERENCE_ADMIN_KEY")
+	devProfile := localDevProfileEnabled()
 
 	if adminKey == "" {
 		logger.Warn("EIGENINFERENCE_ADMIN_KEY is not set — no pre-seeded API key available")
+	}
+	if devProfile {
+		logger.Warn("LOCAL DEV PROFILE ENABLED — memory store, uncatalogued models, TrustNone routing, and env runtime hashes are allowed")
 	}
 
 	// Create core components.
@@ -101,14 +112,14 @@ func main() {
 		// In production that would lose USDC deposits and provider payouts.
 		// Refuse to boot unless the operator has explicitly opted in (e.g.
 		// for local dev or integration tests).
-		if os.Getenv("EIGENINFERENCE_ALLOW_MEMORY_STORE") != "true" {
+		if !devProfile && os.Getenv("EIGENINFERENCE_ALLOW_MEMORY_STORE") != "true" {
 			logger.Error("EIGENINFERENCE_DATABASE_URL is not set and EIGENINFERENCE_ALLOW_MEMORY_STORE is not \"true\" — refusing to start with non-durable store")
 			os.Exit(1)
 		}
 
 		memStore := store.NewMemory(adminKey)
 		st = memStore
-		logger.Warn("using in-memory store — billing state will not survive restart (set EIGENINFERENCE_DATABASE_URL for production)")
+		logger.Warn("using in-memory store — billing state will not survive restart (set EIGENINFERENCE_DATABASE_URL for production)", "dev_profile", devProfile)
 
 		// MemoryStore's append-only slices (usage, ledger, earnings,
 		// payouts, payments) grow unboundedly over the lifetime of the
@@ -130,8 +141,13 @@ func main() {
 		})
 	}
 
-	// Seed the model catalog if empty (first startup or fresh DB).
-	seedModelCatalog(st, logger)
+	allowUncataloguedModels := devProfile || os.Getenv("EIGENINFERENCE_ALLOW_UNCATALOGUED_MODELS") == "true"
+	if allowUncataloguedModels {
+		logger.Warn("uncatalogued model routing ENABLED — local dev only", "dev_profile", devProfile)
+	} else {
+		// Seed the model catalog if empty (first startup or fresh DB).
+		seedModelCatalog(st, logger)
+	}
 
 	reg := registry.New(logger)
 
@@ -140,6 +156,9 @@ func main() {
 	if minTrust := os.Getenv("EIGENINFERENCE_MIN_TRUST"); minTrust != "" {
 		reg.MinTrustLevel = registry.TrustLevel(minTrust)
 		logger.Info("minimum trust level override", "level", minTrust)
+	} else if devProfile {
+		reg.MinTrustLevel = registry.TrustNone
+		logger.Warn("minimum trust lowered to none by local dev profile")
 	}
 
 	srv := api.NewServer(reg, st, logger)
@@ -207,8 +226,14 @@ func main() {
 	}
 
 	// Sync the model catalog to the registry so providers and consumers
-	// are filtered against the admin-managed whitelist.
-	srv.SyncModelCatalog()
+	// are filtered against the admin-managed whitelist. Local dev can disable
+	// this to test small ad-hoc models without downloading production weights.
+	if allowUncataloguedModels {
+		reg.SetModelCatalog(nil)
+		logger.Warn("model catalog filtering disabled — local dev only", "dev_profile", devProfile)
+	} else {
+		srv.SyncModelCatalog()
+	}
 
 	// Console URL — frontend for device auth verification links.
 	if consoleURL := os.Getenv("EIGENINFERENCE_CONSOLE_URL"); consoleURL != "" {
@@ -273,41 +298,49 @@ func main() {
 		templateHashes := os.Getenv("EIGENINFERENCE_KNOWN_TEMPLATE_HASHES") // format: name=hash,name=hash
 
 		if pythonHashes != "" || runtimeHashes != "" || templateHashes != "" {
-			manifest := &api.RuntimeManifest{
-				PythonHashes:   make(map[string]bool),
-				RuntimeHashes:  make(map[string]bool),
-				TemplateHashes: make(map[string]string),
+			allowEnvRuntimeManifest := devProfile || os.Getenv("EIGENINFERENCE_ALLOW_ENV_RUNTIME_HASHES") == "true"
+			if !allowEnvRuntimeManifest {
+				logger.Error("runtime manifest env vars ignored outside local dev profile; register a release manifest or set EIGENINFERENCE_DEV_PROFILE=true for local development")
+			} else if os.Getenv("EIGENINFERENCE_ALLOW_ENV_RUNTIME_HASHES") == "true" && !devProfile {
+				logger.Warn("runtime manifest configured from env outside dev profile — operator override")
 			}
-			if pythonHashes != "" {
-				for _, h := range strings.Split(pythonHashes, ",") {
-					h = strings.TrimSpace(h)
-					if h != "" {
-						manifest.PythonHashes[h] = true
+			if allowEnvRuntimeManifest {
+				manifest := &api.RuntimeManifest{
+					PythonHashes:   make(map[string]bool),
+					RuntimeHashes:  make(map[string]bool),
+					TemplateHashes: make(map[string]string),
+				}
+				if pythonHashes != "" {
+					for _, h := range strings.Split(pythonHashes, ",") {
+						h = strings.TrimSpace(h)
+						if h != "" {
+							manifest.PythonHashes[h] = true
+						}
 					}
 				}
-			}
-			if runtimeHashes != "" {
-				for _, h := range strings.Split(runtimeHashes, ",") {
-					h = strings.TrimSpace(h)
-					if h != "" {
-						manifest.RuntimeHashes[h] = true
+				if runtimeHashes != "" {
+					for _, h := range strings.Split(runtimeHashes, ",") {
+						h = strings.TrimSpace(h)
+						if h != "" {
+							manifest.RuntimeHashes[h] = true
+						}
 					}
 				}
-			}
-			if templateHashes != "" {
-				for _, pair := range strings.Split(templateHashes, ",") {
-					parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-					if len(parts) == 2 {
-						manifest.TemplateHashes[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				if templateHashes != "" {
+					for _, pair := range strings.Split(templateHashes, ",") {
+						parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+						if len(parts) == 2 {
+							manifest.TemplateHashes[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+						}
 					}
 				}
+				srv.SetRuntimeManifest(manifest)
+				logger.Info("runtime manifest configured",
+					"python_hashes", len(manifest.PythonHashes),
+					"runtime_hashes", len(manifest.RuntimeHashes),
+					"template_hashes", len(manifest.TemplateHashes),
+				)
 			}
-			srv.SetRuntimeManifest(manifest)
-			logger.Info("runtime manifest configured",
-				"python_hashes", len(manifest.PythonHashes),
-				"runtime_hashes", len(manifest.RuntimeHashes),
-				"template_hashes", len(manifest.TemplateHashes),
-			)
 		}
 	}
 
@@ -554,13 +587,18 @@ func envInt(key string, fallback int) int {
 	return fallback
 }
 
+func localDevProfileEnabled() bool {
+	return os.Getenv("EIGENINFERENCE_DEV_PROFILE") == "true" ||
+		strings.EqualFold(os.Getenv("EIGENINFERENCE_PROFILE"), "dev")
+}
+
 // seedModelCatalog ensures all hardcoded models exist in the catalog.
 // On first startup it populates everything; on subsequent starts it adds
 // any new models that were added to the code but not yet in the DB and removes
 // catalog entries that should no longer be provider-selectable.
 func seedModelCatalog(st store.Store, logger *slog.Logger) {
 	existing := st.ListSupportedModels()
-	existingIDs := make(map[string]bool, len(existing))
+	existingByID := make(map[string]store.SupportedModel, len(existing))
 	removed := 0
 	for _, m := range existing {
 		if api.IsRetiredProviderModel(m) {
@@ -571,24 +609,33 @@ func seedModelCatalog(st store.Store, logger *slog.Logger) {
 			}
 			continue
 		}
-		existingIDs[m.ID] = true
+		existingByID[m.ID] = m
 	}
 
 	models := []store.SupportedModel{
 		// --- Text generation (8-bit quantization) ---
-		{ID: "qwen3.5-27b-claude-opus-8bit", S3Name: "qwen35-27b-claude-opus-8bit", DisplayName: "Qwen3.5 27B Claude Opus Distilled", ModelType: "text", SizeGB: 27.0, Architecture: "27B dense, Claude Opus distilled", Description: "Frontier quality reasoning", MinRAMGB: 36, Active: true},
-		{ID: "mlx-community/Trinity-Mini-8bit", S3Name: "Trinity-Mini-8bit", DisplayName: "Trinity Mini", ModelType: "text", SizeGB: 26.0, Architecture: "27B Adaptive MoE", Description: "Fast agentic inference", MinRAMGB: 48, Active: true},
-		{ID: "mlx-community/gemma-4-26b-a4b-it-8bit", S3Name: "gemma-4-26b-a4b-it-8bit", DisplayName: "Gemma 4 26B", ModelType: "text", SizeGB: 28.0, Architecture: "26B MoE, 4B active", Description: "Fast multimodal MoE", MinRAMGB: 36, Active: true},
-		{ID: "mlx-community/Qwen3.5-122B-A10B-8bit", S3Name: "Qwen3.5-122B-A10B-8bit", DisplayName: "Qwen3.5 122B", ModelType: "text", SizeGB: 122.0, Architecture: "122B MoE, 10B active", Description: "Best quality", MinRAMGB: 128, Active: true},
-		{ID: "mlx-community/MiniMax-M2.5-8bit", S3Name: "MiniMax-M2.5-8bit", DisplayName: "MiniMax M2.5", ModelType: "text", SizeGB: 243.0, Architecture: "239B MoE, 11B active", Description: "SOTA coding, 100 tok/s", MinRAMGB: 256, Active: true},
+		{ID: "qwen3.5-27b-claude-opus-8bit", S3Name: "qwen35-27b-claude-opus-8bit", DisplayName: "Qwen3.5 27B Claude Opus Distilled", ModelType: "text", SizeGB: 27.0, Family: "qwen", CanVerify: true, Architecture: "27B dense, Claude Opus distilled", Description: "Frontier quality reasoning", MinRAMGB: 36, Active: true},
+		{ID: "mlx-community/Trinity-Mini-8bit", S3Name: "Trinity-Mini-8bit", DisplayName: "Trinity Mini", ModelType: "text", SizeGB: 26.0, Family: "trinity", CanVerify: true, Architecture: "27B Adaptive MoE", Description: "Fast agentic inference", MinRAMGB: 48, Active: true},
+		{ID: "mlx-community/gemma-4-26b-a4b-it-8bit", S3Name: "gemma-4-26b-a4b-it-8bit", DisplayName: "Gemma 4 26B", ModelType: "text", SizeGB: 28.0, Family: "gemma", CanVerify: true, Architecture: "26B MoE, 4B active", Description: "Fast multimodal MoE", MinRAMGB: 36, Active: true},
+		{ID: "mlx-community/Qwen3.5-122B-A10B-8bit", S3Name: "Qwen3.5-122B-A10B-8bit", DisplayName: "Qwen3.5 122B", ModelType: "text", SizeGB: 122.0, Family: "qwen", CanVerify: true, Architecture: "122B MoE, 10B active", Description: "Best quality", MinRAMGB: 128, Active: true},
+		{ID: "mlx-community/MiniMax-M2.5-8bit", S3Name: "MiniMax-M2.5-8bit", DisplayName: "MiniMax M2.5", ModelType: "text", SizeGB: 243.0, Family: "minimax", CanVerify: true, Architecture: "239B MoE, 11B active", Description: "SOTA coding, 100 tok/s", MinRAMGB: 256, Active: true},
 	}
 
 	added := 0
+	updated := 0
 	for i := range models {
 		if api.IsRetiredProviderModel(models[i]) {
 			continue
 		}
-		if existingIDs[models[i].ID] {
+		if existing, ok := existingByID[models[i].ID]; ok {
+			if existing.Family == "" && models[i].Family != "" {
+				existing.Family = models[i].Family
+				if err := st.SetSupportedModel(&existing); err != nil {
+					logger.Warn("failed to update seeded model metadata", "id", existing.ID, "error", err)
+				} else {
+					updated++
+				}
+			}
 			continue
 		}
 		if err := st.SetSupportedModel(&models[i]); err != nil {
@@ -597,8 +644,8 @@ func seedModelCatalog(st store.Store, logger *slog.Logger) {
 			added++
 		}
 	}
-	if added > 0 || removed > 0 {
-		logger.Info("model catalog reconciled", "added", added, "removed", removed, "total", len(existing)+added-removed)
+	if added > 0 || removed > 0 || updated > 0 {
+		logger.Info("model catalog reconciled", "added", added, "updated", updated, "removed", removed, "total", len(existing)+added-removed)
 	} else {
 		logger.Info("model catalog loaded", "count", len(existing))
 	}

@@ -1,12 +1,13 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, Square, ChevronDown, LogIn } from "lucide-react";
+import { Send, Square, ChevronDown, LogIn, Brain } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { trackEvent } from "@/lib/google-analytics";
+import type { WeaverMode } from "@/lib/api";
 
 interface ChatInputProps {
-  onSend: (content: string) => void;
+  onSend: (content: string, mode?: WeaverMode) => void;
   onStop: () => void;
   isStreaming: boolean;
   authenticated?: boolean;
@@ -18,14 +19,15 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { selectedModel, models, setSelectedModel } = useStore();
   const [modelOpen, setModelOpen] = useState(false);
+  const [weaverMode, setWeaverMode] = useState<"fast" | WeaverMode>("fast");
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
     if (!trimmed || isStreaming) return;
-    onSend(trimmed);
+    onSend(trimmed, weaverMode === "fast" ? undefined : weaverMode);
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [input, isStreaming, onSend]);
+  }, [weaverMode, input, isStreaming, onSend]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -100,7 +102,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
           {/* Bottom bar */}
           <div className="flex items-center justify-between px-3 pb-3">
             {/* Left: model selector */}
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1.5 min-w-0">
               <div className="relative">
                 <button
                   onClick={(e) => {
@@ -114,40 +116,77 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                   <ChevronDown size={12} />
                 </button>
 
-                {modelOpen && chatModels.length > 0 && (
+                {modelOpen && (
                   <div className="absolute bottom-full left-0 mb-1 w-[calc(100vw-3rem)] sm:w-80 bg-bg-white border border-border-dim rounded-xl shadow-lg overflow-hidden z-50">
-                    {chatModels.map((m) => {
-                      const name = m.display_name || m.id.split("/").pop() || m.id;
-                      return (
-                        <button
-                          key={m.id}
-                          onClick={() => {
-                            setSelectedModel(m.id);
-                            setModelOpen(false);
-                            trackEvent("chat_model_selected", {
-                              model: m.id,
-                              quantization: m.quantization || "unknown",
-                            });
-                          }}
-                          className={`w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-bg-hover transition-colors ${
-                            selectedModel === m.id
-                              ? "text-coral bg-coral/10 font-semibold"
-                              : "text-text-secondary"
-                          }`}
-                        >
-                          <span className="flex-1 font-mono text-xs truncate">
-                            {name}
-                          </span>
-                          {m.quantization && (
-                            <span className="text-xs text-text-tertiary px-1.5 py-0.5 bg-bg-tertiary rounded border border-border-dim">
-                              {m.quantization}
+                    {chatModels.length > 0 ? (
+                      chatModels.map((m) => {
+                        const name = m.display_name || m.id.split("/").pop() || m.id;
+                        return (
+                          <button
+                            key={m.id}
+                            onClick={() => {
+                              setSelectedModel(m.id);
+                              setModelOpen(false);
+                              trackEvent("chat_model_selected", {
+                                model: m.id,
+                                quantization: m.quantization || "unknown",
+                              });
+                            }}
+                            className={`w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-bg-hover transition-colors ${
+                              selectedModel === m.id
+                                ? "text-coral bg-coral/10 font-semibold"
+                                : "text-text-secondary"
+                            }`}
+                          >
+                            <span className="flex-1 font-mono text-xs truncate">
+                              {name}
                             </span>
-                          )}
-                        </button>
-                      );
-                    })}
+                            {m.quantization && (
+                              <span className="text-xs text-text-tertiary px-1.5 py-0.5 bg-bg-tertiary rounded border border-border-dim">
+                                {m.quantization}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })
+                    ) : (
+                      <div className="px-4 py-3 text-left">
+                        <p className="text-sm font-semibold text-text-secondary">No models loaded</p>
+                        <p className="mt-1 text-xs text-text-tertiary">
+                          Check your API key or coordinator connection.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
+              </div>
+
+              <div className="flex items-center rounded-lg border-2 border-border-dim bg-bg-secondary/60 p-0.5">
+                {([
+                  ["fast", "Fast"],
+                  ["deep", "Deep"],
+                  ["deep_plus", "Deep+"],
+                ] as const).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    title={value === "fast" ? "Fast single-model stream" : `${label} Weaver mode`}
+                    onClick={() => {
+                      setWeaverMode(value);
+                      trackEvent("chat_weaver_mode_selected", {
+                        mode: value,
+                      });
+                    }}
+                    className={`flex h-7 items-center gap-1 rounded-md px-2 text-xs font-semibold transition-colors ${
+                      weaverMode === value
+                        ? "bg-bg-white text-coral shadow-sm"
+                        : "text-text-tertiary hover:text-text-secondary"
+                    }`}
+                  >
+                    {value !== "fast" && <Brain size={12} />}
+                    <span>{label}</span>
+                  </button>
+                ))}
               </div>
             </div>
 

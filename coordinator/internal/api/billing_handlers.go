@@ -567,8 +567,14 @@ func (s *Server) handleAdminSetModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+		return
+	}
+	body, _ := json.Marshal(raw)
 	var model store.SupportedModel
-	if err := json.NewDecoder(r.Body).Decode(&model); err != nil {
+	if err := json.Unmarshal(body, &model); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
 		return
 	}
@@ -579,6 +585,9 @@ func (s *Server) handleAdminSetModel(w http.ResponseWriter, r *http.Request) {
 	if model.DisplayName == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "display_name is required"))
 		return
+	}
+	if _, provided := raw["can_verify"]; !provided && model.Active && isTextCatalogModel(model.ModelType) {
+		model.CanVerify = true
 	}
 
 	if err := s.store.SetSupportedModel(&model); err != nil {

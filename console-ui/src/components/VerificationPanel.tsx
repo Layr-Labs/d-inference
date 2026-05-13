@@ -26,7 +26,9 @@ import {
   Info,
 } from "lucide-react";
 
-const ATTESTATION_API = "https://api.darkbloom.dev";
+const ATTESTATION_API =
+  process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
+const ATTESTATION_PROXY = "/api/providers/attestation";
 
 /** Mask a serial number for normal mode: show first 4 + last 2, mask the rest. */
 function maskSerial(serial: string): string {
@@ -508,7 +510,7 @@ export function VerificationPanel({ trust }: { trust: TrustMetadata }) {
     setVerifySteps([]);
 
     try {
-      const res = await fetch(`${ATTESTATION_API}/v1/providers/attestation`);
+      const res = await fetch(ATTESTATION_PROXY);
       const data = await res.json();
 
       const provider =

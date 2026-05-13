@@ -2,6 +2,8 @@
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { WeaverTraceModal } from "./WeaverTraceModal";
+import { WeaverTraceStrip } from "./WeaverTraceStrip";
 import { TrustBadge } from "./TrustBadge";
 import { VerificationPanel } from "./VerificationPanel";
 import type { Message } from "@/lib/store";
@@ -248,6 +250,8 @@ function parseThinkFromContent(content: string, existingThinking?: string): { th
 
 export function ChatMessage({ message, onRetry }: { message: Message; onRetry?: () => void }) {
   const isUser = message.role === "user";
+  const [traceOpen, setTraceOpen] = useState(false);
+  const [traceTab, setTraceTab] = useState<string | undefined>(undefined);
 
   const parsed = !isUser && !message.streaming
     ? parseThinkFromContent(message.content, message.thinking)
@@ -303,6 +307,16 @@ export function ChatMessage({ message, onRetry }: { message: Message; onRetry?: 
               />
             )}
 
+            {message.weaver && (
+              <WeaverTraceStrip
+                weaver={message.weaver}
+                onOpen={(candidateId) => {
+                  setTraceTab(candidateId);
+                  setTraceOpen(true);
+                }}
+              />
+            )}
+
             {message.trust && !message.streaming && (
               <div className="mb-3">
                 <VerificationPanel trust={message.trust} />
@@ -348,6 +362,17 @@ export function ChatMessage({ message, onRetry }: { message: Message; onRetry?: 
                 <RotateCcw size={12} />
                 {message.error ? "Retry" : "Regenerate"}
               </button>
+            )}
+
+            {message.weaver && traceOpen && (
+              <WeaverTraceModal
+                weaver={message.weaver}
+                finalContent={displayContent}
+                usage={{ tokenCount: message.tokenCount, tps: message.tps, ttft: message.ttft }}
+                initialTab={traceTab}
+                onClose={() => setTraceOpen(false)}
+                onSelectTab={setTraceTab}
+              />
             )}
           </div>
         </div>

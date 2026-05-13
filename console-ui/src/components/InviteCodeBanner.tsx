@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Ticket, X, Check, Loader2 } from "lucide-react";
 import { redeemInviteCode } from "@/lib/api";
 import { trackEvent } from "@/lib/google-analytics";
@@ -8,15 +8,18 @@ import { trackEvent } from "@/lib/google-analytics";
 const DISMISSED_KEY = "darkbloom_invite_dismissed";
 
 export function InviteCodeBanner() {
-  const [dismissed, setDismissed] = useState(() => {
-    if (typeof window === "undefined") return true;
-    return localStorage.getItem(DISMISSED_KEY) === "1";
-  });
+  const [mounted, setMounted] = useState(false);
+  const [dismissed, setDismissed] = useState(true);
   const [expanded, setExpanded] = useState(false);
   const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    setDismissed(localStorage.getItem(DISMISSED_KEY) === "1");
+    setMounted(true);
+  }, []);
 
   const dismissBanner = useCallback(() => {
     setDismissed(true);
@@ -57,7 +60,7 @@ export function InviteCodeBanner() {
     setLoading(false);
   }, [code, dismissBanner]);
 
-  if (dismissed) return null;
+  if (!mounted || dismissed) return null;
 
   return (
     <div className="fixed bottom-24 right-3 sm:right-6 z-40 w-[calc(100%-1.5rem)] sm:w-auto sm:max-w-sm message-animate">

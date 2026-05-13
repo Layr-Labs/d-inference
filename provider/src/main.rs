@@ -2938,7 +2938,7 @@ async fn cmd_serve(
         // (running requests, token counts, GPU memory). This data is included
         // in heartbeats so the coordinator can make informed routing decisions.
         if !using_inprocess {
-            if let Some(cap_arc) = backend_capacity_opt {
+            if let Some(cap_arc) = backend_capacity_opt.clone() {
                 let poll_shared_slots = shared_slots.clone();
                 let total_mem_gb = hw.memory_gb as f64;
                 let poll_backend_running = backend_running_flag_opt
@@ -3238,6 +3238,7 @@ async fn cmd_serve(
         #[cfg(feature = "python")]
         let event_inprocess_engines = inprocess_engines.clone();
 
+        let event_backend_capacity = backend_capacity_opt.clone();
         let event_backend_running =
             backend_running_flag_opt.expect("backend_running_flag must be set in non-local mode");
         let event_handle = tokio::spawn(async move {
@@ -3246,8 +3247,10 @@ async fn cmd_serve(
 
             // Track in-flight inference tasks so we can cancel them on
             // coordinator disconnect or explicit cancel messages.
-            let mut inflight: HashMap<String, (CancellationToken, tokio::task::JoinHandle<()>)> =
-                HashMap::new();
+            let mut inflight: HashMap<
+                String,
+                (CancellationToken, tokio::task::JoinHandle<()>, String),
+            > = HashMap::new();
             let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<(String, bool)>(64);
 
             // Idle timeout: shut down the backend after a period of no
@@ -3262,6 +3265,64 @@ async fn cmd_serve(
             let set_backend_state = |state: u8| {
                 event_backend_running.store(state, std::sync::atomic::Ordering::Relaxed);
             };
+            let update_inprocess_capacity =
+                |inflight: &HashMap<
+                    String,
+                    (CancellationToken, tokio::task::JoinHandle<()>, String),
+                >| {
+                    if !is_inprocess {
+                        return;
+                    }
+                    let Some(cap_arc) = event_backend_capacity.as_ref() else {
+                        return;
+                    };
+
+                    let mut running_by_model: HashMap<String, u32> = HashMap::new();
+                    for (_, _, model_id) in inflight.values() {
+                        *running_by_model.entry(model_id.clone()).or_insert(0) += 1;
+                    }
+
+                    let backend_state =
+                        event_backend_running.load(std::sync::atomic::Ordering::Relaxed);
+                    let slots = {
+                        let slots = shared_slots.lock().unwrap();
+                        slots
+                            .iter()
+                            .map(|slot| {
+                                let state = if slot.restarting {
+                                    "reloading"
+                                } else if !slot.healthy {
+                                    match backend_state {
+                                        BACKEND_IDLE_SHUTDOWN => "idle_shutdown",
+                                        _ => "crashed",
+                                    }
+                                } else {
+                                    "running"
+                                };
+
+                                protocol::BackendSlotCapacity {
+                                    model: slot.model_id.clone(),
+                                    state: state.to_string(),
+                                    num_running: *running_by_model
+                                        .get(&slot.model_id)
+                                        .unwrap_or(&0),
+                                    num_waiting: 0,
+                                    active_tokens: 0,
+                                    max_tokens_potential: 0,
+                                }
+                            })
+                            .collect()
+                    };
+
+                    *cap_arc.lock().unwrap() = Some(protocol::BackendCapacity {
+                        slots,
+                        gpu_memory_active_gb: 0.0,
+                        gpu_memory_peak_gb: 0.0,
+                        gpu_memory_cache_gb: 0.0,
+                        total_memory_gb: hw.memory_gb as f64,
+                    });
+                };
+            update_inprocess_capacity(&inflight);
 
             loop {
                 let idle_sleep = async {
@@ -3289,11 +3350,12 @@ async fn cmd_serve(
                                     tracing::warn!(
                                         "Disconnected from coordinator — aborting {count} in-flight request(s)"
                                     );
-                                    for (rid, (token, handle)) in inflight.drain() {
+                                    for (rid, (token, handle, _model_id)) in inflight.drain() {
                                         tracing::info!("Aborting request {rid} (coordinator disconnected)");
                                         token.cancel();
                                         handle.abort();
                                     }
+                                    update_inprocess_capacity(&inflight);
                                     inference_active.store(false, std::sync::atomic::Ordering::Relaxed);
                                 } else {
                                     tracing::warn!("Disconnected from coordinator");
@@ -3623,12 +3685,14 @@ async fn cmd_serve(
                                     }
                                 };
 
-                                inflight.insert(request_id, (cancel_token, handle));
+                                inflight.insert(request_id, (cancel_token, handle, requested_model));
+                                update_inprocess_capacity(&inflight);
                             }
                             coordinator::CoordinatorEvent::Cancel { request_id } => {
-                                if let Some((token, _handle)) = inflight.remove(&request_id) {
+                                if let Some((token, _handle, _model_id)) = inflight.remove(&request_id) {
                                     tracing::info!("Cancelling request {request_id}");
                                     token.cancel();
+                                    update_inprocess_capacity(&inflight);
                                     if inflight.is_empty() {
                                         inference_active.store(false, std::sync::atomic::Ordering::Relaxed);
                                     }
@@ -3688,6 +3752,7 @@ async fn cmd_serve(
                     Some((rid, backend_dead)) = done_rx.recv() => {
                         if inflight.remove(&rid).is_some() {
                             tracing::debug!("Request {rid} completed, removed from tracker ({} in-flight)", inflight.len());
+                            update_inprocess_capacity(&inflight);
                             if inflight.is_empty() {
                                 inference_active.store(false, std::sync::atomic::Ordering::Relaxed);
                             }
@@ -3715,6 +3780,7 @@ async fn cmd_serve(
                                     slot.restarting = false;
                                 }
                             }
+                            update_inprocess_capacity(&inflight);
                         } else {
                             shutdown_backends(&backend_pids).await;
                         }
@@ -3984,15 +4050,20 @@ fn spawn_inference_backend(
         cmd.args(["--tool-call-parser", tool_parser]);
 
         let reasoning_parser = if model_lower.contains("gemma") {
-            "gemma4"
-        } else if model_lower.contains("deepseek") || model_lower.contains("trinity") {
-            "deepseek_r1"
-        } else if model_lower.contains("minimax") {
-            "deepseek_r1" // MiniMax uses <think>...</think> like DeepSeek
+            Some("gemma4")
+        } else if model_lower.contains("deepseek")
+            || model_lower.contains("trinity")
+            || model_lower.contains("minimax")
+        {
+            Some("deepseek_r1")
+        } else if model_lower.contains("qwen3") || model_lower.contains("qwq") {
+            Some("qwen3")
         } else {
-            "qwen3"
+            None
         };
-        cmd.args(["--reasoning-parser", reasoning_parser]);
+        if let Some(reasoning_parser) = reasoning_parser {
+            cmd.args(["--reasoning-parser", reasoning_parser]);
+        }
     }
 
     let log_target = if module.contains("vllm_mlx") {

@@ -409,6 +409,8 @@ func (s *Server) SyncModelCatalog() {
 				ID:         m.ID,
 				WeightHash: m.WeightHash,
 				SizeGB:     m.SizeGB,
+				Family:     m.Family,
+				CanVerify:  m.CanVerify,
 			})
 		}
 	}

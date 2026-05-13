@@ -8,6 +8,25 @@ import (
 	"github.com/eigeninference/coordinator/internal/store"
 )
 
+func TestLocalDevProfileEnabled(t *testing.T) {
+	t.Setenv("EIGENINFERENCE_DEV_PROFILE", "")
+	t.Setenv("EIGENINFERENCE_PROFILE", "")
+	if localDevProfileEnabled() {
+		t.Fatal("dev profile should be disabled by default")
+	}
+
+	t.Setenv("EIGENINFERENCE_DEV_PROFILE", "true")
+	if !localDevProfileEnabled() {
+		t.Fatal("EIGENINFERENCE_DEV_PROFILE=true should enable dev profile")
+	}
+
+	t.Setenv("EIGENINFERENCE_DEV_PROFILE", "")
+	t.Setenv("EIGENINFERENCE_PROFILE", "dev")
+	if !localDevProfileEnabled() {
+		t.Fatal("EIGENINFERENCE_PROFILE=dev should enable dev profile")
+	}
+}
+
 func TestSeedModelCatalogRemovesRetiredProviderModels(t *testing.T) {
 	st := store.NewMemory("")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -60,7 +79,14 @@ func TestSeedModelCatalogRemovesRetiredProviderModels(t *testing.T) {
 	if _, ok := byID[keep.ID]; !ok {
 		t.Fatalf("supported model %q was removed", keep.ID)
 	}
-	if _, ok := byID["qwen3.5-27b-claude-opus-8bit"]; !ok {
+	qwen, ok := byID["qwen3.5-27b-claude-opus-8bit"]
+	if !ok {
 		t.Fatalf("seeded text model missing")
+	}
+	if qwen.Family != "qwen" {
+		t.Fatalf("seeded model family = %q, want qwen", qwen.Family)
+	}
+	if !qwen.CanVerify {
+		t.Fatalf("seeded text model should be verifier-capable by default")
 	}
 }

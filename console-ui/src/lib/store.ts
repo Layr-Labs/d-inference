@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { TrustMetadata, Model } from "./api";
+import type { WeaverTrace, TrustMetadata, Model } from "./api";
 
 export interface Chat {
   id: string;
@@ -14,6 +14,7 @@ export interface Message {
   role: "user" | "assistant";
   content: string;
   thinking?: string;
+  weaver?: WeaverTrace;
   trust?: TrustMetadata;
   streaming?: boolean;
   error?: boolean;

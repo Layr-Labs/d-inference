@@ -84,12 +84,8 @@ export default function ProviderDashboardContent() {
         setError("Not authenticated");
         return;
       }
-      const coordinatorUrl =
-        localStorage.getItem("darkbloom_coordinator_url") ||
-        process.env.NEXT_PUBLIC_COORDINATOR_URL ||
-        "https://api.darkbloom.dev";
       const headers = { Authorization: `Bearer ${token}` };
-      const pRes = await fetch(`${coordinatorUrl}/v1/me/providers`, { headers, cache: "no-store" });
+      const pRes = await fetch("/api/me/providers", { headers, cache: "no-store" });
       if (!pRes.ok) throw new Error(`providers: HTTP ${pRes.status}`);
       const p = await pRes.json() as MyProvidersResponse;
       setProvidersResp(p);

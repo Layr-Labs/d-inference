@@ -4,8 +4,6 @@ import { useState, useEffect } from "react";
 import { ShieldCheck, Info } from "lucide-react";
 import { TrustExplainerModal } from "./TrustExplainerModal";
 
-const ATTESTATION_API = "https://api.darkbloom.dev";
-
 interface ProviderSummary {
   count: number;
   lastVerified: string;
@@ -22,7 +20,7 @@ export function PreSendTrustBanner({ visible }: { visible: boolean }) {
 
     async function fetchProviders() {
       try {
-        const res = await fetch(`${ATTESTATION_API}/v1/providers/attestation`);
+        const res = await fetch("/api/providers/attestation");
         if (!res.ok) return;
         const data = await res.json();
         if (cancelled) return;

@@ -7,6 +7,7 @@ import {
   fetchModels,
   fetchPricing,
   healthCheck,
+  streamWeaverChat,
 } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
@@ -21,6 +22,21 @@ function jsonResponse(body: unknown, status = 200): Response {
     json: () => Promise.resolve(body),
     text: () => Promise.resolve(JSON.stringify(body)),
     headers: new Headers(),
+  } as unknown as Response;
+}
+
+function sseResponse(events: string): Response {
+  const encoder = new TextEncoder();
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers({ "content-type": "text/event-stream" }),
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(events));
+        controller.close();
+      },
+    }),
   } as unknown as Response;
 }
 
@@ -259,6 +275,54 @@ describe("healthCheck", () => {
   it("throws on non-ok response", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({}, 500));
     await expect(healthCheck()).rejects.toThrow("Health check failed: 500");
+  });
+});
+
+describe("streamWeaverChat", () => {
+  it("sends weaver options and routes orchestration SSE events", async () => {
+    fetchMock.mockResolvedValueOnce(sseResponse([
+      'event: weaver_init\ndata: {"mode":"deep","status":"generating","candidateCount":4,"verifierCount":3,"candidates":[],"verifierScores":[]}\n\n',
+      'event: candidate_delta\ndata: {"candidate_id":"candidate-2","delta":"hello"}\n\n',
+      'event: verifier_score\ndata: {"candidate_id":"candidate-2","verifier_model":"verifier-a","score":8,"rationale":"clear"}\n\n',
+      'event: weaver_final\ndata: {"selected_candidate":"candidate-2","confidence":0.8,"content":"final answer","usage":{"tokenCount":12,"tps":0,"ttft":0}}\n\n',
+      'event: done\ndata: {"status":"complete"}\n\n',
+    ].join("")));
+
+    const seen: string[] = [];
+    await streamWeaverChat(
+      [{ role: "user", content: "hi" }],
+      "base-model",
+      { mode: "deep", candidateCount: 4, verifierCount: 3 },
+      {
+        onWeaverInit: (trace) => seen.push(`init:${trace.candidateCount}`),
+        onWeaverStatus: (status) => seen.push(`status:${status}`),
+        onCandidateStart: () => {},
+        onCandidateDelta: (id, delta) => seen.push(`delta:${id}:${delta}`),
+        onCandidateDone: () => {},
+        onCandidateError: () => {},
+        onVerifierScore: (score) => seen.push(`score:${score.candidateId}:${score.score}`),
+        onFinal: (content, selected, confidence, usage) => seen.push(`final:${selected}:${confidence}:${usage?.tokenCount}:${content}`),
+        onDone: () => seen.push("done"),
+        onError: (error) => seen.push(`error:${error}`),
+      }
+    );
+
+    const [, opts] = fetchMock.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.weaver).toEqual({
+      mode: "deep",
+      candidate_count: 4,
+      verifier_count: 3,
+      verifier_selection: "auto",
+      trace: true,
+    });
+    expect(seen).toEqual([
+      "init:4",
+      "delta:candidate-2:hello",
+      "score:candidate-2:8",
+      "final:candidate-2:0.8:12:final answer",
+      "done",
+    ]);
   });
 });
 

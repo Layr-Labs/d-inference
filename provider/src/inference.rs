@@ -501,7 +501,7 @@ try:
         from vllm_mlx.reasoning import get_parser
         _name_lower = (_model_name or "").lower()
         _parser_name = None
-        if "qwen" in _name_lower:
+        if "qwen3" in _name_lower or "qwq" in _name_lower:
             _parser_name = "qwen3"
         elif "gemma" in _name_lower:
             _parser_name = "gemma4"
@@ -694,7 +694,7 @@ def _select_reasoning_parser(model_id):
         return None
     name = (model_id or "").lower()
     parser_name = None
-    if "qwen" in name:
+    if "qwen3" in name or "qwq" in name:
         parser_name = "qwen3"
     elif "gemma" in name:
         parser_name = "gemma4"

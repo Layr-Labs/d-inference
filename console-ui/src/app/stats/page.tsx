@@ -10,8 +10,6 @@ import {
 } from "lucide-react";
 import { TopBar } from "@/components/TopBar";
 
-const STATS_API = "https://api.darkbloom.dev";
-
 interface CPUCores {
   total: number;
   performance: number;
@@ -451,7 +449,7 @@ export default function StatsPage() {
 
   const fetchStats = async () => {
     try {
-      const res = await fetch(`${STATS_API}/v1/stats`);
+      const res = await fetch("/api/stats");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setStats(data);

@@ -41,12 +41,12 @@ struct Darkbloom: AsyncParsableCommand {
 /// Subcommands invoke this via the top-level `Darkbloom` parsable type
 /// being the entry point; we hook it in `main` of each subcommand
 /// indirectly by calling at the start of any `run()` that wants it.
-public func runUpdateBannerIfEnabled() async {
+func runUpdateBannerIfEnabled(configOptions: ConfigOptions) async {
     if ProcessInfo.processInfo.environment["DARKBLOOM_NO_UPDATE_CHECK"] != nil {
         return
     }
     let coordinatorURL: String
-    if let snapshot = try? loadRuntimeSnapshot(configOptions: ConfigOptions()) {
+    if let snapshot = try? loadRuntimeSnapshot(configOptions: configOptions) {
         coordinatorURL = snapshot.config.coordinator.url
     } else {
         coordinatorURL = "https://api.darkbloom.dev"

@@ -11,7 +11,7 @@ struct Status: AsyncParsableCommand {
     mutating func run() async throws {
         // Best-effort: tell the user if a newer release is published before
         // we dump current status. Bounded by a 2s timeout in UpdateBanner.
-        await runUpdateBannerIfEnabled()
+        await runUpdateBannerIfEnabled(configOptions: configOptions)
 
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         let config = snapshot.config

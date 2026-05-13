@@ -20,7 +20,7 @@ struct Doctor: AsyncParsableCommand {
     var support = false
 
     mutating func run() async throws {
-        await runUpdateBannerIfEnabled()
+        await runUpdateBannerIfEnabled(configOptions: configOptions)
 
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         var checks = buildDoctorChecks(snapshot: snapshot)

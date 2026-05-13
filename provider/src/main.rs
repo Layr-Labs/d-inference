@@ -6066,6 +6066,15 @@ fn verify_installed_update_runtime(
     coordinator_http: &str,
     stdout: bool,
 ) -> Result<()> {
+    let python_dir = eigeninference_dir.join("python");
+    if !python_dir.is_dir() {
+        emit_update_status(
+            stdout,
+            "  No bundled Python (Swift bundle) — skipping runtime verification",
+        );
+        return Ok(());
+    }
+
     let bundled_python = eigeninference_dir.join("python/bin/python3.12");
 
     if let Err(err) = verify_python_core_signature_match(eigeninference_dir) {

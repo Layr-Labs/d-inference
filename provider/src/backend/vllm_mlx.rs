@@ -90,20 +90,24 @@ impl VllmMlxBackend {
         args.push("--tool-call-parser".to_string());
         args.push(tool_parser.to_string());
 
-        // Extract <think>...</think> into reasoning_content field instead of
-        // leaking thinking tags into the response content.
+        // Extract explicit reasoning markers only for known reasoning model
+        // families. Qwen2.x instruct models should stream normal content.
         let reasoning_parser = if model_lower.contains("gemma") {
-            "gemma4" // <|channel>thought\n...<channel|>
+            Some("gemma4") // <|channel>thought\n...<channel|>
         } else if model_lower.contains("deepseek")
             || model_lower.contains("trinity")
             || model_lower.contains("minimax")
         {
-            "deepseek_r1" // <think>...</think> (supports implicit reasoning)
+            Some("deepseek_r1") // <think>...</think> (supports implicit reasoning)
+        } else if model_lower.contains("qwen3") || model_lower.contains("qwq") {
+            Some("qwen3")
         } else {
-            "qwen3" // safe default: no-op if model doesn't output <think> tags
+            None
         };
-        args.push("--reasoning-parser".to_string());
-        args.push(reasoning_parser.to_string());
+        if let Some(reasoning_parser) = reasoning_parser {
+            args.push("--reasoning-parser".to_string());
+            args.push(reasoning_parser.to_string());
+        }
 
         args
     }
@@ -233,13 +237,13 @@ mod tests {
     fn test_build_args_basic() {
         let backend = VllmMlxBackend::new("mlx-community/Qwen2.5-7B-4bit".into(), 8100, false);
         let args = backend.build_args();
-        // Qwen model gets nemotron tool parser + qwen3 reasoning parser
+        // Qwen2 model gets nemotron tool parser without a Qwen3 reasoning parser.
         assert!(args.contains(&"serve".to_string()));
         assert!(args.contains(&"--enable-auto-tool-choice".to_string()));
         assert!(args.contains(&"--tool-call-parser".to_string()));
         assert!(args.contains(&"nemotron".to_string()));
-        assert!(args.contains(&"--reasoning-parser".to_string()));
-        assert!(args.contains(&"qwen3".to_string()));
+        assert!(!args.contains(&"--reasoning-parser".to_string()));
+        assert!(!args.contains(&"qwen3".to_string()));
         assert!(!args.contains(&"--continuous-batching".to_string()));
     }
 
@@ -250,6 +254,14 @@ mod tests {
         assert!(args.contains(&"--continuous-batching".to_string()));
         assert!(args.contains(&"--enable-auto-tool-choice".to_string()));
         assert!(args.contains(&"nemotron".to_string()));
+        assert!(!args.contains(&"qwen3".to_string()));
+    }
+
+    #[test]
+    fn test_build_args_qwen3_reasoning_model() {
+        let backend = VllmMlxBackend::new("mlx-community/Qwen3-8B-4bit".into(), 8100, false);
+        let args = backend.build_args();
+        assert!(args.contains(&"--reasoning-parser".to_string()));
         assert!(args.contains(&"qwen3".to_string()));
     }
 
@@ -279,12 +291,12 @@ mod tests {
     fn test_build_args_generic_model() {
         let backend = VllmMlxBackend::new("mlx-community/Llama-3-8B".into(), 8100, false);
         let args = backend.build_args();
-        // Generic model gets auto tool parser + qwen3 reasoning (safe default)
+        // Generic model gets auto tool parser and no reasoning parser.
         assert!(args.contains(&"--enable-auto-tool-choice".to_string()));
         assert!(args.contains(&"--tool-call-parser".to_string()));
         assert!(args.contains(&"auto".to_string()));
-        assert!(args.contains(&"--reasoning-parser".to_string()));
-        assert!(args.contains(&"qwen3".to_string()));
+        assert!(!args.contains(&"--reasoning-parser".to_string()));
+        assert!(!args.contains(&"qwen3".to_string()));
     }
 
     #[test]

@@ -580,6 +580,8 @@ type CatalogEntry struct {
 	ID         string
 	WeightHash string  // expected SHA-256 weight fingerprint (empty = not enforced)
 	SizeGB     float64 // disk/GPU footprint of the model weights (zero = unknown, gate disabled)
+	Family     string  // model family for verifier diversity (empty = unknown)
+	CanVerify  bool    // whether this text model can act as a Weaver verifier
 }
 
 // SetModelCatalog updates the set of active models. Only models in this

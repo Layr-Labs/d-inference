@@ -17,10 +17,9 @@ import {
 export function GoogleAnalytics() {
   const pathname = usePathname();
   const measurementId = getGoogleAnalyticsMeasurementId();
-  const [consentState, setConsentState] = useState<"granted" | "denied" | "unset">(
-    () => getGoogleAnalyticsConsentStatus(),
-  );
-  const [hasConsent, setHasConsent] = useState(consentState === "granted");
+  const [mounted, setMounted] = useState(false);
+  const [consentState, setConsentState] = useState<"granted" | "denied" | "unset">("unset");
+  const [hasConsent, setHasConsent] = useState(false);
 
   useEffect(() => {
     const syncConsentState = () => {
@@ -30,6 +29,7 @@ export function GoogleAnalytics() {
     };
 
     syncConsentState();
+    setMounted(true);
     window.addEventListener("darkbloom-ga-consent-changed", syncConsentState);
     const onStorage = (event: StorageEvent) => {
       if (event.key === getGoogleAnalyticsConsentStorageKey()) {
@@ -61,7 +61,7 @@ export function GoogleAnalytics() {
     trackRouteChange(pathname);
   }, [hasConsent, pathname]);
 
-  if (!measurementId) {
+  if (!mounted || !measurementId) {
     return null;
   }
 
@@ -74,7 +74,7 @@ export function GoogleAnalytics() {
         />
       )}
       {consentState === "unset" && !hasConsent && (
-        <div className="fixed bottom-4 left-4 right-4 z-50 mx-auto max-w-xl rounded-xl border border-border-dim bg-bg-white/95 p-4 shadow-lg backdrop-blur">
+        <div className="fixed left-4 right-4 top-4 z-50 mx-auto max-w-xl rounded-xl border border-border-dim bg-bg-white/95 p-4 shadow-lg backdrop-blur">
           <p className="text-sm text-text-secondary">
             Allow privacy-filtered usage analytics to help improve
             Darkbloom&apos;s product experience.

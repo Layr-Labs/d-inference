@@ -550,6 +550,8 @@ type SupportedModel struct {
 	DisplayName  string  `json:"display_name"` // Human-readable (e.g. "Qwen3.5 9B")
 	ModelType    string  `json:"model_type"`   // "text", "embedding", "tts"
 	SizeGB       float64 `json:"size_gb"`      // Disk/memory size in GB
+	Family       string  `json:"family"`       // Model family for verifier diversity (empty = unknown)
+	CanVerify    bool    `json:"can_verify"`   // Whether this text model can act as a Weaver verifier
 	Architecture string  `json:"architecture"` // e.g. "9B dense", "2B conformer"
 	Description  string  `json:"description"`  // e.g. "Balanced", "Fast reasoning"
 	MinRAMGB     int     `json:"min_ram_gb"`   // Minimum system RAM for auto-selection

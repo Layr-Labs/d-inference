@@ -38,6 +38,8 @@ export interface Model {
   attested?: boolean;
   trust_level?: string;
   display_name?: string;
+  family?: string;
+  can_verify?: boolean;
 }
 
 export interface BalanceResponse {
@@ -90,6 +92,57 @@ export interface StreamCallbacks {
   onError: (error: string) => void;
 }
 
+export type WeaverMode = "deep" | "deep_plus";
+export type WeaverStatus = "generating" | "verifying" | "selecting" | "complete" | "failed";
+export type CandidateStatus = "queued" | "streaming" | "done" | "failed" | "selected";
+
+export interface WeaverCandidate {
+  id: string;
+  index: number;
+  label: string;
+  model: string;
+  status: CandidateStatus;
+  content: string;
+  error?: string;
+}
+
+export interface WeaverVerifierScore {
+  candidateId: string;
+  verifierModel: string;
+  score: number;
+  rationale?: string;
+}
+
+export interface WeaverTrace {
+  mode: WeaverMode;
+  status: WeaverStatus;
+  candidateCount: number;
+  verifierCount: number;
+  selectedCandidate?: string;
+  confidence?: number;
+  candidates: WeaverCandidate[];
+  verifierScores: WeaverVerifierScore[];
+}
+
+export interface WeaverRequestOptions {
+  mode: WeaverMode;
+  candidateCount: number;
+  verifierCount: number;
+}
+
+export interface WeaverStreamCallbacks {
+  onWeaverInit: (trace: WeaverTrace) => void;
+  onWeaverStatus: (status: WeaverStatus) => void;
+  onCandidateStart: (candidate: WeaverCandidate) => void;
+  onCandidateDelta: (candidateId: string, delta: string) => void;
+  onCandidateDone: (candidateId: string, content: string) => void;
+  onCandidateError: (candidateId: string, error: string) => void;
+  onVerifierScore: (score: WeaverVerifierScore) => void;
+  onFinal: (content: string, selectedCandidate?: string, confidence?: number, usage?: StreamMetrics) => void;
+  onDone: () => void;
+  onError: (error: string) => void;
+}
+
 export async function fetchModels(): Promise<Model[]> {
   const res = await fetch("/api/models", { headers: proxyHeaders() });
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
@@ -106,6 +159,8 @@ export async function fetchModels(): Promise<Model[]> {
       trust_level: m.trust_level || meta.trust_level,
       attested: m.attested ?? (meta.attested_providers as number) > 0,
       display_name: m.display_name || meta.display_name,
+      family: m.family || meta.family,
+      can_verify: m.can_verify ?? meta.can_verify,
     };
   });
 }
@@ -294,6 +349,211 @@ export async function healthCheck(): Promise<{ status: string; providers: number
   const res = await fetch("/api/health", { headers: proxyHeaders() });
   if (!res.ok) throw new Error(`Health check failed: ${res.status}`);
   return res.json();
+}
+
+function parseSseBlock(block: string): { event: string; data: string } | null {
+  const lines = block.split(/\r?\n/);
+  let event = "message";
+  const data: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      event = line.slice(6).trim();
+    } else if (line.startsWith("data:")) {
+      data.push(line.slice(5).trimStart());
+    }
+  }
+  if (data.length === 0) return null;
+  return { event, data: data.join("\n") };
+}
+
+async function parseStreamError(res: Response, sealCtx: { ephemPriv: Uint8Array; coordPub: Uint8Array } | null): Promise<string> {
+  if (res.status === 401) {
+    localStorage.removeItem("darkbloom_api_key");
+    window.dispatchEvent(new Event("darkbloom-key-expired"));
+    return "Session expired — please try again";
+  }
+
+  let text = await res.text();
+  const errCt = res.headers.get("content-type") || "";
+  const errSealed =
+    sealCtx && (res.headers.get("x-eigen-sealed") === "true" ||
+      errCt.toLowerCase().startsWith(SEALED_CONTENT_TYPE));
+  if (errSealed && sealCtx) {
+    try {
+      const pt = unsealResponse(text, sealCtx.ephemPriv, sealCtx.coordPub);
+      text = new TextDecoder().decode(pt);
+    } catch (err) {
+      return `Could not decrypt sealed error response: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+  try {
+    const errData = JSON.parse(text);
+    const msg = errData?.error?.message || text;
+    if (res.status === 503 && msg.includes("queue timeout")) {
+      return "All providers are busy — please try again in a moment";
+    }
+    if (res.status === 402) {
+      return "Insufficient credits — buy credits in Billing to continue";
+    }
+    return `Request failed (${res.status}): ${msg}`;
+  } catch {
+    return `Request failed (${res.status}): ${text}`;
+  }
+}
+
+export async function streamWeaverChat(
+  messages: ChatMessage[],
+  model: string,
+  options: WeaverRequestOptions,
+  callbacks: WeaverStreamCallbacks,
+  signal?: AbortSignal
+): Promise<void> {
+  const requestBody = {
+    model,
+    messages,
+    stream: true,
+    weaver: {
+      mode: options.mode,
+      candidate_count: options.candidateCount,
+      verifier_count: options.verifierCount,
+      verifier_selection: "auto",
+      trace: true,
+    },
+  };
+  let sealCtx: { ephemPriv: Uint8Array; coordPub: Uint8Array } | null = null;
+  let fetchHeaders = proxyHeaders();
+  let fetchBody: string;
+
+  if (isEncryptionEnabled()) {
+    try {
+      const coordKey = await getCoordinatorKey();
+      const sealed = sealRequest(requestBody, coordKey);
+      fetchBody = sealed.envelopeJson;
+      fetchHeaders = proxyHeaders({ "Content-Type": SEALED_CONTENT_TYPE });
+      sealCtx = {
+        ephemPriv: sealed.ephemeralPrivateKey,
+        coordPub: coordKey.publicKey,
+      };
+    } catch (err) {
+      callbacks.onError(
+        `Encryption setup failed: ${err instanceof Error ? err.message : String(err)} — disable "Encrypt to coordinator" in Settings to continue in plaintext.`,
+      );
+      return;
+    }
+  } else {
+    fetchBody = JSON.stringify(requestBody);
+  }
+
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: fetchHeaders,
+    body: fetchBody,
+    signal,
+  });
+
+  if (sealCtx && res.status === 400) {
+    const text = await res.clone().text();
+    if (text.includes("kid_mismatch")) {
+      clearCoordinatorKeyCache();
+    }
+  }
+
+  if (!res.ok) {
+    callbacks.onError(await parseStreamError(res, sealCtx));
+    return;
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) {
+    callbacks.onError("No response body");
+    return;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const responseSealed = sealCtx !== null && res.headers.get("x-eigen-sealed") === "true";
+
+  const handleBlock = (rawBlock: string) => {
+    let block = rawBlock.trim();
+    if (!block) return;
+
+    if (responseSealed && sealCtx) {
+      const encrypted = parseSseBlock(block);
+      if (!encrypted) return;
+      try {
+        block = unsealSseEvent(encrypted.data, sealCtx.ephemPriv, sealCtx.coordPub).trim();
+      } catch (err) {
+        callbacks.onError(
+          `Sealed stream decryption failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return;
+      }
+    }
+
+    const parsed = parseSseBlock(block);
+    if (!parsed) return;
+    if (parsed.data === "[DONE]" || parsed.event === "done") {
+      callbacks.onDone();
+      return;
+    }
+
+    let payload: any;
+    try {
+      payload = JSON.parse(parsed.data);
+    } catch {
+      return;
+    }
+
+    switch (parsed.event) {
+      case "weaver_init":
+        callbacks.onWeaverInit(payload as WeaverTrace);
+        break;
+      case "weaver_status":
+        callbacks.onWeaverStatus(payload.status as WeaverStatus);
+        break;
+      case "candidate_start":
+        callbacks.onCandidateStart(payload as WeaverCandidate);
+        break;
+      case "candidate_delta":
+        callbacks.onCandidateDelta(payload.candidate_id, payload.delta || "");
+        break;
+      case "candidate_done":
+        callbacks.onCandidateDone(payload.candidate_id, payload.content || "");
+        break;
+      case "candidate_error":
+        callbacks.onCandidateError(payload.candidate_id, payload.error || "candidate failed");
+        break;
+      case "verifier_score":
+        callbacks.onVerifierScore({
+          candidateId: payload.candidate_id,
+          verifierModel: payload.verifier_model,
+          score: Number(payload.score) || 0,
+          rationale: payload.rationale,
+        });
+        break;
+      case "weaver_final":
+        callbacks.onFinal(payload.content || "", payload.selected_candidate, payload.confidence, payload.usage);
+        break;
+      case "error":
+        callbacks.onError(payload?.error?.message || payload?.message || "weaver failed");
+        break;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split(/\n\n/);
+    buffer = blocks.pop() || "";
+    for (const block of blocks) {
+      handleBlock(block);
+    }
+  }
+
+  if (buffer.trim()) {
+    handleBlock(buffer);
+  }
 }
 
 export async function streamChat(

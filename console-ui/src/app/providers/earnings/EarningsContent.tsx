@@ -119,18 +119,9 @@ export default function EarningsContent() {
   const fetchEarnings = useCallback(async () => {
     setError(null);
     try {
-      const coordinatorUrl =
-        localStorage.getItem("darkbloom_coordinator_url") ||
-        process.env.NEXT_PUBLIC_COORDINATOR_URL ||
-        "https://api.darkbloom.dev";
       const headers = await getAuthHeaders();
 
-      const res = await fetch(
-        `${coordinatorUrl}/v1/provider/account-earnings?limit=100`,
-        {
-          headers,
-        }
-      );
+      const res = await fetch("/api/provider/account-earnings?limit=100", { headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setData(await res.json());
     } catch (e) {

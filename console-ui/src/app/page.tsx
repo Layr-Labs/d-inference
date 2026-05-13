@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useCallback, useState } from "react";
 import { useStore } from "@/lib/store";
-import { streamChat, fetchModels } from "@/lib/api";
+import { streamWeaverChat, streamChat, fetchModels } from "@/lib/api";
 import { useToastStore } from "@/hooks/useToast";
 import { useAuth } from "@/hooks/useAuth";
 import { ChatMessage } from "@/components/ChatMessage";
@@ -12,10 +12,44 @@ import { PreSendTrustBanner } from "@/components/PreSendTrustBanner";
 import { Mail } from "lucide-react";
 import { InviteCodeBanner } from "@/components/InviteCodeBanner";
 import type { Message } from "@/lib/store";
+import type { WeaverCandidate, WeaverMode, WeaverTrace } from "@/lib/api";
 import { trackEvent } from "@/lib/google-analytics";
 
 function generateId() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+}
+
+function weaverDefaults(mode: WeaverMode) {
+  return mode === "deep_plus"
+    ? { candidateCount: 8, verifierCount: 5 }
+    : { candidateCount: 4, verifierCount: 3 };
+}
+
+function initialWeaver(mode: WeaverMode, model: string): WeaverTrace {
+  const { candidateCount, verifierCount } = weaverDefaults(mode);
+  return {
+    mode,
+    status: "generating",
+    candidateCount,
+    verifierCount,
+    candidates: Array.from({ length: candidateCount }, (_, index) => ({
+      id: `candidate-${index + 1}`,
+      index,
+      label: `Agent ${index + 1}`,
+      model,
+      status: "queued",
+      content: "",
+    })),
+    verifierScores: [],
+  };
+}
+
+function upsertCandidate(candidates: WeaverCandidate[], candidate: WeaverCandidate) {
+  const found = candidates.some((c) => c.id === candidate.id);
+  if (found) {
+    return candidates.map((c) => (c.id === candidate.id ? { ...c, ...candidate } : c));
+  }
+  return [...candidates, candidate].sort((a, b) => a.index - b.index);
 }
 
 const SYSTEM_PROMPT = `You are an AI assistant running on Darkbloom, a decentralized private inference platform built by Eigen Labs. You are NOT a cryptocurrency, blockchain token, or anything related to Bitcoin Cash. Darkbloom is an AI infrastructure project.
@@ -82,7 +116,7 @@ export default function ChatPage() {
   }, [activeChat?.messages]);
 
   const handleSend = useCallback(
-    async (content: string) => {
+    async (content: string, weaverMode?: WeaverMode) => {
       const trimmedContent = content.trim();
       if (!trimmedContent) {
         return;
@@ -132,6 +166,7 @@ export default function ChatPage() {
         id: assistantId,
         role: "assistant",
         content: "",
+        weaver: weaverMode ? initialWeaver(weaverMode, selectedModel) : undefined,
         streaming: true,
         timestamp: Date.now(),
       };
@@ -151,55 +186,209 @@ export default function ChatPage() {
       ];
 
       try {
-        await streamChat(
-          allMessages,
-          selectedModel,
-          {
-            onToken: (token) => {
-              appendToMessage(chatId!, assistantId, token);
+        if (weaverMode) {
+          const defaults = weaverDefaults(weaverMode);
+          await streamWeaverChat(
+            allMessages,
+            selectedModel,
+            {
+              mode: weaverMode,
+              candidateCount: defaults.candidateCount,
+              verifierCount: defaults.verifierCount,
             },
-            onThinking: (token) => {
-              appendToThinking(chatId!, assistantId, token);
+            {
+              onWeaverInit: (weaver) => {
+                updateMessage(chatId!, assistantId, { weaver });
+              },
+              onWeaverStatus: (status) => {
+                const current = useStore.getState().chats
+                  .find((c) => c.id === chatId)
+                  ?.messages.find((m) => m.id === assistantId)?.weaver;
+                if (current) {
+                  updateMessage(chatId!, assistantId, {
+                    weaver: { ...current, status },
+                  });
+                }
+              },
+              onCandidateStart: (candidate) => {
+                const current = useStore.getState().chats
+                  .find((c) => c.id === chatId)
+                  ?.messages.find((m) => m.id === assistantId)?.weaver;
+                if (current) {
+                  updateMessage(chatId!, assistantId, {
+                    weaver: {
+                      ...current,
+                      candidates: upsertCandidate(current.candidates, candidate),
+                    },
+                  });
+                }
+              },
+              onCandidateDelta: (candidateId, delta) => {
+                const current = useStore.getState().chats
+                  .find((c) => c.id === chatId)
+                  ?.messages.find((m) => m.id === assistantId)?.weaver;
+                if (current) {
+                  updateMessage(chatId!, assistantId, {
+                    weaver: {
+                      ...current,
+                      candidates: current.candidates.map((c) =>
+                        c.id === candidateId
+                          ? { ...c, status: "streaming", content: c.content + delta }
+                          : c
+                      ),
+                    },
+                  });
+                }
+              },
+              onCandidateDone: (candidateId, content) => {
+                const current = useStore.getState().chats
+                  .find((c) => c.id === chatId)
+                  ?.messages.find((m) => m.id === assistantId)?.weaver;
+                if (current) {
+                  updateMessage(chatId!, assistantId, {
+                    weaver: {
+                      ...current,
+                      candidates: current.candidates.map((c) =>
+                        c.id === candidateId ? { ...c, status: "done", content } : c
+                      ),
+                    },
+                  });
+                }
+              },
+              onCandidateError: (candidateId, error) => {
+                const current = useStore.getState().chats
+                  .find((c) => c.id === chatId)
+                  ?.messages.find((m) => m.id === assistantId)?.weaver;
+                if (current) {
+                  updateMessage(chatId!, assistantId, {
+                    weaver: {
+                      ...current,
+                      candidates: current.candidates.map((c) =>
+                        c.id === candidateId ? { ...c, status: "failed", error } : c
+                      ),
+                    },
+                  });
+                }
+              },
+              onVerifierScore: (score) => {
+                const current = useStore.getState().chats
+                  .find((c) => c.id === chatId)
+                  ?.messages.find((m) => m.id === assistantId)?.weaver;
+                if (current) {
+                  updateMessage(chatId!, assistantId, {
+                    weaver: {
+                      ...current,
+                      verifierScores: [...current.verifierScores, score],
+                    },
+                  });
+                }
+              },
+              onFinal: (content, selectedCandidate, confidence, usage) => {
+                const current = useStore.getState().chats
+                  .find((c) => c.id === chatId)
+                  ?.messages.find((m) => m.id === assistantId)?.weaver;
+                trackEvent("chat_complete", {
+                  model: selectedModel,
+                  weaver_mode: weaverMode,
+                  token_count: usage?.tokenCount || 0,
+                });
+                updateMessage(chatId!, assistantId, {
+                  content,
+                  streaming: false,
+                  tps: usage?.tps,
+                  ttft: usage?.ttft,
+                  tokenCount: usage?.tokenCount,
+                  weaver: current
+                    ? {
+                        ...current,
+                        status: "complete",
+                        selectedCandidate,
+                        confidence,
+                        candidates: current.candidates.map((c) =>
+                          c.id === selectedCandidate
+                            ? { ...c, status: "selected" }
+                            : c
+                        ),
+                      }
+                    : undefined,
+                });
+                setIsStreaming(false);
+              },
+              onDone: () => {
+                setIsStreaming(false);
+              },
+              onError: (error) => {
+                trackEvent("chat_error", {
+                  model: selectedModel,
+                  weaver_mode: weaverMode,
+                  error_type: "weaver_callback",
+                });
+                const current = useStore.getState().chats
+                  .find((c) => c.id === chatId)
+                  ?.messages.find((m) => m.id === assistantId)?.weaver;
+                updateMessage(chatId!, assistantId, {
+                  content: `Error: ${error}`,
+                  streaming: false,
+                  error: true,
+                  weaver: current ? { ...current, status: "failed" } : current,
+                });
+                addToast(error);
+                setIsStreaming(false);
+              },
             },
-            onMetrics: (metrics) => {
-              updateMessage(chatId!, assistantId, {
-                tps: metrics.tps,
-                ttft: metrics.ttft,
-                tokenCount: metrics.tokenCount,
-              });
+            abort.signal
+          );
+        } else {
+          await streamChat(
+            allMessages,
+            selectedModel,
+            {
+              onToken: (token) => {
+                appendToMessage(chatId!, assistantId, token);
+              },
+              onThinking: (token) => {
+                appendToThinking(chatId!, assistantId, token);
+              },
+              onMetrics: (metrics) => {
+                updateMessage(chatId!, assistantId, {
+                  tps: metrics.tps,
+                  ttft: metrics.ttft,
+                  tokenCount: metrics.tokenCount,
+                });
+              },
+              onDone: (trust, metrics) => {
+                trackEvent("chat_complete", {
+                  model: selectedModel,
+                  trust_level: trust?.trustLevel,
+                  secure_enclave: trust?.secureEnclave,
+                  token_count: metrics.tokenCount,
+                });
+                updateMessage(chatId!, assistantId, {
+                  streaming: false,
+                  trust,
+                  tps: metrics.tps,
+                  ttft: metrics.ttft,
+                  tokenCount: metrics.tokenCount,
+                });
+                setIsStreaming(false);
+              },
+              onError: (error) => {
+                trackEvent("chat_error", {
+                  model: selectedModel,
+                  error_type: "stream_callback",
+                });
+                updateMessage(chatId!, assistantId, {
+                  content: `Error: ${error}`,
+                  streaming: false,
+                  error: true,
+                });
+                addToast(error);
+                setIsStreaming(false);
+              },
             },
-            onDone: (trust, metrics) => {
-              trackEvent("chat_complete", {
-                model: selectedModel,
-                trust_level: trust?.trustLevel,
-                secure_enclave: trust?.secureEnclave,
-                token_count: metrics.tokenCount,
-              });
-              updateMessage(chatId!, assistantId, {
-                streaming: false,
-                trust,
-                tps: metrics.tps,
-                ttft: metrics.ttft,
-                tokenCount: metrics.tokenCount,
-              });
-              setIsStreaming(false);
-            },
-            onError: (error) => {
-              trackEvent("chat_error", {
-                model: selectedModel,
-                error_type: "stream_callback",
-              });
-              updateMessage(chatId!, assistantId, {
-                content: `Error: ${error}`,
-                streaming: false,
-                error: true,
-              });
-              addToast(error);
-              setIsStreaming(false);
-            },
-          },
-          abort.signal
-        );
+            abort.signal
+          );
+        }
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
           trackEvent("chat_error", {

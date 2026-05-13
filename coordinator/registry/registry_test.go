@@ -782,6 +782,42 @@ func TestChallengeFailureThreshold(t *testing.T) {
 	}
 }
 
+func TestHeartbeatDoesNotReviveUntrusted(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	reg.Register("p1", nil, msg)
+
+	if reg.OnlineCount() != 1 {
+		t.Fatalf("OnlineCount = %d, want 1 after register", reg.OnlineCount())
+	}
+
+	reg.MarkUntrusted("p1")
+	if reg.OnlineCount() != 0 {
+		t.Errorf("OnlineCount = %d, want 0 after MarkUntrusted", reg.OnlineCount())
+	}
+
+	p := reg.GetProvider("p1")
+	if p.Status != StatusUntrusted {
+		t.Fatalf("status = %q, want %q", p.Status, StatusUntrusted)
+	}
+
+	// Heartbeat with idle status must not revive an untrusted provider
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{Status: "idle"})
+	p = reg.GetProvider("p1")
+	if p.Status != StatusUntrusted {
+		t.Errorf("status = %q after heartbeat, want %q (untrusted must not revive)", p.Status, StatusUntrusted)
+	}
+	if reg.OnlineCount() != 0 {
+		t.Errorf("OnlineCount = %d after heartbeat on untrusted, want 0", reg.OnlineCount())
+	}
+
+	// Disconnect should NOT decrement again (no double-decrement)
+	reg.Disconnect("p1")
+	if reg.OnlineCount() != 0 {
+		t.Errorf("OnlineCount = %d after disconnect, want 0 (no double-decrement)", reg.OnlineCount())
+	}
+}
+
 // --- scoring tests ---
 
 func TestScoringHigherDecodeTPS(t *testing.T) {

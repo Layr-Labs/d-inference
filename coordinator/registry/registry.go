@@ -985,8 +985,13 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 		p.CurrentModel = *msg.ActiveModel
 	}
 	// Only update status from heartbeat if provider is not actively serving
-	// (serving status is managed by request lifecycle).
-	if p.Status != StatusServing || msg.Status == "idle" {
+	// (serving status is managed by request lifecycle). Crucially, an
+	// untrusted provider must NOT transition back to StatusOnline here —
+	// that would cause an onlineCount double-decrement when Disconnect
+	// later sees StatusOnline and decrements a second time.
+	if p.Status == StatusUntrusted {
+		// no status transitions allowed
+	} else if p.Status != StatusServing || msg.Status == "idle" {
 		switch msg.Status {
 		case "idle":
 			p.Status = StatusOnline

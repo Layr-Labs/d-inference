@@ -725,7 +725,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		timing.RoutedAt = time.Now()
 		s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:selected"})
 		s.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
-		s.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model})
+		s.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model, "provider_id:" + provider.ID})
 		if decision.EffectiveTPS > 0 {
 			s.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
 		}
@@ -2526,7 +2526,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:selected"})
 	s.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
-	s.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model})
+	s.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model, "provider_id:" + provider.ID})
 	if decision.EffectiveTPS > 0 {
 		s.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
 	}

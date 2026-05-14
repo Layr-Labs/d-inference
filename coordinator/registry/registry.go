@@ -636,9 +636,6 @@ func (r *Registry) ModelType(model string) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, p := range r.providers {
-		if p.Status == StatusOffline || p.Status == StatusUntrusted {
-			continue
-		}
 		p.mu.Lock()
 		for _, m := range p.Models {
 			if m.ID == model && m.ModelType != "" {

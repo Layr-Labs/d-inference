@@ -1843,6 +1843,41 @@ func TestModelCatalogFilterOnRegister(t *testing.T) {
 	}
 }
 
+func TestModelTypeIncludesUntrusted(t *testing.T) {
+	reg := New(testLogger())
+	reg.MinTrustLevel = TrustNone
+
+	msg := &protocol.RegisterMessage{
+		Type:     protocol.TypeRegister,
+		Hardware: testRegisterMessage().Hardware,
+		Models: []protocol.ModelInfo{
+			{ID: "model-a", SizeBytes: 1000, ModelType: "text", Quantization: "4bit"},
+			{ID: "model-b", SizeBytes: 2000, ModelType: "image", Quantization: "8bit"},
+		},
+		Backend: "vllm_mlx",
+	}
+	p := reg.Register("p1", nil, msg)
+
+	if got := reg.ModelType("model-a"); got != "text" {
+		t.Errorf("ModelType(model-a) = %q, want %q", got, "text")
+	}
+	if got := reg.ModelType("model-b"); got != "image" {
+		t.Errorf("ModelType(model-b) = %q, want %q", got, "image")
+	}
+
+	reg.MarkUntrusted(p.ID)
+
+	if got := reg.ModelType("model-a"); got != "text" {
+		t.Errorf("ModelType(model-a) after untrusted = %q, want %q", got, "text")
+	}
+	if got := reg.ModelType("model-b"); got != "image" {
+		t.Errorf("ModelType(model-b) after untrusted = %q, want %q", got, "image")
+	}
+	if got := reg.ModelType("nonexistent"); got != "unknown" {
+		t.Errorf("ModelType(nonexistent) = %q, want %q", got, "unknown")
+	}
+}
+
 func TestModelCatalogFilterOnRegisterNoCatalog(t *testing.T) {
 	reg := New(testLogger())
 	reg.MinTrustLevel = TrustNone

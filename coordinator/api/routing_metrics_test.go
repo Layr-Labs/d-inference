@@ -204,7 +204,7 @@ func TestRoutingMetrics_SelectedEmitsDecisionAndCost(t *testing.T) {
 
 	srv.ddIncr("routing.decisions", []string{"model:" + model, "outcome:selected"})
 	srv.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
-	srv.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model})
+	srv.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model, "provider_id:" + provider.ID})
 	if decision.EffectiveTPS > 0 {
 		srv.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
 	}
@@ -505,7 +505,7 @@ func TestRoutingMetrics_AllTagsOnSelection(t *testing.T) {
 
 	srv.ddIncr("routing.decisions", []string{"model:" + model, "outcome:selected"})
 	srv.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
-	srv.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model})
+	srv.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model, "provider_id:" + provider.ID})
 	srv.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
 
 	_ = ddClient.Statsd.Flush()
@@ -520,6 +520,7 @@ func TestRoutingMetrics_AllTagsOnSelection(t *testing.T) {
 		{"routing.provider_selected", "provider_id:" + p.ID},
 		{"routing.provider_selected", "model:" + model},
 		{"routing.cost_ms", "model:" + model},
+		{"routing.cost_ms", "provider_id:" + provider.ID},
 		{"routing.effective_decode_tps", "provider_id:" + p.ID},
 	}
 	for _, c := range checks {

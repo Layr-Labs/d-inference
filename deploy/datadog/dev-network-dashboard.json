@@ -390,7 +390,7 @@
           {
             "definition": {
               "type": "timeseries",
-              "title": "Routing Cost (p95) by Model",
+              "title": "Routing Cost (p95) by Provider",
               "show_legend": true,
               "legend_layout": "auto",
               "requests": [
@@ -400,7 +400,7 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.routing.cost_ms.95percentile{$env,model:$model}"
+                      "query": "avg:d_inference.routing.cost_ms.95percentile{$env,model:$model} by {provider_id}"
                     }
                   ],
                   "formulas": [
@@ -1130,7 +1130,7 @@
           {
             "definition": {
               "type": "timeseries",
-              "title": "Reservation Amount (p50/p95/p99) [µ¢]",
+              "title": "Reservation Amount (p50/p95/p99) [¢]",
               "show_legend": true,
               "legend_layout": "auto",
               "requests": [
@@ -1154,9 +1154,9 @@
                     }
                   ],
                   "formulas": [
-                    { "formula": "p50" },
-                    { "formula": "p95" },
-                    { "formula": "p99" }
+                    { "formula": "p50 / 10000" },
+                    { "formula": "p95 / 10000" },
+                    { "formula": "p99 / 10000" }
                   ],
                   "style": { "palette": "warm" }
                 }
@@ -1166,7 +1166,7 @@
           {
             "definition": {
               "type": "timeseries",
-              "title": "Settlement Refund Amount (p50/p95/p99) [µ¢]",
+              "title": "Settlement Refund Amount (p50/p95/p99) [¢]",
               "show_legend": true,
               "legend_layout": "auto",
               "requests": [
@@ -1190,9 +1190,9 @@
                     }
                   ],
                   "formulas": [
-                    { "formula": "p50" },
-                    { "formula": "p95" },
-                    { "formula": "p99" }
+                    { "formula": "p50 / 10000" },
+                    { "formula": "p95 / 10000" },
+                    { "formula": "p99 / 10000" }
                   ],
                   "style": { "palette": "cool" }
                 }
@@ -1202,7 +1202,7 @@
           {
             "definition": {
               "type": "timeseries",
-              "title": "Provider Credits by Model & Type",
+              "title": "Provider Credits by Model & Type [¢]",
               "show_legend": true,
               "legend_layout": "auto",
               "requests": [
@@ -1216,7 +1216,7 @@
                     }
                   ],
                   "formulas": [
-                    { "formula": "query1" }
+                    { "formula": "query1 / 10000" }
                   ],
                   "display_type": "bars"
                 }
@@ -1226,7 +1226,7 @@
           {
             "definition": {
               "type": "timeseries",
-              "title": "Platform Fees by Model",
+              "title": "Platform Fees by Model [¢]",
               "show_legend": true,
               "legend_layout": "auto",
               "requests": [
@@ -1240,7 +1240,7 @@
                     }
                   ],
                   "formulas": [
-                    { "formula": "query1" }
+                    { "formula": "query1 / 10000" }
                   ],
                   "display_type": "bars"
                 }

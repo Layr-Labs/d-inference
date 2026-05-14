@@ -94,6 +94,7 @@ type SuiteConfig struct {
 	QueueCapacity int
 	QueueTimeout  time.Duration
 	SeedBalance   int64
+	LocalStack    bool
 }
 
 func DefaultSuiteConfig() SuiteConfig {

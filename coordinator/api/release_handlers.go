@@ -85,7 +85,7 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 	// out the TTL.
 	s.readCache.Invalidate("api_version:v1")
 	s.readCache.Invalidate("runtime_manifest:v1")
-	s.readCache.Invalidate("latest_release:v1")
+	s.readCache.Invalidate("latest_release:v1:" + release.Platform)
 
 	s.logger.Info("release registered",
 		"version", release.Version,

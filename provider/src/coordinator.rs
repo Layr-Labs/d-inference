@@ -673,6 +673,7 @@ pub fn handle_attestation_challenge(
         rt_hash.as_deref(),
         &template_hashes,
         None, // grpc_binary_hash removed (text-only)
+        None, // image_bridge_hash removed (text-only)
         &model_hashes,
     );
     let status_signature = match canonical {
@@ -733,6 +734,7 @@ fn build_status_canonical(
     runtime_hash: Option<&str>,
     template_hashes: &std::collections::HashMap<String, String>,
     grpc_binary_hash: Option<&str>,
+    image_bridge_hash: Option<&str>,
     model_hashes: &std::collections::HashMap<String, String>,
 ) -> serde_json::Result<Vec<u8>> {
     use std::collections::BTreeMap;
@@ -780,6 +782,14 @@ fn build_status_canonical(
     if let Some(v) = grpc_binary_hash {
         if !v.is_empty() {
             m.insert("grpc_binary_hash", serde_json::Value::String(v.to_string()));
+        }
+    }
+    if let Some(v) = image_bridge_hash {
+        if !v.is_empty() {
+            m.insert(
+                "image_bridge_hash",
+                serde_json::Value::String(v.to_string()),
+            );
         }
     }
     if !template_hashes.is_empty() {
@@ -881,11 +891,12 @@ mod tests {
             Some("rthash"),
             &templates,
             None,
+            Some("imghash"),
             &models,
         )
         .expect("canonical build should succeed");
 
-        let expected = br#"{"active_model_hash":"activemodel","binary_hash":"binhash","hypervisor_active":true,"model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}"#;
+        let expected = br#"{"active_model_hash":"activemodel","binary_hash":"binhash","hypervisor_active":true,"image_bridge_hash":"imghash","model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}"#;
 
         assert_eq!(
             bytes,
@@ -911,6 +922,7 @@ mod tests {
             None,
             None,
             &std::collections::HashMap::new(),
+            None,
             None,
             &std::collections::HashMap::new(),
         )
@@ -938,6 +950,7 @@ mod tests {
             None,
             None,
             &std::collections::HashMap::new(),
+            None,
             None,
             &std::collections::HashMap::new(),
         )
@@ -967,6 +980,7 @@ mod tests {
             None,
             None,
             &std::collections::HashMap::new(),
+            None,
             None,
             &std::collections::HashMap::new(),
         )
@@ -1208,9 +1222,34 @@ mod tests {
                 .await
                 .unwrap();
 
-            // Read heartbeat or any response
-            if let Some(Ok(Message::Text(text))) = read.next().await {
-                received_messages.push(text.to_string());
+            // Read until the plaintext rejection is observed. The client may
+            // emit WebSocket control frames or heartbeats before the error.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now())
+                else {
+                    break;
+                };
+                let frame = match tokio::time::timeout(remaining, read.next()).await {
+                    Ok(Some(Ok(frame))) => frame,
+                    _ => break,
+                };
+
+                match frame {
+                    Message::Text(text) => {
+                        let is_inference_error = serde_json::from_str::<serde_json::Value>(&text)
+                            .map(|v| v["type"] == "inference_error")
+                            .unwrap_or(false);
+                        received_messages.push(text.to_string());
+                        if is_inference_error {
+                            break;
+                        }
+                    }
+                    Message::Ping(data) => {
+                        let _ = write.send(Message::Pong(data)).await;
+                    }
+                    _ => {}
+                }
             }
 
             // Send cancel

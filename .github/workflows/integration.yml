@@ -9,7 +9,7 @@ jobs:
   integration-tests:
     name: E2E Integration Tests
     runs-on: macos-26-xlarge
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       TESTBED_PROVIDER_CONFIG: debug
@@ -24,6 +24,18 @@ jobs:
 
       - name: Install Postgres
         run: brew install postgresql@16
+
+      - name: Install MinIO
+        run: brew install minio/stable/minio
+
+      - name: Install Python 3.12
+        run: |
+          brew install python@3.12
+          echo "$(brew --prefix python@3.12)/bin" >> "$GITHUB_PATH"
+
+      - name: Install Rust
+        run: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        shell: bash
 
       - name: Build provider (Swift)
         run: |
@@ -43,11 +55,11 @@ jobs:
           /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/Qwen3.5-0.8B-MLX-4bit')"
           /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-3-270m-4bit')"
 
-      - name: Run integration + profile tests
+      - name: Run all integration tests
         run: |
-          export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
-          go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
-            -run 'TestIntegration|TestProfile'
+          export PATH="$(brew --prefix postgresql@16)/bin:$HOME/.cargo/bin:$PATH"
+          go test ./e2e/ -count=1 -v -timeout 35m -p=1 \
+            -run 'TestIntegration_(Release|ModelWeight|FleetUpgrade|SelfUpdate|Non|Stream|Multiple|E2E|Billing|Provider|Insufficient|Invalid|Concurrent|Attestation|Referral)'
 
   benchmark:
     name: E2E Benchmarks

@@ -53,6 +53,8 @@ type Suite struct {
 	Coordinator *Coordinator
 	Providers   []*Provider
 	Users       []UserAccount
+	Bucket      *deps.BucketClient
+	minio       *deps.MinIOLifecycle
 }
 
 type Coordinator struct {
@@ -77,18 +79,14 @@ type Provider struct {
 func NewSuite(cfg SuiteConfig) *Suite {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	if os.Getenv("DARKBLOOM_REPO_ROOT") == "" {
-		if cwd, err := os.Getwd(); err == nil {
-			os.Setenv("DARKBLOOM_REPO_ROOT", cwd+"/../..")
-		}
-	}
+	FindRepoRoot()
 
 	if len(cfg.ModelSpecs) == 0 {
 		cfg.ModelSpecs = []ModelSpec{{ModelID: resolveModelID(""), NumProviders: 1}}
 	}
 	for i := range cfg.ModelSpecs {
 		cfg.ModelSpecs[i].ModelID = resolveModelID(cfg.ModelSpecs[i].ModelID)
-		if cfg.ModelSpecs[i].NumProviders <= 0 {
+		if cfg.ModelSpecs[i].NumProviders < 0 {
 			cfg.ModelSpecs[i].NumProviders = 1
 		}
 	}
@@ -126,21 +124,57 @@ func (s *Suite) PrimaryModelID() string {
 }
 
 func (s *Suite) Start(ctx context.Context) error {
+	return s.StartWithConfig(ctx, StartConfig{
+		Coordinator: true,
+		Providers:   true,
+	})
+}
+
+type StartConfig struct {
+	Coordinator bool
+	Providers   bool
+}
+
+func (s *Suite) StartWithConfig(ctx context.Context, cfg StartConfig) error {
 	s.Ctx = ctx
 
+	if s.Config.LocalStack {
+		if err := s.startMinIO(); err != nil {
+			return err
+		}
+	}
 	if err := s.startPostgres(); err != nil {
 		return err
 	}
 	if err := s.createUserPool(); err != nil {
 		return err
 	}
-	if err := s.startCoordinator(); err != nil {
-		return err
+	if cfg.Coordinator {
+		if err := s.startCoordinatorOnPort(0); err != nil {
+			return err
+		}
 	}
-	if err := s.startProviders(); err != nil {
-		return err
+	if cfg.Providers {
+		if err := s.startProviders(); err != nil {
+			return err
+		}
 	}
-	return s.waitForProviderRegistration(3 * time.Minute)
+	if s.Coordinator != nil && s.Config.TotalProviders() > 0 {
+		return s.waitForProviderRegistration(3 * time.Minute)
+	}
+	return nil
+}
+
+func (s *Suite) StartCoordinator() error {
+	return s.startCoordinatorOnPort(0)
+}
+
+func (s *Suite) StartCoordinatorOnPort(port int) error {
+	return s.startCoordinatorOnPort(port)
+}
+
+func (s *Suite) WaitForProviders(timeout time.Duration) error {
+	return s.waitForProviderRegistration(timeout)
 }
 
 func (s *Suite) Stop() {
@@ -153,6 +187,25 @@ func (s *Suite) Stop() {
 	if s.Pg != nil {
 		s.Pg.Stop()
 	}
+	if s.minio != nil {
+		s.minio.Stop()
+	}
+}
+
+func (s *Suite) startMinIO() error {
+	s.minio = deps.NewMinIOLifecycle(s.Logger, 0)
+	if err := s.minio.Start(s.Ctx); err != nil {
+		return fmt.Errorf("minio: %w", err)
+	}
+
+	bc, err := deps.NewBucketClient(s.Ctx, s.minio.EndpointURL, "darkbloom-cdn")
+	if err != nil {
+		return fmt.Errorf("minio bucket: %w", err)
+	}
+	s.Bucket = bc
+
+	s.Logger.Info("localstack bucket ready", "cdn_url", s.Bucket.CDNURL())
+	return nil
 }
 
 func (s *Suite) startPostgres() error {
@@ -192,7 +245,7 @@ func (s *Suite) createUserPool() error {
 	return nil
 }
 
-func (s *Suite) startCoordinator() error {
+func (s *Suite) startCoordinatorOnPort(port int) error {
 	reg := registry.New(s.Logger)
 	reg.MinTrustLevel = registry.TrustLevel(TrustNone)
 
@@ -204,9 +257,16 @@ func (s *Suite) startCoordinator() error {
 
 	srv := api.NewServer(reg, s.PgStore, s.Logger)
 	srv.SetAdminKey("testbed-admin-key")
+	srv.SetReleaseKey("testbed-release-key")
 	srv.SetRuntimeManifest(&api.RuntimeManifest{})
 	srv.SetChallengeInterval(1 * time.Hour)
 	srv.SetSkipChallenge(true)
+
+	if s.Bucket != nil {
+		cdnURL := s.Bucket.CDNURL()
+		srv.SetR2CDNURL(cdnURL)
+		srv.SetR2SitePackagesCDNURL(cdnURL)
+	}
 
 	ledger := payments.NewLedger(s.PgStore)
 	billingSvc := billing.NewService(s.PgStore, ledger, s.Logger, billing.Config{MockMode: true})
@@ -219,10 +279,21 @@ func (s *Suite) startCoordinator() error {
 		Registry: reg,
 	}
 
-	return s.Coordinator.Start(s.Ctx, s.Logger)
+	return s.Coordinator.StartOnPort(s.Ctx, s.Logger, port)
 }
 
 func (s *Suite) startProviders() error {
+	if s.Config.TotalProviders() == 0 {
+		s.Logger.Info("no providers configured, skipping provider startup")
+		return nil
+	}
+
+	for _, spec := range s.Config.ModelSpecs {
+		if err := EnsureModelCached(s.Ctx, s.Logger, spec.ModelID); err != nil {
+			return fmt.Errorf("cache model %s: %w", spec.ModelID, err)
+		}
+	}
+
 	binaryPath, err := BuildProvider(s.Ctx, s.Logger)
 	if err != nil {
 		return fmt.Errorf("build provider: %w", err)
@@ -276,9 +347,28 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 }
 
 func (c *Coordinator) Start(ctx context.Context, logger *slog.Logger) error {
-	listener, err := netListen()
-	if err != nil {
-		return fmt.Errorf("listen: %w", err)
+	return c.startOnPort(ctx, logger, 0)
+}
+
+func (c *Coordinator) StartOnPort(ctx context.Context, logger *slog.Logger, port int) error {
+	return c.startOnPort(ctx, logger, port)
+}
+
+func (c *Coordinator) startOnPort(ctx context.Context, logger *slog.Logger, port int) error {
+	var listener *tcpListener
+	var err error
+	if port > 0 {
+		l, e := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if e != nil {
+			return fmt.Errorf("listen on port %d: %w", port, e)
+		}
+		p := l.Addr().(*net.TCPAddr).Port
+		listener = &tcpListener{inner: l, port: p, baseURL: "http://127.0.0.1:" + strconv.Itoa(p)}
+	} else {
+		listener, err = netListen()
+		if err != nil {
+			return fmt.Errorf("listen: %w", err)
+		}
 	}
 	c.port = listener.port
 	c.baseURL = listener.baseURL

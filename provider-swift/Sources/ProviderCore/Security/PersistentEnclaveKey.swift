@@ -7,6 +7,7 @@
 /// enforced by securityd at the kernel level. A patched binary re-signed
 /// with `codesign -s -` gets `errSecMissingEntitlement`.
 
+import CryptoKit
 import Foundation
 import Security
 import os
@@ -113,9 +114,15 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
         let group = resolveAccessGroup(accessGroup)
         let keyLabel = label ?? defaultLabel
 
-        if let existing = try? findExisting(accessGroup: group, label: keyLabel) {
+        // Only fall through to creation on errSecItemNotFound. Auth failures,
+        // locked-keychain errors, and missing-entitlement must surface so the
+        // caller can fall back instead of racing with createNew.
+        do {
+            let existing = try findExisting(accessGroup: group, label: keyLabel)
             logger.info("Loaded existing persistent Secure Enclave key")
             return existing
+        } catch PersistentEnclaveKeyError.keyLookupFailed(status: errSecItemNotFound) {
+            // No existing key — proceed to creation.
         }
 
         return try createNew(accessGroup: group, label: keyLabel)
@@ -127,6 +134,10 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
         accessGroup: String,
         label: String
     ) throws -> PersistentEnclaveKey {
+        // kSecUseDataProtectionKeychain forces the iOS-style keychain on macOS,
+        // which is the only one that enforces kSecAttrAccessGroup membership.
+        // Without it, the query may hit the legacy file-based keychain where
+        // the access-group constraint is silently ignored.
         let query: [String: Any] = [
             kSecClass as String: kSecClassKey,
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
@@ -135,6 +146,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
             kSecAttrLabel as String: label,
             kSecAttrAccessGroup as String: accessGroup,
             kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
+            kSecUseDataProtectionKeychain as String: true,
             kSecReturnRef as String: true,
         ]
 
@@ -188,6 +200,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecAttrKeySizeInBits as String: 256,
             kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
+            kSecUseDataProtectionKeychain as String: true,
             kSecPrivateKeyAttrs as String: privateKeyAttrs,
         ]
 
@@ -258,6 +271,7 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
             kSecAttrLabel as String: keyLabel,
             kSecAttrAccessGroup as String: group,
             kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
+            kSecUseDataProtectionKeychain as String: true,
         ]
 
         let status = SecItemDelete(query as CFDictionary)
@@ -275,15 +289,17 @@ public final class PersistentEnclaveKey: @unchecked Sendable {
     // MARK: - Availability
 
     /// Whether the Secure Enclave is available on this device.
+    ///
+    /// Probes actual hardware capability via CryptoKit. Returns false on Intel
+    /// Macs without T2, macOS VMs without virtualized SE, and the iOS Simulator.
+    ///
+    /// - Note: This does NOT check whether the binary has the
+    ///   `keychain-access-groups` entitlement. Even when `isAvailable` returns
+    ///   true, `loadOrCreate()` can still throw `.missingEntitlement` on
+    ///   unsigned debug builds. The entitlement is gated by the provisioning
+    ///   profile embedded in the signed app bundle.
     public static var isAvailable: Bool {
-        #if targetEnvironment(simulator)
-        return false
-        #else
-        if #available(macOS 13.0, *) {
-            return true
-        }
-        return false
-        #endif
+        SecureEnclave.isAvailable
     }
 
     // MARK: - Access Group Resolution

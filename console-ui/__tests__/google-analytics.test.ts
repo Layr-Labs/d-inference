@@ -23,20 +23,6 @@ declare global {
   }
 }
 
-function normalizeDataLayer() {
-  return (window.dataLayer ?? []).map((entry) => {
-    if (
-      typeof entry === "object" &&
-      entry !== null &&
-      "length" in entry
-    ) {
-      return Array.from(entry as ArrayLike<unknown>);
-    }
-
-    return entry;
-  });
-}
-
 describe("google analytics helpers", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -47,7 +33,6 @@ describe("google analytics helpers", () => {
     window.dataLayer = [];
     window.gtag = undefined;
     localStorage.removeItem("darkbloom_ga_consent");
-    document.cookie = "darkbloom_ga_consent=; path=/; max-age=0";
     window.history.replaceState({}, "", "/?token=secret&utm_source=search&gclid=abc123");
     document.title = "Darkbloom";
   });
@@ -67,13 +52,6 @@ describe("google analytics helpers", () => {
     expect(getGoogleAnalyticsConsentStatus()).toBe("denied");
     expect(hasGoogleAnalyticsConsent()).toBe(false);
     expect(window.__googleAnalyticsInitialized).toBe(false);
-  });
-
-  it("falls back to the shared consent cookie when local storage is unset", () => {
-    document.cookie = "darkbloom_ga_consent=granted; path=/; max-age=60";
-
-    expect(getGoogleAnalyticsConsentStatus()).toBe("granted");
-    expect(hasGoogleAnalyticsConsent()).toBe(true);
   });
 
   it("syncs runtime state when consent changes externally", () => {
@@ -148,8 +126,7 @@ describe("google analytics helpers", () => {
     initializeGoogleAnalytics();
     trackRouteChange("/billing");
 
-    expect(window.dataLayer?.[0]).not.toBeInstanceOf(Array);
-    expect(normalizeDataLayer()).toEqual([
+    expect(window.dataLayer).toEqual([
       ["js", expect.any(Date)],
       ["config", "G-TEST123", { send_page_view: false }],
       [
@@ -181,7 +158,7 @@ describe("google analytics helpers", () => {
     trackRouteChange("/billing");
     trackRouteChange("/settings");
 
-    expect(normalizeDataLayer()).toEqual([
+    expect(window.dataLayer).toEqual([
       ["js", expect.any(Date)],
       ["config", "G-TEST123", { send_page_view: false }],
       [
@@ -227,7 +204,7 @@ describe("google analytics helpers", () => {
       source: "login_page",
     });
 
-    expect(normalizeDataLayer()).toEqual([
+    expect(window.dataLayer).toEqual([
       ["js", expect.any(Date)],
       ["config", "G-TEST123", { send_page_view: false }],
       [
@@ -263,7 +240,7 @@ describe("google analytics helpers", () => {
       model: "mlx-community/gemma-4-26b-a4b-it-8bit",
     });
 
-    expect(normalizeDataLayer()).toEqual([
+    expect(window.dataLayer).toEqual([
       ["js", expect.any(Date)],
       ["config", "G-TEST123", { send_page_view: false }],
       [

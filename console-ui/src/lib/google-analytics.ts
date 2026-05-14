@@ -26,7 +26,6 @@ const UTM_QUERY_PARAMS = new Set([
 ]);
 
 const GA_CONSENT_STORAGE_KEY = "darkbloom_ga_consent";
-const GA_CONSENT_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 
 declare global {
   interface Window {
@@ -63,45 +62,6 @@ function setGoogleAnalyticsDisabled(disabled: boolean) {
   )[`ga-disable-${measurementId}`] = disabled;
 }
 
-function getCookieDomain() {
-  if (typeof window === "undefined") {
-    return "";
-  }
-
-  const hostname = window.location.hostname;
-  if (hostname === "darkbloom.dev" || hostname.endsWith(".darkbloom.dev")) {
-    return "; domain=.darkbloom.dev";
-  }
-
-  return "";
-}
-
-function getGoogleAnalyticsConsentCookie(): GoogleAnalyticsConsentStatus {
-  if (typeof document === "undefined") {
-    return "unset";
-  }
-
-  const prefix = `${GA_CONSENT_STORAGE_KEY}=`;
-  const cookie = document.cookie
-    .split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(prefix));
-
-  const value = cookie ? decodeURIComponent(cookie.slice(prefix.length)) : "";
-  return value === "granted" || value === "denied" ? value : "unset";
-}
-
-function setGoogleAnalyticsConsentCookie(status: Exclude<GoogleAnalyticsConsentStatus, "unset">) {
-  if (typeof document === "undefined") {
-    return;
-  }
-
-  const secure = window.location.protocol === "https:" ? "; secure" : "";
-  document.cookie = `${GA_CONSENT_STORAGE_KEY}=${encodeURIComponent(
-    status,
-  )}; path=/; max-age=${GA_CONSENT_COOKIE_MAX_AGE_SECONDS}; samesite=lax${secure}${getCookieDomain()}`;
-}
-
 export function getGoogleAnalyticsConsentStatus(): GoogleAnalyticsConsentStatus {
   if (typeof window === "undefined") {
     return "unset";
@@ -112,7 +72,7 @@ export function getGoogleAnalyticsConsentStatus(): GoogleAnalyticsConsentStatus 
     return stored;
   }
 
-  return getGoogleAnalyticsConsentCookie();
+  return "unset";
 }
 
 export function applyGoogleAnalyticsConsentState(): GoogleAnalyticsConsentStatus {
@@ -142,7 +102,6 @@ export function grantGoogleAnalyticsConsent() {
   }
 
   window.localStorage.setItem(GA_CONSENT_STORAGE_KEY, "granted");
-  setGoogleAnalyticsConsentCookie("granted");
   applyGoogleAnalyticsConsentState();
   window.dispatchEvent(new Event("darkbloom-ga-consent-changed"));
 }
@@ -153,7 +112,6 @@ export function revokeGoogleAnalyticsConsent() {
   }
 
   window.localStorage.setItem(GA_CONSENT_STORAGE_KEY, "denied");
-  setGoogleAnalyticsConsentCookie("denied");
   applyGoogleAnalyticsConsentState();
   window.dispatchEvent(new Event("darkbloom-ga-consent-changed"));
 }
@@ -171,9 +129,9 @@ function getGtag() {
   window.dataLayer = window.dataLayer || [];
   window.gtag =
     window.gtag ||
-    function gtag() {
-      window.dataLayer?.push(arguments);
-    };
+    ((...args: unknown[]) => {
+      window.dataLayer?.push(args);
+    });
 
   return {
     gtag: window.gtag,

@@ -1050,7 +1050,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:settlement_refund"})
 		}
 	} else {
-		// No reservation (billing not configured). Charge best-effort.
+		start := time.Now()
 		if err := s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID); err != nil {
 			s.logger.Warn("could not charge consumer (insufficient balance)",
 				"consumer_key", pr.ConsumerKey,
@@ -1058,6 +1058,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 				"error", err,
 			)
 		}
+		s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:charge"})
 	}
 
 	// Record usage entry — both in-memory (for current session) and persisted
@@ -1072,6 +1073,8 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	})
 	s.store.RecordUsageWithCost(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost)
 	s.ddIncr("inference.completions", []string{"model:" + pr.Model})
+	s.ddCount("inference.prompt_tokens_total", int64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
+	s.ddHistogram("inference.prompt_tokens", float64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
 	s.ddCount("inference.completion_tokens_total", int64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
 	s.ddHistogram("inference.completion_tokens", float64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
 
@@ -1080,6 +1083,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// Otherwise, fall back to the provider's self-reported wallet address.
 	if p := s.registry.GetProvider(providerID); p != nil {
 		if p.AccountID != "" {
+			start := time.Now()
 			if err := s.store.CreditProviderAccount(&store.ProviderEarning{
 				AccountID:        p.AccountID,
 				ProviderID:       providerID,
@@ -1098,8 +1102,10 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 					"error", err,
 				)
 			}
+			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_account_credit"})
 			s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
 		} else if p.WalletAddress != "" {
+			start := time.Now()
 			if err := s.ledger.CreditProvider(p.WalletAddress, providerPayout, pr.Model, msg.RequestID); err != nil {
 				s.logger.Error("failed to credit provider wallet payout",
 					"provider_id", providerID,
@@ -1108,6 +1114,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 					"error", err,
 				)
 			}
+			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_wallet_credit"})
 			s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:wallet"})
 		}
 	}
@@ -1120,7 +1127,9 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		if s.billing != nil && s.billing.Referral() != nil {
 			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
 		}
+		start := time.Now()
 		_ = s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID)
+		s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:platform_fee"})
 		s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
 	}
 

@@ -1,5 +1,5 @@
 {
-  "title": "d-inference Dev",
+  "title": "Darkbloom Observability",
   "description": "Full observability dashboard for the d-inference dev coordinator. Metrics via DogStatsD (d_inference.*), logs via DD Agent journald collection + direct Logs API, traces via DD Agent APM, and system metrics from the host-level agent.",
   "layout_type": "ordered",
   "notify_list": [],
@@ -24,7 +24,7 @@
     {
       "definition": {
         "type": "note",
-        "content": "## d-inference Dev Observability\nMetrics: `d_inference.*` via DogStatsD (agent on 8125) | Logs: journald + direct Logs API | Traces: APM agent on 8126 | System: host-level DD agent checks\n\nTemplate vars: `$env`, `$service`, `$model`. Provider telemetry = `source:provider`; coordinator events = `source:coordinator`.",
+        "content": "## Darkbloom Observability\nMetrics: `d_inference.*` via DogStatsD (agent on 8125) | Logs: journald + direct Logs API | Traces: APM agent on 8126 | System: host-level DD agent checks\n\nTemplate vars: `$env`, `$service`, `$model`. Provider telemetry = `source:provider`; coordinator events = `source:coordinator`.",
         "background_color": "blue",
         "font_size": "14",
         "text_align": "left",
@@ -320,7 +320,33 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "sum:d_inference.inference.completion_tokens_total{$env,model:$model}.as_count()"
+                      "query": "sum:d_inference.inference.completion_tokens_total{$env,model:$model}.as_count() by {model}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Input Tokens by Model",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.inference.prompt_tokens_total{$env,model:$model}.as_count() by {model}"
                     }
                   ],
                   "formulas": [
@@ -1104,7 +1130,7 @@
           {
             "definition": {
               "type": "timeseries",
-              "title": "Reservation Amount (p50/p95/p99)",
+              "title": "Reservation Amount (p50/p95/p99) [µ¢]",
               "show_legend": true,
               "legend_layout": "auto",
               "requests": [
@@ -1114,17 +1140,17 @@
                     {
                       "name": "p50",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.billing.reserved_micro_usd.50percentile{$env,model:$model}"
+                      "query": "avg:d_inference.billing.reserved_micro_usd.50percentile{$env,model:$model} by {model}"
                     },
                     {
                       "name": "p95",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.billing.reserved_micro_usd.95percentile{$env,model:$model}"
+                      "query": "avg:d_inference.billing.reserved_micro_usd.95percentile{$env,model:$model} by {model}"
                     },
                     {
                       "name": "p99",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.billing.reserved_micro_usd.99percentile{$env,model:$model}"
+                      "query": "avg:d_inference.billing.reserved_micro_usd.99percentile{$env,model:$model} by {model}"
                     }
                   ],
                   "formulas": [
@@ -1140,7 +1166,7 @@
           {
             "definition": {
               "type": "timeseries",
-              "title": "Settlement Refund Amount (p50/p95/p99)",
+              "title": "Settlement Refund Amount (p50/p95/p99) [µ¢]",
               "show_legend": true,
               "legend_layout": "auto",
               "requests": [
@@ -1150,17 +1176,17 @@
                     {
                       "name": "p50",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.billing.settlement_refund_micro_usd.50percentile{$env,model:$model}"
+                      "query": "avg:d_inference.billing.settlement_refund_micro_usd.50percentile{$env,model:$model} by {model}"
                     },
                     {
                       "name": "p95",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.billing.settlement_refund_micro_usd.95percentile{$env,model:$model}"
+                      "query": "avg:d_inference.billing.settlement_refund_micro_usd.95percentile{$env,model:$model} by {model}"
                     },
                     {
                       "name": "p99",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.billing.settlement_refund_micro_usd.99percentile{$env,model:$model}"
+                      "query": "avg:d_inference.billing.settlement_refund_micro_usd.99percentile{$env,model:$model} by {model}"
                     }
                   ],
                   "formulas": [
@@ -1224,7 +1250,7 @@
           {
             "definition": {
               "type": "timeseries",
-              "title": "Cost Clamped Events",
+              "title": "Cost Clamped Events (settlement cost > reservation, capped to reserved)",
               "show_legend": true,
               "legend_layout": "auto",
               "requests": [
@@ -1390,31 +1416,6 @@
           },
           {
             "definition": {
-              "type": "timeseries",
-              "title": "Providers by Binary Hash",
-              "show_legend": true,
-              "legend_layout": "auto",
-              "requests": [
-                {
-                  "response_format": "timeseries",
-                  "queries": [
-                    {
-                      "name": "query1",
-                      "data_source": "metrics",
-                      "query": "sum:d_inference.providers.per_binary_hash{$env} by {binary_hash}"
-                    }
-                  ],
-                  "formulas": [
-                    {
-                      "formula": "query1"
-                    }
-                  ]
-                }
-              ]
-            }
-          },
-          {
-            "definition": {
               "type": "query_value",
               "title": "Min Provider Version",
               "autoscale": false,
@@ -1463,29 +1464,6 @@
                   "style": {
                     "palette": "warm"
                   }
-                }
-              ]
-            }
-          },
-          {
-            "definition": {
-              "type": "toplist",
-              "title": "Top Binary Hashes",
-              "requests": [
-                {
-                  "response_format": "scalar",
-                  "queries": [
-                    {
-                      "name": "query1",
-                      "data_source": "metrics",
-                      "query": "sum:d_inference.providers.per_binary_hash{$env} by {binary_hash}"
-                    }
-                  ],
-                  "formulas": [
-                    {
-                      "formula": "query1"
-                    }
-                  ]
                 }
               ]
             }

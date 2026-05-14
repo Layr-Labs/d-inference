@@ -1127,9 +1127,6 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 			for ver, count := range s.registry.ProviderCountByVersion() {
 				s.ddGauge("providers.per_version", float64(count), []string{"version:" + ver})
 			}
-			for hash, count := range s.registry.ProviderCountByBinaryHash() {
-				s.ddGauge("providers.per_binary_hash", float64(count), []string{"binary_hash:" + hash})
-			}
 			if s.minProviderVersion != "" {
 				s.ddGauge("coordinator.min_provider_version_set", 1, []string{"min_version:" + s.minProviderVersion})
 			}

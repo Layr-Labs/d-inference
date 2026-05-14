@@ -15,8 +15,12 @@ import Darwin
 public enum ProcessLifecycle {
 
     /// Default PID file location: `~/.darkbloom/provider.pid`.
+    /// Override with `DARKBLOOM_PID_FILE` env var (useful for multi-instance testing).
     public static func defaultPIDFile() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        if let override = ProcessInfo.processInfo.environment["DARKBLOOM_PID_FILE"] {
+            return URL(fileURLWithPath: override)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".darkbloom/provider.pid")
     }
 

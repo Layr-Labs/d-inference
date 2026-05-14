@@ -1,0 +1,1697 @@
+version: "1.0"
+created: "2026-05-14"
+methodology: STRIDE
+description: >
+  Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
+  platform. Covers production only. Dev environment, nation-state adversaries, and
+  the release supply chain are explicitly out of scope.
+
+# ─────────────────────────────────────────────────────────────
+# SCOPE
+# ─────────────────────────────────────────────────────────────
+scope:
+  in_scope:
+    - Consumer → Coordinator API (HTTPS / OpenAI-compatible)
+    - Coordinator → Provider WebSocket
+    - Provider process vs provider operator (local Mac access)
+    - Console UI browser surface
+    - Coordinator → Apple MDM / MDA trust services
+    - Admin → Coordinator admin API
+    - Provider in-process MLX inference engine
+    - Coordinator → Solana payment network
+    - Apple attestation trust chain (cross-cutting)
+  out_of_scope:
+    - Dev / staging environment (api.dev.darkbloom.xyz)
+    - GitHub Actions / R2 release supply chain
+    - Nation-state / physical lab attacks on Apple Silicon
+    - Denial-of-service via laptop shutdown (accepted operational risk)
+    - Anthropic / Apple server-side infrastructure beyond MDM/MDA APIs
+
+# ─────────────────────────────────────────────────────────────
+# ADVERSARIES
+# ─────────────────────────────────────────────────────────────
+adversaries:
+  - id: ADV-001
+    name: malicious_provider
+    description: >
+      A Mac owner running the darkbloom provider CLI who wants to exfiltrate consumer
+      prompt content, fake attestation to appear trusted, serve manipulated model
+      outputs, or steal payment. Has physical and OS-level access to the host machine
+      but cannot bypass SIP, Hardened Runtime, or the Secure Enclave hardware boundary.
+
+  - id: ADV-002
+    name: malicious_consumer
+    description: >
+      An authenticated or unauthenticated consumer who wants free inference, wants to
+      enumerate or attack providers, manipulate billing, or extract information about
+      the platform. Has access to the OpenAI-compatible API and console UI with a
+      valid or stolen API key.
+
+  - id: ADV-003
+    name: external_attacker
+    description: >
+      An unauthenticated external party targeting the coordinator HTTP API, console UI,
+      MDM webhook, or WebSocket endpoint. No prior access assumed. Goals include
+      account takeover, SSRF, DoS, trust escalation, or payment manipulation.
+
+# ─────────────────────────────────────────────────────────────
+# ASSETS
+# ─────────────────────────────────────────────────────────────
+assets:
+  - id: A-001
+    name: consumer_prompts_completions
+    description: Plaintext inference requests and responses from consumers.
+    sensitivity: critical
+    notes: >
+      Encrypted on the coordinator→provider leg via X25519/NaCl box. The coordinator
+      sees plaintext unless sender-to-coordinator encryption is also enabled (currently
+      optional and off by default — SEC-015).
+
+  - id: A-002
+    name: provider_se_p256_key
+    description: Secure Enclave P-256 key used to sign attestation blobs and challenges.
+    sensitivity: critical
+    notes: Hardware-bound, non-exportable. Cannot leave the SE silicon.
+
+  - id: A-003
+    name: provider_x25519_key
+    description: X25519 Diffie-Hellman private key used for E2E encryption of inference traffic.
+    sensitivity: critical
+    notes: >
+      Stored on disk in the provider TOML config. The provider operator has filesystem
+      read access. Compromise enables decryption of future (not past) inference traffic
+      for that provider.
+
+  - id: A-004
+    name: model_weights
+    description: LLM weight files cached at ~/.cache/huggingface on the provider machine.
+    sensitivity: high
+    notes: >
+      Not cryptographically protected at rest. An operator can replace weights; the
+      coordinator's weight-hash verification is currently fail-open (SEC-007).
+
+  - id: A-005
+    name: coordinator_release_api_key
+    description: Secret API key that authorises release registration at POST /v1/releases.
+    sensitivity: critical
+    notes: Controls which binary hashes are trusted for provider connections.
+
+  - id: A-006
+    name: solana_wallet_mnemonic
+    description: BIP39 mnemonic for the coordinator's Solana USDC wallet (m/44'/501'/0'/0').
+    sensitivity: critical
+    notes: Stored in coordinator environment / EigenCloud KMS. Compromise drains provider payouts.
+
+  - id: A-007
+    name: consumer_api_keys
+    description: Long-lived coordinator API keys issued to consumers, stored in browser localStorage.
+    sensitivity: high
+    notes: No expiry, not re-bound to current Privy identity (SEC-003).
+
+  - id: A-008
+    name: provider_api_tokens
+    description: Coordinator-issued tokens that providers use to register via WebSocket.
+    sensitivity: high
+
+  - id: A-009
+    name: payment_ledger
+    description: Internal micro-USD balance ledger in PostgreSQL.
+    sensitivity: high
+    notes: Atomic balance operations required; duplicate webhook risk (SEC-012).
+
+  - id: A-010
+    name: attestation_blob_and_mda_chain
+    description: >
+      SE-signed attestation blob (hardware info, binary hash, SIP/SecureBoot state) and
+      the Apple MDA DER certificate chain signed by Apple Enterprise Attestation Root CA.
+    sensitivity: critical
+    notes: Basis of the hardware trust level. Integrity must be maintained end-to-end.
+
+  - id: A-011
+    name: provider_binary_hash_registry
+    description: Set of SHA-256 hashes of blessed provider binaries registered with the coordinator.
+    sensitivity: critical
+    notes: Controls which provider binaries can connect and serve private requests.
+
+  - id: A-012
+    name: step_ca_private_key
+    description: step-ca CA private key used to issue device TLS certs for ACME enrollment.
+    sensitivity: critical
+    notes: Stored on persistent disk in coordinator container. Compromise breaks ACME trust chain.
+
+# ─────────────────────────────────────────────────────────────
+# TRUST BOUNDARIES
+# ─────────────────────────────────────────────────────────────
+trust_boundaries:
+  - id: TB-001
+    name: consumer_to_coordinator
+    description: >
+      Consumer applications (OpenAI SDK, curl, console UI) call the coordinator's
+      OpenAI-compatible HTTP API over TLS. Two credential types are accepted: long-lived
+      coordinator API keys (eigeninference-* prefix) and short-lived Privy JWTs for
+      interactive sessions. The coordinator is trusted; consumers are not.
+    how_it_works: >
+      Authentication is resolved in server.go:requireAuth. Tokens beginning with "eyJ"
+      are treated as Privy JWTs and verified via ECDSA ES256 against Privy's public key
+      (auth/privy.go); all others are looked up in the store via ValidateKey(). On first
+      Privy login the coordinator auto-provisions a user account by calling the Privy
+      REST API. API keys are hashed before storage; raw tokens are never persisted.
+
+      The middleware chain for inference endpoints is: requireAuth →
+      rateLimitConsumer → sealedTransport → handler. rateLimitConsumer applies a
+      per-account token bucket; the financial rate limiter (rateLimitFinancial) applies
+      to balance-mutating endpoints. Both limiters default to nil (unlimited) unless
+      SetRateLimiter / SetFinancialRateLimiter are called at startup.
+
+      Sender-to-coordinator encryption is opt-in. When enabled (sealedTransport
+      middleware, sender_encryption.go), request bodies are decrypted with the
+      coordinator's long-lived X25519 key and a body cap of 16 MB is enforced. Plaintext
+      inference endpoints (chat/completions, completions, messages) call io.ReadAll on
+      r.Body with no MaxBytesReader wrapper.
+
+      HTTP server config (cmd/coordinator/main.go): ReadTimeout=10s, WriteTimeout=0
+      (streaming), IdleTimeout=120s. No ReadHeaderTimeout and no MaxHeaderBytes are set.
+    current_limitations:
+      - "API key validation uses a simple store lookup — not constant-time comparison.
+        Allows timing attacks to enumerate valid key prefixes (server.go:1216)."
+      - "No body size limit on plaintext inference endpoints (consumer.go:526, 2359).
+        An authenticated consumer can send arbitrarily large bodies to exhaust coordinator
+        memory."
+      - "ReadHeaderTimeout and MaxHeaderBytes are absent from the HTTP server config,
+        leaving the server exposed to slow-header attacks (cmd/coordinator/main.go:496)."
+      - "WriteTimeout=0 combined with unbounded body reads enables slow-read DoS on
+        inference endpoints."
+      - "Consumer rate limiter defaults to nil (unlimited) unless explicitly configured
+        at deploy time. No IP-level rate limiting exists."
+      - "POST /v1/device/code and POST /v1/device/token have no rate limits, enabling
+        device code enumeration and provider token brute force (device_auth.go)."
+      - "Device codes are not consumed atomically on first token exchange; the approved
+        code can be polled multiple times to mint multiple provider tokens (device_auth.go:99-158)."
+      - "Error responses distinguish 'not found' (404) from 'expired' (410) on device
+        token polling, leaking information about code lifecycle (device_auth.go:111-117)."
+
+  - id: TB-002
+    name: coordinator_to_provider_websocket
+    description: >
+      Providers open an outbound WebSocket to the coordinator. The coordinator upgrades
+      the connection, receives a RegisterMessage, and runs attestation verification.
+      Critically, providers are added to the active registry before attestation completes;
+      verification is asynchronous. The coordinator is trusted; providers are adversarial
+      until fully attested.
+    how_it_works: >
+      The WebSocket upgrade (provider.go:94) uses InsecureSkipVerify: true — no origin
+      validation. A hard 10 MB per-message read limit is applied (line 106). No
+      pre-authentication, rate limiting, or connection limit exists before the upgrade.
+
+      On receiving a RegisterMessage the coordinator immediately calls registry.Register()
+      (line 166) which adds the provider to the active registry. Attestation verification
+      runs asynchronously after this. Registration validates: TPS values clamped to hard
+      limits; hardware memory clamped to 0–1024 GB; models filtered against the catalog;
+      X25519 public key decoded and checked for 32-byte length.
+
+      Binary hash policy: if a policy is configured, the hash in the attestation must
+      match a registered blessed hash or the provider is marked untrusted — but it
+      remains in the registry. If no policy is configured, any binary passes. Weight
+      hash enforcement is fail-open: omitting weight_hash never fails admission.
+
+      The private-text routing gate (registry.go:169–197) requires 11 flags to all be
+      true simultaneously: PublicKey present, backend in {inprocess-mlx, mlx-swift},
+      EncryptedResponseChunks, RuntimeManifestChecked, ChallengeVerifiedSIP, and six
+      PrivacyCapabilities fields. ChallengeVerifiedSIP is set by the coordinator after
+      receiving a challenge response — not trusted from the provider.
+
+      Challenge-response runs immediately after registration and then every 5 minutes.
+      The coordinator generates a 32-byte cryptographically random nonce, stores it in
+      a one-time-use tracker (deleted on first response), and waits 30 seconds. The
+      provider signs (nonce + timestamp) with the SE P-256 key; the coordinator verifies
+      the ECDSA signature against the registered public key. Three consecutive failures
+      mark the provider permanently untrusted; SIP=false or SecureBoot=false in any
+      response triggers immediate untrust without the 3-strike rule.
+
+      Status fields (SIPEnabled, BinaryHash, ActiveModelHash, etc.) may optionally be
+      covered by a separate status_signature over a canonical JSON payload. For providers
+      that omit status_signature, negative reports (SIP=false) are still acted on
+      immediately, but positive reports are treated as advisory only.
+    current_limitations:
+      - "No pre-authentication rate limiting or per-IP connection caps before WebSocket
+        upgrade. Any client can open arbitrary connections and attempt registration
+        (provider.go:94–106, SEC-034)."
+      - "Provider is added to the active registry before attestation verification
+        completes. There is an async window where a provider with an invalid attestation
+        is technically registered (provider.go:166 vs async verify)."
+      - "Weight hash enforcement is fail-open: a provider can omit weight_hash entirely
+        and still be admitted, even for models with a known expected hash in the catalog
+        (registry.go:785–792, SEC-007)."
+      - "status_signature is optional for pre-v0.3.11 providers. Positive status claims
+        (SIP=true, BinaryHash=X) are not cryptographically bound for older providers,
+        creating a rollout window where a compromised OS can echo a valid nonce while
+        lying about its security posture (provider.go:573–606)."
+      - "WebSocket frames after registration are not individually authenticated. Trust
+        for the session is based entirely on the connection identity established at
+        registration."
+      - "Python-specific privacy flags (pythonRuntimeLocked, dangerousModulesBlocked)
+        are required by the routing gate but Swift providers always report them as false,
+        excluding Swift providers from private-text routing (registry.go:169–197,
+        provider-swift/ProviderLoop.swift:274, SEC-017)."
+      - "10 MB per-message cap is global with no per-provider send/receive quota."
+
+  - id: TB-003
+    name: provider_operator_vs_process
+    description: >
+      The human operator who owns the Mac has full OS-level access: filesystem, process
+      list, network interfaces. The darkbloom process must remain secure against this
+      adversary. The design assumes SIP and Hardened Runtime are active (enforced at
+      startup and via 5-minute coordinator challenges). The Secure Enclave provides a
+      hardware boundary that even the operator cannot cross.
+    how_it_works: >
+      PT_DENY_ATTACH is applied at process startup via a raw ptrace(PT_DENY_ATTACH, 0,
+      nil, 0) syscall (AntiDebug.swift). While SIP is active this blocks debugger
+      attachment even from root. On EPERM (already set) the error is treated as
+      non-fatal and a P_TRACED sysctl check is used as a belt-and-suspenders fallback.
+
+      SIP is checked once at startup by spawning /usr/bin/csrutil status and parsing for
+      "enabled" (SecurityHardening.swift:70–97). If disabled the process aborts. The
+      check is not repeated after startup; it is sound because disabling SIP requires a
+      reboot into Recovery Mode which kills the process and purges inference data.
+
+      The binary is SHA-256 hashed at startup via _NSGetExecutablePath() with symlink
+      resolution, read in 64 KB chunks (BinaryHasher.swift). The hash is included in the
+      SE-signed attestation blob and verified by the coordinator against its registry of
+      blessed hashes. The hash is computed once at startup and not re-verified at runtime.
+
+      The SE P-256 signing key is generated fresh on every process launch using
+      CryptoKit's SecureEnclave.P256.Signing.PrivateKey() (SecureEnclaveIdentity.swift).
+      The private key never leaves the Secure Enclave silicon. Only signing operations
+      are possible via the CryptoKit API.
+
+      The X25519 encryption key pair is generated ephemerally in memory using libsodium
+      (NodeKeyPair.swift). It is NOT persisted to disk. Legacy on-disk key paths
+      (~/.darkbloom/node_key and equivalents) are actively purged via purgeLegacyFiles()
+      on startup. The secret key exists only in process memory, protected by Hardened
+      Runtime (kernel denies task_for_pid).
+
+      The provider config file (~/.config/darkbloom/provider.toml) stores only
+      operational settings (coordinator URL, backend port, idle timeout, model list).
+      It contains no cryptographic secrets. Core dumps are disabled (RLIMIT_CORE=0).
+      Memory wiping functions (secureZero via memset_s) are defined in
+      SecurityHardening.swift but call-site coverage in the inference path is not
+      confirmed from static analysis.
+    current_limitations:
+      - "Binary hash is computed once at startup. A binary modification after the hash
+        is captured (e.g. via a writable path the binary was loaded from) would not be
+        detected until the next coordinator challenge (BinaryHasher.swift)."
+      - "SIP check is single-shot at startup. This is sound given the Recovery Mode
+        reboot requirement, but there is no in-process re-verification between coordinator
+        challenges."
+      - "secureZero* (memset_s) functions are defined but their invocation in the actual
+        inference data path (decrypted prompt buffers, KV-cache tensors) is not confirmed
+        by static analysis of SecurityHardening.swift."
+      - "GPU-side MLX buffers (Metal) are not explicitly zeroed between requests.
+        Residual prompt tokens and KV-cache data may persist in GPU memory until
+        overwritten by the next batch."
+      - "PT_DENY_ATTACH EPERM is treated as non-fatal; a narrow race window exists on
+        very fast process restart where a debugger could attach before the syscall fires
+        (AntiDebug.swift)."
+      - "The operator can read and replace model weight files at
+        ~/.cache/huggingface. The coordinator's weight hash check is currently fail-open
+        (SEC-007), so a substituted model may be served without detection."
+
+  - id: TB-004
+    name: browser_to_coordinator
+    description: >
+      The console-ui Next.js frontend runs in the browser and communicates with the
+      coordinator through server-side API routes (BFF). Secrets stored in localStorage
+      and the BFF's willingness to accept a client-supplied coordinator URL are the
+      primary attack surfaces.
+    how_it_works: >
+      The coordinator API key is stored in localStorage as darkbloom_api_key in
+      plaintext (useAuth.ts:7). On first Privy login the key is auto-provisioned via
+      /api/auth/keys and persisted. The Privy JWT is managed by the Privy SDK in its
+      own storage. The coordinator URL is stored in darkbloom_coordinator_url but is
+      explicitly cleared on login (useAuth.ts:112) to prevent a pre-injection attack
+      where an attacker pre-loads a malicious coordinator URL before the victim logs in.
+
+      On logout (useAuth.ts:117–122) the following are cleared: darkbloom_api_key,
+      eigeninference_api_key (legacy), darkbloom_coordinator_url, and the Privy session.
+      The Zustand chat store, persisted to localStorage under darkbloom-store
+      (store.ts:164–174), is NOT cleared on logout. Chat history and prior messages
+      remain readable in localStorage after logout.
+
+      Sender-to-coordinator encryption is controlled by a localStorage boolean flag
+      (darkbloom_encrypt_to_coordinator, encryption.ts:18), defaulting to false. When
+      enabled, each request uses a fresh ephemeral X25519 keypair and XSalsa20-Poly1305.
+      If encryption setup fails the request hard-fails with a user-facing error; there
+      is no silent plaintext fallback at the browser layer.
+
+      Several Next.js BFF routes read the coordinator URL from the x-coordinator-url
+      request header and use it for server-side fetches, forwarding Privy tokens or API
+      keys to that origin (payments/stripe/checkout/route.ts:10, and four other payment
+      routes, telemetry/route.ts:14). The inference and auth routes use the hardcoded
+      NEXT_PUBLIC_COORDINATOR_URL environment variable and do not accept a
+      client-supplied URL.
+
+      next.config.ts contains only TypeScript build settings (ignoreBuildErrors: true).
+      No security headers (CSP, X-Frame-Options, HSTS, Referrer-Policy, Permissions-Policy)
+      are configured at the application layer.
+    current_limitations:
+      - "Chat history (Zustand store) is persisted to localStorage and not cleared on
+        logout. A subsequent user of the same browser can read prior session prompts and
+        responses (store.ts:164–174, SEC-024)."
+      - "Five Next.js BFF routes accept x-coordinator-url from the client request header
+        and use it for authenticated server-side fetches. This is a server-side request
+        forgery primitive: an attacker with XSS, a malicious extension, or access to the
+        same browser session can redirect payment and telemetry calls — including
+        forwarded auth credentials — to an attacker-controlled host
+        (payments/stripe/checkout/route.ts:10, SEC-001, SEC-002)."
+      - "No Content-Security-Policy, X-Frame-Options, HSTS, or Referrer-Policy headers
+        are configured at the application layer. XSS impact is unrestricted (next.config.ts,
+        SEC-014)."
+      - "Sender-to-coordinator encryption is opt-in and defaults off. The product UI
+        claims all prompts are E2E encrypted, but the coordinator leg is unprotected in
+        the default configuration (encryption.ts:12, api.ts:299, SEC-015)."
+      - "next.config.ts sets ignoreBuildErrors: true, allowing TypeScript errors to be
+        silently ignored at build time, potentially masking type-safety regressions in
+        security-sensitive code paths."
+      - "Long-lived API keys in localStorage are not re-bound to the current Privy
+        identity. A leaked key remains valid until explicitly revoked (SEC-003)."
+
+  - id: TB-005
+    name: coordinator_to_apple_mdm_mda
+    description: >
+      The coordinator upgrades providers from self-signed to hardware trust level by
+      independently querying Apple's MDM and MDA services. MicroMDM sends SecurityInfo
+      data to the coordinator via an inbound webhook. The coordinator also sends an SE
+      public key hash as a nonce to Apple and receives back a DER-encoded certificate
+      chain signed by Apple's Enterprise Attestation Root CA.
+    how_it_works: >
+      MDM webhook (server.go:876–887, POST /v1/mdm/webhook): the handler calls
+      io.ReadAll(r.Body) with no size limit and passes the raw bytes to
+      mdmClient.HandleWebhook(). There is no signature verification, no shared secret,
+      no IP allowlist, and no command UUID correlation. The webhook is completely
+      unauthenticated. MicroMDM credentials are used only for outbound API calls to
+      MicroMDM, not to authenticate inbound callbacks.
+
+      When a provider registers, the coordinator asynchronously sends a SecurityInfo MDM
+      command to the enrolled device (mdm.go:155–183), then waits up to 30 seconds for
+      the webhook response via a buffered channel (mdm.go:373–390). The webhook parses
+      SecurityInfo fields from the plist response: SIPEnabled, SecureBootLevel,
+      AuthenticatedRootVolumeEnabled, IsRecoveryLockEnabled, FirewaultEnabled.
+      These are cross-checked against the provider's self-reported attestation values.
+      A match on SIPEnabled and SecureBoot triggers async promotion to TrustHardware
+      (provider.go:1398).
+
+      MDA verification (provider.go:1419–1539): the coordinator computes
+      sha256(SE_public_key_bytes) and sends this as a nonce to Apple via
+      SendDeviceAttestationCommand(). Apple returns a plist containing DER-encoded
+      certificate chain entries. The coordinator parses the chain, verifies it against
+      the embedded Apple Enterprise Attestation Root CA (P-384, valid 2022–2047) using
+      Go's standard x509.Verify() with ExtKeyUsageAny. Custom OIDs are extracted from
+      the leaf certificate: device serial number (1.2.840.113635.100.8.9.1), UDID
+      (.8.9.2), OS version (.8.10.1), SepOS version (.8.10.2), Secure Boot level
+      (.8.13.2), and freshness code (.8.11.1). The freshness code is compared against
+      sha256(SE_public_key_bytes) byte-for-byte (provider.go:1502–1504).
+
+      The SE attestation blob (attestation.go:127–231) is a JSON structure
+      containing: SE public key (raw 64-byte P-256 X||Y in base64), hardware info, SIP
+      and SecureBoot state, X25519 encryption public key, binary hash, system volume
+      hash, serial number, and an RFC3339 timestamp. It is signed with SE P-256 ECDSA
+      (DER). The coordinator SHA-256 hashes the canonical sorted JSON bytes and verifies
+      the signature with ecdsa.Verify(). Three mandatory checks always run: SE must be
+      available, SIP must be enabled, SecureBoot must be enabled. ARV status is parsed
+      but not enforced (informational). RDMA status is informational only.
+    current_limitations:
+      - "The MDM webhook is completely unauthenticated. Any party that can reach
+        POST /v1/mdm/webhook can inject arbitrary SecurityInfo or
+        DevicePropertiesAttestation payloads and trigger trust upgrades without genuine
+        MDM enrollment (server.go:876–887, SEC-004)."
+      - "No body size limit on the MDM webhook endpoint. io.ReadAll(r.Body) with no
+        MaxBytesReader allows a DoS via oversized plist payloads (SEC-004)."
+      - "No MDM command UUID correlation: the webhook response is not bound to a specific
+        outbound command. A replay of any old SecurityInfo webhook response for the same
+        UDID would be accepted."
+      - "The MDA freshness code is sha256(SE_public_key_bytes). The SE public key is
+        publicly visible in the provider's attestation blob. An attacker who captures the
+        attestation can pre-compute the expected freshness code, potentially forging a
+        cert with a matching OID value."
+      - "No OCSP/CRL checks on the Apple MDA certificate chain. A revoked Apple
+        intermediate CA would be accepted until the embedded root is manually updated."
+      - "x509.Verify() is called with ExtKeyUsageAny, which does not enforce leaf or
+        intermediate key usage extensions (mda.go:132)."
+      - "ARV (Authenticated Root Volume) and RDMA status are parsed from attestation and
+        MDM data but explicitly not enforced by the trust state machine — old provider
+        versions omit these fields."
+      - "MDM verification and MDA verification are asynchronous. A provider is routable
+        at TrustSelfSigned while both checks are pending, before any independent Apple
+        verification has completed."
+
+  - id: TB-006
+    name: admin_to_coordinator
+    description: >
+      A distinct admin API surface controls release registration, binary hash registry,
+      trust-level overrides, provider management, and platform configuration. It is gated
+      by a separate admin key (constant-time compared) and by Privy admin email
+      membership. The release key is a narrower credential for GitHub Actions that can
+      only POST /v1/releases.
+    how_it_works: >
+      isAdminAuthorized() (release_handlers.go:186–203) first checks the admin key
+      using subtle.ConstantTimeCompare(). If that fails it checks whether the Privy
+      JWT user is in the configured admin email list. Admin key requests bypass the
+      consumer and financial rate limiters entirely (the accountID is set to "admin"
+      which hits no rate limit bucket). No per-admin audit log is emitted; all admin
+      actions share the same "admin" identity in logs.
+
+      The release key (release_handlers.go:16–22) is a separate secret checked with
+      plain string equality (== operator), NOT subtle.ConstantTimeCompare(). It controls
+      POST /v1/releases, which registers a new release, syncs binary hashes into the
+      provider registry gate, and invalidates caches. After registration the cache key
+      invalidated is latest_release:v1, but the actual per-platform cache key used for
+      lookups is latest_release:v1:<platform> (SEC-021). This means installers and
+      auto-updaters may continue receiving stale release metadata from the per-platform
+      cache after a new release is registered or an old one is deactivated.
+
+      The device auth flow (device_auth.go) has no rate limits on POST /v1/device/code
+      (generates device codes) or POST /v1/device/token (polls for tokens). Approved
+      device codes are not atomically consumed on first token exchange; any holder of
+      the device code can continue polling and minting provider tokens during the 15-minute
+      validity window.
+
+      Admin OTP endpoints (POST /v1/admin/otp/init and /v1/admin/otp/verify) are
+      unauthenticated and not rate-limited, creating a spam and brute-force surface
+      (release_handlers.go:205–221).
+    current_limitations:
+      - "The release key is compared with plain string equality, not constant-time
+        comparison. A timing attack can enumerate key bytes (release_handlers.go:19,
+        SEC-009)."
+      - "Cache invalidation on release registration and deletion targets the wrong key
+        (latest_release:v1 instead of latest_release:v1:<platform>). Installers and
+        providers on a specific platform may see stale release metadata for up to 1 minute
+        after a security-critical release update (release_handlers.go:88, SEC-021)."
+      - "Admin key bypasses all rate limiters. A compromised admin key has unconstrained
+        API throughput (server.go:1318)."
+      - "A single shared admin key means all admin actions are attributed to the same
+        identity. Individual admin revocation is not possible without rotating the single
+        key (server.go:1209)."
+      - "No alerting or audit log entry on release registration, binary hash sync, or
+        admin trust-level overrides. Malicious registration would be silent."
+      - "Admin OTP endpoints are unauthenticated and unrate-limited (SEC-028)."
+      - "Device codes are not atomically consumed on first token exchange, allowing
+        multiple provider tokens to be minted from one approved code (device_auth.go:99–158,
+        SEC-011)."
+
+  - id: TB-007
+    name: provider_inference_engine
+    description: >
+      The in-process MLX inference engine (mlx-swift-lm) executes inside the darkbloom
+      process on the provider's Apple Silicon GPU. Decrypted prompt data is present in
+      process memory during inference. Isolation from the OS and operator is provided by
+      the process boundary, Hardened Runtime, and memory wiping. The inference engine
+      is the innermost trust boundary — a failure here directly exposes consumer data.
+    how_it_works: >
+      The BatchScheduler actor (BatchScheduler.swift) manages concurrent inference with
+      a configurable maxConcurrentRequests (default 4). All concurrent requests share
+      a single BatchGenerator for continuous batching. Requests waiting more than 120
+      seconds in the pending queue are evicted with an error. The scheduler tracks active
+      requests by UID in an actor-protected dictionary.
+
+      Model weights are loaded from the HuggingFace cache directory
+      (~/.cache/huggingface) via ModelScanner.resolveLocalPath(). Weight integrity is
+      verified by WeightHasher: all weight files (*.safetensors, *.npz, *.bin),
+      config.json, and tokenizer files are sorted lexicographically, SHA-256 hashed
+      individually in parallel, and the per-file digests are concatenated then hashed
+      again to produce a single root hash. This hash is advertised to the coordinator at
+      registration and in heartbeats. The coordinator's enforcement of this hash is
+      currently fail-open (SEC-007).
+
+      Cancellation is managed via InferenceCancellationToken (NSLock-protected boolean).
+      The token is checked between token generation steps in the streaming loop
+      (ProviderLoop.swift:470). When cancelled the provider sends an inference_error
+      response and stops generation. An active GPU forward pass is not interrupted —
+      cancellation is checked only at the Swift layer between MLX calls.
+
+      Response encryption uses the consumer's ephemeral X25519 public key (from the
+      inference request) via NaCl crypto_box (XSalsa20-Poly1305). If encryption throws
+      an exception the catch block logs a warning and encryptedPayload remains nil. The
+      chunk message is then sent with plaintext data in the data field and nil
+      encryptedData (ProviderLoop.swift:436–451). The coordinator currently rejects
+      plaintext chunks and marks the provider untrusted, but this is a coordinator-side
+      defence, not a provider-side fail-closed.
+
+      Idle timeout is managed by IdleTimeoutPolicy: shouldUnload() requires the model
+      to be loaded, no in-flight requests, and elapsed time >= timeout. The monitor
+      polls every 60 seconds (ProviderLoop.swift:622). On unload, model, tokenizer,
+      and generator references are set to nil (BatchScheduler.swift:366–369) and Swift
+      ARC releases the objects; MLX GPU memory reclamation is implicit and non-deterministic.
+
+      GPU memory metrics (MLX.GPU.activeMemory, peakMemory, cacheMemory) are tracked
+      and reported but not explicitly zeroed between requests. There is no Metal-level
+      memset of GPU buffers between inference sessions.
+    current_limitations:
+      - "Response encryption failure falls back to plaintext SSE chunks rather than
+        terminating the request with an error (ProviderLoop.swift:436–451, SEC-016).
+        Provider-side fix requires sending inference_error instead of populating the
+        plaintext data field."
+      - "GPU-side MLX buffers (Metal allocations for activations, KV-cache, logits) are
+        not explicitly zeroed between requests. Residual inference data from one consumer
+        may be readable by a subsequent consumer's batch if MLX reuses allocations."
+      - "Cancellation does not interrupt an active GPU forward pass. The MLX computation
+        continues to completion before the Swift cancellation check fires, wasting
+        provider resources and delaying billing reconciliation."
+      - "The idle timeout monitor polls every 60 seconds, meaning a model can remain
+        resident in GPU memory for up to 60 seconds beyond the configured timeout."
+      - "Weight hash enforcement is fail-open at the coordinator (SEC-007). An operator
+        who replaces model weight files will cause a hash mismatch in the next heartbeat,
+        but omitting the hash entirely passes both registration and challenges."
+      - "Model weight files are loaded from the user-writable HuggingFace cache directory.
+        The operator can replace weight files between idle periods without affecting the
+        currently-loaded model."
+
+  - id: TB-008
+    name: coordinator_to_payments
+    description: >
+      The coordinator manages an internal micro-USD ledger backed by PostgreSQL, accepts
+      Solana USDC deposits verified on-chain, and processes Stripe webhook events for
+      fiat top-ups. The Solana BIP39 wallet mnemonic is the highest-value secret in the
+      coordinator's environment.
+    how_it_works: >
+      Stripe webhook ingestion (billing_handlers.go:122–134): the body is read with a
+      1 MB limit (io.LimitReader). The Stripe-Signature header is verified using the
+      Stripe SDK's VerifyWebhookSignature before any processing. Idempotency is checked
+      by looking up the billing_session_id from the event metadata in the store and
+      returning 200 if status == "completed". The status check and the credit insertion
+      are not in a single database transaction; a concurrent duplicate webhook event can
+      pass the completed-session check before either marks it complete, resulting in
+      double credit (billing_handlers.go:158–180, SEC-012).
+
+      The idempotency key used is a custom billing_session_id stored in Stripe metadata,
+      not Stripe's own event.id. There is no unique database constraint on the
+      billing_session_id that would enforce at-most-once credit at the DB level.
+
+      The Solana wallet is derived from a BIP39 mnemonic via SLIP-0010
+      (m/44'/501'/0'/0'). The mnemonic is injected into the coordinator process at
+      startup from EigenCloud KMS environment variables. The coordinator runs inside an
+      AMD SEV-SNP Confidential VM, providing hardware-encrypted memory protection.
+
+      The legacy GET /v1/provider/earnings endpoint (consumer.go:2265–2270) returns
+      provider balance and payment history keyed by wallet address with no authentication
+      requirement.
+    current_limitations:
+      - "Stripe webhook idempotency is not atomic: the completed-session check and the
+        balance credit insertion are separate operations. Concurrent duplicate valid
+        webhooks can both pass the check before either commits, risking double credit
+        (billing_handlers.go:158–176, SEC-012)."
+      - "Idempotency uses a custom billing_session_id rather than Stripe's native
+        event.id. There is no unique database constraint enforcing at-most-once credit
+        at the storage layer."
+      - "GET /v1/provider/earnings is unauthenticated. Any party who knows or can guess
+        a provider's Solana wallet address can retrieve their full earnings history
+        (consumer.go:2265, SEC-030)."
+      - "No rate limiting on payment endpoints beyond the financial rate limiter, which
+        defaults to nil (unlimited) unless explicitly configured."
+
+  - id: TB-009
+    name: apple_attestation_chain
+    description: >
+      The hardware trust guarantee rests on a chain: SE key generation → attestation
+      blob construction and SE signing → coordinator signature verification → MDM
+      SecurityInfo cross-check → MDA cert chain from Apple → ongoing challenge-response.
+      This boundary is cross-cutting; a weakness at any link collapses the trust level
+      of every provider in the field.
+    how_it_works: >
+      SE key lifecycle: CryptoKit generates a fresh SecureEnclave.P256.Signing.PrivateKey
+      on every darkbloom launch (SecureEnclaveIdentity.swift:56). The private key never
+      leaves the SE silicon. The public key (raw 64-byte X||Y, base64-encoded) is bound
+      to the X25519 encryption key in the attestation blob and in the coordinator
+      registration message.
+
+      Attestation blob: AttestationBuilder.swift constructs a JSON structure containing
+      hardware info, SIP/SecureBoot/ARV state, the SE public key, the X25519 encryption
+      public key, the binary SHA-256 hash, system volume hash, serial number, and an
+      RFC3339 timestamp. Keys are serialized in sorted order to match Go's
+      encoding/json field ordering. The blob is signed with SE P-256 ECDSA (DER-encoded).
+
+      Coordinator verification (attestation.go:127–231): the raw P-256 public key is
+      decoded (raw 65-byte uncompressed format), validated on the P-256 curve, then used
+      to verify the DER ECDSA signature over SHA-256(canonical_json_bytes). Three checks
+      are mandatory and will fail the attestation: SecureEnclave not available, SIP
+      disabled, SecureBoot disabled. ARV and RDMA are parsed and logged but not enforced.
+      A 30-second freshness window is checked separately by CheckTimestamp().
+
+      Challenge-response: every 5 minutes the coordinator generates a 32-byte random
+      nonce (base64), stores it in a one-time-use map keyed by nonce string, and sends
+      it with a UTC RFC3339 timestamp. The provider signs (nonce + timestamp) with the
+      SE key — raw string concatenation with no delimiter. The coordinator verifies the
+      ECDSA signature, checks nonce matches, and checks that SIPEnabled is not nil and
+      not false. SIP=false triggers immediate MarkUntrusted(); 3 consecutive timeouts or
+      signature failures trigger MarkUntrusted() via the 3-strike counter.
+
+      Status signature (attestation.go:378–437): an extended canonical JSON payload
+      covering nonce, timestamp, and all security status fields is signed separately.
+      VerifyStatusSignature() checks this signature. If the status_signature field is
+      absent, ErrStatusSignatureMissing is returned; the caller treats this as advisory
+      (not a failure) for compatibility with providers older than v0.3.11. Negative
+      status reports (SIP=false) are always acted on immediately regardless of whether
+      the status_signature is present.
+    current_limitations:
+      - "status_signature is optional for pre-v0.3.11 providers. A compromised provider
+        running OS-level code can report a valid (nonce, timestamp) signature from the
+        SE while reporting SIP=true in unsigned status fields, avoiding untrust during
+        the rollout window (provider.go:573–606)."
+      - "Nonce and timestamp are concatenated without a delimiter for the challenge
+        signature (nonce + timestamp). A crafted nonce ending with a partial timestamp
+        string could theoretically produce the same signed bytes as a different
+        (nonce, timestamp) pair, though in practice base64 nonces (44 chars) and RFC3339
+        timestamps are statistically non-overlapping."
+      - "MDA freshness code is sha256(SE_public_key_bytes). The SE public key is publicly
+        visible in the attestation blob returned by GET /v1/providers/attestation.
+        An attacker can pre-compute the expected freshness code for any known provider."
+      - "No OCSP or CRL checks on the Apple Enterprise Attestation Root CA chain. A
+        compromised or revoked Apple intermediate CA certificate would be accepted by the
+        coordinator until the embedded root CA is manually updated."
+      - "ARV (Authenticated Root Volume) status is parsed from both SE attestation and
+        MDA OIDs but is explicitly not enforced in the trust state machine. Providers
+        with a tampered system volume can still reach TrustHardware."
+      - "MDM webhook is unauthenticated (see TB-005). A forged SecurityInfo callback
+        can cause a provider to reach TrustHardware without genuine Apple MDM enrollment,
+        which is a prerequisite for the MDA step."
+      - "The entire MDM→MDA trust upgrade path is asynchronous and runs in a background
+        goroutine. A provider is routable at TrustSelfSigned during the window between
+        registration and completion of the full verification chain."
+
+# ─────────────────────────────────────────────────────────────
+# THREATS
+# ─────────────────────────────────────────────────────────────
+threats:
+
+  # ── TB-001: Consumer → Coordinator ──────────────────────────
+
+  - id: T-001
+    trust_boundary: TB-001
+    stride: Spoofing
+    title: API key theft enables consumer impersonation
+    description: >
+      Long-lived coordinator API keys stored in browser localStorage can be stolen
+      via XSS, malicious browser extensions, or local user access, and reused to
+      impersonate the victim consumer for inference and billing operations.
+    adversaries: [ADV-002, ADV-003]
+    affected_assets: [A-007, A-009]
+    affected_files:
+      - console-ui/src/hooks/useAuth.ts
+      - console-ui/src/lib/api.ts
+      - coordinator/internal/auth/**
+    mitigations:
+      - description: API keys verified on every coordinator request via constant-time compare.
+        status: implemented
+      - description: Keys stored in localStorage without HttpOnly/Secure cookie protection.
+        status: open
+    open_findings: [SEC-003]
+    severity: high
+    detection_hint: >
+      Changes to API key issuance, validation, storage mechanism, or session lifecycle
+      in auth handlers or the console-ui auth hook should be reviewed against this threat.
+
+  - id: T-002
+    trust_boundary: TB-001
+    stride: Denial_of_Service
+    title: Unbounded request body causes coordinator OOM
+    description: >
+      The OpenAI-compatible inference endpoints read the full request body via
+      io.ReadAll without a size cap. An authenticated consumer can send a multi-GB
+      body to exhaust coordinator memory.
+    adversaries: [ADV-002, ADV-003]
+    affected_assets: [A-009]
+    affected_files:
+      - coordinator/internal/api/consumer.go
+    mitigations:
+      - description: No MaxBytesReader applied to inference endpoints.
+        status: open
+      - description: "Sealed/encrypted endpoint applies a cap (contrast at sender_encryption.go:132)."
+        status: implemented
+    open_findings: [SEC-006]
+    severity: high
+    detection_hint: >
+      Any change to request body reading in consumer.go (io.ReadAll, json.Decode,
+      r.Body) should verify a MaxBytesReader or equivalent cap is applied.
+
+  - id: T-003
+    trust_boundary: TB-001
+    stride: Information_Disclosure
+    title: Coordinator sees plaintext prompts when sender encryption is off
+    description: >
+      Sender-to-coordinator encryption is optional and defaults off. The product UI
+      claims all prompts are E2E encrypted, but the coordinator receives and routes
+      plaintext when consumers do not opt in.
+    adversaries: [ADV-003]
+    affected_assets: [A-001]
+    affected_files:
+      - console-ui/src/lib/encryption.ts
+      - console-ui/src/lib/api.ts
+      - console-ui/src/app/page.tsx
+    mitigations:
+      - description: Provider-leg encryption is always on (X25519/NaCl box).
+        status: implemented
+      - description: Sender-to-coordinator leg is opt-in and off by default.
+        status: open
+    open_findings: [SEC-015]
+    severity: medium
+    detection_hint: >
+      Changes to encryption.ts defaults, the plaintext fallback in api.ts, or
+      product copy claiming E2E encryption should re-examine this boundary.
+
+  - id: T-004
+    trust_boundary: TB-001
+    stride: Elevation_of_Privilege
+    title: Consumer API key used for admin-scoped operations
+    description: >
+      If consumer and admin API key validation shares code paths without scope
+      enforcement, a consumer key could be crafted or escalated to call admin
+      endpoints.
+    adversaries: [ADV-002]
+    affected_assets: [A-005, A-011]
+    affected_files:
+      - coordinator/internal/auth/**
+      - coordinator/internal/api/server.go
+      - coordinator/internal/api/release_handlers.go
+    mitigations:
+      - description: Admin endpoints gated by separate admin key middleware.
+        status: implemented
+      - description: Release key uses plain string equality rather than constant-time compare.
+        status: open
+    open_findings: [SEC-009]
+    severity: high
+    detection_hint: >
+      Changes to middleware ordering, key validation logic, or new route registration
+      in server.go should verify admin vs consumer key scopes are not merged.
+
+  - id: T-005
+    trust_boundary: TB-001
+    stride: Repudiation
+    title: Consumer denies inference requests and billing charges
+    description: >
+      A consumer disputes that they sent requests charged to their balance. Without
+      immutable per-request logs tied to the API key, billing disputes cannot be
+      resolved.
+    adversaries: [ADV-002]
+    affected_assets: [A-009]
+    affected_files:
+      - coordinator/internal/api/consumer.go
+      - coordinator/internal/store/postgres.go
+    mitigations:
+      - description: Usage rows written per request to the ledger.
+        status: implemented
+      - description: No cryptographic receipt or signed request log.
+        status: open
+    open_findings: []
+    severity: low
+    detection_hint: >
+      Changes to usage recording, ledger writes, or billing calculation should
+      ensure every billable request is persisted before returning a response.
+
+  # ── TB-002: Coordinator → Provider WebSocket ─────────────────
+
+  - id: T-006
+    trust_boundary: TB-002
+    stride: Spoofing
+    title: Unauthenticated WebSocket connection floods provider registry
+    description: >
+      The provider WebSocket endpoint accepts connections from any origin before
+      authentication, registers providers into the active registry before trust is
+      verified, and allows 10 MiB messages. An attacker can open many connections
+      to exhaust goroutines, registry memory, and challenge-loop capacity.
+    adversaries: [ADV-001, ADV-003]
+    affected_assets: [A-011]
+    affected_files:
+      - coordinator/internal/api/provider.go
+      - coordinator/internal/registry/registry.go
+    mitigations:
+      - description: Binary hash verified at registration against known blessed hashes.
+        status: implemented
+      - description: No per-IP connection rate limit or pre-auth token requirement.
+        status: open
+    open_findings: [SEC-034]
+    severity: medium
+    detection_hint: >
+      Changes to the WebSocket upgrade path, provider registration flow, or registry
+      admission logic should verify rate-limiting and pre-auth requirements.
+
+  - id: T-007
+    trust_boundary: TB-002
+    stride: Tampering
+    title: Provider serves manipulated model outputs to consumers
+    description: >
+      A malicious provider can run a modified model or post-process outputs before
+      returning them. The consumer has no cryptographic proof that outputs came from
+      the advertised model weights.
+    adversaries: [ADV-001]
+    affected_assets: [A-001, A-004]
+    affected_files:
+      - coordinator/internal/registry/registry.go
+      - coordinator/internal/api/provider.go
+      - provider-swift/Sources/ProviderCore/Inference/**
+    mitigations:
+      - description: Weight hash advertised by provider at registration and in heartbeats.
+        status: implemented
+      - description: Coordinator verification of weight hash is fail-open when hash is omitted (SEC-007).
+        status: open
+      - description: No consumer-side output proof (output signing not implemented).
+        status: open
+    open_findings: [SEC-007]
+    severity: high
+    detection_hint: >
+      Changes to model hash advertisement, registry scoring, or the routing gate
+      should check that weight hash enforcement is fail-closed for catalog models.
+
+  - id: T-008
+    trust_boundary: TB-002
+    stride: Information_Disclosure
+    title: Provider sends plaintext SSE chunks on encryption failure
+    description: >
+      If response encryption fails mid-stream, the Swift provider falls back to
+      sending plaintext data in the SSE chunk rather than failing the request.
+      The coordinator currently rejects plaintext chunks but this is a provider-side
+      regression risk.
+    adversaries: [ADV-001]
+    affected_assets: [A-001]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/ProviderLoop.swift
+      - coordinator/internal/api/provider.go
+    mitigations:
+      - description: Coordinator rejects plaintext inference chunks and marks provider untrusted.
+        status: implemented
+      - description: Provider should fail closed (send inference_error) rather than falling back to plaintext.
+        status: open
+    open_findings: [SEC-016]
+    severity: medium
+    detection_hint: >
+      Any change to the streaming response path in ProviderLoop.swift, encryption
+      error handling, or the coordinator's chunk ingestion should verify the
+      fail-closed behaviour is preserved.
+
+  - id: T-009
+    trust_boundary: TB-002
+    stride: Elevation_of_Privilege
+    title: Swift provider excluded from private-request routing due to missing Python flags
+    description: >
+      The coordinator's private-text routing gate checks Python-specific flags
+      (privacyFeaturesLocked, pythonModulesBlocked) that the Swift provider always
+      reports as false. This may exclude Swift providers from routing or create
+      pressure to lie about controls that do not exist in the Swift backend.
+    adversaries: [ADV-001]
+    affected_assets: [A-001]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/ProviderLoop.swift
+      - coordinator/internal/registry/registry.go
+    mitigations:
+      - description: Routing gate exists and enforces privacy flags.
+        status: implemented
+      - description: Gate is not backend-aware; Swift equivalent controls not defined.
+        status: open
+    open_findings: [SEC-017]
+    severity: medium
+    detection_hint: >
+      Changes to the provider registration message, registry routing gate, or
+      backend-type handling should verify Swift-specific controls are correctly
+      evaluated rather than reusing Python flag semantics.
+
+  - id: T-010
+    trust_boundary: TB-002
+    stride: Denial_of_Service
+    title: In-flight inference cancellation not propagated to inference engine
+    description: >
+      When the coordinator sends a cancel message, the Rust provider creates a
+      cancellation token but does not wire it into the in-process inference task.
+      The task continues consuming GPU and memory after cancellation.
+    adversaries: [ADV-002]
+    affected_assets: [A-009]
+    affected_files:
+      - provider/src/main.rs
+    mitigations:
+      - description: Swift provider wires InferenceCancellation into the generation loop.
+        status: implemented
+      - description: Legacy Rust provider cancellation is not properly wired (SEC-020).
+        status: open
+    open_findings: [SEC-020]
+    severity: medium
+    detection_hint: >
+      Changes to cancellation handling in ProviderLoop.swift or the Rust coordinator.rs
+      should verify the cancel signal reaches the inference loop and aborts generation.
+
+  # ── TB-003: Provider Operator vs Process ─────────────────────
+
+  - id: T-011
+    trust_boundary: TB-003
+    stride: Information_Disclosure
+    title: Provider operator reads X25519 private key from config file
+    description: >
+      The X25519 Diffie-Hellman private key used for E2E encryption is stored in the
+      provider's TOML config file on disk. The operator has full filesystem read
+      access. Reading this key enables decryption of all future (not past) E2E
+      inference traffic routed to this provider.
+    adversaries: [ADV-001]
+    affected_assets: [A-003, A-001]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift
+      - provider/src/config.rs
+    mitigations:
+      - description: XSalsa20-Poly1305 encryption provides no forward secrecy; past sessions are safe.
+        status: implemented
+      - description: Key is stored in plaintext TOML; no OS keychain or SE protection for X25519 key.
+        status: open
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Changes to key generation, storage, or loading in ProviderConfig.swift or
+      config.rs should verify whether the X25519 private key is protected at rest
+      (e.g. moved to macOS Keychain or derived from SE-sealed material).
+
+  - id: T-012
+    trust_boundary: TB-003
+    stride: Tampering
+    title: Operator replaces model weights with manipulated files
+    description: >
+      The operator has write access to ~/.cache/huggingface where model weights are
+      stored. Replacing weights causes the provider to serve outputs from a different
+      or adversarially fine-tuned model while advertising the original model's hash.
+      The coordinator's weight-hash check is currently fail-open.
+    adversaries: [ADV-001]
+    affected_assets: [A-004, A-001]
+    affected_files:
+      - coordinator/internal/registry/registry.go
+      - coordinator/internal/api/provider.go
+      - provider-swift/Sources/ProviderCore/Models/WeightHasher.swift
+    mitigations:
+      - description: Provider computes and advertises weight hash at registration.
+        status: implemented
+      - description: Coordinator fails open when provider omits weight_hash for a catalog model (SEC-007).
+        status: open
+    open_findings: [SEC-007]
+    severity: high
+    detection_hint: >
+      Changes to WeightHasher.swift, model registration, heartbeat hash fields, or
+      the coordinator's registry admission should verify that hash enforcement is
+      fail-closed for all catalog models.
+
+  - id: T-013
+    trust_boundary: TB-003
+    stride: Tampering
+    title: Operator modifies darkbloom binary
+    description: >
+      The operator attempts to replace or patch the darkbloom binary to bypass
+      security checks, fake attestation, or exfiltrate data.
+    adversaries: [ADV-001]
+    affected_assets: [A-011, A-010]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift
+      - coordinator/internal/attestation/**
+    mitigations:
+      - description: Code signing enforced by macOS; SIP prevents unsigned binaries from launching.
+        status: implemented
+      - description: Binary SHA-256 hash included in SE-signed attestation blob, verified by coordinator.
+        status: implemented
+      - description: Coordinator maintains registry of blessed binary hashes; unregistered hashes rejected.
+        status: implemented
+    open_findings: []
+    severity: critical
+    detection_hint: >
+      Changes to binary hash computation in BinaryHasher.swift, attestation blob
+      construction, or the coordinator's binary hash registry admission should
+      preserve the end-to-end tamper-detection chain.
+
+  - id: T-014
+    trust_boundary: TB-003
+    stride: Information_Disclosure
+    title: Operator inspects darkbloom process memory
+    description: >
+      The operator attempts to attach a debugger or read process memory to extract
+      decrypted prompt content, the X25519 key from memory, or SE-derived material.
+    adversaries: [ADV-001]
+    affected_assets: [A-001, A-003, A-002]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Security/AntiDebug.swift
+      - provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift
+      - provider/src/security.rs
+    mitigations:
+      - description: PT_DENY_ATTACH applied at startup; kernel denies task_for_pid.
+        status: implemented
+      - description: Hardened Runtime entitlement blocks external memory inspection.
+        status: implemented
+      - description: SE P-256 key is non-exportable and never present in regular process memory.
+        status: implemented
+      - description: Memory wiping applied to inference buffers after each request.
+        status: implemented
+    open_findings: []
+    severity: critical
+    detection_hint: >
+      Any weakening of AntiDebug.swift, removal of PT_DENY_ATTACH, changes to
+      Hardened Runtime entitlements, or deferral of memory wiping should be
+      treated as a critical regression.
+
+  - id: T-015
+    trust_boundary: TB-003
+    stride: Elevation_of_Privilege
+    title: Operator disables SIP to bypass security controls
+    description: >
+      The operator reboots into Recovery Mode to disable SIP, then restarts darkbloom
+      to operate without code-signing and anti-debug protections.
+    adversaries: [ADV-001]
+    affected_assets: [A-001, A-010]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift
+      - coordinator/internal/api/provider.go
+      - coordinator/internal/registry/registry.go
+    mitigations:
+      - description: darkbloom checks SIP at startup and refuses to serve if disabled.
+        status: implemented
+      - description: SIP status included in every 5-minute challenge-response; coordinator marks untrusted immediately on false.
+        status: implemented
+      - description: Disabling SIP requires reboot into Recovery Mode, which terminates the process and wipes inference data from memory.
+        status: implemented
+    open_findings: []
+    severity: critical
+    detection_hint: >
+      Changes to SIP-check logic in SecurityHardening.swift, the challenge-response
+      handler, or the coordinator's untrust-on-SIP-false path are critical and should
+      be reviewed against this threat.
+
+  - id: T-016
+    trust_boundary: TB-003
+    stride: Denial_of_Service
+    title: Operator fills disk to prevent model loading
+    description: >
+      The operator fills the local filesystem to prevent model weight files from
+      being cached or loaded, degrading provider availability.
+    adversaries: [ADV-001]
+    affected_assets: []
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Inference/LocalMLXModelFoundation.swift
+    mitigations:
+      - description: Model load failure reported to coordinator; provider marked unavailable and re-queued.
+        status: implemented
+      - description: No disk quota enforcement for HuggingFace cache.
+        status: open
+    open_findings: []
+    severity: low
+    detection_hint: >
+      Changes to model loading error handling should verify failures are reported
+      upstream rather than silently retried.
+
+  # ── TB-004: Browser / Console UI ─────────────────────────────
+
+  - id: T-017
+    trust_boundary: TB-004
+    stride: Spoofing
+    title: SSRF via client-controlled coordinator URL forwards auth credentials
+    description: >
+      Several Next.js API routes read the coordinator URL from the x-coordinator-url
+      request header and forward Privy tokens or API keys to that origin. An attacker
+      with XSS, extension access, or a malicious link can redirect authenticated
+      server-side fetches to an attacker-controlled host.
+    adversaries: [ADV-002, ADV-003]
+    affected_assets: [A-007]
+    affected_files:
+      - console-ui/src/app/api/payments/stripe/checkout/route.ts
+      - console-ui/src/app/api/payments/stripe/onboard/route.ts
+      - console-ui/src/app/api/payments/withdraw/stripe/route.ts
+      - console-ui/src/app/api/payments/stripe/status/route.ts
+      - console-ui/src/app/api/payments/stripe/withdrawals/route.ts
+      - console-ui/src/app/api/telemetry/route.ts
+    mitigations:
+      - description: No server-side allowlist for coordinator URLs in affected routes.
+        status: open
+    open_findings: [SEC-001, SEC-002]
+    severity: high
+    detection_hint: >
+      Any route that reads a URL from a request header or body and uses it for a
+      server-side fetch must be reviewed for SSRF and credential-forwarding risk.
+
+  - id: T-018
+    trust_boundary: TB-004
+    stride: Information_Disclosure
+    title: Chat history persists in localStorage after logout
+    description: >
+      Chat messages and prompt content remain in localStorage/Zustand after the user
+      logs out. A subsequent local user, browser extension, or future XSS can read
+      prior session prompts.
+    adversaries: [ADV-003]
+    affected_assets: [A-001]
+    affected_files:
+      - console-ui/src/lib/store.ts
+      - console-ui/src/hooks/useAuth.ts
+    mitigations:
+      - description: Logout clears API keys and coordinator URL but not chat state.
+        status: open
+    open_findings: [SEC-024]
+    severity: medium
+    detection_hint: >
+      Changes to logout logic (useAuth.ts) or Zustand persistence config (store.ts)
+      should verify all sensitive state is cleared on account change.
+
+  - id: T-019
+    trust_boundary: TB-004
+    stride: Information_Disclosure
+    title: Missing security headers increase XSS blast radius
+    description: >
+      No CSP, frame-ancestors, X-Content-Type-Options, or Referrer-Policy headers
+      are configured at the application layer. If a rendering or dependency bug
+      introduces XSS, browser-stored API keys and chat data are unprotected.
+    adversaries: [ADV-003]
+    affected_assets: [A-007, A-001]
+    affected_files:
+      - console-ui/next.config.ts
+      - console-ui/src/proxy.ts
+    mitigations:
+      - description: No application-layer security headers currently configured.
+        status: open
+    open_findings: [SEC-014]
+    severity: medium
+    detection_hint: >
+      Changes to next.config.ts or proxy.ts headers config should verify CSP and
+      other protective headers are present before deployment.
+
+  - id: T-020
+    trust_boundary: TB-004
+    stride: Elevation_of_Privilege
+    title: Mock auth active in production due to missing Privy config
+    description: >
+      If the Privy app ID env var is absent in production, the UI falls back to
+      MOCK_AUTH which sets authenticated=true unconditionally. Coordinator API calls
+      will still fail auth, but the UI presents an authenticated state that may
+      expose unauthenticated flows.
+    adversaries: [ADV-003]
+    affected_assets: [A-007]
+    affected_files:
+      - console-ui/src/components/providers/PrivyClientProvider.tsx
+    mitigations:
+      - description: Mock auth only intended for local development.
+        status: open
+    open_findings: [SEC-026]
+    severity: medium
+    detection_hint: >
+      Changes to PrivyClientProvider.tsx auth fallback logic should fail closed
+      in production environments rather than granting a mock authenticated state.
+
+  # ── TB-005: Coordinator → Apple MDM/MDA ──────────────────────
+
+  - id: T-021
+    trust_boundary: TB-005
+    stride: Spoofing
+    title: Unauthenticated MDM webhook injection manipulates provider trust state
+    description: >
+      The MDM webhook endpoint is unauthenticated and reads an unbounded body.
+      An attacker who can reach it can inject fake SecurityInfo or
+      DevicePropertiesAttestation callbacks to elevate a provider's trust level
+      to hardware without genuine MDM enrollment.
+    adversaries: [ADV-001, ADV-003]
+    affected_assets: [A-010]
+    affected_files:
+      - coordinator/internal/api/server.go
+      - coordinator/internal/mdm/mdm.go
+      - coordinator/internal/api/provider.go
+    mitigations:
+      - description: Coordinator verifies MDA cert chain against Apple Enterprise Attestation Root CA.
+        status: implemented
+      - description: Webhook itself has no shared secret, mTLS, or command-UUID binding.
+        status: open
+      - description: No body-size cap on MDM webhook endpoint.
+        status: open
+    open_findings: [SEC-004]
+    severity: high
+    detection_hint: >
+      Changes to MDM webhook handling (mdm.go, server.go route registration) must
+      verify authentication is present before any trust state is modified.
+
+  - id: T-022
+    trust_boundary: TB-005
+    stride: Tampering
+    title: ACME device identity spoofable via proxy header injection
+    description: >
+      ACME device identity is carried via X-Ssl-Client-* proxy headers. If the
+      coordinator is reachable directly or the proxy fails to strip these headers,
+      an attacker can present a spoofed certificate identity without completing TLS
+      client auth.
+    adversaries: [ADV-001, ADV-003]
+    affected_assets: [A-010, A-012]
+    affected_files:
+      - coordinator/internal/api/acme_verify.go
+      - coordinator/internal/api/provider.go
+    mitigations:
+      - description: Coordinator verifies the presented cert chain and binds the ACME key to SE attestation.
+        status: implemented
+      - description: Requires proxy to strip spoofed inbound X-Ssl-Client-* headers; not enforced at app layer.
+        status: open
+    open_findings: [SEC-005]
+    severity: medium
+    detection_hint: >
+      Changes to acme_verify.go or provider.go cert-header parsing should verify
+      the coordinator cannot be reached directly bypassing proxy header stripping.
+
+  - id: T-023
+    trust_boundary: TB-005
+    stride: Denial_of_Service
+    title: Apple MDA service unavailability degrades hardware trust verification
+    description: >
+      The MDA verification step depends on Apple's attestation servers responding
+      to DevicePropertiesAttestation requests. Prolonged Apple-side unavailability
+      prevents new providers from reaching hardware trust level.
+    adversaries: []
+    affected_assets: [A-010]
+    affected_files:
+      - coordinator/internal/mdm/mdm.go
+      - coordinator/internal/attestation/**
+    mitigations:
+      - description: Providers can still operate at self_signed trust level without MDA.
+        status: implemented
+      - description: No timeout/circuit-breaker documented for MDA requests.
+        status: open
+    open_findings: []
+    severity: low
+    detection_hint: >
+      Changes to MDM/MDA request handling should verify graceful degradation to
+      self_signed trust rather than blocking provider registration indefinitely.
+
+  # ── TB-006: Admin → Coordinator ──────────────────────────────
+
+  - id: T-024
+    trust_boundary: TB-006
+    stride: Spoofing
+    title: Admin API key compromise allows release and trust manipulation
+    description: >
+      The admin key controls release registration (binary hash registry), provider
+      trust overrides, and platform configuration. Compromise via key leak, brute
+      force, or non-constant-time comparison allows an attacker to register malicious
+      binary hashes or deactivate legitimate releases.
+    adversaries: [ADV-003]
+    affected_assets: [A-005, A-011]
+    affected_files:
+      - coordinator/internal/api/release_handlers.go
+      - coordinator/internal/api/server.go
+    mitigations:
+      - description: Release key gated by separate middleware from consumer keys.
+        status: implemented
+      - description: Release key uses plain string equality, not constant-time compare (SEC-009).
+        status: open
+      - description: No alerting or audit log on release registration events.
+        status: open
+    open_findings: [SEC-009]
+    severity: critical
+    detection_hint: >
+      Any change to release key validation, admin middleware, or the /v1/releases
+      handler must use constant-time key comparison and emit an audit log entry.
+
+  - id: T-025
+    trust_boundary: TB-006
+    stride: Tampering
+    title: Stale release cache serves revoked binary hashes after deletion
+    description: >
+      Cache invalidation on release registration uses the wrong key
+      (latest_release:v1 instead of latest_release:v1:<platform>). After a release
+      is deactivated, providers and installers may continue receiving the old
+      release metadata from the per-platform cache.
+    adversaries: [ADV-003]
+    affected_assets: [A-011]
+    affected_files:
+      - coordinator/internal/api/release_handlers.go
+    mitigations:
+      - description: Cache invalidation implemented but targeting wrong key (SEC-021).
+        status: open
+    open_findings: [SEC-021]
+    severity: medium
+    detection_hint: >
+      Any change to release registration, deletion, or cache logic in
+      release_handlers.go must verify that platform-specific cache keys are
+      invalidated on both register and delete operations.
+
+  - id: T-026
+    trust_boundary: TB-006
+    stride: Denial_of_Service
+    title: Unauthenticated admin OTP endpoints enable spam and brute-force
+    description: >
+      Admin OTP init and verify endpoints are unauthenticated and not rate-limited.
+      An attacker can spam OTP requests causing notification fatigue or attempt
+      brute-force against Privy OTP controls.
+    adversaries: [ADV-003]
+    affected_assets: []
+    affected_files:
+      - coordinator/internal/api/release_handlers.go
+    mitigations:
+      - description: No per-IP or per-email rate limit on OTP endpoints.
+        status: open
+    open_findings: [SEC-028]
+    severity: low
+    detection_hint: >
+      Changes to admin OTP endpoint handlers should add rate limiting and
+      generic error responses to prevent enumeration.
+
+  # ── TB-007: Provider Inference Engine ────────────────────────
+
+  - id: T-027
+    trust_boundary: TB-007
+    stride: Tampering
+    title: Model weight substitution causes inference on unadvertised model
+    description: >
+      If the weight-hash check is fail-open (SEC-007), a provider serving from
+      substituted weights will pass the routing gate. Consumers receive outputs
+      from an unknown model while trusting the advertised model's properties.
+    adversaries: [ADV-001]
+    affected_assets: [A-004, A-001]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Models/WeightHasher.swift
+      - coordinator/internal/registry/registry.go
+    mitigations:
+      - description: Weight hash computed by WeightHasher and advertised in registration.
+        status: implemented
+      - description: Coordinator enforcement is fail-open when hash is omitted (SEC-007).
+        status: open
+    open_findings: [SEC-007]
+    severity: high
+    detection_hint: >
+      This threat is a mirror of T-012 at the inference layer. Changes to weight
+      hashing or coordinator enforcement should be reviewed together.
+
+  - id: T-028
+    trust_boundary: TB-007
+    stride: Information_Disclosure
+    title: Residual inference data in GPU memory accessible after request completes
+    description: >
+      Decrypted prompt tokens and KV-cache data remain in GPU memory until
+      overwritten by the next request. A provider who can read GPU memory between
+      requests could recover prior prompt content.
+    adversaries: [ADV-001]
+    affected_assets: [A-001]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Inference/BatchScheduler.swift
+      - provider-swift/Sources/ProviderCore/Inference/LocalMLXModelFoundation.swift
+    mitigations:
+      - description: CPU-side inference buffers are zeroed after each request.
+        status: implemented
+      - description: GPU-side MLX buffers (Metal) are not explicitly zeroed between requests.
+        status: open
+      - description: Hypervisor memory isolation (Stage 2 page tables) not implemented in Swift provider.
+        status: open
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Changes to the inference pipeline, KV-cache management, or batch scheduling
+      that affect buffer lifecycle should consider GPU-side residual data.
+
+  - id: T-029
+    trust_boundary: TB-007
+    stride: Denial_of_Service
+    title: Idle GPU timeout not triggered, monopolising provider resources
+    description: >
+      If IdleTimeoutPolicy fails to unload the model after inactivity, the GPU
+      remains occupied and the provider cannot serve other models or recover memory.
+    adversaries: [ADV-002]
+    affected_assets: []
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Inference/IdleTimeoutPolicy.swift
+    mitigations:
+      - description: IdleTimeoutPolicy unloads model after 1 hour of no requests.
+        status: implemented
+    open_findings: []
+    severity: low
+    detection_hint: >
+      Changes to IdleTimeoutPolicy.swift or the inference loop that could defer
+      or skip idle detection should be reviewed.
+
+  # ── TB-008: Coordinator → Payments ───────────────────────────
+
+  - id: T-030
+    trust_boundary: TB-008
+    stride: Tampering
+    title: Duplicate Stripe webhook credits balance twice
+    description: >
+      The Stripe checkout session completion and balance credit are not one atomic
+      idempotent transaction. Concurrent duplicate valid webhooks can both pass the
+      completed-session check before either marks the session complete, doubling the
+      credit.
+    adversaries: [ADV-002, ADV-003]
+    affected_assets: [A-009]
+    affected_files:
+      - coordinator/internal/api/billing_handlers.go
+      - coordinator/internal/store/postgres.go
+    mitigations:
+      - description: Completed-session check exists but is not atomic with credit insertion.
+        status: open
+    open_findings: [SEC-012]
+    severity: high
+    detection_hint: >
+      Any change to Stripe webhook handling or balance credit logic must verify
+      idempotency via a unique constraint on the Stripe session/event ID within
+      the same database transaction.
+
+  - id: T-031
+    trust_boundary: TB-008
+    stride: Information_Disclosure
+    title: Provider earnings enumerable by wallet address without authentication
+    description: >
+      The legacy /v1/provider/earnings endpoint returns balance and payment history
+      by wallet address with no authentication. Any party who knows or can guess
+      a provider's wallet address can retrieve their earnings history.
+    adversaries: [ADV-002, ADV-003]
+    affected_assets: [A-009]
+    affected_files:
+      - coordinator/internal/api/consumer.go
+    mitigations:
+      - description: Endpoint is unauthenticated by design for legacy reasons.
+        status: open
+    open_findings: [SEC-030]
+    severity: low
+    detection_hint: >
+      Changes to earnings or balance endpoints should require account authentication
+      unless public transparency is an explicit product decision.
+
+  - id: T-032
+    trust_boundary: TB-008
+    stride: Spoofing
+    title: Solana wallet mnemonic exfiltration from coordinator environment
+    description: >
+      The coordinator's Solana BIP39 mnemonic is stored in the EigenCloud KMS
+      environment. A compromised coordinator process, misconfigured KMS policy,
+      or environment variable leak would allow an attacker to derive the wallet
+      private key and drain provider payouts.
+    adversaries: [ADV-003]
+    affected_assets: [A-006]
+    affected_files:
+      - coordinator/internal/billing/**
+      - coordinator/cmd/coordinator/main.go
+    mitigations:
+      - description: Mnemonic stored in EigenCloud KMS, injected at runtime.
+        status: implemented
+      - description: Coordinator runs in AMD SEV-SNP TEE; memory encrypted by hardware.
+        status: implemented
+    open_findings: []
+    severity: critical
+    detection_hint: >
+      Any change that reads, logs, or transmits the Solana mnemonic or derived
+      private key outside the billing package should be treated as a critical issue.
+
+  # ── TB-009: Apple Attestation Trust Chain (cross-cutting) ─────
+
+  - id: T-033
+    trust_boundary: TB-009
+    stride: Spoofing
+    title: Attestation blob replay from a previously trusted provider
+    description: >
+      An attacker captures a valid attestation blob from a trusted provider and
+      replays it from a different machine to inherit that provider's trust level.
+    adversaries: [ADV-001, ADV-003]
+    affected_assets: [A-010]
+    affected_files:
+      - coordinator/internal/attestation/**
+      - coordinator/internal/api/provider.go
+      - provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift
+    mitigations:
+      - description: Attestation blob includes ISO 8601 timestamp; coordinator checks freshness.
+        status: implemented
+      - description: 5-minute challenge-response requires signing a fresh coordinator-generated nonce with the SE key.
+        status: implemented
+      - description: SE key is hardware-bound; replay without the originating SE is cryptographically infeasible.
+        status: implemented
+    open_findings: []
+    severity: critical
+    detection_hint: >
+      Changes to attestation blob construction, timestamp validation, or the
+      challenge-response nonce flow must preserve replay protection.
+
+  - id: T-034
+    trust_boundary: TB-009
+    stride: Tampering
+    title: Binary hash in attestation blob does not match running binary
+    description: >
+      The attestation blob includes a SHA-256 hash of the darkbloom binary at
+      startup. If hash computation is deferred, skipped, or computed over the wrong
+      path, a provider can run a modified binary while advertising a blessed hash.
+    adversaries: [ADV-001]
+    affected_assets: [A-010, A-011]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift
+      - provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift
+      - coordinator/internal/attestation/**
+    mitigations:
+      - description: BinaryHasher computes SHA-256 of the running executable at startup.
+        status: implemented
+      - description: Coordinator verifies binary hash against the registry of blessed hashes.
+        status: implemented
+    open_findings: []
+    severity: critical
+    detection_hint: >
+      Changes to BinaryHasher.swift, AttestationBuilder, or coordinator-side binary
+      hash verification must preserve the invariant that the hash covers the actual
+      running binary, not a copy or cached value.
+
+  - id: T-035
+    trust_boundary: TB-009
+    stride: Repudiation
+    title: Provider denies performing actions after key rotation
+    description: >
+      If the SE key is rotated (e.g. after a factory reset or hardware replacement),
+      the new key is unlinked from prior attestations. Audit trails tied to the old
+      public key cannot be attributed to the new identity.
+    adversaries: [ADV-001]
+    affected_assets: [A-002, A-010]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Security/SecureEnclaveIdentity.swift
+      - coordinator/internal/api/provider.go
+    mitigations:
+      - description: Coordinator logs registration events with SE public key fingerprint.
+        status: implemented
+      - description: No explicit key-rotation policy or cross-signing between old and new SE keys.
+        status: open
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Changes to SecureEnclaveIdentity.swift or provider re-enrollment flows should
+      consider whether key rotation is logged and whether prior audit trails remain
+      valid.
+
+  - id: T-036
+    trust_boundary: TB-009
+    stride: Elevation_of_Privilege
+    title: Trust level elevated without completing full MDM/MDA chain
+    description: >
+      If any step in the attestation chain (MDM SecurityInfo callback, MDA cert
+      chain verification, SE signature check) is bypassed or short-circuited —
+      whether by a code bug, a test flag left in production, or the unauthenticated
+      MDM webhook (SEC-004) — a provider can reach hardware trust level without
+      Apple's genuine verification.
+    adversaries: [ADV-001, ADV-003]
+    affected_assets: [A-010]
+    affected_files:
+      - coordinator/internal/attestation/**
+      - coordinator/internal/mdm/mdm.go
+      - coordinator/internal/api/provider.go
+      - coordinator/internal/registry/registry.go
+    mitigations:
+      - description: "Full chain required: SE signature → MDM SecurityInfo → MDA cert from Apple root CA."
+        status: implemented
+      - description: MDM webhook is unauthenticated; an injected callback can manipulate SecurityInfo state (SEC-004).
+        status: open
+      - description: Attestation tests require AuthenticatedRootEnabled=true or earlier errors are overwritten.
+        status: implemented
+    open_findings: [SEC-004]
+    severity: critical
+    detection_hint: >
+      Any change to the attestation verification sequence, trust-level assignment
+      logic, or MDM webhook handling is critical. Verify each step in the chain is
+      required and cannot be individually bypassed.
+
+  - id: T-037
+    trust_boundary: TB-009
+    stride: Information_Disclosure
+    title: SIP/SecureBoot state self-reported without independent verification between challenges
+    description: >
+      Between 5-minute challenge intervals, the coordinator relies on the provider's
+      self-reported SIP and SecureBoot state. A provider could report true at the
+      challenge boundary and then disable protections until the next challenge.
+    adversaries: [ADV-001]
+    affected_assets: [A-001, A-010]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift
+      - coordinator/internal/api/provider.go
+    mitigations:
+      - description: SIP checked at startup, before every request, and in every 5-minute challenge.
+        status: implemented
+      - description: Disabling SIP requires reboot (kills process); practical attack window is extremely narrow.
+        status: implemented
+      - description: MDM SecurityInfo provides independent SIP verification on demand.
+        status: implemented
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Changes to challenge cadence, SIP-check frequency, or the per-request SIP
+      gate in SecurityHardening.swift should preserve defense-in-depth against
+      this narrow window.
+
+  # ── HTTP Server Hardening (coordinator-wide) ──────────────────
+
+  - id: T-038
+    trust_boundary: TB-001
+    stride: Denial_of_Service
+    title: Missing ReadHeaderTimeout and MaxHeaderBytes enable slow-header attacks
+    description: >
+      The coordinator HTTP server sets ReadTimeout and IdleTimeout but omits
+      ReadHeaderTimeout and MaxHeaderBytes. Slow-header attacks or clients sending
+      very large headers are less constrained at the application layer.
+    adversaries: [ADV-002, ADV-003]
+    affected_assets: []
+    affected_files:
+      - coordinator/cmd/coordinator/main.go
+    mitigations:
+      - description: ReadTimeout and IdleTimeout are set.
+        status: implemented
+      - description: ReadHeaderTimeout and MaxHeaderBytes are absent.
+        status: open
+    open_findings: [SEC-027]
+    severity: medium
+    detection_hint: >
+      Changes to the http.Server configuration in main.go should verify
+      ReadHeaderTimeout and MaxHeaderBytes are set.
+
+  - id: T-039
+    trust_boundary: TB-002
+    stride: Spoofing
+    title: Device codes can mint multiple provider tokens before expiry
+    description: >
+      Approved device codes (RFC 8628 device auth flow) are not consumed atomically
+      on first token exchange. Any party who obtains the device code before expiry
+      can exchange it multiple times, minting multiple long-lived provider tokens.
+    adversaries: [ADV-001, ADV-003]
+    affected_assets: [A-008]
+    affected_files:
+      - coordinator/internal/api/device_auth.go
+      - coordinator/internal/store/postgres.go
+    mitigations:
+      - description: Device codes have a validity window.
+        status: implemented
+      - description: Codes not consumed atomically on first exchange (SEC-011).
+        status: open
+    open_findings: [SEC-011]
+    severity: medium
+    detection_hint: >
+      Changes to device_auth.go token exchange logic must verify the code is
+      marked consumed in the same transaction as token issuance.
+
+  - id: T-040
+    trust_boundary: TB-001
+    stride: Information_Disclosure
+    title: Host header injection influences generated installer and enrollment URLs
+    description: >
+      Public URL generation falls back to the request Host and X-Forwarded-Proto
+      headers when the baseURL config is unset. An attacker who can influence these
+      headers can redirect install.sh downloads or device-link URLs to a
+      controlled origin.
+    adversaries: [ADV-003]
+    affected_assets: [A-011]
+    affected_files:
+      - coordinator/internal/api/server.go
+      - coordinator/internal/api/enroll.go
+      - coordinator/internal/api/consumer.go
+    mitigations:
+      - description: baseURL should be set in production; fallback to Host header is the risk.
+        status: open
+    open_findings: [SEC-013]
+    severity: medium
+    detection_hint: >
+      Changes to URL generation in server.go, enroll.go, or consumer.go should
+      verify that production baseURL is required and the Host-header fallback
+      cannot be reached in production deployments.

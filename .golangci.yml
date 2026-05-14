@@ -1,0 +1,13 @@
+version: "2"
+
+run:
+  timeout: 3m
+  skip-dirs:
+    - e2e
+
+linters:
+  default: none
+  enable:
+    - govet
+    - ineffassign
+    - unused

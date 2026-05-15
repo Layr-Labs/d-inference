@@ -69,6 +69,17 @@ public struct SignedAttestation: Codable, Sendable {
     public let signature: String  // base64 DER-encoded ECDSA signature
 }
 
+public enum AttestationInputValidator {
+    public static let x25519PublicKeyByteCount = 32
+
+    public static func isValidX25519PublicKeyBase64(_ value: String) -> Bool {
+        guard let data = Data(base64Encoded: value, options: [.ignoreUnknownCharacters]) else {
+            return false
+        }
+        return data.count == x25519PublicKeyByteCount
+    }
+}
+
 /// Fields covered by `status_signature` in an attestation challenge response.
 public struct StatusCanonicalInput: Sendable, Equatable {
     public var nonce: String

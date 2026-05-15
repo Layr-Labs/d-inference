@@ -120,6 +120,16 @@ import Testing
     #expect(report.coordinatorRuntimeHashes.templateHashes == report.templateHashes)
 }
 
+@Test func attestationInputValidatorRequiresBase64X25519PublicKey() throws {
+    let valid = Data(repeating: 0x42, count: AttestationInputValidator.x25519PublicKeyByteCount)
+        .base64EncodedString()
+
+    #expect(AttestationInputValidator.isValidX25519PublicKeyBase64(valid))
+    #expect(!AttestationInputValidator.isValidX25519PublicKeyBase64("not-base64"))
+    #expect(!AttestationInputValidator.isValidX25519PublicKeyBase64(Data(repeating: 0x42, count: 31).base64EncodedString()))
+    #expect(!AttestationInputValidator.isValidX25519PublicKeyBase64(Data(repeating: 0x42, count: 33).base64EncodedString()))
+}
+
 @Test func statusCanonicalMatchesCoordinatorGoldenBytes() throws {
     let data = try StatusCanonical.build(StatusCanonicalInput(
         nonce: "test-nonce",

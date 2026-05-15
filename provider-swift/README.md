@@ -39,7 +39,7 @@ cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
    .build/release/mlx.metallib
 
 # Then:
-.build/release/darkbloom serve --foreground
+.build/release/darkbloom serve --model mlx-community/Qwen3-4B-4bit
 ```
 
 `release-swift.yml` in CI does the same thing automatically and bakes the metallib into the released bundle next to `darkbloom`.

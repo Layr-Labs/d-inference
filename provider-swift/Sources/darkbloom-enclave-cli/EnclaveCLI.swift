@@ -7,7 +7,7 @@
 //   attest --pub-key <b64>  Build a signed attestation blob and print JSON.
 //   sign   --message <s>    Sign a message with the SE key (base64 DER sig).
 //   info                    Print public key info (base64 + hex).
-//   wallet-address          Print the deterministic identifier derived from the SE key.
+//   wallet-address          Print an ephemeral identifier derived from the SE key.
 //
 // All operations create a fresh, ephemeral Secure Enclave key pair. The
 // tool is stateless: there is no on-disk key material.
@@ -34,11 +34,14 @@ struct DarkbloomEnclave: ParsableCommand {
 
 private enum EnclaveCLIError: Error, CustomStringConvertible {
     case secureEnclaveUnavailable
+    case invalidPublicKey(String)
 
     var description: String {
         switch self {
         case .secureEnclaveUnavailable:
             return "Secure Enclave is unavailable on this device (Intel Mac or non-Apple hardware?)"
+        case .invalidPublicKey(let value):
+            return "--pub-key must be a base64-encoded 32-byte X25519 public key (got '\(value)')"
         }
     }
 }
@@ -64,6 +67,10 @@ struct Attest: ParsableCommand {
     var binaryHash: String?
 
     func run() throws {
+        if let pubKey, !AttestationInputValidator.isValidX25519PublicKeyBase64(pubKey) {
+            throw EnclaveCLIError.invalidPublicKey(pubKey)
+        }
+
         let identity = try loadIdentity()
         let builder = AttestationBuilder(identity: identity)
         let data = try builder.buildAttestationJSON(
@@ -119,14 +126,16 @@ struct Info: ParsableCommand {
 
 struct WalletAddress: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Print a stable identifier (0x-prefixed 20-byte hex) derived from the SE public key."
+        abstract: "Print an ephemeral identifier (0x-prefixed 20-byte hex) derived from a fresh SE public key.",
+        discussion: "The helper is stateless and creates a new Secure Enclave key for each invocation; this value is not durable identity."
     )
 
     func run() throws {
-        // The SE produces P-256 keys, not secp256k1; we expose a stable
-        // identifier derived from the SE pubkey rather than an Ethereum
-        // address. Coordinators that previously used Ethereum-style hex
-        // wallets accept any 20-byte hex prefixed with "0x".
+        // The SE produces P-256 keys, not secp256k1; this stateless helper
+        // creates a fresh key on every invocation, so the printed value is
+        // only an ephemeral diagnostic identifier. Coordinators that previously
+        // used Ethereum-style hex wallets accept any 20-byte hex prefixed with
+        // "0x".
         let identity = try loadIdentity()
         let pubKeyHash = SHA256.hash(data: identity.publicKey.rawRepresentation)
         let last20 = Array(pubKeyHash).suffix(20)

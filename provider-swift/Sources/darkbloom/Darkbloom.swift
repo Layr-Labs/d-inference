@@ -2,7 +2,7 @@ import Foundation
 import ArgumentParser
 import ProviderCore
 
-@main
+@available(macOS 10.15, macCatalyst 13, iOS 13, tvOS 13, watchOS 6, *)
 struct Darkbloom: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "darkbloom",
@@ -10,6 +10,7 @@ struct Darkbloom: AsyncParsableCommand {
         discussion: "Runs on Apple Silicon Macs. Connects to the coordinator, serves inference requests via mlx-swift.",
         version: ProviderCore.version,
         subcommands: [
+            Serve.self,
             Start.self,
             Stop.self,
             Status.self,

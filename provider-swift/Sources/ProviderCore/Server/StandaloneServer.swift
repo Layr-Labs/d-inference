@@ -60,11 +60,15 @@ public actor StandaloneServer {
         self.models = models
     }
 
+    private static let schedulerMaxConcurrent = 4
+    private static let schedulerPendingTimeout: Duration = .seconds(120)
+    private static let schedulerDefaultMaxTokens = 4096
+
     public func loadModel(_ modelId: String, container: MLXLMCommon.ModelContainer) async {
         let scheduler = BatchScheduler(
-            maxConcurrentRequests: 4,
-            pendingTimeout: .seconds(120),
-            defaultMaxTokens: 4096
+            maxConcurrentRequests: Self.schedulerMaxConcurrent,
+            pendingTimeout: Self.schedulerPendingTimeout,
+            defaultMaxTokens: Self.schedulerDefaultMaxTokens
         )
         await scheduler.loadModel(container: container, modelId: modelId)
         schedulers[modelId] = scheduler
@@ -211,10 +215,15 @@ public actor StandaloneServer {
 
         do {
             try await ensureModelLoaded(chatRequest.model)
-        } catch {
+        } catch let error as StandaloneServerError {
             return openAIErrorResponse(
                 status: .notFound,
-                message: "Model '\(chatRequest.model)' is not available: \(error.localizedDescription)"
+                message: error.localizedDescription
+            )
+        } catch {
+            return openAIErrorResponse(
+                status: .internalServerError,
+                message: "Failed to load model '\(chatRequest.model)': \(error.localizedDescription)"
             )
         }
 

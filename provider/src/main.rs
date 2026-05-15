@@ -6616,7 +6616,11 @@ fn install_swift_update_bundle_at(
                 let link = bin_dir.join(name);
                 std::fs::remove_file(&link).ok();
                 symlink(&target, &link).with_context(|| {
-                    format!("failed to symlink {} -> {}", link.display(), target.display())
+                    format!(
+                        "failed to symlink {} -> {}",
+                        link.display(),
+                        target.display()
+                    )
                 })?;
             }
         }
@@ -6631,9 +6635,8 @@ fn install_swift_update_bundle_at(
     // original plist untouched so a rolled-back binary still launches.
     if let Some(plist) = plist_path {
         if plist.exists() {
-            rewrite_launchd_plist_for_swift(plist, &runtime_binary_path).with_context(|| {
-                format!("failed to migrate launchd plist {}", plist.display())
-            })?;
+            rewrite_launchd_plist_for_swift(plist, &runtime_binary_path)
+                .with_context(|| format!("failed to migrate launchd plist {}", plist.display()))?;
             emit_update_status(stdout, "  launchd plist migrated to Swift args ✓");
         }
     }
@@ -6720,7 +6723,11 @@ fn convert_rust_args_to_swift(rust_args: &[String], binary_path: &std::path::Pat
     ];
 
     // Skip the binary path (index 0) and the legacy verb at index 1 ("serve").
-    let mut i = if rust_args.len() >= 2 { 2 } else { rust_args.len() };
+    let mut i = if rust_args.len() >= 2 {
+        2
+    } else {
+        rust_args.len()
+    };
     while i < rust_args.len() {
         let arg = rust_args[i].as_str();
         let next = rust_args.get(i + 1);
@@ -8067,7 +8074,11 @@ mod tests {
 
         std::fs::write(
             &plist_path,
-            rust_plist_fixture(original_binary, "wss://example/ws/provider", &["alpha", "beta"]),
+            rust_plist_fixture(
+                original_binary,
+                "wss://example/ws/provider",
+                &["alpha", "beta"],
+            ),
         )
         .unwrap();
 

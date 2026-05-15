@@ -797,7 +797,12 @@ public actor ProviderLoop {
 
         modelsLoading.insert(modelId)
         do {
-            let requiredGb = modelInfo.estimatedMemoryGb * 1.2
+            // Budget: model weights + KV cache for 128k context under continuous
+            // batching (4 concurrent requests). estimatedMemoryGb is weight_bytes × 1.2.
+            // KV cache at 128k with GQA is roughly equal to weight size, and we batch
+            // up to 4 requests, so worst-case KV ≈ weights × 4. Budget weights × 3.0
+            // as a practical middle ground (not all requests hit 128k simultaneously).
+            let requiredGb = modelInfo.estimatedMemoryGb * 3.0
             await evictUntilAvailable(requiredGb: requiredGb)
 
             logger.info("Loading model: \(modelId) from \(modelPath.path)")

@@ -110,15 +110,8 @@ struct Start: AsyncParsableCommand {
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
 
-        let scheduler = BatchScheduler(
-            maxConcurrentRequests: 4,
-            pendingTimeout: .seconds(120),
-            defaultMaxTokens: 4096
-        )
-
         let server = StandaloneServer(
             config: StandaloneServerConfig(port: port, host: "127.0.0.1"),
-            scheduler: scheduler,
             models: advertised
         )
         try await server.start()

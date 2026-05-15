@@ -279,10 +279,17 @@ trust_boundaries:
       SE-signed attestation blob and verified by the coordinator against its registry of
       blessed hashes. The hash is computed once at startup and not re-verified at runtime.
 
-      The SE P-256 signing key is generated fresh on every process launch using
-      CryptoKit's SecureEnclave.P256.Signing.PrivateKey() (SecureEnclaveIdentity.swift).
-      The private key never leaves the Secure Enclave silicon. Only signing operations
-      are possible via the CryptoKit API.
+      The SE P-256 signing key is now persistent and stored in the macOS keychain via
+      the Security framework (PersistentEnclaveKey.swift). On first launch the key is
+      created with kSecAttrIsPermanent=true, bound to the keychain access group
+      SLDQ2GJ6TL.io.darkbloom.provider (team-scoped), and labeled
+      io.darkbloom.provider.attestation-signing.v1. Subsequent launches load the
+      existing key by access group and label query. The private key never leaves the
+      SE silicon; only signing operations are available. ProviderLoop tries the
+      persistent key first and falls back to an ephemeral CryptoKit key with a warning
+      if the persistent path fails (e.g. errSecMissingEntitlement=-34018, which fires
+      when a patched or unsigned binary lacks the keychain-access-groups entitlement,
+      effectively preventing impostor binaries from using the established identity).
 
       The X25519 encryption key pair is generated ephemerally in memory using libsodium
       (NodeKeyPair.swift). It is NOT persisted to disk. Legacy on-disk key paths
@@ -315,6 +322,18 @@ trust_boundaries:
       - "The operator can read and replace model weight files at
         ~/.cache/huggingface. The coordinator's weight hash check is currently fail-open
         (SEC-007), so a substituted model may be served without detection."
+      - "The persistent SE key (PersistentEnclaveKey.swift) is accessible to any binary
+        presenting the same keychain access group (SLDQ2GJ6TL.io.darkbloom.provider) and
+        label query. A legitimately code-signed binary from the same Developer ID team
+        that includes the keychain-access-groups entitlement could load and sign with the
+        established identity. The entitlement is team-scoped, so this does NOT apply to
+        third-party binaries; it is limited to Apple-Developer-ID-signed code from team
+        SLDQ2GJ6TL."
+      - "errSecMissingEntitlement (-34018) fallback to an ephemeral key means a patched
+        binary silently continues to operate rather than refusing to start. The ephemeral
+        fallback key will differ from the registered public key, causing coordinator
+        attestation verification to fail, but the failure occurs at the coordinator — the
+        binary itself does not halt on keychain access failure."
 
   - id: TB-004
     name: browser_to_coordinator
@@ -617,11 +636,17 @@ trust_boundaries:
       This boundary is cross-cutting; a weakness at any link collapses the trust level
       of every provider in the field.
     how_it_works: >
-      SE key lifecycle: CryptoKit generates a fresh SecureEnclave.P256.Signing.PrivateKey
-      on every darkbloom launch (SecureEnclaveIdentity.swift:56). The private key never
-      leaves the SE silicon. The public key (raw 64-byte X||Y, base64-encoded) is bound
-      to the X25519 encryption key in the attestation blob and in the coordinator
-      registration message.
+      SE key lifecycle: PersistentEnclaveKey.swift creates or loads a persistent
+      SecureEnclave P-256 signing key stored in the macOS keychain under access group
+      SLDQ2GJ6TL.io.darkbloom.provider (team ID prefix) with label
+      io.darkbloom.provider.attestation-signing.v1 and kSecAttrIsPermanent=true.
+      The same public key is reused across restarts, giving the provider a stable
+      hardware-bound identity. The private key never leaves the SE silicon. The public
+      key (raw 64-byte X||Y without 0x04 prefix, base64-encoded) is bound to the X25519
+      encryption key in the attestation blob and in the coordinator registration message.
+      Key rotation occurs only when the operator explicitly deletes the keychain item
+      (e.g. after a factory reset or device wipe); routine process restarts preserve
+      the established identity.
 
       Attestation blob: AttestationBuilder.swift constructs a JSON structure containing
       hardware info, SIP/SecureBoot/ARV state, the SE public key, the X25519 encryption
@@ -1009,12 +1034,21 @@ threats:
         status: implemented
       - description: Coordinator maintains registry of blessed binary hashes; unregistered hashes rejected.
         status: implemented
+      - description: >
+          Persistent SE key access group (SLDQ2GJ6TL.io.darkbloom.provider) enforces that
+          only binaries with the matching keychain-access-groups entitlement can load the
+          established identity. A patched binary lacking the entitlement receives
+          errSecMissingEntitlement (-34018) and falls back to an ephemeral key, which the
+          coordinator will reject as the public key no longer matches the registered
+          fingerprint (PersistentEnclaveKey.swift).
+        status: implemented
     open_findings: []
     severity: critical
     detection_hint: >
       Changes to binary hash computation in BinaryHasher.swift, attestation blob
-      construction, or the coordinator's binary hash registry admission should
-      preserve the end-to-end tamper-detection chain.
+      construction, the coordinator's binary hash registry admission, or the keychain
+      access group entitlement in the provisioning profile should preserve the
+      end-to-end tamper-detection chain.
 
   - id: T-014
     trust_boundary: TB-003
@@ -1500,18 +1534,21 @@ threats:
       - coordinator/internal/attestation/**
       - coordinator/internal/api/provider.go
       - provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift
+      - provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift
+      - provider-swift/Sources/ProviderCore/Security/AttestationSigner.swift
     mitigations:
       - description: Attestation blob includes ISO 8601 timestamp; coordinator checks freshness.
         status: implemented
       - description: 5-minute challenge-response requires signing a fresh coordinator-generated nonce with the SE key.
         status: implemented
-      - description: SE key is hardware-bound; replay without the originating SE is cryptographically infeasible.
+      - description: SE key is hardware-bound and persistent; replay without the originating SE is cryptographically infeasible.
         status: implemented
     open_findings: []
     severity: critical
     detection_hint: >
-      Changes to attestation blob construction, timestamp validation, or the
-      challenge-response nonce flow must preserve replay protection.
+      Changes to attestation blob construction, timestamp validation, the
+      challenge-response nonce flow, or the PersistentEnclaveKey / AttestationSigner
+      protocol must preserve replay protection.
 
   - id: T-034
     trust_boundary: TB-009
@@ -1544,25 +1581,35 @@ threats:
     stride: Repudiation
     title: Provider denies performing actions after key rotation
     description: >
-      If the SE key is rotated (e.g. after a factory reset or hardware replacement),
-      the new key is unlinked from prior attestations. Audit trails tied to the old
-      public key cannot be attributed to the new identity.
+      The SE key is now persistent across process restarts (keychain-backed, label
+      io.darkbloom.provider.attestation-signing.v1). Key rotation occurs only on
+      explicit keychain deletion (factory reset, device wipe, or deliberate operator
+      action). After rotation the new key is unlinked from prior attestations; audit
+      trails tied to the old public key cannot be attributed to the new identity. A
+      provider could opportunistically delete the keychain item to discard the audit
+      chain tied to a prior identity.
     adversaries: [ADV-001]
     affected_assets: [A-002, A-010]
     affected_files:
+      - provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift
       - provider-swift/Sources/ProviderCore/Security/SecureEnclaveIdentity.swift
       - coordinator/internal/api/provider.go
     mitigations:
       - description: Coordinator logs registration events with SE public key fingerprint.
         status: implemented
-      - description: No explicit key-rotation policy or cross-signing between old and new SE keys.
+      - description: Persistent key (kSecAttrIsPermanent) survives process restarts, reducing
+          involuntary rotation events compared to the prior ephemeral design.
+        status: implemented
+      - description: No explicit key-rotation policy, cross-signing between old and new SE keys,
+          or coordinator-side detection when a provider re-registers with a new key.
         status: open
     open_findings: []
     severity: medium
     detection_hint: >
-      Changes to SecureEnclaveIdentity.swift or provider re-enrollment flows should
-      consider whether key rotation is logged and whether prior audit trails remain
-      valid.
+      Changes to PersistentEnclaveKey.swift key creation/deletion paths, or provider
+      re-enrollment flows, should consider whether key rotation is logged and whether
+      prior audit trails remain valid. A provider that re-registers with a new SE key
+      after an unexplained keychain delete should be flagged.
 
   - id: T-036
     trust_boundary: TB-009

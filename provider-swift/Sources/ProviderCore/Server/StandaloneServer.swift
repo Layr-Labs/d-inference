@@ -11,7 +11,19 @@
 
 import Foundation
 import Hummingbird
+import MLXLLM
+import MLXLMCommon
 import os
+
+private enum StandaloneServerError: Error, LocalizedError {
+    case modelNotFound(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .modelNotFound(let id): return "Model '\(id)' not found locally"
+        }
+    }
+}
 
 // MARK: - Public API
 
@@ -34,18 +46,68 @@ private let standaloneLogger = Logger(
 public actor StandaloneServer {
 
     private let config: StandaloneServerConfig
-    private let scheduler: BatchScheduler
+    private var schedulers: [String: BatchScheduler] = [:]
+    private var modelsLoading: Set<String> = []
+    private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     private var models: [ModelInfo]
     private var serverTask: Task<Void, Never>?
 
     public init(
         config: StandaloneServerConfig = StandaloneServerConfig(),
-        scheduler: BatchScheduler,
         models: [ModelInfo] = []
     ) {
         self.config = config
-        self.scheduler = scheduler
         self.models = models
+    }
+
+    public func loadModel(_ modelId: String, container: MLXLMCommon.ModelContainer) async {
+        let scheduler = BatchScheduler(
+            maxConcurrentRequests: 4,
+            pendingTimeout: .seconds(120),
+            defaultMaxTokens: 4096
+        )
+        await scheduler.loadModel(container: container, modelId: modelId)
+        schedulers[modelId] = scheduler
+    }
+
+    private func ensureModelLoaded(_ modelId: String) async throws {
+        if schedulers[modelId] != nil { return }
+
+        if modelsLoading.contains(modelId) {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
+                loadingWaiters[modelId, default: []].append(cont)
+            }
+            return
+        }
+
+        guard models.contains(where: { $0.id == modelId }) else {
+            throw StandaloneServerError.modelNotFound(modelId)
+        }
+
+        guard let modelPath = ModelScanner.resolveLocalPath(modelID: modelId) else {
+            throw StandaloneServerError.modelNotFound(modelId)
+        }
+
+        modelsLoading.insert(modelId)
+        do {
+            let container = try await LLMModelFactory.shared.loadContainer(
+                from: modelPath,
+                using: LocalTokenizerLoader()
+            )
+            await loadModel(modelId, container: container)
+            standaloneLogger.info("Lazy-loaded model: \(modelId)")
+
+            modelsLoading.remove(modelId)
+            for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
+                waiter.resume()
+            }
+        } catch {
+            modelsLoading.remove(modelId)
+            for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
+                waiter.resume(throwing: error)
+            }
+            throw error
+        }
     }
 
     /// Update the advertised model list (e.g. after a rescan).
@@ -147,12 +209,28 @@ public actor StandaloneServer {
             return openAIErrorResponse(status: .badRequest, message: "Invalid request body")
         }
 
+        do {
+            try await ensureModelLoaded(chatRequest.model)
+        } catch {
+            return openAIErrorResponse(
+                status: .notFound,
+                message: "Model '\(chatRequest.model)' is not available: \(error.localizedDescription)"
+            )
+        }
+
+        guard let sched = schedulers[chatRequest.model] else {
+            return openAIErrorResponse(
+                status: .internalServerError,
+                message: "Model load succeeded but scheduler unavailable"
+            )
+        }
+
         if chatRequest.stream ?? false {
-            let stream = await scheduler.submit(request: chatRequest)
+            let stream = await sched.submit(request: chatRequest)
             return streamingCompletionResponse(stream: stream, model: chatRequest.model)
         }
 
-        return await nonStreamingCompletion(chatRequest)
+        return await nonStreamingCompletion(chatRequest, scheduler: sched)
     }
 
     private nonisolated func streamingCompletionResponse(
@@ -214,7 +292,7 @@ public actor StandaloneServer {
         return Response(status: .ok, headers: headers, body: body)
     }
 
-    private func nonStreamingCompletion(_ chatRequest: ChatCompletionRequest) async -> Response {
+    private func nonStreamingCompletion(_ chatRequest: ChatCompletionRequest, scheduler: BatchScheduler) async -> Response {
         let stream = await scheduler.submit(request: chatRequest)
         let formatter = OpenAIFormatter()
         let completionID = formatter.makeCompletionID()

@@ -70,7 +70,7 @@ import Testing
     }
 }
 
-@Test func standaloneServerReportsNoModelLoadedForNonStreamingChat() async throws {
+@Test func standaloneServerReportsModelNotAvailableForNonStreamingChat() async throws {
     let app = standaloneTestServer().makeApplication()
 
     try await app.test(.router) { client in
@@ -80,15 +80,14 @@ import Testing
             headers: [.contentType: "application/json"],
             body: ByteBuffer(string: #"{"model":"mlx-test","messages":[{"role":"user","content":"hello"}],"stream":false}"#)
         ) { response in
-            #expect(response.status == .internalServerError)
-            #expect(String(buffer: response.body).contains("No model loaded"))
+            #expect(response.status == .notFound)
+            #expect(String(buffer: response.body).contains("not available"))
         }
     }
 }
 
 private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer {
     StandaloneServer(
-        scheduler: BatchScheduler(maxConcurrentRequests: 1),
         models: models
     )
 }

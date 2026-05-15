@@ -263,7 +263,7 @@ func expectedReleaseArtifactURL(baseURL, version, platform string) (string, erro
 	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
 		return "", fmt.Errorf("configured R2 CDN URL must use https")
 	}
-	u.Path = path.Join(u.Path, "releases", "v"+version, "eigeninference-bundle-"+platform+".tar.gz")
+	u.Path = path.Join(u.Path, "releases", "v"+version, "darkbloom-bundle-"+platform+".tar.gz")
 	u.RawQuery = ""
 	u.Fragment = ""
 	return u.String(), nil

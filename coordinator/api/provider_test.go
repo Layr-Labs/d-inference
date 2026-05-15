@@ -552,7 +552,7 @@ func TestSyncBinaryHashesRejectsInvalidStoredReleaseHashWithoutFailingOpen(t *te
 		Platform:   "macos-arm64",
 		BinaryHash: "not-a-sha256",
 		BundleHash: strings.Repeat("b", 64),
-		URL:        "https://r2.example.com/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz",
+		URL:        "https://r2.example.com/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz",
 	}); err != nil {
 		t.Fatalf("SetRelease: %v", err)
 	}
@@ -582,7 +582,7 @@ func TestSyncBinaryHashesPreservesAdditionalConfiguredHashes(t *testing.T) {
 		Platform:   "macos-arm64",
 		BinaryHash: releaseHash,
 		BundleHash: strings.Repeat("c", 64),
-		URL:        "https://r2.example.com/releases/v1.0.0/eigeninference-bundle-macos-arm64.tar.gz",
+		URL:        "https://r2.example.com/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz",
 	}); err != nil {
 		t.Fatalf("SetRelease: %v", err)
 	}
@@ -652,7 +652,7 @@ func TestBinaryHashPolicySnapshotConcurrentSync(t *testing.T) {
 			Platform:   "macos-arm64",
 			BinaryHash: releaseHash,
 			BundleHash: strings.Repeat("c", 64),
-			URL:        "https://r2.example.com/releases/v" + version + "/eigeninference-bundle-macos-arm64.tar.gz",
+			URL:        "https://r2.example.com/releases/v" + version + "/darkbloom-bundle-macos-arm64.tar.gz",
 		}); err != nil {
 			t.Fatalf("SetRelease: %v", err)
 		}
@@ -757,6 +757,47 @@ func TestProviderRegistrationWithoutAttestation(t *testing.T) {
 	models := reg.ListModels()
 	if len(models) != 0 {
 		t.Fatalf("models = %d, want 0 (no attestation, no hardware trust)", len(models))
+	}
+}
+
+// TestProviderRegistrationWithoutAttestationRejectedWhenBinaryHashPolicyConfigured
+// verifies that when a binary-hash policy is in force (SetKnownBinaryHashes),
+// a Register message with no attestation is marked Untrusted with the
+// "attestation missing" error rather than silently accepted.
+//
+// Ported from master's coordinator/internal/api/provider_test.go (PR #99 regression).
+func TestProviderRegistrationWithoutAttestationRejectedWhenBinaryHashPolicyConfigured(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	srv.SetKnownBinaryHashes([]string{knownGoodBinaryHashForTest})
+
+	regMsg := &protocol.RegisterMessage{
+		Type:                    protocol.TypeRegister,
+		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:                  []protocol.ModelInfo{{ID: "no-attestation-policy-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 "inprocess-mlx",
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+	}
+	p := reg.Register("provider-1", nil, regMsg)
+
+	srv.verifyProviderAttestation("provider-1", p, regMsg)
+
+	if p.AttestationResult == nil {
+		t.Fatal("expected attestation result")
+	}
+	if p.AttestationResult.Valid {
+		t.Fatal("missing attestation should be invalid when binary hash policy is configured")
+	}
+	if p.AttestationResult.Error != "attestation missing" {
+		t.Fatalf("attestation error = %q, want %q", p.AttestationResult.Error, "attestation missing")
+	}
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	if p.Status != registry.StatusUntrusted {
+		t.Fatalf("provider status = %q, want %q", p.Status, registry.StatusUntrusted)
 	}
 }
 

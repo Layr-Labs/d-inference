@@ -64,8 +64,10 @@ env:
   ENCLAVE_NAME: 'darkbloom-enclave'
   MIN_MACOS: '14.0'
   # mlx-swift currently pins MLX 0.31.x. The .metallib must come from a wheel
-  # matching that ABI. Bump together with libs/mlx-swift's MLX_VERSION.
-  MLX_PYTHON_PIN: 'mlx==0.31.2'
+  # matching that ABI EXACTLY (patch-level skew can break Metal kernel
+  # loading at runtime). Source of truth: libs/mlx-swift/Source/Cmlx/mlx/mlx/version.h
+  # — bump both together.
+  MLX_PYTHON_PIN: 'mlx==0.31.1'
 
 jobs:
   resolve-env:
@@ -122,12 +124,35 @@ jobs:
           PROD_COORDINATOR_URL: ${{ secrets.PROD_COORDINATOR_URL }}
           DEV_RELEASE_KEY: ${{ secrets.DEV_RELEASE_KEY }}
           PROD_RELEASE_KEY: ${{ secrets.PROD_RELEASE_KEY }}
+          # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
+          # to these when PROD_* is empty so we don't have to duplicate every
+          # secret in the GitHub UI just to satisfy the new naming scheme.
+          LEGACY_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          LEGACY_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          LEGACY_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          LEGACY_R2_BUCKET: ${{ vars.R2_BUCKET }}
+          LEGACY_R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+          LEGACY_COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
+          LEGACY_RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
         run: |
+          set -euo pipefail
           PREFIX=$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')
           for key in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET R2_PUBLIC_URL COORDINATOR_URL RELEASE_KEY; do
-            varname="${PREFIX}_${key}"
+            primary="${PREFIX}_${key}"
+            legacy="LEGACY_${key}"
             outkey=$(echo "$key" | tr '[:upper:]' '[:lower:]')
-            echo "${outkey}=${!varname}" >> "$GITHUB_ENV"
+            value="${!primary:-}"
+            if [ -z "$value" ] && [ "$PREFIX" = "PROD" ]; then
+              value="${!legacy:-}"
+              if [ -n "$value" ]; then
+                echo "::notice::Using legacy unprefixed secret for ${key} (set PROD_${key} to silence this)"
+              fi
+            fi
+            if [ -z "$value" ]; then
+              echo "::error::No value resolved for ${PREFIX}_${key} (also tried LEGACY_${key})"
+              exit 1
+            fi
+            echo "${outkey}=${value}" >> "$GITHUB_ENV"
           done
 
       - name: Checkout (with submodules)
@@ -250,8 +275,14 @@ jobs:
           MLX_METALLIB_SOURCE: ${{ steps.metallib.outputs.metallib }}
         run: |
           # Dev releases: soft-fail tests (live MLX model cache may be
-          # incomplete on CI). Prod releases should re-enable set -euo pipefail.
-          swift test -c release || echo "::warning::Swift tests failed — continuing for dev release"
+          # incomplete on CI). Prod releases: hard-fail. Switching on
+          # ENV_PREFIX so a broken Swift test never lands on prod providers.
+          set -euo pipefail
+          if [ "$ENV_PREFIX" = "prod" ]; then
+            swift test -c release
+          else
+            swift test -c release || echo "::warning::Swift tests failed — continuing for dev release"
+          fi
 
       # ----------------------------------------------------------------------
       # Stage the bundle: bin/darkbloom, bin/darkbloom-enclave, bin/mlx.metallib
@@ -263,13 +294,62 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${PROVISIONING_PROFILE_BASE64:-}" ]; then
-            echo "::warning::PROVISIONING_PROFILE_BASE64 not set — persistent SE key will fall back to ephemeral"
-            echo "profile_available=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "$PROVISIONING_PROFILE_BASE64" | base64 --decode > /tmp/embedded.provisionprofile
-            security cms -D -i /tmp/embedded.provisionprofile | head -20
-            echo "profile_available=true" >> "$GITHUB_OUTPUT"
+            echo "::error::PROVISIONING_PROFILE_BASE64 is required (PR #146 persistent SE key)"
+            exit 1
           fi
+          echo "$PROVISIONING_PROFILE_BASE64" | base64 --decode > /tmp/embedded.provisionprofile
+
+          # Decode the CMS-wrapped profile to its plist payload so we can
+          # introspect entitlements + expiry. Without this, a profile that
+          # doesn't grant SLDQ2GJ6TL.io.darkbloom.provider (or is expired)
+          # passes codesign but fails at runtime → silent attestation break.
+          security cms -D -i /tmp/embedded.provisionprofile > /tmp/profile.plist
+
+          python3 - <<'PY'
+          import plistlib, sys
+          from datetime import datetime, timezone
+
+          with open('/tmp/profile.plist', 'rb') as f:
+              p = plistlib.load(f)
+
+          errors = []
+          team = p.get('TeamIdentifier', [])
+          if 'SLDQ2GJ6TL' not in team:
+              errors.append(f"TeamIdentifier missing SLDQ2GJ6TL: {team}")
+
+          ents = p.get('Entitlements', {})
+          groups = ents.get('keychain-access-groups', [])
+          if 'SLDQ2GJ6TL.io.darkbloom.provider' not in groups:
+              errors.append(f"keychain-access-groups missing SLDQ2GJ6TL.io.darkbloom.provider: {groups}")
+
+          app_id = ents.get('application-identifier', '')
+          if not app_id.endswith('io.darkbloom.provider'):
+              errors.append(f"application-identifier mismatch: {app_id}")
+
+          expiry = p.get('ExpirationDate')
+          if expiry is not None:
+              # ExpirationDate is a naive UTC datetime from plistlib.
+              now = datetime.utcnow()
+              days_left = (expiry - now).days
+              if days_left < 30:
+                  errors.append(f"Profile expires in {days_left} days (renew before cutover): {expiry}")
+              else:
+                  print(f"Profile valid for {days_left} more days")
+          else:
+              print("::warning::Provisioning profile has no ExpirationDate field")
+
+          name = p.get('Name', '<unknown>')
+          uuid = p.get('UUID', '<unknown>')
+          print(f"Profile: name={name!r} uuid={uuid} team={team} app_id={app_id}")
+
+          if errors:
+              for e in errors:
+                  print(f"::error::{e}", file=sys.stderr)
+              sys.exit(1)
+          print("Provisioning profile verification passed")
+          PY
+
+          echo "profile_available=true" >> "$GITHUB_OUTPUT"
         id: profile
 
       - name: Stage and sign bundle
@@ -333,11 +413,41 @@ jobs:
           codesign --verify --verbose=2 "$APP"
           codesign --verify --verbose=2 "$APP/Contents/MacOS/$CLI_NAME"
 
-          # Backward-compatible flat layout alongside the .app bundle.
+          # Persistent Secure Enclave key requires keychain-access-groups
+          # bound to the team-scoped access group. If the entitlement is
+          # missing, providers fall back to ephemeral SE keys and PR #146
+          # silently no-ops. Fail the build instead of shipping a broken
+          # attestation.
+          EXPECTED_ACCESS_GROUP="SLDQ2GJ6TL.io.darkbloom.provider"
+          ENTITLEMENTS=$(codesign -d --entitlements - --xml "$APP/Contents/MacOS/$CLI_NAME" 2>&1 || true)
+          if ! echo "$ENTITLEMENTS" | grep -q "keychain-access-groups"; then
+            echo "::error::Signed CLI is missing keychain-access-groups entitlement"
+            echo "$ENTITLEMENTS"
+            exit 1
+          fi
+          if ! echo "$ENTITLEMENTS" | grep -q "$EXPECTED_ACCESS_GROUP"; then
+            echo "::error::Signed CLI is missing access group $EXPECTED_ACCESS_GROUP"
+            echo "$ENTITLEMENTS"
+            exit 1
+          fi
+          if [ "${{ steps.profile.outputs.profile_available }}" = "true" ]; then
+            if [ ! -f "$APP/Contents/embedded.provisionprofile" ]; then
+              echo "::error::Provisioning profile secret set but not embedded in app bundle"
+              exit 1
+            fi
+          else
+            echo "::error::PROVISIONING_PROFILE_BASE64 secret is required to authorize the keychain-access-groups entitlement on provider machines"
+            exit 1
+          fi
+          echo "Entitlement verification passed: $EXPECTED_ACCESS_GROUP authorized via embedded provisioning profile"
+
+          # Flat layout alongside the .app bundle. Coordinator's release
+          # artifact verifier (release_handlers.go:413) requires bin/darkbloom
+          # to be a regular file — symlinks fail the tar.TypeReg check.
           mkdir -p "$STAGE/bin"
-          ln -s "../Darkbloom.app/Contents/MacOS/$CLI_NAME" "$STAGE/bin/$CLI_NAME"
-          ln -s "../Darkbloom.app/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$ENCLAVE_NAME"
-          ln -s "../Darkbloom.app/Contents/MacOS/mlx.metallib" "$STAGE/bin/mlx.metallib"
+          cp "$APP/Contents/MacOS/$CLI_NAME" "$STAGE/bin/$CLI_NAME"
+          cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$ENCLAVE_NAME"
+          cp "$APP/Contents/MacOS/mlx.metallib" "$STAGE/bin/mlx.metallib"
 
           # Two artifact shapes: zip for notarization, tar.gz for distribution.
           ditto -c -k --keepParent "$STAGE" /tmp/darkbloom-notarize.zip
@@ -360,9 +470,16 @@ jobs:
 
           # Staple per Mach-O. Re-tar after stapling so the distribution
           # tarball ships stapled binaries (avoids a network round trip on
-          # first launch with strict Gatekeeper).
-          xcrun stapler staple "${{ steps.bundle.outputs.stage }}/bin/$CLI_NAME" || true
-          xcrun stapler staple "${{ steps.bundle.outputs.stage }}/bin/$ENCLAVE_NAME" || true
+          # first launch with strict Gatekeeper). Staple both the flat bin/
+          # layout AND the .app bundle copies — both are independent files
+          # now (no symlinks) so each needs its own ticket.
+          STAGE="${{ steps.bundle.outputs.stage }}"
+          APP="$STAGE/Darkbloom.app"
+          xcrun stapler staple "$STAGE/bin/$CLI_NAME" || true
+          xcrun stapler staple "$STAGE/bin/$ENCLAVE_NAME" || true
+          xcrun stapler staple "$APP/Contents/MacOS/$CLI_NAME" || true
+          xcrun stapler staple "$APP/Contents/MacOS/$ENCLAVE_NAME" || true
+          xcrun stapler staple "$APP" || true
 
           tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "${{ steps.bundle.outputs.stage }}" .
           tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt

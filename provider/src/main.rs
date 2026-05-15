@@ -6517,6 +6517,26 @@ fn install_swift_update_bundle(
     info: &serde_json::Value,
     stdout: bool,
 ) -> Result<()> {
+    install_swift_update_bundle_at(
+        eigeninference_dir,
+        info,
+        stdout,
+        Some(&default_swift_plist_path()),
+    )
+}
+
+/// Install the Swift bundle and (optionally) rewrite the launchd plist so the
+/// next `launchctl kickstart` runs `darkbloom start --foreground …` instead of
+/// the legacy `darkbloom serve --coordinator …` Rust invocation.
+///
+/// `plist_path` is exposed for tests; production callers pass the default
+/// location via [`install_swift_update_bundle`].
+fn install_swift_update_bundle_at(
+    eigeninference_dir: &std::path::Path,
+    info: &serde_json::Value,
+    stdout: bool,
+    plist_path: Option<&std::path::Path>,
+) -> Result<()> {
     let bin_dir = eigeninference_dir.join("bin");
     std::fs::create_dir_all(&bin_dir)?;
 
@@ -6572,8 +6592,208 @@ fn install_swift_update_bundle(
             .with_context(|| format!("failed to create {}", legacy_link.display()))?;
     }
 
+    // If the bundle ships a Darkbloom.app wrapper (PR #146), the persistent
+    // Secure Enclave key requires the embedded provisioning profile to be in
+    // scope at runtime. That only works when the binary is invoked from
+    // *inside* the .app bundle — a flat bin/darkbloom invocation gets
+    // errSecMissingEntitlement on keychain access. Mirror what
+    // `scripts/install.sh` does for fresh installs: swap bin/{darkbloom,
+    // darkbloom-enclave,mlx.metallib} for symlinks into the .app, then
+    // route the launchd plist directly at the .app's MacOS path.
+    let app_macos = eigeninference_dir
+        .join("Darkbloom.app")
+        .join("Contents")
+        .join("MacOS");
+    let runtime_binary_path = if app_macos.join("darkbloom").exists() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            for name in &["darkbloom", "darkbloom-enclave", "mlx.metallib"] {
+                let target = app_macos.join(name);
+                if !target.exists() {
+                    continue;
+                }
+                let link = bin_dir.join(name);
+                std::fs::remove_file(&link).ok();
+                symlink(&target, &link).with_context(|| {
+                    format!("failed to symlink {} -> {}", link.display(), target.display())
+                })?;
+            }
+        }
+        app_macos.join("darkbloom")
+    } else {
+        darkbloom.clone()
+    };
+
+    // Rewrite the launchd plist so the next restart invokes the Swift CLI
+    // shape (`start --foreground --coordinator-url …`) rather than the Rust
+    // shape (`serve --coordinator …`). Atomic write — failure leaves the
+    // original plist untouched so a rolled-back binary still launches.
+    if let Some(plist) = plist_path {
+        if plist.exists() {
+            rewrite_launchd_plist_for_swift(plist, &runtime_binary_path).with_context(|| {
+                format!("failed to migrate launchd plist {}", plist.display())
+            })?;
+            emit_update_status(stdout, "  launchd plist migrated to Swift args ✓");
+        }
+    }
+
     emit_update_status(stdout, "  Swift runtime bundle verified ✓");
     Ok(())
+}
+
+/// Default location of the user-agent launchd plist installed by the Rust
+/// provider's `service` module.
+fn default_swift_plist_path() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join("Library/LaunchAgents/io.darkbloom.provider.plist")
+}
+
+/// Rewrite an existing launchd plist so its `ProgramArguments` invokes the
+/// Swift CLI (`darkbloom start --foreground --coordinator-url … --model …`)
+/// instead of the legacy Rust CLI (`darkbloom serve --coordinator …`).
+///
+/// Preserves the binary path (so `launchctl bootstrap` resolves the same
+/// program), the coordinator URL, the selected models, and the optional
+/// idle-timeout. Drops any flags the Swift CLI does not understand.
+///
+/// Writes to a sibling `.tmp` and renames so a power loss mid-write cannot
+/// corrupt the plist.
+fn rewrite_launchd_plist_for_swift(
+    plist_path: &std::path::Path,
+    binary_path: &std::path::Path,
+) -> Result<()> {
+    let original = std::fs::read_to_string(plist_path)
+        .with_context(|| format!("read {}", plist_path.display()))?;
+    let rust_args = extract_program_arguments(&original)?;
+    let swift_args = convert_rust_args_to_swift(&rust_args, binary_path);
+    let new_plist = render_launchd_plist(&swift_args, &original)?;
+
+    let tmp_path = plist_path.with_extension("plist.tmp");
+    std::fs::write(&tmp_path, &new_plist)
+        .with_context(|| format!("write {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, plist_path)
+        .with_context(|| format!("rename {} -> {}", tmp_path.display(), plist_path.display()))?;
+    Ok(())
+}
+
+/// Extract `<string>…</string>` values from the `ProgramArguments` array.
+fn extract_program_arguments(plist_content: &str) -> Result<Vec<String>> {
+    let pa_idx = plist_content
+        .find("<key>ProgramArguments</key>")
+        .ok_or_else(|| anyhow::anyhow!("plist is missing ProgramArguments"))?;
+    let after_key = &plist_content[pa_idx + "<key>ProgramArguments</key>".len()..];
+    let array_open = after_key
+        .find("<array>")
+        .ok_or_else(|| anyhow::anyhow!("plist ProgramArguments has no <array>"))?;
+    let array_body_start = array_open + "<array>".len();
+    let array_close = after_key[array_body_start..]
+        .find("</array>")
+        .ok_or_else(|| anyhow::anyhow!("plist ProgramArguments <array> is not terminated"))?;
+    let array_body = &after_key[array_body_start..array_body_start + array_close];
+
+    let mut args = Vec::new();
+    let mut cursor = 0;
+    while let Some(start) = array_body[cursor..].find("<string>") {
+        let value_start = cursor + start + "<string>".len();
+        let end_rel = array_body[value_start..]
+            .find("</string>")
+            .ok_or_else(|| anyhow::anyhow!("plist contains malformed <string>"))?;
+        args.push(array_body[value_start..value_start + end_rel].to_string());
+        cursor = value_start + end_rel + "</string>".len();
+    }
+    if args.is_empty() {
+        anyhow::bail!("plist ProgramArguments is empty");
+    }
+    Ok(args)
+}
+
+/// Translate Rust-shaped args (`<bin> serve --coordinator URL --model M …`)
+/// into Swift-shaped args (`<bin> start --foreground --coordinator-url URL --model M …`).
+/// Unknown flags are dropped — the Swift CLI rejects unrecognised options.
+fn convert_rust_args_to_swift(rust_args: &[String], binary_path: &std::path::Path) -> Vec<String> {
+    let mut out: Vec<String> = vec![
+        binary_path.display().to_string(),
+        "start".to_string(),
+        "--foreground".to_string(),
+    ];
+
+    // Skip the binary path (index 0) and the legacy verb at index 1 ("serve").
+    let mut i = if rust_args.len() >= 2 { 2 } else { rust_args.len() };
+    while i < rust_args.len() {
+        let arg = rust_args[i].as_str();
+        let next = rust_args.get(i + 1);
+        match arg {
+            "--coordinator" | "--coordinator-url" => {
+                if let Some(value) = next {
+                    out.push("--coordinator-url".to_string());
+                    out.push(value.clone());
+                    i += 2;
+                    continue;
+                }
+            }
+            "--model" => {
+                if let Some(value) = next {
+                    out.push("--model".to_string());
+                    out.push(value.clone());
+                    i += 2;
+                    continue;
+                }
+            }
+            "--idle-timeout" => {
+                if let Some(value) = next {
+                    out.push("--idle-timeout".to_string());
+                    out.push(value.clone());
+                    i += 2;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Splice a new ProgramArguments block into the original plist text,
+/// preserving every other key (Label, StandardOutPath, KeepAlive, …).
+fn render_launchd_plist(new_args: &[String], original_plist: &str) -> Result<String> {
+    let pa_idx = original_plist
+        .find("<key>ProgramArguments</key>")
+        .ok_or_else(|| anyhow::anyhow!("plist is missing ProgramArguments"))?;
+    let after_key = &original_plist[pa_idx + "<key>ProgramArguments</key>".len()..];
+    let array_open = after_key
+        .find("<array>")
+        .ok_or_else(|| anyhow::anyhow!("plist ProgramArguments has no <array>"))?;
+    let array_body_start = array_open + "<array>".len();
+    let array_close_rel = after_key[array_body_start..]
+        .find("</array>")
+        .ok_or_else(|| anyhow::anyhow!("plist ProgramArguments <array> is not terminated"))?;
+
+    // Absolute offsets in the original string.
+    let body_start_abs = pa_idx + "<key>ProgramArguments</key>".len() + array_body_start;
+    let body_end_abs = body_start_abs + array_close_rel;
+
+    let mut rendered_body = String::from("\n");
+    for arg in new_args {
+        rendered_body.push_str("        <string>");
+        rendered_body.push_str(&xml_escape(arg));
+        rendered_body.push_str("</string>\n");
+    }
+    rendered_body.push_str("    ");
+
+    let mut out = String::with_capacity(original_plist.len() + 64);
+    out.push_str(&original_plist[..body_start_abs]);
+    out.push_str(&rendered_body);
+    out.push_str(&original_plist[body_end_abs..]);
+    Ok(out)
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Check for updates and install if available. Returns Ok(true) if an update was installed.
@@ -7740,11 +7960,259 @@ mod tests {
             "metallib_hash": security::hash_file(&metallib).unwrap()
         });
 
-        install_swift_update_bundle(install_dir, &info, false).unwrap();
+        // Pass plist_path=None so the test cannot touch ~/Library/LaunchAgents
+        // on a developer machine that already has darkbloom installed.
+        install_swift_update_bundle_at(install_dir, &info, false, None).unwrap();
         assert!(darkbloom.exists());
         assert!(enclave.exists());
         assert!(metallib.exists());
         assert!(bin_dir.join("eigeninference-enclave").exists());
+    }
+
+    fn rust_plist_fixture(binary: &std::path::Path, coordinator: &str, models: &[&str]) -> String {
+        let mut args = vec![
+            format!("        <string>{}</string>", binary.display()),
+            "        <string>serve</string>".to_string(),
+            "        <string>--coordinator</string>".to_string(),
+            format!("        <string>{coordinator}</string>"),
+        ];
+        for m in models {
+            args.push("        <string>--model</string>".to_string());
+            args.push(format!("        <string>{m}</string>"));
+        }
+        let args_xml = args.join("\n");
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.darkbloom.provider</string>
+
+    <key>ProgramArguments</key>
+    <array>
+{args_xml}
+    </array>
+
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
+"#
+        )
+    }
+
+    #[test]
+    fn test_extract_program_arguments_parses_rust_plist() {
+        let plist = rust_plist_fixture(
+            std::path::Path::new("/usr/local/bin/darkbloom"),
+            "wss://coord.example/ws/provider",
+            &["llama-3.1", "qwen-3"],
+        );
+        let args = extract_program_arguments(&plist).unwrap();
+        assert_eq!(args[0], "/usr/local/bin/darkbloom");
+        assert_eq!(args[1], "serve");
+        assert_eq!(args[2], "--coordinator");
+        assert_eq!(args[3], "wss://coord.example/ws/provider");
+        assert_eq!(args[4], "--model");
+        assert_eq!(args[5], "llama-3.1");
+        assert_eq!(args[6], "--model");
+        assert_eq!(args[7], "qwen-3");
+    }
+
+    #[test]
+    fn test_convert_rust_args_to_swift_translates_verb_and_flags() {
+        let rust_args = vec![
+            "/old/path".to_string(),
+            "serve".to_string(),
+            "--coordinator".to_string(),
+            "wss://coord/ws/provider".to_string(),
+            "--model".to_string(),
+            "m1".to_string(),
+            "--model".to_string(),
+            "m2".to_string(),
+            "--idle-timeout".to_string(),
+            "60".to_string(),
+            "--legacy-unknown".to_string(),
+        ];
+        let new_binary = std::path::Path::new("/new/bin/darkbloom");
+        let swift = convert_rust_args_to_swift(&rust_args, new_binary);
+        assert_eq!(
+            swift,
+            vec![
+                "/new/bin/darkbloom".to_string(),
+                "start".to_string(),
+                "--foreground".to_string(),
+                "--coordinator-url".to_string(),
+                "wss://coord/ws/provider".to_string(),
+                "--model".to_string(),
+                "m1".to_string(),
+                "--model".to_string(),
+                "m2".to_string(),
+                "--idle-timeout".to_string(),
+                "60".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_rewrite_launchd_plist_for_swift_swaps_args_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plist_path = tmp.path().join("io.darkbloom.provider.plist");
+        let original_binary = std::path::Path::new("/old/bin/darkbloom");
+        let new_binary = std::path::Path::new("/new/bin/darkbloom");
+
+        std::fs::write(
+            &plist_path,
+            rust_plist_fixture(original_binary, "wss://example/ws/provider", &["alpha", "beta"]),
+        )
+        .unwrap();
+
+        rewrite_launchd_plist_for_swift(&plist_path, new_binary).unwrap();
+
+        let after = std::fs::read_to_string(&plist_path).unwrap();
+        let args = extract_program_arguments(&after).unwrap();
+        assert_eq!(args[0], "/new/bin/darkbloom");
+        assert_eq!(args[1], "start");
+        assert_eq!(args[2], "--foreground");
+        assert_eq!(args[3], "--coordinator-url");
+        assert_eq!(args[4], "wss://example/ws/provider");
+        assert_eq!(args[5], "--model");
+        assert_eq!(args[6], "alpha");
+        assert_eq!(args[7], "--model");
+        assert_eq!(args[8], "beta");
+
+        // Other keys preserved.
+        assert!(after.contains("<key>Label</key>"));
+        assert!(after.contains("<key>KeepAlive</key>"));
+    }
+
+    /// When the bundle ships a Darkbloom.app wrapper, install_swift_update_bundle
+    /// must (a) replace bin/* with symlinks into .app/Contents/MacOS/ and
+    /// (b) point the launchd plist at the .app's MacOS path. Otherwise the
+    /// persistent SE key cannot find the embedded provisioning profile at
+    /// runtime → errSecMissingEntitlement on keychain access.
+    #[test]
+    fn test_install_swift_update_bundle_routes_through_dot_app_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let install_dir = tmp.path();
+        let bin_dir = install_dir.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let app_macos = install_dir
+            .join("Darkbloom.app")
+            .join("Contents")
+            .join("MacOS");
+        std::fs::create_dir_all(&app_macos).unwrap();
+        std::fs::write(
+            install_dir.join("Darkbloom.app/Contents/embedded.provisionprofile"),
+            b"<provisioning-profile-bytes>",
+        )
+        .unwrap();
+
+        // Both the flat layout and the .app payload contain copies of the
+        // same signed Mach-O — that's what release-swift.yml ships post fix #2.
+        let signed_bytes = b"signed darkbloom mach-o";
+        std::fs::write(bin_dir.join("darkbloom"), signed_bytes).unwrap();
+        std::fs::write(bin_dir.join("darkbloom-enclave"), b"signed enclave").unwrap();
+        std::fs::write(bin_dir.join("mlx.metallib"), b"metal kernels").unwrap();
+        std::fs::write(app_macos.join("darkbloom"), signed_bytes).unwrap();
+        std::fs::write(app_macos.join("darkbloom-enclave"), b"signed enclave").unwrap();
+        std::fs::write(app_macos.join("mlx.metallib"), b"metal kernels").unwrap();
+
+        let plist_path = tmp.path().join("io.darkbloom.provider.plist");
+        std::fs::write(
+            &plist_path,
+            rust_plist_fixture(
+                std::path::Path::new("/old/bin/darkbloom"),
+                "wss://coord.example/ws/provider",
+                &["llama"],
+            ),
+        )
+        .unwrap();
+
+        let info = serde_json::json!({
+            "backend": "mlx-swift",
+            "binary_hash": security::hash_file(&bin_dir.join("darkbloom")).unwrap(),
+            "metallib_hash": security::hash_file(&bin_dir.join("mlx.metallib")).unwrap()
+        });
+
+        install_swift_update_bundle_at(install_dir, &info, false, Some(&plist_path)).unwrap();
+
+        // bin/* must be symlinks pointing into the .app so the embedded
+        // provisioning profile is in scope when launchd resolves the path.
+        for name in &["darkbloom", "darkbloom-enclave", "mlx.metallib"] {
+            let link = bin_dir.join(name);
+            let meta = std::fs::symlink_metadata(&link).unwrap();
+            assert!(
+                meta.file_type().is_symlink(),
+                "bin/{name} should be a symlink to .app payload after .app-aware install",
+            );
+            let target = std::fs::read_link(&link).unwrap();
+            assert_eq!(target, app_macos.join(name), "bin/{name} target mismatch");
+        }
+
+        // Plist's ProgramArguments[0] must be the .app's MacOS binary path —
+        // that's the canonical real path (matches Swift LaunchAgent's
+        // realpath() behavior for fresh installs).
+        let after = std::fs::read_to_string(&plist_path).unwrap();
+        let args = extract_program_arguments(&after).unwrap();
+        assert_eq!(
+            args[0],
+            app_macos.join("darkbloom").display().to_string(),
+            "plist must invoke the .app binary so provisioning profile is in scope",
+        );
+        assert_eq!(args[1], "start");
+        assert_eq!(args[2], "--foreground");
+        assert_eq!(args[3], "--coordinator-url");
+        assert_eq!(args[4], "wss://coord.example/ws/provider");
+    }
+
+    #[test]
+    fn test_install_swift_update_bundle_rewrites_existing_plist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let install_dir = tmp.path();
+        let bin_dir = install_dir.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let darkbloom = bin_dir.join("darkbloom");
+        let enclave = bin_dir.join("darkbloom-enclave");
+        let metallib = bin_dir.join("mlx.metallib");
+        std::fs::write(&darkbloom, b"swift binary").unwrap();
+        std::fs::write(&enclave, b"swift enclave").unwrap();
+        std::fs::write(&metallib, b"metal kernels").unwrap();
+
+        let plist_path = tmp.path().join("io.darkbloom.provider.plist");
+        std::fs::write(
+            &plist_path,
+            rust_plist_fixture(
+                std::path::Path::new("/old/bin/darkbloom"),
+                "wss://coord.example/ws/provider",
+                &["llama"],
+            ),
+        )
+        .unwrap();
+
+        let info = serde_json::json!({
+            "backend": "mlx-swift",
+            "binary_hash": security::hash_file(&darkbloom).unwrap(),
+            "metallib_hash": security::hash_file(&metallib).unwrap()
+        });
+
+        install_swift_update_bundle_at(install_dir, &info, false, Some(&plist_path)).unwrap();
+
+        let after = std::fs::read_to_string(&plist_path).unwrap();
+        let args = extract_program_arguments(&after).unwrap();
+        assert_eq!(args[0], darkbloom.display().to_string());
+        assert_eq!(args[1], "start");
+        assert_eq!(args[2], "--foreground");
+        assert_eq!(args[3], "--coordinator-url");
+        assert_eq!(args[4], "wss://coord.example/ws/provider");
+        assert_eq!(args[5], "--model");
+        assert_eq!(args[6], "llama");
     }
 
     struct SwiftBundleFixture {

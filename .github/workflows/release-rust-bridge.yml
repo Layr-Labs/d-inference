@@ -109,12 +109,35 @@ jobs:
           PROD_COORDINATOR_URL: ${{ secrets.PROD_COORDINATOR_URL }}
           DEV_RELEASE_KEY: ${{ secrets.DEV_RELEASE_KEY }}
           PROD_RELEASE_KEY: ${{ secrets.PROD_RELEASE_KEY }}
+          # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
+          # to these when PROD_* is empty so we don't have to duplicate every
+          # secret in the GitHub UI just to satisfy the new naming scheme.
+          LEGACY_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          LEGACY_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          LEGACY_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          LEGACY_R2_BUCKET: ${{ vars.R2_BUCKET }}
+          LEGACY_R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+          LEGACY_COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
+          LEGACY_RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
         run: |
+          set -euo pipefail
           PREFIX=$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')
           for key in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET R2_PUBLIC_URL COORDINATOR_URL RELEASE_KEY; do
-            varname="${PREFIX}_${key}"
+            primary="${PREFIX}_${key}"
+            legacy="LEGACY_${key}"
             outkey=$(echo "$key" | tr '[:upper:]' '[:lower:]')
-            echo "${outkey}=${!varname}" >> "$GITHUB_ENV"
+            value="${!primary:-}"
+            if [ -z "$value" ] && [ "$PREFIX" = "PROD" ]; then
+              value="${!legacy:-}"
+              if [ -n "$value" ]; then
+                echo "::notice::Using legacy unprefixed secret for ${key} (set PROD_${key} to silence this)"
+              fi
+            fi
+            if [ -z "$value" ]; then
+              echo "::error::No value resolved for ${PREFIX}_${key} (also tried LEGACY_${key})"
+              exit 1
+            fi
+            echo "${outkey}=${value}" >> "$GITHUB_ENV"
           done
 
       - name: Checkout
@@ -253,7 +276,7 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           set -euo pipefail
-          STAGE=/tmp/eigeninference-bundle
+          STAGE=/tmp/darkbloom-bundle
           rm -rf "$STAGE"
           mkdir -p "$STAGE/bin" "$STAGE/python"
 
@@ -312,11 +335,11 @@ jobs:
           xcrun stapler staple "$STAGE/bin/darkbloom" || true
           xcrun stapler staple "$STAGE/bin/eigeninference-enclave" || true
 
-          tar czf /tmp/eigeninference-bundle-macos-arm64.tar.gz -C "$STAGE" .
-          tar tzf /tmp/eigeninference-bundle-macos-arm64.tar.gz | sort | tee /tmp/eigeninference-bundle-files.txt
-          grep -qx './bin/darkbloom' /tmp/eigeninference-bundle-files.txt
-          grep -qx './bin/eigeninference-enclave' /tmp/eigeninference-bundle-files.txt
-          grep -qx './python/bin/python3.12' /tmp/eigeninference-bundle-files.txt
+          tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$STAGE" .
+          tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
+          grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
+          grep -qx './bin/eigeninference-enclave' /tmp/darkbloom-bundle-files.txt
+          grep -qx './python/bin/python3.12' /tmp/darkbloom-bundle-files.txt
 
           PYTHON_BIN="$STAGE/python/bin/python3.12"
           PYTHON_HASH=$(shasum -a 256 "$PYTHON_BIN" | cut -d' ' -f1)
@@ -325,7 +348,7 @@ jobs:
           RUNTIME_HASH=$(DYLD_LIBRARY_PATH="$STAGE/python/lib:/tmp/darkbloom-build-python/lib" \
             "$STAGE/bin/darkbloom" hash-runtime "$PYTHON_LIB_DIR")
           BINARY_HASH=$(shasum -a 256 "$STAGE/bin/darkbloom" | cut -d' ' -f1)
-          BUNDLE_HASH=$(shasum -a 256 /tmp/eigeninference-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
+          BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
 
           tar czf /tmp/eigeninference-python-macos-arm64.tar.gz -C "$STAGE/python" .
           tar czf /tmp/eigeninference-site-packages.tar.gz -C "$SITE_PACKAGES_DIR" .
@@ -348,12 +371,12 @@ jobs:
         run: |
           set -euo pipefail
           PREFIX="s3://${R2_BUCKET}/releases/v${VERSION}"
-          aws s3 cp /tmp/eigeninference-bundle-macos-arm64.tar.gz "${PREFIX}/eigeninference-bundle-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors
+          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz "${PREFIX}/darkbloom-bundle-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors
           aws s3 cp /tmp/eigeninference-python-macos-arm64.tar.gz "${PREFIX}/eigeninference-python-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors
           aws s3 cp /tmp/eigeninference-site-packages.tar.gz "${PREFIX}/eigeninference-site-packages.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors
           aws s3 cp /tmp/vllm-mlx-source.zip "${PREFIX}/vllm-mlx-source.zip" --endpoint-url "$R2_ENDPOINT" --only-show-errors
 
-          aws s3 cp /tmp/eigeninference-bundle-macos-arm64.tar.gz "s3://${R2_BUCKET}/releases/latest/eigeninference-bundle-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors
+          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz "s3://${R2_BUCKET}/releases/latest/darkbloom-bundle-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors
           aws s3 cp /tmp/eigeninference-python-macos-arm64.tar.gz "s3://${R2_BUCKET}/releases/latest/eigeninference-python-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors
           aws s3 cp /tmp/eigeninference-site-packages.tar.gz "s3://${R2_BUCKET}/releases/latest/eigeninference-site-packages.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors
 
@@ -379,7 +402,7 @@ jobs:
           R2_PUBLIC_URL: ${{ env.r2_public_url }}
         run: |
           set -euo pipefail
-          BUNDLE_URL="${R2_PUBLIC_URL}/releases/v${VERSION}/eigeninference-bundle-macos-arm64.tar.gz"
+          BUNDLE_URL="${R2_PUBLIC_URL}/releases/v${VERSION}/darkbloom-bundle-macos-arm64.tar.gz"
 
           TAG_MSG=$(git tag -l --format='%(contents:subject)%0a%(contents:body)' "$GITHUB_REF_NAME" 2>/dev/null || echo "")
           if [ -z "$TAG_MSG" ] || [ "$TAG_MSG" = $'\n' ]; then
@@ -432,7 +455,7 @@ jobs:
           using tag \`v0.5.0\`.
           NOTES
           gh release create "${{ github.ref_name }}" \
-            /tmp/eigeninference-bundle-macos-arm64.tar.gz \
+            /tmp/darkbloom-bundle-macos-arm64.tar.gz \
             /tmp/eigeninference-python-macos-arm64.tar.gz \
             /tmp/eigeninference-site-packages.tar.gz \
             --title "${{ github.ref_name }}" \

@@ -140,6 +140,10 @@ public actor ProviderLoop {
 
     // MARK: - Model Slot
 
+    private static let schedulerMaxConcurrent = 4
+    private static let schedulerPendingTimeout: Duration = .seconds(120)
+    private static let schedulerDefaultMaxTokens = 4096
+
     private struct ModelSlot {
         let scheduler: BatchScheduler
         let container: MLXLMCommon.ModelContainer
@@ -460,11 +464,11 @@ public actor ProviderLoop {
             return
         }
 
+        // Mark in-flight before any suspension so eviction sees this model as active
+        requestToModel[requestId] = modelId
+
         // 5. Register cancellation token
         let token = await cancellationRegistry.register(requestId: requestId)
-
-        // Track which model this request belongs to
-        requestToModel[requestId] = modelId
 
         // 6. Capture values for the spawned task
         let responsePublicKeyData: Data = senderKey
@@ -773,19 +777,6 @@ public actor ProviderLoop {
             )
         }
 
-        if modelSlots.count >= maxModelSlots {
-            let modelsWithInflight = Set(requestToModel.values)
-            let evictable = modelSlots.filter { !modelsWithInflight.contains($0.key) }
-            if evictable.isEmpty {
-                throw InferenceError.invalidModelDirectory(
-                    "All \(maxModelSlots) model slot(s) are active; cannot load '\(modelId)'"
-                )
-            }
-            if let lru = evictable.min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt }) {
-                await unloadModel(lru.key)
-            }
-        }
-
         // Serialize loads so concurrent eviction decisions don't interleave
         while isLoadingAny {
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
@@ -794,6 +785,22 @@ public actor ProviderLoop {
             if modelSlots[modelId] != nil { return }
         }
         isLoadingAny = true
+
+        // Re-check slot cap after gate (another load may have consumed a slot)
+        if modelSlots.count >= maxModelSlots {
+            let modelsWithInflight = Set(requestToModel.values)
+            let evictable = modelSlots.filter { !modelsWithInflight.contains($0.key) }
+            if evictable.isEmpty {
+                isLoadingAny = false
+                releaseLoadGateWaiters()
+                throw InferenceError.invalidModelDirectory(
+                    "All \(maxModelSlots) model slot(s) are active; cannot load '\(modelId)'"
+                )
+            }
+            if let lru = evictable.min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt }) {
+                await unloadModel(lru.key)
+            }
+        }
 
         modelsLoading.insert(modelId)
         do {
@@ -809,9 +816,9 @@ public actor ProviderLoop {
 
             let container = try await loadModelContainer(from: modelPath)
             let scheduler = BatchScheduler(
-                maxConcurrentRequests: 4,
-                pendingTimeout: .seconds(120),
-                defaultMaxTokens: 4096
+                maxConcurrentRequests: Self.schedulerMaxConcurrent,
+                pendingTimeout: Self.schedulerPendingTimeout,
+                defaultMaxTokens: Self.schedulerDefaultMaxTokens
             )
             await scheduler.loadModel(container: container, modelId: modelId)
 

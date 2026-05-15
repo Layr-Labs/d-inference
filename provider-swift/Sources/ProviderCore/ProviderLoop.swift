@@ -102,6 +102,9 @@ public actor ProviderLoop {
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     private var inflightTasks: [String: Task<Void, Never>] = [:]
 
+    /// Tracks coordinator-driven preload tasks so they can be cancelled on shutdown.
+    private var preloadTasks: [String: Task<Void, Never>] = [:]
+
     /// Cached security posture from startup verification.
     private var securityPosture: SecurityPosture?
 
@@ -268,6 +271,8 @@ public actor ProviderLoop {
         logger.info("Event stream ended, shutting down")
         idleMonitorTask?.cancel()
         idleMonitorTask = nil
+        for (_, task) in preloadTasks { task.cancel() }
+        preloadTasks.removeAll()
         await coordinator.shutdown()
         await cancelAllInflight()
         for modelId in Array(modelSlots.keys) {
@@ -615,7 +620,8 @@ public actor ProviderLoop {
         ))
 
         let me = self
-        Task {
+        preloadTasks[modelId] = Task {
+            defer { Task { await me.removePreloadTask(modelId: modelId) } }
             do {
                 try await me.ensureModelLoaded(modelId: modelId)
                 send.send(.loadModelStatus(
@@ -623,6 +629,8 @@ public actor ProviderLoop {
                     status: .succeeded,
                     error: nil
                 ))
+            } catch is CancellationError {
+                return
             } catch {
                 let message = error.localizedDescription
                 await me.logPreloadFailure(modelId: modelId, error: message)
@@ -637,6 +645,10 @@ public actor ProviderLoop {
 
     private func logPreloadFailure(modelId: String, error: String) {
         logger.error("Preload for \(modelId) failed: \(error)")
+    }
+
+    private func removePreloadTask(modelId: String) {
+        preloadTasks.removeValue(forKey: modelId)
     }
 
     // MARK: - Idle timeout
@@ -770,6 +782,7 @@ public actor ProviderLoop {
             )
 
             syncWarmModelState()
+            await updateAggregateCapacity()
             logger.info("Model loaded: \(modelId) (\(modelSlots.count) model(s) in memory)")
 
             modelsLoading.remove(modelId)
@@ -808,8 +821,10 @@ public actor ProviderLoop {
     private func availableMemoryGb() -> Double {
         let total = ProcessInfo.processInfo.physicalMemory
         let active = UInt64(MLX.GPU.activeMemory)
-        let available = total > active ? total - active : 0
-        return Double(available) / (1024.0 * 1024.0 * 1024.0)
+        let cache = UInt64(MLX.GPU.cacheMemory)
+        let used = active + cache
+        let usable = total > used ? total - used : 0
+        return Double(usable) * 0.7 / (1024.0 * 1024.0 * 1024.0)
     }
 
     /// Evict idle models (LRU order) until `requiredGb` is available or

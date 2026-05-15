@@ -672,13 +672,15 @@ public actor ProviderLoop {
 
     /// Single tick: check each loaded model for idle timeout. Unloads any
     /// model that has no in-flight requests and has exceeded the timeout.
+    /// Re-validates each candidate before unloading since `await unloadModel`
+    /// is a suspension point that could allow new requests to arrive.
     private func tickIdleMonitor(timeout: Duration) async {
         guard !modelSlots.isEmpty else { return }
 
-        let modelsWithInflight = Set(requestToModel.values)
         let now = ContinuousClock.now
 
-        var toEvict: [String] = []
+        var candidates: [String] = []
+        let modelsWithInflight = Set(requestToModel.values)
         for (modelId, slot) in modelSlots {
             let elapsed = now - slot.lastInferenceAt
             let hasInflight = modelsWithInflight.contains(modelId)
@@ -688,15 +690,24 @@ public actor ProviderLoop {
                 hasInflight: hasInflight,
                 hasLoadedModel: true
             ) {
-                toEvict.append(modelId)
+                candidates.append(modelId)
             }
         }
 
-        for modelId in toEvict {
-            if let slot = modelSlots[modelId] {
-                let elapsed = now - slot.lastInferenceAt
-                logger.info("Idle timeout exceeded (\(formatDuration(elapsed)) since last activity); unloading \(modelId)")
-            }
+        for modelId in candidates {
+            let currentInflight = Set(requestToModel.values)
+            guard !currentInflight.contains(modelId),
+                  let slot = modelSlots[modelId] else { continue }
+
+            let elapsed = ContinuousClock.now - slot.lastInferenceAt
+            guard IdleTimeoutPolicy.shouldUnload(
+                elapsed: elapsed,
+                timeout: timeout,
+                hasInflight: false,
+                hasLoadedModel: true
+            ) else { continue }
+
+            logger.info("Idle timeout exceeded (\(formatDuration(elapsed)) since last activity); unloading \(modelId)")
             await unloadModel(modelId)
         }
     }
@@ -802,11 +813,11 @@ public actor ProviderLoop {
     }
 
     /// Evict idle models (LRU order) until `requiredGb` is available or
-    /// no more idle models remain.
+    /// no more idle models remain. Re-checks in-flight state before each
+    /// eviction since `await unloadModel` is a suspension point.
     private func evictUntilAvailable(requiredGb: Double) async {
-        let modelsWithInflight = Set(requestToModel.values)
-
         while availableMemoryGb() < requiredGb {
+            let modelsWithInflight = Set(requestToModel.values)
             let candidate = modelSlots
                 .filter { !modelsWithInflight.contains($0.key) }
                 .min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })

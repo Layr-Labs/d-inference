@@ -34,17 +34,7 @@ beforeEach(() => {
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
 
-  // Provide a minimal localStorage so getConfig() works
-  const store: Record<string, string> = {};
-  vi.stubGlobal("localStorage", {
-    getItem: (k: string) => store[k] ?? null,
-    setItem: (k: string, v: string) => {
-      store[k] = v;
-    },
-    removeItem: (k: string) => {
-      delete store[k];
-    },
-  });
+  localStorage.clear();
 });
 
 afterEach(() => {
@@ -66,7 +56,7 @@ describe("fetchBalance", () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/payments/balance");
     expect(opts.headers["Content-Type"]).toBe("application/json");
-    expect(opts.headers["x-api-key"]).toBeDefined();
+    expect(opts.headers["x-api-key"]).toBeUndefined();
     expect(result).toEqual(payload);
   });
 

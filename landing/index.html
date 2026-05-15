@@ -55,6 +55,116 @@
   }
   </script>
 
+  <!-- Google Analytics (privacy-filtered, consent-gated) -->
+  <script>
+  (function(){
+    const GA_ID = 'G-M65PNVW5TE';
+    const CONSENT_KEY = 'darkbloom_ga_consent';
+    const COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
+    const ATTRIBUTION_PARAMS = new Set(['_gl','dclid','fbclid','gbraid','gclid','li_fat_id','mc_cid','mc_eid','msclkid','srsltid','ttclid','wbraid']);
+    const UTM_PARAMS = new Set(['utm_source','utm_medium','utm_campaign','utm_term','utm_content','utm_id','utm_source_platform','utm_creative_format','utm_marketing_tactic']);
+
+    function cookieDomain(){
+      const host = window.location.hostname;
+      return host === 'darkbloom.dev' || host.endsWith('.darkbloom.dev') ? '; domain=.darkbloom.dev' : '';
+    }
+
+    function getCookieConsent(){
+      const prefix = CONSENT_KEY + '=';
+      const cookie = document.cookie.split(';').map(part => part.trim()).find(part => part.startsWith(prefix));
+      const value = cookie ? decodeURIComponent(cookie.slice(prefix.length)) : '';
+      return value === 'granted' || value === 'denied' ? value : 'unset';
+    }
+
+    function getConsent(){
+      try {
+        const stored = window.localStorage.getItem(CONSENT_KEY);
+        if (stored === 'granted' || stored === 'denied') return stored;
+      } catch (e) {}
+      return getCookieConsent();
+    }
+
+    function setConsent(value){
+      try { window.localStorage.setItem(CONSENT_KEY, value); } catch (e) {}
+      const secure = window.location.protocol === 'https:' ? '; secure' : '';
+      document.cookie = CONSENT_KEY + '=' + encodeURIComponent(value) + '; path=/; max-age=' + COOKIE_MAX_AGE + '; samesite=lax' + secure + cookieDomain();
+    }
+
+    function allowedParam(name){
+      return UTM_PARAMS.has(name) || ATTRIBUTION_PARAMS.has(name);
+    }
+
+    function sanitizeLocation(raw){
+      try {
+        const url = new URL(raw);
+        const params = new URLSearchParams();
+        for (const [name, value] of url.searchParams) {
+          if (allowedParam(name)) params.append(name, value);
+        }
+        url.search = params.toString();
+        url.hash = '';
+        return url.toString();
+      } catch (e) {
+        return window.location.origin + window.location.pathname;
+      }
+    }
+
+    function sanitizeReferrer(raw){
+      if (!raw) return undefined;
+      try {
+        const url = new URL(raw);
+        url.search = '';
+        url.hash = '';
+        return url.toString();
+      } catch (e) {
+        return undefined;
+      }
+    }
+
+    function initAnalytics(){
+      if (window.__darkbloomGaInitialized || getConsent() !== 'granted') return;
+      window.__darkbloomGaInitialized = true;
+      window.dataLayer = window.dataLayer || [];
+      window.gtag = window.gtag || function(){ window.dataLayer.push(arguments); };
+      const script = document.createElement('script');
+      script.async = true;
+      script.src = 'https://www.googletagmanager.com/gtag/js?id=' + encodeURIComponent(GA_ID);
+      document.head.appendChild(script);
+      window.gtag('js', new Date());
+      window.gtag('config', GA_ID, { send_page_view: false });
+      window.gtag('event', 'page_view', {
+        page_location: sanitizeLocation(window.location.href),
+        page_referrer: sanitizeReferrer(document.referrer),
+        page_title: document.title,
+        send_to: GA_ID
+      });
+    }
+
+    function showConsentBanner(){
+      if (getConsent() !== 'unset' || document.getElementById('analytics-consent')) return;
+      const banner = document.createElement('div');
+      banner.id = 'analytics-consent';
+      banner.setAttribute('role', 'dialog');
+      banner.setAttribute('aria-label', 'Analytics consent');
+      banner.style.cssText = 'position:fixed;left:16px;right:16px;bottom:16px;z-index:9999;max-width:620px;margin:0 auto;padding:16px;border:1px solid var(--grey-01);border-radius:var(--radius-sm);background:rgba(255,255,255,.96);box-shadow:0 16px 60px rgba(0,0,0,.16);font-family:var(--font-sans);color:var(--black);';
+      banner.innerHTML = '<p style="margin:0 0 12px;font-size:14px;line-height:1.45;color:var(--grey-03);">Allow privacy-filtered usage analytics to help improve Darkbloom. Page URLs are sanitized before events are sent.</p><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;"><button id="analytics-allow" type="button" style="border:1px solid var(--black);background:var(--black);color:var(--white);border-radius:4px;padding:9px 14px;font-family:var(--font-mono);font-size:12px;cursor:pointer;">Allow analytics</button><button id="analytics-decline" type="button" style="border:1px solid var(--grey-01);background:var(--white);color:var(--grey-03);border-radius:4px;padding:9px 14px;font-family:var(--font-mono);font-size:12px;cursor:pointer;">Decline</button><a href="privacy.html" target="_blank" style="font-size:12px;color:var(--grey-03);">Privacy</a></div>';
+      document.body.appendChild(banner);
+      document.getElementById('analytics-allow').onclick = function(){
+        setConsent('granted');
+        banner.remove();
+        initAnalytics();
+      };
+      document.getElementById('analytics-decline').onclick = function(){
+        setConsent('denied');
+        banner.remove();
+      };
+    }
+
+    initAnalytics();
+    document.addEventListener('DOMContentLoaded', showConsentBanner);
+  })();
+  </script>
+
   <style>
     /* ==================== BRAND FONTS (EigenCloud Brand Book v1.0) ==================== */
     @font-face { font-family: 'ABC Repro'; src: url('fonts/ABCRepro-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }

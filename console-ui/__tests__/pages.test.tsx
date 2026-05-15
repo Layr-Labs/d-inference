@@ -149,16 +149,7 @@ beforeEach(() => {
   });
   vi.stubGlobal("fetch", fetchMock);
 
-  const store: Record<string, string> = {};
-  vi.stubGlobal("localStorage", {
-    getItem: (k: string) => store[k] ?? null,
-    setItem: (k: string, v: string) => {
-      store[k] = v;
-    },
-    removeItem: (k: string) => {
-      delete store[k];
-    },
-  });
+  localStorage.clear();
 });
 
 afterEach(() => {
@@ -180,8 +171,9 @@ describe("BillingPage", () => {
     // TopBar is mocked and should show "Billing"
     expect(screen.getByTestId("topbar")).toHaveTextContent("Billing");
 
-    // Research preview banner — purchases disabled, Buy Credits button present
-    expect(screen.getByText("Available Credits")).toBeInTheDocument();
+    // Balance card — starts in loading state and exposes Buy Credits action.
+    expect(screen.getByText("Balance")).toBeInTheDocument();
+    expect(screen.getByText("Loading...")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Buy Credits/i })).toBeInTheDocument();
 
     // Invite code section
@@ -240,17 +232,16 @@ describe("ProvidersPage", () => {
     render(<ProvidersPage />);
 
     await screen.findByRole("heading", { name: "Provider Dashboard" });
-    expect(screen.getByText(/Earnings, device health/)).toBeInTheDocument();
+    expect(screen.getByText("Your linked provider machines.")).toBeInTheDocument();
   });
 
   it("shows provider summary stats", async () => {
     const ProvidersPage = (await import("@/app/providers/page")).default;
     render(<ProvidersPage />);
 
-    await screen.findByText("Devices online");
-    expect(screen.getByText("Needs attention")).toBeInTheDocument();
-    expect(screen.getByText("Available earnings")).toBeInTheDocument();
-    expect(screen.getByText("Lifetime earnings")).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Provider Dashboard" });
+    expect(screen.getByText("We're rebuilding this page")).toBeInTheDocument();
+    expect(screen.getByText("Earnings page")).toBeInTheDocument();
   });
 
   it("shows onboarding actions when no devices are linked", async () => {

@@ -89,15 +89,21 @@ public actor ProviderLoop {
     /// BatchScheduler and worker task. Keyed by model ID.
     private var modelSlots: [String: ModelSlot] = [:]
 
+    /// Hard cap on concurrent model slots to prevent coordinator-driven OOM.
+    private let maxModelSlots: Int
+
     /// Maps request IDs to the model they're running on, so the idle
     /// monitor knows which model has in-flight work.
     private var requestToModel: [String: String] = [:]
 
-    /// Guards against concurrent loads of the same model. When a load is
-    /// in progress, subsequent callers append their continuation here and
-    /// get resumed when the first load finishes (or fails).
+    /// Guards against concurrent loads. `modelsLoading` tracks which models
+    /// are mid-load; waiters suspend until the first loader finishes.
+    /// `isLoadingAny` serializes loads so two large models don't interleave
+    /// eviction decisions and overcommit memory.
     private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     private var modelsLoading: Set<String> = []
+    private var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
+    private var isLoadingAny: Bool = false
 
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     private var inflightTasks: [String: Task<Void, Never>] = [:]
@@ -129,6 +135,7 @@ public actor ProviderLoop {
         self.stats = AtomicProviderStats()
         self.state = ProviderState()
         self.cancellationRegistry = InferenceCancellationRegistry()
+        self.maxModelSlots = max(1, config.models.count)
     }
 
     // MARK: - Model Slot
@@ -486,19 +493,25 @@ public actor ProviderLoop {
             let created = Int(Date().timeIntervalSince1970)
 
             let emitSSE: @Sendable (String) -> Void = { sseData in
-                var encryptedPayload: EncryptedPayload?
+                let encryptedPayload: EncryptedPayload
                 do {
                     encryptedPayload = try kp.encryptPayload(
                         recipientPublicKey: responsePublicKeyData,
                         plaintext: Data(sseData.utf8)
                     )
                 } catch {
-                    log.warning("[\(requestId)] Chunk encryption failed: \(error)")
+                    log.error("[\(requestId)] Chunk encryption failed: \(error)")
+                    send.send(.inferenceError(
+                        requestId: requestId,
+                        error: "response encryption failed",
+                        statusCode: 500
+                    ))
+                    return
                 }
 
                 send.send(.inferenceChunk(
                     requestId: requestId,
-                    data: encryptedPayload != nil ? "" : sseData,
+                    data: "",
                     encryptedData: encryptedPayload
                 ))
             }
@@ -760,6 +773,28 @@ public actor ProviderLoop {
             )
         }
 
+        if modelSlots.count >= maxModelSlots {
+            let modelsWithInflight = Set(requestToModel.values)
+            let evictable = modelSlots.filter { !modelsWithInflight.contains($0.key) }
+            if evictable.isEmpty {
+                throw InferenceError.invalidModelDirectory(
+                    "All \(maxModelSlots) model slot(s) are active; cannot load '\(modelId)'"
+                )
+            }
+            if let lru = evictable.min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt }) {
+                await unloadModel(lru.key)
+            }
+        }
+
+        // Serialize loads so concurrent eviction decisions don't interleave
+        while isLoadingAny {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                loadGateWaiters.append(cont)
+            }
+            if modelSlots[modelId] != nil { return }
+        }
+        isLoadingAny = true
+
         modelsLoading.insert(modelId)
         do {
             let requiredGb = modelInfo.estimatedMemoryGb * 1.2
@@ -786,15 +821,27 @@ public actor ProviderLoop {
             logger.info("Model loaded: \(modelId) (\(modelSlots.count) model(s) in memory)")
 
             modelsLoading.remove(modelId)
+            isLoadingAny = false
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
                 waiter.resume()
             }
+            releaseLoadGateWaiters()
         } catch {
             modelsLoading.remove(modelId)
+            isLoadingAny = false
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
                 waiter.resume(throwing: error)
             }
+            releaseLoadGateWaiters()
             throw error
+        }
+    }
+
+    private func releaseLoadGateWaiters() {
+        let waiters = loadGateWaiters
+        loadGateWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
         }
     }
 

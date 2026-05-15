@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -22,6 +23,9 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	openai "github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/shared"
 	"nhooyr.io/websocket"
 )
 
@@ -704,6 +708,259 @@ func TestOpenAI_UsageTracking(t *testing.T) {
 	// Verify the arithmetic: total = prompt + completion.
 	if gotTotal != gotPrompt+gotCompletion {
 		t.Errorf("total_tokens (%d) != prompt_tokens (%d) + completion_tokens (%d)", gotTotal, gotPrompt, gotCompletion)
+	}
+
+	<-providerDone
+}
+
+// ---------------------------------------------------------------------------
+// SDK compatibility — unimplemented endpoint error responses
+// ---------------------------------------------------------------------------
+//
+// Verifies that unimplemented /v1/* endpoints return structured JSON errors
+// that the official OpenAI Go SDK (github.com/openai/openai-go) can parse
+// into openai.Error without crashing on text/plain 404s.
+
+// newSDKClientForCompat creates an OpenAI SDK client pointed at a test server.
+func newSDKClientForCompat(t *testing.T, ts *httptest.Server) *openai.Client {
+	t.Helper()
+	client := openai.NewClient(
+		option.WithBaseURL(ts.URL+"/v1"),
+		option.WithAPIKey("test-key"),
+	)
+	return &client
+}
+
+// asSDKError extracts an openai.Error from err, or nil.
+func asSDKError(err error) *openai.Error {
+	var apiErr *openai.Error
+	if errors.As(err, &apiErr) {
+		return apiErr
+	}
+	return nil
+}
+
+func TestOpenAI_SDK_UnimplementedEndpoint_Embeddings(t *testing.T) {
+	srv, _ := testServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	client := newSDKClientForCompat(t, ts)
+
+	_, err := client.Embeddings.New(context.Background(), openai.EmbeddingNewParams{})
+	if err == nil {
+		t.Fatal("expected error from unimplemented endpoint, got nil")
+	}
+
+	apiErr := asSDKError(err)
+	if apiErr == nil {
+		t.Fatalf("expected openai.Error, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != 404 {
+		t.Errorf("expected 404, got %d", apiErr.StatusCode)
+	}
+	if apiErr.Type == "" {
+		t.Error("error type should not be empty")
+	}
+	if apiErr.Message == "" {
+		t.Error("error message should not be empty")
+	}
+}
+
+func TestOpenAI_SDK_UnimplementedEndpoint_GetModel(t *testing.T) {
+	srv, _ := testServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	client := newSDKClientForCompat(t, ts)
+
+	_, err := client.Models.Get(context.Background(), "nonexistent-model")
+	if err == nil {
+		t.Fatal("expected error from unimplemented endpoint, got nil")
+	}
+
+	apiErr := asSDKError(err)
+	if apiErr == nil {
+		t.Fatalf("expected openai.Error, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != 404 {
+		t.Errorf("expected 404, got %d", apiErr.StatusCode)
+	}
+	if apiErr.Type == "" {
+		t.Error("error type should not be empty")
+	}
+}
+
+func TestOpenAI_SDK_UnimplementedEndpoint_Moderations(t *testing.T) {
+	srv, _ := testServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	client := newSDKClientForCompat(t, ts)
+
+	_, err := client.Moderations.New(context.Background(), openai.ModerationNewParams{})
+	if err == nil {
+		t.Fatal("expected error from unimplemented endpoint, got nil")
+	}
+
+	apiErr := asSDKError(err)
+	if apiErr == nil {
+		t.Fatalf("expected openai.Error, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != 404 {
+		t.Errorf("expected 404, got %d", apiErr.StatusCode)
+	}
+}
+
+func TestOpenAI_SDK_UnimplementedEndpoint_CustomPath(t *testing.T) {
+	srv, _ := testServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	client := newSDKClientForCompat(t, ts)
+
+	var resp struct{}
+	err := client.Execute(context.Background(), "POST", "/custom-unsupported-endpoint", nil, &resp)
+	if err == nil {
+		t.Fatal("expected error from unimplemented endpoint, got nil")
+	}
+
+	apiErr := asSDKError(err)
+	if apiErr == nil {
+		t.Fatalf("expected openai.Error, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != 404 {
+		t.Errorf("expected 404, got %d", apiErr.StatusCode)
+	}
+	if apiErr.Type != "invalid_request_error" {
+		t.Errorf("expected type 'invalid_request_error', got %q", apiErr.Type)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SDK compatibility — success cases
+// ---------------------------------------------------------------------------
+//
+// Verify that the SDK can successfully parse valid responses for implemented endpoints.
+
+func TestOpenAI_SDK_ModelCatalog(t *testing.T) {
+	srv, _ := testServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	client := newSDKClientForCompat(t, ts)
+
+	var result struct {
+		Models []struct {
+			ID       string `json:"id"`
+			SizeGB   int    `json:"size_gb"`
+			ModelTag string `json:"model_tag"`
+		} `json:"models"`
+	}
+	err := client.Execute(context.Background(), "GET", "/models/catalog", nil, &result)
+	if err != nil {
+		t.Fatalf("expected model catalog to succeed, got: %v", err)
+	}
+}
+
+func TestOpenAI_SDK_Health(t *testing.T) {
+	srv, _ := testServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	// Health endpoint doesn't live under /v1, so use raw client.
+	client := openai.NewClient(
+		option.WithBaseURL(ts.URL),
+		option.WithAPIKey("test-key"),
+	)
+
+	var result struct {
+		Status string `json:"status"`
+	}
+	err := client.Execute(context.Background(), "GET", "/health", nil, &result)
+	if err != nil {
+		t.Fatalf("expected health to succeed, got: %v", err)
+	}
+	if result.Status != "ok" {
+		t.Errorf("expected status 'ok', got %q", result.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SDK compatibility — non-/v1/ paths are unaffected
+// ---------------------------------------------------------------------------
+
+func TestOpenAI_SDK_NonV1Unaffected(t *testing.T) {
+	srv, _ := testServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	resp, err := ts.Client().Get(ts.URL + "/nonexistent")
+	if err != nil {
+		t.Fatalf("GET /nonexistent: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 404 {
+		t.Errorf("expected 404, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct == "application/json" {
+		t.Error("non-/v1/ paths should not get JSON content type")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SDK compatibility — chat completions
+// ---------------------------------------------------------------------------
+//
+// Verifies that the official OpenAI Go SDK can successfully make chat
+// completion calls against the coordinator, with a real connected provider.
+
+func TestOpenAI_SDK_ChatCompletionNonStreaming(t *testing.T) {
+	ts, cleanup, providerDone := setupE2ETest(t, "test-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
+			`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"Hello world"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11}}`+"\n\n")
+		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 8, CompletionTokens: 3})
+	})
+	defer cleanup()
+
+	client := openai.NewClient(
+		option.WithBaseURL(ts.URL+"/v1"),
+		option.WithAPIKey("test-key"),
+	)
+
+	messages := []openai.ChatCompletionMessageParamUnion{
+		openai.UserMessage("hi"),
+	}
+	body := openai.ChatCompletionNewParams{
+		Messages: messages,
+		Model:    shared.ChatModel("test-model"),
+	}
+
+	completion, err := client.Chat.Completions.New(context.Background(), body)
+	if err != nil {
+		t.Fatalf("chat completion failed: %v", err)
+	}
+
+	// Verify response shape matches OpenAI spec.
+	if completion.ID == "" {
+		t.Error("completion ID is empty")
+	}
+	if completion.Object != "chat.completion" {
+		t.Errorf("object = %q, want 'chat.completion'", completion.Object)
+	}
+	if completion.Model != "test-model" {
+		t.Errorf("model = %q, want 'test-model'", completion.Model)
+	}
+	if len(completion.Choices) == 0 {
+		t.Fatal("no choices in completion")
+	}
+	choice := completion.Choices[0]
+	if choice.Message.Content != "Hello world" {
+		t.Errorf("message content = %q, want 'Hello world'", choice.Message.Content)
+	}
+	if choice.Message.Role != "assistant" {
+		t.Errorf("message role = %q, want 'assistant'", choice.Message.Role)
+	}
+	if choice.FinishReason != "stop" {
+		t.Errorf("finish_reason = %q, want 'stop'", choice.FinishReason)
+	}
+	if completion.Usage.TotalTokens != 11 {
+		t.Errorf("usage.total_tokens = %d, want 11", completion.Usage.TotalTokens)
 	}
 
 	<-providerDone

@@ -1087,6 +1087,12 @@ func (s *Server) routes() {
 
 	// Metrics snapshot (admin only)
 	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
+
+	// Catch-all for unimplemented OpenAI-compatible endpoints.
+	// Registered last (old-style pattern) so explicit method+path routes
+	// take precedence. Any /v1/* path not handled above gets a structured
+	// JSON error instead of the mux default text/plain 404.
+	s.mux.HandleFunc("/v1/", s.handleUnimplementedEndpoint)
 }
 
 // registerDefaultGauges wires live-computed gauges (fleet size, etc.) into
@@ -1147,6 +1153,17 @@ func (s *Server) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, snap)
+}
+
+// handleUnimplementedEndpoint returns a structured JSON error for any /v1/*
+// path not registered as an explicit route. This prevents OpenAI SDK clients
+// from crashing on raw text/plain 404s when hitting unimplemented endpoints
+// like /v1/embeddings or /v1/moderations.
+func (s *Server) handleUnimplementedEndpoint(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotFound, errorResponse(
+		"invalid_request_error",
+		fmt.Sprintf("endpoint %s %s is not implemented", r.Method, r.URL.Path),
+	))
 }
 
 // Handler returns the root http.Handler with global middleware applied.

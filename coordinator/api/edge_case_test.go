@@ -299,6 +299,9 @@ func TestEdge_AuthMalformedHeader(t *testing.T) {
 func TestEdge_WrongHTTPMethod(t *testing.T) {
 	srv, _ := testServer(t)
 
+	// /v1/chat/completions is POST-only. Wrong methods are caught by the
+	// /v1/ catch-all and return a structured JSON 404 (not Go's default 405
+	// text/plain), which is better for OpenAI SDK compatibility.
 	methods := []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch}
 	for _, method := range methods {
 		t.Run(method, func(t *testing.T) {
@@ -307,8 +310,12 @@ func TestEdge_WrongHTTPMethod(t *testing.T) {
 			w := httptest.NewRecorder()
 			srv.Handler().ServeHTTP(w, req)
 
-			if w.Code != http.StatusMethodNotAllowed {
-				t.Errorf("%s: status = %d, want 405", method, w.Code)
+			if w.Code != http.StatusNotFound {
+				t.Errorf("%s: status = %d, want 404", method, w.Code)
+			}
+			ct := w.Header().Get("Content-Type")
+			if ct != "application/json" {
+				t.Errorf("%s: Content-Type = %q, want application/json", method, ct)
 			}
 		})
 	}

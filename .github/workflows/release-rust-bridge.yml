@@ -1,0 +1,468 @@
+name: Release Rust Bridge Provider Bundle
+
+# One-time migration bridge for existing Rust providers.
+#
+# This workflow exists only to ship the last Rust provider release that knows
+# how to consume the Swift bundle metadata (`backend=mlx-swift`,
+# `binary_hash`, `bundle_hash`, `metallib_hash`) and migrate itself to the
+# Swift CLI release. Do not use this for post-cutover Swift releases.
+#
+# Release order:
+#   1. Tag `rust-bridge-v0.4.8` and run this workflow.
+#   2. Let existing Rust providers auto-update to 0.4.8.
+#   3. Tag `v0.5.0` and run `release-swift.yml`.
+#   4. Rust 0.4.8 providers migrate themselves to the Swift bundle.
+#
+# The tag prefix is intentionally not `v...` so the Swift release workflow
+# cannot accidentally publish a Swift bundle for the bridge tag.
+#
+# Repo secrets use DEV_/PROD_ prefixes so both environments live at repo
+# level without needing GitHub environments:
+#   DEV_R2_ACCESS_KEY_ID  / PROD_R2_ACCESS_KEY_ID
+#   DEV_R2_SECRET_ACCESS_KEY / PROD_R2_SECRET_ACCESS_KEY
+#   DEV_R2_ENDPOINT       / PROD_R2_ENDPOINT
+#   DEV_R2_BUCKET         / PROD_R2_BUCKET
+#   DEV_R2_PUBLIC_URL     / PROD_R2_PUBLIC_URL
+#   DEV_COORDINATOR_URL   / PROD_COORDINATOR_URL
+#   DEV_RELEASE_KEY       / PROD_RELEASE_KEY
+# Apple signing secrets are shared (same cert for both envs).
+
+on:
+  push:
+    tags:
+      - 'rust-bridge-v*'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options: [dev, prod]
+        default: dev
+      version_override:
+        description: 'Rust bridge version to register, e.g. 0.4.8'
+        required: true
+        type: string
+        default: '0.4.8'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  PYO3_USE_ABI3_FORWARD_COMPATIBILITY: '1'
+  DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
+  APPLE_TEAM_ID: 'SLDQ2GJ6TL'
+  PBS_TAG: '20260408'
+  PBS_PYTHON_VERSION: '3.12.13'
+  UV_VERSION: '0.11.7'
+  VLLM_MLX_COMMIT: '2e92a6b3dc2c44351aab9d960d9682e2a9912ba5'
+
+jobs:
+  resolve-env:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.pick.outputs.environment }}
+      version: ${{ steps.pick.outputs.version }}
+    steps:
+      - id: pick
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.environment }}" ]; then
+            ENV="${{ inputs.environment }}"
+          else
+            ENV="prod"
+          fi
+          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
+
+          if [ -n "${{ inputs.version_override }}" ]; then
+            VERSION="${{ inputs.version_override }}"
+          else
+            VERSION="${GITHUB_REF_NAME#rust-bridge-v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved env=$ENV version=$VERSION"
+
+  build-and-release:
+    name: Build, sign, notarize, upload, register
+    needs: [resolve-env]
+    runs-on: macos-26-xlarge
+
+    env:
+      VERSION: ${{ needs.resolve-env.outputs.version }}
+      ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
+
+    steps:
+      - name: Resolve env-specific secrets
+        env:
+          DEV_R2_ACCESS_KEY_ID: ${{ secrets.DEV_R2_ACCESS_KEY_ID }}
+          PROD_R2_ACCESS_KEY_ID: ${{ secrets.PROD_R2_ACCESS_KEY_ID }}
+          DEV_R2_SECRET_ACCESS_KEY: ${{ secrets.DEV_R2_SECRET_ACCESS_KEY }}
+          PROD_R2_SECRET_ACCESS_KEY: ${{ secrets.PROD_R2_SECRET_ACCESS_KEY }}
+          DEV_R2_ENDPOINT: ${{ secrets.DEV_R2_ENDPOINT }}
+          PROD_R2_ENDPOINT: ${{ secrets.PROD_R2_ENDPOINT }}
+          DEV_R2_BUCKET: ${{ secrets.DEV_R2_BUCKET }}
+          PROD_R2_BUCKET: ${{ secrets.PROD_R2_BUCKET }}
+          DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
+          PROD_R2_PUBLIC_URL: ${{ secrets.PROD_R2_PUBLIC_URL }}
+          DEV_COORDINATOR_URL: ${{ secrets.DEV_COORDINATOR_URL }}
+          PROD_COORDINATOR_URL: ${{ secrets.PROD_COORDINATOR_URL }}
+          DEV_RELEASE_KEY: ${{ secrets.DEV_RELEASE_KEY }}
+          PROD_RELEASE_KEY: ${{ secrets.PROD_RELEASE_KEY }}
+          # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
+          # to these when PROD_* is empty so we don't have to duplicate every
+          # secret in the GitHub UI just to satisfy the new naming scheme.
+          LEGACY_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          LEGACY_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          LEGACY_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          LEGACY_R2_BUCKET: ${{ vars.R2_BUCKET }}
+          LEGACY_R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+          LEGACY_COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
+          LEGACY_RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
+        run: |
+          set -euo pipefail
+          PREFIX=$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')
+          for key in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET R2_PUBLIC_URL COORDINATOR_URL RELEASE_KEY; do
+            primary="${PREFIX}_${key}"
+            legacy="LEGACY_${key}"
+            outkey=$(echo "$key" | tr '[:upper:]' '[:lower:]')
+            value="${!primary:-}"
+            if [ -z "$value" ] && [ "$PREFIX" = "PROD" ]; then
+              value="${!legacy:-}"
+              if [ -n "$value" ]; then
+                echo "::notice::Using legacy unprefixed secret for ${key} (set PROD_${key} to silence this)"
+              fi
+            fi
+            if [ -z "$value" ]; then
+              echo "::error::No value resolved for ${PREFIX}_${key} (also tried LEGACY_${key})"
+              exit 1
+            fi
+            echo "${outkey}=${value}" >> "$GITHUB_ENV"
+          done
+
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Validate bridge version matches Rust package
+        run: |
+          set -euo pipefail
+          PACKAGE_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' provider/Cargo.toml | head -1)
+          if [ "$PACKAGE_VERSION" != "$VERSION" ]; then
+            echo "Rust bridge version mismatch: workflow=$VERSION Cargo.toml=$PACKAGE_VERSION"
+            exit 1
+          fi
+
+      - name: Validate prod release source
+        if: needs.resolve-env.outputs.environment == 'prod'
+        run: |
+          set -euo pipefail
+          git fetch --force origin master
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+              echo "Prod bridge release tags must point at commits reachable from origin/master"
+              exit 1
+            fi
+          elif [ "$GITHUB_REF_NAME" != "master" ]; then
+            echo "Manual prod bridge releases must run from master"
+            exit 1
+          fi
+
+      - name: Import Developer ID certificate
+        env:
+          P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          echo "$P12_BASE64" | base64 --decode > /tmp/cert.p12
+
+          security create-keychain -p "build" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "build" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security import /tmp/cert.p12 -k "$KEYCHAIN_PATH" \
+            -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productsign -f pkcs12
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "build" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          rm -f /tmp/cert.p12
+
+      - name: Prepare build tools and Python runtime
+        run: |
+          set -euo pipefail
+          curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          command -v aws >/dev/null 2>&1 || brew install awscli >/dev/null 2>&1 || true
+
+          curl -fsSL "https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/cpython-${PBS_PYTHON_VERSION}+${PBS_TAG}-aarch64-apple-darwin-install_only.tar.gz" \
+            -o /tmp/pbs-python.tar.gz
+
+          rm -rf /tmp/darkbloom-build-python /tmp/darkbloom-python
+          mkdir -p /tmp/darkbloom-build-python
+          tar xzf /tmp/pbs-python.tar.gz --strip-components=1 -C /tmp/darkbloom-build-python
+          tar xzf /tmp/pbs-python.tar.gz -C /tmp/
+          mv /tmp/python /tmp/darkbloom-python
+          rm -f /tmp/pbs-python.tar.gz
+
+          curl -fsSL -o /tmp/vllm-mlx-source.zip \
+            "https://github.com/Gajesh2007/vllm-mlx/archive/${VLLM_MLX_COMMIT}.zip"
+
+          PYTHON=/tmp/darkbloom-python/bin/python3.12
+          "$HOME/.local/bin/uv" pip install --python "$PYTHON" --quiet --no-cache-dir \
+            'mlx-lm>=0.31.2' \
+            /tmp/vllm-mlx-source.zip \
+            tokenizers
+          "$HOME/.local/bin/uv" pip install --python "$PYTHON" --quiet --no-cache-dir --upgrade 'mlx-lm>=0.31.2'
+
+          "$PYTHON" -c "import vllm_mlx; print(f'vllm-mlx {vllm_mlx.__version__}')"
+          "$PYTHON" -c "import mlx_lm; print(f'mlx-lm {mlx_lm.__version__}')"
+          "$PYTHON" -c "from vllm_mlx.server import app; print('vllm-mlx server imports OK')"
+
+          cd /tmp/darkbloom-python/lib/python*/site-packages
+          rm -rf torch* gradio* opencv* cv2* pandas* pyarrow* \
+                 sympy* networkx* mcp* miniaudio* pydub* datasets*
+          find /tmp/darkbloom-python -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+          find /tmp/darkbloom-python -name "*.pyc" -delete 2>/dev/null || true
+          "$PYTHON" -m compileall -q /tmp/darkbloom-python/lib/python3.12/site-packages/ 2>/dev/null || true
+          rm -f /tmp/darkbloom-python/lib/python*/EXTERNALLY-MANAGED
+
+      - name: Cache Cargo artifacts
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/index
+            ~/.cargo/git/db
+            provider/target
+          key: cargo-rust-bridge-v1-${{ runner.os }}-${{ hashFiles('provider/Cargo.lock') }}
+          restore-keys: |
+            cargo-rust-bridge-v1-${{ runner.os }}-
+
+      - name: Build Rust provider and legacy enclave helper
+        env:
+          DARKBLOOM_COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
+          PYO3_PYTHON: /tmp/darkbloom-build-python/bin/python3.12
+          LIBRARY_PATH: /tmp/darkbloom-build-python/lib
+          DYLD_LIBRARY_PATH: /tmp/darkbloom-build-python/lib
+          RUSTFLAGS: -L native=/tmp/darkbloom-build-python/lib
+        run: |
+          set -euo pipefail
+          cd provider
+          cargo build --release
+          test -x target/release/darkbloom
+          cd ../enclave
+          swift build -c release
+          test -x .build/release/eigeninference-enclave
+
+      - name: Run bridge updater tests
+        env:
+          PYO3_PYTHON: /tmp/darkbloom-build-python/bin/python3.12
+          LIBRARY_PATH: /tmp/darkbloom-build-python/lib
+          DYLD_LIBRARY_PATH: /tmp/darkbloom-build-python/lib
+          RUSTFLAGS: -L native=/tmp/darkbloom-build-python/lib
+        run: |
+          set -euo pipefail
+          cd provider
+          cargo test auto_update_check -- --nocapture
+
+      - name: Stage, sign, and hash bridge bundle
+        id: artifacts
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          STAGE=/tmp/darkbloom-bundle
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/bin" "$STAGE/python"
+
+          cp provider/target/release/darkbloom "$STAGE/bin/"
+          cp enclave/.build/release/eigeninference-enclave "$STAGE/bin/"
+
+          cp -R /tmp/darkbloom-python/bin "$STAGE/python/"
+          cp -R /tmp/darkbloom-python/lib "$STAGE/python/"
+          rm -rf "$STAGE/python/lib/python3.12/site-packages"
+
+          PYTHON_LOAD_PATH=$(otool -L "$STAGE/bin/darkbloom" | awk '/libpython3\.12\.dylib/ {print $1; exit}')
+          if [ -z "$PYTHON_LOAD_PATH" ]; then
+            echo "ERROR: could not find libpython linkage in darkbloom"
+            exit 1
+          fi
+          install_name_tool -change \
+            "$PYTHON_LOAD_PATH" \
+            "@executable_path/../python/lib/libpython3.12.dylib" \
+            "$STAGE/bin/darkbloom"
+
+          sign_macho_tree() {
+            local dir="$1"
+            find "$dir" -type f | while read -r file; do
+              if file "$file" | grep -q "Mach-O"; then
+                codesign --force --sign "$DEVELOPER_ID" \
+                  --keychain "$KEYCHAIN_PATH" --options runtime --timestamp \
+                  "$file"
+              fi
+            done
+          }
+
+          sign_macho_tree "$STAGE/python"
+          codesign --force --sign "$DEVELOPER_ID" \
+            --keychain "$KEYCHAIN_PATH" \
+            --entitlements scripts/entitlements.plist \
+            --options runtime --timestamp \
+            "$STAGE/bin/darkbloom"
+          codesign --force --sign "$DEVELOPER_ID" \
+            --keychain "$KEYCHAIN_PATH" \
+            --entitlements scripts/entitlements.plist \
+            --options runtime --timestamp \
+            "$STAGE/bin/eigeninference-enclave"
+
+          codesign --verify --verbose=2 "$STAGE/bin/darkbloom"
+          codesign --verify --verbose=2 "$STAGE/bin/eigeninference-enclave"
+          codesign --verify --verbose=2 "$STAGE/python/bin/python3.12"
+          codesign --verify --verbose=2 "$STAGE/python/lib/libpython3.12.dylib"
+
+          ditto -c -k --keepParent "$STAGE" /tmp/eigeninference-notarize.zip
+          xcrun notarytool submit /tmp/eigeninference-notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 15m
+
+          xcrun stapler staple "$STAGE/bin/darkbloom" || true
+          xcrun stapler staple "$STAGE/bin/eigeninference-enclave" || true
+
+          tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$STAGE" .
+          tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
+          grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
+          grep -qx './bin/eigeninference-enclave' /tmp/darkbloom-bundle-files.txt
+          grep -qx './python/bin/python3.12' /tmp/darkbloom-bundle-files.txt
+
+          PYTHON_BIN="$STAGE/python/bin/python3.12"
+          PYTHON_HASH=$(shasum -a 256 "$PYTHON_BIN" | cut -d' ' -f1)
+          PYTHON_LIB_DIR=$("$PYTHON_BIN" -c "import sysconfig; print(sysconfig.get_path('stdlib'))")
+          SITE_PACKAGES_DIR=$("/tmp/darkbloom-python/bin/python3.12" -c "import site; print(site.getsitepackages()[0])")
+          RUNTIME_HASH=$(DYLD_LIBRARY_PATH="$STAGE/python/lib:/tmp/darkbloom-build-python/lib" \
+            "$STAGE/bin/darkbloom" hash-runtime "$PYTHON_LIB_DIR")
+          BINARY_HASH=$(shasum -a 256 "$STAGE/bin/darkbloom" | cut -d' ' -f1)
+          BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
+
+          tar czf /tmp/eigeninference-python-macos-arm64.tar.gz -C "$STAGE/python" .
+          tar czf /tmp/eigeninference-site-packages.tar.gz -C "$SITE_PACKAGES_DIR" .
+
+          echo "PYTHON_HASH=$PYTHON_HASH" >> "$GITHUB_ENV"
+          echo "RUNTIME_HASH=$RUNTIME_HASH" >> "$GITHUB_ENV"
+          echo "BINARY_HASH=$BINARY_HASH" >> "$GITHUB_ENV"
+          echo "BUNDLE_HASH=$BUNDLE_HASH" >> "$GITHUB_ENV"
+          echo "Python hash:  $PYTHON_HASH"
+          echo "Runtime hash: $RUNTIME_HASH"
+          echo "Binary hash:  $BINARY_HASH"
+          echo "Bundle hash:  $BUNDLE_HASH"
+
+      - name: Upload bridge artifacts to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ env.r2_access_key_id }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.r2_secret_access_key }}
+          R2_ENDPOINT: ${{ env.r2_endpoint }}
+          R2_BUCKET: ${{ env.r2_bucket }}
+        run: |
+          set -euo pipefail
+          PREFIX="s3://${R2_BUCKET}/releases/v${VERSION}"
+          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz "${PREFIX}/darkbloom-bundle-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors
+          aws s3 cp /tmp/eigeninference-python-macos-arm64.tar.gz "${PREFIX}/eigeninference-python-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors
+          aws s3 cp /tmp/eigeninference-site-packages.tar.gz "${PREFIX}/eigeninference-site-packages.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors
+          aws s3 cp /tmp/vllm-mlx-source.zip "${PREFIX}/vllm-mlx-source.zip" --endpoint-url "$R2_ENDPOINT" --only-show-errors
+
+          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz "s3://${R2_BUCKET}/releases/latest/darkbloom-bundle-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors
+          aws s3 cp /tmp/eigeninference-python-macos-arm64.tar.gz "s3://${R2_BUCKET}/releases/latest/eigeninference-python-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors
+          aws s3 cp /tmp/eigeninference-site-packages.tar.gz "s3://${R2_BUCKET}/releases/latest/eigeninference-site-packages.tar.gz" --endpoint-url "$R2_ENDPOINT" --only-show-errors
+
+      - name: Compute template hashes
+        run: |
+          set -euo pipefail
+          MODELS_CDN="https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev"
+          TEMPLATE_HASHES=""
+          for name in qwen3.5 trinity gemma4 minimax; do
+            HASH=$(curl -fsSL "$MODELS_CDN/templates/${name}.jinja" 2>/dev/null | shasum -a 256 | cut -d' ' -f1 || true)
+            if [ -n "$HASH" ] && [ "$HASH" != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]; then
+              [ -n "$TEMPLATE_HASHES" ] && TEMPLATE_HASHES+=","
+              TEMPLATE_HASHES+="${name}=${HASH}"
+              echo "Template $name: ${HASH:0:16}..."
+            fi
+          done
+          echo "TEMPLATE_HASHES=$TEMPLATE_HASHES" >> "$GITHUB_ENV"
+
+      - name: Register bridge release with coordinator
+        env:
+          COORDINATOR_URL: ${{ env.coordinator_url }}
+          RELEASE_KEY: ${{ env.release_key }}
+          R2_PUBLIC_URL: ${{ env.r2_public_url }}
+        run: |
+          set -euo pipefail
+          BUNDLE_URL="${R2_PUBLIC_URL}/releases/v${VERSION}/darkbloom-bundle-macos-arm64.tar.gz"
+
+          TAG_MSG=$(git tag -l --format='%(contents:subject)%0a%(contents:body)' "$GITHUB_REF_NAME" 2>/dev/null || echo "")
+          if [ -z "$TAG_MSG" ] || [ "$TAG_MSG" = $'\n' ]; then
+            TAG_MSG="Rust bridge release v${VERSION}"
+          fi
+
+          python3 - <<PY > /tmp/release-payload.json
+          import json, os
+          payload = {
+              "version":         os.environ["VERSION"],
+              "platform":        "macos-arm64",
+              "backend":         "vllm-mlx",
+              "binary_hash":     os.environ["BINARY_HASH"],
+              "bundle_hash":     os.environ["BUNDLE_HASH"],
+              "python_hash":     os.environ["PYTHON_HASH"],
+              "runtime_hash":    os.environ["RUNTIME_HASH"],
+              "template_hashes": os.environ.get("TEMPLATE_HASHES", ""),
+              "url":             "${BUNDLE_URL}",
+              "changelog":       """${TAG_MSG}""".strip(),
+          }
+          print(json.dumps(payload))
+          PY
+          curl -fsSL -X POST "${COORDINATOR_URL}/v1/releases" \
+            -H "Authorization: Bearer ${RELEASE_KEY}" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/release-payload.json
+          echo
+          echo "Rust bridge release v${VERSION} registered with coordinator"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/release-notes.md <<NOTES
+          ## Rust bridge provider v${VERSION}
+
+          This is the final Rust provider release for migrating existing
+          installs to the Swift CLI provider.
+
+          **Binary hash:**  \`${BINARY_HASH}\`
+          **Bundle hash:**  \`${BUNDLE_HASH}\`
+          **Python hash:**  \`${PYTHON_HASH}\`
+          **Runtime hash:** \`${RUNTIME_HASH}\`
+          **Backend:**      \`vllm-mlx\`
+          **Signed by:**    \`${DEVELOPER_ID}\`
+          **Notarized:**    yes
+
+          Next release step: publish the Swift provider with \`release-swift.yml\`
+          using tag \`v0.5.0\`.
+          NOTES
+          gh release create "${{ github.ref_name }}" \
+            /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+            /tmp/eigeninference-python-macos-arm64.tar.gz \
+            /tmp/eigeninference-site-packages.tar.gz \
+            --title "${{ github.ref_name }}" \
+            --notes-file /tmp/release-notes.md \
+            --generate-notes
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true

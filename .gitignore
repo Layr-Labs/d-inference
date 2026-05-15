@@ -69,7 +69,7 @@ tmp/
 
 d-inf-docs/
 .vercel
-.claude/worktrees/
+.claude/
 .external/
 
 # Generated prompts

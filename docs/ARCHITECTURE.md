@@ -5,50 +5,34 @@
 EigenInference is a platform for private, decentralized AI inference on Apple Silicon Macs. Mac owners provide idle compute. Consumers get private inference on open-source models with hardware-backed trust guarantees from Apple's Secure Enclave and MDM-verified security posture.
 
 ```
-Consumer (Python SDK)
+Consumer (OpenAI SDK / Web UI / curl)
     |
     | HTTPS (OpenAI-compatible API)
     v
-Coordinator (Go, GCP Confidential VM — AMD SEV-SNP)
+Coordinator (Go, runs on EigenCloud TEE in prod / GCP VM in dev)
     |
     | WebSocket (outbound from provider, no port forwarding needed)
     v
-Provider Agent (Rust + embedded Python via PyO3)
+Provider CLI (Swift `darkbloom`, hardened in-process)
     |
-    | In-process function calls (no HTTP, no IPC)
+    | mlx-swift-lm
     v
-MLX inference engine -> Metal -> Apple Silicon GPU
+Apple Silicon GPU (Metal)
 ```
+
+> The legacy Rust provider (`provider/`) is still in production but will be
+> retired at the Swift cutover.
 
 ## Components
 
-### Provider Agent (`provider/`)
+### Provider Agent — legacy Rust (`provider/`)
 
-**Language:** Rust + Python (PyO3)
+**Language:** Rust + Python (PyO3) — **legacy, retired at Swift cutover**
 
-A hardened CLI daemon that runs on each provider Mac. Runs inference **in-process** — the MLX engine is embedded directly in the Rust process via PyO3, with no subprocess or IPC channel.
-
-**Inference:**
-- Embeds Python interpreter via PyO3 for in-process MLX inference
-- Supports mlx-lm (primary) and vllm-mlx (preferred when available, adds batching)
-- Auto-installs mlx-lm if not present
-- No subprocess, no HTTP localhost, no Unix socket — all inference in one hardened process
-- Python import path locked to bundled packages (prevents malicious package injection)
-
-**Security hardening:**
-- `PT_DENY_ATTACH` at startup — blocks all debugger attachment at kernel level
-- SIP verification at startup, before every request, and in every challenge-response
-- Hardened Runtime signing (no `get-task-allow`) — blocks external memory reads
-- Binary self-hash included in Secure Enclave attestation
-- App bundle code signature verification — any modification refuses to serve
-- Memory wiping (volatile zero + fence) of prompts and responses after each request
-- Backend file integrity verification before launch
-
-**Other:**
-- Detects Apple Silicon hardware (chip family, memory, GPU cores, bandwidth)
-- Scans HuggingFace cache for available MLX models and filters by memory
-- Maintains persistent WebSocket connection to coordinator with auto-reconnect
-- Generates Secure Enclave identity and signed attestation via the enclave CLI tool
+The currently-shipping provider. Embeds the Python interpreter via PyO3 to run
+in-process MLX inference (`mlx-lm` / `vllm-mlx`). Same hardening posture as the
+Swift port. Replaced module-for-module by `provider-swift/` once the cutover
+lands.
 
 ### Coordinator (`coordinator/`)
 
@@ -71,15 +55,16 @@ The control plane. Runs in a GCP Confidential VM (AMD SEV-SNP) — hardware-encr
 - Reputation scoring: 40% job success + 30% uptime + 20% attestation + 10% response time
 - Persistent storage via PostgreSQL (in-memory fallback for development)
 
-### Consumer SDK (`sdk/`)
+### Consumer SDK
 
-**Language:** Python
-
-OpenAI-compatible client library and CLI. Drop-in replacement for existing OpenAI code:
+The OpenAI Python SDK is the consumer client; users point its base URL at the
+coordinator and pass a `eigeninference-…` API key. Coordinator response
+includes EigenInference-specific fields `provider_attested` (bool) and
+`provider_trust_level` (string).
 
 ```python
-from eigeninference import EigenInference
-client = EigenInference(base_url="https://coordinator.darkbloom.io", api_key="eigeninference-...")
+from openai import OpenAI
+client = OpenAI(base_url="https://api.darkbloom.dev/v1", api_key="eigeninference-...")
 response = client.chat.completions.create(
     model="mlx-community/Qwen2.5-7B-Instruct-4bit",
     messages=[{"role": "user", "content": "Hello"}],
@@ -87,30 +72,23 @@ response = client.chat.completions.create(
 )
 ```
 
-CLI commands: `configure`, `models`, `ask`, `chat`, `deposit`, `balance`, `usage`, `withdraw`.
+### Provider, Swift CLI (`provider-swift/`)
 
-EigenInference-specific response fields: `provider_attested` (bool), `provider_trust_level` (string).
+**Language:** Swift (replaces the Rust provider at cutover)
 
-### macOS App (`app/EigenInference/`)
+CLI-only port of the provider agent. Two binaries:
+- `darkbloom`: the main provider daemon. Subcommands `serve`, `start`, `stop`,
+  `status`, `doctor`, `models`, `login`, `logout`, `benchmark`, `update`, `verify`.
+- `darkbloom-enclave`: stateless Secure Enclave attestation/sign helper (legacy name `eigeninference-enclave` ships as a symlink for backward compatibility)
+  used by `install.sh`. Subcommands `attest`, `sign`, `info`, `wallet-address`.
 
-**Language:** Swift/SwiftUI
+Inference is in-process via [`mlx-swift-lm`](https://github.com/ml-explore/mlx-swift-lm)
+(forked under `libs/mlx-swift-lm`). NaCl `crypto_box` (XSalsa20-Poly1305 + Curve25519)
+is provided by [`swift-sodium`](https://github.com/jedisct1/swift-sodium) so the
+wire format remains compatible with the Rust `crypto_box` and Go `nacl/box`
+implementations.
 
-Menu bar app (no dock icon) that wraps the provider agent:
-- Idle detection via CGEventSource (pauses serving when user is active)
-- Provider subprocess management with auto-restart
-- Model discovery from HuggingFace cache
-- Dashboard with hardware info, session stats, earnings
-- Settings for coordinator URL, API key, availability schedule
-
-### Secure Enclave Module (`enclave/`)
-
-**Language:** Swift
-
-Hardware-bound cryptographic identity for provider nodes:
-- P-256 key generation/storage in Apple Secure Enclave (non-extractable)
-- Signed attestation blobs (chip, SIP, SecureBoot, SE status, binary hash)
-- C FFI bridge (`@_cdecl`) for Rust integration
-- CLI tool: `eigeninference-enclave attest [--encryption-key <b64>] [--binary-hash <hex>]`
+The Secure Enclave identity is native CryptoKit — no FFI bridge.
 
 ## Security Architecture
 

@@ -27,12 +27,11 @@ options:
 steps:
   - id: build
     name: gcr.io/cloud-builders/docker
-    dir: coordinator
     args:
       - build
       - --tag=${_IMAGE}:$SHORT_SHA
       - --tag=${_IMAGE}:latest
-      - --file=Dockerfile
+      - --file=coordinator/Dockerfile
       - .
 
   - id: push-sha

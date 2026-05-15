@@ -30,10 +30,9 @@ For UI changes, include a screenshot or short video.
 <!-- Tick all that apply so reviewers know what to look at. -->
 
 - [ ] coordinator (Go)
-- [ ] provider (Rust)
+- [ ] provider (Rust, legacy)
+- [ ] provider-swift (Swift CLI)
 - [ ] console-ui (Next.js)
-- [ ] image-bridge (Python)
-- [ ] app (macOS Swift)
 - [ ] enclave (Swift)
 - [ ] infra / CI / release
 - [ ] docs
@@ -43,7 +42,7 @@ For UI changes, include a screenshot or short video.
 <!--
 If you changed a WebSocket message, an HTTP endpoint, a config key, or a CLI flag:
 - Did you update the matching side? (provider/src/protocol.rs ↔ coordinator/internal/protocol/messages.go)
-- Are bundle scripts (build-bundle.sh, install.sh, the Swift app launcher, LatestProviderVersion) still consistent?
+- Are release artifacts (`release-swift.yml`, `scripts/install.sh`, `LatestProviderVersion`) still consistent?
 - Does this need a version bump or a migration note?
 -->
 

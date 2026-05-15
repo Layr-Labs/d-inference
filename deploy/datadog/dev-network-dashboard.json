@@ -1,6 +1,6 @@
 {
-  "title": "d-inference Dev",
-  "description": "Log-first operational dashboard for the d-inference dev coordinator. Provider telemetry is forwarded through the coordinator and indexed with source:provider; regular coordinator runtime logs are indexed with kind:coordinator_log.",
+  "title": "Darkbloom Observability",
+  "description": "Full observability dashboard for the d-inference dev coordinator. Metrics via DogStatsD (d_inference.*), logs via DD Agent journald collection + direct Logs API, traces via DD Agent APM, and system metrics from the host-level agent.",
   "layout_type": "ordered",
   "notify_list": [],
   "template_variables": [
@@ -13,13 +13,18 @@
       "name": "service",
       "prefix": "service",
       "default": "d-inference-coordinator"
+    },
+    {
+      "name": "model",
+      "prefix": "model",
+      "default": "*"
     }
   ],
   "widgets": [
     {
       "definition": {
         "type": "note",
-        "content": "Dev d-inference observability. This dashboard is log-backed so it works without a Datadog Agent on the VM. Queries use `$env $service`. Provider telemetry appears as `source:provider`; coordinator runtime logs appear as `source:coordinator kind:coordinator_log`.",
+        "content": "## Darkbloom Observability\nMetrics: `d_inference.*` via DogStatsD (agent on 8125) | Logs: journald + direct Logs API | Traces: APM agent on 8126 | System: host-level DD agent checks\n\nTemplate vars: `$env`, `$service`, `$model`. Provider telemetry = `source:provider`; coordinator events = `source:coordinator`.",
         "background_color": "blue",
         "font_size": "14",
         "text_align": "left",
@@ -28,315 +33,1442 @@
     },
     {
       "definition": {
-        "type": "query_value",
-        "title": "All Dev Logs",
-        "autoscale": true,
-        "precision": 0,
-        "requests": [
+        "type": "group",
+        "title": "Overview",
+        "layout_type": "ordered",
+        "show_title": true,
+        "widgets": [
           {
-            "response_format": "scalar",
-            "queries": [
-              {
-                "name": "query1",
-                "data_source": "logs",
-                "search": {
-                  "query": "$env $service"
-                },
-                "indexes": [
-                  "*"
-                ],
-                "compute": {
-                  "aggregation": "count"
-                }
-              }
-            ],
-            "formulas": [
-              {
-                "formula": "query1"
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "definition": {
-        "type": "query_value",
-        "title": "Provider Telemetry",
-        "autoscale": true,
-        "precision": 0,
-        "requests": [
-          {
-            "response_format": "scalar",
-            "queries": [
-              {
-                "name": "query1",
-                "data_source": "logs",
-                "search": {
-                  "query": "$env $service source:provider"
-                },
-                "indexes": [
-                  "*"
-                ],
-                "compute": {
-                  "aggregation": "count"
-                }
-              }
-            ],
-            "formulas": [
-              {
-                "formula": "query1"
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "definition": {
-        "type": "query_value",
-        "title": "Warnings + Errors",
-        "autoscale": true,
-        "precision": 0,
-        "requests": [
-          {
-            "response_format": "scalar",
-            "queries": [
-              {
-                "name": "query1",
-                "data_source": "logs",
-                "search": {
-                  "query": "$env $service (severity:warn OR severity:error OR severity:fatal OR status:warn OR status:error)"
-                },
-                "indexes": [
-                  "*"
-                ],
-                "compute": {
-                  "aggregation": "count"
-                }
-              }
-            ],
-            "formulas": [
-              {
-                "formula": "query1"
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "definition": {
-        "type": "timeseries",
-        "title": "Log Volume by Source",
-        "show_legend": true,
-        "legend_layout": "auto",
-        "requests": [
-          {
-            "response_format": "timeseries",
-            "queries": [
-              {
-                "name": "query1",
-                "data_source": "logs",
-                "search": {
-                  "query": "$env $service"
-                },
-                "indexes": [
-                  "*"
-                ],
-                "compute": {
-                  "aggregation": "count"
-                },
-                "group_by": [
-                  {
-                    "facet": "source",
-                    "limit": 10,
-                    "sort": {
-                      "aggregation": "count",
-                      "order": "desc"
+            "definition": {
+              "type": "timeseries",
+              "title": "Providers Online",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.providers.online{$env}"
                     }
-                  }
-                ]
-              }
-            ],
-            "formulas": [
-              {
-                "formula": "query1"
-              }
-            ],
-            "display_type": "bars"
-          }
-        ]
-      }
-    },
-    {
-      "definition": {
-        "type": "timeseries",
-        "title": "Warnings + Errors by Kind",
-        "show_legend": true,
-        "legend_layout": "auto",
-        "requests": [
-          {
-            "response_format": "timeseries",
-            "queries": [
-              {
-                "name": "query1",
-                "data_source": "logs",
-                "search": {
-                  "query": "$env $service (severity:warn OR severity:error OR severity:fatal OR status:warn OR status:error)"
-                },
-                "indexes": [
-                  "*"
-                ],
-                "compute": {
-                  "aggregation": "count"
-                },
-                "group_by": [
-                  {
-                    "facet": "kind",
-                    "limit": 10,
-                    "sort": {
-                      "aggregation": "count",
-                      "order": "desc"
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
                     }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Queue Depth",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.request_queue.depth{$env}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_table",
+              "title": "Providers per Model",
+              "has_search_bar": "auto",
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.providers.per_model{$env} by {model}",
+                      "aggregator": "last"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "All Dev Logs",
+              "autoscale": true,
+              "precision": 0,
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "logs",
+                      "search": {
+                        "query": "$env $service"
+                      },
+                      "indexes": ["*"],
+                      "compute": {
+                        "aggregation": "count"
+                      }
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Warnings + Errors",
+              "autoscale": true,
+              "precision": 0,
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "logs",
+                      "search": {
+                        "query": "$env $service (severity:warn OR severity:error OR severity:fatal OR status:warn OR status:error)"
+                      },
+                      "indexes": ["*"],
+                      "compute": {
+                        "aggregation": "count"
+                      }
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Inference & Request Flow",
+        "layout_type": "ordered",
+        "show_title": true,
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Inference Dispatches by Status",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.inference.dispatches{$env} by {status}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "HTTP Request Latency by Route (p50/p95/p99)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "p50",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.http.latency_ms.50percentile{$env} by {path}"
+                    },
+                    {
+                      "name": "p95",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.http.latency_ms.95percentile{$env} by {path}"
+                    },
+                    {
+                      "name": "p99",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.http.latency_ms.99percentile{$env} by {path}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "p50"
+                    },
+                    {
+                      "formula": "p95"
+                    },
+                    {
+                      "formula": "p99"
+                    }
+                  ],
+                  "style": {
+                    "palette": "warm"
                   }
-                ]
-              }
-            ],
-            "formulas": [
-              {
-                "formula": "query1"
-              }
-            ],
-            "display_type": "bars"
-          }
-        ]
-      }
-    },
-    {
-      "definition": {
-        "type": "list_stream",
-        "title": "Provider Telemetry Events",
-        "requests": [
+                }
+              ]
+            }
+          },
           {
-            "query": {
-              "data_source": "logs_stream",
-              "query_string": "$env $service source:provider"
-            },
-            "response_format": "event_list",
-            "columns": [
-              {
-                "field": "timestamp",
-                "width": "auto"
-              },
-              {
-                "field": "status",
-                "width": "auto"
-              },
-              {
-                "field": "message",
-                "width": "compact"
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "definition": {
-        "type": "list_stream",
-        "title": "Coordinator Warnings + Errors",
-        "requests": [
+            "definition": {
+              "type": "timeseries",
+              "title": "HTTP Requests by Route",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.http.requests{$env} by {path}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
           {
-            "query": {
-              "data_source": "logs_stream",
-              "query_string": "$env $service source:coordinator (severity:warn OR severity:error OR severity:fatal OR status:warn OR status:error)"
-            },
-            "response_format": "event_list",
-            "columns": [
-              {
-                "field": "timestamp",
-                "width": "auto"
-              },
-              {
-                "field": "status",
-                "width": "auto"
-              },
-              {
-                "field": "message",
-                "width": "compact"
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "definition": {
-        "type": "list_stream",
-        "title": "Recent Coordinator Runtime Logs",
-        "requests": [
+            "definition": {
+              "type": "timeseries",
+              "title": "Routing Decisions by Outcome",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.routing.decisions{$env} by {outcome}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
           {
-            "query": {
-              "data_source": "logs_stream",
-              "query_string": "$env $service source:coordinator kind:coordinator_log"
-            },
-            "response_format": "event_list",
-            "columns": [
-              {
-                "field": "timestamp",
-                "width": "auto"
-              },
-              {
-                "field": "status",
-                "width": "auto"
-              },
-              {
-                "field": "message",
-                "width": "compact"
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "definition": {
-        "type": "list_stream",
-        "title": "All Recent Dev Logs",
-        "requests": [
+            "definition": {
+              "type": "timeseries",
+              "title": "Completion Tokens by Model",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.inference.completion_tokens_total{$env,model:$model}.as_count() by {model}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
           {
-            "query": {
-              "data_source": "logs_stream",
-              "query_string": "$env $service"
-            },
-            "response_format": "event_list",
-            "columns": [
-              {
-                "field": "timestamp",
-                "width": "auto"
-              },
-              {
-                "field": "status",
-                "width": "auto"
-              },
-              {
-                "field": "message",
-                "width": "compact"
-              }
-            ]
+            "definition": {
+              "type": "timeseries",
+              "title": "Input Tokens by Model",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.inference.prompt_tokens_total{$env,model:$model}.as_count() by {model}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Queue Timeouts by Model",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.request_queue.timeout{$env,model:$model}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "warm"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Routing Cost (p95) by Provider",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.routing.cost_ms.95percentile{$env,model:$model} by {provider_id}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "sunburst",
+              "title": "Requests by Model Type",
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.routing.decisions{$env} by {model_type}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ]
+                }
+              ]
+            }
           }
         ]
       }
     },
     {
       "definition": {
-        "type": "note",
-        "content": "APM and DogStatsD panels are intentionally omitted here until the dev VM runs a Datadog Agent on 8126/8125. The coordinator currently forwards logs directly via the Datadog Logs API, which is why this dashboard uses log analytics instead of `d_inference.*` metrics.",
-        "background_color": "gray",
-        "font_size": "12",
-        "text_align": "left",
-        "show_tick": false
+        "type": "group",
+        "title": "Attestation & Security",
+        "layout_type": "ordered",
+        "show_title": true,
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Attestation Challenges Sent",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.attestation.challenges_sent{$env}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Attestation Challenge Outcomes",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.attestation.challenges{$env} by {outcome}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Attestation Failures by Reason",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.attestation.failures{$env} by {reason}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "warm"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Provider Registrations by Trust Level",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.providers.registrations{$env} by {trust_level}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Rate Limiting & Errors",
+        "layout_type": "ordered",
+        "show_title": true,
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Rate Limit Rejections by Tier",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.ratelimit.rejections{$env} by {tier}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "warm"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "WebSocket Disconnects by Reason",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.ws.disconnects{$env} by {reason}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Telemetry Events Ingested by Source & Severity",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.telemetry.events_ingested{$env} by {source,severity}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Logs",
+        "layout_type": "ordered",
+        "show_title": true,
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Log Volume by Source",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "logs",
+                      "search": {
+                        "query": "$env $service"
+                      },
+                      "indexes": ["*"],
+                      "compute": {
+                        "aggregation": "count"
+                      },
+                      "group_by": [
+                        {
+                          "facet": "source",
+                          "limit": 10,
+                          "sort": {
+                            "aggregation": "count",
+                            "order": "desc"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Warnings + Errors by Kind",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "logs",
+                      "search": {
+                        "query": "$env $service (severity:warn OR severity:error OR severity:fatal OR status:warn OR status:error)"
+                      },
+                      "indexes": ["*"],
+                      "compute": {
+                        "aggregation": "count"
+                      },
+                      "group_by": [
+                        {
+                          "facet": "kind",
+                          "limit": 10,
+                          "sort": {
+                            "aggregation": "count",
+                            "order": "desc"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "list_stream",
+              "title": "Provider Telemetry Events",
+              "requests": [
+                {
+                  "query": {
+                    "data_source": "logs_stream",
+                    "query_string": "$env $service source:provider"
+                  },
+                  "response_format": "event_list",
+                  "columns": [
+                    {
+                      "field": "timestamp",
+                      "width": "auto"
+                    },
+                    {
+                      "field": "status",
+                      "width": "auto"
+                    },
+                    {
+                      "field": "message",
+                      "width": "compact"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "list_stream",
+              "title": "Coordinator Warnings + Errors",
+              "requests": [
+                {
+                  "query": {
+                    "data_source": "logs_stream",
+                    "query_string": "$env $service source:coordinator (severity:warn OR severity:error OR severity:fatal OR status:warn OR status:error)"
+                  },
+                  "response_format": "event_list",
+                  "columns": [
+                    {
+                      "field": "timestamp",
+                      "width": "auto"
+                    },
+                    {
+                      "field": "status",
+                      "width": "auto"
+                    },
+                    {
+                      "field": "message",
+                      "width": "compact"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "list_stream",
+              "title": "All Recent Dev Logs",
+              "requests": [
+                {
+                  "query": {
+                    "data_source": "logs_stream",
+                    "query_string": "$env $service"
+                  },
+                  "response_format": "event_list",
+                  "columns": [
+                    {
+                      "field": "timestamp",
+                      "width": "auto"
+                    },
+                    {
+                      "field": "status",
+                      "width": "auto"
+                    },
+                    {
+                      "field": "message",
+                      "width": "compact"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "APM / Traces",
+        "layout_type": "ordered",
+        "show_title": true,
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Trace Hits by Operation",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:trace.http.request.hits{$env} by {operation_name}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Trace Latency (p50/p95/p99)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "p50",
+                      "data_source": "metrics",
+                      "query": "avg:trace.http.request.latency.50percentile{$env}"
+                    },
+                    {
+                      "name": "p95",
+                      "data_source": "metrics",
+                      "query": "avg:trace.http.request.latency.95percentile{$env}"
+                    },
+                    {
+                      "name": "p99",
+                      "data_source": "metrics",
+                      "query": "avg:trace.http.request.latency.99percentile{$env}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "p50"
+                    },
+                    {
+                      "formula": "p95"
+                    },
+                    {
+                      "formula": "p99"
+                    }
+                  ],
+                  "style": {
+                    "palette": "warm"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Trace Errors",
+              "autoscale": true,
+              "precision": 0,
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:trace.http.request.errors{$env}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "toplist",
+              "title": "Slowest Operations (p99)",
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "avg:trace.http.request.latency.99percentile{$env} by {operation_name}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "System Metrics (Host)",
+        "layout_type": "ordered",
+        "show_title": true,
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "CPU Usage",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "yaxis": {
+                "label": "%",
+                "min": "0",
+                "max": "100"
+              },
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "idle",
+                      "data_source": "metrics",
+                      "query": "avg:system.cpu.idle{host:d-inference-dev}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "100 - idle",
+                      "limit": {
+                        "count": 1,
+                        "order": "desc"
+                      }
+                    }
+                  ],
+                  "style": {
+                    "palette": "cool"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Memory Usage",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "used",
+                      "data_source": "metrics",
+                      "query": "avg:system.mem.used{host:d-inference-dev}"
+                    },
+                    {
+                      "name": "total",
+                      "data_source": "metrics",
+                      "query": "avg:system.mem.total{host:d-inference-dev}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "used"
+                    },
+                    {
+                      "formula": "total"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Disk Usage",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "yaxis": {
+                "label": "%",
+                "min": "0",
+                "max": "100"
+              },
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "avg:system.disk.in_use{host:d-inference-dev} by {device}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1 * 100"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Network I/O",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "rcvd",
+                      "data_source": "metrics",
+                      "query": "avg:system.net.bytes_rcvd{host:d-inference-dev} by {device}"
+                    },
+                    {
+                      "name": "sent",
+                      "data_source": "metrics",
+                      "query": "avg:system.net.bytes_sent{host:d-inference-dev} by {device}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "rcvd"
+                    },
+                    {
+                      "formula": "sent"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Load Average (1m)",
+              "autoscale": true,
+              "precision": 2,
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "avg:system.load.1{host:d-inference-dev}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Billing & Store",
+        "layout_type": "ordered",
+        "show_title": true,
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Reservation Amount (p50/p95/p99) [¢]",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "p50",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.billing.reserved_micro_usd.50percentile{$env,model:$model} by {model}"
+                    },
+                    {
+                      "name": "p95",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.billing.reserved_micro_usd.95percentile{$env,model:$model} by {model}"
+                    },
+                    {
+                      "name": "p99",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.billing.reserved_micro_usd.99percentile{$env,model:$model} by {model}"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "p50 / 10000" },
+                    { "formula": "p95 / 10000" },
+                    { "formula": "p99 / 10000" }
+                  ],
+                  "style": { "palette": "warm" }
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Settlement Refund Amount (p50/p95/p99) [¢]",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "p50",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.billing.settlement_refund_micro_usd.50percentile{$env,model:$model} by {model}"
+                    },
+                    {
+                      "name": "p95",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.billing.settlement_refund_micro_usd.95percentile{$env,model:$model} by {model}"
+                    },
+                    {
+                      "name": "p99",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.billing.settlement_refund_micro_usd.99percentile{$env,model:$model} by {model}"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "p50 / 10000" },
+                    { "formula": "p95 / 10000" },
+                    { "formula": "p99 / 10000" }
+                  ],
+                  "style": { "palette": "cool" }
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Provider Credits by Model & Type [¢]",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.billing.provider_credits_micro_usd{$env,model:$model} by {model,type}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "query1 / 10000" }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Platform Fees by Model [¢]",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.billing.platform_fees_micro_usd{$env,model:$model} by {model}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "query1 / 10000" }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Cost Clamped Events (settlement cost > reservation, capped to reserved)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.billing.cost_clamped{$env,model:$model}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "query1" }
+                  ],
+                  "style": { "palette": "warm" }
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Reservation Refunds",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.billing.reservation_refunds{$env,model:$model}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "query1" }
+                  ],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Store Operation Latency (p50/p95/p99)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "p50",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.debit.latency_ms.50percentile{$env} by {op}"
+                    },
+                    {
+                      "name": "p95",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.debit.latency_ms.95percentile{$env} by {op}"
+                    },
+                    {
+                      "name": "p99",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.debit.latency_ms.99percentile{$env} by {op}"
+                    },
+                    {
+                      "name": "c50",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.credit.latency_ms.50percentile{$env} by {op}"
+                    },
+                    {
+                      "name": "c95",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.credit.latency_ms.95percentile{$env} by {op}"
+                    },
+                    {
+                      "name": "c99",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.credit.latency_ms.99percentile{$env} by {op}"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "p50" },
+                    { "formula": "p95" },
+                    { "formula": "p99" },
+                    { "formula": "c50" },
+                    { "formula": "c95" },
+                    { "formula": "c99" }
+                  ],
+                  "style": { "palette": "warm" }
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_table",
+              "title": "Store Latency by Operation (p99)",
+              "has_search_bar": "auto",
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    {
+                      "name": "debit",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.debit.latency_ms.99percentile{$env} by {op}",
+                      "aggregator": "last"
+                    },
+                    {
+                      "name": "credit",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.store.credit.latency_ms.99percentile{$env} by {op}",
+                      "aggregator": "last"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "debit", "alias": "Debit p99 (ms)" },
+                    { "formula": "credit", "alias": "Credit p99 (ms)" }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Fleet Version & Binary Hash",
+        "layout_type": "ordered",
+        "show_title": true,
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Providers by Version",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.providers.per_version{$env} by {version}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Min Provider Version",
+              "autoscale": false,
+              "precision": 0,
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.coordinator.min_provider_version_set{$env} by {min_version}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Providers Below Minimum Version",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.provider_version_below_minimum{$env} by {gate,version}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "display_type": "bars",
+                  "style": {
+                    "palette": "warm"
+                  }
+                }
+              ]
+            }
+          }
+        ]
       }
     }
   ]

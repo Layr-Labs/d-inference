@@ -15,9 +15,9 @@ Coordinator (Go, Confidential VM)
     |
     |  WebSocket (outbound from provider)
     v
-Provider (Rust, hardened process)
+Provider (Swift CLI, hardened process)
     |
-    |  vllm-mlx
+    |  mlx-swift-lm
     v
 Apple Silicon GPU (Metal)
 ```
@@ -76,7 +76,10 @@ Earn by serving inference on your idle Mac.
 curl -fsSL https://api.darkbloom.dev/install.sh | bash
 ```
 
-Zero prerequisites. The installer bundles the provider binary, Python 3.12 runtime, vllm-mlx, and Secure Enclave tooling. You pick a model from the catalog, link your account, and you're serving within minutes.
+Zero prerequisites. The installer downloads a single signed bundle containing the
+provider CLI, the Secure Enclave attestation helper, and the matching MLX
+metallib. You pick a model from the catalog, link your account, and you're
+serving within minutes.
 
 ### Provider CLI
 
@@ -88,23 +91,13 @@ darkbloom status         # Hardware and connection info
 darkbloom doctor         # Diagnose issues
 darkbloom models list    # Downloaded models
 darkbloom earnings       # Earnings and usage
+darkbloom benchmark      # Local tok/s benchmark
 darkbloom update         # Check for updates
 ```
 
-### macOS Menu Bar App
-
-A native SwiftUI app is also available:
-
-- One-click start/stop
-- Real-time throughput display
-- Idle detection (pauses when you're using your Mac)
-- Provider scheduling (set hours your Mac serves, GPU memory freed between windows)
-- Earnings dashboard
-- Auto-start at login
-
 ### Scheduling
 
-Providers can configure time-based availability windows. Outside scheduled hours, the provider disconnects and shuts down the backend to free GPU memory. Configured in the app's Settings or directly in `~/.config/eigeninference/provider.toml`:
+Providers can configure time-based availability windows. Outside scheduled hours, the provider disconnects and shuts down the backend to free GPU memory. Configure them in `~/.config/eigeninference/provider.toml`:
 
 ```toml
 [schedule]
@@ -156,10 +149,9 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 | Component | Language | Role |
 |-----------|----------|------|
 | Coordinator (`coordinator/`) | Go | Control plane: routing, attestation, billing, API |
-| Provider (`provider/`) | Rust | Inference agent: security, attestation, WebSocket client |
+| Provider, legacy (`provider/`) | Rust | Inference agent in production today; retired at the Swift cutover |
+| Provider, Swift (`provider-swift/`) | Swift | CLI-only Swift port; replaces `provider/` after cutover |
 | Console (`console-ui/`) | Next.js 16 | Web dashboard: chat, billing, provider verification |
-| macOS App (`app/EigenInference/`) | Swift | Menu bar app: status, scheduling, earnings |
-| Secure Enclave (`enclave/`) | Swift | Hardware-bound P-256 identity |
 | Landing (`landing/`) | HTML | Static landing page |
 
 ## Development
@@ -168,11 +160,12 @@ Attestation data is publicly verifiable at `GET /v1/providers/attestation`.
 # Coordinator
 cd coordinator && go test ./...
 
-# Provider (set PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 on Python 3.14+)
+# Legacy Rust provider (set PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 on Python 3.14+)
 cd provider && cargo test
 
-# macOS App
-cd app/EigenInference && swift build -c release
+# Swift provider (CLI)
+cd provider-swift && swift test
+cd provider-swift && swift build -c release
 
 # Console UI
 cd console-ui && npm install && npm run dev

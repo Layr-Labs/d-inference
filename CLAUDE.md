@@ -24,7 +24,7 @@ provider/             Rust — runs on Apple Silicon Macs
 ├── src/
 │   ├── main.rs       CLI entry (serve, start, stop, models, benchmark, status, doctor, login, etc.)
 │   ├── coordinator.rs WebSocket client with auto-reconnect
-│   ├── proxy.rs      Forwards text/transcription/image requests to local backends
+│   ├── proxy.rs      Forwards text requests to local backends
 │   ├── hardware.rs   Apple Silicon detection, system metrics (memory/CPU/thermal)
 │   ├── protocol.rs   Message types (mirrors coordinator/internal/protocol)
 │   ├── backend/      Backend process management (vllm_mlx.rs, health checks)
@@ -40,67 +40,33 @@ provider/             Rust — runs on Apple Silicon Macs
 │   └── wallet.rs     Legacy provider wallet (secp256k1)
 ├── stt_server.py     Local speech-to-text server script
 
-image-bridge/         Python FastAPI image generation bridge
-├── eigeninference_image_bridge/
-│   ├── server.py     OpenAI-compatible /v1/images/generations
-│   └── drawthings_backend.py  Draw Things gRPC backend adapter
-├── requirements.txt
-└── tests/
-
-app/EigenInference/   Swift — macOS menu bar app (SwiftUI)
-├── Sources/EigenInference/
-│   ├── EigenInferenceApp.swift    App entry, menu bar setup
-│   ├── StatusViewModel.swift      Core state management
-│   ├── ProviderManager.swift      Provider subprocess lifecycle
-│   ├── CLIRunner.swift            Launches eigeninference-provider
-│   ├── ConfigManager.swift        TOML config read/write
-│   ├── SecurityManager.swift      Trust level checks (SIP, SE, MDM, Secure Boot)
-│   ├── ModelManager.swift         HuggingFace model scanning
-│   ├── ModelCatalog.swift         Static model catalog
-│   ├── LaunchAgentManager.swift   macOS launch agent
-│   ├── NotificationManager.swift  System notifications
-│   ├── UpdateManager.swift        Version checking
-│   ├── IdleDetector.swift         User idle detection
-│   ├── DesignSystem.swift         Colors, typography, UI primitives
-│   ├── DashboardView.swift        Main dashboard
-│   ├── SettingsView.swift         Preferences (General, Availability, Model, Security tabs)
-│   ├── MenuBarView.swift          Menu bar dropdown
-│   ├── SetupWizardView.swift      6-step onboarding wizard
-│   ├── DoctorView.swift           Diagnostics display
-│   ├── LogViewerView.swift        Log viewer with live streaming
-│   ├── ModelCatalogView.swift     Model browser with RAM fit indicators
-│   ├── GuideAvatar.swift          Animated mascot (mood-based PNGs)
-│   └── Illustrations.swift        Procedural Mac illustration
-├── Tests/EigenInferenceTests/
-
-enclave/              Swift — Secure Enclave attestation CLI helper
+provider-swift/       Swift — CLI replacement for the Rust provider (in progress)
+├── Package.swift     SwiftPM manifest, depends on libs/mlx-swift{,-lm}
 ├── Sources/
-│   ├── EigenInferenceEnclave/     Library (P-256 key gen, attestation blob, FFI bridge for Rust)
-│   └── EigenInferenceEnclaveCLI/  CLI tool (attest, sign, info, wallet-address)
-├── Tests/EigenInferenceEnclaveTests/
-└── include/eigeninference_enclave.h
+│   ├── ProviderCore/                  shared library (protocol, hardware, crypto, security, inference, coordinator client, scheduling, server, telemetry, models, attestation)
+│   ├── darkbloom/                     CLI executable (serve, start, stop, status, doctor, models, login, logout, benchmark, update, verify)
+│   └── darkbloom-enclave-cli/    Secure Enclave attestation/sign helper (replaces the legacy enclave/ FFI bridge)
+└── Tests/ProviderCoreTests/
 
 console-ui/           Next.js 16 / React 19 frontend (chat, billing, models, images)
 ├── src/app/          Pages: chat (/), billing, images, models, stats, providers, settings, link, api-console, earn
-├── src/app/api/      Proxy routes: chat, models, images, transcribe, auth/keys, payments/*, invite, health, pricing
+├── src/app/api/      Proxy routes: chat, models, auth/keys, payments/*, invite, health, pricing
 ├── src/components/   Chat UI, sidebar, top bar, trust badges, invite banner, verification panel
 ├── src/lib/          API client (api.ts), Zustand store (store.ts)
 ├── src/hooks/        Auth (useAuth.ts), toast notifications (useToast.ts)
 └── proxy.ts          Next.js 16 proxy (replaces middleware.ts)
 
 scripts/
-├── build-bundle.sh   Provider/enclave/python/ffmpeg bundle builder (+ optional upload)
-├── bundle-app.sh     macOS .app bundle + DMG
 ├── install.sh        curl one-liner installer (fetches release, verifies SHA-256 + code signature)
-├── sign-hardened.sh  Hardened runtime signing helper
 ├── admin.sh          Admin CLI (Privy auth, release mgmt, API calls)
 ├── deploy-acme.sh    nginx/step-ca helper
-├── test-stt-e2e.sh   Speech-to-text smoke test
+├── smoke-dev.sh      Dev-coordinator smoke test
+├── benchmark-*.py    Benchmark utilities
 └── entitlements.plist Hardened Runtime entitlements (hypervisor, network)
 
 docs/                 Architecture docs, deploy runbook, MDM/ACME notes
 landing/              Static landing page (index.html)
-.github/workflows/    CI (ci.yml) and release automation (release.yml)
+.github/workflows/    CI (ci.yml) and Swift release automation (release-swift.yml)
 
 .external/            Git-ignored; holds external forks used by the project (NOT part of this repo)
 └── vllm-mlx/         Our fork of vllm-mlx (github.com/Gajesh2007/vllm-mlx)
@@ -120,7 +86,7 @@ go test ./...
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o eigeninference-coordinator-linux ./cmd/coordinator
 ```
 
-### Provider (Rust)
+### Provider, Rust (legacy, in production)
 ```bash
 cd provider
 PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo test
@@ -133,19 +99,16 @@ To build without the Python in-process inference feature (needed for the distrib
 cargo build --release --no-default-features
 ```
 
-### macOS App (Swift)
+### Provider, Swift (new CLI, replacing Rust at cutover)
 ```bash
-cd app/EigenInference
-swift build -c release
+cd provider-swift
 swift test
+swift build -c release
+# Outputs: .build/release/darkbloom and .build/release/darkbloom-enclave
 ```
 
-### Enclave Helper (Swift)
-```bash
-cd enclave
-swift build -c release
-swift test
-```
+The Swift package depends on `../libs/mlx-swift` and `../libs/mlx-swift-lm`
+(both submodules).
 
 ### Console UI (Next.js 16)
 ```bash
@@ -154,14 +117,6 @@ npm install
 npm run build
 npx eslint src/       # lint check
 npm test              # vitest
-```
-
-### Image Bridge (Python)
-```bash
-cd image-bridge
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt pytest httpx
-PYTHONPATH=. pytest
 ```
 
 ## Releases
@@ -179,13 +134,13 @@ PYTHONPATH=. pytest
    - ..."
    ```
 4. **Push** the commit and tag: `git push origin master --tags`
-5. The CI release workflow (`.github/workflows/release.yml`) is triggered by the tag push.
+5. The Swift release workflow (`.github/workflows/release-swift.yml`) is triggered by tags shaped `vX.Y.Z-swift[.N]`. While the Rust provider is still in production, ship Rust releases via a separate workflow re-introduced from git history.
 
 ## Deploying
 
 Full deploy runbook: **[docs/coordinator-deploy-runbook.md](docs/coordinator-deploy-runbook.md)**
 
-Covers coordinator deploy, provider CLI bundling, macOS app distribution, and install.sh updates.
+Covers coordinator deploy, provider CLI bundling, and install.sh updates.
 
 ### Coordinator (prod, EigenCloud)
 
@@ -217,7 +172,7 @@ Shape: GCE Ubuntu VM + Docker + systemd (coordinator + step-ca + MicroMDM need p
 
 ### Provider bundle
 
-CI (`.github/workflows/release.yml`) builds, signs, notarizes, and uploads bundles to Cloudflare R2 (`s3://d-inf-app/releases/v{VERSION}/`), then registers the release with the coordinator via `POST /v1/releases`. Providers fetch via `install.sh` served by the coordinator. There is no SSH-to-a-VM step.
+CI (`.github/workflows/release-swift.yml`) builds, signs, notarizes, and uploads the Swift CLI bundle to Cloudflare R2 (`s3://d-inf-app/releases/v{VERSION}/eigeninference-bundle-macos-arm64.tar.gz`), then registers the release with the coordinator via `POST /v1/releases`. Providers fetch via `install.sh` served by the coordinator. There is no SSH-to-a-VM step.
 
 ## Infrastructure
 
@@ -277,8 +232,8 @@ Always think from first principles. When fixing a bug or designing a feature:
 - The coordinator uses in-memory store by default. Provider state is lost on restart. Postgres store exists but is not used in production yet.
 - Binary files like `coordinator/eigeninference-coordinator` and `coordinator/eigeninference-coordinator-linux` should NOT be committed to git (15MB+ each).
 - CI release workflow must compute binary SHA-256 hashes AFTER code signing, not before. Providers verify hashes of the signed binary.
-- Provider bundle semantics span multiple files: `scripts/build-bundle.sh`, `scripts/install.sh`, the Swift app launcher, and `LatestProviderVersion` in `coordinator/internal/api/server.go`. Keep them in sync.
-- Image generation changes span three places: coordinator consumer/provider handlers, provider proxying, and `image-bridge/`.
+- Provider bundle semantics span multiple files: `.github/workflows/release-swift.yml`, `scripts/install.sh` (and the embedded copy at `coordinator/internal/api/install.sh`), and `LatestProviderVersion` in `coordinator/internal/api/server.go`. Keep them in sync.
+- Image generation and audio transcription are not supported. The platform serves only text inference; the model catalog filter (`coordinator/internal/api/model_catalog_filter.go`) rejects any `ModelType` other than `text`.
 - Device linking changes span coordinator device auth endpoints and provider `login`/`logout` commands.
 - The repo contains mixed payment language: current code implements Privy + Solana + Stripe, but some provider comments still reference Tempo/pathUSD.
 
@@ -324,7 +279,7 @@ Hooks live in `.githooks/` and are enabled via `git config core.hooksPath .githo
 | Go (coordinator/) | `gofmt -l` | `gofmt -w <file>` |
 | Rust (provider/) | `cargo fmt --check` | `cd provider && cargo fmt` |
 | TypeScript (console-ui/) | `npx eslint src/` | `cd console-ui && npx eslint src/ --fix` |
-| Swift (app/, enclave/) | skipped | no enforced formatter |
+| Swift (provider-swift/) | skipped | no enforced formatter |
 
 If you clone fresh, activate the hook with:
 ```bash

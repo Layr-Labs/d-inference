@@ -5,31 +5,45 @@ EigenInference is a decentralized/private inference stack for Apple Silicon Macs
 ## Project Structure
 
 ```text
-coordinator/          Go control plane
+coordinator/          Go control plane (packages live at top level, not internal/)
 ├── cmd/coordinator/  main service entrypoint
 ├── cmd/verify-attestation/
 │   └── main.go       verifies attestation blobs from /tmp/eigeninference_attestation.json
-└── internal/
-    ├── api/          HTTP + WebSocket handlers
-    │   ├── consumer.go         OpenAI-compatible chat/completions/messages/transcriptions/images
-    │   ├── provider.go         provider registration, heartbeats, attestation, relay
-    │   ├── billing_handlers.go Stripe/Solana/referral/pricing endpoints
-    │   ├── device_auth.go      device code flow for linking providers to user accounts
-    │   ├── enroll.go           MDM + ACME enrollment profile generation
-    │   ├── invite_handlers.go  invite code admin/user flows
-    │   ├── release_handlers.go binary release registration (GitHub Actions integration)
-    │   ├── acme_verify.go      ACME device-attest-01 client cert verification
-    │   ├── stats.go            public network stats
-    │   └── server.go           route wiring, auth middleware, version gate
-    ├── attestation/  Secure Enclave + MDA verification
-    ├── auth/         Privy JWT integration
-    ├── billing/      Stripe, Solana USDC deposits, referrals
-    ├── e2e/          X25519 request-encryption helpers
-    ├── mdm/          MicroMDM client + webhook handling
-    ├── payments/     internal ledger + pricing
-    ├── protocol/     WebSocket message types shared with provider
-    ├── registry/     provider registry, queueing, routing, reputation
-    └── store/        in-memory or Postgres persistence
+├── api/              HTTP + WebSocket handlers
+│   ├── consumer.go         OpenAI-compatible chat/completions/messages/transcriptions/images
+│   ├── provider.go         provider registration, heartbeats, attestation, relay
+│   ├── billing_handlers.go Stripe/Solana/referral/pricing endpoints
+│   ├── device_auth.go      device code flow for linking providers to user accounts
+│   ├── enroll.go           MDM + ACME enrollment profile generation
+│   ├── invite_handlers.go  invite code admin/user flows
+│   ├── release_handlers.go binary release registration (GitHub Actions integration)
+│   ├── acme_verify.go      ACME device-attest-01 client cert verification
+│   ├── stats.go            public network stats
+│   └── server.go           route wiring, auth middleware, version gate
+├── attestation/      Secure Enclave + MDA verification
+├── auth/             Privy JWT integration
+├── billing/          Stripe, Solana USDC deposits, referrals
+├── e2e/              X25519 request-encryption helpers
+├── mdm/              MicroMDM client + webhook handling
+├── payments/         ledger + pricing
+├── protocol/         WebSocket message types shared with provider
+├── registry/         provider registry, queueing, routing, reputation
+└── store/            in-memory or Postgres persistence
+
+testbed/              System-level testing framework (shared Go module with coordinator)
+├── coordinator.go    Coordinator lifecycle (start/stop, Postgres helpers)
+├── provider.go       Provider lifecycle (binary discovery, start/stop)
+├── config.go         Test configuration (model, provider, request settings)
+├── events.go         Event system (segments, buffers, fan-out)
+├── instrument.go     Request-level instrumentation
+├── assert/           Assertion framework
+│   ├── assert.go           Latency threshold assertions
+│   └── accounting.go       Postgres-backed accounting integrity checks
+├── deps/             External dependency lifecycle
+│   └── postgres.go         Ephemeral Docker Postgres
+├── profile/          Profiling and regression detection
+│   └── profile.go          Segment stats aggregation, diffing, JSON export
+└── integration/      Integration test suite (Docker Postgres + real coordinator)
 
 provider/             Rust provider agent for Apple Silicon Macs
 ├── src/
@@ -47,7 +61,7 @@ provider/             Rust provider agent for Apple Silicon Macs
 │   ├── crypto.rs     X25519 keypair management
 │   ├── models.rs     local text/image model discovery (fast scan, on-demand hashing)
 │   ├── inference.rs  in-process MLX inference (behind "python" feature flag)
-│   ├── protocol.rs   message types mirrored from coordinator/internal/protocol
+│   ├── protocol.rs   message types mirrored from coordinator/protocol
 │   └── wallet.rs     legacy provider wallet (secp256k1)
 ├── stt_server.py     local speech-to-text server script used by bundles
 └── Cargo.toml        default `python` feature enables in-process PyO3 inference
@@ -116,7 +130,7 @@ docs/                 architecture, deploy runbooks, MDM/ACME notes, image/video
 
 - Coordinator HTTP routes include `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/messages`, `POST /v1/audio/transcriptions`, `POST /v1/images/generations`, `GET /v1/models`, billing/pricing endpoints, invite flows, stats, enrollment, device authorization, and release registration endpoints.
 - Coordinator auth is split between Privy JWTs, API keys, and device-code login (RFC 8628) for provider machines.
-- Billing logic is split between `coordinator/internal/payments` (ledger + pricing) and `coordinator/internal/billing` (Stripe, Solana USDC, referrals). Coordinator wallet derived from BIP39 mnemonic via SLIP-0010.
+- Billing logic is split between `coordinator/payments` (ledger + pricing) and `coordinator/billing` (Stripe, Solana USDC, referrals). Coordinator wallet derived from BIP39 mnemonic via SLIP-0010.
 - Providers can serve text models, transcription, and optional image models. Image generation goes through the separate `image-bridge/` process and uploads PNGs back to the coordinator over HTTP.
 - The macOS app is a real operational client, not just a wrapper. It manages installation, onboarding, launchd integration, diagnostics, and subprocess supervision for `darkbloom`.
 
@@ -192,7 +206,7 @@ Current release-sensitive pieces:
 - Provider bundle creation lives in `scripts/build-bundle.sh`.
 - App bundle + DMG creation lives in `scripts/bundle-app.sh`.
 - Installer flow lives in `scripts/install.sh`.
-- Provider update checks use `LatestProviderVersion` in `coordinator/internal/api/server.go`, so bundle uploads and version bumps need to stay coordinated.
+- Provider update checks use `LatestProviderVersion` in `coordinator/api/server.go`, so bundle uploads and version bumps need to stay coordinated.
 - CI release workflow (`release.yml`) signs binaries with Developer ID Application cert, notarizes with Apple, computes SHA-256 hashes after signing.
 
 Quick coordinator deploy (prod, EigenCloud):
@@ -209,14 +223,14 @@ Dev coordinator deploy (Google Cloud): see `docs/dev-environment.md`.
 
 ## Important Sync Points
 
-- Protocol changes must be mirrored in both `provider/src/protocol.rs` and `coordinator/internal/protocol/messages.go`.
+- Protocol changes must be mirrored in both `provider/src/protocol.rs` and `coordinator/protocol/messages.go`.
 - Telemetry wire types live in three places and MUST stay aligned:
-  - `coordinator/internal/protocol/telemetry.go` (canonical),
+  - `coordinator/protocol/telemetry.go` (canonical),
   - `provider/src/telemetry/event.rs` (Rust mirror),
   - `console-ui/src/lib/telemetry-types.ts` (TS mirror).
   Symmetry tests in each language pin enum casing and optional-field omission.
   Field allowlist additions need parallel updates in
-  `coordinator/internal/api/telemetry_handlers.go`,
+  `coordinator/api/telemetry_handlers.go`,
   `provider/src/telemetry/layer.rs`, and the TS set above.
 - If you change provider bundle semantics, keep `scripts/build-bundle.sh`, `scripts/install.sh`, the app launcher code, and `LatestProviderVersion` in sync.
 - If you change install paths or process invocation, update both the CLI/install flow and the Swift app's `CLIRunner` / `ProviderManager`.

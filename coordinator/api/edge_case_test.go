@@ -1,0 +1,1431 @@
+package api
+
+// Edge case tests for the coordinator API.
+//
+// These tests verify that the coordinator handles malformed, missing, and
+// boundary-condition inputs gracefully. All tests use mock providers
+// (no real backends needed) and run in CI.
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"nhooyr.io/websocket"
+)
+
+// ---------------------------------------------------------------------------
+// Request validation edge cases
+// ---------------------------------------------------------------------------
+
+func TestEdge_EmptyBody(t *testing.T) {
+	srv, _ := testServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(""))
+	req.Header.Set("Authorization", "Bearer test-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("empty body: status = %d, want 400", w.Code)
+	}
+}
+
+func TestEdge_InvalidJSON(t *testing.T) {
+	srv, _ := testServer(t)
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"truncated", `{"model": "test"`},
+		{"bare_string", `"just a string"`},
+		{"bare_number", `42`},
+		{"bare_null", `null`},
+		{"bare_array", `[1,2,3]`},
+		{"trailing_comma", `{"model": "test",}`},
+		{"single_quote", `{'model': 'test'}`},
+		{"binary_garbage", "\x00\x01\x02\x03"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer test-key")
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("%s: status = %d, want 400, body = %s", tc.name, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestEdge_MissingModel(t *testing.T) {
+	srv, _ := testServer(t)
+
+	body := `{"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("missing model: status = %d, want 400", w.Code)
+	}
+}
+
+func TestEdge_EmptyModel(t *testing.T) {
+	srv, _ := testServer(t)
+
+	body := `{"model":"","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("empty model: status = %d, want 400", w.Code)
+	}
+}
+
+func TestEdge_EmptyMessages(t *testing.T) {
+	srv, _ := testServer(t)
+
+	body := `{"model":"test-model","messages":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("empty messages: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_MissingMessages(t *testing.T) {
+	srv, _ := testServer(t)
+
+	body := `{"model":"test-model"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("missing messages: status = %d, want 400", w.Code)
+	}
+}
+
+func TestEdge_NonCatalogModel(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{
+		{ID: "allowed-model"},
+	})
+
+	body := `{"model":"forbidden-model","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("non-catalog model: status = %d, want 404, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_UnicodeInModelName(t *testing.T) {
+	srv, _ := testServerFastQueue(t)
+
+	body := `{"model":"模型/test-中文","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	// Should fail with not found (not in catalog or no provider)
+	if w.Code != http.StatusNotFound && w.Code != http.StatusServiceUnavailable {
+		t.Errorf("unicode model: status = %d, want 404 or 503", w.Code)
+	}
+}
+
+func TestEdge_VeryLongModelName(t *testing.T) {
+	srv, _ := testServerFastQueue(t)
+
+	longModel := strings.Repeat("a", 10000)
+	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]}`, longModel)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	// Should fail gracefully (not crash). 503 (queue timeout) and 404 (not in catalog) are valid.
+	if w.Code == 0 {
+		t.Error("very long model name: got status 0")
+	}
+	// Ensure it doesn't panic or return 500 Internal Server Error
+	if w.Code == http.StatusInternalServerError {
+		t.Errorf("very long model name: got 500 Internal Server Error: %s", w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Message content edge cases
+// ---------------------------------------------------------------------------
+
+func TestEdge_UnicodeMessages(t *testing.T) {
+	ts, cleanup, providerDone := setupE2ETest(t, "unicode-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
+			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"你好世界 🌍"},"finish_reason":"stop"}]}`+"\n\n")
+		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 3})
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	body := `{"model":"unicode-model","messages":[{"role":"user","content":"你好 🌍 emoji test 🎉"}],"stream":true}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unicode messages: status = %d, want 200, body = %s", resp.StatusCode, respBody)
+	}
+
+	<-providerDone
+}
+
+func TestEdge_HTMLInjectionInMessages(t *testing.T) {
+	ts, cleanup, providerDone := setupE2ETest(t, "html-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
+			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"safe response"},"finish_reason":"stop"}]}`+"\n\n")
+		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 2})
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	body := `{"model":"html-model","messages":[{"role":"user","content":"<script>alert('xss')</script><img src=x onerror=alert(1)>"}],"stream":true}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("html injection: status = %d, want 200", resp.StatusCode)
+	}
+
+	<-providerDone
+}
+
+// ---------------------------------------------------------------------------
+// Authentication edge cases
+// ---------------------------------------------------------------------------
+
+func TestEdge_AuthEmptyBearer(t *testing.T) {
+	srv, _ := testServer(t)
+
+	body := `{"model":"test","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer ")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("empty bearer: status = %d, want 401", w.Code)
+	}
+}
+
+func TestEdge_AuthMalformedHeader(t *testing.T) {
+	srv, _ := testServer(t)
+
+	cases := []struct {
+		name   string
+		header string
+	}{
+		{"no_bearer_prefix", "test-key"},
+		{"basic_auth", "Basic dGVzdDp0ZXN0"},
+		{"double_bearer", "Bearer Bearer test-key"},
+		{"just_bearer", "Bearer"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"model":"test","messages":[{"role":"user","content":"hi"}]}`
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			req.Header.Set("Authorization", tc.header)
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req)
+
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("%s: status = %d, want 401", tc.name, w.Code)
+			}
+		})
+	}
+}
+
+func TestEdge_WrongHTTPMethod(t *testing.T) {
+	srv, _ := testServer(t)
+
+	methods := []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch}
+	for _, method := range methods {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/v1/chat/completions", nil)
+			req.Header.Set("Authorization", "Bearer test-key")
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req)
+
+			if w.Code != http.StatusMethodNotAllowed {
+				t.Errorf("%s: status = %d, want 405", method, w.Code)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Provider registration edge cases
+// ---------------------------------------------------------------------------
+
+func TestEdge_ProviderEmptyModels(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Register a provider with no models
+	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{}, testPublicKeyB64())
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Provider should register but not be findable for any model
+	time.Sleep(200 * time.Millisecond)
+	if p := reg.FindProvider("any-model"); p != nil {
+		t.Error("provider with no models should not be findable")
+	}
+}
+
+func TestEdge_ProviderDuplicateModels(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Register with duplicate model entries
+	models := []protocol.ModelInfo{
+		{ID: "dupe-model", ModelType: "chat", Quantization: "4bit"},
+		{ID: "dupe-model", ModelType: "chat", Quantization: "4bit"},
+		{ID: "dupe-model", ModelType: "chat", Quantization: "8bit"},
+	}
+	conn := connectProvider(t, ctx, ts.URL, models, testPublicKeyB64())
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	time.Sleep(200 * time.Millisecond)
+	// Should register successfully without panicking
+	if reg.ProviderCount() != 1 {
+		t.Errorf("expected 1 provider, got %d", reg.ProviderCount())
+	}
+}
+
+func TestEdge_ProviderVeryLargeRegistration(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Register with many models
+	var models []protocol.ModelInfo
+	for i := range 100 {
+		models = append(models, protocol.ModelInfo{
+			ID:           fmt.Sprintf("model-%d", i),
+			ModelType:    "chat",
+			Quantization: "4bit",
+		})
+	}
+	conn := connectProvider(t, ctx, ts.URL, models, testPublicKeyB64())
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	time.Sleep(200 * time.Millisecond)
+	if reg.ProviderCount() != 1 {
+		t.Errorf("expected 1 provider, got %d", reg.ProviderCount())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Trust level and catalog filtering
+// ---------------------------------------------------------------------------
+
+func TestEdge_CatalogChangeDuringActiveProvider(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	srv.challengeInterval = 100 * time.Millisecond
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	model := "dynamic-model"
+	pubKey := testPublicKeyB64()
+	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
+
+	// No catalog set — model should be allowed
+	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Handle the first challenge
+	go handleProviderMessages(ctx, t, conn, func(msgType string, data []byte) []byte {
+		if msgType == protocol.TypeAttestationChallenge {
+			return makeValidChallengeResponse(data, pubKey)
+		}
+		return nil
+	})
+
+	time.Sleep(300 * time.Millisecond)
+
+	for _, id := range reg.ProviderIDs() {
+		reg.SetTrustLevel(id, registry.TrustHardware)
+	}
+
+	// Model should be findable (no catalog = allow all)
+	if p := reg.FindProvider(model); p == nil {
+		t.Fatal("provider should be findable with no catalog")
+	}
+
+	// Now set a catalog that excludes this model
+	reg.SetModelCatalog([]registry.CatalogEntry{
+		{ID: "other-model"},
+	})
+
+	// Model should now be rejected by catalog check
+	if reg.IsModelInCatalog(model) {
+		t.Error("model should not be in catalog after change")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Provider error handling edge cases
+// ---------------------------------------------------------------------------
+
+func TestEdge_ProviderSendsEmptyChunks(t *testing.T) {
+	ts, cleanup, providerDone := setupE2ETest(t, "empty-chunk-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
+		// Send chunks with empty content
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
+			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`+"\n\n")
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
+			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":""},"finish_reason":null}]}`+"\n\n")
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
+			`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"actual content"},"finish_reason":"stop"}]}`+"\n\n")
+		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 1})
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	body := `{"model":"empty-chunk-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// Read all SSE data — should not crash
+	io.ReadAll(resp.Body)
+	<-providerDone
+}
+
+func TestEdge_ProviderSendsVeryLargeChunk(t *testing.T) {
+	// Simulate a provider sending a very large content chunk (100KB).
+	largeContent := strings.Repeat("x", 100*1024)
+
+	ts, cleanup, providerDone := setupE2ETest(t, "large-chunk-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
+			fmt.Sprintf(`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":%q},"finish_reason":"stop"}]}`, largeContent)+"\n\n")
+		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 25000})
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	body := `{"model":"large-chunk-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if len(respBody) < 100*1024 {
+		t.Errorf("expected large response, got %d bytes", len(respBody))
+	}
+
+	<-providerDone
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent consumer requests
+// ---------------------------------------------------------------------------
+
+func TestEdge_ConcurrentRequestsSameProvider(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+	srv.challengeInterval = 500 * time.Millisecond
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	model := "concurrent-model"
+	pubKey := testPublicKeyB64()
+	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
+
+	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	for _, id := range reg.ProviderIDs() {
+		reg.SetTrustLevel(id, registry.TrustHardware)
+		reg.RecordChallengeSuccess(id)
+	}
+
+	// Provider serves requests in a loop
+	served := make(chan int, 1)
+	go func() {
+		count := runProviderLoop(ctx, t, conn, pubKey, "concurrent-response")
+		served <- count
+	}()
+
+	// Fire 5 concurrent requests
+	const numRequests = 5
+	var wg sync.WaitGroup
+	results := make([]int, numRequests)
+
+	for i := range numRequests {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"req %d"}],"stream":true}`, model, idx)
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer test-key")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				results[idx] = 0
+				return
+			}
+			io.ReadAll(resp.Body)
+			resp.Body.Close()
+			results[idx] = resp.StatusCode
+		}(i)
+	}
+
+	wg.Wait()
+
+	// At least one request should succeed (provider handles one at a time,
+	// others may queue and succeed or time out)
+	successCount := 0
+	for _, code := range results {
+		if code == 200 {
+			successCount++
+		}
+	}
+	if successCount == 0 {
+		t.Errorf("no concurrent requests succeeded, results: %v", results)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Models listing edge cases
+// ---------------------------------------------------------------------------
+
+func TestEdge_ModelsEndpointNoProviders(t *testing.T) {
+	srv, st := testServer(t)
+
+	// Add models to the catalog store
+	st.SetSupportedModel(&store.SupportedModel{
+		ID: "model-a", DisplayName: "Model A", ModelType: "text", Active: true,
+	})
+
+	// Sync catalog to registry
+	srv.SyncModelCatalog()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer test-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("models endpoint: status = %d, want 200", w.Code)
+	}
+
+	var resp struct {
+		Data []any `json:"data"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	// With no providers connected, the models list will be empty
+	// (models endpoint shows available models from live providers)
+	// This verifies the endpoint doesn't crash with no providers
+}
+
+func TestEdge_ModelCatalogHidesRetiredProviderModels(t *testing.T) {
+	srv, st := testServer(t)
+
+	models := []store.SupportedModel{
+		{
+			ID:          "black-forest-labs/FLUX.1-schnell",
+			S3Name:      "flux-4b",
+			DisplayName: "Flux 4B",
+			ModelType:   "image",
+			Active:      true,
+		},
+		{
+			ID:          "cohere/command-audio-stt",
+			S3Name:      "cohere-stt",
+			DisplayName: "Cohere STT",
+			ModelType:   "transcription",
+			Active:      true,
+		},
+		{
+			ID:          "qwen3.5-27b-claude-opus-8bit",
+			S3Name:      "qwen35-27b-claude-opus-8bit",
+			DisplayName: "Qwen3.5 27B Claude Opus",
+			ModelType:   "text",
+			Active:      true,
+		},
+	}
+	for _, model := range models {
+		if err := st.SetSupportedModel(&model); err != nil {
+			t.Fatalf("SetSupportedModel(%q): %v", model.ID, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models/catalog", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("models catalog: status = %d, want 200", w.Code)
+	}
+
+	var resp struct {
+		Models []store.SupportedModel `json:"models"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Models) != 1 {
+		t.Fatalf("models len = %d, want 1: %#v", len(resp.Models), resp.Models)
+	}
+	if resp.Models[0].ID != "qwen3.5-27b-claude-opus-8bit" {
+		t.Fatalf("model = %q, want qwen text model", resp.Models[0].ID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Release API edge cases
+// ---------------------------------------------------------------------------
+
+func TestEdge_ReleaseLatestNoReleases(t *testing.T) {
+	srv, _ := testServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/releases/latest?platform=macos-arm64", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("latest with no releases: status = %d, want 404", w.Code)
+	}
+}
+
+func TestEdge_ReleaseRegisterNoAuth(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("secret-release-key")
+
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":"http://example.com/bundle.tar.gz"}`,
+		strings.Repeat("a", 64), strings.Repeat("b", 64))
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("release register without auth: status = %d, want 401", w.Code)
+	}
+}
+
+func TestEdge_ReleaseRegisterWrongKey(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("correct-key")
+
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":"http://example.com/bundle.tar.gz"}`,
+		strings.Repeat("a", 64), strings.Repeat("b", 64))
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer wrong-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("release register wrong key: status = %d, want 401", w.Code)
+	}
+}
+
+func TestEdge_ReleaseRegisterMissingFields(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing_version", fmt.Sprintf(`{"platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":"http://example.com/b.tar.gz"}`, strings.Repeat("a", 64), strings.Repeat("b", 64))},
+		// platform defaults to "macos-arm64" when omitted, so omit a truly required field instead
+		{"empty_version", fmt.Sprintf(`{"version":"","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":"http://example.com/b.tar.gz"}`, strings.Repeat("a", 64), strings.Repeat("b", 64))},
+		{"missing_hash", `{"version":"1.0.0","platform":"macos-arm64","url":"http://example.com/b.tar.gz"}`},
+		{"missing_url", fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q}`, strings.Repeat("a", 64), strings.Repeat("b", 64))},
+		{"invalid_hash", `{"version":"1.0.0","platform":"macos-arm64","binary_hash":"abc","bundle_hash":"def","url":"http://example.com/b.tar.gz"}`},
+		{"missing_swift_metallib", fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","backend":"mlx-swift","binary_hash":%q,"bundle_hash":%q,"url":"http://example.com/b.tar.gz"}`, strings.Repeat("a", 64), strings.Repeat("b", 64))},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer release-key")
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("%s: status = %d, want 400, body = %s", tc.name, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestEdge_ReleaseRegisterAndRetrieve(t *testing.T) {
+	srv, st := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	bundle, binaryHash, bundleHash := buildReleaseBundleForTest(t, []byte("provider-binary"))
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(bundle)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL + "/")
+
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","backend":"mlx-swift","binary_hash":%q,"bundle_hash":%q,"metallib_hash":%q,"url":%q,"changelog":"First release"}`, binaryHash, bundleHash, strings.Repeat("c", 64), cdn.URL+"/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz")
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK && w.Code != http.StatusCreated {
+		t.Fatalf("register release: status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	// Retrieve latest
+	req = httptest.NewRequest(http.MethodGet, "/v1/releases/latest?platform=macos-arm64", nil)
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("get latest: status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var latest map[string]any
+	json.Unmarshal(w.Body.Bytes(), &latest)
+	if latest["version"] != "1.0.0" {
+		t.Errorf("latest version = %v, want 1.0.0", latest["version"])
+	}
+
+	// Verify binary hashes were synced
+	releases := st.ListReleases()
+	if len(releases) == 0 {
+		t.Error("expected at least one release in store")
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsInvalidHashMetadata(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	body := `{"version":"1.0.0","platform":"macos-arm64","binary_hash":"abc123","bundle_hash":"def456","url":"http://example.com/bundle.tar.gz"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with invalid hashes: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsStoreOnlyFields(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	binaryHash := strings.Repeat("a", 64)
+	bundleHash := strings.Repeat("b", 64)
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":"https://r2.example.com/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz","active":true,"created_at":"2099-01-01T00:00:00Z"}`, binaryHash, bundleHash)
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with store-only fields: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsOffOriginURLWhenR2Configured(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+	srv.SetR2CDNURL("https://r2.example.com")
+
+	binaryHash := strings.Repeat("a", 64)
+	bundleHash := strings.Repeat("b", 64)
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":"https://evil.example.com/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz"}`, binaryHash, bundleHash)
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with off-origin URL: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsHTTPArtifactOrigin(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+	srv.SetR2CDNURL("http://r2.example.com")
+
+	binaryHash := strings.Repeat("a", 64)
+	bundleHash := strings.Repeat("b", 64)
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":"http://r2.example.com/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz"}`, binaryHash, bundleHash)
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with http artifact origin: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsCredentialedArtifactURL(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+	srv.SetR2CDNURL("https://r2.example.com")
+
+	binaryHash := strings.Repeat("a", 64)
+	bundleHash := strings.Repeat("b", 64)
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":"https://user:pass@r2.example.com/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz"}`, binaryHash, bundleHash)
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with credentialed artifact URL: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterVerifiesBundleArtifact(t *testing.T) {
+	srv, st := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	bundle, binaryHash, bundleHash := buildReleaseBundleForTest(t, []byte("provider-binary"))
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(bundle)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL)
+
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":%q}`, binaryHash, bundleHash, cdn.URL+"/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz")
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("release register with verified artifact: status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+	releases := st.ListReleases()
+	if len(releases) != 1 || releases[0].BinaryHash != binaryHash {
+		t.Fatalf("release was not stored with verified binary hash: %+v", releases)
+	}
+}
+
+func TestEdge_ReleaseRegisterAcceptsLegacyRegularBundleEntry(t *testing.T) {
+	srv, st := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	bundle, binaryHash, bundleHash := buildReleaseBundleWithEntryForTest(t, "bin/darkbloom", tar.TypeRegA, []byte("provider-binary"), "")
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(bundle)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL)
+
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":%q}`, binaryHash, bundleHash, cdn.URL+"/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz")
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("release register with legacy regular bundle entry: status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+	releases := st.ListReleases()
+	if len(releases) != 1 || releases[0].BinaryHash != binaryHash {
+		t.Fatalf("release was not stored with legacy regular bundle entry: %+v", releases)
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsBundledBinaryHashMismatch(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	bundle, _, bundleHash := buildReleaseBundleForTest(t, []byte("provider-binary"))
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(bundle)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL)
+
+	wrongBinaryHash := strings.Repeat("c", 64)
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":%q}`, wrongBinaryHash, bundleHash, cdn.URL+"/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz")
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with mismatched binary hash: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsOversizedBundledBinary(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	bundle, bundleHash := buildOversizedBinaryReleaseBundleForTest(t)
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(bundle)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL)
+
+	binaryHash := strings.Repeat("d", 64)
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":%q}`, binaryHash, bundleHash, cdn.URL+"/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz")
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with oversized bundled binary: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsRedirectedBundleDownload(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	bundle, binaryHash, bundleHash := buildReleaseBundleForTest(t, []byte("provider-binary"))
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(bundle)
+	}))
+	defer target.Close()
+
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/bundle.tar.gz", http.StatusFound)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL)
+
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":%q}`, binaryHash, bundleHash, cdn.URL+"/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz")
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with redirected bundle: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsUnsafeBundlePath(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	bundle, binaryHash, bundleHash := buildReleaseBundleWithEntryForTest(t, "../bin/darkbloom", tar.TypeReg, []byte("provider-binary"), "")
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(bundle)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL)
+
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":%q}`, binaryHash, bundleHash, cdn.URL+"/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz")
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with unsafe bundle path: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEdge_ReleaseRegisterRejectsNonRegularProviderBinary(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetReleaseKey("release-key")
+
+	bundle, _, bundleHash := buildReleaseBundleWithEntryForTest(t, "bin/darkbloom", tar.TypeSymlink, nil, "darkbloom.real")
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(bundle)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL)
+
+	binaryHash := strings.Repeat("e", 64)
+	body := fmt.Sprintf(`{"version":"1.0.0","platform":"macos-arm64","binary_hash":%q,"bundle_hash":%q,"url":%q}`, binaryHash, bundleHash, cdn.URL+"/releases/v1.0.0/darkbloom-bundle-macos-arm64.tar.gz")
+	req := httptest.NewRequest(http.MethodPost, "/v1/releases", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer release-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("release register with non-regular provider binary: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func buildReleaseBundleForTest(t *testing.T, binary []byte) ([]byte, string, string) {
+	t.Helper()
+
+	return buildReleaseBundleWithEntryForTest(t, "bin/darkbloom", tar.TypeReg, binary, "")
+}
+
+func buildReleaseBundleWithEntryForTest(t *testing.T, name string, typeflag byte, binary []byte, linkname string) ([]byte, string, string) {
+	t.Helper()
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+
+	header := &tar.Header{
+		Name:     name,
+		Mode:     0o755,
+		Typeflag: typeflag,
+		Linkname: linkname,
+	}
+	if typeflag == tar.TypeReg || typeflag == tar.TypeRegA {
+		header.Size = int64(len(binary))
+	}
+	if err := tw.WriteHeader(header); err != nil {
+		t.Fatalf("write tar header: %v", err)
+	}
+	if len(binary) > 0 {
+		if _, err := tw.Write(binary); err != nil {
+			t.Fatalf("write binary: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+
+	return buf.Bytes(), sha256HexBytesForReleaseTest(binary), sha256HexBytesForReleaseTest(buf.Bytes())
+}
+
+func buildOversizedBinaryReleaseBundleForTest(t *testing.T) ([]byte, string) {
+	t.Helper()
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "bin/darkbloom",
+		Mode: 0o755,
+		Size: maxReleaseProviderBinBytes + 1,
+	}); err != nil {
+		t.Fatalf("write oversized tar header: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+
+	return buf.Bytes(), sha256HexBytesForReleaseTest(buf.Bytes())
+}
+
+func sha256HexBytesForReleaseTest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// ---------------------------------------------------------------------------
+// Error response format
+// ---------------------------------------------------------------------------
+
+func TestEdge_ErrorResponseFormat(t *testing.T) {
+	srv, _ := testServer(t)
+
+	// Send invalid request to trigger error (empty model triggers "model is required")
+	body := `{"model":"","messages":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	var errResp struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+			Code    string `json:"code"`
+			Param   string `json:"param"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("error response is not valid JSON: %v, body = %s", err, w.Body.String())
+	}
+
+	if errResp.Error.Type == "" {
+		t.Error("error response missing 'type' field")
+	}
+	if errResp.Error.Message == "" {
+		t.Error("error response missing 'message' field")
+	}
+	if errResp.Error.Code == "" {
+		t.Error("error response missing 'code' field — required by OpenAI spec for SDK error handling")
+	}
+	if errResp.Error.Param != "model" {
+		t.Errorf("error response param = %q, want %q", errResp.Error.Param, "model")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Provider disconnect during inference
+// ---------------------------------------------------------------------------
+
+func TestEdge_ProviderDisconnectMidStream(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	model := "disconnect-model"
+	pubKey := testPublicKeyB64()
+	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
+
+	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
+
+	for _, id := range reg.ProviderIDs() {
+		reg.SetTrustLevel(id, registry.TrustHardware)
+		reg.RecordChallengeSuccess(id)
+	}
+
+	// Provider handles challenge then sends one chunk and disconnects
+	go func() {
+		for {
+			_, data, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			var env struct {
+				Type string `json:"type"`
+			}
+			json.Unmarshal(data, &env)
+
+			if env.Type == protocol.TypeAttestationChallenge {
+				resp := makeValidChallengeResponse(data, pubKey)
+				conn.Write(ctx, websocket.MessageText, resp)
+			}
+			if env.Type == protocol.TypeInferenceRequest {
+				var req protocol.InferenceRequestMessage
+				json.Unmarshal(data, &req)
+
+				// Send one chunk then disconnect abruptly
+				sendChunk(t, ctx, conn, req, pubKey,
+					`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`+"\n\n")
+				time.Sleep(50 * time.Millisecond)
+				conn.Close(websocket.StatusAbnormalClosure, "simulated crash")
+				return
+			}
+		}
+	}()
+
+	// Send a streaming request
+	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}],"stream":true}`, model)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// The response should complete (with error or partial data) rather than hang
+	_, readErr := io.ReadAll(resp.Body)
+	// Expect the body to be readable (not hang forever)
+	_ = readErr
+
+	// After provider disconnect, it should be removed from the registry
+	time.Sleep(500 * time.Millisecond)
+	if reg.ProviderCount() != 0 {
+		t.Errorf("provider should be removed after disconnect, count = %d", reg.ProviderCount())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Non-streaming inference
+// ---------------------------------------------------------------------------
+
+func TestEdge_NonStreamingResponse(t *testing.T) {
+	ts, cleanup, providerDone := setupE2ETest(t, "nonstream-model", func(ctx context.Context, conn *websocket.Conn, inferReq protocol.InferenceRequestMessage, providerPublicKey string) {
+		// Provider sends a non-streaming response (single chunk with full content + complete)
+		sendChunk(t, ctx, conn, inferReq, providerPublicKey,
+			`data: {"id":"chatcmpl-ns","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"The answer is 42."},"finish_reason":"stop"}]}`+"\n\n")
+		sendComplete(ctx, conn, inferReq.RequestID, protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 6})
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	body := `{"model":"nonstream-model","messages":[{"role":"user","content":"What is the answer?"}],"stream":false}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("non-streaming: status = %d, body = %s", resp.StatusCode, respBody)
+	}
+
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	// Should have choices array
+	choices, _ := result["choices"].([]any)
+	if len(choices) == 0 {
+		t.Fatal("non-streaming response missing choices")
+	}
+
+	// Content-Type should be application/json (not text/event-stream)
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "application/json") {
+		t.Errorf("non-streaming Content-Type = %q, want application/json", ct)
+	}
+
+	<-providerDone
+}
+
+// ---------------------------------------------------------------------------
+// Version endpoint
+// ---------------------------------------------------------------------------
+
+func TestEdge_VersionEndpoint(t *testing.T) {
+	srv, _ := testServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/version", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("version: status = %d, want 200", w.Code)
+	}
+
+	var resp map[string]any
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["version"] == nil {
+		t.Error("version response missing 'version' field")
+	}
+	if resp["download_url"] == nil {
+		t.Error("version response missing 'download_url' field")
+	}
+}
+
+func TestEdge_VersionEndpointIncludesSwiftReleaseMetadata(t *testing.T) {
+	srv, st := testServer(t)
+	binaryHash := strings.Repeat("a", 64)
+	bundleHash := strings.Repeat("b", 64)
+	metallibHash := strings.Repeat("c", 64)
+	if err := st.SetRelease(&store.Release{
+		Version:      "1.2.3",
+		Platform:     "macos-arm64",
+		Backend:      "mlx-swift",
+		BinaryHash:   binaryHash,
+		BundleHash:   bundleHash,
+		MetallibHash: metallibHash,
+		URL:          "https://example.com/darkbloom.tar.gz",
+		Changelog:    "Swift bridge",
+	}); err != nil {
+		t.Fatalf("SetRelease: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/version", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("version: status = %d, want 200", w.Code)
+	}
+
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["backend"] != "mlx-swift" {
+		t.Fatalf("backend = %q, want mlx-swift", resp["backend"])
+	}
+	if resp["binary_hash"] != binaryHash {
+		t.Fatalf("binary_hash = %q, want %q", resp["binary_hash"], binaryHash)
+	}
+	if resp["bundle_hash"] != bundleHash {
+		t.Fatalf("bundle_hash = %q, want %q", resp["bundle_hash"], bundleHash)
+	}
+	if resp["metallib_hash"] != metallibHash {
+		t.Fatalf("metallib_hash = %q, want %q", resp["metallib_hash"], metallibHash)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Provider with invalid public key
+// ---------------------------------------------------------------------------
+
+func TestEdge_ProviderInvalidPublicKey(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory("test-key")
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, logger)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Register with invalid base64 public key
+	models := []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}}
+	conn := connectProvider(t, ctx, ts.URL, models, "not-valid-base64!!!")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	time.Sleep(200 * time.Millisecond)
+	// Provider should still register (key validation happens at encryption time)
+	// but requests to it should fail gracefully
+}
+
+// suppress unused import warnings.
+var _ = rand.Read
+var _ = base64.StdEncoding

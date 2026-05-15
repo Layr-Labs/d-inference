@@ -23,9 +23,9 @@ Darkbloom is a privacy-focused decentralized inference platform that enables con
 
 The Services may include:
 
-- OpenAI-compatible and related API endpoints for text, image, audio, and other inference workloads;
+- OpenAI-compatible and related API endpoints for text inference workloads;
 - a web console and developer tooling;
-- provider software, installers, and a macOS app used to contribute compute capacity;
+- provider software and installers used to contribute compute capacity;
 - account, billing, referral, enrollment, attestation, and device-linking features.
 
 **Research Preview Status.** The Services are currently offered as a research preview and may be labeled alpha, beta, preview, experimental, or research. This means:
@@ -62,7 +62,7 @@ If you use the Services as a customer, developer, or end user submitting request
 - you must ensure you have all rights and permissions needed to submit Inputs and use Outputs;
 - you may not use the Services in any way that violates law, infringes rights, or materially risks harm to people, property, systems, or the Services.
 
-"Inputs" means prompts, messages, audio, images, files, metadata, and other material you submit to the Services. "Outputs" means model generations and other results returned by the Services.
+"Inputs" means prompts, messages, metadata, and other material you submit to the Services. "Outputs" means model generations and other results returned by the Services.
 
 ## 5. Provider Participation
 

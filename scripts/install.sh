@@ -3,19 +3,21 @@
 # The copy at coordinator/internal/api/install.sh must be kept in sync.
 set -euo pipefail
 
-# Darkbloom Provider Installer
+# Darkbloom Provider Installer (Swift CLI release v0.5.0+)
 # Usage: curl -fsSL https://api.darkbloom.dev/install.sh | bash
 #
 # This script:
 #   1. Fetches the latest signed release from the coordinator
-#   2. Downloads the provider bundle (binary + enclave helper)
-#   3. Verifies the bundle hash
-#   4. Sets up Python runtime
-#   5. Sets up Secure Enclave identity
-#   6. Downloads the best model for your hardware
-#   7. Summary with next steps
+#   2. Downloads the provider bundle (darkbloom + darkbloom-enclave + mlx.metallib)
+#   3. Verifies bundle SHA-256 + Apple Developer ID code signature
+#   4. Sets up the Secure Enclave identity
+#   5. Optionally enrolls in MDM (device attestation)
+#   6. Optionally downloads a starter model
 #
-# Zero prerequisites — just macOS + Apple Silicon.
+# Zero prerequisites — just macOS 14+ on Apple Silicon. The Swift CLI
+# links mlx-swift directly and ships a colocated mlx.metallib for Metal
+# kernels; there is no Python interpreter to install and no inference
+# subprocess to spawn.
 
 # Direct-fetch copy: no serve-time templating applied. Override with
 #   curl ... | COORD_URL=https://api.dev.darkbloom.xyz bash
@@ -23,12 +25,8 @@ set -euo pipefail
 COORD_URL="${COORD_URL:-https://api.darkbloom.dev}"
 INSTALL_DIR="$HOME/.darkbloom"
 BIN_DIR="$INSTALL_DIR/bin"
-PYTHON_BIN="$INSTALL_DIR/python/bin/python3.12"
-PBS_TAG="20260408"
-PBS_PYTHON_VERSION="3.12.13"
-PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/cpython-${PBS_PYTHON_VERSION}+${PBS_TAG}-aarch64-apple-darwin-install_only.tar.gz"
 
-# Detect if running interactively (terminal) or piped (curl | bash)
+# Detect interactive vs piped (curl | bash).
 if [ -t 0 ]; then
     INTERACTIVE=true
 else
@@ -36,7 +34,7 @@ else
 fi
 
 echo "╔══════════════════════════════════════════════╗"
-echo "║  Darkbloom — Private AI on Verified Macs ║"
+echo "║  Darkbloom — Private AI on Verified Macs     ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 
@@ -53,11 +51,12 @@ fi
 CHIP=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon")
 MEM=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}')
 SERIAL=$(ioreg -c IOPlatformExpertDevice -d 2 | awk -F'"' '/IOPlatformSerialNumber/{print $4}')
-echo "  $CHIP · ${MEM}GB · macOS $(sw_vers -productVersion)"
+MACOS=$(sw_vers -productVersion 2>/dev/null || echo "?")
+echo "  $CHIP · ${MEM}GB · macOS $MACOS"
 echo ""
 
 # ─── Step 1: Fetch latest release ────────────────────────────
-echo "→ [1/7] Fetching latest release..."
+echo "→ [1/5] Fetching latest release from $COORD_URL ..."
 
 RELEASE_JSON=$(curl -fsSL "$COORD_URL/v1/releases/latest" 2>/dev/null || echo "")
 if [ -z "$RELEASE_JSON" ]; then
@@ -66,68 +65,113 @@ if [ -z "$RELEASE_JSON" ]; then
     exit 1
 fi
 
-# Extract JSON string fields with sed — no python3 needed, avoids Xcode CLT prompt on fresh Macs
+# Extract JSON string fields with sed — no python3 needed (no Xcode CLT prompt).
 json_val() { echo "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p"; }
 BUNDLE_URL=$(json_val "$RELEASE_JSON" url)
 BUNDLE_HASH=$(json_val "$RELEASE_JSON" bundle_hash)
 BINARY_HASH=$(json_val "$RELEASE_JSON" binary_hash)
+METALLIB_HASH=$(json_val "$RELEASE_JSON" metallib_hash)
 VERSION=$(json_val "$RELEASE_JSON" version)
+BACKEND=$(json_val "$RELEASE_JSON" backend)
+
+if [ -z "$BUNDLE_URL" ] || [ -z "$BUNDLE_HASH" ] || [ -z "$VERSION" ]; then
+    echo "  ✗ Coordinator response missing required fields (url / bundle_hash / version)."
+    echo "    Raw response: $RELEASE_JSON"
+    exit 1
+fi
 
 echo "  Version: $VERSION"
+echo "  Backend: ${BACKEND:-mlx-swift}"
 echo "  Signed by: Developer ID Application: Eigen Labs, Inc."
 echo ""
 
-# ─── Step 2: Download and install bundle ──────────────────────
-echo "→ [2/7] Downloading Darkbloom v${VERSION}..."
+# ─── Step 2: Download + verify bundle ────────────────────────
+echo "→ [2/5] Downloading Darkbloom v${VERSION}..."
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
-curl -f#L "$BUNDLE_URL" -o "/tmp/eigeninference-bundle.tar.gz"
+TARBALL="/tmp/darkbloom-bundle.tar.gz"
+curl -f#L "$BUNDLE_URL" -o "$TARBALL"
 
-# Verify bundle hash
-ACTUAL_HASH=$(shasum -a 256 /tmp/eigeninference-bundle.tar.gz | cut -d' ' -f1)
+ACTUAL_HASH=$(shasum -a 256 "$TARBALL" | cut -d' ' -f1)
 if [ "$ACTUAL_HASH" != "$BUNDLE_HASH" ]; then
     echo ""
-    echo "  ✗ Bundle hash mismatch — download may be corrupted."
+    echo "  ✗ Bundle hash mismatch — refusing to install possibly-tampered binary."
     echo "    Expected: $BUNDLE_HASH"
     echo "    Got:      $ACTUAL_HASH"
-    rm -f /tmp/eigeninference-bundle.tar.gz
+    rm -f "$TARBALL"
     exit 1
 fi
-echo ""
-echo "  Hash verified ✓"
+echo "  Bundle hash verified ✓"
 
-echo "  Installing binaries..."
-tar xzf /tmp/eigeninference-bundle.tar.gz -C "$INSTALL_DIR"
+echo "  Installing into $INSTALL_DIR ..."
+# The bundle ships as Darkbloom.app/ (contains provisioning profile for
+# keychain-access-groups) with bin/ symlinks for backward compatibility.
+# Older flat bundles (bin/darkbloom directly) are also handled.
+tar xzf "$TARBALL" -C "$INSTALL_DIR"
 
-# Migrate older flat bundle layouts into the current install structure.
-[ -f "$INSTALL_DIR/darkbloom" ] && mv -f "$INSTALL_DIR/darkbloom" "$BIN_DIR/darkbloom"
-[ -f "$INSTALL_DIR/eigeninference-enclave" ] && mv -f "$INSTALL_DIR/eigeninference-enclave" "$BIN_DIR/eigeninference-enclave"
+# New .app bundle layout: Darkbloom.app/Contents/MacOS/{darkbloom,darkbloom-enclave,mlx.metallib}
+if [ -d "$INSTALL_DIR/Darkbloom.app" ]; then
+    APP_BIN="$INSTALL_DIR/Darkbloom.app/Contents/MacOS"
+    chmod +x "$APP_BIN/darkbloom" "$APP_BIN/darkbloom-enclave" 2>/dev/null || true
+    # bin/ gets symlinks pointing into the .app bundle
+    mkdir -p "$BIN_DIR"
+    ln -sfn "$APP_BIN/darkbloom" "$BIN_DIR/darkbloom"
+    ln -sfn "$APP_BIN/darkbloom-enclave" "$BIN_DIR/darkbloom-enclave"
+    ln -sfn "$APP_BIN/mlx.metallib" "$BIN_DIR/mlx.metallib" 2>/dev/null || true
+    echo "  Installed .app bundle with provisioning profile"
+else
+    # Legacy flat layout fallback
+    [ -f "$INSTALL_DIR/darkbloom" ]               && mv -f "$INSTALL_DIR/darkbloom" "$BIN_DIR/darkbloom"
+    [ -f "$INSTALL_DIR/darkbloom-enclave" ]       && mv -f "$INSTALL_DIR/darkbloom-enclave" "$BIN_DIR/darkbloom-enclave"
+    if [ -f "$INSTALL_DIR/eigeninference-enclave" ] && [ ! -f "$BIN_DIR/darkbloom-enclave" ]; then
+        mv -f "$INSTALL_DIR/eigeninference-enclave" "$BIN_DIR/darkbloom-enclave"
+    fi
+    [ -f "$INSTALL_DIR/mlx.metallib" ]            && mv -f "$INSTALL_DIR/mlx.metallib" "$BIN_DIR/mlx.metallib"
+    chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/darkbloom-enclave" 2>/dev/null || true
+fi
 
-chmod +x "$BIN_DIR/darkbloom" "$BIN_DIR/eigeninference-enclave" 2>/dev/null || true
-rm -f /tmp/eigeninference-bundle.tar.gz
+ln -sfn "$BIN_DIR/darkbloom-enclave" "$BIN_DIR/eigeninference-enclave" 2>/dev/null || true
+rm -f "$TARBALL"
 
-# Verify code signature (codesign is part of base macOS, no CLT needed)
+# Verify per-binary SHA matches what the coordinator registered. The bundle
+# hash above proves the tarball matches; this also proves codesign + notary
+# didn't quietly mutate the binary.
+if [ -n "${BINARY_HASH:-}" ]; then
+    ACTUAL_BIN=$(shasum -a 256 "$BIN_DIR/darkbloom" | cut -d' ' -f1)
+    if [ "$ACTUAL_BIN" != "$BINARY_HASH" ]; then
+        echo "  ✗ Binary hash mismatch (expected $BINARY_HASH, got $ACTUAL_BIN)."
+        rm -rf "$BIN_DIR"
+        exit 1
+    fi
+    echo "  Binary hash verified ✓"
+fi
+if [ -n "$METALLIB_HASH" ] && [ -f "$BIN_DIR/mlx.metallib" ]; then
+    ACTUAL_LIB=$(shasum -a 256 "$BIN_DIR/mlx.metallib" | cut -d' ' -f1)
+    if [ "$ACTUAL_LIB" != "$METALLIB_HASH" ]; then
+        echo "  ✗ mlx.metallib hash mismatch (expected $METALLIB_HASH, got $ACTUAL_LIB)."
+        rm -rf "$BIN_DIR"
+        exit 1
+    fi
+    echo "  Metallib hash verified ✓"
+fi
+
+# Verify code signature (codesign is base macOS, no CLT prompt).
 if codesign --verify --verbose "$BIN_DIR/darkbloom" 2>/dev/null; then
     TEAM=$(codesign -dvv "$BIN_DIR/darkbloom" 2>&1 | grep "TeamIdentifier=" | cut -d= -f2)
     echo "  Code signature verified ✓ (Team: $TEAM)"
 else
-    echo "  ⚠ Code signature could not be verified"
+    echo "  ⚠ Code signature could not be verified — proceed with caution."
 fi
 
-# Make available in PATH
-# Try /usr/local/bin symlink first (may need sudo on newer macOS)
-SYMLINKED=false
+# Make available in PATH. Try /usr/local/bin symlink, fall back to shell rc.
 if ln -sf "$BIN_DIR/darkbloom" /usr/local/bin/darkbloom 2>/dev/null; then
-    SYMLINKED=true
+    :
 fi
-
-# Always add to shell rc so it works even without the symlink
 RC="$HOME/.zshrc"
 if [ -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ]; then
     RC="$HOME/.bashrc"
 fi
 if ! grep -q "\.darkbloom/bin" "$RC" 2>/dev/null; then
-    # Remove old PATH entries from previous installs
     sed -i '' '/\.dginf\/bin/d; /\.eigeninference\/bin/d; /alias eigeninf/d; /alias dginf/d; /# EigenInference/d; /# Darkbloom$/d' "$RC" 2>/dev/null || true
     cat >> "$RC" << 'SHELL'
 
@@ -137,12 +181,11 @@ SHELL
 fi
 export PATH="$BIN_DIR:$PATH"
 
-# Source the rc file so commands are available immediately in this session
-# (important when running via curl | bash — the parent shell won't have PATH yet)
-# Temporarily disable -eu: the user's rc file may reference unbound variables
-# or use zsh-specific builtins that fail in bash, and set -u causes an immediate
-# exit that || true cannot catch.
-set +eu; source "$RC" 2>/dev/null; set -eu
+# Source rc so commands work in this shell. Disable -eu around it: rc files
+# may use unbound vars or shell-specific builtins that fail under bash strict.
+set +eu
+source "$RC" 2>/dev/null || true
+set -eu
 
 echo "  Binaries installed ✓"
 echo "  Shortcut: darkbloom"
@@ -153,122 +196,28 @@ for OLD_DIR in "$HOME/.dginf" "$HOME/.eigeninference"; do
     if [ -d "$OLD_DIR" ] && [ ! -L "$OLD_DIR" ]; then
         echo ""
         echo "  Migrating from $OLD_DIR..."
-        for f in enclave_key.data wallet_key; do
+        for f in enclave_key.data wallet_key auth_token; do
             [ -f "$OLD_DIR/$f" ] && cp -n "$OLD_DIR/$f" "$INSTALL_DIR/$f" 2>/dev/null || true
         done
-        if [ -d "$OLD_DIR/python" ] && [ ! -d "$INSTALL_DIR/python" ]; then
-            ln -sf "$OLD_DIR/python" "$INSTALL_DIR/python"
-        fi
-        # Symlink old path so stragglers still work
+        # Symlink old path so stragglers still work, then drop the old python/
+        # subtree -- the Swift release no longer needs it.
         ln -sfn "$INSTALL_DIR" "$OLD_DIR" 2>/dev/null || true
         echo "  Migration complete ✓"
     fi
 done
 
-# ─── Step 3: Python runtime ──────────────────────────────────
+# ─── Step 3: Secure Enclave identity ─────────────────────────
 echo ""
-echo "→ [3/7] Verifying inference runtime..."
-
-# Check for Python runtime
-if [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "import mlx_lm, vllm_mlx; from vllm_mlx.server import app" 2>/dev/null; then
-    echo "  Python runtime ✓"
+echo "→ [3/5] Provisioning Secure Enclave identity..."
+if "$BIN_DIR/darkbloom-enclave" info >/dev/null 2>&1; then
+    echo "  Secure Enclave ✓ (P-256 key generated)"
 else
-    R2_CDN="${R2_CDN:-https://pub-3d1cb668259340eeb2276e1d375c846d.r2.dev}"
-    RUNTIME_INSTALLED=false
-
-    # Try R2 release artifacts first (the canonical source).
-    if [ -n "$VERSION" ] && curl -f#L "$R2_CDN/releases/v${VERSION}/eigeninference-python-macos-arm64.tar.gz" -o "/tmp/eigeninference-python.tar.gz" 2>/dev/null; then
-        echo ""
-        echo "  Extracting Python runtime..."
-        rm -rf "$INSTALL_DIR/python"
-        mkdir -p "$INSTALL_DIR/python"
-        tar xzf /tmp/eigeninference-python.tar.gz -C "$INSTALL_DIR/python"
-        rm -f /tmp/eigeninference-python.tar.gz
-        RUNTIME_INSTALLED=true
-        echo "  Python runtime installed ✓"
-    fi
-
-    # If the full runtime tarball wasn't available but python binary exists
-    # (from the bundle), fetch just the site-packages.
-    if [ "$RUNTIME_INSTALLED" = false ] && [ -f "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
-        echo "  Downloading site-packages..."
-        SITE_DIR="$INSTALL_DIR/python/lib/python3.12/site-packages"
-        if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/eigeninference-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
-            rm -rf "$SITE_DIR"
-            mkdir -p "$SITE_DIR"
-            tar xzf /tmp/eigen-site-packages.tar.gz -C "$SITE_DIR"
-            rm -f /tmp/eigen-site-packages.tar.gz
-            RUNTIME_INSTALLED=true
-            echo "  Site-packages installed from R2 ✓"
-        fi
-    fi
-
-    if [ "$RUNTIME_INSTALLED" = false ]; then
-        echo "  ⚠ Python runtime download failed — inference won't work without it"
-    fi
+    echo "  Secure Enclave ⚠ (not available on this hardware; provider will run with reduced trust)"
 fi
 
-# Test that extracted Python actually runs (catches dyld errors from non-portable builds)
-if [ -f "$PYTHON_BIN" ] && ! "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
-    echo "  ⚠ Downloaded Python binary doesn't run on this machine"
-    echo "  Downloading portable Python from python-build-standalone..."
-    if curl -f#L "$PBS_URL" -o "/tmp/pbs-python.tar.gz" 2>/dev/null; then
-        rm -rf "$INSTALL_DIR/python"
-        mkdir -p "$INSTALL_DIR/python"
-        tar xzf /tmp/pbs-python.tar.gz --strip-components=1 -C "$INSTALL_DIR/python"
-        rm -f /tmp/pbs-python.tar.gz
-        rm -f "$INSTALL_DIR/python/lib/python3.12/EXTERNALLY-MANAGED"
-        if "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
-            echo "  Portable Python installed ✓"
-            # Install packages from R2 site-packages tarball (same verified artifacts as CI)
-            SITE_DIR="$INSTALL_DIR/python/lib/python3.12/site-packages"
-            # Prefer the coordinator-served install.sh (templated) — this copy is
-            # a direct-fetch fallback and stays pinned to the prod CDN defaults.
-            R2_CDN="${R2_CDN:-https://pub-3d1cb668259340eeb2276e1d375c846d.r2.dev}"
-            if [ -n "$VERSION" ] && curl -fsSL "$R2_CDN/releases/v${VERSION}/eigeninference-site-packages.tar.gz" -o "/tmp/eigen-site-packages.tar.gz" 2>/dev/null; then
-                rm -rf "$SITE_DIR"
-                mkdir -p "$SITE_DIR"
-                tar xzf /tmp/eigen-site-packages.tar.gz -C "$SITE_DIR"
-                rm -f /tmp/eigen-site-packages.tar.gz
-                echo "  Packages installed from R2 ✓"
-            else
-                # Fallback: pip install from GitHub
-                "$PYTHON_BIN" -m pip install --quiet --no-cache-dir \
-                    "https://github.com/Gajesh2007/vllm-mlx/archive/refs/heads/main.zip" \
-                    "mlx-lm>=0.31.2" 2>/dev/null || true
-                "$PYTHON_BIN" -m pip install --quiet --no-cache-dir --upgrade \
-                    "mlx-lm>=0.31.2" 2>/dev/null || true
-            fi
-        else
-            echo "  ✗ Portable Python also failed — please report this issue"
-        fi
-    else
-        echo "  ✗ Could not download portable Python"
-    fi
-fi
-
-# Verify vllm-mlx
-if [ -f "$PYTHON_BIN" ]; then
-    if ! "$PYTHON_BIN" -c "print('ok')" 2>/dev/null; then
-        echo "  ✗ Python binary does not execute"
-    else
-        PYTHONHOME="$INSTALL_DIR/python" "$PYTHON_BIN" -c \
-            "import mlx_lm, vllm_mlx; from vllm_mlx.server import app; print(f'  vllm-mlx {vllm_mlx.__version__} / mlx-lm {mlx_lm.__version__} ✓')" 2>/dev/null \
-            || echo "  ⚠ vllm-mlx server import failed"
-    fi
-fi
-
-# ─── Step 4: Secure Enclave identity ─────────────────────────
+# ─── Step 4: Enrollment + device attestation ─────────────────
 echo ""
-echo "→ [4/7] Setting up Secure Enclave identity..."
-
-"$BIN_DIR/eigeninference-enclave" info >/dev/null 2>&1 \
-    && echo "  Secure Enclave ✓ (P-256 key generated)" \
-    || echo "  Secure Enclave ⚠ (not available on this hardware)"
-
-# ─── Step 5: Enrollment + device attestation ─────────────────
-echo ""
-echo "→ [5/7] Enrollment + device attestation..."
+echo "→ [4/5] Enrollment + device attestation..."
 
 ALREADY_ENROLLED=false
 if profiles status -type enrollment 2>&1 | grep -q "MDM enrollment: Yes"; then
@@ -278,36 +227,36 @@ fi
 if [ "$ALREADY_ENROLLED" = true ]; then
     echo "  Already enrolled ✓"
 elif [ -n "$SERIAL" ]; then
-    echo "  Requesting enrollment profile..."
-    rm -f "/tmp/EigenInference-Enroll-${SERIAL}.mobileconfig" 2>/dev/null
+    echo "  Requesting enrollment profile from coordinator..."
+    PROFILE_PATH="/tmp/Darkbloom-Enroll-${SERIAL}.mobileconfig"
+    rm -f "$PROFILE_PATH" 2>/dev/null
     if curl -fsSL -X POST "$COORD_URL/v1/enroll" \
         -H "Content-Type: application/json" \
         -d "{\"serial_number\": \"$SERIAL\"}" \
-        -o "/tmp/EigenInference-Enroll-${SERIAL}.mobileconfig" 2>/dev/null; then
+        -o "$PROFILE_PATH" 2>/dev/null; then
         echo ""
         echo "  ┌──────────────────────────────────────────────────┐"
-        echo "  │ ACTION REQUIRED: Install the enrollment profile   │"
-        echo "  │                                                   │"
-        echo "  │ This profile will:                                │"
-        echo "  │  • Verify SIP, Secure Boot, system integrity      │"
-        echo "  │  • Generate a key in your Secure Enclave          │"
-        echo "  │  • Apple verifies your device is genuine          │"
-        echo "  │                                                   │"
-        echo "  │ Darkbloom CANNOT erase, lock, or control     │"
-        echo "  │ your Mac. Remove anytime in System Settings.      │"
+        echo "  │ ACTION REQUIRED: Install the enrollment profile  │"
+        echo "  │                                                  │"
+        echo "  │ This profile lets the coordinator verify:        │"
+        echo "  │  • SIP, Secure Boot, system integrity            │"
+        echo "  │  • Your Secure Enclave is genuine Apple silicon  │"
+        echo "  │  • Device identity signed by Apple's Root CA     │"
+        echo "  │                                                  │"
+        echo "  │ Darkbloom CANNOT erase, lock, or control         │"
+        echo "  │ your Mac. Remove anytime in System Settings.     │"
         echo "  └──────────────────────────────────────────────────┘"
         echo ""
-        # Register the profile, then open System Settings to the install pane
-        open "/tmp/EigenInference-Enroll-${SERIAL}.mobileconfig"
+        open "$PROFILE_PATH"
         sleep 1
         open "x-apple.systempreferences:com.apple.Profiles-Settings.extension"
 
         echo "  System Settings opened — click Install and enter your password."
-        echo ""
         if [ "$INTERACTIVE" = true ]; then
-            read -p "  Press Enter after installing the profile..."
+            echo ""
+            read -p "  Press Enter once you have installed the profile..." || true
         else
-            echo "  Install the profile, then the provider will verify on start."
+            echo "  After installing, the provider will verify on first start."
             sleep 3
         fi
         echo "  Enrollment ✓"
@@ -315,161 +264,45 @@ elif [ -n "$SERIAL" ]; then
         echo "  Enrollment ⚠ (coordinator unreachable — enroll later with: darkbloom enroll)"
     fi
 else
-    echo "  Enrollment ⚠ (serial number not found)"
+    echo "  Enrollment ⚠ (could not read serial number — enroll later with: darkbloom enroll)"
 fi
 
-# ─── Step 6: Download inference model ─────────────────────────
+# ─── Step 5: Optional starter model ──────────────────────────
 echo ""
-echo "→ [6/7] Selecting inference model..."
+echo "→ [5/5] Inference model..."
 
-MODEL=""
-S3_NAME=""
-MODEL_NAME=""
-MODEL_SIZE=""
+CATALOG_JSON=$(curl -fsSL "$COORD_URL/v1/models/catalog?type=text" 2>/dev/null || echo "")
 
-# Fetch model catalog from coordinator
-CATALOG_JSON=$(curl -fsSL "$COORD_URL/v1/models/catalog" 2>/dev/null || echo "")
-
-# Use bundled Python (installed in step 3) for catalog parsing — system python3 may not exist
-CATALOG_PYTHON="$PYTHON_BIN"
-[ ! -f "$CATALOG_PYTHON" ] && CATALOG_PYTHON="python3"
-
-if [ -n "$CATALOG_JSON" ] && echo "$CATALOG_JSON" | PYTHONHOME="$INSTALL_DIR/python" "$CATALOG_PYTHON" -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
-    AVAILABLE_MODELS=$(echo "$CATALOG_JSON" | PYTHONHOME="$INSTALL_DIR/python" "$CATALOG_PYTHON" -c "
-import sys, json
-data = json.load(sys.stdin)
-mem = int(sys.argv[1])
-idx = 1
-for m in data.get('models', []):
-    if m.get('min_ram_gb', 999) > mem:
-        continue
-    name = m.get('display_name', m['id'])
-    size = m.get('size_gb', '?')
-    mtype = m.get('model_type', 'text')
-    print(f'{idx}. {name} (~{size} GB) [{mtype}]')
-    print(f'   {m[\"id\"]}|{m.get(\"s3_name\", m[\"id\"].split(\"/\")[-1])}|{name}|{size}|{mtype}')
-    idx += 1
-" "$MEM" 2>/dev/null)
-
-    if [ -n "$AVAILABLE_MODELS" ]; then
+if [ -n "$CATALOG_JSON" ]; then
+    if [ "$INTERACTIVE" = true ]; then
         echo ""
-        echo "  Available models for your hardware (${MEM}GB RAM):"
+        echo "  Available text models:"
+        echo "$CATALOG_JSON" \
+          | tr ',' '\n' \
+          | sed -n 's/.*"id":"\([^"]*\)".*"display_name":"\([^"]*\)".*"size_gb":\([0-9.]*\).*"min_ram_gb":\([0-9]*\).*/  • \2  ~\3 GB  (≥\4 GB RAM)  [\1]/p' \
+          | head -20
         echo ""
-        echo "$AVAILABLE_MODELS" | grep -v "^   " | sed 's/^/  /'
-        echo ""
-
-        if [ "$INTERACTIVE" = true ]; then
-            read -p "  Select a model number (or press Enter to skip): " MODEL_CHOICE
-            if [ -n "$MODEL_CHOICE" ]; then
-                MODEL_LINE=$(echo "$AVAILABLE_MODELS" | grep "^   " | sed -n "${MODEL_CHOICE}p" | sed 's/^   //')
-                if [ -n "$MODEL_LINE" ]; then
-                    MODEL=$(echo "$MODEL_LINE" | cut -d'|' -f1)
-                    S3_NAME=$(echo "$MODEL_LINE" | cut -d'|' -f2)
-                    MODEL_NAME=$(echo "$MODEL_LINE" | cut -d'|' -f3)
-                    MODEL_SIZE="~$(echo "$MODEL_LINE" | cut -d'|' -f4) GB"
-                else
-                    echo "  Invalid selection."
-                fi
-            else
-                echo "  Skipped — download models later: darkbloom models download"
-            fi
-        else
-            echo "  Run interactively to select: curl -fsSL $COORD_URL/install.sh | bash -s"
-        fi
+        echo "  Download a model with:"
+        echo "    darkbloom models download <id>"
     else
-        echo "  No models in catalog for ${MEM}GB RAM"
+        echo "  Run interactively to pick a starter model:"
+        echo "    curl -fsSL $COORD_URL/install.sh | bash -s"
+        echo "  Or list the catalog with:  darkbloom models catalog"
     fi
-fi
-
-# Download selected model
-if [ -n "$MODEL" ]; then
-    HF_CACHE_DIR="$HOME/.cache/huggingface/hub/models--$(echo "$MODEL" | tr '/' '--')"
-    if [ -d "$HF_CACHE_DIR/snapshots" ]; then
-        echo "  $MODEL_NAME already downloaded ✓"
-    else
-        CACHE_DIR="$HF_CACHE_DIR/snapshots/main"
-        mkdir -p "$CACHE_DIR"
-        echo "  Downloading $MODEL_NAME ($MODEL_SIZE)..."
-        echo ""
-
-        # Try CDN tarball first, then individual files from R2
-        if curl -f#L "$COORD_URL/dl/models/$S3_NAME.tar.gz" | tar xz -C "$CACHE_DIR" 2>/dev/null; then
-            echo ""
-            echo "  $MODEL_NAME downloaded ✓"
-        else
-            echo "  Tarball not available, downloading from R2..."
-            R2_BASE="${R2_CDN_URL:-https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev}/$S3_NAME"
-            for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json model.safetensors.index.json; do
-                curl -fsSL "$R2_BASE/$f" -o "$CACHE_DIR/$f" 2>/dev/null || true
-            done
-
-            DOWNLOAD_OK=true
-            if [ -s "$CACHE_DIR/model.safetensors.index.json" ]; then
-                SHARDS=$(PYTHONHOME="$INSTALL_DIR/python" "$CATALOG_PYTHON" -c 'import json, sys; data=json.load(open(sys.argv[1])); print("\n".join(sorted({v for v in data.get("weight_map", {}).values() if isinstance(v, str)})))' "$CACHE_DIR/model.safetensors.index.json" 2>/dev/null || true)
-                if [ -z "$SHARDS" ]; then
-                    echo "  Could not parse model shard index."
-                    DOWNLOAD_OK=false
-                fi
-            else
-                SHARDS="model.safetensors"
-            fi
-
-            for f in $SHARDS; do
-                echo "  Downloading $f..."
-                curl -f#L "$R2_BASE/$f" -o "$CACHE_DIR/$f" || DOWNLOAD_OK=false
-            done
-
-            if [ "$DOWNLOAD_OK" = true ]; then
-                echo "  $MODEL_NAME downloaded ✓"
-            else
-                echo "  ✗ Failed to download $MODEL_NAME"
-                exit 1
-            fi
-        fi
-    fi
-fi
-
-# ─── Step 7: Summary ─────────────────────────────────────────
-echo ""
-echo "════════════════════════════════════════════════"
-echo ""
-echo "  Darkbloom v${VERSION} installed!"
-echo ""
-echo "  Hardware:  $CHIP · ${MEM}GB"
-if [ -n "$MODEL_NAME" ]; then
-    echo "  Model:     $MODEL_NAME"
-fi
-echo "  Binary:    Signed + notarized by Eigen Labs, Inc."
-echo "  Status:    ○ Installed (not running)"
-echo ""
-echo "  Start serving:"
-if [ -n "$MODEL" ]; then
-    echo "    darkbloom serve --model $MODEL"
 else
-    echo "    darkbloom serve"
-fi
-echo ""
-
-if [ ! -f "$HOME/.config/eigeninference/auth_token" ]; then
-    echo "  ┌──────────────────────────────────────────────┐"
-    echo "  │  Link your account to earn rewards:          │"
-    echo "  │                                              │"
-    echo "  │    darkbloom login              │"
-    echo "  │                                              │"
-    echo "  │  Without linking, earnings go to a local     │"
-    echo "  │  wallet and cannot be withdrawn.             │"
-    echo "  └──────────────────────────────────────────────┘"
-    echo ""
+    echo "  Could not fetch model catalog (continuing anyway)."
 fi
 
-echo "  Commands:"
-echo "    darkbloom serve       Start serving"
-echo "    darkbloom status      Show status"
-echo "    darkbloom logs -w     Stream logs"
-echo "    darkbloom stop        Stop provider"
-echo "    darkbloom update      Check for updates"
-echo "    darkbloom doctor      Run diagnostics"
+# ─── Done ────────────────────────────────────────────────────
 echo ""
-echo "  Open a new terminal or run: source ~/.zshrc"
+echo "╔══════════════════════════════════════════════╗"
+echo "║  Install complete                            ║"
+echo "╚══════════════════════════════════════════════╝"
 echo ""
-echo "════════════════════════════════════════════════"
+echo "  Next steps:"
+echo "    darkbloom doctor             # verify the system is ready"
+echo "    darkbloom models catalog     # browse available models"
+echo "    darkbloom models download <id>"
+echo "    darkbloom login              # link this Mac to your account"
+echo "    darkbloom start              # serve inference (interactive picker)"
+echo ""

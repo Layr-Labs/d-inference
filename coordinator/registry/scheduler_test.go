@@ -724,8 +724,8 @@ func TestLegacyProviderFallsBackToOldRouting(t *testing.T) {
 func TestResolveEffectiveTPSFallback(t *testing.T) {
 	// When observedDecodeTPS is 0, should fall back to formula-based TPS.
 	snap := routingSnapshot{
-		decodeTPS:       100,
-		backendRunning:  2,
+		decodeTPS:         100,
+		backendRunning:    2,
 		observedDecodeTPS: 0,
 	}
 	got := resolveEffectiveTPS(snap)

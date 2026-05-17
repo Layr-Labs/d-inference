@@ -53,9 +53,16 @@ const (
 	// backend crashed, model not loaded after idle shutdown).
 	maxDispatchAttempts = 3
 
-	// firstChunkTimeout is how long to wait for the first chunk from a provider
-	// before considering the attempt failed and retrying.
+	// firstChunkTimeout is the legacy flat first-chunk timeout kept as a
+	// fallback constant. Callers should prefer ttftDeadline() which scales
+	// with prompt size to meet the OpenRouter TTFT SLA.
 	firstChunkTimeout = 10 * time.Second
+
+	// speculativeTimerRatio is the fraction of the TTFT deadline at which
+	// the coordinator launches a speculative backup dispatch. The primary
+	// provider gets this fraction of the deadline before the backup is
+	// started, and then both race until one produces the first chunk.
+	speculativeTimerRatio = 0.5
 
 	// cancelWriteTimeout bounds how long a cancel write to the provider can
 	// block. Using context.Background() unbounded here risks hanging the HTTP
@@ -64,6 +71,15 @@ const (
 )
 
 var thinkBlockPattern = regexp.MustCompile(`(?is)<think>(.*?)</think>\s*`)
+
+// ttftDeadline returns the TTFT budget for a request based on prompt size.
+// Base: 5 seconds + 1ms per estimated input token. This meets the OpenRouter
+// SLA of TTFT < 5s + 1ms/input_token.
+func ttftDeadline(estimatedPromptTokens int) time.Duration {
+	base := 5 * time.Second
+	perToken := time.Duration(estimatedPromptTokens) * time.Millisecond
+	return base + perToken
+}
 
 // sendProviderCancel sends a Cancel message for the given request to the
 // provider with a bounded timeout so a half-dead WebSocket doesn't hang the
@@ -85,6 +101,154 @@ func (s *Server) sendProviderCancel(provider *registry.Provider, requestID strin
 		s.logger.Debug("failed to send cancel (provider may have disconnected)",
 			"request_id", requestID, "error", err)
 	}
+}
+
+// cancelDispatch cleans up a speculative dispatch participant that lost the
+// race: removes the pending request, marks the provider idle, and sends a
+// cancel over WebSocket so the provider stops generating tokens.
+func (s *Server) cancelDispatch(provider *registry.Provider, pr *registry.PendingRequest) {
+	if provider == nil || pr == nil {
+		return
+	}
+	provider.RemovePending(pr.RequestID)
+	s.registry.SetProviderIdle(provider.ID)
+	s.sendProviderCancel(provider, pr.RequestID)
+}
+
+// speculativeResult describes the outcome of a speculative dispatch cycle.
+// The winning provider, pending request, routing decision, and first chunk
+// are captured so the caller can proceed with streaming or assembly.
+type speculativeResult struct {
+	provider    *registry.Provider
+	pr          *registry.PendingRequest
+	decision    registry.RoutingDecision
+	firstChunk  string
+	speculative bool // true if the backup provider won the race
+}
+
+// dispatchOneProvider encrypts and sends an inference request to a single
+// provider. It returns the pending request and provider on success, or an
+// error string on failure. The excludeProviders set is updated on failure.
+func (s *Server) dispatchOneProvider(
+	r *http.Request,
+	model string,
+	rawBody []byte,
+	consumerKey string,
+	reservedMicroUSD int64,
+	estimatedPromptTokens int,
+	requestedMaxTokens int,
+	allowedProviderSerials []string,
+	isResponsesAPI bool,
+	timing *registry.RequestTiming,
+	excludeProviders map[string]struct{},
+) (
+	provider *registry.Provider,
+	pr *registry.PendingRequest,
+	decision registry.RoutingDecision,
+	lastErr string,
+	lastErrCode int,
+) {
+	requestID := uuid.New().String()
+	pr = &registry.PendingRequest{
+		RequestID:              requestID,
+		Model:                  model,
+		ConsumerKey:            consumerKey,
+		IsResponsesAPI:         isResponsesAPI,
+		EstimatedPromptTokens:  estimatedPromptTokens,
+		RequestedMaxTokens:     requestedMaxTokens,
+		ReservedMicroUSD:       reservedMicroUSD,
+		AllowedProviderSerials: allowedProviderSerials,
+		AcceptedCh:             make(chan struct{}, 1),
+		ChunkCh:                make(chan string, chunkBufferSize),
+		CompleteCh:             make(chan protocol.UsageInfo, 1),
+		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
+		Timing:                 timing,
+	}
+
+	excludeList := func() []string {
+		ids := make([]string, 0, len(excludeProviders))
+		for id := range excludeProviders {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+
+	provider, decision = s.registry.ReserveProviderEx(model, pr, excludeList()...)
+	if provider == nil {
+		return nil, nil, decision, "no provider available", http.StatusServiceUnavailable
+	}
+
+	if s.billing != nil && !providerHasPayoutDestination(provider) {
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+		excludeProviders[provider.ID] = struct{}{}
+		return nil, nil, decision, "provider missing payout destination", http.StatusServiceUnavailable
+	}
+
+	if s.billing != nil {
+		_, err := s.reserveAdditionalForProvider(pr, provider)
+		if err != nil {
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			excludeProviders[provider.ID] = struct{}{}
+			return nil, nil, decision, "insufficient funds for provider price", http.StatusPaymentRequired
+		}
+	}
+
+	// E2E encryption
+	if provider.PublicKey == "" {
+		s.registry.SetProviderIdle(provider.ID)
+		excludeProviders[provider.ID] = struct{}{}
+		return nil, nil, decision, "no provider with E2E encryption", http.StatusServiceUnavailable
+	}
+
+	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
+	if err != nil {
+		s.registry.SetProviderIdle(provider.ID)
+		excludeProviders[provider.ID] = struct{}{}
+		return nil, nil, decision, "provider public key invalid", http.StatusServiceUnavailable
+	}
+
+	sessionKeys, err := e2e.GenerateSessionKeys()
+	if err != nil {
+		s.registry.SetProviderIdle(provider.ID)
+		return nil, nil, decision, "failed to generate session keys", http.StatusInternalServerError
+	}
+
+	encrypted, err := e2e.Encrypt(rawBody, providerPubKey, sessionKeys)
+	if err != nil {
+		s.registry.SetProviderIdle(provider.ID)
+		return nil, nil, decision, "failed to encrypt request", http.StatusInternalServerError
+	}
+
+	wireMsg := map[string]any{
+		"type":       protocol.TypeInferenceRequest,
+		"request_id": requestID,
+		"encrypted_body": map[string]string{
+			"ephemeral_public_key": encrypted.EphemeralPublicKey,
+			"ciphertext":           encrypted.Ciphertext,
+		},
+	}
+
+	pr.SessionPrivKey = &sessionKeys.PrivateKey
+	// pr.ReservedMicroUSD was already set in the struct literal and may have
+	// been increased by reserveAdditionalForProvider above. Don't overwrite.
+
+	data, err := json.Marshal(wireMsg)
+	if err != nil {
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+		return nil, nil, decision, "failed to marshal request", http.StatusInternalServerError
+	}
+	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+		excludeProviders[provider.ID] = struct{}{}
+		return nil, nil, decision, "failed to send request to provider", http.StatusBadGateway
+	}
+	pr.Timing.DispatchedAt = time.Now()
+
+	return provider, pr, decision, "", 0
 }
 
 func intFromRequestValue(v any) (int, bool) {
@@ -705,11 +869,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Dispatch to a provider with automatic retry. If the first provider
-	// fails (backend crashed, timeout, etc.), retry on the same or another
-	// provider before returning an error to the consumer. We wait for the
-	// first chunk before committing — no HTTP response is written until a
-	// provider starts generating, so retries are invisible to the consumer.
+	// Dispatch to a provider with speculative TTFT-aware dispatch. On the
+	// first attempt we dispatch to the best provider (primary), and start a
+	// speculative timer at 50% of the TTFT deadline. If the primary hasn't
+	// produced a first chunk by the speculative timer, a backup provider is
+	// dispatched in parallel and both race. If the primary fails outright
+	// (error before the speculative timer), up to maxDispatchAttempts
+	// sequential retries are performed without speculation.
+	//
+	// No HTTP response is written until a provider starts generating, so
+	// retries and speculative dispatch are invisible to the consumer.
 	var (
 		provider    *registry.Provider
 		pr          *registry.PendingRequest
@@ -724,58 +893,68 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Track providers that failed during retry so we don't dispatch to them again.
 	excludeProviders := make(map[string]struct{})
-	excludeList := func() []string {
-		ids := make([]string, 0, len(excludeProviders))
-		for id := range excludeProviders {
-			ids = append(ids, id)
-		}
-		return ids
-	}
+
+	deadline := ttftDeadline(estimatedPromptTokens)
+	speculativeAt := time.Duration(float64(deadline) * speculativeTimerRatio)
 
 	for attempt := range maxDispatchAttempts {
-		requestID = uuid.New().String()
-		pr = &registry.PendingRequest{
-			RequestID:              requestID,
-			Model:                  model,
-			ConsumerKey:            consumerKey,
-			IsResponsesAPI:         isResponsesAPI,
-			EstimatedPromptTokens:  estimatedPromptTokens,
-			RequestedMaxTokens:     requestedMaxTokens,
-			ReservedMicroUSD:       reservedMicroUSD,
-			AllowedProviderSerials: allowedProviderSerials,
-			AcceptedCh:             make(chan struct{}, 1),
-			ChunkCh:                make(chan string, chunkBufferSize),
-			CompleteCh:             make(chan protocol.UsageInfo, 1),
-			ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
-			Timing:                 timing,
-		}
-
-		var decision registry.RoutingDecision
-		provider, decision = s.registry.ReserveProviderEx(model, pr, excludeList()...)
+		// Dispatch the primary provider.
+		var dispatchErr string
+		var dispatchErrCode int
+		provider, pr, _, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
+			r, model, rawBody, consumerKey, reservedMicroUSD,
+			estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials,
+			isResponsesAPI, timing, excludeProviders,
+		)
 		if provider == nil {
+			// dispatchOneProvider may have found a provider but rejected it
+			// (payout destination missing, insufficient funds, encryption
+			// missing). In that case it already added the provider to
+			// excludeProviders. If there may be more providers to try,
+			// continue to the next attempt.
+			providerWasRejected := dispatchErr != "no provider available"
+			if providerWasRejected {
+				lastErr = dispatchErr
+				lastErrCode = dispatchErrCode
+				continue
+			}
+
 			// On retry attempts, don't queue — if the only available
 			// providers already failed, waiting 120s for one of them
 			// to come back won't help. Break and return the last error.
+			// Don't overwrite lastErr/lastErrCode from the real provider
+			// error — preserve the original status code.
 			if attempt > 0 {
-				outcome := "no_provider"
-				if decision.CapacityRejections > 0 && decision.CandidateCount == 0 {
-					// Every fitting candidate was rejected by the
-					// admission gate (memory). Surface as over_capacity
-					// so dashboards distinguish "no provider" from
-					// "fleet over-subscribed for this model size".
-					outcome = "over_capacity"
+				if lastErr == "" {
+					lastErr = dispatchErr
+					lastErrCode = dispatchErrCode
 				}
-				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:" + outcome})
 				break
 			}
 			// No idle provider — try queueing.
+			requestID = uuid.New().String()
+			queuePR := &registry.PendingRequest{
+				RequestID:              requestID,
+				Model:                  model,
+				ConsumerKey:            consumerKey,
+				IsResponsesAPI:         isResponsesAPI,
+				EstimatedPromptTokens:  estimatedPromptTokens,
+				RequestedMaxTokens:     requestedMaxTokens,
+				ReservedMicroUSD:       reservedMicroUSD,
+				AllowedProviderSerials: allowedProviderSerials,
+				AcceptedCh:             make(chan struct{}, 1),
+				ChunkCh:                make(chan string, chunkBufferSize),
+				CompleteCh:             make(chan protocol.UsageInfo, 1),
+				ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
+				Timing:                 timing,
+			}
 			queuedReq := &registry.QueuedRequest{
 				RequestID:  requestID,
 				Model:      model,
-				Pending:    pr,
+				Pending:    queuePR,
 				ResponseCh: make(chan *registry.Provider, 1),
 			}
-			pr.Timing.QueuedAt = time.Now()
+			queuePR.Timing.QueuedAt = time.Now()
 			if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:over_capacity"})
 				refundReservation()
@@ -801,106 +980,62 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider became available for model %q (queue timeout)", model)))
 				return
 			}
-			decision = queuedReq.Decision
-		}
-		timing.RoutedAt = time.Now()
-		s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:selected"})
-		s.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
-		s.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model, "provider_id:" + provider.ID})
-		if decision.EffectiveTPS > 0 {
-			s.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
-		}
-		if s.billing != nil && !providerHasPayoutDestination(provider) {
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			excludeProviders[provider.ID] = struct{}{}
-			lastErr = "provider missing payout destination"
-			lastErrCode = http.StatusServiceUnavailable
-			s.logger.Warn("skipping provider without payout destination",
-				"request_id", requestID,
-				"provider_id", provider.ID,
-				"model", model,
-			)
-			continue
-		}
-		if s.billing != nil {
-			var err error
-			reservedMicroUSD, err = s.reserveAdditionalForProvider(pr, provider)
+			// Queue assigned a provider; still need to dispatch.
+			// Use the queue PR's channels.
+			pr = queuePR
+			requestID = pr.RequestID
+
+			// Perform E2E encryption and send the request.
+			if provider.PublicKey == "" {
+				s.registry.SetProviderIdle(provider.ID)
+				excludeProviders[provider.ID] = struct{}{}
+				lastErr = "no provider with E2E encryption"
+				continue
+			}
+			providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
 			if err != nil {
+				s.registry.SetProviderIdle(provider.ID)
+				excludeProviders[provider.ID] = struct{}{}
+				lastErr = "provider public key invalid"
+				continue
+			}
+			sessionKeys, err := e2e.GenerateSessionKeys()
+			if err != nil {
+				s.registry.SetProviderIdle(provider.ID)
+				lastErr = "failed to generate session keys"
+				continue
+			}
+			encrypted, err := e2e.Encrypt(rawBody, providerPubKey, sessionKeys)
+			if err != nil {
+				s.registry.SetProviderIdle(provider.ID)
+				lastErr = "failed to encrypt request"
+				continue
+			}
+			timing.EncryptedAt = time.Now()
+			wireMsg := map[string]any{
+				"type":       protocol.TypeInferenceRequest,
+				"request_id": requestID,
+				"encrypted_body": map[string]string{
+					"ephemeral_public_key": encrypted.EphemeralPublicKey,
+					"ciphertext":           encrypted.Ciphertext,
+				},
+			}
+			pr.SessionPrivKey = &sessionKeys.PrivateKey
+			pr.ReservedMicroUSD = reservedMicroUSD
+			data, _ := json.Marshal(wireMsg)
+			if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
 				excludeProviders[provider.ID] = struct{}{}
-				lastErr = "insufficient funds for provider price"
-				lastErrCode = http.StatusPaymentRequired
-				s.logger.Warn("consumer balance cannot cover selected provider price",
-					"request_id", requestID,
-					"provider_id", provider.ID,
-					"model", model,
-					"error", err,
-				)
+				lastErr = "failed to send request to provider"
 				continue
 			}
+			pr.Timing.DispatchedAt = time.Now()
 		}
-
-		// E2E encryption — must be done per provider (different keys).
-		if provider.PublicKey == "" {
-			s.registry.SetProviderIdle(provider.ID)
-			excludeProviders[provider.ID] = struct{}{}
-			lastErr = "no provider with E2E encryption"
-			continue
-		}
-
-		providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
-		if err != nil {
-			s.registry.SetProviderIdle(provider.ID)
-			excludeProviders[provider.ID] = struct{}{}
-			lastErr = "provider public key invalid"
-			continue
-		}
-
-		sessionKeys, err := e2e.GenerateSessionKeys()
-		if err != nil {
-			s.registry.SetProviderIdle(provider.ID)
-			lastErr = "failed to generate session keys"
-			continue
-		}
-
-		encrypted, err := e2e.Encrypt(rawBody, providerPubKey, sessionKeys)
-		if err != nil {
-			s.registry.SetProviderIdle(provider.ID)
-			lastErr = "failed to encrypt request"
-			continue
-		}
-		timing.EncryptedAt = time.Now()
-
-		wireMsg := map[string]any{
-			"type":       protocol.TypeInferenceRequest,
-			"request_id": requestID,
-			"encrypted_body": map[string]string{
-				"ephemeral_public_key": encrypted.EphemeralPublicKey,
-				"ciphertext":           encrypted.Ciphertext,
-			},
-		}
-
-		pr.SessionPrivKey = &sessionKeys.PrivateKey
-		pr.ReservedMicroUSD = reservedMicroUSD
-
-		data, err := json.Marshal(wireMsg)
-		if err != nil {
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			lastErr = "failed to marshal request"
-			continue
-		}
-		if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			excludeProviders[provider.ID] = struct{}{}
-			s.logger.Error("failed to send inference request", "request_id", requestID, "error", err)
-			lastErr = "failed to send request to provider"
-			continue
-		}
-		pr.Timing.DispatchedAt = time.Now()
+		requestID = pr.RequestID
+		timing.RoutedAt = time.Now()
+		s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:selected"})
+		s.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
 
 		s.logger.Info("inference request dispatched",
 			"trace_id", requestIDFromContext(r.Context()),
@@ -911,44 +1046,58 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			"attempt", attempt+1,
 		)
 
-		// Wait for an accepted signal, first chunk, or error before committing.
-		// No HTTP response has been written yet, so retries are invisible.
-		timer := time.NewTimer(firstChunkTimeout)
+		s.logger.Info("dispatch_pool",
+			"model", model,
+			"ttft_deadline_ms", deadline.Milliseconds(),
+			"speculative_at_ms", speculativeAt.Milliseconds(),
+		)
+
+		// ---- Speculative TTFT-aware first-chunk wait ----
+		//
+		// Phase 1: Wait for first chunk with speculative timer.
+		// - If primary sends first chunk → commit.
+		// - If primary sends accepted → extend to inferenceTimeout (model reload).
+		// - If primary errors → retry immediately (sequential fallback).
+		// - If speculative timer fires → dispatch backup and race.
+		// - If full deadline expires → fail.
+
+		speculativeTimer := time.NewTimer(speculativeAt)
+		deadlineTimer := time.NewTimer(deadline)
 		accepted := false
+
 		select {
-		case <-pr.AcceptedCh:
-			timer.Stop()
-			accepted = true
 		case chunk, ok := <-pr.ChunkCh:
-			timer.Stop()
+			speculativeTimer.Stop()
+			deadlineTimer.Stop()
 			if ok {
 				firstChunk = chunk
 				pr.Timing.FirstChunkAt = time.Now()
 				committed = true
 			} else {
-				// Channel closed — check if an error caused it.
-				// handleInferenceError sends to ErrorCh then closes ChunkCh,
-				// so both can be ready simultaneously.
 				select {
 				case errMsg := <-pr.ErrorCh:
 					excludeProviders[provider.ID] = struct{}{}
-					provider.RemovePending(requestID)
-					s.registry.SetProviderIdle(provider.ID)
+					s.cancelDispatch(provider, pr)
 					lastErr = errMsg.Error
 					lastErrCode = errMsg.StatusCode
 					provider = nil
 					pr = nil
 					continue
 				default:
-					// No error — genuine empty response.
 					committed = true
 				}
 			}
+
+		case <-pr.AcceptedCh:
+			speculativeTimer.Stop()
+			deadlineTimer.Stop()
+			accepted = true
+
 		case errMsg := <-pr.ErrorCh:
-			timer.Stop()
+			speculativeTimer.Stop()
+			deadlineTimer.Stop()
 			excludeProviders[provider.ID] = struct{}{}
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
+			s.cancelDispatch(provider, pr)
 			lastErr = errMsg.Error
 			lastErrCode = errMsg.StatusCode
 			s.logger.Warn("provider failed, retrying",
@@ -972,23 +1121,378 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			provider = nil
 			pr = nil
 			continue
-		case <-timer.C:
+
+		case <-speculativeTimer.C:
+			deadlineTimer.Stop()
+			// Primary is slow. Attempt speculative backup dispatch.
+			s.ddIncr("inference.speculative_dispatch", []string{"model:" + model})
+
+			backupExclude := make(map[string]struct{}, len(excludeProviders)+1)
+			for id := range excludeProviders {
+				backupExclude[id] = struct{}{}
+			}
+			backupExclude[provider.ID] = struct{}{}
+
+			backupProvider, backupPR, _, _, _ := s.dispatchOneProvider(
+				r, model, rawBody, consumerKey, reservedMicroUSD,
+				estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials,
+				isResponsesAPI, &registry.RequestTiming{ReceivedAt: timing.ReceivedAt},
+				backupExclude,
+			)
+
+			if backupProvider == nil {
+				// No backup available. Keep waiting for primary with remaining deadline.
+				s.logger.Info("speculative_dispatch_no_backup",
+					"request_id", requestID,
+					"primary_provider", provider.ID,
+				)
+				remainingDeadline := time.NewTimer(deadline - speculativeAt)
+				select {
+				case chunk, ok := <-pr.ChunkCh:
+					remainingDeadline.Stop()
+					if ok {
+						firstChunk = chunk
+						pr.Timing.FirstChunkAt = time.Now()
+						committed = true
+					} else {
+						select {
+						case errMsg := <-pr.ErrorCh:
+							excludeProviders[provider.ID] = struct{}{}
+							s.cancelDispatch(provider, pr)
+							lastErr = errMsg.Error
+							lastErrCode = errMsg.StatusCode
+							provider = nil
+							pr = nil
+							continue
+						default:
+							committed = true
+						}
+					}
+				case <-pr.AcceptedCh:
+					remainingDeadline.Stop()
+					accepted = true
+				case errMsg := <-pr.ErrorCh:
+					remainingDeadline.Stop()
+					excludeProviders[provider.ID] = struct{}{}
+					s.cancelDispatch(provider, pr)
+					lastErr = errMsg.Error
+					lastErrCode = errMsg.StatusCode
+					if s.metrics != nil {
+						s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
+					}
+					s.ddIncr("inference.dispatches", []string{"status:retry"})
+					provider = nil
+					pr = nil
+					continue
+				case <-remainingDeadline.C:
+					excludeProviders[provider.ID] = struct{}{}
+					s.cancelDispatch(provider, pr)
+					lastErr = "timeout waiting for first response"
+					lastErrCode = http.StatusGatewayTimeout
+					s.logger.Warn("provider timeout (no backup), retrying",
+						"request_id", requestID,
+						"provider_id", provider.ID,
+						"attempt", attempt+1,
+					)
+					s.emitRequest(r.Context(), protocol.SeverityWarn, requestID,
+						"provider first-chunk timeout",
+						map[string]any{
+							"provider_id": provider.ID,
+							"attempt":     attempt + 1,
+							"reason":      "first_chunk_timeout",
+						})
+					if s.metrics != nil {
+						s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+					}
+					s.ddIncr("inference.dispatches", []string{"status:timeout"})
+					provider = nil
+					pr = nil
+					continue
+				case <-r.Context().Done():
+					remainingDeadline.Stop()
+					s.cancelDispatch(provider, pr)
+					refundReservation()
+					return
+				}
+			} else {
+				// Backup dispatched — race primary vs backup.
+				s.logger.Info("speculative_dispatch",
+					"request_id", requestID,
+					"primary_provider", provider.ID,
+					"backup_provider", backupProvider.ID,
+					"ttft_deadline_ms", deadline.Milliseconds(),
+					"speculative_at_ms", speculativeAt.Milliseconds(),
+				)
+
+				raceDeadline := time.NewTimer(deadline - speculativeAt)
+
+				select {
+				case chunk, ok := <-pr.ChunkCh:
+					// Primary wins!
+					raceDeadline.Stop()
+					s.cancelDispatch(backupProvider, backupPR)
+					if ok {
+						firstChunk = chunk
+						pr.Timing.FirstChunkAt = time.Now()
+						committed = true
+					} else {
+						select {
+						case errMsg := <-pr.ErrorCh:
+							// Primary failed but we already cancelled backup.
+							excludeProviders[provider.ID] = struct{}{}
+							s.cancelDispatch(provider, pr)
+							lastErr = errMsg.Error
+							lastErrCode = errMsg.StatusCode
+							provider = nil
+							pr = nil
+							continue
+						default:
+							committed = true
+						}
+					}
+
+				case chunk, ok := <-backupPR.ChunkCh:
+					// Backup wins!
+					raceDeadline.Stop()
+					s.cancelDispatch(provider, pr)
+					s.ddIncr("inference.speculative_win", []string{"model:" + model})
+					if ok {
+						provider = backupProvider
+						pr = backupPR
+						requestID = pr.RequestID
+						firstChunk = chunk
+						pr.Timing.FirstChunkAt = time.Now()
+						committed = true
+					} else {
+						select {
+						case errMsg := <-backupPR.ErrorCh:
+							// Backup failed too. Keep primary context for retry.
+							excludeProviders[backupProvider.ID] = struct{}{}
+							// Wait remaining deadline for primary.
+							remainingPrimary := time.NewTimer(deadline - speculativeAt)
+							select {
+							case chunk, ok := <-pr.ChunkCh:
+								remainingPrimary.Stop()
+								if ok {
+									firstChunk = chunk
+									pr.Timing.FirstChunkAt = time.Now()
+									committed = true
+								} else {
+									select {
+									case errMsg2 := <-pr.ErrorCh:
+										excludeProviders[provider.ID] = struct{}{}
+										s.cancelDispatch(provider, pr)
+										lastErr = errMsg2.Error
+										lastErrCode = errMsg2.StatusCode
+										provider = nil
+										pr = nil
+										continue
+									default:
+										committed = true
+									}
+								}
+							case <-pr.AcceptedCh:
+								remainingPrimary.Stop()
+								accepted = true
+							case <-remainingPrimary.C:
+								excludeProviders[provider.ID] = struct{}{}
+								s.cancelDispatch(provider, pr)
+								lastErr = errMsg.Error
+								lastErrCode = errMsg.StatusCode
+								provider = nil
+								pr = nil
+								continue
+							case <-r.Context().Done():
+								remainingPrimary.Stop()
+								s.cancelDispatch(provider, pr)
+								refundReservation()
+								return
+							}
+						default:
+							// Backup channel closed with no error — treat as committed.
+							s.cancelDispatch(provider, pr)
+							provider = backupProvider
+							pr = backupPR
+							requestID = pr.RequestID
+							committed = true
+						}
+					}
+
+				case <-pr.AcceptedCh:
+					// Primary accepted (model reload). Cancel backup, extend deadline.
+					raceDeadline.Stop()
+					s.cancelDispatch(backupProvider, backupPR)
+					accepted = true
+
+				case <-backupPR.AcceptedCh:
+					// Backup accepted (model reload). Cancel primary, extend deadline.
+					raceDeadline.Stop()
+					s.cancelDispatch(provider, pr)
+					provider = backupProvider
+					pr = backupPR
+					requestID = pr.RequestID
+					accepted = true
+
+				case errMsg := <-pr.ErrorCh:
+					// Primary failed. Keep waiting for backup.
+					raceDeadline.Stop()
+					excludeProviders[provider.ID] = struct{}{}
+					s.cancelDispatch(provider, pr)
+					// Wait for backup with remaining deadline.
+					backupDeadline := time.NewTimer(deadline - speculativeAt)
+					select {
+					case chunk, ok := <-backupPR.ChunkCh:
+						backupDeadline.Stop()
+						_ = errMsg // used implicitly via excludeProviders
+						if ok {
+							provider = backupProvider
+							pr = backupPR
+							requestID = pr.RequestID
+							firstChunk = chunk
+							pr.Timing.FirstChunkAt = time.Now()
+							committed = true
+						} else {
+							select {
+							case errMsg2 := <-backupPR.ErrorCh:
+								excludeProviders[backupProvider.ID] = struct{}{}
+								s.cancelDispatch(backupProvider, backupPR)
+								lastErr = errMsg2.Error
+								lastErrCode = errMsg2.StatusCode
+								provider = nil
+								pr = nil
+								continue
+							default:
+								provider = backupProvider
+								pr = backupPR
+								requestID = pr.RequestID
+								committed = true
+							}
+						}
+					case <-backupPR.AcceptedCh:
+						backupDeadline.Stop()
+						provider = backupProvider
+						pr = backupPR
+						requestID = pr.RequestID
+						accepted = true
+					case errMsg2 := <-backupPR.ErrorCh:
+						backupDeadline.Stop()
+						excludeProviders[backupProvider.ID] = struct{}{}
+						s.cancelDispatch(backupProvider, backupPR)
+						lastErr = errMsg2.Error
+						lastErrCode = errMsg2.StatusCode
+						provider = nil
+						pr = nil
+						continue
+					case <-backupDeadline.C:
+						excludeProviders[backupProvider.ID] = struct{}{}
+						s.cancelDispatch(backupProvider, backupPR)
+						lastErr = "timeout waiting for first response (backup)"
+						lastErrCode = http.StatusGatewayTimeout
+						if s.metrics != nil {
+							s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+						}
+						s.ddIncr("inference.dispatches", []string{"status:timeout"})
+						provider = nil
+						pr = nil
+						continue
+					case <-r.Context().Done():
+						backupDeadline.Stop()
+						s.cancelDispatch(backupProvider, backupPR)
+						refundReservation()
+						return
+					}
+
+				case errMsg := <-backupPR.ErrorCh:
+					// Backup failed. Keep waiting for primary.
+					raceDeadline.Stop()
+					excludeProviders[backupProvider.ID] = struct{}{}
+					s.cancelDispatch(backupProvider, backupPR)
+					_ = errMsg
+					primaryDeadline := time.NewTimer(deadline - speculativeAt)
+					select {
+					case chunk, ok := <-pr.ChunkCh:
+						primaryDeadline.Stop()
+						if ok {
+							firstChunk = chunk
+							pr.Timing.FirstChunkAt = time.Now()
+							committed = true
+						} else {
+							select {
+							case errMsg2 := <-pr.ErrorCh:
+								excludeProviders[provider.ID] = struct{}{}
+								s.cancelDispatch(provider, pr)
+								lastErr = errMsg2.Error
+								lastErrCode = errMsg2.StatusCode
+								provider = nil
+								pr = nil
+								continue
+							default:
+								committed = true
+							}
+						}
+					case <-pr.AcceptedCh:
+						primaryDeadline.Stop()
+						accepted = true
+					case errMsg2 := <-pr.ErrorCh:
+						primaryDeadline.Stop()
+						excludeProviders[provider.ID] = struct{}{}
+						s.cancelDispatch(provider, pr)
+						lastErr = errMsg2.Error
+						lastErrCode = errMsg2.StatusCode
+						provider = nil
+						pr = nil
+						continue
+					case <-primaryDeadline.C:
+						excludeProviders[provider.ID] = struct{}{}
+						s.cancelDispatch(provider, pr)
+						lastErr = "timeout waiting for first response"
+						lastErrCode = http.StatusGatewayTimeout
+						if s.metrics != nil {
+							s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+						}
+						s.ddIncr("inference.dispatches", []string{"status:timeout"})
+						provider = nil
+						pr = nil
+						continue
+					case <-r.Context().Done():
+						primaryDeadline.Stop()
+						s.cancelDispatch(provider, pr)
+						refundReservation()
+						return
+					}
+
+				case <-raceDeadline.C:
+					// Both missed deadline.
+					s.cancelDispatch(provider, pr)
+					s.cancelDispatch(backupProvider, backupPR)
+					excludeProviders[provider.ID] = struct{}{}
+					excludeProviders[backupProvider.ID] = struct{}{}
+					lastErr = "timeout waiting for first response (both providers)"
+					lastErrCode = http.StatusGatewayTimeout
+					if s.metrics != nil {
+						s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+					}
+					s.ddIncr("inference.dispatches", []string{"status:timeout"})
+					provider = nil
+					pr = nil
+					continue
+
+				case <-r.Context().Done():
+					raceDeadline.Stop()
+					s.cancelDispatch(provider, pr)
+					s.cancelDispatch(backupProvider, backupPR)
+					refundReservation()
+					return
+				}
+			}
+
+		case <-deadlineTimer.C:
+			speculativeTimer.Stop()
 			excludeProviders[provider.ID] = struct{}{}
-			// Order matters: RemovePending must precede sendProviderCancel.
-			// Each retry attempt generates a fresh requestID (line 301), so
-			// the original provider would otherwise keep generating into
-			// this requestID and could send InferenceComplete after the
-			// retry has already been billed — double-charge. Removing the
-			// pending entry first means any late chunk/Complete from the
-			// original provider hits handleChunk/handleComplete with an
-			// unknown request_id and is silently dropped, so only the
-			// retry's Complete reaches the ledger.
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			s.sendProviderCancel(provider, requestID)
+			s.cancelDispatch(provider, pr)
 			lastErr = "timeout waiting for first response"
 			lastErrCode = http.StatusGatewayTimeout
-			s.logger.Warn("provider timeout, retrying",
+			s.logger.Warn("provider timeout (full deadline), retrying",
 				"request_id", requestID,
 				"provider_id", provider.ID,
 				"attempt", attempt+1,
@@ -1007,10 +1511,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			provider = nil
 			pr = nil
 			continue
+
 		case <-r.Context().Done():
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			s.sendProviderCancel(provider, requestID)
+			speculativeTimer.Stop()
+			deadlineTimer.Stop()
+			s.cancelDispatch(provider, pr)
 			refundReservation()
 			return
 		}
@@ -1032,8 +1537,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					select {
 					case errMsg := <-pr.ErrorCh:
 						excludeProviders[provider.ID] = struct{}{}
-						provider.RemovePending(requestID)
-						s.registry.SetProviderIdle(provider.ID)
+						s.cancelDispatch(provider, pr)
 						lastErr = errMsg.Error
 						lastErrCode = errMsg.StatusCode
 						s.logger.Warn("provider failed after accepting request, retrying",
@@ -1064,8 +1568,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			case errMsg := <-pr.ErrorCh:
 				chunkTimer.Stop()
 				excludeProviders[provider.ID] = struct{}{}
-				provider.RemovePending(requestID)
-				s.registry.SetProviderIdle(provider.ID)
+				s.cancelDispatch(provider, pr)
 				lastErr = errMsg.Error
 				lastErrCode = errMsg.StatusCode
 				s.logger.Warn("provider failed after accepting request, retrying",
@@ -1091,9 +1594,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				continue
 			case <-chunkTimer.C:
 				excludeProviders[provider.ID] = struct{}{}
-				provider.RemovePending(requestID)
-				s.registry.SetProviderIdle(provider.ID)
-				s.sendProviderCancel(provider, requestID)
+				s.cancelDispatch(provider, pr)
 				lastErr = "provider accepted but timed out before first chunk"
 				lastErrCode = http.StatusGatewayTimeout
 				s.logger.Warn("provider timed out after accepting request, retrying",
@@ -1116,9 +1617,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				pr = nil
 				continue
 			case <-r.Context().Done():
-				provider.RemovePending(requestID)
-				s.registry.SetProviderIdle(provider.ID)
-				s.sendProviderCancel(provider, requestID)
+				s.cancelDispatch(provider, pr)
 				refundReservation()
 				return
 			}
@@ -2680,6 +3179,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		EstimatedPromptTokens:  estimatedPromptTokens,
 		RequestedMaxTokens:     requestedMaxTokens,
 		ReservedMicroUSD:       reservedMicroUSD,
+		AcceptedCh:             make(chan struct{}, 1),
 		ChunkCh:                make(chan string, chunkBufferSize),
 		CompleteCh:             make(chan protocol.UsageInfo, 1),
 		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
@@ -2803,6 +3303,136 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		"stream", stream,
 	)
 
+	// Dynamic TTFT deadline — wait for the first chunk or accepted signal
+	// before committing. This mirrors the chat completions path but without
+	// speculative dispatch (single attempt). If the provider misses the
+	// TTFT deadline, the request fails instead of streaming forever.
+	genericDeadline := ttftDeadline(estimatedPromptTokens)
+	ttftTimer := time.NewTimer(genericDeadline)
+	var firstChunk string
+	committed := false
+	accepted := false
+
+	select {
+	case <-pr.AcceptedCh:
+		ttftTimer.Stop()
+		accepted = true
+	case chunk, ok := <-pr.ChunkCh:
+		ttftTimer.Stop()
+		if ok {
+			firstChunk = chunk
+			committed = true
+		} else {
+			select {
+			case errMsg := <-pr.ErrorCh:
+				provider.RemovePending(requestID)
+				s.registry.SetProviderIdle(provider.ID)
+				s.sendProviderCancel(provider, requestID)
+				refundReservation()
+				statusCode := errMsg.StatusCode
+				if statusCode == 0 {
+					statusCode = http.StatusBadGateway
+				}
+				writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+				return
+			default:
+				committed = true
+			}
+		}
+	case errMsg := <-pr.ErrorCh:
+		ttftTimer.Stop()
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+		s.sendProviderCancel(provider, requestID)
+		refundReservation()
+		statusCode := errMsg.StatusCode
+		if statusCode == 0 {
+			statusCode = http.StatusBadGateway
+		}
+		writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+		return
+	case <-ttftTimer.C:
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+		s.sendProviderCancel(provider, requestID)
+		refundReservation()
+		s.ddIncr("inference.dispatches", []string{"status:timeout"})
+		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider did not respond within TTFT deadline"))
+		return
+	case <-r.Context().Done():
+		ttftTimer.Stop()
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+		s.sendProviderCancel(provider, requestID)
+		refundReservation()
+		return
+	}
+
+	// If provider accepted (model reload), wait for first chunk with extended deadline.
+	if accepted && !committed {
+		chunkTimer := time.NewTimer(inferenceTimeout)
+		select {
+		case chunk, ok := <-pr.ChunkCh:
+			chunkTimer.Stop()
+			if ok {
+				firstChunk = chunk
+				committed = true
+			} else {
+				select {
+				case errMsg := <-pr.ErrorCh:
+					provider.RemovePending(requestID)
+					s.registry.SetProviderIdle(provider.ID)
+					s.sendProviderCancel(provider, requestID)
+					refundReservation()
+					statusCode := errMsg.StatusCode
+					if statusCode == 0 {
+						statusCode = http.StatusBadGateway
+					}
+					writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+					return
+				default:
+					committed = true
+				}
+			}
+		case errMsg := <-pr.ErrorCh:
+			chunkTimer.Stop()
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			s.sendProviderCancel(provider, requestID)
+			refundReservation()
+			statusCode := errMsg.StatusCode
+			if statusCode == 0 {
+				statusCode = http.StatusBadGateway
+			}
+			writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+			return
+		case <-chunkTimer.C:
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			s.sendProviderCancel(provider, requestID)
+			refundReservation()
+			s.ddIncr("inference.dispatches", []string{"status:timeout"})
+			writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider accepted but timed out before first chunk"))
+			return
+		case <-r.Context().Done():
+			chunkTimer.Stop()
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			s.sendProviderCancel(provider, requestID)
+			refundReservation()
+			return
+		}
+	}
+
+	if !committed {
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+		s.sendProviderCancel(provider, requestID)
+		refundReservation()
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("provider_error", "failed to get first chunk from provider"))
+		return
+	}
+
 	// When this function returns (consumer disconnect, timeout, or
 	// completion), tell the provider to stop generating. Without this the
 	// provider keeps producing tokens into a buffered channel until the
@@ -2814,9 +3444,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}()
 
 	if stream {
-		s.handleStreamingResponse(w, r, pr)
+		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
 	} else {
-		s.handleNonStreamingResponse(w, r, pr)
+		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunk)
 	}
 }
 

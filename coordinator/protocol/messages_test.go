@@ -786,3 +786,88 @@ func TestProviderMessageUnmarshalHeartbeatWithoutCapacity(t *testing.T) {
 		t.Error("backend_capacity should be nil for old providers")
 	}
 }
+
+func TestBackendSlotCapacityTokenBudgetFields(t *testing.T) {
+	slot := BackendSlotCapacity{
+		Model:                 "mlx-community/Qwen2.5-7B-4bit",
+		State:                 "running",
+		NumRunning:            3,
+		NumWaiting:            1,
+		ActiveTokens:          5000,
+		MaxTokensPotential:    12000,
+		ObservedDecodeTPS:     85.5,
+		ActiveTokenBudgetUsed: 28000,
+		ActiveTokenBudgetMax:  32768,
+		QueuedTokenBudget:     4096,
+	}
+
+	data, err := json.Marshal(slot)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded BackendSlotCapacity
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if decoded.ObservedDecodeTPS != 85.5 {
+		t.Errorf("observed_decode_tps = %f, want 85.5", decoded.ObservedDecodeTPS)
+	}
+	if decoded.ActiveTokenBudgetUsed != 28000 {
+		t.Errorf("active_token_budget_used = %d, want 28000", decoded.ActiveTokenBudgetUsed)
+	}
+	if decoded.ActiveTokenBudgetMax != 32768 {
+		t.Errorf("active_token_budget_max = %d, want 32768", decoded.ActiveTokenBudgetMax)
+	}
+	if decoded.QueuedTokenBudget != 4096 {
+		t.Errorf("queued_token_budget = %d, want 4096", decoded.QueuedTokenBudget)
+	}
+}
+
+func TestBackendSlotCapacityOmitsZeroTokenBudget(t *testing.T) {
+	slot := BackendSlotCapacity{
+		Model:      "test-model",
+		State:      "running",
+		NumRunning: 1,
+	}
+
+	data, err := json.Marshal(slot)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var m map[string]any
+	json.Unmarshal(data, &m)
+
+	for _, key := range []string{"observed_decode_tps", "active_token_budget_used", "active_token_budget_max", "queued_token_budget"} {
+		if _, ok := m[key]; ok {
+			t.Errorf("%s should be omitted when zero (omitempty)", key)
+		}
+	}
+}
+
+func TestBackendSlotCapacityBackwardCompatDecode(t *testing.T) {
+	// Old provider sends a slot without the new token-budget fields.
+	raw := `{"model":"test","state":"running","num_running":2,"num_waiting":0,"active_tokens":3000,"max_tokens_potential":8000}`
+
+	var slot BackendSlotCapacity
+	if err := json.Unmarshal([]byte(raw), &slot); err != nil {
+		t.Fatalf("unmarshal old-format slot: %v", err)
+	}
+	if slot.ObservedDecodeTPS != 0 {
+		t.Errorf("observed_decode_tps = %f, want 0 (absent from JSON)", slot.ObservedDecodeTPS)
+	}
+	if slot.ActiveTokenBudgetUsed != 0 {
+		t.Errorf("active_token_budget_used = %d, want 0", slot.ActiveTokenBudgetUsed)
+	}
+	if slot.ActiveTokenBudgetMax != 0 {
+		t.Errorf("active_token_budget_max = %d, want 0", slot.ActiveTokenBudgetMax)
+	}
+	if slot.QueuedTokenBudget != 0 {
+		t.Errorf("queued_token_budget = %d, want 0", slot.QueuedTokenBudget)
+	}
+	if slot.NumRunning != 2 {
+		t.Errorf("num_running = %d, want 2", slot.NumRunning)
+	}
+}

@@ -94,10 +94,39 @@ type PendingRequest struct {
 	// ReservedMicroUSD is the balance atomically debited at pre-flight.
 	// The post-inference charge adjusts for the difference between the
 	// actual cost and this reservation, preventing billing race conditions.
-	ReservedMicroUSD int64
+	ReservedMicroUSD     int64
+	reservationMu        sync.Mutex
+	reservationFinalized bool
 
 	// Timing fields for latency decomposition.
 	Timing *RequestTiming
+}
+
+// MarkReservationFinalized returns true only for the first settlement or refund
+// of a pre-flight balance reservation. It prevents a terminal provider error
+// racing with a late completion from crediting or refunding the same reservation
+// twice.
+func (pr *PendingRequest) MarkReservationFinalized() bool {
+	ok, _ := pr.FinalizeReservation(nil)
+	return ok
+}
+
+// FinalizeReservation runs settle while holding the reservation finalization
+// lock and marks the reservation finalized only if settle succeeds. It returns
+// false when another terminal path already finalized the reservation.
+func (pr *PendingRequest) FinalizeReservation(settle func() error) (bool, error) {
+	pr.reservationMu.Lock()
+	defer pr.reservationMu.Unlock()
+	if pr.reservationFinalized {
+		return false, nil
+	}
+	if settle != nil {
+		if err := settle(); err != nil {
+			return false, err
+		}
+	}
+	pr.reservationFinalized = true
+	return true, nil
 }
 
 type RequestTiming struct {
@@ -340,6 +369,15 @@ func (p *Provider) maxConcurrency() int {
 	if p.BackendCapacity == nil {
 		return DefaultMaxConcurrent
 	}
+
+	// Token-budget providers use budget-based admission; the concurrency
+	// cap is just a safety valve.
+	for _, slot := range p.BackendCapacity.Slots {
+		if slot.ActiveTokenBudgetMax > 0 {
+			return 24
+		}
+	}
+
 	// Hardware-based cap using total memory reported by the provider.
 	memGB := p.BackendCapacity.TotalMemoryGB
 	if memGB <= 0 {
@@ -374,6 +412,8 @@ type Registry struct {
 
 	store store.Store
 
+	tpsRegistry *TPSRegistry
+
 	logger *slog.Logger
 
 	onlineCount      atomic.Int64
@@ -387,6 +427,7 @@ func New(logger *slog.Logger) *Registry {
 		providers:      make(map[string]*Provider),
 		queue:          NewRequestQueue(10, 120*time.Second),
 		MinTrustLevel:  TrustHardware,
+		tpsRegistry:    NewTPSRegistry(),
 		modelProviders: make(map[string]*atomic.Int64),
 		logger:         logger,
 	}
@@ -769,6 +810,32 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 		if s.NumWaiting < 0 {
 			s.NumWaiting = 0
 		}
+		if v, changed := clampNonNeg(s.ObservedDecodeTPS, maxDecodeTPS); changed {
+			logger.Warn("provider slot observed_decode_tps out of range, clamping",
+				"provider_id", providerID, "model", s.Model, "reported", s.ObservedDecodeTPS, "clamped", v)
+			s.ObservedDecodeTPS = v
+		}
+		if s.ActiveTokenBudgetUsed < 0 || s.ActiveTokenBudgetUsed > maxTokensPotential {
+			if s.ActiveTokenBudgetUsed < 0 {
+				s.ActiveTokenBudgetUsed = 0
+			} else {
+				s.ActiveTokenBudgetUsed = maxTokensPotential
+			}
+		}
+		if s.ActiveTokenBudgetMax < 0 || s.ActiveTokenBudgetMax > maxTokensPotential {
+			if s.ActiveTokenBudgetMax < 0 {
+				s.ActiveTokenBudgetMax = 0
+			} else {
+				s.ActiveTokenBudgetMax = maxTokensPotential
+			}
+		}
+		if s.QueuedTokenBudget < 0 || s.QueuedTokenBudget > maxTokensPotential {
+			if s.QueuedTokenBudget < 0 {
+				s.QueuedTokenBudget = 0
+			} else {
+				s.QueuedTokenBudget = maxTokensPotential
+			}
+		}
 	}
 }
 
@@ -973,6 +1040,12 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	// Update backend capacity from heartbeat (nil-safe for old providers).
 	if msg.BackendCapacity != nil {
 		p.BackendCapacity = msg.BackendCapacity
+		chipFamily := p.Hardware.ChipFamily
+		for _, slot := range msg.BackendCapacity.Slots {
+			if slot.ObservedDecodeTPS > 0 {
+				r.tpsRegistry.Record(slot.Model, chipFamily, slot.ObservedDecodeTPS)
+			}
+		}
 	}
 	// Update warm models from heartbeat
 	if len(msg.WarmModels) > 0 {

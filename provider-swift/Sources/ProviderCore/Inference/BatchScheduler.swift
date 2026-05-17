@@ -49,6 +49,8 @@ public actor BatchScheduler {
     private var modelContainer: ModelContainer?
     private var modelId: String = ""
     private var modelWeightBytes: Int = 0
+    private var kvBytesPerToken: Int = 400_000
+    private var dynamicTokenBudgetMax: Int = 0
 
     private var tokenizer: TokenizerBox?
     private var generator: BatchGenerator?
@@ -60,12 +62,26 @@ public actor BatchScheduler {
     private var cancelledUIDs = Set<Int>()
     private var generationEpoch: UInt64 = 0
     private var engineBusy = false
+    private var observedDecodeTpsEwma: Double = 0
+    private var ewmaInitialized = false
 
     /// Once every active row has received its first token, run several decode
     /// steps per actor/model hop. A single hop per token starves Gemma-class
     /// models because the CPU actor round trip is larger than one GPU step.
     private let decodeBurstSteps = 32
 
+    private var tokenBudgetMax: Int {
+        if dynamicTokenBudgetMax > 0 {
+            return dynamicTokenBudgetMax
+        }
+        return defaultMaxTokens * maxConcurrentRequests
+    }
+
+    private var currentTokenBudgetUsed: Int {
+        let activeBudget = active.values.reduce(0) { $0 + $1.promptTokens + $1.maxTokens }
+        let pendingBudget = pending.reduce(0) { $0 + $1.promptTokens.count + $1.maxTokens }
+        return activeBudget + pendingBudget
+    }
 
     public init(
         maxConcurrentRequests: Int = 4,
@@ -123,6 +139,19 @@ public actor BatchScheduler {
             completionBatchSize: maxConcurrentRequests
         )
         startWorker()
+
+        // Compute dynamic token budget from available memory.
+        let estimatedKV = max(snapshot.bytes / 25_000, 100_000)
+        self.kvBytesPerToken = estimatedKV
+        let totalMemory = Int(ProcessInfo.processInfo.physicalMemory)
+        let osReserve = 4 * 1024 * 1024 * 1024
+        let safetyMargin = totalMemory / 10
+        let availableForKV = totalMemory - snapshot.bytes - osReserve - safetyMargin
+        if availableForKV > 0 && estimatedKV > 0 {
+            self.dynamicTokenBudgetMax = max(availableForKV / estimatedKV, 1024)
+        } else {
+            self.dynamicTokenBudgetMax = 1024
+        }
     }
 
     public func unloadModel() async {
@@ -159,6 +188,14 @@ public actor BatchScheduler {
         }
 
         let maxTokens = request.max_tokens ?? defaultMaxTokens
+
+        let requestBudget = promptTokens.count + maxTokens
+        if currentTokenBudgetUsed + requestBudget > tokenBudgetMax {
+            continuation.yield(.error("token_budget_exhausted: request requires \(requestBudget) tokens but only \(tokenBudgetMax - currentTokenBudgetUsed) available"))
+            continuation.finish()
+            return stream
+        }
+
         let temperature = request.temperature ?? 0.0
         // Pass `nil` for greedy rows so GenerationBatch.step takes its
         // vectorized fast path (one batched argMax across all rows)
@@ -234,13 +271,35 @@ public actor BatchScheduler {
     public func backendCapacity() -> BackendCapacity {
         let cap = capacity()
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
+
+        var activeTokens: Int64 = 0
+        var maxTokensPotential: Int64 = 0
+        var activeBudget: Int64 = 0
+        for entry in active.values {
+            activeTokens += Int64(entry.promptTokens + entry.completionTokens)
+            maxTokensPotential += Int64(entry.promptTokens + entry.maxTokens)
+            activeBudget += Int64(entry.promptTokens + entry.maxTokens)
+        }
+
+        var queuedBudget: Int64 = 0
+        for entry in pending {
+            queuedBudget += Int64(entry.promptTokens.count + entry.maxTokens)
+        }
+
+        let budgetMax = Int64(tokenBudgetMax)
+
         let slot = BackendSlotCapacity(
             model: cap.model,
             state: cap.activeRequests > 0 ? "running" : "idle",
             numRunning: UInt32(cap.activeRequests),
             numWaiting: UInt32(cap.pendingRequests),
-            activeTokens: 0,
-            maxTokensPotential: Int64(defaultMaxTokens * maxConcurrentRequests)
+            activeTokens: activeTokens,
+            maxTokensPotential: maxTokensPotential,
+            observedDecodeTps: observedDecodeTpsEwma,
+            activeTokenBudgetUsed: activeBudget,
+            activeTokenBudgetMax: budgetMax,
+            queuedTokenBudget: queuedBudget,
+            kvBytesPerToken: Int64(kvBytesPerToken)
         )
         return BackendCapacity(
             slots: [slot],
@@ -319,6 +378,7 @@ public actor BatchScheduler {
                 detokenizer: entry.detokenizer,
                 promptTokens: entry.promptTokens.count,
                 completionTokens: 0,
+                maxTokens: entry.maxTokens,
                 firstTokenAt: nil,
                 lastTokenAt: nil,
                 submittedAt: entry.submittedAt
@@ -368,6 +428,8 @@ public actor BatchScheduler {
         tokenizer = nil
         modelWeightBytes = 0
         modelId = ""
+        kvBytesPerToken = 400_000
+        dynamicTokenBudgetMax = 0
 
         while engineBusy {
             try? await Task.sleep(for: .milliseconds(1))
@@ -441,6 +503,16 @@ public actor BatchScheduler {
                     ? Double(entry.completionTokens) / elapsedSeconds : 0
             }
 
+            if tps > 0 {
+                let alpha = 0.3
+                if ewmaInitialized {
+                    observedDecodeTpsEwma = alpha * tps + (1 - alpha) * observedDecodeTpsEwma
+                } else {
+                    observedDecodeTpsEwma = tps
+                    ewmaInitialized = true
+                }
+            }
+
             entry.continuation.yield(.info(
                 promptTokens: entry.promptTokens,
                 completionTokens: entry.completionTokens,
@@ -483,6 +555,7 @@ private struct ActiveRequest {
     var detokenizer: NaiveStreamingDetokenizer
     var promptTokens: Int
     var completionTokens: Int
+    let maxTokens: Int
     var firstTokenAt: ContinuousClock.Instant?
     var lastTokenAt: ContinuousClock.Instant?
     let submittedAt: ContinuousClock.Instant

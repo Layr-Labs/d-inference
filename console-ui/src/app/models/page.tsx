@@ -13,13 +13,13 @@ import {
   TrendingDown,
 } from "lucide-react";
 
-// Competitor pricing for comparison — static since these are external
-const competitorPricing: Record<string, { output: number; name: string; competitor: string; unit?: string }> = {
-  "qwen3.5-27b-claude-opus-8bit": { output: 1_560_000, name: "Qwen3.5 27B Claude Opus", competitor: "OpenRouter" },
-  "mlx-community/Trinity-Mini-8bit": { output: 150_000, name: "Trinity Mini", competitor: "OpenRouter" },
-  "mlx-community/gemma-4-26b-a4b-it-8bit": { output: 400_000, name: "Gemma 4 26B", competitor: "OpenRouter" },
-  "mlx-community/Qwen3.5-122B-A10B-8bit": { output: 2_080_000, name: "Qwen3.5 122B", competitor: "OpenRouter" },
-  "mlx-community/MiniMax-M2.5-8bit": { output: 1_000_000, name: "MiniMax M2.5", competitor: "OpenRouter" },
+// Baseline pricing for comparison, static since these are external reference points.
+const baselinePricing: Record<string, { output: number; name: string; baseline: string; unit?: string }> = {
+  "qwen3.5-27b-claude-opus-8bit": { output: 1_560_000, name: "Qwen3.5 27B Claude Opus", baseline: "OpenRouter" },
+  "mlx-community/Trinity-Mini-8bit": { output: 150_000, name: "Trinity Mini", baseline: "OpenRouter" },
+  "mlx-community/gemma-4-26b-a4b-it-8bit": { output: 400_000, name: "Gemma 4 26B", baseline: "OpenRouter" },
+  "mlx-community/Qwen3.5-122B-A10B-8bit": { output: 2_080_000, name: "Qwen3.5 122B", baseline: "OpenRouter" },
+  "mlx-community/MiniMax-M2.5-8bit": { output: 1_000_000, name: "MiniMax M2.5", baseline: "OpenRouter" },
 };
 
 // Build a unified pricing lookup from the coordinator's response
@@ -184,13 +184,13 @@ export default function ModelsPage() {
                             {eigenPricing[model.id].unit ?? "per 1M tokens"}
                           </span>
                         </div>
-                        {competitorPricing[model.id] && (
+                        {baselinePricing[model.id] && (
                           <div className="flex items-center gap-1.5 mt-1">
                             <TrendingDown size={10} className="text-accent-green" />
                             <span className="text-xs font-medium text-accent-green">
-                              {savingsPercent(eigenPricing[model.id].output, competitorPricing[model.id].output)}% cheaper
+                              {savingsPercent(eigenPricing[model.id].output, baselinePricing[model.id].output)}% cheaper
                             </span>
-                            <span className="text-xs text-text-tertiary opacity-50">vs {competitorPricing[model.id].competitor}</span>
+                            <span className="text-xs text-text-tertiary opacity-50">against {baselinePricing[model.id].baseline} baseline</span>
                           </div>
                         )}
                       </div>
@@ -224,10 +224,10 @@ export default function ModelsPage() {
           <div className="mt-12 mb-8">
             <div className="mb-4">
               <h2 className="text-2xl font-semibold text-ink mb-1">
-                Pricing vs Competitors
+                Pricing vs Baseline
               </h2>
               <p className="text-sm text-text-tertiary">
-                Darkbloom runs on idle Apple Silicon hardware — 50% cheaper than centralized providers.
+                Darkbloom runs on idle Apple Silicon hardware, benchmarked against common market pricing.
               </p>
             </div>
 
@@ -237,21 +237,21 @@ export default function ModelsPage() {
                   <tr className="border-b border-border-dim">
                     <th className="text-left px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wider">Model</th>
                     <th>Darkbloom</th>
-                    <th className="text-right px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wider">Competitor</th>
+                    <th className="text-right px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wider">Baseline</th>
                     <th className="text-right px-4 py-3 text-xs font-medium text-text-tertiary uppercase tracking-wider">Savings</th>
                   </tr>
                 </thead>
                 <tbody>
                   {Object.entries(eigenPricing)
-                    .filter(([id]) => competitorPricing[id])
+                    .filter(([id]) => baselinePricing[id])
                     .map(([id, eigen]) => {
-                      const comp = competitorPricing[id];
-                      const savings = savingsPercent(eigen.output, comp.output);
+                      const baseline = baselinePricing[id];
+                      const savings = savingsPercent(eigen.output, baseline.output);
                       const unit = eigen.unit ?? "per 1M tokens";
                       return (
                         <tr key={id} className="border-b border-border-dim/50 hover:bg-bg-tertiary transition-colors">
                           <td className="px-4 py-3">
-                            <span className="font-medium text-text-primary">{comp.name}</span>
+                            <span className="font-medium text-text-primary">{baseline.name}</span>
                             <span className="ml-2 text-xs text-text-tertiary">{unit}</span>
                           </td>
                           <td className="px-4 py-3 text-right font-mono text-text-secondary">
@@ -261,9 +261,9 @@ export default function ModelsPage() {
                           </td>
                           <td className="px-4 py-3 text-right font-mono text-text-tertiary">
                             <span className="line-through opacity-60">
-                              {microUsdToDisplay(comp.output)}
+                              {microUsdToDisplay(baseline.output)}
                             </span>
-                            <span className="block text-xs opacity-50">{comp.competitor}</span>
+                            <span className="block text-xs opacity-50">{baseline.baseline}</span>
                           </td>
                           <td className="px-4 py-3 text-right">
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-green-dim/30 text-accent-green text-xs font-medium">
@@ -277,7 +277,7 @@ export default function ModelsPage() {
                 </tbody>
               </table>
               <div className="px-4 py-2 text-xs text-text-tertiary bg-bg-tertiary/50">
-                Competitor prices from OpenRouter as of April 2026.
+                Baseline prices from OpenRouter as of April 2026.
               </div>
             </div>
           </div>

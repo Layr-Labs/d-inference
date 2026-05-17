@@ -25,6 +25,10 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn is_zero_i64(value: &i64) -> bool {
+    *value == 0
+}
+
 /// Messages sent from provider to coordinator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -259,6 +263,21 @@ pub struct BackendSlotCapacity {
     pub active_tokens: i64,
     /// Sum of max_tokens across running requests (worst-case future growth).
     pub max_tokens_potential: i64,
+    /// EWMA of measured per-request decode TPS (0 = not reported).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_decode_tps: Option<f64>,
+    /// Tokens reserved by active requests (prompt + max_output). 0 = not reported.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub active_token_budget_used: i64,
+    /// Maximum token budget for this slot. 0 = not reported.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub active_token_budget_max: i64,
+    /// Tokens reserved by queued requests. 0 = not reported.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub queued_token_budget: i64,
+    /// Per-token KV cache memory cost in bytes (0 = unknown/not reported).
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub kv_bytes_per_token: i64,
 }
 
 /// Aggregate backend capacity across all slots on a provider. Reported in

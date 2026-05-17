@@ -3084,6 +3084,11 @@ async fn cmd_serve(
                                     num_waiting: 0,
                                     active_tokens: 0,
                                     max_tokens_potential: 0,
+                                    observed_decode_tps: None,
+                                    active_token_budget_used: 0,
+                                    active_token_budget_max: 0,
+                                    queued_token_budget: 0,
+                                    kv_bytes_per_token: 0,
                                 });
                                 continue;
                             }
@@ -3109,6 +3114,11 @@ async fn cmd_serve(
                                         num_waiting: status.num_waiting,
                                         active_tokens: status.active_tokens,
                                         max_tokens_potential: status.max_tokens_potential,
+                                        observed_decode_tps: None,
+                                        active_token_budget_used: 0,
+                                        active_token_budget_max: 0,
+                                        queued_token_budget: 0,
+                                        kv_bytes_per_token: 0,
                                     });
                                 }
                                 None => {
@@ -3128,6 +3138,11 @@ async fn cmd_serve(
                                         num_waiting: 0,
                                         active_tokens: 0,
                                         max_tokens_potential: 0,
+                                        observed_decode_tps: None,
+                                        active_token_budget_used: 0,
+                                        active_token_budget_max: 0,
+                                        queued_token_budget: 0,
+                                        kv_bytes_per_token: 0,
                                     });
                                 }
                             }

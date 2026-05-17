@@ -256,6 +256,86 @@ func (s *Server) reservationCost(model string, promptTokens, maxTokens int) int6
 	return payments.CalculateCostWithOverrides(model, promptTokens, maxTokens, customIn, customOut, hasCustom)
 }
 
+func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference string) bool {
+	if pr == nil || pr.ReservedMicroUSD <= 0 {
+		return false
+	}
+	if reference == "" {
+		reference = "reservation_refund:" + pr.RequestID
+	}
+	start := time.Now()
+	finalized, err := pr.FinalizeReservation(func() error {
+		return s.store.Credit(pr.ConsumerKey, pr.ReservedMicroUSD, store.LedgerRefund, reference)
+	})
+	if err != nil {
+		s.logger.Error("failed to refund reservation",
+			"request_id", pr.RequestID,
+			"consumer_key", pr.ConsumerKey,
+			"reserved_micro_usd", pr.ReservedMicroUSD,
+			"error", err,
+		)
+		return false
+	}
+	if !finalized {
+		return false
+	}
+	s.ddIncr("billing.reservation_refunds", []string{"model:" + pr.Model})
+	s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
+	return true
+}
+
+func providerHasPayoutDestination(provider *registry.Provider) bool {
+	if provider == nil {
+		return false
+	}
+	provider.Mu().Lock()
+	defer provider.Mu().Unlock()
+	return provider.AccountID != "" || provider.WalletAddress != ""
+}
+
+func providerPricingKeys(provider *registry.Provider) (accountID, walletAddress string) {
+	if provider == nil {
+		return "", ""
+	}
+	provider.Mu().Lock()
+	defer provider.Mu().Unlock()
+	return provider.AccountID, provider.WalletAddress
+}
+
+func (s *Server) providerReservationCost(provider *registry.Provider, model string, promptTokens, maxTokens int) int64 {
+	accountID, wallet := providerPricingKeys(provider)
+	if accountID != "" {
+		customIn, customOut, hasCustom := s.store.GetModelPrice(accountID, model)
+		if hasCustom {
+			return payments.CalculateCostWithOverrides(model, promptTokens, maxTokens, customIn, customOut, true)
+		}
+	}
+	if wallet != "" {
+		customIn, customOut, hasCustom := s.store.GetModelPrice(wallet, model)
+		if hasCustom {
+			return payments.CalculateCostWithOverrides(model, promptTokens, maxTokens, customIn, customOut, true)
+		}
+	}
+	return s.reservationCost(model, promptTokens, maxTokens)
+}
+
+func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provider *registry.Provider) (int64, error) {
+	if pr == nil {
+		return 0, fmt.Errorf("pending request is required")
+	}
+	required := s.providerReservationCost(provider, pr.Model, pr.EstimatedPromptTokens, pr.RequestedMaxTokens)
+	if required <= pr.ReservedMicroUSD {
+		return pr.ReservedMicroUSD, nil
+	}
+	extra := required - pr.ReservedMicroUSD
+	if err := s.ledger.Charge(pr.ConsumerKey, extra, "reserve:"+pr.ConsumerKey); err != nil {
+		return pr.ReservedMicroUSD, err
+	}
+	pr.ReservedMicroUSD = required
+	s.ddHistogram("billing.reserved_micro_usd", float64(required), []string{"model:" + pr.Model})
+	return required, nil
+}
+
 // ensureMaxTokensBound injects defaultMaxOutputTokens into parsed when the
 // consumer didn't specify any max-tokens field, so the outgoing request to
 // the provider is bounded by the amount we reserve upfront. The injected
@@ -661,6 +741,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			IsResponsesAPI:         isResponsesAPI,
 			EstimatedPromptTokens:  estimatedPromptTokens,
 			RequestedMaxTokens:     requestedMaxTokens,
+			ReservedMicroUSD:       reservedMicroUSD,
 			AllowedProviderSerials: allowedProviderSerials,
 			AcceptedCh:             make(chan struct{}, 1),
 			ChunkCh:                make(chan string, chunkBufferSize),
@@ -728,6 +809,37 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model, "provider_id:" + provider.ID})
 		if decision.EffectiveTPS > 0 {
 			s.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
+		}
+		if s.billing != nil && !providerHasPayoutDestination(provider) {
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			excludeProviders[provider.ID] = struct{}{}
+			lastErr = "provider missing payout destination"
+			lastErrCode = http.StatusServiceUnavailable
+			s.logger.Warn("skipping provider without payout destination",
+				"request_id", requestID,
+				"provider_id", provider.ID,
+				"model", model,
+			)
+			continue
+		}
+		if s.billing != nil {
+			var err error
+			reservedMicroUSD, err = s.reserveAdditionalForProvider(pr, provider)
+			if err != nil {
+				provider.RemovePending(requestID)
+				s.registry.SetProviderIdle(provider.ID)
+				excludeProviders[provider.ID] = struct{}{}
+				lastErr = "insufficient funds for provider price"
+				lastErrCode = http.StatusPaymentRequired
+				s.logger.Warn("consumer balance cannot cover selected provider price",
+					"request_id", requestID,
+					"provider_id", provider.ID,
+					"model", model,
+					"error", err,
+				)
+				continue
+			}
 		}
 
 		// E2E encryption — must be done per provider (different keys).
@@ -1199,6 +1311,27 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if !ok {
+				select {
+				case errMsg, ok := <-pr.ErrorCh:
+					if ok && errMsg.Error != "" {
+						s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+						errData, _ := json.Marshal(map[string]any{
+							"error": map[string]any{
+								"message": errMsg.Error,
+								"type":    "provider_error",
+							},
+						})
+						fmt.Fprintf(w, "data: %s\n\n", errData)
+						flusher.Flush()
+						return
+					}
+				default:
+				}
+				if s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
+					fmt.Fprintf(w, "data: {\"error\":{\"message\":\"provider ended without completion\",\"type\":\"provider_error\"}}\n\n")
+					flusher.Flush()
+					return
+				}
 				// Channel closed — inference complete.
 				// For Responses API streams, the provider already sent
 				// "response.completed" as the terminal event. Adding
@@ -1238,7 +1371,11 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			}
 			timer.Reset(inferenceTimeout)
 
-		case errMsg := <-pr.ErrorCh:
+		case errMsg, ok := <-pr.ErrorCh:
+			if !ok {
+				continue
+			}
+			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
 			errData, _ := json.Marshal(map[string]any{
 				"error": map[string]any{
 					"message": errMsg.Error,
@@ -1250,6 +1387,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			return
 
 		case <-timer.C:
+			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 			fmt.Fprintf(w, "data: {\"error\":{\"message\":\"request timed out\",\"type\":\"timeout\"}}\n\n")
 			flusher.Flush()
 			return
@@ -1307,12 +1445,27 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 		case chunk, ok := <-pr.ChunkCh:
 			if !ok {
 				var usage protocol.UsageInfo
+				completed := false
 				select {
 				case u, ok := <-pr.CompleteCh:
 					if ok {
 						usage = u
+						completed = true
 					}
 				default:
+				}
+				if !completed && s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
+					writeResponsesSSE(w, flusher, map[string]any{
+						"type":            "error",
+						"sequence_number": 0,
+						"error": map[string]any{
+							"type":    "provider_error",
+							"code":    "provider_error",
+							"message": "provider ended without completion",
+							"param":   nil,
+						},
+					})
+					return
 				}
 				msg := extractMessage(chunks)
 				writeResponsesStreamOutput(w, flusher, pr, responseID, createdAt, msg, usage)
@@ -1327,7 +1480,11 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 			}
 			timer.Reset(inferenceTimeout)
 
-		case errMsg := <-pr.ErrorCh:
+		case errMsg, ok := <-pr.ErrorCh:
+			if !ok {
+				continue
+			}
+			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
 			writeResponsesSSE(w, flusher, map[string]any{
 				"type":            "error",
 				"sequence_number": 0,
@@ -1341,6 +1498,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 			return
 
 		case <-timer.C:
+			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 			writeResponsesSSE(w, flusher, map[string]any{
 				"type":            "error",
 				"sequence_number": 0,
@@ -1512,6 +1670,19 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if !ok {
+				select {
+				case errMsg, ok := <-pr.ErrorCh:
+					if ok && errMsg.Error != "" {
+						s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+						statusCode := errMsg.StatusCode
+						if statusCode == 0 {
+							statusCode = http.StatusBadGateway
+						}
+						writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+						return
+					}
+				default:
+				}
 				// The provider forwards the raw backend response as a single
 				// chunk. Detect complete responses (object=chat.completion
 				// or object=response) and pass through directly — this is
@@ -1526,8 +1697,16 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 						// object=response. Delta chunks have object=chat.completion.chunk.
 						if objType == "chat.completion" || objType == "response" {
 							select {
-							case <-pr.CompleteCh:
+							case _, ok := <-pr.CompleteCh:
+								if !ok {
+									s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
+									writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "provider ended without completion"))
+									return
+								}
 							case <-ctx.Done():
+								s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
+								writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
+								return
 							}
 							if objType == "chat.completion" {
 								normalizeCompleteChatResponse(obj, pr.Model)
@@ -1550,7 +1729,12 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				// Fallback: SSE delta chunks — reconstruct into response.
 				msg := extractMessage(chunks)
 				select {
-				case usage := <-pr.CompleteCh:
+				case usage, ok := <-pr.CompleteCh:
+					if !ok {
+						s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
+						writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "provider ended without completion"))
+						return
+					}
 					var resp map[string]any
 					if pr.IsResponsesAPI {
 						resp = buildResponsesResponse(pr.RequestID, pr.Model, msg, usage, pr.SESignature, pr.ResponseHash)
@@ -1559,13 +1743,18 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 					}
 					writeJSON(w, http.StatusOK, resp)
 				case <-ctx.Done():
+					s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 					writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
 				}
 				return
 			}
 			chunks = append(chunks, chunk)
 
-		case errMsg := <-pr.ErrorCh:
+		case errMsg, ok := <-pr.ErrorCh:
+			if !ok {
+				continue
+			}
+			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
 			statusCode := errMsg.StatusCode
 			if statusCode == 0 {
 				statusCode = http.StatusBadGateway
@@ -1574,6 +1763,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 			return
 
 		case <-ctx.Done():
+			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 			writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "request timed out"))
 			return
 		}
@@ -2529,6 +2719,26 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	s.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model, "provider_id:" + provider.ID})
 	if decision.EffectiveTPS > 0 {
 		s.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
+	}
+	if s.billing != nil && !providerHasPayoutDestination(provider) {
+		provider.RemovePending(requestID)
+		s.registry.SetProviderIdle(provider.ID)
+		refundReservation()
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
+			fmt.Sprintf("no payable provider available for model %q", model)))
+		return
+	}
+	if s.billing != nil {
+		var err error
+		reservedMicroUSD, err = s.reserveAdditionalForProvider(pr, provider)
+		if err != nil {
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			refundReservation()
+			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
+				"your balance is too low for this provider price — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
+			return
+		}
 	}
 
 	inferenceBody, _ := json.Marshal(parsed)

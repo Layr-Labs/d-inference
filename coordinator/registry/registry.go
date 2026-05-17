@@ -608,9 +608,11 @@ func TruncHash(h string) string {
 
 // CatalogEntry holds metadata about an active model in the catalog.
 type CatalogEntry struct {
-	ID         string
-	WeightHash string  // expected SHA-256 weight fingerprint (empty = not enforced)
-	SizeGB     float64 // disk/GPU footprint of the model weights (zero = unknown, gate disabled)
+	ID              string
+	WeightHash      string  // expected SHA-256 weight fingerprint (empty = not enforced)
+	SizeGB          float64 // disk/GPU footprint of the model weights (zero = unknown, gate disabled)
+	ContextLength   int     // max context window in tokens (0 = default 131072)
+	MaxOutputTokens int     // max output tokens per request (0 = default 32768)
 }
 
 // SetModelCatalog updates the set of active models. Only models in this
@@ -681,6 +683,35 @@ func (r *Registry) catalogSizeGBLocked(model string) float64 {
 		return e.SizeGB
 	}
 	return 0
+}
+
+const (
+	DefaultContextLength   = 131072 // 128k tokens
+	DefaultMaxOutputTokens = 32768  // 32k tokens
+)
+
+// CatalogContextLength returns the context window for a model. Returns
+// DefaultContextLength (128k) if the model is not in the catalog or the
+// field is unset.
+func (r *Registry) CatalogContextLength(model string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if e, ok := r.modelCatalog[model]; ok && e.ContextLength > 0 {
+		return e.ContextLength
+	}
+	return DefaultContextLength
+}
+
+// CatalogMaxOutputTokens returns the max output tokens for a model. Returns
+// DefaultMaxOutputTokens (32k) if the model is not in the catalog or the
+// field is unset.
+func (r *Registry) CatalogMaxOutputTokens(model string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if e, ok := r.modelCatalog[model]; ok && e.MaxOutputTokens > 0 {
+		return e.MaxOutputTokens
+	}
+	return DefaultMaxOutputTokens
 }
 
 // trustMeetsMinimum returns true if the given trust level meets the minimum.

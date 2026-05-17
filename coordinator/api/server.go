@@ -422,9 +422,11 @@ func (s *Server) SyncModelCatalog() {
 	for _, m := range models {
 		if m.Active && !IsRetiredProviderModel(m) {
 			entries = append(entries, registry.CatalogEntry{
-				ID:         m.ID,
-				WeightHash: m.WeightHash,
-				SizeGB:     m.SizeGB,
+				ID:              m.ID,
+				WeightHash:      m.WeightHash,
+				SizeGB:          m.SizeGB,
+				ContextLength:   m.ContextLength,
+				MaxOutputTokens: m.MaxOutputTokens,
 			})
 		}
 	}

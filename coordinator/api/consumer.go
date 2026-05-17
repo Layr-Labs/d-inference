@@ -230,7 +230,7 @@ func stripProviderRoutingFields(parsed map[string]any) bool {
 // post-inference charge would fail silently (see GitHub issue #33). Consumers
 // who need longer generations must set max_tokens explicitly and carry the
 // balance to cover it.
-const defaultMaxOutputTokens = 8192
+const defaultMaxOutputTokens = 32768
 
 // explicitMaxTokens returns the consumer-specified max output tokens from any
 // of the recognized field names, or 0 if none were set.
@@ -256,20 +256,26 @@ func (s *Server) reservationCost(model string, promptTokens, maxTokens int) int6
 	return payments.CalculateCostWithOverrides(model, promptTokens, maxTokens, customIn, customOut, hasCustom)
 }
 
-// ensureMaxTokensBound injects defaultMaxOutputTokens into parsed when the
+// ensureMaxTokensBound injects a max-tokens bound into parsed when the
 // consumer didn't specify any max-tokens field, so the outgoing request to
-// the provider is bounded by the amount we reserve upfront. The injected
-// field name depends on the API flavor: Responses API uses max_output_tokens,
-// everything else uses max_tokens. Returns true when an injection occurred,
-// so the caller can re-marshal the outgoing body if needed.
-func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool) bool {
+// the provider is bounded by the amount we reserve upfront. Uses the
+// per-model limit from the catalog when available, otherwise falls back to
+// defaultMaxOutputTokens. The injected field name depends on the API flavor:
+// Responses API uses max_output_tokens, everything else uses max_tokens.
+// Returns true when an injection occurred, so the caller can re-marshal the
+// outgoing body if needed.
+func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool, modelMaxTokens int) bool {
 	if explicitMaxTokens(parsed) > 0 {
 		return false
 	}
+	limit := defaultMaxOutputTokens
+	if modelMaxTokens > 0 {
+		limit = modelMaxTokens
+	}
 	if isResponsesAPI {
-		parsed["max_output_tokens"] = defaultMaxOutputTokens
+		parsed["max_output_tokens"] = limit
 	} else {
-		parsed["max_tokens"] = defaultMaxOutputTokens
+		parsed["max_tokens"] = limit
 	}
 	return true
 }
@@ -568,7 +574,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// outgoing body. Without this bound the provider could return more tokens
 	// than we reserved for, and the silent post-inference charge failure would
 	// hand the consumer free inference (GitHub issue #33).
-	if ensureMaxTokensBound(parsed, isResponsesAPI) {
+	modelMaxOutputTokens := s.registry.CatalogMaxOutputTokens(model)
+	if ensureMaxTokensBound(parsed, isResponsesAPI, modelMaxOutputTokens) {
 		rawBody, _ = json.Marshal(parsed)
 	}
 
@@ -2143,6 +2150,16 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		if inCatalog && cm.DisplayName != "" {
 			metadata["display_name"] = cm.DisplayName
 		}
+		contextLength := registry.DefaultContextLength
+		maxOutput := registry.DefaultMaxOutputTokens
+		if inCatalog && cm.ContextLength > 0 {
+			contextLength = cm.ContextLength
+		}
+		if inCatalog && cm.MaxOutputTokens > 0 {
+			maxOutput = cm.MaxOutputTokens
+		}
+		metadata["context_length"] = contextLength
+		metadata["max_output_tokens"] = maxOutput
 		data = append(data, map[string]any{
 			"id":       m.ID,
 			"object":   "model",
@@ -2446,7 +2463,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Completions and Anthropic messages both use the max_tokens field (never
 	// max_output_tokens, which is Responses API only). Inject a default if
 	// unset so the pre-flight reservation bounds the generation.
-	ensureMaxTokensBound(parsed, false)
+	ensureMaxTokensBound(parsed, false, s.registry.CatalogMaxOutputTokens(model))
 
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := estimatePromptTokens(parsed)

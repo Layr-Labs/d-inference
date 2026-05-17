@@ -142,7 +142,7 @@ public actor ProviderLoop {
 
     private static let schedulerMaxConcurrent = 4
     private static let schedulerPendingTimeout: Duration = .seconds(120)
-    private static let schedulerDefaultMaxTokens = 4096
+    private static let schedulerDefaultMaxTokens = 32_768
 
     private struct ModelSlot {
         let scheduler: BatchScheduler

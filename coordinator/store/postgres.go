@@ -275,6 +275,15 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			ALTER TABLE supported_models ADD COLUMN IF NOT EXISTS weight_hash TEXT NOT NULL DEFAULT '';
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
+		// Add context_length and max_output_tokens columns for per-model token limits
+		`DO $$ BEGIN
+			ALTER TABLE supported_models ADD COLUMN IF NOT EXISTS context_length INTEGER NOT NULL DEFAULT 0;
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
+		`DO $$ BEGIN
+			ALTER TABLE supported_models ADD COLUMN IF NOT EXISTS max_output_tokens INTEGER NOT NULL DEFAULT 0;
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
 
 		// Releases (provider binary versioning)
 		`CREATE TABLE IF NOT EXISTS releases (
@@ -1619,13 +1628,14 @@ func (s *PostgresStore) SetSupportedModel(model *SupportedModel) error {
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO supported_models (id, s3_name, display_name, model_type, size_gb, architecture, description, min_ram_gb, active, weight_hash, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+		`INSERT INTO supported_models (id, s3_name, display_name, model_type, size_gb, architecture, description, min_ram_gb, active, weight_hash, context_length, max_output_tokens, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
 		 ON CONFLICT (id) DO UPDATE SET
 		   s3_name = $2, display_name = $3, model_type = $4, size_gb = $5, architecture = $6,
-		   description = $7, min_ram_gb = $8, active = $9, weight_hash = $10, updated_at = NOW()`,
+		   description = $7, min_ram_gb = $8, active = $9, weight_hash = $10, context_length = $11, max_output_tokens = $12, updated_at = NOW()`,
 		model.ID, model.S3Name, model.DisplayName, model.ModelType, model.SizeGB,
 		model.Architecture, model.Description, model.MinRAMGB, model.Active, model.WeightHash,
+		model.ContextLength, model.MaxOutputTokens,
 	)
 	if err != nil {
 		return fmt.Errorf("store: set supported model: %w", err)
@@ -1638,7 +1648,7 @@ func (s *PostgresStore) ListSupportedModels() []SupportedModel {
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, s3_name, display_name, model_type, size_gb, architecture, description, min_ram_gb, active, weight_hash
+		`SELECT id, s3_name, display_name, model_type, size_gb, architecture, description, min_ram_gb, active, weight_hash, context_length, max_output_tokens
 		 FROM supported_models ORDER BY model_type ASC, min_ram_gb ASC, size_gb ASC`,
 	)
 	if err != nil {
@@ -1650,7 +1660,8 @@ func (s *PostgresStore) ListSupportedModels() []SupportedModel {
 	for rows.Next() {
 		var m SupportedModel
 		if err := rows.Scan(&m.ID, &m.S3Name, &m.DisplayName, &m.ModelType, &m.SizeGB,
-			&m.Architecture, &m.Description, &m.MinRAMGB, &m.Active, &m.WeightHash); err != nil {
+			&m.Architecture, &m.Description, &m.MinRAMGB, &m.Active, &m.WeightHash,
+			&m.ContextLength, &m.MaxOutputTokens); err != nil {
 			continue
 		}
 		models = append(models, m)

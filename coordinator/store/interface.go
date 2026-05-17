@@ -545,16 +545,18 @@ type StripeWithdrawal struct {
 // small chat models (< 7B) are not useful, but small specialized models
 // (embeddings) can be best-in-class.
 type SupportedModel struct {
-	ID           string  `json:"id"`           // HuggingFace path (e.g. "mlx-community/Qwen3.5-9B-MLX-4bit")
-	S3Name       string  `json:"s3_name"`      // CDN key for download (e.g. "Qwen3.5-9B-MLX-4bit")
-	DisplayName  string  `json:"display_name"` // Human-readable (e.g. "Qwen3.5 9B")
-	ModelType    string  `json:"model_type"`   // "text", "embedding", "tts"
-	SizeGB       float64 `json:"size_gb"`      // Disk/memory size in GB
-	Architecture string  `json:"architecture"` // e.g. "9B dense", "2B conformer"
-	Description  string  `json:"description"`  // e.g. "Balanced", "Fast reasoning"
-	MinRAMGB     int     `json:"min_ram_gb"`   // Minimum system RAM for auto-selection
-	Active       bool    `json:"active"`       // Whether available for use
-	WeightHash   string  `json:"weight_hash"`  // Expected SHA-256 fingerprint of model weight files
+	ID              string  `json:"id"`               // HuggingFace path (e.g. "mlx-community/Qwen3.5-9B-MLX-4bit")
+	S3Name          string  `json:"s3_name"`          // CDN key for download (e.g. "Qwen3.5-9B-MLX-4bit")
+	DisplayName     string  `json:"display_name"`     // Human-readable (e.g. "Qwen3.5 9B")
+	ModelType       string  `json:"model_type"`       // "text", "embedding", "tts"
+	SizeGB          float64 `json:"size_gb"`          // Disk/memory size in GB
+	Architecture    string  `json:"architecture"`     // e.g. "9B dense", "2B conformer"
+	Description     string  `json:"description"`      // e.g. "Balanced", "Fast reasoning"
+	MinRAMGB        int     `json:"min_ram_gb"`       // Minimum system RAM for auto-selection
+	Active          bool    `json:"active"`           // Whether available for use
+	WeightHash      string  `json:"weight_hash"`      // Expected SHA-256 fingerprint of model weight files
+	ContextLength   int     `json:"context_length"`   // Maximum context window in tokens (0 = use default 131072)
+	MaxOutputTokens int     `json:"max_output_tokens"` // Maximum output tokens per request (0 = use default 32768)
 }
 
 // Release represents a versioned provider binary release.

@@ -748,12 +748,13 @@ func (r *Registry) SetQueue(q *RequestQueue) {
 // tok/s, max Mac Studio RAM is 512 GB) so legitimate future hardware isn't
 // clamped unnecessarily.
 const (
-	maxDecodeTPS          = 500.0
-	maxPrefillTPS         = 5000.0
-	maxMemoryBandwidthGBs = 2000.0
-	maxMemoryGB           = 1024
-	maxMemoryGBFloat      = 1024.0
-	maxTokensPotential    = 1_000_000
+	maxDecodeTPS                = 500.0
+	maxPrefillTPS               = 5000.0
+	maxMemoryBandwidthGBs       = 2000.0
+	maxMemoryGB                 = 1024
+	maxMemoryGBFloat            = 1024.0
+	maxTokensPotential          = 1_000_000
+	maxTokenBudgetCap     int64 = 10_000_000_000 // 10 billion — generous safety valve for total token budget capacity
 )
 
 // clampNonNeg returns v clamped into [0, max]; NaN/negative become 0.
@@ -822,11 +823,11 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 				s.ActiveTokenBudgetUsed = maxTokensPotential
 			}
 		}
-		if s.ActiveTokenBudgetMax < 0 || s.ActiveTokenBudgetMax > maxTokensPotential {
+		if s.ActiveTokenBudgetMax < 0 || s.ActiveTokenBudgetMax > maxTokenBudgetCap {
 			if s.ActiveTokenBudgetMax < 0 {
 				s.ActiveTokenBudgetMax = 0
 			} else {
-				s.ActiveTokenBudgetMax = maxTokensPotential
+				s.ActiveTokenBudgetMax = maxTokenBudgetCap
 			}
 		}
 		if s.QueuedTokenBudget < 0 || s.QueuedTokenBudget > maxTokensPotential {

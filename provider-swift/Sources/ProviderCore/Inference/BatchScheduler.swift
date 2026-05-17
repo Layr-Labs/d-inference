@@ -52,6 +52,11 @@ public actor BatchScheduler {
     private var kvBytesPerToken: Int = 400_000
     private var dynamicTokenBudgetMax: Int = 0
 
+    /// Queue planner for admission control, token budget tracking, and request
+    /// phase management. Created in `loadModel()` once the dynamic token budget
+    /// is known; `nil` before a model is loaded (inline fallback is used).
+    private var planner: BatchQueuePlanner?
+
     private var tokenizer: TokenizerBox?
     private var generator: BatchGenerator?
     private var workerTask: Task<Void, Never>?
@@ -141,6 +146,11 @@ public actor BatchScheduler {
         startWorker()
 
         // Compute dynamic token budget from available memory.
+        // NOTE: kvBytesPerToken is a rough heuristic (model weight bytes / 25k,
+        // floored at 100kB). Ideally this would be computed from model
+        // architecture metadata (num_hidden_layers * num_key_value_heads *
+        // head_dim * 2 bytes-per-element * 2 for K+V), but MLX model config
+        // doesn't expose these fields through the LanguageModel protocol yet.
         let estimatedKV = max(snapshot.bytes / 25_000, 100_000)
         self.kvBytesPerToken = estimatedKV
         let totalMemory = Int(ProcessInfo.processInfo.physicalMemory)
@@ -152,6 +162,16 @@ public actor BatchScheduler {
         } else {
             self.dynamicTokenBudgetMax = 1024
         }
+
+        // Create the planner now that tokenBudgetMax is determined.
+        self.planner = BatchQueuePlanner(
+            policy: BatchSchedulingPolicy(
+                maxConcurrentRequests: maxConcurrentRequests,
+                maxQueuedRequests: 128,
+                maxActiveTokenBudget: tokenBudgetMax,
+                maxTokensPerBatch: 4096
+            )
+        )
     }
 
     public func unloadModel() async {
@@ -163,7 +183,7 @@ public actor BatchScheduler {
     public func submit(
         request: ChatCompletionRequest,
         requestId: String? = nil
-    ) -> AsyncStream<GenerationEvent> {
+    ) async -> AsyncStream<GenerationEvent> {
         let id = requestId ?? "req-\(UUID().uuidString.prefix(12))"
         let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
 
@@ -189,8 +209,34 @@ public actor BatchScheduler {
 
         let maxTokens = request.max_tokens ?? defaultMaxTokens
 
+        // Admission control: use planner when available, fall back to inline check.
         let requestBudget = promptTokens.count + maxTokens
-        if currentTokenBudgetUsed + requestBudget > tokenBudgetMax {
+        if let planner = self.planner {
+            let result = await planner.admit(
+                id: id,
+                promptTokenCount: promptTokens.count,
+                maxOutputTokens: maxTokens
+            )
+            if case .rejected(_, let reason) = result {
+                let errorMsg: String
+                switch reason {
+                case .requestExceedsActiveTokenBudget:
+                    errorMsg = "token_budget_exhausted: request exceeds active token budget"
+                case .requestExceedsBatchTokenBudget:
+                    errorMsg = "token_budget_exhausted: request exceeds batch token budget"
+                case .queueFull:
+                    errorMsg = "token_budget_exhausted: request queue full"
+                case .duplicateRequestID:
+                    errorMsg = "token_budget_exhausted: duplicate request ID"
+                case .invalidTokenCount:
+                    errorMsg = "token_budget_exhausted: invalid token count"
+                }
+                continuation.yield(.error(errorMsg))
+                continuation.finish()
+                return stream
+            }
+        } else if currentTokenBudgetUsed + requestBudget > tokenBudgetMax {
+            // Fallback: inline check when planner is not yet initialized (no model loaded).
             continuation.yield(.error("token_budget_exhausted: request requires \(requestBudget) tokens but only \(tokenBudgetMax - currentTokenBudgetUsed) available"))
             continuation.finish()
             return stream
@@ -239,6 +285,11 @@ public actor BatchScheduler {
         let entry = pending.remove(at: index)
         entry.continuation.yield(.error("Request cancelled"))
         entry.continuation.finish()
+
+        // Also remove from the planner's pending queue.
+        if let planner = self.planner {
+            Task { await planner.cancel(requestID: requestId) }
+        }
     }
 
     public func cancelAll() {
@@ -268,7 +319,7 @@ public actor BatchScheduler {
         )
     }
 
-    public func backendCapacity() -> BackendCapacity {
+    public func backendCapacity() async -> BackendCapacity {
         let cap = capacity()
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
 
@@ -284,6 +335,14 @@ public actor BatchScheduler {
         var queuedBudget: Int64 = 0
         for entry in pending {
             queuedBudget += Int64(entry.promptTokens.count + entry.maxTokens)
+        }
+
+        // When the planner is available, prefer its authoritative snapshot
+        // for budget fields since it tracks the full admission lifecycle.
+        if let planner = self.planner {
+            let snapshot = await planner.snapshot()
+            activeBudget = Int64(snapshot.activeTokenBudgetUsed)
+            queuedBudget = Int64(snapshot.queuedTokenBudget)
         }
 
         let budgetMax = Int64(tokenBudgetMax)
@@ -430,6 +489,7 @@ public actor BatchScheduler {
         modelId = ""
         kvBytesPerToken = 400_000
         dynamicTokenBudgetMax = 0
+        planner = nil
 
         while engineBusy {
             try? await Task.sleep(for: .milliseconds(1))
@@ -521,15 +581,28 @@ public actor BatchScheduler {
             entry.continuation.finish()
             active.removeValue(forKey: first.uid)
             requestIdToUid.removeValue(forKey: entry.requestId)
+
+            // Notify planner that this request is done so its token budget
+            // is released for future admissions.
+            if let planner = self.planner {
+                let completedId = entry.requestId
+                Task { await planner.complete(requestID: completedId) }
+            }
         }
     }
 
     private func finishRequest(uid: Int, error: String) {
         guard let entry = active.removeValue(forKey: uid) else { return }
         cancelledUIDs.insert(uid)
-        requestIdToUid.removeValue(forKey: entry.requestId)
+        let cancelledId = entry.requestId
+        requestIdToUid.removeValue(forKey: cancelledId)
         entry.continuation.yield(.error(error))
         entry.continuation.finish()
+
+        // Release the request's token budget in the planner.
+        if let planner = self.planner {
+            Task { await planner.cancel(requestID: cancelledId) }
+        }
     }
 
     private enum MemoryKind { case active, peak, cache }

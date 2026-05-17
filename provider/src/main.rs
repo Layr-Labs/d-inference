@@ -3054,6 +3054,17 @@ async fn cmd_serve(
             if let Some(cap_arc) = backend_capacity_opt {
                 let poll_shared_slots = shared_slots.clone();
                 let total_mem_gb = hw.memory_gb as f64;
+                let total_mem_bytes = hw.memory_gb * 1024 * 1024 * 1024;
+
+                // Build a lookup table of model weight bytes for token budget
+                // estimation. The heuristic mirrors the Swift provider:
+                //   kv_bytes_per_token = max(weight_bytes / 25_000, 100_000)
+                let model_weight_bytes_map: std::collections::HashMap<String, u64> =
+                    available_models
+                        .iter()
+                        .map(|m| (m.id.clone(), m.size_bytes))
+                        .collect();
+
                 let poll_backend_running = backend_running_flag_opt
                     .as_ref()
                     .expect("backend_running_flag must be set in non-local mode")
@@ -3076,6 +3087,34 @@ async fn cmd_serve(
                                 .collect()
                         };
                         for (model_id, port, restarting) in &slot_snapshots {
+                            // Compute per-model token budget fields.
+                            let weight_bytes = model_weight_bytes_map
+                                .get(model_id.as_str())
+                                .copied()
+                                .unwrap_or(0);
+                            let kv_bytes_per_token: i64 = if weight_bytes > 0 {
+                                std::cmp::max(weight_bytes / 25_000, 100_000) as i64
+                            } else {
+                                0
+                            };
+                            let active_token_budget_max: i64 = {
+                                let kv = kv_bytes_per_token as u64;
+                                let os_reserve: u64 = 4 * 1024 * 1024 * 1024; // 4 GB
+                                let safety_margin = total_mem_bytes / 10; // 10%
+                                if kv > 0
+                                    && total_mem_bytes
+                                        > weight_bytes + os_reserve + safety_margin
+                                {
+                                    let available = total_mem_bytes
+                                        - weight_bytes
+                                        - os_reserve
+                                        - safety_margin;
+                                    (available / kv) as i64
+                                } else {
+                                    0
+                                }
+                            };
+
                             if *restarting {
                                 slots.push(protocol::BackendSlotCapacity {
                                     model: model_id.clone(),
@@ -3084,11 +3123,13 @@ async fn cmd_serve(
                                     num_waiting: 0,
                                     active_tokens: 0,
                                     max_tokens_potential: 0,
+                                    // TODO: Track observed decode TPS in proxy layer (coordinator.rs)
+                                    // by measuring tokens/second per proxied request and computing EWMA
                                     observed_decode_tps: None,
                                     active_token_budget_used: 0,
-                                    active_token_budget_max: 0,
+                                    active_token_budget_max,
                                     queued_token_budget: 0,
-                                    kv_bytes_per_token: 0,
+                                    kv_bytes_per_token,
                                 });
                                 continue;
                             }
@@ -3114,11 +3155,13 @@ async fn cmd_serve(
                                         num_waiting: status.num_waiting,
                                         active_tokens: status.active_tokens,
                                         max_tokens_potential: status.max_tokens_potential,
+                                        // TODO: Track observed decode TPS in proxy layer (coordinator.rs)
+                                        // by measuring tokens/second per proxied request and computing EWMA
                                         observed_decode_tps: None,
-                                        active_token_budget_used: 0,
-                                        active_token_budget_max: 0,
+                                        active_token_budget_used: status.max_tokens_potential,
+                                        active_token_budget_max,
                                         queued_token_budget: 0,
-                                        kv_bytes_per_token: 0,
+                                        kv_bytes_per_token,
                                     });
                                 }
                                 None => {
@@ -3138,11 +3181,13 @@ async fn cmd_serve(
                                         num_waiting: 0,
                                         active_tokens: 0,
                                         max_tokens_potential: 0,
+                                        // TODO: Track observed decode TPS in proxy layer (coordinator.rs)
+                                        // by measuring tokens/second per proxied request and computing EWMA
                                         observed_decode_tps: None,
                                         active_token_budget_used: 0,
-                                        active_token_budget_max: 0,
+                                        active_token_budget_max,
                                         queued_token_budget: 0,
-                                        kv_bytes_per_token: 0,
+                                        kv_bytes_per_token,
                                     });
                                 }
                             }

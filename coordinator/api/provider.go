@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -1193,7 +1194,11 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	close(pr.ErrorCh)
 
 	// Record job failure for reputation tracking.
-	s.registry.RecordJobFailure(providerID)
+	// token_budget_exhausted is a capacity rejection, not a provider fault —
+	// skip the reputation penalty so the provider isn't unfairly penalised.
+	if !strings.Contains(msg.Error, "token_budget_exhausted") {
+		s.registry.RecordJobFailure(providerID)
+	}
 
 	// Mark provider idle.
 	s.registry.SetProviderIdle(providerID)

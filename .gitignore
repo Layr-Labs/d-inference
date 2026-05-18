@@ -5,6 +5,7 @@ target/
 *.dylib
 
 .next/
+**/.next/
 
 # Rust
 Cargo.lock

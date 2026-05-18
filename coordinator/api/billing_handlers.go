@@ -372,12 +372,10 @@ func (s *Server) handleGetPricing(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAdminPricing handles PUT /v1/admin/pricing.
-// Sets platform default prices for a model. Requires a Privy account with
-// an admin email. These defaults apply to all users who haven't set custom prices.
+// Sets platform default prices for a model. Requires admin auth. These defaults
+// apply to all users who haven't set custom prices.
 func (s *Server) handleAdminPricing(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil || !s.isAdmin(user) {
-		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
+	if !s.isAdminAuthorized(w, r) {
 		return
 	}
 
@@ -545,9 +543,7 @@ func (s *Server) requirePrivyUser(w http.ResponseWriter, r *http.Request) *store
 // handleAdminListModels handles GET /v1/admin/models.
 // Returns the full supported model catalog. Requires admin auth.
 func (s *Server) handleAdminListModels(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil || !s.isAdmin(user) {
-		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
+	if !s.isAdminAuthorized(w, r) {
 		return
 	}
 
@@ -561,9 +557,7 @@ func (s *Server) handleAdminListModels(w http.ResponseWriter, r *http.Request) {
 // handleAdminSetModel handles POST /v1/admin/models.
 // Adds or updates a model in the catalog. Requires admin auth.
 func (s *Server) handleAdminSetModel(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil || !s.isAdmin(user) {
-		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
+	if !s.isAdminAuthorized(w, r) {
 		return
 	}
 
@@ -605,9 +599,7 @@ func (s *Server) handleAdminSetModel(w http.ResponseWriter, r *http.Request) {
 // handleAdminDeleteModel handles DELETE /v1/admin/models.
 // Removes a model from the catalog. Requires admin auth.
 func (s *Server) handleAdminDeleteModel(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil || !s.isAdmin(user) {
-		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
+	if !s.isAdminAuthorized(w, r) {
 		return
 	}
 

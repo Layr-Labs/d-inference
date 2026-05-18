@@ -54,11 +54,6 @@ const (
 	// backend crashed, model not loaded after idle shutdown).
 	maxDispatchAttempts = 3
 
-	// firstChunkTimeout is the legacy flat first-chunk timeout kept as a
-	// fallback constant. Callers should prefer ttftDeadline() which scales
-	// with prompt size to meet the OpenRouter TTFT SLA.
-	firstChunkTimeout = 10 * time.Second
-
 	// speculativeTimerRatio is the fraction of the TTFT deadline at which
 	// the coordinator launches a speculative backup dispatch. The primary
 	// provider gets this fraction of the deadline before the backup is
@@ -114,17 +109,6 @@ func (s *Server) cancelDispatch(provider *registry.Provider, pr *registry.Pendin
 	provider.RemovePending(pr.RequestID)
 	s.registry.SetProviderIdle(provider.ID)
 	s.sendProviderCancel(provider, pr.RequestID)
-}
-
-// speculativeResult describes the outcome of a speculative dispatch cycle.
-// The winning provider, pending request, routing decision, and first chunk
-// are captured so the caller can proceed with streaming or assembly.
-type speculativeResult struct {
-	provider    *registry.Provider
-	pr          *registry.PendingRequest
-	decision    registry.RoutingDecision
-	firstChunk  string
-	speculative bool // true if the backup provider won the race
 }
 
 // dispatchOneProvider encrypts and sends an inference request to a single
@@ -1809,14 +1793,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleStreamingResponse writes SSE events to the consumer as they arrive
-// from the provider. Each chunk is forwarded in real time, providing
-// token-by-token streaming to the consumer.
-// handleStreamingResponse is kept for callers that don't have a first chunk.
-func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest) {
-	s.handleStreamingResponseWithFirstChunk(w, r, pr, "")
-}
-
 // handleStreamingResponseWithFirstChunk streams SSE chunks to the consumer.
 // If firstChunk is non-empty, it is written before reading further chunks
 // from the channel. This allows the dispatch loop to "peek" at the first
@@ -2206,11 +2182,6 @@ func writeResponsesStreamOutput(w http.ResponseWriter, flusher http.Flusher, pr 
 			"service_tier":       nil,
 		},
 	})
-}
-
-// handleNonStreamingResponse is kept for callers that don't have a first chunk.
-func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest) {
-	s.handleNonStreamingResponseWithFirstChunk(w, r, pr, "")
 }
 
 // handleNonStreamingResponseWithFirstChunk collects all chunks from the

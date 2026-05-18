@@ -3102,13 +3102,10 @@ async fn cmd_serve(
                                 let os_reserve: u64 = 4 * 1024 * 1024 * 1024; // 4 GB
                                 let safety_margin = total_mem_bytes / 10; // 10%
                                 if kv > 0
-                                    && total_mem_bytes
-                                        > weight_bytes + os_reserve + safety_margin
+                                    && total_mem_bytes > weight_bytes + os_reserve + safety_margin
                                 {
-                                    let available = total_mem_bytes
-                                        - weight_bytes
-                                        - os_reserve
-                                        - safety_margin;
+                                    let available =
+                                        total_mem_bytes - weight_bytes - os_reserve - safety_margin;
                                     (available / kv) as i64
                                 } else {
                                     0

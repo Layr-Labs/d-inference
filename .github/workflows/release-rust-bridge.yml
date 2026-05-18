@@ -60,7 +60,7 @@ env:
 
 jobs:
   resolve-env:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       environment: ${{ steps.pick.outputs.environment }}
       version: ${{ steps.pick.outputs.version }}
@@ -86,7 +86,7 @@ jobs:
   build-and-release:
     name: Build, sign, notarize, upload, register
     needs: [resolve-env]
-    runs-on: macos-26-xlarge
+    runs-on: blacksmith-12vcpu-macos-26
 
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}

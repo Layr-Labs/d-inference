@@ -15,7 +15,7 @@ Open [http://localhost:3000](http://localhost:3000).
 
 Client-side variables used by the app:
 
-- `NEXT_PUBLIC_COORDINATOR_URL` - coordinator API base URL
+- `NEXT_PUBLIC_COORDINATOR_URL` - coordinator API base URL 
 - `NEXT_PUBLIC_PRIVY_APP_ID` - Privy application ID
 - `NEXT_PUBLIC_SOLANA_RPC_URL` - Solana RPC endpoint
 - `NEXT_PUBLIC_GA_MEASUREMENT_ID` - optional public Google Analytics 4 measurement ID

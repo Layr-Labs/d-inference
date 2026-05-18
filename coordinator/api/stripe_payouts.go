@@ -111,9 +111,15 @@ func (s *Server) handleStripeOnboard(w http.ResponseWriter, r *http.Request) {
 	// could reference an unknown account.
 	stripeAcctID := user.StripeAccountID
 	if stripeAcctID == "" {
+		country := strings.ToUpper(strings.TrimSpace(req.Country))
+		if country == "" {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+				"country is required before creating a Stripe payout account"))
+			return
+		}
 		acct, err := s.billing.StripeConnect().CreateExpressAccount(billing.CreateExpressAccountParams{
 			Email:   user.Email,
-			Country: strings.TrimSpace(req.Country),
+			Country: country,
 		})
 		if err != nil {
 			s.logger.Error("stripe connect: create account failed", "error", err)

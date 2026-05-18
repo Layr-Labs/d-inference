@@ -46,6 +46,7 @@ public actor BatchScheduler {
     private let maxConcurrentRequests: Int
     private let pendingTimeout: Duration
     private let defaultMaxTokens: Int
+    private let kvBudget: GlobalKVCacheBudget?
 
     private var modelContainer: ModelContainer?
     private var modelId: String = ""
@@ -128,11 +129,13 @@ public actor BatchScheduler {
     public init(
         maxConcurrentRequests: Int = 4,
         pendingTimeout: Duration = .seconds(120),
-        defaultMaxTokens: Int = 4096
+        defaultMaxTokens: Int = 4096,
+        kvBudget: GlobalKVCacheBudget? = nil
     ) {
         self.maxConcurrentRequests = max(1, maxConcurrentRequests)
         self.pendingTimeout = pendingTimeout
         self.defaultMaxTokens = defaultMaxTokens
+        self.kvBudget = kvBudget
         self.dynamicMaxConcurrentRequests = min(4, max(1, maxConcurrentRequests))
     }
 
@@ -411,6 +414,22 @@ public actor BatchScheduler {
             return stream
         }
 
+        if let kvBudget {
+            let reserved = await kvBudget.reserve(
+                requestID: id,
+                kvBytesPerToken: kvBytesPerToken,
+                tokenCount: requestBudget
+            )
+            guard reserved else {
+                if let planner = self.planner {
+                    await planner.cancel(requestID: id)
+                }
+                continuation.yield(.error("token_budget_exhausted: insufficient global KV cache headroom"))
+                continuation.finish()
+                return stream
+            }
+        }
+
         let temperature = request.temperature ?? 0.0
         // Pass `nil` for greedy rows so GenerationBatch.step takes its
         // vectorized fast path (one batched argMax across all rows)
@@ -452,6 +471,7 @@ public actor BatchScheduler {
         }
         guard let index = pending.firstIndex(where: { $0.requestId == requestId }) else { return }
         let entry = pending.remove(at: index)
+        releaseKVReservation(requestID: entry.requestId)
         entry.continuation.yield(.error("Request cancelled"))
         entry.continuation.finish()
 
@@ -467,6 +487,7 @@ public actor BatchScheduler {
             finishRequest(uid: uid, error: "Scheduler shutting down")
         }
         for entry in pending {
+            releaseKVReservation(requestID: entry.requestId)
             entry.continuation.yield(.error("Scheduler shutting down"))
             entry.continuation.finish()
             if let planner = self.planner {
@@ -603,6 +624,7 @@ public actor BatchScheduler {
             let requestBudget = next.promptTokens.count + next.maxTokens
             if requestBudget > budgetMax {
                 pending.remove(at: pendingIndex)
+                releaseKVReservation(requestID: next.requestId)
                 next.continuation.yield(.error("token_budget_exhausted: request requires \(requestBudget) tokens but only \(budgetMax) available"))
                 next.continuation.finish()
                 if let planner = self.planner {
@@ -644,6 +666,7 @@ public actor BatchScheduler {
 
         if assignedUids.count < batch.count {
             for entry in batch.dropFirst(assignedUids.count) {
+                releaseKVReservation(requestID: entry.requestId)
                 entry.continuation.yield(.error("BatchGenerator rejected the prompt"))
                 entry.continuation.finish()
             }
@@ -657,6 +680,7 @@ public actor BatchScheduler {
         stillPending.reserveCapacity(pending.count)
         for entry in pending {
             if now - entry.submittedAt >= pendingTimeout {
+                releaseKVReservation(requestID: entry.requestId)
                 entry.continuation.yield(.error("Request timed out waiting for capacity"))
                 entry.continuation.finish()
                 if let planner = self.planner {
@@ -786,6 +810,7 @@ public actor BatchScheduler {
             entry.continuation.finish()
             active.removeValue(forKey: first.uid)
             requestIdToUid.removeValue(forKey: entry.requestId)
+            releaseKVReservation(requestID: entry.requestId)
 
             // Notify planner that this request is done so its token budget
             // is released for future admissions. Use cancel() instead of
@@ -839,6 +864,7 @@ public actor BatchScheduler {
         cancelledUIDs.insert(uid)
         let cancelledId = entry.requestId
         requestIdToUid.removeValue(forKey: cancelledId)
+        releaseKVReservation(requestID: cancelledId)
         entry.continuation.yield(.error(error))
         entry.continuation.finish()
 
@@ -849,6 +875,11 @@ public actor BatchScheduler {
     }
 
     private enum MemoryKind { case active, peak, cache }
+
+    private func releaseKVReservation(requestID: String) {
+        guard let kvBudget else { return }
+        Task { await kvBudget.release(requestID: requestID) }
+    }
 
     private func gpuMemory(_ kind: MemoryKind) -> Int {
         #if canImport(Metal)

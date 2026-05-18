@@ -17,10 +17,12 @@ import os
 
 private enum StandaloneServerError: Error, LocalizedError {
     case modelNotFound(String)
+    case capacityUnavailable(String)
 
     var errorDescription: String? {
         switch self {
         case .modelNotFound(let id): return "Model '\(id)' not found locally"
+        case .capacityUnavailable(let message): return message
         }
     }
 }
@@ -31,10 +33,12 @@ private enum StandaloneServerError: Error, LocalizedError {
 public struct StandaloneServerConfig: Sendable {
     public let port: UInt16
     public let host: String
+    public let maxCachedModels: Int
 
-    public init(port: UInt16 = 8000, host: String = "127.0.0.1") {
+    public init(port: UInt16 = 8000, host: String = "127.0.0.1", maxCachedModels: Int = 3) {
         self.port = port
         self.host = host
+        self.maxCachedModels = max(1, maxCachedModels)
     }
 }
 
@@ -57,12 +61,11 @@ public actor StandaloneServer {
     private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     private var isLoadingAny: Bool = false
     private var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
+    private var schedulerReservations: [String: Int] = [:]
+    private var evictingModels: Set<String> = []
     private var models: [ModelInfo]
     private var serverTask: Task<Void, Never>?
-
-    /// Maximum number of models kept warm in standalone mode. Oldest models
-    /// are evicted (LRU) when this limit is reached.
-    private static let maxCachedModels = 3
+    private let kvBudget: GlobalKVCacheBudget
 
     public init(
         config: StandaloneServerConfig = StandaloneServerConfig(),
@@ -70,45 +73,79 @@ public actor StandaloneServer {
     ) {
         self.config = config
         self.models = models
+        self.kvBudget = GlobalKVCacheBudget()
     }
 
     private static let schedulerMaxConcurrent = 24
     private static let schedulerPendingTimeout: Duration = .seconds(120)
     private static let schedulerDefaultMaxTokens = 4096
 
-    public func loadModel(_ modelId: String, container: MLXLMCommon.ModelContainer) async {
-        // Evict least-recently-used idle model if at capacity.
-        // Skip schedulers with active requests to avoid truncating in-flight responses.
-        if schedulers.count >= Self.maxCachedModels {
-            var lruKey: String?
-            var lruTime: ContinuousClock.Instant?
-            for (key, cached) in schedulers {
-                let cap = await cached.scheduler.capacity()
-                if cap.activeRequests > 0 || cap.pendingRequests > 0 { continue }
-                if lruTime == nil || cached.lastUsedAt < lruTime! {
-                    lruKey = key
-                    lruTime = cached.lastUsedAt
-                }
-            }
-            if let evictKey = lruKey {
-                await schedulers[evictKey]!.scheduler.unloadModel()
-                schedulers.removeValue(forKey: evictKey)
-                standaloneLogger.info("Evicted LRU model: \(evictKey)")
-            }
-        }
-
+    private func loadModel(_ modelId: String, container: MLXLMCommon.ModelContainer) async {
         let scheduler = BatchScheduler(
             maxConcurrentRequests: Self.schedulerMaxConcurrent,
             pendingTimeout: Self.schedulerPendingTimeout,
-            defaultMaxTokens: Self.schedulerDefaultMaxTokens
+            defaultMaxTokens: Self.schedulerDefaultMaxTokens,
+            kvBudget: kvBudget
         )
         await scheduler.loadModel(container: container, modelId: modelId)
         schedulers[modelId] = CachedScheduler(scheduler: scheduler, lastUsedAt: .now)
     }
 
+    private func evictIfNeededForLoad() async throws {
+        guard schedulers.count >= config.maxCachedModels else { return }
+
+        let snapshot = schedulers.map { (key: $0.key, cached: $0.value) }
+        var lruKey: String?
+        var lruTime: ContinuousClock.Instant?
+
+        for entry in snapshot {
+            guard schedulers[entry.key] != nil,
+                  !evictingModels.contains(entry.key),
+                  (schedulerReservations[entry.key] ?? 0) == 0 else { continue }
+
+            let cap = await entry.cached.scheduler.capacity()
+            guard schedulers[entry.key] != nil,
+                  !evictingModels.contains(entry.key),
+                  (schedulerReservations[entry.key] ?? 0) == 0,
+                  cap.activeRequests == 0,
+                  cap.pendingRequests == 0 else { continue }
+
+            if lruTime == nil || entry.cached.lastUsedAt < lruTime! {
+                lruKey = entry.key
+                lruTime = entry.cached.lastUsedAt
+            }
+        }
+
+        guard let evictKey = lruKey, let evicted = schedulers.removeValue(forKey: evictKey) else {
+            throw StandaloneServerError.capacityUnavailable(
+                "All \(config.maxCachedModels) cached model slot(s) are active; try again when a request finishes"
+            )
+        }
+
+        evictingModels.insert(evictKey)
+        await evicted.scheduler.unloadModel()
+        evictingModels.remove(evictKey)
+        standaloneLogger.info("Evicted LRU model: \(evictKey)")
+    }
+
     /// Touch the cached scheduler's last-used timestamp on access.
     private func touchScheduler(_ modelId: String) {
         schedulers[modelId]?.lastUsedAt = .now
+    }
+
+    private func reserveScheduler(_ modelId: String) {
+        schedulerReservations[modelId, default: 0] += 1
+        touchScheduler(modelId)
+    }
+
+    private func releaseScheduler(_ modelId: String) {
+        guard let count = schedulerReservations[modelId] else { return }
+        if count <= 1 {
+            schedulerReservations.removeValue(forKey: modelId)
+        } else {
+            schedulerReservations[modelId] = count - 1
+        }
+        touchScheduler(modelId)
     }
 
     private func ensureModelLoaded(_ modelId: String) async throws {
@@ -148,6 +185,7 @@ public actor StandaloneServer {
 
         modelsLoading.insert(modelId)
         do {
+            try await evictIfNeededForLoad()
             let container = try await LLMModelFactory.shared.loadContainer(
                 from: modelPath,
                 using: LocalTokenizerLoader()
@@ -281,10 +319,15 @@ public actor StandaloneServer {
 
         do {
             try await ensureModelLoaded(chatRequest.model)
-        } catch let error as StandaloneServerError {
+        } catch StandaloneServerError.modelNotFound(let modelId) {
             return openAIErrorResponse(
                 status: .notFound,
-                message: error.localizedDescription
+                message: StandaloneServerError.modelNotFound(modelId).localizedDescription
+            )
+        } catch StandaloneServerError.capacityUnavailable(let message) {
+            return openAIErrorResponse(
+                status: .serviceUnavailable,
+                message: message
             )
         } catch {
             return openAIErrorResponse(
@@ -299,14 +342,17 @@ public actor StandaloneServer {
                 message: "Model load succeeded but scheduler unavailable"
             )
         }
-        touchScheduler(chatRequest.model)
+        reserveScheduler(chatRequest.model)
 
         if chatRequest.stream ?? false {
             let stream = await cached.scheduler.submit(request: chatRequest)
+            releaseScheduler(chatRequest.model)
             return streamingCompletionResponse(stream: stream, model: chatRequest.model)
         }
 
-        return await nonStreamingCompletion(chatRequest, scheduler: cached.scheduler)
+        let response = await nonStreamingCompletion(chatRequest, scheduler: cached.scheduler)
+        releaseScheduler(chatRequest.model)
+        return response
     }
 
     private nonisolated func streamingCompletionResponse(

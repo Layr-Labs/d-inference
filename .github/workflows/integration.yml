@@ -8,7 +8,7 @@ on:
 jobs:
   integration-tests:
     name: E2E Integration Tests
-    runs-on: macos-26-xlarge
+    runs-on: blacksmith-12vcpu-macos-26
     timeout-minutes: 30
     env:
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
@@ -51,7 +51,7 @@ jobs:
 
   benchmark:
     name: E2E Benchmarks
-    runs-on: macos-15
+    runs-on: blacksmith-12vcpu-macos-26
     timeout-minutes: 30
     if: github.event_name == 'pull_request'
     env:

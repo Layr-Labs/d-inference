@@ -751,25 +751,39 @@ public actor BatchScheduler {
             resolvedLayerTypes = nil
         }
 
-        // If we have different head dims per attention type, sum per-layer.
+        // Layer types that use fixed-size recurrent state (e.g. GatedDeltaNet/Mamba)
+        // instead of per-token KV cache. These contribute zero per-token KV bytes.
+        let recurrentLayerTypes: Set<String> = [
+            "linear_attention",   // Qwen3.5 GatedDeltaNet
+            "recurrent",          // Generic recurrent layers
+        ]
+
+        // If we have per-layer type information, sum only layers with KV cache.
         let hasHybridDims = globalHeadDim != nil && globalHeadDim != headDim
             || numGlobalKvHeads != nil && numGlobalKvHeads != kvHeads
 
-        if let types = resolvedLayerTypes, hasHybridDims {
+        if let types = resolvedLayerTypes {
             var totalBytesPerToken = 0
             for i in 0..<cachedLayers {
-                let isSliding = types[i] != "full_attention"
+                let layerType = types[i]
+
+                // Recurrent layers (linear_attention, etc.) use fixed-size
+                // state, not per-token KV cache. Skip them.
+                if recurrentLayerTypes.contains(layerType) {
+                    continue
+                }
 
                 let layerKvHeads: Int
                 let layerHeadDim: Int
 
-                if isSliding {
-                    layerKvHeads = kvHeads
-                    layerHeadDim = headDim
-                } else {
-                    // Full/global attention layer
+                if hasHybridDims && layerType == "full_attention" {
+                    // Full/global attention layer with different dimensions
                     layerKvHeads = numGlobalKvHeads ?? kvHeads
                     layerHeadDim = globalHeadDim ?? headDim
+                } else {
+                    // Sliding attention or standard full attention
+                    layerKvHeads = kvHeads
+                    layerHeadDim = headDim
                 }
 
                 totalBytesPerToken += layerKvHeads * layerHeadDim * kvTensors * bytesPerElement
@@ -785,7 +799,7 @@ public actor BatchScheduler {
             return cachedLayers * maxKvHeads * ghd * kvTensors * bytesPerElement
         }
 
-        // Standard uniform architecture
+        // Standard uniform architecture (no layer_types, no hybrid dims)
         return cachedLayers * kvHeads * headDim * kvTensors * bytesPerElement
     }
 }

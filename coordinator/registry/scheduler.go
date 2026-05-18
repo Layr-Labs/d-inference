@@ -721,14 +721,26 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string) bool {
 // capacityRejections > 0, providers exist but are all at capacity (429).
 // If candidateCount == 0 && capacityRejections == 0, no provider serves
 // the model at all (404/503).
-func (r *Registry) QuickCapacityCheck(model string) (candidateCount, capacityRejections int) {
-	// Use a dummy PendingRequest with reasonable defaults for the admission
-	// gate. We only need prompt/max token estimates for freeMemoryAdmits.
+func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, allowedSerials ...string) (candidateCount, capacityRejections int) {
+	// Use a dummy PendingRequest with the caller's actual token estimates
+	// for the admission gate (freeMemoryAdmits).
+	if estimatedPromptTokens <= 0 {
+		estimatedPromptTokens = 500
+	}
+	if requestedMaxTokens <= 0 {
+		requestedMaxTokens = defaultRequestedMaxTokens
+	}
 	dummyPR := &PendingRequest{
 		RequestID:             "capacity-check",
 		Model:                 model,
-		EstimatedPromptTokens: 500,
-		RequestedMaxTokens:    defaultRequestedMaxTokens,
+		EstimatedPromptTokens: estimatedPromptTokens,
+		RequestedMaxTokens:    requestedMaxTokens,
+	}
+
+	// Build allowed serial set for optional provider filtering.
+	allowedSet := make(map[string]struct{}, len(allowedSerials))
+	for _, s := range allowedSerials {
+		allowedSet[s] = struct{}{}
 	}
 
 	r.mu.RLock()
@@ -736,6 +748,12 @@ func (r *Registry) QuickCapacityCheck(model string) (candidateCount, capacityRej
 
 	now := time.Now()
 	for _, p := range r.providers {
+		// Filter by allowed serials before acquiring the provider lock
+		// (providerMatchesAllowedSerial takes p.mu internally).
+		if len(allowedSet) > 0 && !providerMatchesAllowedSerial(p, allowedSet) {
+			continue
+		}
+
 		p.mu.Lock()
 
 		// Structural gates (same as snapshotProviderLocked).

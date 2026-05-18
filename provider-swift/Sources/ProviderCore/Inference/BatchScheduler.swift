@@ -172,6 +172,33 @@ public actor BatchScheduler {
                 }
             }
 
+            // Clamp architecture values to prevent absurd token budgets from
+            // crafted config.json (operator-writable model directory).
+            let maxLayersBound = 1024
+            let maxHeadsBound = 1024
+            let maxHeadDimBound = 2048
+
+            if let l = numLayers { numLayers = min(max(l, 1), maxLayersBound) }
+            if let h = kvHeads { kvHeads = min(max(h, 1), maxHeadsBound) }
+            if let hd = headDim { headDim = min(max(hd, 1), maxHeadDimBound) }
+            if let ghd = globalHeadDim { globalHeadDim = min(max(ghd, 1), maxHeadDimBound) }
+            if let gkh = numGlobalKvHeads { numGlobalKvHeads = min(max(gkh, 1), maxHeadsBound) }
+            // Clamp numKvSharedLayers to [0, numLayers]
+            if let l = numLayers {
+                numKvSharedLayers = min(max(numKvSharedLayers, 0), l)
+            } else {
+                numKvSharedLayers = max(numKvSharedLayers, 0)
+            }
+            // Clamp slidingWindowPattern to [0, numLayers]
+            if let swp = slidingWindowPattern {
+                let upperBound = numLayers ?? maxLayersBound
+                slidingWindowPattern = min(max(swp, 0), upperBound)
+            }
+            // Cap layerTypes to first numLayers entries
+            if let lt = layerTypes, let l = numLayers, lt.count > l {
+                layerTypes = Array(lt.prefix(l))
+            }
+
             return LoadSnapshot(
                 bytes: bytes,
                 eos: eos,
@@ -230,13 +257,31 @@ public actor BatchScheduler {
         } else {
             estimatedKV = max(snapshot.bytes / 25_000, 100_000)
         }
-        self.kvBytesPerToken = estimatedKV
+
+        // Cross-check: no real model has KV cache cost below ~1000 bytes per
+        // token (even tiny 2-layer models exceed this). If config.json
+        // produced an implausibly small value, log a warning and fall back
+        // to the weight-bytes heuristic to avoid an absurdly large token
+        // budget that could OOM the system.
+        let kvFloor = 1_000
+        let finalKV: Int
+        if estimatedKV < kvFloor && snapshot.numLayers != nil {
+            let heuristicKV = max(snapshot.bytes / 25_000, 100_000)
+            FileHandle.standardError.write(Data(
+                "[WARN] config.json produced implausibly small kvBytesPerToken=\(estimatedKV); falling back to heuristic=\(heuristicKV)\n".utf8
+            ))
+            finalKV = heuristicKV
+        } else {
+            finalKV = estimatedKV
+        }
+
+        self.kvBytesPerToken = finalKV
         let totalMemory = Int(ProcessInfo.processInfo.physicalMemory)
         let osReserve = 4 * 1024 * 1024 * 1024
         let safetyMargin = totalMemory / 10
         let availableForKV = totalMemory - snapshot.bytes - osReserve - safetyMargin
-        if availableForKV > 0 && estimatedKV > 0 {
-            self.dynamicTokenBudgetMax = max(availableForKV / estimatedKV, 1024)
+        if availableForKV > 0 && finalKV > 0 {
+            self.dynamicTokenBudgetMax = max(availableForKV / finalKV, 1024)
         } else {
             self.dynamicTokenBudgetMax = 1024
         }
@@ -663,10 +708,16 @@ public actor BatchScheduler {
             requestIdToUid.removeValue(forKey: entry.requestId)
 
             // Notify planner that this request is done so its token budget
-            // is released for future admissions.
+            // is released for future admissions. Use cancel() instead of
+            // complete() because the planner's nextBatch() is never called
+            // (BatchScheduler manages its own pending→active promotion),
+            // so entries remain in the planner's pending queue. cancel()
+            // removes from both pending and active; complete() only checks
+            // active, causing a permanent leak that eventually triggers
+            // queueFull rejection.
             if let planner = self.planner {
                 let completedId = entry.requestId
-                Task { await planner.complete(requestID: completedId) }
+                Task { await planner.cancel(requestID: completedId) }
             }
         }
     }

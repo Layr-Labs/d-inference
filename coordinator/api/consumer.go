@@ -180,8 +180,23 @@ func (s *Server) dispatchOneProvider(
 		}
 	}
 
+	// refundExtra credits back the provider-specific surcharge that
+	// reserveAdditionalForProvider may have added. The caller's
+	// refundReservation only covers the base reservation.
+	refundExtra := func() {
+		extra := pr.ReservedMicroUSD - reservedMicroUSD
+		if extra > 0 {
+			start := time.Now()
+			_ = s.store.Credit(consumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+requestID)
+			s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + model})
+			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_extra_refund"})
+			pr.ReservedMicroUSD = reservedMicroUSD
+		}
+	}
+
 	// E2E encryption
 	if provider.PublicKey == "" {
+		refundExtra()
 		s.registry.SetProviderIdle(provider.ID)
 		excludeProviders[provider.ID] = struct{}{}
 		return nil, nil, decision, "no provider with E2E encryption", http.StatusServiceUnavailable
@@ -189,6 +204,7 @@ func (s *Server) dispatchOneProvider(
 
 	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
 	if err != nil {
+		refundExtra()
 		s.registry.SetProviderIdle(provider.ID)
 		excludeProviders[provider.ID] = struct{}{}
 		return nil, nil, decision, "provider public key invalid", http.StatusServiceUnavailable
@@ -196,12 +212,14 @@ func (s *Server) dispatchOneProvider(
 
 	sessionKeys, err := e2e.GenerateSessionKeys()
 	if err != nil {
+		refundExtra()
 		s.registry.SetProviderIdle(provider.ID)
 		return nil, nil, decision, "failed to generate session keys", http.StatusInternalServerError
 	}
 
 	encrypted, err := e2e.Encrypt(rawBody, providerPubKey, sessionKeys)
 	if err != nil {
+		refundExtra()
 		s.registry.SetProviderIdle(provider.ID)
 		return nil, nil, decision, "failed to encrypt request", http.StatusInternalServerError
 	}
@@ -221,11 +239,13 @@ func (s *Server) dispatchOneProvider(
 
 	data, err := json.Marshal(wireMsg)
 	if err != nil {
+		refundExtra()
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
 		return nil, nil, decision, "failed to marshal request", http.StatusInternalServerError
 	}
 	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
+		refundExtra()
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
 		excludeProviders[provider.ID] = struct{}{}
@@ -877,7 +897,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// If not, return 429 immediately rather than queueing for up to 120s.
 	// OpenRouter treats 429 as "rate limited" (no uptime penalty) vs 503
 	// which counts as downtime. Fast 429s also preserve our TTFT metrics.
-	candidateCount, capacityRejections := s.registry.QuickCapacityCheck(model)
+	candidateCount, capacityRejections := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
 	if candidateCount == 0 && capacityRejections > 0 {
 		// Providers exist for this model but ALL are at capacity.
 		retryAfter := s.estimateRetryAfter(model)
@@ -1692,7 +1712,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if statusCode == 0 {
 			// Distinguish capacity exhaustion (429) from genuine unavailability (503).
 			// A quick capacity check tells us if providers exist but are full.
-			_, capRej := s.registry.QuickCapacityCheck(model)
+			_, capRej := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
 			if capRej > 0 {
 				statusCode = http.StatusTooManyRequests
 			} else {
@@ -3251,7 +3271,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// Pre-flight capacity check (same logic as handleChatCompletions).
-	candidateCount, capacityRejections := s.registry.QuickCapacityCheck(model)
+	candidateCount, capacityRejections := s.registry.QuickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials...)
 	if candidateCount == 0 && capacityRejections > 0 {
 		retryAfter := s.estimateRetryAfter(model)
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
@@ -3276,6 +3296,22 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		ChunkCh:                make(chan string, chunkBufferSize),
 		CompleteCh:             make(chan protocol.UsageInfo, 1),
 		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
+	}
+
+	// refundExtra credits back the provider-specific surcharge that
+	// reserveAdditionalForProvider may have added on top of the base
+	// reservation. Without this, failing after the extra charge leaks
+	// the difference between pr.ReservedMicroUSD and the original
+	// reservedMicroUSD.
+	refundExtra := func() {
+		extra := pr.ReservedMicroUSD - reservedMicroUSD
+		if extra > 0 {
+			start := time.Now()
+			_ = s.store.Credit(consumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+requestID)
+			s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + model})
+			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_extra_refund"})
+			pr.ReservedMicroUSD = reservedMicroUSD
+		}
 	}
 
 	var provider *registry.Provider
@@ -3351,6 +3387,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if s.billing != nil && !providerHasPayoutDestination(provider) {
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
+		refundExtra()
 		refundReservation()
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
 			fmt.Sprintf("no payable provider available for model %q", model)))
@@ -3360,6 +3397,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
 			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
+			refundExtra()
 			refundReservation()
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 				"your balance is too low for this provider price — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
@@ -3371,6 +3409,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	if provider.PublicKey == "" {
 		s.registry.SetProviderIdle(provider.ID)
+		refundExtra()
 		refundReservation()
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
 			"no provider with E2E encryption available"))
@@ -3380,6 +3419,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
 	if err != nil {
 		s.registry.SetProviderIdle(provider.ID)
+		refundExtra()
 		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "provider public key invalid"))
 		return
@@ -3388,6 +3428,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	sessionKeys, err := e2e.GenerateSessionKeys()
 	if err != nil {
 		s.registry.SetProviderIdle(provider.ID)
+		refundExtra()
 		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to generate session keys"))
 		return
@@ -3396,6 +3437,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	encrypted, err := e2e.Encrypt(inferenceBody, providerPubKey, sessionKeys)
 	if err != nil {
 		s.registry.SetProviderIdle(provider.ID)
+		refundExtra()
 		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to encrypt request"))
 		return
@@ -3416,6 +3458,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
+		refundExtra()
 		refundReservation()
 		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
 		return
@@ -3454,6 +3497,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
 				s.sendProviderCancel(provider, requestID)
+				refundExtra()
 				refundReservation()
 				statusCode := errMsg.StatusCode
 				if statusCode == 0 {
@@ -3470,6 +3514,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)
+		refundExtra()
 		refundReservation()
 		statusCode := errMsg.StatusCode
 		if statusCode == 0 {
@@ -3481,6 +3526,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)
+		refundExtra()
 		refundReservation()
 		s.ddIncr("inference.dispatches", []string{"status:timeout"})
 		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider did not respond within TTFT deadline"))
@@ -3490,6 +3536,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)
+		refundExtra()
 		refundReservation()
 		return
 	}
@@ -3509,6 +3556,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 					provider.RemovePending(requestID)
 					s.registry.SetProviderIdle(provider.ID)
 					s.sendProviderCancel(provider, requestID)
+					refundExtra()
 					refundReservation()
 					statusCode := errMsg.StatusCode
 					if statusCode == 0 {
@@ -3525,6 +3573,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
 			s.sendProviderCancel(provider, requestID)
+			refundExtra()
 			refundReservation()
 			statusCode := errMsg.StatusCode
 			if statusCode == 0 {
@@ -3536,6 +3585,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
 			s.sendProviderCancel(provider, requestID)
+			refundExtra()
 			refundReservation()
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider accepted but timed out before first chunk"))
@@ -3545,6 +3595,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
 			s.sendProviderCancel(provider, requestID)
+			refundExtra()
 			refundReservation()
 			return
 		}
@@ -3554,6 +3605,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)
+		refundExtra()
 		refundReservation()
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("provider_error", "failed to get first chunk from provider"))
 		return

@@ -1926,18 +1926,27 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		}
 
 		hasHeadroom := p.pendingCount() < p.maxConcurrency()
-		pending := p.pendingCount()
 		decodeTPS := resolvedDecodeTPS(p)
 		prefillTPS := resolvedPrefillTPS(p)
 
 		// Enumerate every model this provider serves.
 		for _, m := range p.Models {
+			// Count only pending requests for this specific model, not the
+			// total across all models. Using the total inflates
+			// activeRequests for multi-model providers.
+			modelPending := 0
+			for _, pr := range p.pendingReqs {
+				if pr.Model == m.ID {
+					modelPending++
+				}
+			}
+
 			snap := providerCapSnap{
 				model:          m.ID,
 				hasHeadroom:    hasHeadroom,
 				effectiveTPS:   decodeTPS,
 				prefillTPS:     prefillTPS,
-				activeRequests: pending,
+				activeRequests: modelPending,
 			}
 
 			// Check backend capacity for this model's slot.
@@ -1982,8 +1991,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		budgetTotal      int64
 		bestWarmTTFTMs   int64 // -1 = not set
 		bestColdTTFTMs   int64 // -1 = not set
-		anyHasHeadroom   bool
-		anyImmediateSlot bool // at least one provider with headroom
+		anyImmediateSlot bool  // at least one provider with headroom
 	}
 	agg := make(map[string]*modelAgg)
 	for _, s := range snaps {
@@ -2009,8 +2017,13 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			a.budgetTotal += s.activeTokenBudgetMax
 		}
 		if s.hasHeadroom {
-			a.anyHasHeadroom = true
-			a.anyImmediateSlot = true
+			// anyImmediateSlot requires both concurrency headroom AND
+			// token budget headroom. A provider with concurrency room
+			// but exhausted token budget should not bypass the queue
+			// check.
+			if s.activeTokenBudgetMax <= 0 || s.activeTokenBudgetUsed+s.queuedTokenBudget < s.activeTokenBudgetMax {
+				a.anyImmediateSlot = true
+			}
 		}
 
 		// Estimate TTFT for this provider: prefill 500 tokens + backlog drain.
@@ -2046,7 +2059,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		if r.queue != nil {
 			queued = r.queue.QueueSize(model)
 		}
-		ready := a.routable > 0 && a.anyHasHeadroom
+		ready := a.routable > 0
 		canAccept := ready && (queued < queueLimit || a.anyImmediateSlot)
 
 		ttft := a.bestWarmTTFTMs

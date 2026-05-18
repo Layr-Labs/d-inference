@@ -124,29 +124,51 @@ public actor BatchScheduler {
                 eos.append([id])
             }
 
-            // Extract KV cache dimensions from the model if it conforms to
-            // KVCacheDimensionProvider (most MLX LLM models do).
+            // Read architecture metadata from config.json. This is more
+            // universal than the KVCacheDimensionProvider protocol (which
+            // some models like Gemma 3/3n don't conform to) and gives us
+            // access to hybrid-architecture fields (num_kv_shared_layers,
+            // global_head_dim, sliding_window_pattern, etc.).
             var numLayers: Int?
-            var kvHeadsPerLayer: Int?
-            if let kvProvider = ctx.model as? KVCacheDimensionProvider {
-                let kvHeads = kvProvider.kvHeads
-                numLayers = kvHeads.count
-                kvHeadsPerLayer = kvHeads.first  // uniform across layers for standard architectures
-            }
-
-            // Read head_dim from config.json in the model directory.
+            var kvHeads: Int?
             var headDim: Int?
+            var numKvSharedLayers: Int = 0
+            var globalHeadDim: Int?
+            var numGlobalKvHeads: Int?
+            var slidingWindowPattern: Int?
+            var layerTypes: [String]?
+
             if case .directory(let modelDir) = ctx.configuration.id {
                 let configURL = modelDir.appendingPathComponent("config.json")
                 if let data = try? Data(contentsOf: configURL),
                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    headDim = json["head_dim"] as? Int
-                    // Fallback: head_dim = hidden_size / num_attention_heads
-                    if headDim == nil,
-                       let hiddenSize = json["hidden_size"] as? Int,
-                       let numHeads = json["num_attention_heads"] as? Int, numHeads > 0 {
-                        headDim = hiddenSize / numHeads
+                    // Resolve nested text_config if present (Gemma 4 VLM wraps everything there)
+                    let cfg: [String: Any]
+                    if let textConfig = json["text_config"] as? [String: Any] {
+                        cfg = textConfig
+                    } else {
+                        cfg = json
                     }
+
+                    numLayers = cfg["num_hidden_layers"] as? Int
+                    kvHeads = cfg["num_key_value_heads"] as? Int
+                        ?? cfg["num_attention_heads"] as? Int  // MHA fallback
+
+                    headDim = cfg["head_dim"] as? Int
+                    if headDim == nil,
+                       let hs = cfg["hidden_size"] as? Int,
+                       let nh = cfg["num_attention_heads"] as? Int, nh > 0 {
+                        headDim = hs / nh
+                    }
+
+                    // Hybrid architecture fields (Gemma 4, Gemma 3n)
+                    numKvSharedLayers = cfg["num_kv_shared_layers"] as? Int ?? 0
+                    globalHeadDim = cfg["global_head_dim"] as? Int
+                    numGlobalKvHeads = cfg["num_global_key_value_heads"] as? Int
+                    // sliding_window_pattern is an Int in Gemma 3/3n/4:
+                    // e.g. 5 means [sliding, sliding, sliding, sliding, full] repeating
+                    slidingWindowPattern = cfg["sliding_window_pattern"] as? Int
+                    layerTypes = cfg["layer_types"] as? [String]
                 }
             }
 
@@ -156,8 +178,13 @@ public actor BatchScheduler {
                 tokenizer: TokenizerBox(ctx.tokenizer),
                 model: ctx.model,
                 numLayers: numLayers,
-                kvHeadsPerLayer: kvHeadsPerLayer,
-                headDim: headDim
+                kvHeads: kvHeads,
+                headDim: headDim,
+                numKvSharedLayers: numKvSharedLayers,
+                globalHeadDim: globalHeadDim,
+                numGlobalKvHeads: numGlobalKvHeads,
+                slidingWindowPattern: slidingWindowPattern,
+                layerTypes: layerTypes
             )
         }
         guard loadEpoch == generationEpoch else { return }
@@ -175,15 +202,31 @@ public actor BatchScheduler {
         )
         startWorker()
 
-        // Compute dynamic token budget from available memory.
-        // KV cache per token = num_layers * num_kv_heads * head_dim * 2 (K+V) * 2 (float16 bytes).
-        // Architecture metadata is extracted from the model's KVCacheDimensionProvider
-        // conformance (num_layers, num_kv_heads) and config.json (head_dim).
-        // Falls back to a weight-based heuristic if metadata is unavailable.
+        // Compute per-token KV cache cost from architecture metadata in
+        // config.json.  This handles:
+        //   - Standard uniform models (Llama, Qwen, Mistral, Gemma 2)
+        //   - GQA / MQA (fewer KV heads than query heads)
+        //   - Hybrid sliding + global attention (Gemma 4, GPT-OSS)
+        //   - KV sharing (Gemma 4, Gemma 3n): only non-shared layers
+        //     allocate KV caches
+        //   - Differing head dimensions per attention type (Gemma 4:
+        //     sliding layers use head_dim, full-attention layers use
+        //     global_head_dim and possibly num_global_key_value_heads)
+        // Falls back to a weight-bytes heuristic when config metadata is
+        // unavailable (e.g. non-HuggingFace model directories).
         let estimatedKV: Int
-        if let layers = snapshot.numLayers, let kvHeads = snapshot.kvHeadsPerLayer,
-           let hd = snapshot.headDim, layers > 0, kvHeads > 0, hd > 0 {
-            estimatedKV = layers * kvHeads * hd * 2 * 2
+        if let layers = snapshot.numLayers, let kvH = snapshot.kvHeads,
+           let hd = snapshot.headDim, layers > 0, kvH > 0, hd > 0 {
+            estimatedKV = Self.computeKVBytesPerToken(
+                numLayers: layers,
+                kvHeads: kvH,
+                headDim: hd,
+                numKvSharedLayers: snapshot.numKvSharedLayers,
+                globalHeadDim: snapshot.globalHeadDim,
+                numGlobalKvHeads: snapshot.numGlobalKvHeads,
+                slidingWindowPattern: snapshot.slidingWindowPattern,
+                layerTypes: snapshot.layerTypes
+            )
         } else {
             estimatedKV = max(snapshot.bytes / 25_000, 100_000)
         }
@@ -655,6 +698,96 @@ public actor BatchScheduler {
         return 0
         #endif
     }
+
+    // MARK: - KV cache cost computation
+
+    /// Compute total KV cache bytes per token across all layers, accounting
+    /// for architecture-specific differences:
+    ///
+    /// - **KV sharing** (Gemma 4, Gemma 3n): only the first
+    ///   `numLayers - numKvSharedLayers` layers allocate real KV caches.
+    /// - **Hybrid attention** (Gemma 4, GPT-OSS): sliding-attention layers
+    ///   use `headDim` / `kvHeads`, while full-attention layers can use
+    ///   `globalHeadDim` / `numGlobalKvHeads`.
+    /// - **Standard models** (Llama, Qwen, Mistral, Gemma 2): all layers
+    ///   are uniform; degenerates to `cachedLayers * kvHeads * headDim * 4`.
+    static func computeKVBytesPerToken(
+        numLayers: Int,
+        kvHeads: Int,
+        headDim: Int,
+        numKvSharedLayers: Int,
+        globalHeadDim: Int?,
+        numGlobalKvHeads: Int?,
+        slidingWindowPattern: Int?,
+        layerTypes: [String]?
+    ) -> Int {
+        let bytesPerElement = 2  // float16
+        let kvTensors = 2        // K + V
+
+        let cachedLayers = numLayers - numKvSharedLayers
+        guard cachedLayers > 0 else { return 0 }
+
+        // Determine per-layer attention type. Three sources of truth:
+        //   1. Explicit layer_types array from config.json (Gemma 4, GPT-OSS)
+        //   2. slidingWindowPattern Int: e.g. 5 means [S,S,S,S,F] repeating
+        //      (Gemma 3, Gemma 3n, Gemma 4)
+        //   3. Neither: assume all layers are uniform full-attention
+        let resolvedLayerTypes: [String]?
+        if let lt = layerTypes, lt.count >= cachedLayers {
+            resolvedLayerTypes = lt
+        } else if let swp = slidingWindowPattern, swp > 1 {
+            // Derive the repeating pattern: first (swp-1) are sliding,
+            // last one is full attention.
+            var pattern = [String]()
+            for i in 0..<swp {
+                pattern.append(i == swp - 1 ? "full_attention" : "sliding_attention")
+            }
+            var types = [String]()
+            while types.count < cachedLayers {
+                types.append(contentsOf: pattern)
+            }
+            resolvedLayerTypes = Array(types.prefix(cachedLayers))
+        } else {
+            resolvedLayerTypes = nil
+        }
+
+        // If we have different head dims per attention type, sum per-layer.
+        let hasHybridDims = globalHeadDim != nil && globalHeadDim != headDim
+            || numGlobalKvHeads != nil && numGlobalKvHeads != kvHeads
+
+        if let types = resolvedLayerTypes, hasHybridDims {
+            var totalBytesPerToken = 0
+            for i in 0..<cachedLayers {
+                let isSliding = types[i] != "full_attention"
+
+                let layerKvHeads: Int
+                let layerHeadDim: Int
+
+                if isSliding {
+                    layerKvHeads = kvHeads
+                    layerHeadDim = headDim
+                } else {
+                    // Full/global attention layer
+                    layerKvHeads = numGlobalKvHeads ?? kvHeads
+                    layerHeadDim = globalHeadDim ?? headDim
+                }
+
+                totalBytesPerToken += layerKvHeads * layerHeadDim * kvTensors * bytesPerElement
+            }
+            return totalBytesPerToken
+        }
+
+        // If we have global_head_dim but no layer type information to
+        // distinguish which layers use it, conservatively use the larger
+        // dimension for all cached layers.
+        if let ghd = globalHeadDim, ghd > headDim {
+            let maxKvHeads = max(kvHeads, numGlobalKvHeads ?? kvHeads)
+            return cachedLayers * maxKvHeads * ghd * kvTensors * bytesPerElement
+        }
+
+        // Standard uniform architecture
+        return cachedLayers * kvHeads * headDim * kvTensors * bytesPerElement
+    }
 }
 
 // MARK: - Supporting types
@@ -687,8 +820,13 @@ private struct LoadSnapshot: @unchecked Sendable {
     let tokenizer: TokenizerBox
     let model: any LanguageModel
     let numLayers: Int?
-    let kvHeadsPerLayer: Int?
+    let kvHeads: Int?
     let headDim: Int?
+    let numKvSharedLayers: Int
+    let globalHeadDim: Int?
+    let numGlobalKvHeads: Int?
+    let slidingWindowPattern: Int?
+    let layerTypes: [String]?
 }
 
 private final class TokenizerBox: @unchecked Sendable {

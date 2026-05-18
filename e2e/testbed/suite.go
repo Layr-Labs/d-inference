@@ -272,6 +272,17 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 		s.Coordinator.Registry.ForceTrustProvider(id)
 	}
 	s.Logger.Info("providers force-trusted for testing")
+
+	// Link providers to a user account so the payout destination check
+	// (providerHasPayoutDestination) passes when billing is enabled.
+	s.Coordinator.Registry.ForEachProvider(func(p *registry.Provider) {
+		if p.AccountID == "" && len(s.Users) > 0 {
+			p.Mu().Lock()
+			p.AccountID = s.Users[0].AccountID
+			p.Mu().Unlock()
+		}
+	})
+
 	return nil
 }
 

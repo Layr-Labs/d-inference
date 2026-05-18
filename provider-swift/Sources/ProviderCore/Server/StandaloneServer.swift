@@ -77,12 +77,23 @@ public actor StandaloneServer {
     private static let schedulerDefaultMaxTokens = 4096
 
     public func loadModel(_ modelId: String, container: MLXLMCommon.ModelContainer) async {
-        // Evict least-recently-used model if at capacity
+        // Evict least-recently-used idle model if at capacity.
+        // Skip schedulers with active requests to avoid truncating in-flight responses.
         if schedulers.count >= Self.maxCachedModels {
-            if let lru = schedulers.min(by: { $0.value.lastUsedAt < $1.value.lastUsedAt }) {
-                await lru.value.scheduler.unloadModel()
-                schedulers.removeValue(forKey: lru.key)
-                standaloneLogger.info("Evicted LRU model: \(lru.key)")
+            var lruKey: String?
+            var lruTime: ContinuousClock.Instant?
+            for (key, cached) in schedulers {
+                let cap = await cached.scheduler.capacity()
+                if cap.activeRequests > 0 || cap.pendingRequests > 0 { continue }
+                if lruTime == nil || cached.lastUsedAt < lruTime! {
+                    lruKey = key
+                    lruTime = cached.lastUsedAt
+                }
+            }
+            if let evictKey = lruKey {
+                await schedulers[evictKey]!.scheduler.unloadModel()
+                schedulers.removeValue(forKey: evictKey)
+                standaloneLogger.info("Evicted LRU model: \(evictKey)")
             }
         }
 

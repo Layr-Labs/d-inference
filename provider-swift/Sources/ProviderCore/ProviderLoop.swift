@@ -801,6 +801,9 @@ public actor ProviderLoop {
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 loadGateWaiters.append(cont)
             }
+            // Honor cancellation (e.g. shutdown cancelled this preload task
+            // while it was suspended at the gate).
+            try Task.checkCancellation()
             if modelSlots[modelId] != nil { return }
         }
         isLoadingAny = true

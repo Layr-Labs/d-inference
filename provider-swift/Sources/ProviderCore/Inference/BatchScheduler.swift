@@ -490,6 +490,8 @@ public actor BatchScheduler {
         kvBytesPerToken = 400_000
         dynamicTokenBudgetMax = 0
         planner = nil
+        observedDecodeTpsEwma = 0
+        ewmaInitialized = false
 
         while engineBusy {
             try? await Task.sleep(for: .milliseconds(1))

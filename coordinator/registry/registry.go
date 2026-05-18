@@ -816,11 +816,11 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 				"provider_id", providerID, "model", s.Model, "reported", s.ObservedDecodeTPS, "clamped", v)
 			s.ObservedDecodeTPS = v
 		}
-		if s.ActiveTokenBudgetUsed < 0 || s.ActiveTokenBudgetUsed > maxTokensPotential {
+		if s.ActiveTokenBudgetUsed < 0 || s.ActiveTokenBudgetUsed > maxTokenBudgetCap {
 			if s.ActiveTokenBudgetUsed < 0 {
 				s.ActiveTokenBudgetUsed = 0
 			} else {
-				s.ActiveTokenBudgetUsed = maxTokensPotential
+				s.ActiveTokenBudgetUsed = maxTokenBudgetCap
 			}
 		}
 		if s.ActiveTokenBudgetMax < 0 || s.ActiveTokenBudgetMax > maxTokenBudgetCap {
@@ -830,11 +830,11 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 				s.ActiveTokenBudgetMax = maxTokenBudgetCap
 			}
 		}
-		if s.QueuedTokenBudget < 0 || s.QueuedTokenBudget > maxTokensPotential {
+		if s.QueuedTokenBudget < 0 || s.QueuedTokenBudget > maxTokenBudgetCap {
 			if s.QueuedTokenBudget < 0 {
 				s.QueuedTokenBudget = 0
 			} else {
-				s.QueuedTokenBudget = maxTokensPotential
+				s.QueuedTokenBudget = maxTokenBudgetCap
 			}
 		}
 	}

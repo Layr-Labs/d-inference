@@ -445,7 +445,15 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) bool {
 	if snap.activeTokenBudgetMax > 0 {
 		requestTokens := int64(reqPromptTokens) + int64(reqMaxTokens)
-		return snap.activeTokenBudgetUsed+snap.queuedTokenBudget+requestTokens <= snap.activeTokenBudgetMax
+		// Include coordinator-side pending tokens not yet reflected in the
+		// provider's heartbeat. Avoid double-counting by subtracting the
+		// provider-reported maxTokensPotential which already covers committed
+		// tokens from the backend's perspective.
+		coordinatorExtra := int64(snap.pendingMaxTokens) - snap.maxTokensPotential
+		if coordinatorExtra < 0 {
+			coordinatorExtra = 0
+		}
+		return snap.activeTokenBudgetUsed+snap.queuedTokenBudget+coordinatorExtra+requestTokens <= snap.activeTokenBudgetMax
 	}
 
 	if snap.modelSizeGB <= 0 || snap.totalMemoryGB <= 0 {

@@ -49,12 +49,12 @@ func (r *TPSRegistry) Median(model, chipFamily string) float64 {
 	key := tpsKey{Model: model, ChipFamily: chipFamily}
 	r.mu.RLock()
 	samples := r.samples[key]
-	r.mu.RUnlock()
-	if len(samples) == 0 {
-		return 0
-	}
 	sorted := make([]float64, len(samples))
 	copy(sorted, samples)
+	r.mu.RUnlock()
+	if len(sorted) == 0 {
+		return 0
+	}
 	sort.Float64s(sorted)
 	mid := len(sorted) / 2
 	if len(sorted)%2 == 0 {

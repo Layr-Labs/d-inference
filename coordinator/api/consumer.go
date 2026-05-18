@@ -1014,6 +1014,36 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			pr = queuePR
 			requestID = pr.RequestID
 
+			// Payout destination check — same as dispatchOneProvider.
+			if s.billing != nil && !providerHasPayoutDestination(provider) {
+				s.logger.Warn("queued provider missing payout destination, skipping",
+					"request_id", requestID,
+					"provider_id", provider.ID,
+				)
+				s.registry.SetProviderIdle(provider.ID)
+				excludeProviders[provider.ID] = struct{}{}
+				lastErr = "provider missing payout destination"
+				lastErrCode = http.StatusServiceUnavailable
+				continue
+			}
+
+			// Custom pricing check — provider may charge more than the
+			// platform rate. Reserve the additional amount now.
+			if s.billing != nil {
+				if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
+					s.logger.Warn("queued provider pricing exceeds balance, skipping",
+						"request_id", requestID,
+						"provider_id", provider.ID,
+						"error", err,
+					)
+					s.registry.SetProviderIdle(provider.ID)
+					excludeProviders[provider.ID] = struct{}{}
+					lastErr = "insufficient funds for provider price"
+					lastErrCode = http.StatusPaymentRequired
+					continue
+				}
+			}
+
 			// Perform E2E encryption and send the request.
 			if provider.PublicKey == "" {
 				s.registry.SetProviderIdle(provider.ID)
@@ -1050,7 +1080,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				},
 			}
 			pr.SessionPrivKey = &sessionKeys.PrivateKey
-			pr.ReservedMicroUSD = reservedMicroUSD
+			// pr.ReservedMicroUSD was already set in the struct literal and may
+			// have been increased by reserveAdditionalForProvider. Don't overwrite.
 			data, _ := json.Marshal(wireMsg)
 			if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
 				provider.RemovePending(requestID)
@@ -3247,7 +3278,36 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
 	}
 
-	provider, decision := s.registry.ReserveProviderEx(model, pr)
+	var provider *registry.Provider
+	var decision registry.RoutingDecision
+	var excludeProviders []string
+	for attempt := 0; attempt < 3; attempt++ {
+		provider, decision = s.registry.ReserveProviderEx(model, pr, excludeProviders...)
+		if provider == nil {
+			break
+		}
+
+		// Payout destination check — skip providers that can't receive payment.
+		if s.billing != nil && !providerHasPayoutDestination(provider) {
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			excludeProviders = append(excludeProviders, provider.ID)
+			continue
+		}
+
+		// Custom pricing check — provider may charge more than the platform rate.
+		if s.billing != nil {
+			if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
+				provider.RemovePending(requestID)
+				s.registry.SetProviderIdle(provider.ID)
+				excludeProviders = append(excludeProviders, provider.ID)
+				continue
+			}
+		}
+
+		// Provider passed all checks.
+		break
+	}
 	if provider == nil {
 		queuedReq := &registry.QueuedRequest{
 			RequestID:  requestID,
@@ -3297,9 +3357,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if s.billing != nil {
-		var err error
-		reservedMicroUSD, err = s.reserveAdditionalForProvider(pr, provider)
-		if err != nil {
+		if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
 			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
 			refundReservation()

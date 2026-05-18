@@ -29,28 +29,6 @@ public struct SchedulerCapacity: Sendable {
     public let totalMemoryBytes: UInt64
 }
 
-private struct BatchPerformanceBucket: Sendable {
-    var aggregateTps: Double = 0
-    var perRequestTps: Double = 0
-    var samples: Int = 0
-
-    var hasSignal: Bool {
-        samples >= 8
-    }
-
-    mutating func record(aggregateTps newAggregateTps: Double, perRequestTps newPerRequestTps: Double) {
-        let alpha = 0.25
-        if samples == 0 {
-            aggregateTps = newAggregateTps
-            perRequestTps = newPerRequestTps
-        } else {
-            aggregateTps = alpha * newAggregateTps + (1 - alpha) * aggregateTps
-            perRequestTps = alpha * newPerRequestTps + (1 - alpha) * perRequestTps
-        }
-        samples += 1
-    }
-}
-
 /// Continuous-batching scheduler. One shared `BatchGenerator` runs all
 /// concurrent requests through one batched forward pass per step.
 ///
@@ -92,15 +70,14 @@ public actor BatchScheduler {
     private var engineBusy = false
     private var observedDecodeTpsEwma: Double = 0
     private var ewmaInitialized = false
-    private var performanceByBatchSize: [Int: BatchPerformanceBucket] = [:]
+    private var performanceByBatchSize: [Int: AdaptiveBatchPerformanceBucket] = [:]
     private var dynamicMaxConcurrentRequests: Int
 
     /// Once every active row has received its first token, run several decode
     /// steps per actor/model hop. A single hop per token starves Gemma-class
     /// models because the CPU actor round trip is larger than one GPU step.
     private let decodeBurstSteps = 32
-    private let targetMinPerRequestTps = 15.0
-    private let expansionHeadroomMultiplier = 1.15
+    private let adaptiveCapPolicy = AdaptiveBatchCapPolicy.default
 
     private var tokenBudgetMax: Int {
         let staticBudget = dynamicTokenBudgetMax > 0
@@ -834,48 +811,18 @@ public actor BatchScheduler {
 
         let aggregateTps = Double(tokenCount) / elapsedSeconds
         let perRequestTps = aggregateTps / Double(batchSize)
-        performanceByBatchSize[batchSize, default: BatchPerformanceBucket()]
+        performanceByBatchSize[batchSize, default: AdaptiveBatchPerformanceBucket()]
             .record(aggregateTps: aggregateTps, perRequestTps: perRequestTps)
         updateDynamicMaxConcurrentRequests(observedBatchSize: batchSize)
     }
 
     private func updateDynamicMaxConcurrentRequests(observedBatchSize: Int) {
-        let hardCap = maxConcurrentRequests
-        let currentCap = max(1, min(dynamicMaxConcurrentRequests, hardCap))
-        dynamicMaxConcurrentRequests = currentCap
-
-        let signaled = performanceByBatchSize
-            .filter { $0.value.hasSignal }
-            .sorted { $0.key < $1.key }
-        guard !signaled.isEmpty else { return }
-
-        if let currentBucket = performanceByBatchSize[observedBatchSize],
-           currentBucket.hasSignal,
-           observedBatchSize >= currentCap,
-           currentBucket.perRequestTps < targetMinPerRequestTps {
-            let sustainableLowerCap = signaled
-                .filter { $0.key < observedBatchSize && $0.value.perRequestTps >= targetMinPerRequestTps }
-                .map(\.key)
-                .max()
-            dynamicMaxConcurrentRequests = max(1, sustainableLowerCap ?? observedBatchSize - 1)
-            return
-        }
-
-        guard currentCap < hardCap,
-              observedBatchSize >= currentCap,
-              let currentBucket = performanceByBatchSize[currentCap],
-              currentBucket.hasSignal,
-              currentBucket.perRequestTps >= targetMinPerRequestTps * expansionHeadroomMultiplier else {
-            return
-        }
-
-        if let nextBucket = performanceByBatchSize[currentCap + 1],
-           nextBucket.hasSignal,
-           nextBucket.perRequestTps < targetMinPerRequestTps {
-            return
-        }
-
-        dynamicMaxConcurrentRequests = currentCap + 1
+        dynamicMaxConcurrentRequests = adaptiveCapPolicy.nextCap(
+            currentCap: dynamicMaxConcurrentRequests,
+            hardCap: maxConcurrentRequests,
+            observedBatchSize: observedBatchSize,
+            performanceByBatchSize: performanceByBatchSize
+        )
     }
 
     private static func seconds(

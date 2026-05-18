@@ -127,6 +127,50 @@ func TestBackendSlotCapacityMaxConcurrencyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBackendSlotCapacityMaxConcurrencyOmittedCompatibility(t *testing.T) {
+	data := []byte(`{
+		"type":"heartbeat",
+		"status":"serving",
+		"active_model":null,
+		"stats":{},
+		"system_metrics":{},
+		"backend_capacity":{"slots":[{"model":"qwen","state":"running"}]}
+	}`)
+
+	var decoded HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.BackendCapacity == nil || len(decoded.BackendCapacity.Slots) != 1 {
+		t.Fatalf("decoded slots = %+v", decoded.BackendCapacity)
+	}
+	if got := decoded.BackendCapacity.Slots[0].MaxConcurrency; got != 0 {
+		t.Fatalf("omitted MaxConcurrency=%d, want zero compatibility default", got)
+	}
+}
+
+func TestBackendSlotCapacityMaxConcurrencyExplicitZeroCompatibility(t *testing.T) {
+	data := []byte(`{
+		"type":"heartbeat",
+		"status":"serving",
+		"active_model":null,
+		"stats":{},
+		"system_metrics":{},
+		"backend_capacity":{"slots":[{"model":"qwen","state":"running","max_concurrency":0}]}
+	}`)
+
+	var decoded HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.BackendCapacity == nil || len(decoded.BackendCapacity.Slots) != 1 {
+		t.Fatalf("decoded slots = %+v", decoded.BackendCapacity)
+	}
+	if got := decoded.BackendCapacity.Slots[0].MaxConcurrency; got != 0 {
+		t.Fatalf("explicit zero MaxConcurrency=%d, want preserved zero", got)
+	}
+}
+
 func TestHeartbeatWithActiveModel(t *testing.T) {
 	model := "qwen3.5-9b"
 	msg := HeartbeatMessage{

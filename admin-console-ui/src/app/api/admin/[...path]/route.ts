@@ -13,7 +13,7 @@ const DEFAULT_ALLOWED_COORDINATORS = [DEFAULT_COORDINATOR_URL, "https://api.dev.
 function configuredCoordinatorUrls(): string[] {
   return [
     ...DEFAULT_ALLOWED_COORDINATORS,
-    process.env.EIGENINFERENCE_COORDINATOR_URL,
+    process.env.DARKBLOOM_COORDINATOR_URL,
     process.env.NEXT_PUBLIC_COORDINATOR_URL,
     ...(process.env.ADMIN_CONSOLE_ALLOWED_COORDINATORS ?? "").split(","),
   ].filter((value): value is string => Boolean(value && value.trim()));
@@ -46,7 +46,7 @@ function isAllowedCoordinator(url: URL): boolean {
 function coordinatorBase(request: NextRequest): string | Response {
   const configured =
     request.headers.get("x-coordinator-url") ||
-    process.env.EIGENINFERENCE_COORDINATOR_URL ||
+    process.env.DARKBLOOM_COORDINATOR_URL ||
     process.env.NEXT_PUBLIC_COORDINATOR_URL ||
     DEFAULT_COORDINATOR_URL;
 

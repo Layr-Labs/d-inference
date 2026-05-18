@@ -476,7 +476,7 @@ export function AdminDashboard() {
         <section className="grid gap-5 rounded-[2rem] border border-border bg-card/70 p-5 shadow-sm backdrop-blur sm:p-8 lg:grid-cols-[1fr_24rem]">
           <div className="space-y-4">
             <Badge variant="outline" className="w-fit bg-card/80">
-              EigenInference admin
+              Darkbloom admin
             </Badge>
             <div className="space-y-3">
               <h1 className="max-w-3xl text-3xl font-semibold tracking-tight sm:text-5xl">Admin operations console</h1>
@@ -574,7 +574,7 @@ export function AdminDashboard() {
                 <Card>
                   <CardHeader>
                     <CardTitle>Manual admin key fallback</CardTitle>
-                    <CardDescription>Use this when Privy is unavailable or for dev environments with EIGENINFERENCE_ADMIN_KEY.</CardDescription>
+                    <CardDescription>Use this when Privy is unavailable or for dev environments with a coordinator admin key.</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <Field id="coordinator-url" label="Coordinator URL">

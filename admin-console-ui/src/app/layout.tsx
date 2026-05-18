@@ -4,7 +4,7 @@ import { AdminPrivyClientProvider } from "@/components/providers/privy-client-pr
 
 export const metadata: Metadata = {
   title: "Darkbloom Admin Console",
-  description: "Administrative dashboard for EigenInference coordinator operations.",
+  description: "Administrative dashboard for Darkbloom coordinator operations.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

@@ -1,5 +1,5 @@
-export const ADMIN_TOKEN_STORAGE_KEY = "eigeninference.admin.token";
-export const COORDINATOR_URL_STORAGE_KEY = "eigeninference.admin.coordinator_url";
+export const ADMIN_TOKEN_STORAGE_KEY = "darkbloom.admin.token";
+export const COORDINATOR_URL_STORAGE_KEY = "darkbloom.admin.coordinator_url";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];

@@ -24,6 +24,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 let fetchMock: ReturnType<typeof vi.fn>;
 
+const onboardingReturnUrl = "https://app.test/billing?stripe_return=1";
+
 beforeEach(() => {
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
@@ -112,12 +114,27 @@ describe("startStripeOnboarding", () => {
       status: "pending",
     }));
 
-    const resp = await startStripeOnboarding("https://app.test/billing?stripe_return=1");
+    const resp = await startStripeOnboarding(onboardingReturnUrl);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [, opts] = fetchMock.mock.calls[0];
     expect(opts.method).toBe("POST");
-    expect(JSON.parse(opts.body)).toEqual({ return_url: "https://app.test/billing?stripe_return=1" });
+    expect(JSON.parse(opts.body)).toEqual({ return_url: onboardingReturnUrl });
     expect(resp.url).toContain("connect.stripe.com");
+  });
+
+  it("POSTs country when provided", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      url: "https://connect.stripe.com/setup/abc",
+      stripe_account_id: "acct_x",
+      status: "pending",
+    }));
+
+    await startStripeOnboarding(onboardingReturnUrl, "GB");
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(opts.body)).toEqual({
+      return_url: onboardingReturnUrl,
+      country: "GB",
+    });
   });
 
   it("surfaces server error message when present", async () => {

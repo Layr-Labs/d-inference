@@ -131,7 +131,8 @@ type ExpressAccount struct {
 }
 
 // CreateExpressAccountParams gates which prefilled fields we pass to Stripe on
-// account creation. Email/first/last come from Privy; country defaults to US.
+// account creation. Email/first/last come from Privy; country should come from
+// the onboarding UI because Stripe locks it once the connected account exists.
 type CreateExpressAccountParams struct {
 	Email     string
 	FirstName string

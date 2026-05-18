@@ -55,6 +55,8 @@ public actor StandaloneServer {
     private var schedulers: [String: CachedScheduler] = [:]
     private var modelsLoading: Set<String> = []
     private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
+    private var isLoadingAny: Bool = false
+    private var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     private var models: [ModelInfo]
     private var serverTask: Task<Void, Never>?
 
@@ -119,6 +121,20 @@ public actor StandaloneServer {
             throw StandaloneServerError.modelNotFound(modelId)
         }
 
+        // Serialize loads so concurrent requests for different models don't
+        // interleave and overcommit unified memory.
+        while isLoadingAny {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                loadGateWaiters.append(cont)
+            }
+            // Re-check: another load may have loaded our model while we waited
+            if schedulers[modelId] != nil {
+                touchScheduler(modelId)
+                return
+            }
+        }
+        isLoadingAny = true
+
         modelsLoading.insert(modelId)
         do {
             let container = try await LLMModelFactory.shared.loadContainer(
@@ -129,15 +145,27 @@ public actor StandaloneServer {
             standaloneLogger.info("Lazy-loaded model: \(modelId)")
 
             modelsLoading.remove(modelId)
+            isLoadingAny = false
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
                 waiter.resume()
             }
+            releaseLoadGateWaiters()
         } catch {
             modelsLoading.remove(modelId)
+            isLoadingAny = false
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
                 waiter.resume(throwing: error)
             }
+            releaseLoadGateWaiters()
             throw error
+        }
+    }
+
+    private func releaseLoadGateWaiters() {
+        let waiters = loadGateWaiters
+        loadGateWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
         }
     }
 

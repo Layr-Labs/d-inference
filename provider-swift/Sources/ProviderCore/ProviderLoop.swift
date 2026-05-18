@@ -111,6 +111,10 @@ public actor ProviderLoop {
     /// Tracks coordinator-driven preload tasks so they can be cancelled on shutdown.
     private var preloadTasks: [String: Task<Void, Never>] = [:]
 
+    /// Ownership tokens for preload tasks — ensures deferred cleanup only
+    /// removes an entry if it still belongs to the completing task.
+    private var preloadTaskIds: [String: UUID] = [:]
+
     /// Cached security posture from startup verification.
     private var securityPosture: SecurityPosture?
 
@@ -284,6 +288,7 @@ public actor ProviderLoop {
         idleMonitorTask = nil
         for (_, task) in preloadTasks { task.cancel() }
         preloadTasks.removeAll()
+        preloadTaskIds.removeAll()
         await coordinator.shutdown()
         await cancelAllInflight()
         for modelId in Array(modelSlots.keys) {
@@ -496,7 +501,9 @@ public actor ProviderLoop {
             let responseId = "chatcmpl-\(UUID().uuidString.prefix(12).lowercased())"
             let created = Int(Date().timeIntervalSince1970)
 
-            let emitSSE: @Sendable (String) -> Void = { sseData in
+            /// Encrypts and emits an SSE chunk. Returns `false` if encryption
+            /// failed — callers must abort the inference task immediately.
+            let emitSSE: @Sendable (String) -> Bool = { sseData in
                 let encryptedPayload: EncryptedPayload
                 do {
                     encryptedPayload = try kp.encryptPayload(
@@ -510,7 +517,7 @@ public actor ProviderLoop {
                         error: "response encryption failed",
                         statusCode: 500
                     ))
-                    return
+                    return false
                 }
 
                 send.send(.inferenceChunk(
@@ -518,6 +525,7 @@ public actor ProviderLoop {
                     data: "",
                     encryptedData: encryptedPayload
                 ))
+                return true
             }
 
             if let roleChunk = try? formatter.roleChunk(
@@ -525,7 +533,7 @@ public actor ProviderLoop {
                 model: chatRequest.model,
                 created: created
             ) {
-                emitSSE(roleChunk.formatted)
+                if !emitSSE(roleChunk.formatted) { return }
             }
 
             // Submit to the BatchScheduler
@@ -553,7 +561,7 @@ public actor ProviderLoop {
                         created: created,
                         text: text
                     ) {
-                        emitSSE(contentChunk.formatted)
+                        if !emitSSE(contentChunk.formatted) { return }
                     }
 
                 case .info(let promptTokens, let completionTokens, _):
@@ -576,8 +584,8 @@ public actor ProviderLoop {
                 reason: .stop,
                 usage: usage
             ) {
-                emitSSE(finishChunk.formatted)
-                emitSSE(SSEChunk.done.formatted)
+                if !emitSSE(finishChunk.formatted) { return }
+                if !emitSSE(SSEChunk.done.formatted) { return }
             }
 
             // Update stats
@@ -636,9 +644,13 @@ public actor ProviderLoop {
             error: nil
         ))
 
+        // Cancel any prior preload for this model before overwriting
+        preloadTasks[modelId]?.cancel()
+
         let me = self
+        let taskId = UUID()
         preloadTasks[modelId] = Task {
-            defer { Task { await me.removePreloadTask(modelId: modelId) } }
+            defer { Task { await me.removePreloadTask(modelId: modelId, taskId: taskId) } }
             do {
                 try await me.ensureModelLoaded(modelId: modelId)
                 send.send(.loadModelStatus(
@@ -658,14 +670,21 @@ public actor ProviderLoop {
                 ))
             }
         }
+        preloadTaskIds[modelId] = taskId
     }
 
     private func logPreloadFailure(modelId: String, error: String) {
         logger.error("Preload for \(modelId) failed: \(error)")
     }
 
-    private func removePreloadTask(modelId: String) {
-        preloadTasks.removeValue(forKey: modelId)
+    /// Only remove the preload entry if it still belongs to this task,
+    /// preventing a newer preload's entry from being removed by an older
+    /// task's deferred cleanup.
+    private func removePreloadTask(modelId: String, taskId: UUID) {
+        if preloadTaskIds[modelId] == taskId {
+            preloadTasks.removeValue(forKey: modelId)
+            preloadTaskIds.removeValue(forKey: modelId)
+        }
     }
 
     // MARK: - Idle timeout

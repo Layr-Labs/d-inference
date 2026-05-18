@@ -81,7 +81,7 @@ import Testing
             body: ByteBuffer(string: #"{"model":"mlx-test","messages":[{"role":"user","content":"hello"}],"stream":false}"#)
         ) { response in
             #expect(response.status == .notFound)
-            #expect(String(buffer: response.body).contains("not available"))
+            #expect(String(buffer: response.body).contains("not found locally"))
         }
     }
 }

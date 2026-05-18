@@ -9,6 +9,7 @@
     "lint": "eslint src/"
   },
   "dependencies": {
+    "@privy-io/react-auth": "^3.26.0",
     "@tailwindcss/postcss": "^4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

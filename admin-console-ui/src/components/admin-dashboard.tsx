@@ -10,6 +10,8 @@ import {
   Gift,
   KeyRound,
   Loader2,
+  LogIn,
+  LogOut,
   PackageCheck,
   RefreshCw,
   Settings,
@@ -48,11 +50,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { useAdminPrivyAuth } from "@/components/providers/privy-client-provider";
 import { cn } from "@/lib/utils";
 
 type SectionId = "auth" | "models" | "pricing" | "releases" | "invites" | "credits" | "metrics";
 type LoadKey =
   | "saveSettings"
+  | "privyToken"
   | "otpInit"
   | "otpVerify"
   | "models"
@@ -120,6 +124,12 @@ function maskToken(token: string) {
   if (!token) return "No token saved";
   if (token.length <= 8) return "Saved token is masked";
   return `${token.slice(0, 4)}...${token.slice(-4)}`;
+}
+
+function userEmail(user: unknown) {
+  if (!user || typeof user !== "object") return "";
+  const record = user as { email?: { address?: string }; linkedAccounts?: Array<{ type?: string; address?: string }> };
+  return record.email?.address || record.linkedAccounts?.find((account) => account.type === "email")?.address || "";
 }
 
 function formatMicroUsd(value: unknown) {
@@ -225,6 +235,15 @@ function JsonBlock({ value, placeholder }: { value: unknown; placeholder: string
 }
 
 export function AdminDashboard() {
+  const {
+    configured: privyConfigured,
+    ready: privyReady,
+    authenticated: privyAuthenticated,
+    user: privyUser,
+    login: privyLogin,
+    logout: privyLogout,
+    getAccessToken: getPrivyAccessToken,
+  } = useAdminPrivyAuth();
   const [activeSection, setActiveSection] = useState<SectionId>("auth");
   const [adminToken, setAdminToken] = useState("");
   const [adminTokenInput, setAdminTokenInput] = useState("");
@@ -251,6 +270,21 @@ export function AdminDashboard() {
     setAdminToken(window.sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) ?? "");
     setCoordinatorUrl(window.localStorage.getItem(COORDINATOR_URL_STORAGE_KEY) ?? "");
   }, []);
+
+  useEffect(() => {
+    if (!privyConfigured || !privyReady || !privyAuthenticated) return;
+    let cancelled = false;
+
+    getPrivyAccessToken().then((token) => {
+      if (cancelled || !token) return;
+      setAdminToken(token);
+      window.sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [getPrivyAccessToken, privyAuthenticated, privyConfigured, privyReady]);
 
   const config = { token: adminToken, coordinatorUrl } satisfies AdminConfig;
 
@@ -290,6 +324,19 @@ export function AdminDashboard() {
     setAdminTokenInput("");
     window.sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
     setMessages((current) => ({ ...current, saveSettings: { type: "success", text: "Saved token cleared." } }));
+  }
+
+  async function handleUsePrivyToken() {
+    const token = await run("privyToken", async () => {
+      const accessToken = await getPrivyAccessToken();
+      if (!accessToken) throw new Error("Privy did not return an access token. Sign in again and retry.");
+      return accessToken;
+    });
+    if (!token) return;
+    setAdminToken(token);
+    setAdminTokenInput("");
+    window.sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
+    setMessages((current) => ({ ...current, privyToken: { type: "success", text: "Privy access token saved for this browser session." } }));
   }
 
   async function handleOtpInit() {
@@ -421,6 +468,7 @@ export function AdminDashboard() {
   }
 
   const tokenStatus = maskToken(adminToken);
+  const privyEmail = userEmail(privyUser);
 
   return (
     <main className="min-h-screen px-4 py-6 sm:px-6 lg:px-8">
@@ -443,12 +491,16 @@ export function AdminDashboard() {
                 <KeyRound className="h-4 w-4" />
                 Local credentials
               </CardTitle>
-              <CardDescription className="text-white/70">The full admin token is stored locally and never rendered back to the page.</CardDescription>
+              <CardDescription className="text-white/70">Privy tokens stay in session storage and are masked in the UI.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               <div className="flex items-center justify-between gap-3 rounded-2xl bg-white/10 px-3 py-2">
                 <span className="text-white/70">Token</span>
                 <Badge variant={adminToken ? "default" : "secondary"}>{tokenStatus}</Badge>
+              </div>
+              <div className="flex items-center justify-between gap-3 rounded-2xl bg-white/10 px-3 py-2">
+                <span className="text-white/70">Privy</span>
+                <Badge variant={privyAuthenticated ? "default" : "secondary"}>{privyAuthenticated ? "Signed in" : "Signed out"}</Badge>
               </div>
               <div className="break-all rounded-2xl bg-white/10 px-3 py-2 font-mono text-xs text-white/80">{coordinatorUrl || "No coordinator URL saved"}</div>
             </CardContent>
@@ -483,8 +535,46 @@ export function AdminDashboard() {
               <section className="grid gap-6 xl:grid-cols-2">
                 <Card>
                   <CardHeader>
-                    <CardTitle>Auth and coordinator settings</CardTitle>
-                    <CardDescription>Save the coordinator URL locally and keep the admin token only for this browser session.</CardDescription>
+                    <CardTitle>Privy admin login</CardTitle>
+                    <CardDescription>Sign in with Privy email auth and use the Privy access token for admin endpoints.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {!privyConfigured && (
+                      <InfoMessage message={{ type: "error", text: "NEXT_PUBLIC_PRIVY_APP_ID is not configured. Manual admin key login still works." }} />
+                    )}
+                    <div className="flex flex-wrap items-center gap-3">
+                      <Badge variant={privyAuthenticated ? "default" : "secondary"}>
+                        {privyAuthenticated ? `Signed in${privyEmail ? ` as ${privyEmail}` : ""}` : "Not signed in"}
+                      </Badge>
+                      <Badge variant="outline">{privyReady ? "Privy ready" : "Privy loading"}</Badge>
+                    </div>
+                    <div className="flex flex-wrap gap-3">
+                      {!privyAuthenticated ? (
+                        <Button disabled={!privyConfigured || !privyReady} onClick={privyLogin} type="button">
+                          <LogIn className="h-4 w-4" />
+                          Sign in with Privy
+                        </Button>
+                      ) : (
+                        <>
+                          <Button disabled={loading.privyToken} onClick={handleUsePrivyToken} type="button">
+                            <LoadingIcon show={Boolean(loading.privyToken)} />
+                            Use Privy token
+                          </Button>
+                          <Button onClick={() => privyLogout()} type="button" variant="outline">
+                            <LogOut className="h-4 w-4" />
+                            Sign out
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                    <InfoMessage message={messages.privyToken} />
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Manual admin key fallback</CardTitle>
+                    <CardDescription>Use this when Privy is unavailable or for dev environments with EIGENINFERENCE_ADMIN_KEY.</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <Field id="coordinator-url" label="Coordinator URL">
@@ -509,8 +599,8 @@ export function AdminDashboard() {
 
                 <Card>
                   <CardHeader>
-                    <CardTitle>OTP login</CardTitle>
-                    <CardDescription>Initialize and verify admin OTP login. Verification saves any returned token locally.</CardDescription>
+                    <CardTitle>Coordinator OTP fallback</CardTitle>
+                    <CardDescription>Legacy coordinator OTP flow. Prefer the Privy login above for normal admin use.</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <Field id="otp-email" label="Admin email or identifier">

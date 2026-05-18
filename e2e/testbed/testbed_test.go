@@ -79,7 +79,7 @@ func TestEventSchemaVersion(t *testing.T) {
 
 func TestDefaultConfigs(t *testing.T) {
 	cfg := DefaultTestConfig()
-	assert.Equal(t, "mlx-community/gemma-3-270m", cfg.Model.ModelID)
+	assert.Equal(t, "mlx-community/gemma-4-e4b-4bit", cfg.Model.ModelID)
 	assert.Equal(t, TrustNone, cfg.Provider.TrustLevel)
 	assert.Equal(t, 64, cfg.Request.PromptTokens)
 	assert.Equal(t, 128, cfg.Request.MaxTokens)
@@ -90,12 +90,12 @@ func TestDefaultConfigs(t *testing.T) {
 
 	sc := DefaultSuiteConfig()
 	assert.Equal(t, 1, len(sc.ModelSpecs))
-	assert.Equal(t, "mlx-community/Qwen3.5-0.8B-MLX-4bit", sc.ModelSpecs[0].ModelID)
+	assert.Equal(t, "mlx-community/gemma-4-e4b-4bit", sc.ModelSpecs[0].ModelID)
 	assert.Equal(t, 1, sc.ModelSpecs[0].NumProviders)
 	assert.Equal(t, 1, sc.NumUsers)
 	assert.Equal(t, 1, sc.TotalProviders())
-	assert.Equal(t, "mlx-community/Qwen3.5-0.8B-MLX-4bit", sc.PrimaryModelID())
-	assert.Equal(t, []string{"mlx-community/Qwen3.5-0.8B-MLX-4bit"}, sc.AllModelIDs())
+	assert.Equal(t, "mlx-community/gemma-4-e4b-4bit", sc.PrimaryModelID())
+	assert.Equal(t, []string{"mlx-community/gemma-4-e4b-4bit"}, sc.AllModelIDs())
 
 	multiSpec := SuiteConfig{
 		ModelSpecs: []ModelSpec{

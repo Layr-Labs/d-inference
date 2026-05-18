@@ -5,6 +5,10 @@ on:
     branches: [master, main]
   pull_request:
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   integration-tests:
     name: E2E Integration Tests
@@ -22,8 +26,25 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Cache Homebrew packages
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-integration-${{ runner.os }}-postgresql16
+          restore-keys: brew-integration-${{ runner.os }}-
+
       - name: Install Postgres
         run: brew install postgresql@16
+
+      - name: Cache Swift build artifacts
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            provider-swift/.build
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/org.swift.swiftpm
+          key: swift-integration-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved') }}
+          restore-keys: swift-integration-${{ runner.os }}-
 
       - name: Build provider (Swift)
         run: |
@@ -37,11 +58,17 @@ jobs:
           cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
              provider-swift/.build/debug/mlx.metallib
 
-      - name: Download model
+      - name: Cache HuggingFace models
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-integration-${{ runner.os }}-gemma4-e4b
+          restore-keys: hf-models-integration-${{ runner.os }}-
+
+      - name: Download models
         run: |
           /tmp/mlxvenv/bin/pip install huggingface_hub
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/Qwen3.5-0.8B-MLX-4bit')"
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-3-270m-4bit')"
+          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-4-e4b-4bit')"
 
       - name: Run integration + profile tests
         run: |
@@ -58,7 +85,7 @@ jobs:
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       TESTBED_PROVIDER_CONFIG: debug
       BENCHMARK_MD_PATH: /tmp/benchmark-results.md
-      RUNNER_DESC: macos-15 (M1 Virtual)
+      RUNNER_DESC: macos-26 (M4 Blacksmith)
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -68,8 +95,25 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Cache Homebrew packages
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-integration-${{ runner.os }}-postgresql16
+          restore-keys: brew-integration-${{ runner.os }}-
+
       - name: Install Postgres
         run: brew install postgresql@16
+
+      - name: Cache Swift build artifacts
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            provider-swift/.build
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/org.swift.swiftpm
+          key: swift-integration-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved') }}
+          restore-keys: swift-integration-${{ runner.os }}-
 
       - name: Build provider (Swift)
         run: |
@@ -83,11 +127,17 @@ jobs:
           cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
              provider-swift/.build/debug/mlx.metallib
 
-      - name: Download model
+      - name: Cache HuggingFace models
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-integration-${{ runner.os }}-gemma4-e4b
+          restore-keys: hf-models-integration-${{ runner.os }}-
+
+      - name: Download models
         run: |
           /tmp/mlxvenv/bin/pip install huggingface_hub
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/Qwen3.5-0.8B-MLX-4bit')"
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-3-270m-4bit')"
+          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-4-e4b-4bit')"
 
       - name: Run benchmarks
         run: |

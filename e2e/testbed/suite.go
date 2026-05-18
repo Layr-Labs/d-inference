@@ -118,7 +118,7 @@ func resolveModelID(modelID string) string {
 	if env := os.Getenv("TESTBED_MODEL_ID"); env != "" {
 		return env
 	}
-	return "mlx-community/Qwen3.5-0.8B-MLX-4bit"
+	return "mlx-community/gemma-4-e4b-4bit"
 }
 
 func (s *Suite) PrimaryModelID() string {

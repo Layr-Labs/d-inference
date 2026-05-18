@@ -45,12 +45,22 @@ private let standaloneLogger = Logger(
 
 public actor StandaloneServer {
 
+    /// Tracks a loaded model scheduler and when it was last used for LRU eviction.
+    private struct CachedScheduler {
+        let scheduler: BatchScheduler
+        var lastUsedAt: ContinuousClock.Instant
+    }
+
     private let config: StandaloneServerConfig
-    private var schedulers: [String: BatchScheduler] = [:]
+    private var schedulers: [String: CachedScheduler] = [:]
     private var modelsLoading: Set<String> = []
     private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     private var models: [ModelInfo]
     private var serverTask: Task<Void, Never>?
+
+    /// Maximum number of models kept warm in standalone mode. Oldest models
+    /// are evicted (LRU) when this limit is reached.
+    private static let maxCachedModels = 3
 
     public init(
         config: StandaloneServerConfig = StandaloneServerConfig(),
@@ -65,17 +75,34 @@ public actor StandaloneServer {
     private static let schedulerDefaultMaxTokens = 4096
 
     public func loadModel(_ modelId: String, container: MLXLMCommon.ModelContainer) async {
+        // Evict least-recently-used model if at capacity
+        if schedulers.count >= Self.maxCachedModels {
+            if let lru = schedulers.min(by: { $0.value.lastUsedAt < $1.value.lastUsedAt }) {
+                await lru.value.scheduler.unloadModel()
+                schedulers.removeValue(forKey: lru.key)
+                standaloneLogger.info("Evicted LRU model: \(lru.key)")
+            }
+        }
+
         let scheduler = BatchScheduler(
             maxConcurrentRequests: Self.schedulerMaxConcurrent,
             pendingTimeout: Self.schedulerPendingTimeout,
             defaultMaxTokens: Self.schedulerDefaultMaxTokens
         )
         await scheduler.loadModel(container: container, modelId: modelId)
-        schedulers[modelId] = scheduler
+        schedulers[modelId] = CachedScheduler(scheduler: scheduler, lastUsedAt: .now)
+    }
+
+    /// Touch the cached scheduler's last-used timestamp on access.
+    private func touchScheduler(_ modelId: String) {
+        schedulers[modelId]?.lastUsedAt = .now
     }
 
     private func ensureModelLoaded(_ modelId: String) async throws {
-        if schedulers[modelId] != nil { return }
+        if schedulers[modelId] != nil {
+            touchScheduler(modelId)
+            return
+        }
 
         if modelsLoading.contains(modelId) {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
@@ -227,19 +254,20 @@ public actor StandaloneServer {
             )
         }
 
-        guard let sched = schedulers[chatRequest.model] else {
+        guard let cached = schedulers[chatRequest.model] else {
             return openAIErrorResponse(
                 status: .internalServerError,
                 message: "Model load succeeded but scheduler unavailable"
             )
         }
+        touchScheduler(chatRequest.model)
 
         if chatRequest.stream ?? false {
-            let stream = await sched.submit(request: chatRequest)
+            let stream = await cached.scheduler.submit(request: chatRequest)
             return streamingCompletionResponse(stream: stream, model: chatRequest.model)
         }
 
-        return await nonStreamingCompletion(chatRequest, scheduler: sched)
+        return await nonStreamingCompletion(chatRequest, scheduler: cached.scheduler)
     }
 
     private nonisolated func streamingCompletionResponse(

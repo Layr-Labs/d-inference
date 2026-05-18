@@ -810,7 +810,7 @@ public actor ProviderLoop {
             // up to 4 requests, so worst-case KV ≈ weights × 4. Budget weights × 3.0
             // as a practical middle ground (not all requests hit 128k simultaneously).
             let requiredGb = modelInfo.estimatedMemoryGb * 3.0
-            await evictUntilAvailable(requiredGb: requiredGb)
+            try await evictUntilAvailable(requiredGb: requiredGb)
 
             logger.info("Loading model: \(modelId) from \(modelPath.path)")
 
@@ -889,7 +889,8 @@ public actor ProviderLoop {
     /// Evict idle models (LRU order) until `requiredGb` is available or
     /// no more idle models remain. Re-checks in-flight state before each
     /// eviction since `await unloadModel` is a suspension point.
-    private func evictUntilAvailable(requiredGb: Double) async {
+    /// Throws if the memory target cannot be met after exhausting evictable models.
+    private func evictUntilAvailable(requiredGb: Double) async throws {
         while availableMemoryGb() < requiredGb {
             let modelsWithInflight = Set(requestToModel.values)
             let candidate = modelSlots
@@ -897,8 +898,11 @@ public actor ProviderLoop {
                 .min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })
 
             guard let (modelId, _) = candidate else {
-                logger.warning("Low memory (\(String(format: "%.1f", availableMemoryGb())) GB free, need \(String(format: "%.1f", requiredGb)) GB) but no idle model to evict")
-                break
+                let available = String(format: "%.1f", availableMemoryGb())
+                let required = String(format: "%.1f", requiredGb)
+                throw InferenceError.modelLoadFailed(
+                    "Insufficient memory (\(available) GB free, need \(required) GB) and all loaded models are actively serving"
+                )
             }
 
             logger.info("Evicting idle model \(modelId) to free memory")

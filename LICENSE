@@ -3,7 +3,7 @@ Copyright © 2026 Eigen Labs, Inc.
 
 Subject to the terms and conditions of this license, Eigen Labs, Inc. grants you a limited, non-exclusive, non-transferable right to access and use the Software solely as expressly permitted herein. Any use of the Software not expressly permitted by this license requires a separate written commercial license agreement with Eigen Labs, Inc.
 
-For purposes of this license, "Software" means all source code, object code, scripts, configuration files, and other materials contained in this repository, excluding third-party components which are governed by their own respective licenses as listed in NOTICES.md.
+For purposes of this license, "Software" means all source code, object code, scripts, configuration files, and other materials contained in this repository, excluding third-party components which are governed by their own respective licenses.
 
 1. Platform Requirement. The Software, and any derivative works thereof, may only be deployed or operated as a component of the Darkbloom inference platform as operated by Eigen Labs, Inc. or its authorized successors, including operation of the provider agent software on authorized provider hardware as part of the Darkbloom network. Any deployment, operation, or use of the Software to power, enable, or operate any service, platform, or product other than the Darkbloom platform is strictly prohibited without prior written permission from Eigen Labs, Inc.
 

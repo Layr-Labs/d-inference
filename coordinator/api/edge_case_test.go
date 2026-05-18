@@ -163,9 +163,9 @@ func TestEdge_UnicodeInModelName(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
-	// Should fail with not found (not in catalog or no provider)
-	if w.Code != http.StatusNotFound && w.Code != http.StatusServiceUnavailable {
-		t.Errorf("unicode model: status = %d, want 404 or 503", w.Code)
+	// Should fail with not found (not in catalog), 429 (queue timeout), or 503 (no provider).
+	if w.Code != http.StatusNotFound && w.Code != http.StatusTooManyRequests && w.Code != http.StatusServiceUnavailable {
+		t.Errorf("unicode model: status = %d, want 404, 429, or 503", w.Code)
 	}
 }
 

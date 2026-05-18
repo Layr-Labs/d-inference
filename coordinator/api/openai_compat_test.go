@@ -464,9 +464,12 @@ func TestOpenAI_ErrorFormat(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
-	// Should be 503 (no provider available).
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	// Should be 404 (not in catalog), 429 (capacity/queue timeout), or 503
+	// (no provider). With the pre-flight 429 capacity check and fast queue
+	// timeouts, 429 is the expected outcome when providers exist but are at
+	// capacity or the queue times out.
+	if w.Code != http.StatusNotFound && w.Code != http.StatusTooManyRequests && w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 404, 429, or 503", w.Code)
 	}
 
 	var result map[string]any

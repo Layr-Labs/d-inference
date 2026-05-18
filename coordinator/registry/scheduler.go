@@ -697,6 +697,116 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string) bool {
 	return true
 }
 
+// QuickCapacityCheck performs a fast, read-only scan of the provider fleet to
+// determine whether any provider could serve a request for the given model
+// right now. It runs the same gates as the full routing path (status, trust,
+// runtime, privacy, challenge freshness, concurrency headroom, slot state,
+// free memory) but does NOT reserve capacity or create pending requests.
+//
+// Returns:
+//   - candidateCount: providers that passed ALL gates (could route right now)
+//   - capacityRejections: providers that serve the model and passed structural
+//     gates but were rejected for capacity reasons (full concurrency, no free
+//     memory, etc.)
+//
+// This is used for the pre-flight 429 check: if candidateCount == 0 &&
+// capacityRejections > 0, providers exist but are all at capacity (429).
+// If candidateCount == 0 && capacityRejections == 0, no provider serves
+// the model at all (404/503).
+func (r *Registry) QuickCapacityCheck(model string) (candidateCount, capacityRejections int) {
+	// Use a dummy PendingRequest with reasonable defaults for the admission
+	// gate. We only need prompt/max token estimates for freeMemoryAdmits.
+	dummyPR := &PendingRequest{
+		RequestID:             "capacity-check",
+		Model:                 model,
+		EstimatedPromptTokens: 500,
+		RequestedMaxTokens:    defaultRequestedMaxTokens,
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	now := time.Now()
+	for _, p := range r.providers {
+		p.mu.Lock()
+
+		// Structural gates (same as snapshotProviderLocked).
+		if !providerServesModelLocked(p, model) {
+			p.mu.Unlock()
+			continue
+		}
+		if p.Status == StatusOffline || p.Status == StatusUntrusted {
+			p.mu.Unlock()
+			continue
+		}
+		if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
+			p.mu.Unlock()
+			continue
+		}
+		if !p.RuntimeVerified {
+			p.mu.Unlock()
+			continue
+		}
+		if !providerSupportsPrivateTextLocked(p) {
+			p.mu.Unlock()
+			continue
+		}
+		if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+			p.mu.Unlock()
+			continue
+		}
+
+		// Concurrency gate.
+		if p.pendingCount() >= p.maxConcurrency() {
+			p.mu.Unlock()
+			capacityRejections++
+			continue
+		}
+
+		// Build a snapshot for the admission gate (slot state + free memory).
+		snap := routingSnapshot{
+			provider:      p,
+			model:         model,
+			slotState:     "unknown",
+			totalMemoryGB: float64(p.Hardware.MemoryGB),
+			modelSizeGB:   r.catalogSizeGBLocked(model),
+		}
+		if p.BackendCapacity != nil {
+			snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
+			if p.BackendCapacity.TotalMemoryGB > 0 {
+				snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
+			}
+			for _, slot := range p.BackendCapacity.Slots {
+				if slot.Model != model {
+					continue
+				}
+				snap.slotState = slot.State
+				snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
+				snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
+				snap.queuedTokenBudget = slot.QueuedTokenBudget
+				break
+			}
+		}
+		snap.modelLoaded = snap.slotState == "running"
+
+		p.mu.Unlock()
+
+		// Slot state gate (crashed/reloading are ineligible).
+		if _, eligible := slotStatePenalty(snap.slotState); !eligible {
+			continue
+		}
+
+		// Free memory / token budget admission gate.
+		if !freeMemoryAdmits(snap, dummyPR.EstimatedPromptTokens, dummyPR.RequestedMaxTokens) {
+			capacityRejections++
+			continue
+		}
+
+		candidateCount++
+	}
+	return candidateCount, capacityRejections
+}
+
 func (r *Registry) drainQueuedRequestsForModels(models []string) {
 	if r.queue == nil || len(models) == 0 {
 		return

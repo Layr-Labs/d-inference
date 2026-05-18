@@ -988,6 +988,9 @@ func (s *Server) routes() {
 	// Users can independently verify Apple's MDA certificate chain.
 	s.mux.HandleFunc("GET /v1/providers/attestation", s.handleProviderAttestation)
 
+	// Capacity snapshot — no auth needed. Upstream routers poll this.
+	s.mux.HandleFunc("GET /v1/models/capacity", s.handleModelsCapacity)
+
 	// Platform stats — no auth needed. Frontend dashboard uses this.
 	s.mux.HandleFunc("GET /v1/stats", s.handleStats)
 

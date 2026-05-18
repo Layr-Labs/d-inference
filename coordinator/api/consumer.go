@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -448,6 +449,25 @@ func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference st
 	return true
 }
 
+// estimateRetryAfter returns a suggested wait time in seconds before retrying
+// a request for the given model. Based on queue depth as a rough proxy for
+// fleet backlog. OpenRouter uses the Retry-After header to schedule retries.
+func (s *Server) estimateRetryAfter(model string) int {
+	queueDepth := s.registry.Queue().QueueSize(model)
+	if queueDepth == 0 {
+		return 2 // Light load, retry soon
+	}
+	// Rough estimate: each queued request takes ~3 seconds to drain.
+	estimate := queueDepth * 3
+	if estimate < 2 {
+		estimate = 2
+	}
+	if estimate > 30 {
+		estimate = 30
+	}
+	return estimate
+}
+
 func providerHasPayoutDestination(provider *registry.Provider) bool {
 	if provider == nil {
 		return false
@@ -869,6 +889,23 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Pre-flight capacity check: can ANY provider serve this model right now?
+	// If not, return 429 immediately rather than queueing for up to 120s.
+	// OpenRouter treats 429 as "rate limited" (no uptime penalty) vs 503
+	// which counts as downtime. Fast 429s also preserve our TTFT metrics.
+	candidateCount, capacityRejections := s.registry.QuickCapacityCheck(model)
+	if candidateCount == 0 && capacityRejections > 0 {
+		// Providers exist for this model but ALL are at capacity.
+		retryAfter := s.estimateRetryAfter(model)
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		refundReservation()
+		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
+		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+			fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", model, retryAfter),
+			withCode("rate_limit_exceeded")))
+		return
+	}
+
 	// Dispatch to a provider with speculative TTFT-aware dispatch. On the
 	// first attempt we dispatch to the best provider (primary), and start a
 	// speculative timer at 50% of the TTFT deadline. If the primary hasn't
@@ -957,8 +994,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			queuePR.Timing.QueuedAt = time.Now()
 			if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
 				s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:over_capacity"})
+				retryAfter := s.estimateRetryAfter(model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 				refundReservation()
-				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider available for model %q and queue is full", model)))
+				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+					fmt.Sprintf("all providers for model %q are at capacity and queue is full", model),
+					withCode("rate_limit_exceeded")))
 				return
 			}
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:queued"})
@@ -977,7 +1018,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				}
 				refundReservation()
 				s.ddIncr("request_queue.timeout", []string{"model:" + model, "model_type:" + s.registry.ModelType(model)})
-				writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available", fmt.Sprintf("no hardware-trusted provider became available for model %q (queue timeout)", model)))
+				retryAfter := s.estimateRetryAfter(model)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+					fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", model),
+					withCode("rate_limit_exceeded")))
 				return
 			}
 			// Queue assigned a provider; still need to dispatch.
@@ -1630,7 +1675,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		refundReservation()
 		statusCode := lastErrCode
 		if statusCode == 0 {
-			statusCode = http.StatusServiceUnavailable
+			// Distinguish capacity exhaustion (429) from genuine unavailability (503).
+			// A quick capacity check tells us if providers exist but are full.
+			_, capRej := s.registry.QuickCapacityCheck(model)
+			if capRej > 0 {
+				statusCode = http.StatusTooManyRequests
+			} else {
+				statusCode = http.StatusServiceUnavailable
+			}
 		}
 		s.emitRequest(r.Context(), protocol.SeverityError, requestID,
 			fmt.Sprintf("inference failed after %d attempt(s)", maxDispatchAttempts),
@@ -1644,8 +1696,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "failure"})
 		}
 		s.ddIncr("inference.dispatches", []string{"status:failure"})
-		writeJSON(w, statusCode, errorResponse("provider_error",
-			fmt.Sprintf("inference failed after %d attempt(s): %s", maxDispatchAttempts, lastErr)))
+		if statusCode == http.StatusTooManyRequests {
+			retryAfter := s.estimateRetryAfter(model)
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			writeJSON(w, statusCode, errorResponse("rate_limit_exceeded",
+				fmt.Sprintf("all providers at capacity after %d attempt(s): %s", maxDispatchAttempts, lastErr),
+				withCode("rate_limit_exceeded")))
+		} else {
+			writeJSON(w, statusCode, errorResponse("provider_error",
+				fmt.Sprintf("inference failed after %d attempt(s): %s", maxDispatchAttempts, lastErr)))
+		}
 		return
 	}
 	if s.metrics != nil {
@@ -2796,9 +2856,17 @@ func buildNonStreamingResponse(requestID, model string, msg extractedMessage, us
 //
 // Returns a deduplicated list of models across all connected providers,
 // including attestation metadata (trust level, Secure Enclave status,
-// provider count) for each model.
+// provider count) for each model. Capacity fields (routable_providers,
+// warm_providers, can_accept) are included from the live capacity snapshot.
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	models := s.registry.ListModels()
+
+	// Build a lookup of capacity data keyed by model ID.
+	capacities := s.registry.ModelCapacitySnapshot()
+	capByModel := make(map[string]*registry.ModelCapacity, len(capacities))
+	for i := range capacities {
+		capByModel[capacities[i].ModelID] = &capacities[i]
+	}
 
 	// Filter to only show models from the catalog (active supported models).
 	catalogModels := s.store.ListSupportedModels()
@@ -2821,6 +2889,16 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 			"provider_count":     m.Providers,
 			"attested_providers": m.AttestedProviders,
 			"trust_level":        string(m.TrustLevel),
+		}
+		// Add capacity fields from live snapshot.
+		if cap, ok := capByModel[m.ID]; ok {
+			metadata["routable_providers"] = cap.RoutableProviders
+			metadata["warm_providers"] = cap.WarmProviders
+			metadata["can_accept"] = cap.CanAccept
+		} else {
+			metadata["routable_providers"] = 0
+			metadata["warm_providers"] = 0
+			metadata["can_accept"] = false
 		}
 		if m.Attestation != nil {
 			metadata["attestation"] = map[string]any{
@@ -3170,6 +3248,19 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 
+	// Pre-flight capacity check (same logic as handleChatCompletions).
+	candidateCount, capacityRejections := s.registry.QuickCapacityCheck(model)
+	if candidateCount == 0 && capacityRejections > 0 {
+		retryAfter := s.estimateRetryAfter(model)
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		refundReservation()
+		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
+		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+			fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", model, retryAfter),
+			withCode("rate_limit_exceeded")))
+		return
+	}
+
 	requestID := uuid.New().String()
 	pr := &registry.PendingRequest{
 		RequestID:              requestID,
@@ -3194,10 +3285,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			ResponseCh: make(chan *registry.Provider, 1),
 		}
 		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
+			retryAfter := s.estimateRetryAfter(model)
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:over_capacity"})
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-				fmt.Sprintf("no provider available for model %q", model)))
+			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+				fmt.Sprintf("all providers for model %q are at capacity and queue is full", model),
+				withCode("rate_limit_exceeded")))
 			return
 		}
 		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:queued"})
@@ -3207,9 +3301,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				refundReservation()
 				return
 			}
+			retryAfter := s.estimateRetryAfter(model)
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-				fmt.Sprintf("no provider became available for model %q", model)))
+			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+				fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", model),
+				withCode("rate_limit_exceeded")))
 			return
 		}
 		decision = queuedReq.Decision

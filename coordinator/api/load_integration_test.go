@@ -261,32 +261,44 @@ func TestLoad_SingleProviderConcurrent(t *testing.T) {
 	defer providerCancel()
 	go runProviderLoop(providerCtx, t, conn, pubKey, "concurrent")
 
-	// DefaultMaxConcurrent = 4, so with 20 concurrent requests the remaining
-	// 16 will queue. The queue supports up to 200 slots (setupLoadTestServer).
+	// DefaultMaxConcurrent = 4, so with 20 concurrent requests the pre-flight
+	// 429 capacity check rejects requests when the provider is full. Only
+	// requests that arrive while the provider has headroom get routed; the
+	// rest receive 429 (rate_limit_exceeded). This is intentional for the
+	// OpenRouter SLA — fast 429s don't penalize uptime scores.
 	const numRequests = 20
 	results := sendConcurrentRequests(t, ts.URL, "test-key", model, numRequests, numRequests, 25*time.Second)
 
 	successes := 0
+	rateLimited := 0
 	for i, code := range results {
-		if code == http.StatusOK {
+		switch code {
+		case http.StatusOK:
 			successes++
-		} else {
-			t.Logf("request %d: status=%d", i, code)
+		case http.StatusTooManyRequests:
+			rateLimited++
+		default:
+			t.Logf("request %d: unexpected status=%d", i, code)
 		}
 	}
 
-	t.Logf("concurrent test: %d/%d succeeded", successes, numRequests)
+	t.Logf("concurrent test: %d/%d succeeded, %d rate-limited (429)", successes, numRequests, rateLimited)
 
-	if successes != numRequests {
-		t.Errorf("successes = %d, want %d", successes, numRequests)
+	// At least maxConcurrency requests should succeed; the rest may get 429.
+	if successes < registry.DefaultMaxConcurrent {
+		t.Errorf("successes = %d, want >= %d", successes, registry.DefaultMaxConcurrent)
+	}
+	// All responses should be either 200 or 429 (no 503s or other errors).
+	if successes+rateLimited != numRequests {
+		t.Errorf("successes(%d) + rateLimited(%d) = %d, want %d", successes, rateLimited, successes+rateLimited, numRequests)
 	}
 
 	// Give handleComplete a moment to finish recording.
 	time.Sleep(300 * time.Millisecond)
 
 	records := st.UsageRecords()
-	if len(records) != numRequests {
-		t.Errorf("usage records = %d, want %d", len(records), numRequests)
+	if len(records) != successes {
+		t.Errorf("usage records = %d, want %d (matching successes)", len(records), successes)
 	}
 }
 
@@ -331,18 +343,32 @@ func TestLoad_MultiProviderLoadBalance(t *testing.T) {
 	}
 
 	// 3 providers * 4 concurrent = 12 in-flight + queue headroom.
+	// With the pre-flight 429 capacity check, requests that arrive when all
+	// providers are at capacity get 429'd immediately instead of queueing.
 	const numRequests = 30
 	results := sendConcurrentRequests(t, ts.URL, "test-key", model, numRequests, numRequests, 25*time.Second)
 
 	successes := 0
+	rateLimited := 0
 	for _, code := range results {
-		if code == http.StatusOK {
+		switch code {
+		case http.StatusOK:
 			successes++
+		case http.StatusTooManyRequests:
+			rateLimited++
 		}
 	}
 
-	if successes != numRequests {
-		t.Errorf("successes = %d, want %d", successes, numRequests)
+	t.Logf("load balance: %d/%d succeeded, %d rate-limited (429)", successes, numRequests, rateLimited)
+
+	// At least 3*DefaultMaxConcurrent=12 requests should succeed.
+	minExpected := 3 * registry.DefaultMaxConcurrent
+	if successes < minExpected {
+		t.Errorf("successes = %d, want >= %d", successes, minExpected)
+	}
+	// All responses should be either 200 or 429.
+	if successes+rateLimited != numRequests {
+		t.Errorf("successes(%d) + rateLimited(%d) = %d, want %d", successes, rateLimited, successes+rateLimited, numRequests)
 	}
 
 	// Allow completion handlers to finish.
@@ -363,8 +389,8 @@ func TestLoad_MultiProviderLoadBalance(t *testing.T) {
 		t.Logf("warning: fast provider served fewer requests (%d) than slow provider (%d); timing jitter may explain this", s2, s0)
 	}
 
-	if total < int32(numRequests) {
-		t.Errorf("total served = %d, want >= %d", total, numRequests)
+	if total < int32(successes) {
+		t.Errorf("total served = %d, want >= %d (successes)", total, successes)
 	}
 }
 
@@ -463,20 +489,32 @@ func TestLoad_ConcurrentBillingUnderLoad(t *testing.T) {
 	}
 
 	// Send 50 requests with a concurrency limit. DefaultMaxConcurrent=4, so
-	// we allow up to 50 in flight (the queue can hold 200) and they'll be
-	// served 4 at a time by the single provider.
+	// with the pre-flight 429 check, requests that arrive when the provider
+	// is full get rate-limited immediately. Only requests that find headroom
+	// get served.
 	const numRequests = 50
 	results := sendConcurrentRequests(t, ts.URL, consumerKey, model, numRequests, numRequests, 25*time.Second)
 
 	successes := 0
+	rateLimited := 0
 	for _, code := range results {
-		if code == http.StatusOK {
+		switch code {
+		case http.StatusOK:
 			successes++
+		case http.StatusTooManyRequests:
+			rateLimited++
 		}
 	}
 
-	if successes != numRequests {
-		t.Errorf("successes = %d, want %d", successes, numRequests)
+	t.Logf("billing test: %d/%d succeeded, %d rate-limited (429)", successes, numRequests, rateLimited)
+
+	// At least maxConcurrency requests should succeed.
+	if successes < registry.DefaultMaxConcurrent {
+		t.Errorf("successes = %d, want >= %d", successes, registry.DefaultMaxConcurrent)
+	}
+	// All responses should be either 200 or 429.
+	if successes+rateLimited != numRequests {
+		t.Errorf("successes(%d) + rateLimited(%d) = %d, want %d", successes, rateLimited, successes+rateLimited, numRequests)
 	}
 
 	// Let handleComplete finish processing.
@@ -504,8 +542,8 @@ func TestLoad_ConcurrentBillingUnderLoad(t *testing.T) {
 			chargeCount++
 		}
 	}
-	if chargeCount != numRequests {
-		t.Errorf("ledger charge entries = %d, want %d (no double-charges)", chargeCount, numRequests)
+	if chargeCount != successes {
+		t.Errorf("ledger charge entries = %d, want %d (no double-charges)", chargeCount, successes)
 	}
 }
 
@@ -571,23 +609,34 @@ func TestLoad_RaceSafety(t *testing.T) {
 	}
 
 	// Send 100 concurrent requests. 5 providers * 4 slots = 20 concurrent,
-	// plus queue capacity of 200.
+	// plus queue capacity of 200. With the pre-flight 429 capacity check,
+	// requests that arrive when all providers are full get rate-limited.
 	results := sendConcurrentRequests(t, ts.URL, "test-key", model, numRequests, numRequests, 30*time.Second)
 
 	heartbeatCancel()
 	heartbeatWg.Wait()
 
 	successes := 0
+	rateLimited := 0
 	for _, code := range results {
-		if code == http.StatusOK {
+		switch code {
+		case http.StatusOK:
 			successes++
+		case http.StatusTooManyRequests:
+			rateLimited++
 		}
 	}
 
-	t.Logf("race safety: %d/%d requests succeeded with %d providers and concurrent heartbeats",
-		successes, numRequests, numProviders)
+	t.Logf("race safety: %d/%d requests succeeded, %d rate-limited (429), with %d providers and concurrent heartbeats",
+		successes, numRequests, rateLimited, numProviders)
 
-	if successes != numRequests {
-		t.Errorf("successes = %d, want %d", successes, numRequests)
+	// At least numProviders * DefaultMaxConcurrent requests should succeed.
+	minExpected := numProviders * registry.DefaultMaxConcurrent
+	if successes < minExpected {
+		t.Errorf("successes = %d, want >= %d", successes, minExpected)
+	}
+	// All responses should be either 200 or 429 (no 503s, 500s, or other errors).
+	if successes+rateLimited != numRequests {
+		t.Errorf("successes(%d) + rateLimited(%d) = %d, want %d", successes, rateLimited, successes+rateLimited, numRequests)
 	}
 }

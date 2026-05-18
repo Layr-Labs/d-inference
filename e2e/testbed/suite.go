@@ -2,12 +2,15 @@ package testbed
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -69,6 +72,7 @@ type Provider struct {
 	BinaryPath    string
 	Logger        *slog.Logger
 	ProviderIndex int
+	AuthDir       string
 
 	cmd    *os.Process
 	cancel context.CancelFunc
@@ -239,10 +243,17 @@ func (s *Suite) startProviders() error {
 				Logger:        s.Logger.With("provider_index", providerIdx, "model", spec.ModelID),
 				ProviderIndex: providerIdx,
 			}
+			authDir, authTokenPath, err := s.prepareProviderAuth(providerIdx)
+			if err != nil {
+				return fmt.Errorf("prepare provider auth %d: %w", providerIdx, err)
+			}
+			p.AuthDir = authDir
 			if err := p.Start(s.Ctx, s.Coordinator.BaseURL(), ProviderConfig{
-				ModelID:    spec.ModelID,
-				TrustLevel: TrustNone,
+				ModelID:       spec.ModelID,
+				TrustLevel:    TrustNone,
+				AuthTokenPath: authTokenPath,
 			}); err != nil {
+				_ = os.RemoveAll(authDir)
 				return fmt.Errorf("start provider %d (%s): %w", providerIdx, spec.ModelID, err)
 			}
 			s.Providers = append(s.Providers, p)
@@ -250,6 +261,37 @@ func (s *Suite) startProviders() error {
 		}
 	}
 	return nil
+}
+
+func (s *Suite) prepareProviderAuth(providerIdx int) (string, string, error) {
+	rawToken := fmt.Sprintf("testbed-provider-token-%d-%d", providerIdx, time.Now().UnixNano())
+	tokenHash := sha256.Sum256([]byte(rawToken))
+	accountID := fmt.Sprintf("testbed-provider-%d", providerIdx)
+	if err := s.PgStore.CreateProviderToken(&store.ProviderToken{
+		TokenHash: hex.EncodeToString(tokenHash[:]),
+		AccountID: accountID,
+		Label:     fmt.Sprintf("testbed-provider-%d", providerIdx),
+		Active:    true,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		return "", "", err
+	}
+
+	authDir, err := os.MkdirTemp("", fmt.Sprintf("darkbloom-testbed-provider-%d-", providerIdx))
+	if err != nil {
+		return "", "", err
+	}
+	tokenDir := filepath.Join(authDir, ".darkbloom")
+	if err := os.MkdirAll(tokenDir, 0700); err != nil {
+		_ = os.RemoveAll(authDir)
+		return "", "", err
+	}
+	authTokenPath := filepath.Join(tokenDir, "auth_token")
+	if err := os.WriteFile(authTokenPath, []byte(rawToken+"\n"), 0600); err != nil {
+		_ = os.RemoveAll(authDir)
+		return "", "", err
+	}
+	return authDir, authTokenPath, nil
 }
 
 func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
@@ -351,6 +393,9 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 	cmd.Env = append(os.Environ(),
 		"DARKBLOOM_PID_FILE=/tmp/darkbloom-testbed-"+strconv.Itoa(p.ProviderIndex)+".pid",
 	)
+	if cfg.AuthTokenPath != "" {
+		cmd.Env = append(cmd.Env, "DARKBLOOM_AUTH_TOKEN_PATH="+cfg.AuthTokenPath)
+	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start provider: %w", err)
@@ -387,6 +432,9 @@ func (p *Provider) Stop() {
 		case <-time.After(10 * time.Second):
 			p.cmd.Kill()
 		}
+	}
+	if p.AuthDir != "" {
+		_ = os.RemoveAll(p.AuthDir)
 	}
 	p.Logger.Info("provider stopped")
 }

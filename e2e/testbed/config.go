@@ -24,6 +24,7 @@ type ProviderConfig struct {
 	TrustLevel          TrustLevel
 	ModelID             string
 	AttestationInterval time.Duration
+	AuthTokenPath       string
 }
 
 func DefaultProviderConfig() ProviderConfig {

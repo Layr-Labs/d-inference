@@ -14,8 +14,12 @@ import Foundation
 
 public enum AuthTokenStore: Sendable {
 
-    /// Path to the stored auth token: ~/.darkbloom/auth_token
+    /// Path to the stored auth token. Test harnesses can override this with
+    /// DARKBLOOM_AUTH_TOKEN_PATH to avoid touching the user's login state.
     public static func tokenPath() -> URL {
+        if let override = ProcessInfo.processInfo.environment["DARKBLOOM_AUTH_TOKEN_PATH"], !override.isEmpty {
+            return URL(fileURLWithPath: override)
+        }
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".darkbloom")
             .appendingPathComponent("auth_token")

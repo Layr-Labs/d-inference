@@ -60,7 +60,8 @@ import Testing
                     numRunning: 1,
                     numWaiting: 0,
                     activeTokens: 512,
-                    maxTokensPotential: 2048
+                    maxTokensPotential: 2048,
+                    maxConcurrency: 4
                 )],
                 gpuMemoryActiveGb: 8.5,
                 gpuMemoryPeakGb: 9.0,
@@ -203,6 +204,49 @@ import Testing
         encoding: .utf8
     ) ?? ""
     #expect(!runtimeJSON.contains("mismatches"))
+}
+
+@Test func backendSlotCapacityRoundTripsAdaptiveBatchingFields() throws {
+    let slot = BackendSlotCapacity(
+        model: "mlx-community/Qwen2.5-7B-4bit",
+        state: "running",
+        numRunning: 3,
+        numWaiting: 2,
+        activeTokens: 5_000,
+        maxTokensPotential: 12_000,
+        maxConcurrency: 6,
+        observedDecodeTps: 85.5,
+        activeTokenBudgetUsed: 28_000,
+        activeTokenBudgetMax: 32_768,
+        queuedTokenBudget: 4_096,
+        kvBytesPerToken: 393_216
+    )
+
+    let data = try JSONEncoder().encode(slot)
+    let object = try jsonObject(data)
+    #expect(object["max_concurrency"] as? Int == 6)
+    #expect(object["observed_decode_tps"] as? Double == 85.5)
+    #expect(object["active_token_budget_used"] as? Int == 28_000)
+    #expect(object["active_token_budget_max"] as? Int == 32_768)
+    #expect(object["queued_token_budget"] as? Int == 4_096)
+    #expect(object["kv_bytes_per_token"] as? Int == 393_216)
+
+    let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: data)
+    #expect(decoded == slot)
+}
+
+@Test func backendSlotCapacityDecodesOldPayloadWithoutAdaptiveFields() throws {
+    let raw = #"{"model":"test","state":"running","num_running":2,"num_waiting":0,"active_tokens":3000,"max_tokens_potential":8000}"#
+    let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: Data(raw.utf8))
+
+    #expect(decoded.model == "test")
+    #expect(decoded.numRunning == 2)
+    #expect(decoded.maxConcurrency == 0)
+    #expect(decoded.observedDecodeTps == 0)
+    #expect(decoded.activeTokenBudgetUsed == 0)
+    #expect(decoded.activeTokenBudgetMax == 0)
+    #expect(decoded.queuedTokenBudget == 0)
+    #expect(decoded.kvBytesPerToken == 0)
 }
 
 private func sampleHardware() -> HardwareInfo {

@@ -68,6 +68,7 @@ type routingSnapshot struct {
 	provider           *Provider
 	model              string
 	slotState          string
+	hasHeadroom        bool
 	totalPending       int
 	pendingForModel    int
 	pendingMaxTokens   int
@@ -385,9 +386,6 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
 		return routingSnapshot{}, false
 	}
-	if p.pendingCount() >= p.maxConcurrency() {
-		return routingSnapshot{}, false
-	}
 
 	snap := routingSnapshot{
 		provider:      p,
@@ -412,6 +410,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 		}
 		snap.pendingMaxTokens += maxTok
 	}
+	snap.hasHeadroom = p.hasConcurrencyHeadroomForModelLocked(model)
 
 	if p.BackendCapacity != nil {
 		snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
@@ -482,6 +481,9 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	statePenalty, eligible := slotStatePenalty(snap.slotState)
 	if !eligible {
 		return nil, rejectNone, false
+	}
+	if !snap.hasHeadroom {
+		return nil, rejectCapacity, false
 	}
 
 	if snap.systemMetrics.ThermalState == "critical" {
@@ -687,7 +689,7 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string) bool {
 	if !providerServesModelLocked(p, model) {
 		return false
 	}
-	if p.pendingCount() >= p.maxConcurrency() {
+	if !p.hasConcurrencyHeadroomForModelLocked(model) {
 		return false
 	}
 	if p.BackendCapacity != nil {
@@ -783,7 +785,7 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 		}
 
 		// Concurrency gate.
-		if p.pendingCount() >= p.maxConcurrency() {
+		if !p.hasConcurrencyHeadroomForModelLocked(model) {
 			p.mu.Unlock()
 			capacityRejections++
 			continue

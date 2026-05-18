@@ -240,6 +240,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public var activeTokenBudgetMax: Int64
     public var queuedTokenBudget: Int64
     public var kvBytesPerToken: Int64
+    public var maxConcurrency: UInt32
 
     enum CodingKeys: String, CodingKey {
         case model
@@ -253,6 +254,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case activeTokenBudgetMax = "active_token_budget_max"
         case queuedTokenBudget = "queued_token_budget"
         case kvBytesPerToken = "kv_bytes_per_token"
+        case maxConcurrency = "max_concurrency"
     }
 
     public init(
@@ -262,6 +264,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         numWaiting: UInt32,
         activeTokens: Int64,
         maxTokensPotential: Int64,
+        maxConcurrency: UInt32 = 0,
         observedDecodeTps: Double = 0,
         activeTokenBudgetUsed: Int64 = 0,
         activeTokenBudgetMax: Int64 = 0,
@@ -274,11 +277,28 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.numWaiting = numWaiting
         self.activeTokens = activeTokens
         self.maxTokensPotential = maxTokensPotential
+        self.maxConcurrency = maxConcurrency
         self.observedDecodeTps = observedDecodeTps
         self.activeTokenBudgetUsed = activeTokenBudgetUsed
         self.activeTokenBudgetMax = activeTokenBudgetMax
         self.queuedTokenBudget = queuedTokenBudget
         self.kvBytesPerToken = kvBytesPerToken
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        model = try container.decode(String.self, forKey: .model)
+        state = try container.decode(String.self, forKey: .state)
+        numRunning = try container.decode(UInt32.self, forKey: .numRunning)
+        numWaiting = try container.decode(UInt32.self, forKey: .numWaiting)
+        activeTokens = try container.decodeIfPresent(Int64.self, forKey: .activeTokens) ?? 0
+        maxTokensPotential = try container.decodeIfPresent(Int64.self, forKey: .maxTokensPotential) ?? 0
+        maxConcurrency = try container.decodeIfPresent(UInt32.self, forKey: .maxConcurrency) ?? 0
+        observedDecodeTps = try container.decodeIfPresent(Double.self, forKey: .observedDecodeTps) ?? 0
+        activeTokenBudgetUsed = try container.decodeIfPresent(Int64.self, forKey: .activeTokenBudgetUsed) ?? 0
+        activeTokenBudgetMax = try container.decodeIfPresent(Int64.self, forKey: .activeTokenBudgetMax) ?? 0
+        queuedTokenBudget = try container.decodeIfPresent(Int64.self, forKey: .queuedTokenBudget) ?? 0
+        kvBytesPerToken = try container.decodeIfPresent(Int64.self, forKey: .kvBytesPerToken) ?? 0
     }
 }
 

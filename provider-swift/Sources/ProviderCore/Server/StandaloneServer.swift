@@ -72,7 +72,7 @@ public actor StandaloneServer {
         self.models = models
     }
 
-    private static let schedulerMaxConcurrent = 4
+    private static let schedulerMaxConcurrent = 24
     private static let schedulerPendingTimeout: Duration = .seconds(120)
     private static let schedulerDefaultMaxTokens = 4096
 

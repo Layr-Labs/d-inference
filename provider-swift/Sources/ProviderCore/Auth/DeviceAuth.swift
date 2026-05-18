@@ -20,7 +20,7 @@ public enum AuthTokenStore: Sendable {
         if let override = ProcessInfo.processInfo.environment["DARKBLOOM_AUTH_TOKEN_PATH"], !override.isEmpty {
             return URL(fileURLWithPath: override)
         }
-        FileManager.default.homeDirectoryForCurrentUser
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".darkbloom")
             .appendingPathComponent("auth_token")
     }

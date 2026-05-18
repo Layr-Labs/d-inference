@@ -123,11 +123,41 @@ public actor BatchScheduler {
             if let id = ctx.tokenizer.convertTokenToId(ctx.tokenizer.eosToken ?? "") {
                 eos.append([id])
             }
+
+            // Extract KV cache dimensions from the model if it conforms to
+            // KVCacheDimensionProvider (most MLX LLM models do).
+            var numLayers: Int?
+            var kvHeadsPerLayer: Int?
+            if let kvProvider = ctx.model as? KVCacheDimensionProvider {
+                let kvHeads = kvProvider.kvHeads
+                numLayers = kvHeads.count
+                kvHeadsPerLayer = kvHeads.first  // uniform across layers for standard architectures
+            }
+
+            // Read head_dim from config.json in the model directory.
+            var headDim: Int?
+            if case .directory(let modelDir) = ctx.configuration.id {
+                let configURL = modelDir.appendingPathComponent("config.json")
+                if let data = try? Data(contentsOf: configURL),
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    headDim = json["head_dim"] as? Int
+                    // Fallback: head_dim = hidden_size / num_attention_heads
+                    if headDim == nil,
+                       let hiddenSize = json["hidden_size"] as? Int,
+                       let numHeads = json["num_attention_heads"] as? Int, numHeads > 0 {
+                        headDim = hiddenSize / numHeads
+                    }
+                }
+            }
+
             return LoadSnapshot(
                 bytes: bytes,
                 eos: eos,
                 tokenizer: TokenizerBox(ctx.tokenizer),
-                model: ctx.model
+                model: ctx.model,
+                numLayers: numLayers,
+                kvHeadsPerLayer: kvHeadsPerLayer,
+                headDim: headDim
             )
         }
         guard loadEpoch == generationEpoch else { return }
@@ -146,12 +176,17 @@ public actor BatchScheduler {
         startWorker()
 
         // Compute dynamic token budget from available memory.
-        // NOTE: kvBytesPerToken is a rough heuristic (model weight bytes / 25k,
-        // floored at 100kB). Ideally this would be computed from model
-        // architecture metadata (num_hidden_layers * num_key_value_heads *
-        // head_dim * 2 bytes-per-element * 2 for K+V), but MLX model config
-        // doesn't expose these fields through the LanguageModel protocol yet.
-        let estimatedKV = max(snapshot.bytes / 25_000, 100_000)
+        // KV cache per token = num_layers * num_kv_heads * head_dim * 2 (K+V) * 2 (float16 bytes).
+        // Architecture metadata is extracted from the model's KVCacheDimensionProvider
+        // conformance (num_layers, num_kv_heads) and config.json (head_dim).
+        // Falls back to a weight-based heuristic if metadata is unavailable.
+        let estimatedKV: Int
+        if let layers = snapshot.numLayers, let kvHeads = snapshot.kvHeadsPerLayer,
+           let hd = snapshot.headDim, layers > 0, kvHeads > 0, hd > 0 {
+            estimatedKV = layers * kvHeads * hd * 2 * 2
+        } else {
+            estimatedKV = max(snapshot.bytes / 25_000, 100_000)
+        }
         self.kvBytesPerToken = estimatedKV
         let totalMemory = Int(ProcessInfo.processInfo.physicalMemory)
         let osReserve = 4 * 1024 * 1024 * 1024
@@ -651,6 +686,9 @@ private struct LoadSnapshot: @unchecked Sendable {
     let eos: [[Int]]
     let tokenizer: TokenizerBox
     let model: any LanguageModel
+    let numLayers: Int?
+    let kvHeadsPerLayer: Int?
+    let headDim: Int?
 }
 
 private final class TokenizerBox: @unchecked Sendable {

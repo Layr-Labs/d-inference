@@ -108,6 +108,10 @@ public actor ProviderLoop {
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     private var inflightTasks: [String: Task<Void, Never>] = [:]
 
+    /// A detached task can finish before the actor stores it in `inflightTasks`.
+    /// Track that edge so the post-spawn registration does not leave a stale task.
+    private var completedBeforeTaskRegistration = Set<String>()
+
     /// Tracks coordinator-driven preload tasks so they can be cancelled on shutdown.
     private var preloadTasks: [String: Task<Void, Never>] = [:]
 
@@ -125,6 +129,11 @@ public actor ProviderLoop {
     /// the model when the timeout has elapsed. nil when disabled
     /// (`idleTimeoutMins == 0`) or before `run()` starts it.
     private var idleMonitorTask: Task<Void, Never>?
+
+    /// Periodically refreshes provider-reported backend capacity so heartbeats
+    /// reflect active/queued requests and adaptive batch-cap changes while
+    /// long-running generations are still in flight.
+    private var capacityRefreshTask: Task<Void, Never>?
 
     private let logger = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
 
@@ -144,7 +153,7 @@ public actor ProviderLoop {
 
     // MARK: - Model Slot
 
-    private static let schedulerMaxConcurrent = 4
+    private static let schedulerMaxConcurrent = 24
     private static let schedulerPendingTimeout: Duration = .seconds(120)
     private static let schedulerDefaultMaxTokens = 4096
 
@@ -233,6 +242,7 @@ public actor ProviderLoop {
         // followed by a long disconnect is still subject to the unload
         // timer.
         startIdleMonitor()
+        startCapacityRefreshMonitor()
 
         logger.info("Coordinator client started, entering event loop")
 
@@ -286,6 +296,8 @@ public actor ProviderLoop {
         logger.info("Event stream ended, shutting down")
         idleMonitorTask?.cancel()
         idleMonitorTask = nil
+        capacityRefreshTask?.cancel()
+        capacityRefreshTask = nil
         for (_, task) in preloadTasks { task.cancel() }
         preloadTasks.removeAll()
         preloadTaskIds.removeAll()
@@ -541,6 +553,7 @@ public actor ProviderLoop {
                 request: chatRequest,
                 requestId: requestId
             )
+            await me.updateAggregateCapacity()
 
             for await event in generationStream {
                 // Check cancellation
@@ -613,6 +626,9 @@ public actor ProviderLoop {
         }
 
         inflightTasks[requestId] = task
+        if completedBeforeTaskRegistration.remove(requestId) != nil {
+            inflightTasks.removeValue(forKey: requestId)
+        }
         modelSlots[modelId]?.lastInferenceAt = .now
     }
 
@@ -770,6 +786,22 @@ public actor ProviderLoop {
         return remMinutes == 0 ? "\(hours)h" : "\(hours)h\(remMinutes)m"
     }
 
+    // MARK: - Capacity Refresh
+
+    private func startCapacityRefreshMonitor() {
+        capacityRefreshTask?.cancel()
+        let heartbeatInterval = max(1, loopConfig.config.coordinator.heartbeatIntervalSecs)
+        let pollInterval = Duration.seconds(Int64(max(1, heartbeatInterval / 2)))
+        let me = self
+        capacityRefreshTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: pollInterval)
+                if Task.isCancelled { break }
+                await me.updateAggregateCapacity()
+            }
+        }
+    }
+
     // MARK: - Model Loading
 
     private func ensureModelLoaded(modelId: String) async throws {
@@ -826,11 +858,10 @@ public actor ProviderLoop {
 
         modelsLoading.insert(modelId)
         do {
-            // Budget: model weights + KV cache for 128k context under continuous
-            // batching (4 concurrent requests). estimatedMemoryGb is weight_bytes × 1.2.
-            // KV cache at 128k with GQA is roughly equal to weight size, and we batch
-            // up to 4 requests, so worst-case KV ≈ weights × 4. Budget weights × 3.0
-            // as a practical middle ground (not all requests hit 128k simultaneously).
+            // Budget enough headroom to warm the model. Per-request KV safety is
+            // enforced later by BatchScheduler's live token budget, so this load
+            // gate should not assume the engine's full adaptive slot ceiling is
+            // simultaneously filled with maximum-context requests.
             let requiredGb = modelInfo.estimatedMemoryGb * 3.0
             try await evictUntilAvailable(requiredGb: requiredGb)
 
@@ -952,6 +983,7 @@ public actor ProviderLoop {
         }
 
         requestToModel.removeValue(forKey: requestId)
+        await updateAggregateCapacity()
 
         if let task = inflightTasks.removeValue(forKey: requestId) {
             task.cancel()
@@ -964,12 +996,17 @@ public actor ProviderLoop {
             await handleCancellation(requestId: requestId)
         }
         inflightTasks.removeAll()
+        completedBeforeTaskRegistration.removeAll()
         requestToModel.removeAll()
     }
 
     private func finishInflightRequest(requestId: String) {
-        inflightTasks.removeValue(forKey: requestId)
-        if let modelId = requestToModel.removeValue(forKey: requestId) {
+        let hadRegisteredTask = inflightTasks.removeValue(forKey: requestId) != nil
+        let modelId = requestToModel.removeValue(forKey: requestId)
+        if !hadRegisteredTask, modelId != nil {
+            completedBeforeTaskRegistration.insert(requestId)
+        }
+        if let modelId {
             modelSlots[modelId]?.lastInferenceAt = .now
             syncWarmModelState()
         }

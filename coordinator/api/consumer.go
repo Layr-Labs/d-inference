@@ -179,6 +179,9 @@ func (s *Server) dispatchOneProvider(
 			return nil, nil, decision, "insufficient funds for provider price", http.StatusPaymentRequired
 		}
 	}
+	if pr.Timing != nil {
+		pr.Timing.RoutedAt = time.Now()
+	}
 
 	// refundExtra credits back the provider-specific surcharge that
 	// reserveAdditionalForProvider may have added. The caller's
@@ -222,6 +225,9 @@ func (s *Server) dispatchOneProvider(
 		refundExtra()
 		s.registry.SetProviderIdle(provider.ID)
 		return nil, nil, decision, "failed to encrypt request", http.StatusInternalServerError
+	}
+	if pr.Timing != nil {
+		pr.Timing.EncryptedAt = time.Now()
 	}
 
 	wireMsg := map[string]any{
@@ -1063,6 +1069,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
+			timing.RoutedAt = time.Now()
 
 			// Perform E2E encryption and send the request.
 			if provider.PublicKey == "" {
@@ -1113,7 +1120,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			pr.Timing.DispatchedAt = time.Now()
 		}
 		requestID = pr.RequestID
-		timing.RoutedAt = time.Now()
+		if timing.RoutedAt.IsZero() {
+			timing.RoutedAt = time.Now()
+		}
 		s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:selected"})
 		s.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
 

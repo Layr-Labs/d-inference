@@ -22,6 +22,7 @@ public struct SchedulerCapacity: Sendable {
     public let activeRequests: Int
     public let pendingRequests: Int
     public let maxConcurrent: Int
+    public let engineMaxConcurrent: Int
     public let gpuMemoryActiveBytes: Int
     public let gpuMemoryPeakBytes: Int
     public let gpuMemoryCacheBytes: Int
@@ -69,23 +70,59 @@ public actor BatchScheduler {
     private var engineBusy = false
     private var observedDecodeTpsEwma: Double = 0
     private var ewmaInitialized = false
+    private var performanceByBatchSize: [Int: AdaptiveBatchPerformanceBucket] = [:]
+    private var dynamicMaxConcurrentRequests: Int
 
     /// Once every active row has received its first token, run several decode
     /// steps per actor/model hop. A single hop per token starves Gemma-class
     /// models because the CPU actor round trip is larger than one GPU step.
     private let decodeBurstSteps = 32
+    private let adaptiveCapPolicy = AdaptiveBatchCapPolicy.default
 
     private var tokenBudgetMax: Int {
-        if dynamicTokenBudgetMax > 0 {
-            return dynamicTokenBudgetMax
+        let staticBudget = dynamicTokenBudgetMax > 0
+            ? dynamicTokenBudgetMax
+            : defaultMaxTokens * maxConcurrentRequests
+        guard modelWeightBytes > 0, kvBytesPerToken > 0 else {
+            return staticBudget
         }
-        return defaultMaxTokens * maxConcurrentRequests
+
+        let totalMemory = Int(ProcessInfo.processInfo.physicalMemory)
+        let osReserve = 4 * 1024 * 1024 * 1024
+        let safetyMargin = totalMemory / 10
+        let globalUsed = Int(MLX.GPU.activeMemory) + Int(MLX.GPU.cacheMemory)
+        let availableHeadroom = max(0, totalMemory - osReserve - safetyMargin - globalUsed)
+        let liveBudget = activeTokenBudgetUsed + (availableHeadroom / kvBytesPerToken)
+        return max(1024, min(staticBudget, liveBudget))
+    }
+
+    private var activeTokenBudgetUsed: Int {
+        active.values.reduce(0) { $0 + $1.promptTokens + $1.maxTokens }
+    }
+
+    private var queuedTokenBudget: Int {
+        pending.reduce(0) { $0 + $1.promptTokens.count + $1.maxTokens }
     }
 
     private var currentTokenBudgetUsed: Int {
-        let activeBudget = active.values.reduce(0) { $0 + $1.promptTokens + $1.maxTokens }
-        let pendingBudget = pending.reduce(0) { $0 + $1.promptTokens.count + $1.maxTokens }
-        return activeBudget + pendingBudget
+        activeTokenBudgetUsed + queuedTokenBudget
+    }
+
+    private var averageReservedTokensForAdmission: Int {
+        let requestCount = active.count + pending.count
+        guard requestCount > 0 else { return defaultMaxTokens }
+        return max(1, currentTokenBudgetUsed / requestCount)
+    }
+
+    private var memoryBoundMaxConcurrentRequests: Int {
+        let budget = tokenBudgetMax
+        let averageReserved = averageReservedTokensForAdmission
+        guard budget > 0, averageReserved > 0 else { return 1 }
+        return max(1, min(maxConcurrentRequests, budget / averageReserved))
+    }
+
+    private var effectiveMaxConcurrentRequests: Int {
+        max(1, min(maxConcurrentRequests, dynamicMaxConcurrentRequests, memoryBoundMaxConcurrentRequests))
     }
 
     public init(
@@ -96,6 +133,7 @@ public actor BatchScheduler {
         self.maxConcurrentRequests = max(1, maxConcurrentRequests)
         self.pendingTimeout = pendingTimeout
         self.defaultMaxTokens = defaultMaxTokens
+        self.dynamicMaxConcurrentRequests = min(4, max(1, maxConcurrentRequests))
     }
 
     // MARK: - Model lifecycle
@@ -285,6 +323,8 @@ public actor BatchScheduler {
         } else {
             self.dynamicTokenBudgetMax = 1024
         }
+        self.dynamicMaxConcurrentRequests = min(4, maxConcurrentRequests)
+        self.performanceByBatchSize.removeAll()
 
         // Create the planner now that tokenBudgetMax is determined.
         self.planner = BatchQueuePlanner(
@@ -334,6 +374,12 @@ public actor BatchScheduler {
 
         // Admission control: use planner when available, fall back to inline check.
         let requestBudget = promptTokens.count + maxTokens
+        guard requestBudget <= tokenBudgetMax else {
+            continuation.yield(.error("token_budget_exhausted: request requires \(requestBudget) tokens but only \(tokenBudgetMax) available"))
+            continuation.finish()
+            return stream
+        }
+
         if let planner = self.planner {
             let result = await planner.admit(
                 id: id,
@@ -423,6 +469,10 @@ public actor BatchScheduler {
         for entry in pending {
             entry.continuation.yield(.error("Scheduler shutting down"))
             entry.continuation.finish()
+            if let planner = self.planner {
+                let cancelledId = entry.requestId
+                Task { await planner.cancel(requestID: cancelledId) }
+            }
         }
         pending.removeAll()
     }
@@ -434,7 +484,8 @@ public actor BatchScheduler {
             model: modelId,
             activeRequests: active.count + cancelledUIDs.count,
             pendingRequests: pending.count,
-            maxConcurrent: maxConcurrentRequests,
+            maxConcurrent: effectiveMaxConcurrentRequests,
+            engineMaxConcurrent: maxConcurrentRequests,
             gpuMemoryActiveBytes: gpuMemory(.active),
             gpuMemoryPeakBytes: gpuMemory(.peak),
             gpuMemoryCacheBytes: gpuMemory(.cache),
@@ -448,24 +499,9 @@ public actor BatchScheduler {
 
         var activeTokens: Int64 = 0
         var maxTokensPotential: Int64 = 0
-        var activeBudget: Int64 = 0
         for entry in active.values {
             activeTokens += Int64(entry.promptTokens + entry.completionTokens)
             maxTokensPotential += Int64(entry.promptTokens + entry.maxTokens)
-            activeBudget += Int64(entry.promptTokens + entry.maxTokens)
-        }
-
-        var queuedBudget: Int64 = 0
-        for entry in pending {
-            queuedBudget += Int64(entry.promptTokens.count + entry.maxTokens)
-        }
-
-        // When the planner is available, prefer its authoritative snapshot
-        // for budget fields since it tracks the full admission lifecycle.
-        if let planner = self.planner {
-            let snapshot = await planner.snapshot()
-            activeBudget = Int64(snapshot.activeTokenBudgetUsed)
-            queuedBudget = Int64(snapshot.queuedTokenBudget)
         }
 
         let budgetMax = Int64(tokenBudgetMax)
@@ -477,10 +513,11 @@ public actor BatchScheduler {
             numWaiting: UInt32(cap.pendingRequests),
             activeTokens: activeTokens,
             maxTokensPotential: maxTokensPotential,
+            maxConcurrency: UInt32(cap.maxConcurrent),
             observedDecodeTps: observedDecodeTpsEwma,
-            activeTokenBudgetUsed: activeBudget,
+            activeTokenBudgetUsed: Int64(activeTokenBudgetUsed),
             activeTokenBudgetMax: budgetMax,
-            queuedTokenBudget: queuedBudget,
+            queuedTokenBudget: Int64(queuedTokenBudget),
             kvBytesPerToken: Int64(kvBytesPerToken)
         )
         return BackendCapacity(
@@ -515,7 +552,10 @@ public actor BatchScheduler {
         admitPendingRequests(into: gen)
         if !gen.hasWork { return false }
 
-        let burstSteps = shouldPrioritizeFirstToken ? 1 : decodeBurstSteps
+        let prioritizeFirstToken = shouldPrioritizeFirstToken
+        let burstSteps = prioritizeFirstToken ? 1 : decodeBurstSteps
+        let activeBefore = max(1, gen.activeCount)
+        let startedAt = ContinuousClock.now
         engineBusy = true
         let responses: [GenerationBatchResponse] = await container.perform { _ in
             var all: [GenerationBatchResponse] = []
@@ -527,8 +567,16 @@ public actor BatchScheduler {
             return all
         }
         engineBusy = false
+        let elapsed = Self.seconds(between: startedAt, and: .now)
         guard epoch == generationEpoch, generator === gen else {
             return false
+        }
+        if !prioritizeFirstToken, !responses.isEmpty, elapsed > 0 {
+            recordBatchPerformance(
+                batchSize: activeBefore,
+                tokenCount: responses.count,
+                elapsedSeconds: elapsed
+            )
         }
         applyCancelledRequests(to: gen)
         dispatchResponses(responses, producedAt: .now)
@@ -541,11 +589,37 @@ public actor BatchScheduler {
 
     private func admitPendingRequests(into gen: BatchGenerator) {
         guard !pending.isEmpty else { return }
-        let freeSlots = max(0, maxConcurrentRequests - active.count)
+        let freeSlots = max(0, effectiveMaxConcurrentRequests - active.count)
         guard freeSlots > 0 else { return }
 
-        let batch = Array(pending.prefix(freeSlots))
-        pending.removeFirst(batch.count)
+        var activeBudgetAfterAdmission = activeTokenBudgetUsed
+        let budgetMax = tokenBudgetMax
+        var batch: [PendingRequest] = []
+        batch.reserveCapacity(freeSlots)
+
+        var pendingIndex = 0
+        while batch.count < freeSlots, pendingIndex < pending.count {
+            let next = pending[pendingIndex]
+            let requestBudget = next.promptTokens.count + next.maxTokens
+            if requestBudget > budgetMax {
+                pending.remove(at: pendingIndex)
+                next.continuation.yield(.error("token_budget_exhausted: request requires \(requestBudget) tokens but only \(budgetMax) available"))
+                next.continuation.finish()
+                if let planner = self.planner {
+                    let rejectedId = next.requestId
+                    Task { await planner.cancel(requestID: rejectedId) }
+                }
+                continue
+            }
+            if activeBudgetAfterAdmission + requestBudget > budgetMax {
+                pendingIndex += 1
+                continue
+            }
+            batch.append(pending.remove(at: pendingIndex))
+            activeBudgetAfterAdmission += requestBudget
+        }
+
+        guard !batch.isEmpty else { return }
 
         let assignedUids = gen.insert(
             prompts: batch.map(\.promptTokens),
@@ -585,6 +659,10 @@ public actor BatchScheduler {
             if now - entry.submittedAt >= pendingTimeout {
                 entry.continuation.yield(.error("Request timed out waiting for capacity"))
                 entry.continuation.finish()
+                if let planner = self.planner {
+                    let timedOutId = entry.requestId
+                    Task { await planner.cancel(requestID: timedOutId) }
+                }
             } else {
                 stillPending.append(entry)
             }
@@ -615,6 +693,8 @@ public actor BatchScheduler {
         planner = nil
         observedDecodeTpsEwma = 0
         ewmaInitialized = false
+        performanceByBatchSize.removeAll()
+        dynamicMaxConcurrentRequests = min(4, maxConcurrentRequests)
 
         while engineBusy {
             try? await Task.sleep(for: .milliseconds(1))
@@ -720,6 +800,38 @@ public actor BatchScheduler {
                 Task { await planner.cancel(requestID: completedId) }
             }
         }
+    }
+
+    private func recordBatchPerformance(
+        batchSize: Int,
+        tokenCount: Int,
+        elapsedSeconds: Double
+    ) {
+        guard batchSize > 0, tokenCount > 0, elapsedSeconds > 0 else { return }
+
+        let aggregateTps = Double(tokenCount) / elapsedSeconds
+        let perRequestTps = aggregateTps / Double(batchSize)
+        performanceByBatchSize[batchSize, default: AdaptiveBatchPerformanceBucket()]
+            .record(aggregateTps: aggregateTps, perRequestTps: perRequestTps)
+        updateDynamicMaxConcurrentRequests(observedBatchSize: batchSize)
+    }
+
+    private func updateDynamicMaxConcurrentRequests(observedBatchSize: Int) {
+        dynamicMaxConcurrentRequests = adaptiveCapPolicy.nextCap(
+            currentCap: dynamicMaxConcurrentRequests,
+            hardCap: maxConcurrentRequests,
+            observedBatchSize: observedBatchSize,
+            performanceByBatchSize: performanceByBatchSize
+        )
+    }
+
+    private static func seconds(
+        between start: ContinuousClock.Instant,
+        and end: ContinuousClock.Instant
+    ) -> Double {
+        let elapsed = end - start
+        return Double(elapsed.components.seconds)
+            + Double(elapsed.components.attoseconds) / 1e18
     }
 
     private func finishRequest(uid: Int, error: String) {

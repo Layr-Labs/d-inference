@@ -971,9 +971,9 @@ func TestOpenAI_SDK_ChatCompletionNonStreaming(t *testing.T) {
 
 func TestOpenRouter_ListModelsFormat(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := NewServer(reg, st, logger)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1020,9 +1020,9 @@ func TestOpenRouter_ListModelsFormat(t *testing.T) {
 
 func TestOpenRouter_PricingConversion(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := NewServer(reg, st, logger)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1064,9 +1064,9 @@ func TestOpenRouter_PricingConversion(t *testing.T) {
 
 func TestOpenRouter_NoAuthRequired(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := NewServer(reg, st, logger)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	req := httptest.NewRequest(http.MethodGet, "/v1/openrouter/models", nil)

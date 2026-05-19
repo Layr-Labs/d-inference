@@ -968,3 +968,111 @@ func TestOpenAI_SDK_ChatCompletionNonStreaming(t *testing.T) {
 
 	<-providerDone
 }
+
+func TestOpenRouter_ListModelsFormat(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pubKey := testPublicKeyB64()
+	conn := connectProvider(t, ctx, ts.URL,
+		[]protocol.ModelInfo{{ID: "gpt-test", ModelType: "text", Quantization: "8bit"}},
+		pubKey)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	for _, id := range reg.ProviderIDs() {
+		reg.SetTrustLevel(id, registry.TrustHardware)
+		reg.RecordChallengeSuccess(id)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/openrouter/models", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var result map[string]any
+	json.Unmarshal(w.Body.Bytes(), &result)
+	data, _ := result["data"].([]any)
+	if len(data) == 0 {
+		t.Fatal("empty data")
+	}
+	for i, item := range data {
+		model := item.(map[string]any)
+		for _, f := range []string{"id", "name", "quantization"} {
+			if s, _ := model[f].(string); s == "" {
+				t.Errorf("data[%d]: empty %q", i, f)
+			}
+		}
+		if p, ok := model["pricing"].([]any); !ok || len(p) == 0 {
+			t.Errorf("data[%d]: missing pricing", i)
+		} else if tier, ok := p[0].(map[string]any); ok {
+			for _, pf := range []string{"prompt", "completion"} {
+				if s, _ := tier[pf].(string); s == "" {
+					t.Errorf("data[%d]: pricing.%s empty", i, pf)
+				}
+			}
+		}
+	}
+}
+
+func TestOpenRouter_PricingConversion(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pubKey := testPublicKeyB64()
+	conn := connectProvider(t, ctx, ts.URL,
+		[]protocol.ModelInfo{{ID: "qwen3.5-27b-claude-opus-8bit", ModelType: "text", Quantization: "8bit"}},
+		pubKey)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	for _, id := range reg.ProviderIDs() {
+		reg.SetTrustLevel(id, registry.TrustHardware)
+		reg.RecordChallengeSuccess(id)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/openrouter/models", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var result map[string]any
+	json.Unmarshal(w.Body.Bytes(), &result)
+	for _, item := range result["data"].([]any) {
+		m := item.(map[string]any)
+		if m["id"] != "qwen3.5-27b-claude-opus-8bit" {
+			continue
+		}
+		p := m["pricing"].([]any)
+		tier := p[0].(map[string]any)
+		if tier["prompt"] != "0.0000001" {
+			t.Errorf("prompt = %q, want 0.0000001", tier["prompt"])
+		}
+		if tier["completion"] != "0.00000078" {
+			t.Errorf("completion = %q, want 0.00000078", tier["completion"])
+		}
+		return
+	}
+	t.Fatal("model not found in response")
+}
+
+func TestOpenRouter_NoAuthRequired(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	req := httptest.NewRequest(http.MethodGet, "/v1/openrouter/models", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 without auth, got %d", w.Code)
+	}
+}

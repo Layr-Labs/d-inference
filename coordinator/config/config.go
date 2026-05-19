@@ -8,48 +8,16 @@
 // Pattern adapted from: https://github.com/Layr-Labs/eigenda-proxy
 package config
 
-import (
-	"os"
-	"strconv"
-)
+import "github.com/eigeninference/d-inference/coordinator/env"
 
-// EnvOr reads key from the environment and returns fallback when the key is
-// missing or empty.
-func EnvOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
+// EnvOr delegates to env.EnvOr.
+func EnvOr(key, fallback string) string { return env.EnvOr(key, fallback) }
 
-// FirstNonEmpty returns the first non-empty string from vals.
-func FirstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
+// FirstNonEmpty delegates to env.FirstNonEmpty.
+func FirstNonEmpty(vals ...string) string { return env.FirstNonEmpty(vals...) }
 
-// EnvFloat reads key from the environment as a float64, returning fallback
-// when the key is missing, empty, or unparseable.
-func EnvFloat(key string, fallback float64) float64 {
-	if v := os.Getenv(key); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			return f
-		}
-	}
-	return fallback
-}
+// EnvFloat delegates to env.EnvFloat.
+func EnvFloat(key string, fallback float64) float64 { return env.EnvFloat(key, fallback) }
 
-// EnvInt reads key from the environment as an int, returning fallback when
-// the key is missing, empty, or unparseable.
-func EnvInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return fallback
-}
+// EnvInt delegates to env.EnvInt.
+func EnvInt(key string, fallback int) int { return env.EnvInt(key, fallback) }

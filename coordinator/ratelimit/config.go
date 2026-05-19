@@ -1,8 +1,6 @@
 package ratelimit
 
 import (
-	"os"
-	"strconv"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
@@ -26,12 +24,12 @@ type ConfigPair struct {
 func ReadConfig() ConfigPair {
 	return ConfigPair{
 		Inference: Config{
-			RPS:   envFloat(env.EnvPrefix+"_RATE_LIMIT_RPS", DefaultRPS),
-			Burst: envInt(env.EnvPrefix+"_RATE_LIMIT_BURST", DefaultBurst),
+			RPS:   env.EnvFloat(env.EnvPrefix+"_RATE_LIMIT_RPS", DefaultRPS),
+			Burst: env.EnvInt(env.EnvPrefix+"_RATE_LIMIT_BURST", DefaultBurst),
 		},
 		Financial: Config{
-			RPS:   envFloat(env.EnvPrefix+"_FINANCIAL_RATE_LIMIT_RPS", 0.2),
-			Burst: envInt(env.EnvPrefix+"_FINANCIAL_RATE_LIMIT_BURST", 3),
+			RPS:   env.EnvFloat(env.EnvPrefix+"_FINANCIAL_RATE_LIMIT_RPS", 0.2),
+			Burst: env.EnvInt(env.EnvPrefix+"_FINANCIAL_RATE_LIMIT_BURST", 3),
 		},
 	}
 }
@@ -41,21 +39,3 @@ func (c Config) Check() error { return nil }
 
 // Check is a no-op for ConfigPair.
 func (cp ConfigPair) Check() error { return nil }
-
-func envFloat(key string, fallback float64) float64 {
-	if v := os.Getenv(key); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			return f
-		}
-	}
-	return fallback
-}
-
-func envInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return fallback
-}

@@ -499,7 +499,7 @@ public actor BatchScheduler {
     public func capacity() -> SchedulerCapacity {
         SchedulerCapacity(
             model: modelId,
-            activeRequests: active.count + cancelledUIDs.count,
+            activeRequests: active.count,
             pendingRequests: pending.count,
             maxConcurrent: effectiveMaxConcurrentRequests,
             engineMaxConcurrent: maxConcurrentRequests,

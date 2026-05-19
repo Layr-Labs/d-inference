@@ -407,6 +407,80 @@ struct InferenceLiveTests {
         }
     }
 
+    @Test(
+        "provider loop coalesces duplicate live load_model requests",
+        .enabled(
+            if: LiveInferenceFixtures.liveTestsEnabled,
+            "set DARKBLOOM_LIVE_MLX_TESTS=1 to run live MLX inference tests"
+        )
+    )
+    func liveProviderLoopCoalescesDuplicateLoadModelRequests() async throws {
+        guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
+            Issue.record("skipped: \(LiveFixtureSkip.missingMetallib.description)")
+            return
+        }
+        guard case .found = LiveInferenceFixtures.locate(LiveInferenceFixtures.tinyModelID) else {
+            Issue.record("skipped: \(LiveFixtureSkip.modelNotInCache(LiveInferenceFixtures.tinyModelID).description)")
+            return
+        }
+        LiveInferenceFixtures.applyMemoryBudget()
+
+        let mock = MockCoordinator()
+        let baseURL = try await mock.start()
+        let config = liveProviderLoopConfig(
+            coordinatorURL: baseURL.mockProviderWebSocketURL(),
+            models: [liveModelInfo(id: LiveInferenceFixtures.tinyModelID, quantization: "8bit")]
+        )
+        let loadGate = LiveLoadModelGate()
+        let loop = try ProviderLoop(
+            config: config,
+            purgeLegacyFiles: false,
+            attestationSigner: nil,
+            preloadTaskStarted: { modelId in
+                loadGate.recordPreloadTaskStarted(modelId)
+            },
+            beforeModelLoad: { modelId in
+                await loadGate.waitBeforeLoading(modelId)
+            }
+        )
+        let loopTask = Task { try await loop.run() }
+
+        do {
+            let register = try await mock.awaitFirstRegister(timeout: .seconds(10))
+            try #require(register != nil)
+
+            try await mock.pushLoadModel(modelId: LiveInferenceFixtures.tinyModelID)
+            let reachedLoadGate = try await waitUntil(timeout: .seconds(10)) {
+                loadGate.loadReached(for: LiveInferenceFixtures.tinyModelID)
+            }
+            try #require(reachedLoadGate, "provider did not reach the real model-load gate")
+
+            try await mock.pushLoadModel(modelId: LiveInferenceFixtures.tinyModelID)
+            let startedSnapshot = try await mock.waitForSnapshot(timeout: .seconds(10)) { snapshot in
+                let statuses = snapshot.loadModelStatuses.filter { $0.modelId == LiveInferenceFixtures.tinyModelID }
+                return statuses.filter { $0.status == .started }.count == 2
+            }
+            try #require(startedSnapshot != nil)
+            loadGate.release()
+
+            let statusSnapshot = try await mock.waitForSnapshot(timeout: .seconds(90)) { snapshot in
+                let statuses = snapshot.loadModelStatuses.filter { $0.modelId == LiveInferenceFixtures.tinyModelID }
+                return statuses.filter { $0.status == .started }.count == 2
+                    && statuses.filter { $0.status == .succeeded }.count == 2
+            }
+            let snapshot = try #require(statusSnapshot)
+            let statuses = snapshot.loadModelStatuses.filter { $0.modelId == LiveInferenceFixtures.tinyModelID }
+            #expect(statuses.count == 4, "expected exactly two started and two succeeded statuses, got \(statuses)")
+            #expect(statuses.map(\.status) == [.started, .started, .succeeded, .succeeded])
+            #expect(statuses.allSatisfy { $0.error == nil })
+            #expect(loadGate.preloadTaskStartCount(for: LiveInferenceFixtures.tinyModelID) == 1)
+        } catch {
+            await shutdownLiveProviderLoop(loopTask, mock: mock, loadGate: loadGate)
+            throw error
+        }
+        await shutdownLiveProviderLoop(loopTask, mock: mock, loadGate: loadGate)
+    }
+
     // MARK: 6. Gemma 26B
 
     @Test(
@@ -558,4 +632,103 @@ private func liveModelInfo(id: String, quantization: String) -> ModelInfo {
         sizeBytes: 0,
         estimatedMemoryGb: 0.25
     )
+}
+
+private func liveProviderLoopConfig(coordinatorURL: String, models: [ModelInfo]) -> ProviderLoopConfig {
+    ProviderLoopConfig(
+        coordinatorURL: coordinatorURL,
+        hardware: HardwareInfo(
+            machineModel: "Mac16,5",
+            chipName: "Apple M4 Max",
+            chipFamily: .m4,
+            chipTier: .max,
+            memoryGb: 128,
+            memoryAvailableGb: 124,
+            cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
+            gpuCores: 40,
+            memoryBandwidthGbs: 546
+        ),
+        models: models,
+        config: ProviderConfig(
+            provider: ProviderSettings(name: "darkbloom-live-test", memoryReserveGB: 1),
+            backend: BackendSettings(
+                continuousBatching: true,
+                idleTimeoutMins: 0,
+                maxModelSlots: UInt64(max(1, models.count))
+            ),
+            coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
+        )
+    )
+}
+
+private final class LiveLoadModelGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var reachedModels = Set<String>()
+    private var released = false
+    private var preloadStarts: [String: Int] = [:]
+
+    func recordPreloadTaskStarted(_ modelId: String) {
+        lock.lock()
+        preloadStarts[modelId, default: 0] += 1
+        lock.unlock()
+    }
+
+    func waitBeforeLoading(_ modelId: String) async {
+        markLoadReached(modelId)
+
+        while !Task.isCancelled {
+            if isReleased() { return }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    private func markLoadReached(_ modelId: String) {
+        lock.lock()
+        reachedModels.insert(modelId)
+        lock.unlock()
+    }
+
+    private func isReleased() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return released
+    }
+
+    func loadReached(for modelId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return reachedModels.contains(modelId)
+    }
+
+    func release() {
+        lock.lock()
+        released = true
+        lock.unlock()
+    }
+
+    func preloadTaskStartCount(for modelId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return preloadStarts[modelId] ?? 0
+    }
+}
+
+private func waitUntil(timeout: Duration, predicate: () -> Bool) async throws -> Bool {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while ContinuousClock.now < deadline {
+        if predicate() { return true }
+        try await Task.sleep(for: .milliseconds(25))
+    }
+    return predicate()
+}
+
+private func shutdownLiveProviderLoop(
+    _ loopTask: Task<Void, any Error>,
+    mock: MockCoordinator,
+    loadGate: LiveLoadModelGate
+) async {
+    loadGate.release()
+    loopTask.cancel()
+    _ = try? await loopTask.value
+    await mock.shutdown()
 }

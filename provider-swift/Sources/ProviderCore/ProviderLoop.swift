@@ -103,6 +103,8 @@ public actor ProviderLoop {
     private let cancellationRegistry: InferenceCancellationRegistry
     private let kvBudget: GlobalKVCacheBudget
     private let powerAssertion: InferencePowerAssertion
+    private let preloadTaskStarted: (@Sendable (String) -> Void)?
+    private let beforeModelLoad: (@Sendable (String) async -> Void)?
 
     /// Per-model inference slots. Each loaded model gets its own
     /// BatchScheduler and worker task. Keyed by model ID.
@@ -172,10 +174,26 @@ public actor ProviderLoop {
     // MARK: - Initialization
 
     public init(config: ProviderLoopConfig) throws {
+        try self.init(
+            config: config,
+            purgeLegacyFiles: true,
+            attestationSigner: Self.createAttestationSigner()
+        )
+    }
+
+    init(
+        config: ProviderLoopConfig,
+        purgeLegacyFiles: Bool,
+        attestationSigner: (any AttestationSigner)?,
+        preloadTaskStarted: (@Sendable (String) -> Void)? = nil,
+        beforeModelLoad: (@Sendable (String) async -> Void)? = nil
+    ) throws {
         self.loopConfig = config
-        NodeKeyPair.purgeLegacyFiles()
+        if purgeLegacyFiles {
+            NodeKeyPair.purgeLegacyFiles()
+        }
         self.keyPair = NodeKeyPair.generate()
-        self.signer = Self.createAttestationSigner()
+        self.signer = attestationSigner
         self.attestationBuilder = signer.map { AttestationBuilder(identity: $0) }
         self.stats = AtomicProviderStats()
         self.state = ProviderState()
@@ -184,6 +202,8 @@ public actor ProviderLoop {
         let reserveBytes = Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB)
         self.kvBudget = GlobalKVCacheBudget(reserveBytes: reserveBytes)
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
+        self.preloadTaskStarted = preloadTaskStarted
+        self.beforeModelLoad = beforeModelLoad
     }
 
     static func memoryReserveBytes(forGiB gb: UInt64) -> UInt64 {
@@ -756,6 +776,7 @@ public actor ProviderLoop {
         let me = self
         let taskId = UUID()
         preloadTaskIds[modelId] = taskId
+        preloadTaskStarted?(modelId)
         preloadTasks[modelId] = Task {
             defer { Task { await me.removePreloadTask(modelId: modelId, taskId: taskId) } }
             do {
@@ -1028,6 +1049,11 @@ public actor ProviderLoop {
 
             logger.info("Loading model: \(modelId) from \(modelPath.path)")
 
+            if let beforeModelLoad {
+                await beforeModelLoad(modelId)
+                try Task.checkCancellation()
+                if isShuttingDown { throw CancellationError() }
+            }
             let container = try await loadModelContainer(from: modelPath)
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }

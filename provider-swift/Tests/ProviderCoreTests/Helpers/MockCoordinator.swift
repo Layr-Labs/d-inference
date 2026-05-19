@@ -358,6 +358,11 @@ public final class MockCoordinator: @unchecked Sendable {
         try await sendCoordinatorMessage(msg)
     }
 
+    public func pushLoadModel(modelId: String) async throws {
+        let msg = CoordinatorMessage.loadModel(.init(modelId: modelId))
+        try await sendCoordinatorMessage(msg)
+    }
+
     /// Force-close the active provider WebSocket so the provider's reconnect
     /// loop kicks in.
     public func dropActiveWebSocket() async {

@@ -33,5 +33,6 @@ func ReadConfig() Config {
 	return Config{
 		DatabaseURL:      os.Getenv(envDatabaseURL),
 		AllowMemoryStore: os.Getenv(envAllowMemoryStore) == "true",
+		AdminKey:         os.Getenv("EIGENINFERENCE_ADMIN_KEY"),
 	}
 }

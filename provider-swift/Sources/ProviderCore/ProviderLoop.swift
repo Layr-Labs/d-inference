@@ -33,6 +33,23 @@ public final class SendHandle: @unchecked Sendable {
     }
 }
 
+private final class OneShotBoolContinuation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(returning value: Bool) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: value)
+    }
+}
+
 private enum ProviderLoopError: Error, CustomStringConvertible {
     case binaryHashUnavailable
 
@@ -123,6 +140,9 @@ public actor ProviderLoop {
     /// Tracks coordinator-driven preload tasks so they can be cancelled on shutdown.
     private var preloadTasks: [String: Task<Void, Never>] = [:]
 
+    /// Senders waiting for the terminal status of an in-flight preload.
+    private var preloadStatusSubscribers: [String: [SendHandle]] = [:]
+
     /// Ownership tokens for preload tasks — ensures deferred cleanup only
     /// removes an entry if it still belongs to the completing task.
     private var preloadTaskIds: [String: UUID] = [:]
@@ -146,6 +166,8 @@ public actor ProviderLoop {
     private let logger = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
 
     private static let shutdownDrainTimeout: Duration = .seconds(600)
+    private static let preloadShutdownTimeout: Duration = .seconds(10)
+    private static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
 
     // MARK: - Initialization
 
@@ -159,9 +181,14 @@ public actor ProviderLoop {
         self.state = ProviderState()
         self.cancellationRegistry = InferenceCancellationRegistry()
         self.maxModelSlots = max(1, min(config.models.count, Int(config.config.backend.maxModelSlots)))
-        let reserveBytes = config.config.provider.memoryReserveGB * 1024 * 1024 * 1024
+        let reserveBytes = Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB)
         self.kvBudget = GlobalKVCacheBudget(reserveBytes: reserveBytes)
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
+    }
+
+    static func memoryReserveBytes(forGiB gb: UInt64) -> UInt64 {
+        let (bytes, overflow) = gb.multipliedReportingOverflow(by: bytesPerGiB)
+        return overflow ? UInt64.max : bytes
     }
 
     // MARK: - Model Slot
@@ -314,9 +341,14 @@ public actor ProviderLoop {
         capacityRefreshTask = nil
         let preloads = Array(preloadTasks.values)
         for task in preloads { task.cancel() }
-        for task in preloads { await task.value }
+        cancelLoadWaiters()
+        let preloadsFinished = await waitForPreloads(preloads, timeout: Self.preloadShutdownTimeout)
+        if !preloadsFinished {
+            logger.warning("Timed out waiting for coordinator-driven preloads to cancel during shutdown")
+        }
         preloadTasks.removeAll()
         preloadTaskIds.removeAll()
+        preloadStatusSubscribers.removeAll()
 
         let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
         if !drained {
@@ -703,17 +735,27 @@ public actor ProviderLoop {
             return
         }
 
+        if preloadTasks[modelId] != nil {
+            logger.info("Preload for \(modelId): already in progress, coalescing duplicate request")
+            preloadStatusSubscribers[modelId, default: []].append(send)
+            send.send(.loadModelStatus(
+                modelId: modelId,
+                status: .started,
+                error: nil
+            ))
+            return
+        }
+
+        preloadStatusSubscribers[modelId] = [send]
         send.send(.loadModelStatus(
             modelId: modelId,
             status: .started,
             error: nil
         ))
 
-        // Cancel any prior preload for this model before overwriting
-        preloadTasks[modelId]?.cancel()
-
         let me = self
         let taskId = UUID()
+        preloadTaskIds[modelId] = taskId
         preloadTasks[modelId] = Task {
             defer { Task { await me.removePreloadTask(modelId: modelId, taskId: taskId) } }
             do {
@@ -721,24 +763,62 @@ public actor ProviderLoop {
                 try Task.checkCancellation()
                 let shuttingDown = await me.isProviderShuttingDown()
                 guard !shuttingDown else { return }
-                send.send(.loadModelStatus(
-                    modelId: modelId,
-                    status: .succeeded,
-                    error: nil
-                ))
+                await me.finishPreloadTask(modelId: modelId, taskId: taskId, status: .succeeded, error: nil)
             } catch is CancellationError {
                 return
             } catch {
                 let message = error.localizedDescription
                 await me.logPreloadFailure(modelId: modelId, error: message)
-                send.send(.loadModelStatus(
-                    modelId: modelId,
-                    status: .failed,
-                    error: message
-                ))
+                await me.finishPreloadTask(modelId: modelId, taskId: taskId, status: .failed, error: message)
             }
         }
-        preloadTaskIds[modelId] = taskId
+    }
+
+    private func finishPreloadTask(
+        modelId: String,
+        taskId: UUID,
+        status: ProviderMessage.LoadModelStatus.Status,
+        error: String?
+    ) {
+        guard preloadTaskIds[modelId] == taskId else { return }
+        preloadTasks.removeValue(forKey: modelId)
+        preloadTaskIds.removeValue(forKey: modelId)
+        let subscribers = preloadStatusSubscribers.removeValue(forKey: modelId) ?? []
+        for subscriber in subscribers {
+            subscriber.send(.loadModelStatus(
+                modelId: modelId,
+                status: status,
+                error: error
+            ))
+        }
+    }
+
+    private func waitForPreloads(_ preloads: [Task<Void, Never>], timeout: Duration) async -> Bool {
+        guard !preloads.isEmpty else { return true }
+        return await withCheckedContinuation { continuation in
+            let oneShot = OneShotBoolContinuation(continuation)
+
+            Task {
+                for task in preloads { await task.value }
+                oneShot.resume(returning: true)
+            }
+
+            DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(Int(timeout.components.seconds))) {
+                oneShot.resume(returning: false)
+            }
+        }
+    }
+
+    private func cancelLoadWaiters() {
+        for waiters in loadingWaiters.values {
+            for waiter in waiters { waiter.resume(throwing: CancellationError()) }
+        }
+        loadingWaiters.removeAll()
+        releaseLoadGateWaiters()
+        for waiters in unloadingWaiters.values {
+            for waiter in waiters { waiter.resume() }
+        }
+        unloadingWaiters.removeAll()
     }
 
     private func logPreloadFailure(modelId: String, error: String) {
@@ -756,6 +836,7 @@ public actor ProviderLoop {
         if preloadTaskIds[modelId] == taskId {
             preloadTasks.removeValue(forKey: modelId)
             preloadTaskIds.removeValue(forKey: modelId)
+            preloadStatusSubscribers.removeValue(forKey: modelId)
         }
     }
 
@@ -1033,10 +1114,20 @@ public actor ProviderLoop {
         let total = ProcessInfo.processInfo.physicalMemory
         let active = UInt64(MLX.GPU.activeMemory)
         let cache = UInt64(MLX.GPU.cacheMemory)
-        let reserve = loopConfig.config.provider.memoryReserveGB * 1024 * 1024 * 1024
-        let used = active + cache + reserve
+        let reserve = Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB)
+        let used = Self.saturatingAdd(active, cache, reserve)
         let usable = total > used ? total - used : 0
         return Double(usable) * 0.7 / (1024.0 * 1024.0 * 1024.0)
+    }
+
+    private static func saturatingAdd(_ values: UInt64...) -> UInt64 {
+        var total: UInt64 = 0
+        for value in values {
+            let (sum, overflow) = total.addingReportingOverflow(value)
+            if overflow { return UInt64.max }
+            total = sum
+        }
+        return total
     }
 
     /// Evict idle models (LRU order) until `requiredGb` is available or
@@ -1123,10 +1214,15 @@ public actor ProviderLoop {
         logger.info("Waiting up to \(timeout.components.seconds)s for active inference to finish before shutdown")
         let started = ContinuousClock.now
         while !inflightTasks.isEmpty || !requestToModel.isEmpty {
+            if Task.isCancelled { return false }
             if ContinuousClock.now - started >= timeout {
                 return false
             }
-            try? await Task.sleep(for: .milliseconds(250))
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+            } catch {
+                return false
+            }
         }
         return true
     }

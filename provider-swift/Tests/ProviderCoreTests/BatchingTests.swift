@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ProviderCore
 
@@ -435,4 +436,25 @@ import Testing
 
     #expect(await planner.admit(id: "queued", promptTokenCount: 5, maxOutputTokens: 5) == .queued(requestID: "queued", position: 1))
     #expect(await planner.admit(id: "oversize", promptTokenCount: 6, maxOutputTokens: 5) == .rejected(requestID: "oversize", reason: .requestExceedsActiveTokenBudget))
+}
+
+@Test func schedulerUsesDefaultReservationWhenMaxTokensIsOmitted() {
+    #expect(BatchScheduler.resolvedMaxTokens(requested: nil, defaultMaxTokens: 4096) == 4096)
+    #expect(BatchScheduler.resolvedMaxTokens(requested: 128, defaultMaxTokens: 4096) == 128)
+}
+
+@Test func schedulerBoundsConfigJSONBeforeReading() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("BatchSchedulerTests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let smallConfig = directory.appendingPathComponent("small-config.json")
+    try Data(#"{"num_hidden_layers":1}"#.utf8).write(to: smallConfig)
+    #expect(BatchScheduler.readBoundedConfigJSON(smallConfig) != nil)
+
+    let largeConfig = directory.appendingPathComponent("large-config.json")
+    let oversized = Data(repeating: UInt8(ascii: "{"), count: BatchScheduler.maxConfigJSONBytes + 1)
+    try oversized.write(to: largeConfig)
+    #expect(BatchScheduler.readBoundedConfigJSON(largeConfig) == nil)
 }

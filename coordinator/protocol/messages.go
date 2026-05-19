@@ -425,6 +425,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		}
 		pm.Payload = &msg
 
+	case TypeLoadModelStatus:
+		var msg LoadModelStatusMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal load_model_status: %w", err)
+		}
+		pm.Payload = &msg
+
 	default:
 		return fmt.Errorf("protocol: unknown message type %q", envelope.Type)
 	}

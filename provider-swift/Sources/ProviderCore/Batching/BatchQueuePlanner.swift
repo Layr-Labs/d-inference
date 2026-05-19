@@ -277,7 +277,7 @@ public actor BatchQueuePlanner {
         var generatedTokenCount: Int
     }
 
-    public let policy: BatchSchedulingPolicy
+    public private(set) var policy: BatchSchedulingPolicy
 
     private var nextRequestSequence: UInt64 = 0
     private var nextBatchSequence: UInt64 = 0
@@ -286,6 +286,10 @@ public actor BatchQueuePlanner {
     private var activeOrder: [String] = []
 
     public init(policy: BatchSchedulingPolicy = .default) {
+        self.policy = policy
+    }
+
+    public func updatePolicy(_ policy: BatchSchedulingPolicy) {
         self.policy = policy
     }
 

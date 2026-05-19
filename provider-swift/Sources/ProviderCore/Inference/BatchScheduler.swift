@@ -79,6 +79,7 @@ public actor BatchScheduler {
     /// models because the CPU actor round trip is larger than one GPU step.
     private let decodeBurstSteps = 32
     private let adaptiveCapPolicy = AdaptiveBatchCapPolicy.default
+    static let maxConfigJSONBytes = 4 * 1024 * 1024
 
     private var tokenBudgetMax: Int {
         let staticBudget = dynamicTokenBudgetMax > 0
@@ -181,8 +182,8 @@ public actor BatchScheduler {
 
             if case .directory(let modelDir) = ctx.configuration.id {
                 let configURL = modelDir.appendingPathComponent("config.json")
-                if let data = try? Data(contentsOf: configURL),
-                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let data = Self.readBoundedConfigJSON(configURL),
+                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     // Resolve nested text_config if present (Gemma 4 VLM wraps everything there)
                     let cfg: [String: Any]
                     if let textConfig = json["text_config"] as? [String: Any] {
@@ -330,14 +331,7 @@ public actor BatchScheduler {
         self.performanceByBatchSize.removeAll()
 
         // Create the planner now that tokenBudgetMax is determined.
-        self.planner = BatchQueuePlanner(
-            policy: BatchSchedulingPolicy(
-                maxConcurrentRequests: maxConcurrentRequests,
-                maxQueuedRequests: 128,
-                maxActiveTokenBudget: tokenBudgetMax,
-                maxTokensPerBatch: 4096
-            )
-        )
+        self.planner = makePlanner(activeTokenBudget: tokenBudgetMax)
     }
 
     public func unloadModel() async {
@@ -373,7 +367,7 @@ public actor BatchScheduler {
             return stream
         }
 
-        let maxTokens = request.max_tokens ?? defaultMaxTokens
+        let maxTokens = Self.resolvedMaxTokens(requested: request.max_tokens, defaultMaxTokens: defaultMaxTokens)
 
         // Admission control: use planner when available, fall back to inline check.
         let requestBudget = promptTokens.count + maxTokens
@@ -384,6 +378,8 @@ public actor BatchScheduler {
         }
 
         if let planner = self.planner {
+            await refreshPlannerPolicy(activeTokenBudget: tokenBudgetMax)
+            let planner = self.planner ?? planner
             let result = await planner.admit(
                 id: id,
                 promptTokenCount: promptTokens.count,
@@ -669,6 +665,10 @@ public actor BatchScheduler {
                 releaseKVReservation(requestID: entry.requestId)
                 entry.continuation.yield(.error("BatchGenerator rejected the prompt"))
                 entry.continuation.finish()
+                if let planner = self.planner {
+                    let rejectedId = entry.requestId
+                    Task { await planner.cancel(requestID: rejectedId) }
+                }
             }
         }
     }
@@ -879,6 +879,52 @@ public actor BatchScheduler {
     private func releaseKVReservation(requestID: String) {
         guard let kvBudget else { return }
         Task { await kvBudget.release(requestID: requestID) }
+    }
+
+    static func resolvedMaxTokens(requested: Int?, defaultMaxTokens: Int) -> Int {
+        requested ?? defaultMaxTokens
+    }
+
+    private func makePlanner(activeTokenBudget: Int) -> BatchQueuePlanner {
+        BatchQueuePlanner(
+            policy: BatchSchedulingPolicy(
+                maxConcurrentRequests: maxConcurrentRequests,
+                maxQueuedRequests: 128,
+                maxActiveTokenBudget: activeTokenBudget,
+                maxTokensPerBatch: 4096
+            )
+        )
+    }
+
+    private func refreshPlannerPolicy(activeTokenBudget: Int) async {
+        guard let planner else { return }
+        let updatedPolicy = BatchSchedulingPolicy(
+            maxConcurrentRequests: maxConcurrentRequests,
+            maxQueuedRequests: 128,
+            maxActiveTokenBudget: activeTokenBudget,
+            maxTokensPerBatch: 4096
+        )
+        let snapshot = await planner.snapshot()
+        guard snapshot.policy != updatedPolicy else { return }
+
+        if activeTokenBudget >= snapshot.policy.maxActiveTokenBudget {
+            await planner.updatePolicy(updatedPolicy)
+            return
+        }
+
+        guard snapshot.pendingRequests.isEmpty,
+              snapshot.activeRequests.isEmpty else { return }
+        await planner.updatePolicy(updatedPolicy)
+    }
+
+    static func readBoundedConfigJSON(_ url: URL) -> Data? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return nil
+        }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: maxConfigJSONBytes + 1),
+              data.count <= maxConfigJSONBytes else { return nil }
+        return data
     }
 
     private func gpuMemory(_ kind: MemoryKind) -> Int {

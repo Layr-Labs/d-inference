@@ -1117,11 +1117,12 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	p.Stats.TokensGenerated += cumulativeDelta(p.lastSessionStats.TokensGenerated, msg.Stats.TokensGenerated)
 	p.lastSessionStats = msg.Stats
 	p.SystemMetrics = msg.SystemMetrics
-	// Update backend capacity from heartbeat (nil-safe for old providers).
-	if msg.BackendCapacity != nil {
-		p.BackendCapacity = msg.BackendCapacity
+	// Update backend capacity from heartbeat. A nil report clears prior live
+	// capacity so stale slot state cannot keep influencing routing.
+	p.BackendCapacity = msg.BackendCapacity
+	if p.BackendCapacity != nil {
 		chipFamily := p.Hardware.ChipFamily
-		for _, slot := range msg.BackendCapacity.Slots {
+		for _, slot := range p.BackendCapacity.Slots {
 			if slot.ObservedDecodeTPS > 0 {
 				r.tpsRegistry.Record(slot.Model, chipFamily, slot.ObservedDecodeTPS)
 			}

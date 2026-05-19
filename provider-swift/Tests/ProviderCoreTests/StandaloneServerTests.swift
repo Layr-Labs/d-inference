@@ -86,6 +86,24 @@ import Testing
     }
 }
 
+@Test func standaloneServerClassifiesSchedulerAdmissionErrors() {
+    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: request exceeds active token budget") == .serviceUnavailable)
+    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: request queue full") == .tooManyRequests)
+    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: invalid token count") == .badRequest)
+    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: duplicate request ID") == .badRequest)
+    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: request exceeds batch token budget") == .badRequest)
+    #expect(StandaloneServer.schedulerErrorStatus(for: "unexpected backend failure") == .internalServerError)
+}
+
+@Test func standaloneServerFormatsTerminalStreamingErrorEvent() {
+    let event = StandaloneServer.sseErrorEvent(message: "token_budget_exhausted: request queue full")
+
+    #expect(event.contains("event: error"))
+    #expect(event.contains("token_budget_exhausted"))
+    #expect(!event.contains("[DONE]"))
+    #expect(!event.contains("finish_reason"))
+}
+
 private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer {
     StandaloneServer(
         models: models

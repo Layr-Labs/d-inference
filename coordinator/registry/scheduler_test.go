@@ -730,6 +730,79 @@ func TestTokenBudgetAdmissionRejectsWhenOverBudget(t *testing.T) {
 	}
 }
 
+func TestTokenBudgetAdmissionCountsPendingPromptAndMaxTokens(t *testing.T) {
+	reg := New(testLogger())
+	model := "pending-budget-model"
+	p := makeTokenBudgetProvider(t, reg, "budget", model, 100, 0, 5_000, 80)
+	p.AddPending(&PendingRequest{
+		RequestID:             "existing",
+		Model:                 model,
+		EstimatedPromptTokens: 3_000,
+		RequestedMaxTokens:    1_000,
+	})
+
+	req := &PendingRequest{
+		RequestID:             "new",
+		Model:                 model,
+		EstimatedPromptTokens: 1_000,
+		RequestedMaxTokens:    256,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected != nil {
+		t.Fatalf("selected %q, want nil because pending prompt+max exhausts budget", selected.ID)
+	}
+	if decision.CapacityRejections != 1 {
+		t.Fatalf("CapacityRejections=%d, want 1", decision.CapacityRejections)
+	}
+}
+
+func TestQuickCapacityCheckCountsPendingPromptAndMaxTokens(t *testing.T) {
+	reg := New(testLogger())
+	model := "quick-pending-budget-model"
+	p := makeTokenBudgetProvider(t, reg, "budget", model, 100, 0, 5_000, 80)
+	p.AddPending(&PendingRequest{
+		RequestID:             "existing",
+		Model:                 model,
+		EstimatedPromptTokens: 3_000,
+		RequestedMaxTokens:    1_000,
+	})
+
+	candidates, rejections := reg.QuickCapacityCheck(model, 1_000, 256)
+	if candidates != 0 || rejections != 1 {
+		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 0/1", candidates, rejections)
+	}
+}
+
+func TestTokenBudgetDoesNotDoubleCountBackendQueuedBudget(t *testing.T) {
+	reg := New(testLogger())
+	model := "queued-overlap-budget-model"
+	p := makeTokenBudgetProvider(t, reg, "budget", model, 100, 1_000, 5_000, 80)
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].MaxTokensPotential = 1_000
+	p.BackendCapacity.Slots[0].QueuedTokenBudget = 3_000
+	p.mu.Unlock()
+	p.AddPending(&PendingRequest{
+		RequestID:             "existing",
+		Model:                 model,
+		EstimatedPromptTokens: 3_000,
+		RequestedMaxTokens:    1_000,
+	})
+
+	req := &PendingRequest{
+		RequestID:             "new",
+		Model:                 model,
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    128,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatalf("selected nil, want provider; decision=%+v", decision)
+	}
+	if selected.ID != p.ID {
+		t.Fatalf("selected %q, want %q", selected.ID, p.ID)
+	}
+}
+
 func TestObservedTPSPreferredOverBenchmark(t *testing.T) {
 	reg := New(testLogger())
 	model := "tps-model"

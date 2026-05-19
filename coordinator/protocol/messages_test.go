@@ -198,6 +198,25 @@ func TestHeartbeatWithActiveModel(t *testing.T) {
 	}
 }
 
+func TestProviderMessageUnmarshalLoadModelStatus(t *testing.T) {
+	data := []byte(`{"type":"load_model_status","model_id":"qwen","status":"failed","error":"GPU OOM"}`)
+
+	var msg ProviderMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.Type != TypeLoadModelStatus {
+		t.Fatalf("Type=%q, want %q", msg.Type, TypeLoadModelStatus)
+	}
+	status, ok := msg.Payload.(*LoadModelStatusMessage)
+	if !ok {
+		t.Fatalf("Payload=%T, want *LoadModelStatusMessage", msg.Payload)
+	}
+	if status.ModelID != "qwen" || status.Status != LoadModelStatusFailed || status.Error != "GPU OOM" {
+		t.Fatalf("decoded status = %+v", status)
+	}
+}
+
 func TestInferenceResponseChunkMarshal(t *testing.T) {
 	msg := InferenceResponseChunkMessage{
 		Type:      TypeInferenceResponseChunk,

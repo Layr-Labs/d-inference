@@ -9,8 +9,10 @@
 ///   - GET  /v1/models           -> OpenAI models list
 ///   - POST /v1/chat/completions -> streaming SSE or JSON response
 
+import Darwin
 import Foundation
 import Hummingbird
+import MLX
 import MLXLLM
 import MLXLMCommon
 import os
@@ -79,6 +81,27 @@ public actor StandaloneServer {
     private static let schedulerMaxConcurrent = 24
     private static let schedulerPendingTimeout: Duration = .seconds(120)
     private static let schedulerDefaultMaxTokens = 4096
+    private static let modelLoadMemoryMultiplier = 3.0
+
+    static func schedulerErrorStatus(for message: String) -> HTTPResponse.Status {
+        let lowercased = message.lowercased()
+        if lowercased.contains("invalid token")
+            || lowercased.contains("duplicate request")
+            || lowercased.contains("batch token budget")
+        {
+            return .badRequest
+        }
+        if lowercased.contains("queue full") {
+            return .tooManyRequests
+        }
+        if lowercased.contains("token_budget_exhausted")
+            || lowercased.contains("timed out waiting for capacity")
+            || lowercased.contains("insufficient global kv cache headroom")
+        {
+            return .serviceUnavailable
+        }
+        return .internalServerError
+    }
 
     private func loadModel(_ modelId: String, container: MLXLMCommon.ModelContainer) async {
         let scheduler = BatchScheduler(
@@ -91,9 +114,7 @@ public actor StandaloneServer {
         schedulers[modelId] = CachedScheduler(scheduler: scheduler, lastUsedAt: .now)
     }
 
-    private func evictIfNeededForLoad() async throws {
-        guard schedulers.count >= config.maxCachedModels else { return }
-
+    private func evictLRUIdleScheduler() async -> Bool {
         let snapshot = schedulers.map { (key: $0.key, cached: $0.value) }
         var lruKey: String?
         var lruTime: ContinuousClock.Instant?
@@ -117,15 +138,72 @@ public actor StandaloneServer {
         }
 
         guard let evictKey = lruKey, let evicted = schedulers.removeValue(forKey: evictKey) else {
-            throw StandaloneServerError.capacityUnavailable(
-                "All \(config.maxCachedModels) cached model slot(s) are active; try again when a request finishes"
-            )
+            return false
         }
 
         evictingModels.insert(evictKey)
         await evicted.scheduler.unloadModel()
         evictingModels.remove(evictKey)
         standaloneLogger.info("Evicted LRU model: \(evictKey)")
+        return true
+    }
+
+    private func evictIfNeededForLoad() async throws {
+        guard schedulers.count >= config.maxCachedModels else { return }
+
+        guard await evictLRUIdleScheduler() else {
+            throw StandaloneServerError.capacityUnavailable(
+                "All \(config.maxCachedModels) cached model slot(s) are active; try again when a request finishes"
+            )
+        }
+    }
+
+    private func ensureMemoryHeadroomForLoad(requiredGb: Double) async throws {
+        guard requiredGb.isFinite, requiredGb > 0 else { return }
+
+        while availableMemoryGb() < requiredGb {
+            guard await evictLRUIdleScheduler() else {
+                throw StandaloneServerError.capacityUnavailable(
+                    String(format: "Insufficient memory headroom to load model (needs %.1f GB available)", requiredGb)
+                )
+            }
+        }
+    }
+
+    private nonisolated func availableMemoryGb() -> Double {
+        let mlxUsedBytes = Self.saturatingAdd(UInt64(max(0, MLX.GPU.activeMemory)), UInt64(max(0, MLX.GPU.cacheMemory)))
+        let totalBytes = ProcessInfo.processInfo.physicalMemory
+        let mlxHeadroomBytes = totalBytes > mlxUsedBytes ? totalBytes - mlxUsedBytes : 0
+        let availableBytes = min(Self.systemAvailableMemoryBytes() ?? mlxHeadroomBytes, mlxHeadroomBytes)
+        return Double(availableBytes) / (1024.0 * 1024.0 * 1024.0)
+    }
+
+    private nonisolated static func systemAvailableMemoryBytes() -> UInt64? {
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &stats) { ptr in
+            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, intPtr, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return nil }
+        let availablePages = Self.saturatingAdd(
+            UInt64(stats.free_count),
+            UInt64(stats.inactive_count),
+            UInt64(stats.speculative_count)
+        )
+        let (bytes, overflow) = availablePages.multipliedReportingOverflow(by: UInt64(getpagesize()))
+        return overflow ? UInt64.max : bytes
+    }
+
+    private nonisolated static func saturatingAdd(_ values: UInt64...) -> UInt64 {
+        var total: UInt64 = 0
+        for value in values {
+            let (sum, overflow) = total.addingReportingOverflow(value)
+            if overflow { return UInt64.max }
+            total = sum
+        }
+        return total
     }
 
     /// Touch the cached scheduler's last-used timestamp on access.
@@ -161,7 +239,7 @@ public actor StandaloneServer {
             return
         }
 
-        guard models.contains(where: { $0.id == modelId }) else {
+        guard let modelInfo = models.first(where: { $0.id == modelId }) else {
             throw StandaloneServerError.modelNotFound(modelId)
         }
 
@@ -186,6 +264,9 @@ public actor StandaloneServer {
         modelsLoading.insert(modelId)
         do {
             try await evictIfNeededForLoad()
+            try await ensureMemoryHeadroomForLoad(
+                requiredGb: modelInfo.estimatedMemoryGb * Self.modelLoadMemoryMultiplier
+            )
             let container = try await LLMModelFactory.shared.loadContainer(
                 from: modelPath,
                 using: LocalTokenizerLoader()
@@ -345,77 +426,106 @@ public actor StandaloneServer {
         reserveScheduler(chatRequest.model)
 
         if chatRequest.stream ?? false {
-            let stream = await cached.scheduler.submit(request: chatRequest)
-            releaseScheduler(chatRequest.model)
-            return streamingCompletionResponse(stream: stream, model: chatRequest.model)
+            let requestID = "standalone-\(UUID().uuidString.prefix(12))"
+            let stream = await cached.scheduler.submit(request: chatRequest, requestId: requestID)
+            return streamingCompletionResponse(
+                stream: stream,
+                model: chatRequest.model,
+                onFinished: { [scheduler = cached.scheduler] in
+                    await scheduler.cancel(requestId: requestID)
+                    await self.releaseScheduler(chatRequest.model)
+                }
+            )
         }
 
-        let response = await nonStreamingCompletion(chatRequest, scheduler: cached.scheduler)
-        releaseScheduler(chatRequest.model)
-        return response
+        let requestID = "standalone-\(UUID().uuidString.prefix(12))"
+        defer { releaseScheduler(chatRequest.model) }
+        return await withTaskCancellationHandler {
+            await nonStreamingCompletion(chatRequest, scheduler: cached.scheduler, requestID: requestID)
+        } onCancel: {
+            Task { await cached.scheduler.cancel(requestId: requestID) }
+        }
     }
 
     private nonisolated func streamingCompletionResponse(
         stream: AsyncStream<GenerationEvent>,
-        model: String
+        model: String,
+        onFinished: @escaping @Sendable () async -> Void
     ) -> Response {
         var headers = defaultHeaders(contentType: "text/event-stream")
         headers[.cacheControl] = "no-cache"
         headers[.connection] = "keep-alive"
 
         let body = ResponseBody { writer in
-            let formatter = OpenAIFormatter()
-            let completionID = formatter.makeCompletionID()
-            let created = Int(Date().timeIntervalSince1970)
+            do {
+                let formatter = OpenAIFormatter()
+                let completionID = formatter.makeCompletionID()
+                let created = Int(Date().timeIntervalSince1970)
 
-            try await writer.write(ByteBuffer(string: formatter.roleChunk(
-                id: completionID,
-                model: model,
-                created: created
-            ).formatted))
+                try await writer.write(ByteBuffer(string: formatter.roleChunk(
+                    id: completionID,
+                    model: model,
+                    created: created
+                ).formatted))
 
-            var promptTokens = 0
-            var completionTokens = 0
+                var promptTokens = 0
+                var completionTokens = 0
 
-            for await event in stream {
-                switch event {
-                case .chunk(let text):
-                    completionTokens += 1
-                    let chunk = formatter.contentChunk(
-                        id: completionID,
-                        model: model,
-                        created: created,
-                        text: text
-                    )
-                    try await writer.write(ByteBuffer(string: chunk.formatted))
+                for await event in stream {
+                    switch event {
+                    case .chunk(let text):
+                        completionTokens += 1
+                        let chunk = formatter.contentChunk(
+                            id: completionID,
+                            model: model,
+                            created: created,
+                            text: text
+                        )
+                        try await writer.write(ByteBuffer(string: chunk.formatted))
 
-                case .info(let prompt, let completion, _):
-                    promptTokens = prompt
-                    completionTokens = completion
+                    case .info(let prompt, let completion, _):
+                        promptTokens = prompt
+                        completionTokens = completion
 
-                case .error(let message):
-                    standaloneLogger.error("Generation error during streaming: \(message)")
+                    case .error(let message):
+                        standaloneLogger.error("Generation error during streaming: \(message)")
+                        try await writer.write(ByteBuffer(string: Self.sseErrorEvent(message: message)))
+                        try await writer.finish(nil)
+                        await onFinished()
+                        return
+                    }
                 }
-            }
 
-            let usage = ChunkUsage(prompt_tokens: promptTokens, completion_tokens: completionTokens)
-            let stopChunk = formatter.stopChunk(
-                id: completionID,
-                model: model,
-                created: created,
-                finishReason: "stop",
-                usage: usage
-            )
-            try await writer.write(ByteBuffer(string: stopChunk.formatted))
-            try await writer.write(ByteBuffer(string: SSEChunk.done.formatted))
-            try await writer.finish(nil)
+                let usage = ChunkUsage(prompt_tokens: promptTokens, completion_tokens: completionTokens)
+                let stopChunk = formatter.stopChunk(
+                    id: completionID,
+                    model: model,
+                    created: created,
+                    finishReason: "stop",
+                    usage: usage
+                )
+                try await writer.write(ByteBuffer(string: stopChunk.formatted))
+                try await writer.write(ByteBuffer(string: SSEChunk.done.formatted))
+                try await writer.finish(nil)
+                await onFinished()
+            } catch {
+                await onFinished()
+                throw error
+            }
         }
 
         return Response(status: .ok, headers: headers, body: body)
     }
 
-    private func nonStreamingCompletion(_ chatRequest: ChatCompletionRequest, scheduler: BatchScheduler) async -> Response {
-        let stream = await scheduler.submit(request: chatRequest)
+    static func sseErrorEvent(message: String) -> String {
+        let response = OpenAIErrorResponse(error: .init(message: message, type: "server_error"))
+        let data = (try? JSONEncoder().encode(response)) ?? Data(#"{"error":{"message":"Generation failed","type":"server_error"}}"#.utf8)
+        let json = String(data: data, encoding: .utf8) ?? #"{"error":{"message":"Generation failed","type":"server_error"}}"#
+        return "event: error\ndata: \(json)\n\n"
+    }
+
+    private func nonStreamingCompletion(_ chatRequest: ChatCompletionRequest, scheduler: BatchScheduler, requestID: String) async -> Response {
+        let stream = await scheduler.submit(request: chatRequest, requestId: requestID)
         let formatter = OpenAIFormatter()
         let completionID = formatter.makeCompletionID()
         let created = Int(Date().timeIntervalSince1970)
@@ -434,7 +544,7 @@ public actor StandaloneServer {
                 completionTokens = completion
 
             case .error(let message):
-                return openAIErrorResponse(status: .internalServerError, message: message)
+                return openAIErrorResponse(status: Self.schedulerErrorStatus(for: message), message: message)
             }
         }
 

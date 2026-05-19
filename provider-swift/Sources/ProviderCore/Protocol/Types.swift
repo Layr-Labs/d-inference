@@ -214,6 +214,19 @@ public struct PrivacyCapabilities: Codable, Sendable, Equatable {
         self.envScrubbed = envScrubbed
         self.hypervisorActive = hypervisorActive
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        textBackendInprocess = try container.decode(Bool.self, forKey: .textBackendInprocess)
+        textProxyDisabled = try container.decode(Bool.self, forKey: .textProxyDisabled)
+        pythonRuntimeLocked = try container.decode(Bool.self, forKey: .pythonRuntimeLocked)
+        dangerousModulesBlocked = try container.decode(Bool.self, forKey: .dangerousModulesBlocked)
+        sipEnabled = try container.decode(Bool.self, forKey: .sipEnabled)
+        antiDebugEnabled = try container.decode(Bool.self, forKey: .antiDebugEnabled)
+        coreDumpsDisabled = try container.decode(Bool.self, forKey: .coreDumpsDisabled)
+        envScrubbed = try container.decode(Bool.self, forKey: .envScrubbed)
+        hypervisorActive = try container.decodeIfPresent(Bool.self, forKey: .hypervisorActive) ?? false
+    }
 }
 
 public struct RuntimeMismatch: Codable, Sendable, Equatable {
@@ -299,6 +312,42 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         activeTokenBudgetMax = try container.decodeIfPresent(Int64.self, forKey: .activeTokenBudgetMax) ?? 0
         queuedTokenBudget = try container.decodeIfPresent(Int64.self, forKey: .queuedTokenBudget) ?? 0
         kvBytesPerToken = try container.decodeIfPresent(Int64.self, forKey: .kvBytesPerToken) ?? 0
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(model, forKey: .model)
+        try container.encode(state, forKey: .state)
+        try container.encode(numRunning, forKey: .numRunning)
+        try container.encode(numWaiting, forKey: .numWaiting)
+        try container.encode(activeTokens, forKey: .activeTokens)
+        try container.encode(maxTokensPotential, forKey: .maxTokensPotential)
+        try encodeIfNonZero(maxConcurrency, forKey: .maxConcurrency, into: &container)
+        try encodeIfNonZero(observedDecodeTps, forKey: .observedDecodeTps, into: &container)
+        try encodeIfNonZero(activeTokenBudgetUsed, forKey: .activeTokenBudgetUsed, into: &container)
+        try encodeIfNonZero(activeTokenBudgetMax, forKey: .activeTokenBudgetMax, into: &container)
+        try encodeIfNonZero(queuedTokenBudget, forKey: .queuedTokenBudget, into: &container)
+        try encodeIfNonZero(kvBytesPerToken, forKey: .kvBytesPerToken, into: &container)
+    }
+
+    private func encodeIfNonZero<T: BinaryInteger & Encodable>(
+        _ value: T,
+        forKey key: CodingKeys,
+        into container: inout KeyedEncodingContainer<CodingKeys>
+    ) throws {
+        if value != 0 {
+            try container.encode(value, forKey: key)
+        }
+    }
+
+    private func encodeIfNonZero(
+        _ value: Double,
+        forKey key: CodingKeys,
+        into container: inout KeyedEncodingContainer<CodingKeys>
+    ) throws {
+        if value != 0 {
+            try container.encode(value, forKey: key)
+        }
     }
 }
 

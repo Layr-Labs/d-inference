@@ -93,7 +93,8 @@ struct Start: AsyncParsableCommand {
         let advertised = advertisedModels(
             from: snapshot.models,
             config: config,
-            modelOverrides: model
+            modelOverrides: model,
+            includeDisabled: all
         )
 
         print("darkbloom \(ProviderCore.version) (standalone)")

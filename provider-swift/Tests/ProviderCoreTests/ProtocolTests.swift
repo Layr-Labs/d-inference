@@ -263,6 +263,41 @@ import Testing
     #expect(decoded.maxConcurrency == 0)
 }
 
+@Test func backendSlotCapacityOmitsZeroAdditiveFields() throws {
+    let slot = BackendSlotCapacity(
+        model: "test",
+        state: "running",
+        numRunning: 1,
+        numWaiting: 0,
+        activeTokens: 0,
+        maxTokensPotential: 0,
+        maxConcurrency: 0,
+        observedDecodeTps: 0,
+        activeTokenBudgetUsed: 0,
+        activeTokenBudgetMax: 0,
+        queuedTokenBudget: 0,
+        kvBytesPerToken: 0
+    )
+
+    let object = try jsonObject(JSONEncoder().encode(slot))
+
+    #expect(object["active_tokens"] as? Int == 0)
+    #expect(object["max_tokens_potential"] as? Int == 0)
+    #expect(object["max_concurrency"] == nil)
+    #expect(object["observed_decode_tps"] == nil)
+    #expect(object["active_token_budget_used"] == nil)
+    #expect(object["active_token_budget_max"] == nil)
+    #expect(object["queued_token_budget"] == nil)
+    #expect(object["kv_bytes_per_token"] == nil)
+}
+
+@Test func privacyCapabilitiesDecodesMissingHypervisorActiveAsFalse() throws {
+    let raw = #"{"text_backend_inprocess":true,"text_proxy_disabled":true,"python_runtime_locked":true,"dangerous_modules_blocked":true,"sip_enabled":true,"anti_debug_enabled":true,"core_dumps_disabled":true,"env_scrubbed":true}"#
+    let decoded = try JSONDecoder().decode(PrivacyCapabilities.self, from: Data(raw.utf8))
+
+    #expect(decoded.hypervisorActive == false)
+}
+
 @Test func heartbeatBackendCapacityEncodesSnakeCaseFields() throws {
     let heartbeat = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
         status: .serving,

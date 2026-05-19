@@ -404,11 +404,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 			continue
 		}
 		snap.pendingForModel++
-		maxTok := pr.RequestedMaxTokens
-		if maxTok <= 0 {
-			maxTok = defaultRequestedMaxTokens
-		}
-		snap.pendingMaxTokens += maxTok
+		snap.pendingMaxTokens += pendingTokenBudget(pr)
 	}
 	snap.hasHeadroom = p.hasConcurrencyHeadroomForModelLocked(model)
 
@@ -445,10 +441,10 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	if snap.activeTokenBudgetMax > 0 {
 		requestTokens := int64(reqPromptTokens) + int64(reqMaxTokens)
 		// Include coordinator-side pending tokens not yet reflected in the
-		// provider's heartbeat. Avoid double-counting by subtracting the
-		// provider-reported maxTokensPotential which already covers committed
-		// tokens from the backend's perspective.
-		coordinatorExtra := int64(snap.pendingMaxTokens) - snap.maxTokensPotential
+		// provider's heartbeat. Avoid double-counting active/queued backend
+		// budgets that are still present in the coordinator pending set until
+		// completion/cancellation removes them.
+		coordinatorExtra := int64(snap.pendingMaxTokens) - committedTokenBudget(snap)
 		if coordinatorExtra < 0 {
 			coordinatorExtra = 0
 		}
@@ -473,6 +469,32 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 	required += float64(tokens*kvCacheBytesPerToken) / float64(bytesPerGB)
 	free := snap.totalMemoryGB - snap.gpuMemoryActiveGB
 	return free >= required
+}
+
+func pendingTokenBudget(pr *PendingRequest) int {
+	if pr == nil {
+		return 0
+	}
+	prompt := pr.EstimatedPromptTokens
+	if prompt < 0 {
+		prompt = 0
+	}
+	maxTok := pr.RequestedMaxTokens
+	if maxTok <= 0 {
+		maxTok = defaultRequestedMaxTokens
+	}
+	return prompt + maxTok
+}
+
+func committedTokenBudget(snap routingSnapshot) int64 {
+	committed := snap.activeTokenBudgetUsed + snap.queuedTokenBudget
+	if snap.maxTokensPotential > committed {
+		committed = snap.maxTokensPotential
+	}
+	if committed < 0 {
+		return 0
+	}
+	return committed
 }
 
 // buildCandidateWithReason returns the candidate plus, on rejection,
@@ -796,8 +818,16 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 			provider:      p,
 			model:         model,
 			slotState:     "unknown",
+			totalPending:  p.pendingCount(),
 			totalMemoryGB: float64(p.Hardware.MemoryGB),
 			modelSizeGB:   r.catalogSizeGBLocked(model),
+		}
+		for _, pending := range p.pendingReqs {
+			if pending.Model != model {
+				continue
+			}
+			snap.pendingForModel++
+			snap.pendingMaxTokens += pendingTokenBudget(pending)
 		}
 		if p.BackendCapacity != nil {
 			snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
@@ -812,6 +842,7 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 				snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
 				snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
 				snap.queuedTokenBudget = slot.QueuedTokenBudget
+				snap.maxTokensPotential = slot.MaxTokensPotential
 				break
 			}
 		}

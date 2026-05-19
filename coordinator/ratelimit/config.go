@@ -4,6 +4,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/env"
 )
 
 // Config controls the limiter's behavior. Zero values fall back to defaults.
@@ -24,12 +26,12 @@ type ConfigPair struct {
 func ReadConfig() ConfigPair {
 	return ConfigPair{
 		Inference: Config{
-			RPS:   envFloat("EIGENINFERENCE_RATE_LIMIT_RPS", DefaultRPS),
-			Burst: envInt("EIGENINFERENCE_RATE_LIMIT_BURST", DefaultBurst),
+			RPS:   envFloat(env.EnvPrefix+"_RATE_LIMIT_RPS", DefaultRPS),
+			Burst: envInt(env.EnvPrefix+"_RATE_LIMIT_BURST", DefaultBurst),
 		},
 		Financial: Config{
-			RPS:   envFloat("EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS", 0.2),
-			Burst: envInt("EIGENINFERENCE_FINANCIAL_RATE_LIMIT_BURST", 3),
+			RPS:   envFloat(env.EnvPrefix+"_FINANCIAL_RATE_LIMIT_RPS", 0.2),
+			Burst: envInt(env.EnvPrefix+"_FINANCIAL_RATE_LIMIT_BURST", 3),
 		},
 	}
 }

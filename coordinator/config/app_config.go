@@ -7,6 +7,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
+	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -14,7 +15,7 @@ import (
 )
 
 // EnvPrefix is the namespace prefix for all coordinator environment variables.
-const EnvPrefix = "EIGENINFERENCE"
+const EnvPrefix = env.EnvPrefix
 
 // AppConfig is the root configuration struct, composing per-package configs.
 type AppConfig struct {

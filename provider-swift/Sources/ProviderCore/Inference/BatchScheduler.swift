@@ -460,14 +460,14 @@ public actor BatchScheduler {
         return stream
     }
 
-    public func cancel(requestId: String) {
+    public func cancel(requestId: String) async {
         if let uid = requestIdToUid[requestId] {
-            finishRequest(uid: uid, error: "Request cancelled")
+            await finishRequest(uid: uid, error: "Request cancelled")
             return
         }
         guard let index = pending.firstIndex(where: { $0.requestId == requestId }) else { return }
         let entry = pending.remove(at: index)
-        releaseKVReservation(requestID: entry.requestId)
+        await releaseKVReservation(requestID: entry.requestId)
         entry.continuation.yield(.error("Request cancelled"))
         entry.continuation.finish()
 
@@ -477,13 +477,19 @@ public actor BatchScheduler {
         }
     }
 
-    public func cancelAll() {
-        let uids = Array(active.keys)
-        for uid in uids {
-            finishRequest(uid: uid, error: "Scheduler shutting down")
-        }
-        for entry in pending {
-            releaseKVReservation(requestID: entry.requestId)
+    public func cancelAll() async {
+        let activeEntries = active
+        let pendingEntries = pending
+        active.removeAll()
+        pending.removeAll()
+
+        var releaseIDs: [String] = []
+        releaseIDs.reserveCapacity(activeEntries.count + pendingEntries.count)
+
+        for (uid, entry) in activeEntries {
+            cancelledUIDs.insert(uid)
+            requestIdToUid.removeValue(forKey: entry.requestId)
+            releaseIDs.append(entry.requestId)
             entry.continuation.yield(.error("Scheduler shutting down"))
             entry.continuation.finish()
             if let planner = self.planner {
@@ -491,7 +497,20 @@ public actor BatchScheduler {
                 Task { await planner.cancel(requestID: cancelledId) }
             }
         }
-        pending.removeAll()
+
+        for entry in pendingEntries {
+            releaseIDs.append(entry.requestId)
+            entry.continuation.yield(.error("Scheduler shutting down"))
+            entry.continuation.finish()
+            if let planner = self.planner {
+                let cancelledId = entry.requestId
+                Task { await planner.cancel(requestID: cancelledId) }
+            }
+        }
+
+        for requestID in releaseIDs {
+            await releaseKVReservation(requestID: requestID)
+        }
     }
 
     // MARK: - Capacity
@@ -564,9 +583,15 @@ public actor BatchScheduler {
     private func stepEngine() async -> Bool {
         guard let gen = generator, let container = modelContainer else { return false }
         let epoch = generationEpoch
-        expireTimedOutPending()
+        await expireTimedOutPending()
+        guard epoch == generationEpoch, generator === gen else {
+            return false
+        }
         applyCancelledRequests(to: gen)
-        admitPendingRequests(into: gen)
+        await admitPendingRequests(into: gen)
+        guard epoch == generationEpoch, generator === gen else {
+            return false
+        }
         if !gen.hasWork { return false }
 
         let prioritizeFirstToken = shouldPrioritizeFirstToken
@@ -596,7 +621,7 @@ public actor BatchScheduler {
             )
         }
         applyCancelledRequests(to: gen)
-        dispatchResponses(responses, producedAt: .now)
+        await dispatchResponses(responses, producedAt: .now)
         return true
     }
 
@@ -604,7 +629,7 @@ public actor BatchScheduler {
         active.values.contains { $0.completionTokens == 0 }
     }
 
-    private func admitPendingRequests(into gen: BatchGenerator) {
+    private func admitPendingRequests(into gen: BatchGenerator) async {
         guard !pending.isEmpty else { return }
         let freeSlots = max(0, effectiveMaxConcurrentRequests - active.count)
         guard freeSlots > 0 else { return }
@@ -612,6 +637,7 @@ public actor BatchScheduler {
         var activeBudgetAfterAdmission = activeTokenBudgetUsed
         let budgetMax = tokenBudgetMax
         var batch: [PendingRequest] = []
+        var rejected: [(entry: PendingRequest, error: String)] = []
         batch.reserveCapacity(freeSlots)
 
         var pendingIndex = 0
@@ -620,13 +646,10 @@ public actor BatchScheduler {
             let requestBudget = next.promptTokens.count + next.maxTokens
             if requestBudget > budgetMax {
                 pending.remove(at: pendingIndex)
-                releaseKVReservation(requestID: next.requestId)
-                next.continuation.yield(.error("token_budget_exhausted: request requires \(requestBudget) tokens but only \(budgetMax) available"))
-                next.continuation.finish()
-                if let planner = self.planner {
-                    let rejectedId = next.requestId
-                    Task { await planner.cancel(requestID: rejectedId) }
-                }
+                rejected.append((
+                    entry: next,
+                    error: "token_budget_exhausted: request requires \(requestBudget) tokens but only \(budgetMax) available"
+                ))
                 continue
             }
             if activeBudgetAfterAdmission + requestBudget > budgetMax {
@@ -637,7 +660,10 @@ public actor BatchScheduler {
             activeBudgetAfterAdmission += requestBudget
         }
 
-        guard !batch.isEmpty else { return }
+        guard !batch.isEmpty else {
+            await rejectPendingRequests(rejected)
+            return
+        }
 
         let assignedUids = gen.insert(
             prompts: batch.map(\.promptTokens),
@@ -662,36 +688,53 @@ public actor BatchScheduler {
 
         if assignedUids.count < batch.count {
             for entry in batch.dropFirst(assignedUids.count) {
-                releaseKVReservation(requestID: entry.requestId)
-                entry.continuation.yield(.error("BatchGenerator rejected the prompt"))
-                entry.continuation.finish()
-                if let planner = self.planner {
-                    let rejectedId = entry.requestId
-                    Task { await planner.cancel(requestID: rejectedId) }
-                }
+                rejected.append((entry: entry, error: "BatchGenerator rejected the prompt"))
+            }
+        }
+
+        await rejectPendingRequests(rejected)
+    }
+
+    private func rejectPendingRequests(_ rejected: [(entry: PendingRequest, error: String)]) async {
+        guard !rejected.isEmpty else { return }
+        let planner = self.planner
+        for rejection in rejected {
+            await releaseKVReservation(requestID: rejection.entry.requestId)
+            rejection.entry.continuation.yield(.error(rejection.error))
+            rejection.entry.continuation.finish()
+            if let planner {
+                let rejectedId = rejection.entry.requestId
+                Task { await planner.cancel(requestID: rejectedId) }
             }
         }
     }
 
-    private func expireTimedOutPending(now: ContinuousClock.Instant = .now) {
+    private func expireTimedOutPending(now: ContinuousClock.Instant = .now) async {
         guard !pending.isEmpty else { return }
 
         var stillPending: [PendingRequest] = []
+        var timedOut: [PendingRequest] = []
         stillPending.reserveCapacity(pending.count)
         for entry in pending {
             if now - entry.submittedAt >= pendingTimeout {
-                releaseKVReservation(requestID: entry.requestId)
-                entry.continuation.yield(.error("Request timed out waiting for capacity"))
-                entry.continuation.finish()
-                if let planner = self.planner {
-                    let timedOutId = entry.requestId
-                    Task { await planner.cancel(requestID: timedOutId) }
-                }
+                timedOut.append(entry)
             } else {
                 stillPending.append(entry)
             }
         }
         pending = stillPending
+
+        for entry in timedOut {
+            entry.continuation.yield(.error("Request timed out waiting for capacity"))
+            entry.continuation.finish()
+            if let planner = self.planner {
+                let timedOutId = entry.requestId
+                Task { await planner.cancel(requestID: timedOutId) }
+            }
+        }
+        for entry in timedOut {
+            await releaseKVReservation(requestID: entry.requestId)
+        }
     }
 
     private func applyCancelledRequests(to gen: BatchGenerator) {
@@ -703,13 +746,13 @@ public actor BatchScheduler {
     }
 
     private func stopCurrentEngine() async {
-        cancelAll()
         generationEpoch &+= 1
         workerTask?.cancel()
         workerTask = nil
         generator = nil
         modelContainer = nil
         tokenizer = nil
+        await cancelAll()
         modelWeightBytes = 0
         modelId = ""
         kvBytesPerToken = 400_000
@@ -729,7 +772,7 @@ public actor BatchScheduler {
     private func dispatchResponses(
         _ responses: [GenerationBatchResponse],
         producedAt: ContinuousClock.Instant
-    ) {
+    ) async {
         var byUID: [Int: [GenerationBatchResponse]] = [:]
         byUID.reserveCapacity(responses.count)
         for response in responses {
@@ -738,14 +781,14 @@ public actor BatchScheduler {
 
         for uid in responses.map(\.uid) where byUID[uid] != nil {
             let rowResponses = byUID.removeValue(forKey: uid)!
-            dispatchRowResponses(rowResponses, producedAt: producedAt)
+            await dispatchRowResponses(rowResponses, producedAt: producedAt)
         }
     }
 
     private func dispatchRowResponses(
         _ responses: [GenerationBatchResponse],
         producedAt: ContinuousClock.Instant
-    ) {
+    ) async {
         guard let first = responses.first, var entry = active[first.uid] else { return }
 
         var finalResponse: GenerationBatchResponse?
@@ -810,7 +853,7 @@ public actor BatchScheduler {
             entry.continuation.finish()
             active.removeValue(forKey: first.uid)
             requestIdToUid.removeValue(forKey: entry.requestId)
-            releaseKVReservation(requestID: entry.requestId)
+            await releaseKVReservation(requestID: entry.requestId)
 
             // Notify planner that this request is done so its token budget
             // is released for future admissions. Use cancel() instead of
@@ -859,12 +902,12 @@ public actor BatchScheduler {
             + Double(elapsed.components.attoseconds) / 1e18
     }
 
-    private func finishRequest(uid: Int, error: String) {
+    private func finishRequest(uid: Int, error: String) async {
         guard let entry = active.removeValue(forKey: uid) else { return }
         cancelledUIDs.insert(uid)
         let cancelledId = entry.requestId
         requestIdToUid.removeValue(forKey: cancelledId)
-        releaseKVReservation(requestID: cancelledId)
+        await releaseKVReservation(requestID: cancelledId)
         entry.continuation.yield(.error(error))
         entry.continuation.finish()
 
@@ -876,9 +919,9 @@ public actor BatchScheduler {
 
     private enum MemoryKind { case active, peak, cache }
 
-    private func releaseKVReservation(requestID: String) {
+    private func releaseKVReservation(requestID: String) async {
         guard let kvBudget else { return }
-        Task { await kvBudget.release(requestID: requestID) }
+        await kvBudget.release(requestID: requestID)
     }
 
     static func resolvedMaxTokens(requested: Int?, defaultMaxTokens: Int) -> Int {

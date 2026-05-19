@@ -148,11 +148,24 @@ public actor StandaloneServer {
             }
         }
 
-        guard let evictKey = lruKey, let evicted = schedulers.removeValue(forKey: evictKey) else {
+        guard let evictKey = lruKey,
+              let evicted = schedulers[evictKey],
+              !evictingModels.contains(evictKey),
+              (schedulerReservations[evictKey] ?? 0) == 0 else {
+            return false
+        }
+
+        let cap = await evicted.scheduler.capacity()
+        guard schedulers[evictKey] != nil,
+              !evictingModels.contains(evictKey),
+              (schedulerReservations[evictKey] ?? 0) == 0,
+              cap.activeRequests == 0,
+              cap.pendingRequests == 0 else {
             return false
         }
 
         evictingModels.insert(evictKey)
+        schedulers.removeValue(forKey: evictKey)
         await evicted.scheduler.unloadModel()
         evictingModels.remove(evictKey)
         standaloneLogger.info("Evicted LRU model: \(evictKey)")
@@ -238,7 +251,8 @@ public actor StandaloneServer {
     }
 
     private func ensureModelLoaded(_ modelId: String) async throws {
-        if schedulers[modelId] != nil {
+        try Task.checkCancellation()
+        if schedulers[modelId] != nil, !evictingModels.contains(modelId) {
             touchScheduler(modelId)
             return
         }
@@ -247,6 +261,12 @@ public actor StandaloneServer {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
                 loadingWaiters[modelId, default: []].append(cont)
             }
+            try Task.checkCancellation()
+            if schedulers[modelId] != nil, !evictingModels.contains(modelId) {
+                touchScheduler(modelId)
+                return
+            }
+            try await ensureModelLoaded(modelId)
             return
         }
 
@@ -264,8 +284,9 @@ public actor StandaloneServer {
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 loadGateWaiters.append(cont)
             }
+            try Task.checkCancellation()
             // Re-check: another load may have loaded our model while we waited
-            if schedulers[modelId] != nil {
+            if schedulers[modelId] != nil, !evictingModels.contains(modelId) {
                 touchScheduler(modelId)
                 return
             }
@@ -274,15 +295,22 @@ public actor StandaloneServer {
 
         modelsLoading.insert(modelId)
         do {
+            try Task.checkCancellation()
             try await evictIfNeededForLoad()
             try await ensureMemoryHeadroomForLoad(
                 requiredGb: modelInfo.estimatedMemoryGb * Self.modelLoadMemoryMultiplier
             )
+            try Task.checkCancellation()
             let container = try await LLMModelFactory.shared.loadContainer(
                 from: modelPath,
                 using: LocalTokenizerLoader()
             )
+            try Task.checkCancellation()
             await loadModel(modelId, container: container)
+            if Task.isCancelled, let cached = schedulers.removeValue(forKey: modelId) {
+                await cached.scheduler.unloadModel()
+                throw CancellationError()
+            }
             standaloneLogger.info("Lazy-loaded model: \(modelId)")
 
             modelsLoading.remove(modelId)

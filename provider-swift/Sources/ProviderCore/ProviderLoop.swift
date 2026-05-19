@@ -554,35 +554,55 @@ public actor ProviderLoop {
         // 3. Send inference_accepted
         send.send(.inferenceAccepted(requestId: requestId))
 
-        // 4. Ensure model is loaded
+        // 4. Mark the request before loading so concurrent preloads cannot
+        // evict the model this accepted request is waiting for.
         let modelId = chatRequest.model
+        requestToModel[requestId] = modelId
+        powerAssertion.acquire()
+        syncWarmModelState()
+        let token = await cancellationRegistry.register(requestId: requestId)
+
+        // 5. Ensure model is loaded
         do {
             try await ensureModelLoaded(modelId: modelId)
         } catch {
+            if requestToModel.removeValue(forKey: requestId) != nil {
+                powerAssertion.release()
+                syncWarmModelState()
+                await updateAggregateCapacity()
+            }
+            await cancellationRegistry.finish(requestId: requestId)
             logger.error("[\(requestId)] Failed to load model '\(modelId)': \(error)")
             send.send(.inferenceError(requestId: requestId, error: "model load failed: \(error.localizedDescription)", statusCode: 500))
             return
         }
 
+        guard requestToModel[requestId] == modelId else {
+            await cancellationRegistry.finish(requestId: requestId)
+            logger.info("[\(requestId)] Request cancelled during model load")
+            return
+        }
+
         guard let slot = modelSlots[modelId] else {
+            if requestToModel.removeValue(forKey: requestId) != nil {
+                powerAssertion.release()
+                syncWarmModelState()
+                await updateAggregateCapacity()
+            }
+            await cancellationRegistry.finish(requestId: requestId)
             logger.error("[\(requestId)] Model '\(modelId)' disappeared after load")
             send.send(.inferenceError(requestId: requestId, error: "model unavailable", statusCode: 500))
             return
         }
 
-        // Mark in-flight before any suspension so eviction sees this model as active
-        requestToModel[requestId] = modelId
-        powerAssertion.acquire()
-
-        // 5. Register cancellation token
-        let token = await cancellationRegistry.register(requestId: requestId)
+        modelSlots[modelId]?.lastInferenceAt = .now
+        syncWarmModelState()
 
         // 6. Capture values for the spawned task
         let responsePublicKeyData: Data = senderKey
         let kp = self.keyPair
         let sched = slot.scheduler
         let providerStats = self.stats
-        let providerState = self.state
         let registry = self.cancellationRegistry
         let signingIdentity = self.signer
         let log = self.logger
@@ -596,8 +616,6 @@ public actor ProviderLoop {
                     await me.finishInflightRequest(requestId: requestId)
                 }
             }
-
-            providerState.inferenceActive = true
 
             var usageAccumulator = UsageAccumulator()
             var fullResponseText = ""
@@ -982,7 +1000,14 @@ public actor ProviderLoop {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
                 loadingWaiters[modelId, default: []].append(cont)
             }
+            try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
+            while modelsUnloading.contains(modelId) {
+                await waitForModelUnload(modelId)
+                if isShuttingDown { throw CancellationError() }
+            }
+            if modelSlots[modelId] != nil { return }
+            try await ensureModelLoaded(modelId: modelId)
             return
         }
 
@@ -1127,7 +1152,10 @@ public actor ProviderLoop {
         let loaded = modelSlots.keys.filter { !modelsUnloading.contains($0) }.sorted()
         state.warmModels = loaded
         let activeSlots = modelSlots.filter { !modelsUnloading.contains($0.key) }
-        if let mostRecent = activeSlots.max(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt }) {
+        let inflightModels = Set(requestToModel.values)
+        let currentCandidates = activeSlots.filter { inflightModels.contains($0.key) }
+        let candidates = currentCandidates.isEmpty ? activeSlots : currentCandidates
+        if let mostRecent = candidates.max(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt }) {
             state.currentModel = mostRecent.key
             state.currentModelHash = loopConfig.modelHashes[mostRecent.key]
         } else {
@@ -1201,6 +1229,7 @@ public actor ProviderLoop {
             }
         }
 
+        syncWarmModelState()
         await updateAggregateCapacity()
 
         if let task = inflightTasks.removeValue(forKey: requestId) {
@@ -1219,6 +1248,7 @@ public actor ProviderLoop {
             powerAssertion.releaseAll()
         }
         requestToModel.removeAll()
+        syncWarmModelState()
     }
 
     private func finishInflightRequest(requestId: String) async {

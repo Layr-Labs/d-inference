@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
@@ -18,4 +19,16 @@ func ReadConfig() Config {
 	}
 }
 
-func (c Config) Check() error { return nil }
+// Check validates the configuration.
+// An empty MinTrustLevel is valid and means "use the default".
+func (c Config) Check() error {
+	if c.MinTrustLevel == "" {
+		return nil
+	}
+	// trustRank returns -1 for unrecognized trust levels.
+	if trustRank(TrustLevel(c.MinTrustLevel)) < 0 {
+		return fmt.Errorf("registry: invalid MinTrustLevel %q (valid: %q, %q, %q)",
+			c.MinTrustLevel, TrustNone, TrustSelfSigned, TrustHardware)
+	}
+	return nil
+}

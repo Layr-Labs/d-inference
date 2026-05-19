@@ -246,6 +246,9 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	// reconnecting providers to their persisted state.
 	s.storedProviders = reg.LoadStoredProviders()
 	// Apply server configuration from ServerConfig.
+	// TODO(auth): storing admin emails in the server struct is an antipattern.
+	// Move admin verification to an external auth service (Privy or IDP) so that
+	// the server doesn't need to hold email state.
 	s.adminKey = cfg.AdminKey
 	if len(cfg.AdminEmails) > 0 {
 		s.adminEmails = make(map[string]bool)

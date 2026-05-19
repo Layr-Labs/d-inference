@@ -24,7 +24,7 @@
 
 AI compute today flows through three layers of markup — GPU manufacturers to hyperscalers to API providers to end users. Meanwhile, **over 100 million Apple Silicon Macs** sit idle most of each day with 64–512 GB of unified memory and up to 819 GB/s memory bandwidth, capable of running models with up to 500 billion parameters at interactive speeds.
 
-**Darkbloom** connects this idle capacity directly to demand. The API is **OpenAI-compatible**. Providers keep **95% of revenue**. Consumer prompts are **never visible** to providers — enforced by hardware, not policy.
+**Darkbloom** connects this idle capacity directly to demand. The API is **OpenAI-compatible**. Providers keep **95% of revenue** (5% platform fee). Consumer prompts are **never visible** to providers — enforced by hardware, not policy.
 
 > **Status:** Active development. Breaking changes may occur between releases. See the [changelog](https://github.com/Layr-Labs/d-inference/releases) for details.
 
@@ -89,8 +89,6 @@ The **Anthropic Messages API** is also supported at `/v1/messages`.
 | `/v1/chat/completions` | `POST` | Chat completions (streaming & non-streaming) |
 | `/v1/completions` | `POST` | Text completions |
 | `/v1/messages` | `POST` | Anthropic Messages API |
-| `/v1/audio/transcriptions` | `POST` | Speech-to-text transcription |
-| `/v1/images/generations` | `POST` | Image generation |
 | `/v1/models` | `GET` | List available models |
 
 ## Architecture
@@ -143,7 +141,7 @@ For the full architecture deep-dive, see [`docs/ARCHITECTURE.md`](docs/ARCHITECT
 | M1 Pro / Max | 16–64 GB | 200–400 GB/s | 8B–33B |
 | M2 Pro / Max | 16–96 GB | 200–400 GB/s | 8B–70B |
 | M3 Pro / Max | 18–128 GB | 150–400 GB/s | 8B–122B |
-| M3 Ultra | 96–256 GB | 819 GB/s | 8B–230B |
+| M3 Ultra | 96–512 GB | 819 GB/s | 8B–400B |
 | M4 Pro / Max | 24–128 GB | 273–546 GB/s | 8B–122B |
 
 ## API Reference
@@ -275,7 +273,7 @@ For the full threat model, see [`docs/threat-model.yaml`](docs/threat-model.yaml
 | Qwen3.5 122B | $0.13 / 1M tokens | $1.04 / 1M tokens |
 | MiniMax M2.5 | $0.06 / 1M tokens | $0.50 / 1M tokens |
 
-**0% platform fee. Providers keep 100% of revenue.**
+**5% platform fee. Providers keep 95% of revenue.**
 
 Payments settled via **Solana USDC** on-chain.
 

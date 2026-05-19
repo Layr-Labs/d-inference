@@ -259,7 +259,7 @@ Every 5 minutes:
 
   1. Coordinator generates 32-byte random nonce + timestamp
   2. Sends attestation_challenge over WebSocket
-  3. Provider signs (nonce + timestamp + public_key) with SE key
+  3. Provider signs (nonce + timestamp + public_key) with P-256 key
   4. Provider includes fresh sip_enabled and secure_boot_enabled status
   5. Sends attestation_response back
   6. Coordinator verifies:
@@ -301,23 +301,23 @@ Returns for each provider:
 ## Privacy Architecture
 
 ```
-Layer                              Status    What It Means
-──────────────────────────────────────────────────────────────────────
-Confidential VM (coordinator)      Active    AMD SEV-SNP, hardware-encrypted memory
-TLS transport (consumer)           Active    Encrypted in transit
-Hardware-bound identity (SE)       Active    Provider key in Secure Enclave silicon
-Signed attestation                 Active    SE signs hardware info + binary hash
-Challenge-response + SIP check     Active    Ongoing security posture verification
-PT_DENY_ATTACH                     Active    Kernel-level anti-debug
-Hardened Runtime                   Active    Blocks external memory inspection
-In-process inference               Active    No subprocess/IPC to sniff
-Memory wiping                      Active    Volatile-zero after each request
-Python path locking                Active    Prevents malicious package injection
-Signed app bundle                  Active    Any modification breaks code signature
-MDM SecurityInfo                   Active    Hardware-verified SIP/SecureBoot/SSV
-SIP/SecureBoot attestation         Active    Self-reported + MDM-verified
-Hardware-attested posture (MDA)    Active    Apple Enterprise Attestation Root CA signs device cert chain
-User-verifiable attestation API    Active    GET /v1/providers/attestation — exposes Apple cert chain
+Layer                              What It Means
+────────────────────────────────────────────────────────────────────
+Confidential VM (coordinator)      AMD SEV-SNP, hardware-encrypted memory
+TLS transport (consumer)           Encrypted in transit
+Hardware-bound identity (SE)       Provider key in Secure Enclave silicon
+Signed attestation                 SE signs hardware info + binary hash
+Challenge-response + SIP check     Ongoing security posture verification
+PT_DENY_ATTACH                     Kernel-level anti-debug
+Hardened Runtime                   Blocks external memory inspection
+In-process inference               No subprocess/IPC to sniff
+Memory wiping                      Volatile-zero after each request
+Python path locking                Prevents malicious package injection
+Signed app bundle                  Any modification breaks code signature
+MDM SecurityInfo                   Hardware-verified SIP/SecureBoot/SSV
+SIP/SecureBoot attestation         Self-reported + MDM-verified
+Hardware-attested posture (MDA)    Apple Enterprise Attestation Root CA signs device cert chain
+User-verifiable attestation API    GET /v1/providers/attestation — exposes Apple cert chain
 ```
 
 ---
@@ -349,7 +349,7 @@ If the in-process engine cannot initialize, the provider refuses to start and in
 |--------|---------|
 | Ledger | Internal micro-USD (1 USD = 1,000,000 micro-USD) |
 | Settlement | Solana USDC (primary), Stripe (wired, not activated) |
-| Platform fee | 0% — providers keep 100% |
+| Platform fee | 5% — providers keep 95% |
 | Minimum charge | $0.001 per request |
 | Wallet derivation | BIP39 mnemonic → SLIP-0010 (m/44'/501'/0'/0') |
 | Referrals | Referrers receive a share of platform fees |
@@ -363,7 +363,7 @@ If the in-process engine cannot initialize, the provider refuses to start and in
 | **MemoryStore** | Development | No external dependencies; bounded ring buffer |
 | **PostgresStore** | Production | Atomic balance operations, persistent ledger |
 
-**Tables:** `api_keys`, `usage`, `payments`, `balances`, `ledger_entries`, `telemetry_events`
+**Tables:** `providers`, `provider_reputation`, `api_keys`, `usage`, `payments`, `balances`, `ledger_entries`, `referrers`, `referrals`, `billing_sessions`, `model_prices`, `users`, `supported_models`, `releases`, `device_codes`, `provider_tokens`, `invite_codes`, `invite_redemptions`, `provider_earnings`, `provider_payouts`, `stripe_withdrawals`, `telemetry_events`
 
 ---
 
@@ -377,5 +377,5 @@ Any Apple Silicon Mac (M1 or later):
 | M1 Pro / Max | 16–64 GB | 200–400 GB/s | 8B–33B |
 | M2 Pro / Max | 16–96 GB | 200–400 GB/s | 8B–70B |
 | M3 Pro / Max | 18–128 GB | 150–400 GB/s | 8B–122B |
-| M3 Ultra | 96–256 GB | 819 GB/s | 8B–230B |
+| M3 Ultra | 96–512 GB | 819 GB/s | 8B–400B |
 | M4 Pro / Max | 24–128 GB | 273–546 GB/s | 8B–122B |

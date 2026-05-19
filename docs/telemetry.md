@@ -150,14 +150,9 @@ Explicit emit sites:
 
 The client spawns a background batcher that POSTs to the coordinator. On network failure, events spill to `~/.darkbloom/telemetry-queue.jsonl`, capped at 5 MB; the oldest half is rotated out on overflow.
 
-### macOS App (Swift)
+### Provider (Swift)
 
-`app/EigenInference/Sources/EigenInference/TelemetryReporter.swift` is a singleton with a bounded 500-event buffer and debounced flush.
-
-| Component | Events |
-|-----------|--------|
-| `AppDelegate` | `NSSetUncaughtExceptionHandler` for fatal Obj-C exceptions |
-| `ProviderManager` | `backend_crash` on every subprocess exit; `fatal` when restart limit exceeded |
+`provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` is the Swift telemetry client with a bounded event buffer and debounced flush.
 
 ### Console UI (TypeScript)
 

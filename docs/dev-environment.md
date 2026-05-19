@@ -33,7 +33,6 @@
 | Mac fleet | 2–4 Macs with hostnames `dev-*` | Listed in `deploy/provider-fleet/dev-inventory.txt` |
 | DNS | Vercel Domains | `api.dev.darkbloom.xyz` A → VM static IP |
 | Privy | Separate dev Privy app (not the prod one) | Values in Secret Manager |
-| Solana | Mainnet, dev-only BIP39 mnemonic (new wallet) | `EIGENINFERENCE_BILLING_MOCK=false` |
 | MDM / attestation | Full stack — MicroMDM + step-ca inside coordinator container | `MIN_TRUST=hardware` (same as prod) |
 
 ### Architecture Decisions
@@ -70,7 +69,6 @@ echo -n '<value>' | gcloud secrets versions add <secret-name> --data-file=-
 |--------|--------|
 | `eigeninference-admin-key` | `openssl rand -hex 32` |
 | `eigeninference-release-key` | `openssl rand -hex 32` |
-| `eigeninference-solana-mnemonic` | Generate a **new** BIP39 mnemonic (never reuse prod). Derive the Solana public key, fund with a small amount of USDC on mainnet. |
 | `eigeninference-privy-app-id` | Privy dashboard (dev app) |
 | `eigeninference-privy-app-secret` | Privy dashboard |
 | `eigeninference-privy-verification-key` | Privy dashboard (JWKS JSON or PEM) |
@@ -155,7 +153,6 @@ Hits `/health`, `/v1/stats`, `/v1/models/catalog`, verifies install.sh templatin
 | `EIGENINFERENCE_PRIVY_APP_ID` | `eigeninference-privy-app-id` | Privy dashboard (dev app) |
 | `EIGENINFERENCE_PRIVY_APP_SECRET` | `eigeninference-privy-app-secret` | Privy dashboard |
 | `EIGENINFERENCE_PRIVY_VERIFICATION_KEY` | `eigeninference-privy-verification-key` | Privy dashboard |
-| `MNEMONIC` | `eigeninference-solana-mnemonic` | Generated fresh for dev |
 | `EIGENINFERENCE_DATABASE_URL` | `eigeninference-database-url` | Bootstrap writes Cloud SQL conn string (via cloud-sql-proxy on 127.0.0.1:5432) |
 | `MICROMDM_API_KEY` / `EIGENINFERENCE_MDM_API_KEY` | `eigeninference-micromdm-api-key` | Same value for both — keep in sync |
 | `MDM_PUSH_P12_B64` | `eigeninference-mdm-push-p12-b64` | Apple push cert (base64url-encoded PKCS#12) |

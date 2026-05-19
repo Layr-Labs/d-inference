@@ -275,8 +275,6 @@ For the full threat model, see [`docs/threat-model.yaml`](docs/threat-model.yaml
 
 **5% platform fee. Providers keep 95% of revenue.**
 
-Payments settled via **Solana USDC** on-chain.
-
 ## Project Structure
 
 ```
@@ -285,7 +283,7 @@ coordinator/              Go control plane
 ├── api/                  HTTP + WebSocket handlers
 ├── attestation/          Secure Enclave + MDA verification
 ├── auth/                 Privy JWT integration
-├── billing/              Stripe, Solana USDC, referrals
+├── billing/              Stripe, referrals
 ├── e2e/                  X25519 request-encryption helpers
 ├── mdm/                  MicroMDM client + webhook handling
 ├── payments/             Internal ledger + pricing

@@ -83,7 +83,7 @@ The coordinator is the control plane. Consumer requests arrive as plain text ove
 | Attestation | Verifies Secure Enclave P-256 ECDSA signatures, binary hashes, SIP/SecureBoot status |
 | Challenge-response | Periodically challenges providers every 5 minutes to prove key possession + security posture |
 | Trust enforcement | Immediately marks providers untrusted if SIP or Secure Boot is disabled |
-| Billing | API keys, usage tracking, payment ledger, Solana USDC settlement |
+| Billing | API keys, usage tracking, payment ledger |
 | Queue management | Per-model request queues (max 10, 30s timeout) when providers are busy |
 | Reputation | Composite scoring: 40% job success + 30% uptime + 20% attestation + 10% response time |
 
@@ -348,10 +348,9 @@ If the in-process engine cannot initialize, the provider refuses to start and in
 | Aspect | Details |
 |--------|---------|
 | Ledger | Internal micro-USD (1 USD = 1,000,000 micro-USD) |
-| Settlement | Solana USDC (primary), Stripe (wired, not activated) |
+| Settlement | Stripe |
 | Platform fee | 5% — providers keep 95% |
 | Minimum charge | $0.001 per request |
-| Wallet derivation | BIP39 mnemonic → SLIP-0010 (m/44'/501'/0'/0') |
 | Referrals | Referrers receive a share of platform fees |
 
 ---

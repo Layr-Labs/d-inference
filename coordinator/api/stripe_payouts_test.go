@@ -38,9 +38,9 @@ import (
 func stripePayoutsTestServer(t *testing.T, mockMode bool, fakeStripe *httptest.Server, opts ...billing.Config) (*Server, *store.MemoryStore) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	cfg := billing.Config{
 		MockMode:                     mockMode,
@@ -483,7 +483,7 @@ func TestStripeWithdrawPersistsRowAsPendingFirst(t *testing.T) {
 	// Stripe that records when CreateTransfer is called and the test then
 	// asserts that the DB had a "pending" row at that moment.
 	var rowSeenAtTransferTime *store.StripeWithdrawal
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/transfers" {
@@ -507,7 +507,7 @@ func TestStripeWithdrawPersistsRowAsPendingFirst(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	t.Cleanup(setStripeAPIBase(fakeStripe.URL))
 	ledger := payments.NewLedger(st)
 	srv.SetBilling(billing.NewService(st, ledger, logger, billing.Config{

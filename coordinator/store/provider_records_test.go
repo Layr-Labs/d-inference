@@ -7,7 +7,7 @@ import (
 )
 
 func TestMemoryListProvidersByAccount(t *testing.T) {
-	st := NewMemory("")
+	st := NewMemory(Config{})
 	ctx := context.Background()
 	now := time.Now()
 

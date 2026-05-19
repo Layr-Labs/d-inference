@@ -8,7 +8,7 @@ import (
 )
 
 func newTestLedger() *Ledger {
-	return NewLedger(store.NewMemory(""))
+	return NewLedger(store.NewMemory(store.Config{}))
 }
 
 func TestNewLedger(t *testing.T) {
@@ -193,7 +193,7 @@ func TestSettlePayoutOutOfRange(t *testing.T) {
 }
 
 func TestPayoutsPersistAcrossLedgerInstances(t *testing.T) {
-	st := store.NewMemory("")
+	st := store.NewMemory(store.Config{})
 	l1 := NewLedger(st)
 
 	if err := l1.store.CreditProviderWallet(&store.ProviderPayout{

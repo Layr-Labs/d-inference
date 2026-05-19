@@ -23,7 +23,7 @@ func mkEvent(id string, ts time.Time, source, kind string) TelemetryEventRecord 
 }
 
 func TestMemoryTelemetryInsert(t *testing.T) {
-	s := NewMemory("")
+	s := NewMemory(Config{})
 	ctx := context.Background()
 	now := time.Now().UTC()
 
@@ -46,7 +46,7 @@ func TestMemoryTelemetryInsert(t *testing.T) {
 }
 
 func TestMemoryTelemetryRingBuffer(t *testing.T) {
-	s := NewMemory("")
+	s := NewMemory(Config{})
 	ctx := context.Background()
 
 	// Push more than the cap.

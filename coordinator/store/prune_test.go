@@ -6,7 +6,7 @@ import (
 )
 
 func TestPruneCapsSlicesAtMaxEntries(t *testing.T) {
-	s := NewMemory("")
+	s := NewMemory(Config{})
 	const maxEntries = 100
 
 	// Overfill each append-only slice.
@@ -47,7 +47,7 @@ func TestPruneCapsSlicesAtMaxEntries(t *testing.T) {
 }
 
 func TestPruneBelowCapNoop(t *testing.T) {
-	s := NewMemory("")
+	s := NewMemory(Config{})
 	for i := 0; i < 5; i++ {
 		s.usage = append(s.usage, UsageRecord{PromptTokens: i})
 	}
@@ -58,7 +58,7 @@ func TestPruneBelowCapNoop(t *testing.T) {
 }
 
 func TestPruneDeletesExpiredDeviceCodes(t *testing.T) {
-	s := NewMemory("")
+	s := NewMemory(Config{})
 	past := time.Now().Add(-time.Hour)
 	future := time.Now().Add(time.Hour)
 
@@ -81,7 +81,7 @@ func TestPruneDeletesExpiredDeviceCodes(t *testing.T) {
 }
 
 func TestPruneDefaultMaxEntries(t *testing.T) {
-	s := NewMemory("")
+	s := NewMemory(Config{})
 	// Single entry, call with 0 -> should use DefaultPruneMaxEntries and be a no-op.
 	s.usage = append(s.usage, UsageRecord{})
 	s.Prune(0)

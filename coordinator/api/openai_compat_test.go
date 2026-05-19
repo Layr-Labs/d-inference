@@ -47,9 +47,9 @@ func setupE2ETest(t *testing.T, model string, handler func(ctx context.Context, 
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 
@@ -369,9 +369,9 @@ func TestOpenAI_ChatCompletionNonStreamingFormat(t *testing.T) {
 
 func TestOpenAI_ListModelsFormat(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

@@ -78,7 +78,7 @@ func main() {
 
 	var st store.Store
 	if cfg.StoreConfig.DatabaseURL != "" {
-		pgStore, err := store.NewPostgres(ctx, cfg.StoreConfig.DatabaseURL)
+		pgStore, err := store.NewPostgres(ctx, cfg.StoreConfig)
 		if err != nil {
 			logger.Error("failed to connect to PostgreSQL", "error", err)
 			os.Exit(1)
@@ -99,7 +99,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		memStore := store.NewMemory(adminKey)
+		memStore := store.NewMemory(store.Config{AdminKey: adminKey})
 		st = memStore
 		logger.Warn("using in-memory store — billing state will not survive restart (set EIGENINFERENCE_DATABASE_URL for production)")
 
@@ -130,7 +130,7 @@ func main() {
 		logger.Info("minimum trust level override", "level", cfg.RegistryCfg.MinTrustLevel)
 	}
 
-	srv := api.NewServer(reg, st, logger)
+	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
 	srv.SetAdminKey(adminKey)
 
 	// Per-account rate limiter on consumer (inference) endpoints.
@@ -320,7 +320,7 @@ func main() {
 	// Configure MDM client for provider security verification.
 	mdmCfg := cfg.MDMConfig
 	if mdmCfg.URL != "" {
-		mdmClient := mdm.NewClient(mdmCfg.URL, mdmCfg.APIKey, logger)
+		mdmClient := mdm.NewClient(mdmCfg, logger)
 
 		mdmClient.SetOnMDA(func(udid string, certChain [][]byte) {
 			reg.ForEachProvider(func(p *registry.Provider) {

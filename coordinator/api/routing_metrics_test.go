@@ -176,7 +176,7 @@ func TestRoutingMetrics_SelectedEmitsDecisionAndCost(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
 	model := "test-routing-model"
@@ -192,7 +192,7 @@ func TestRoutingMetrics_SelectedEmitsDecisionAndCost(t *testing.T) {
 		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
 	}
 
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	ddClient := newTestDD(t, collector)
 	defer ddClient.Close()
 	srv.SetDatadog(ddClient)
@@ -234,10 +234,10 @@ func TestRoutingMetrics_NoProviderEmitsNoProvider(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	ddClient := newTestDD(t, collector)
 	defer ddClient.Close()
 	srv.SetDatadog(ddClient)
@@ -279,7 +279,7 @@ func TestRoutingMetrics_OverCapacityOutcome(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
 	model := "big-model"
@@ -290,7 +290,7 @@ func TestRoutingMetrics_OverCapacityOutcome(t *testing.T) {
 	p.BackendCapacity.Slots[0].State = "idle_shutdown"
 	p.Mu().Unlock()
 
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	ddClient := newTestDD(t, collector)
 	defer ddClient.Close()
 	srv.SetDatadog(ddClient)
@@ -328,10 +328,10 @@ func TestRateLimitMetrics_ConsumerRejectionEmitsCounter(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	ddClient := newTestDD(t, collector)
 	defer ddClient.Close()
 	srv.SetDatadog(ddClient)
@@ -371,10 +371,10 @@ func TestRateLimitMetrics_FinancialTierTag(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	ddClient := newTestDD(t, collector)
 	defer ddClient.Close()
 	srv.SetDatadog(ddClient)
@@ -407,10 +407,10 @@ func TestAttestationMetrics_AllOutcomes(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	ddClient := newTestDD(t, collector)
 	defer ddClient.Close()
 	srv.SetDatadog(ddClient)
@@ -438,10 +438,10 @@ func TestInferenceMetrics_CompletionCounters(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	ddClient := newTestDD(t, collector)
 	defer ddClient.Close()
 	srv.SetDatadog(ddClient)
@@ -477,13 +477,13 @@ func TestRoutingMetrics_AllTagsOnSelection(t *testing.T) {
 	defer collector.Close()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 
 	model := "tag-check-model"
 	p := makeRoutableProvider(t, reg, "tag-provider", model)
 
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	ddClient := newTestDD(t, collector)
 	defer ddClient.Close()
 	srv.SetDatadog(ddClient)

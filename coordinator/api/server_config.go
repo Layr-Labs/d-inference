@@ -16,6 +16,9 @@ type ServerConfig struct {
 	R2CDNURL             string
 	R2SitePackagesCDNURL string
 	MinProviderVersion   string
+	AdminKey             string
+	AdminEmails          []string
+	ReleaseKey           string
 }
 
 // ReadServerConfig reads server configuration from environment variables.
@@ -28,6 +31,9 @@ func ReadServerConfig() ServerConfig {
 		R2CDNURL:             os.Getenv("EIGENINFERENCE_R2_CDN_URL"),
 		R2SitePackagesCDNURL: os.Getenv("EIGENINFERENCE_R2_SITE_PACKAGES_CDN_URL"),
 		MinProviderVersion:   os.Getenv("EIGENINFERENCE_MIN_PROVIDER_VERSION"),
+		AdminKey:             os.Getenv("EIGENINFERENCE_ADMIN_KEY"),
+		AdminEmails:          ParseCommaList(envOr("EIGENINFERENCE_ADMIN_EMAILS", "")),
+		ReleaseKey:           os.Getenv("EIGENINFERENCE_RELEASE_KEY"),
 	}
 }
 

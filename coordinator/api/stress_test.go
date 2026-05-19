@@ -35,11 +35,11 @@ import (
 
 func TestStress_QueueOverflow(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	// Tiny queue: 3 slots, 500ms timeout
 	reg.SetQueue(registry.NewRequestQueue(3, 500*time.Millisecond))
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -100,10 +100,10 @@ func TestStress_QueueOverflow(t *testing.T) {
 
 func TestStress_QueueDrainsWhenProviderAppears(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	reg.SetQueue(registry.NewRequestQueue(10, 10*time.Second))
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 200 * time.Millisecond
 
 	ts := httptest.NewServer(srv.Handler())
@@ -175,10 +175,10 @@ func TestStress_QueueDrainsWhenProviderAppears(t *testing.T) {
 
 func TestStress_ProviderCrashDuringMultipleInFlightRequests(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	reg.SetQueue(registry.NewRequestQueue(50, 30*time.Second))
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 1 * time.Second
 
 	ts := httptest.NewServer(srv.Handler())
@@ -268,9 +268,9 @@ func TestStress_ProviderCrashDuringMultipleInFlightRequests(t *testing.T) {
 
 func TestStress_ConsumerDisconnectSendsCancelToProvider(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 1 * time.Second
 
 	ts := httptest.NewServer(srv.Handler())
@@ -363,13 +363,13 @@ func TestStress_ConsumerDisconnectSendsCancelToProvider(t *testing.T) {
 
 func TestStress_BillingBalanceExhaustion(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("billing-key")
+	st := store.NewMemory(store.Config{AdminKey: "billing-key"})
 	reg := registry.New(logger)
 	reg.SetQueue(registry.NewRequestQueue(50, 5*time.Second))
 	ledger := payments.NewLedger(st)
 	billingSvc := billing.NewService(st, ledger, logger, billing.Config{MockMode: true})
 
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.SetBilling(billingSvc)
 	srv.SetAdminKey("billing-key")
 	srv.challengeInterval = 500 * time.Millisecond
@@ -429,7 +429,7 @@ func TestStress_BillingBalanceExhaustion(t *testing.T) {
 }
 
 func TestStress_BillingConcurrentCharges(t *testing.T) {
-	st := store.NewMemory("charge-key")
+	st := store.NewMemory(store.Config{AdminKey: "charge-key"})
 	ledger := payments.NewLedger(st)
 
 	// Credit a large balance
@@ -472,9 +472,9 @@ func TestStress_BillingConcurrentCharges(t *testing.T) {
 
 func TestStress_ProviderReRegistersWithDifferentModels(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -544,10 +544,10 @@ func TestStress_ProviderReRegistersWithDifferentModels(t *testing.T) {
 
 func TestStress_HeterogeneousProviderScoring(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	reg.SetQueue(registry.NewRequestQueue(50, 10*time.Second))
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 1 * time.Second
 
 	ts := httptest.NewServer(srv.Handler())
@@ -738,9 +738,9 @@ func TestStress_MemoryPressureAffectsScoring(t *testing.T) {
 
 func TestStress_ProviderBecomesIdleAfterRequest(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.challengeInterval = 500 * time.Millisecond
 
 	ts := httptest.NewServer(srv.Handler())

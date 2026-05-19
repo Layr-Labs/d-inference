@@ -15,6 +15,7 @@ const (
 type Config struct {
 	DatabaseURL      string
 	AllowMemoryStore bool
+	AdminKey         string // bootstrap admin API key
 }
 
 // Check validates invariants: a database URL is required unless the operator

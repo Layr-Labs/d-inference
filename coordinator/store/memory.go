@@ -99,7 +99,7 @@ type MemoryStore struct {
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
 // pre-seeded as a valid API key for bootstrapping.
-func NewMemory(adminKey string) *MemoryStore {
+func NewMemory(scfg Config) *MemoryStore {
 	s := &MemoryStore{
 		keys:                          make(map[string]bool),
 		keyAccounts:                   make(map[string]string),
@@ -136,8 +136,8 @@ func NewMemory(adminKey string) *MemoryStore {
 		serialToProviderID:            make(map[string]string),
 		telemetryEvents:               make([]TelemetryEventRecord, 0, memTelemetryCap),
 	}
-	if adminKey != "" {
-		s.keys[adminKey] = true
+	if scfg.AdminKey != "" {
+		s.keys[scfg.AdminKey] = true
 	}
 	return s
 }

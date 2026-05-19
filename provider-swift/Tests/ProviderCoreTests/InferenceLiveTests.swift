@@ -4,10 +4,11 @@
 // Gating
 // ------
 // These tests load real model weights, run real generations on the GPU,
-// and take seconds to minutes. They are **opt-in** via two env vars:
+// and take seconds to minutes. They are **opt-in** via env vars:
 //
 //   DARKBLOOM_LIVE_MLX_TESTS=1   required for any test in this file
-//   DARKBLOOM_LIVE_MLX_GEMMA=1   required additionally for the 27 GB Gemma test
+//   DARKBLOOM_LIVE_MLX_GEMMA=1        required additionally for the 27 GB Gemma test
+//   DARKBLOOM_LIVE_MLX_MULTI_MODEL=1  required additionally for tests needing two local models
 //
 // The CI runner (`macos-26-xlarge` in `.github/workflows/release-swift.yml`)
 // sets only the first env var; it does not have Gemma cached. Local laptops
@@ -30,6 +31,11 @@
 //     DARKBLOOM_LIVE_MLX_GEMMA=1 \
 //     swift test --filter InferenceLiveTests
 //
+// Adding the two-model cases:
+//   DARKBLOOM_LIVE_MLX_TESTS=1 \
+//     DARKBLOOM_LIVE_MLX_MULTI_MODEL=1 \
+//     swift test --filter InferenceLiveTests
+//
 // Cleanup
 // -------
 // Each test `defer`s `await scheduler.unloadModel()` so the next test
@@ -38,6 +44,8 @@
 // of unified RAM.
 
 import Foundation
+import Hummingbird
+import HummingbirdTesting
 import MLX
 import MLXLLM
 import MLXLMCommon
@@ -266,7 +274,140 @@ struct InferenceLiveTests {
         #expect(cap.pendingRequests == 0, "expected 0 pending requests, got \(cap.pendingRequests)")
     }
 
-    // MARK: 4. Gemma 26B
+    // MARK: 4. Multi-model residency
+
+    @Test(
+        "two different model schedulers generate while both resident",
+        .enabled(
+            if: LiveInferenceFixtures.multiModelLiveTestsEnabled,
+            "set DARKBLOOM_LIVE_MLX_TESTS=1 and DARKBLOOM_LIVE_MLX_MULTI_MODEL=1 to run two-model live tests"
+        )
+    )
+    func liveInferenceTwoDifferentModelsGenerateWhileResident() async throws {
+        let primary: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
+        let secondary: (scheduler: BatchScheduler, container: ModelContainer, modelDirectory: URL)
+        do {
+            primary = try await LiveInferenceFixtures.loadScheduler(
+                modelID: LiveInferenceFixtures.tinyModelID,
+                maxConcurrentRequests: 2,
+                memoryBudgetBytes: 16 * 1024 * 1024 * 1024
+            )
+            secondary = try await LiveInferenceFixtures.loadScheduler(
+                modelID: LiveInferenceFixtures.tinyModelFallbackID,
+                maxConcurrentRequests: 2,
+                memoryBudgetBytes: 16 * 1024 * 1024 * 1024
+            )
+        } catch let skip as LiveFixtureSkip {
+            Issue.record("skipped: \(skip.description)")
+            return
+        }
+        defer {
+            Task { await primary.scheduler.unloadModel() }
+            Task { await secondary.scheduler.unloadModel() }
+        }
+
+        async let primaryResult = collect(
+            from: primary.scheduler,
+            request: ChatCompletionRequest(
+                model: LiveInferenceFixtures.tinyModelID,
+                messages: [ChatMessage(role: "user", content: "Reply with one short word: alpha.")],
+                temperature: 0.0,
+                max_tokens: 12
+            ),
+            requestId: "multi-primary-\(UUID().uuidString)"
+        )
+        async let secondaryResult = collect(
+            from: secondary.scheduler,
+            request: ChatCompletionRequest(
+                model: LiveInferenceFixtures.tinyModelFallbackID,
+                messages: [ChatMessage(role: "user", content: "Reply with one short word: beta.")],
+                temperature: 0.0,
+                max_tokens: 12
+            ),
+            requestId: "multi-secondary-\(UUID().uuidString)"
+        )
+
+        let results = await [primaryResult, secondaryResult]
+        for (index, result) in results.enumerated() {
+            #expect(!result.didError, "model \(index) errored: \(result.error ?? "")")
+            #expect(!result.fullText.isEmpty, "model \(index) produced empty text")
+            #expect(result.info != nil, "model \(index) did not emit usage info")
+        }
+
+        let primaryCapacity = await primary.scheduler.capacity()
+        let secondaryCapacity = await secondary.scheduler.capacity()
+        #expect(primaryCapacity.model == LiveInferenceFixtures.tinyModelID)
+        #expect(secondaryCapacity.model == LiveInferenceFixtures.tinyModelFallbackID)
+        #expect(primaryCapacity.activeRequests == 0)
+        #expect(secondaryCapacity.activeRequests == 0)
+        #expect(primaryCapacity.pendingRequests == 0)
+        #expect(secondaryCapacity.pendingRequests == 0)
+    }
+
+    @Test(
+        "standalone server serves two local models through one process",
+        .enabled(
+            if: LiveInferenceFixtures.multiModelLiveTestsEnabled,
+            "set DARKBLOOM_LIVE_MLX_TESTS=1 and DARKBLOOM_LIVE_MLX_MULTI_MODEL=1 to run two-model live tests"
+        )
+    )
+    func liveStandaloneServerServesTwoModelsThroughOneProcess() async throws {
+        guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
+            Issue.record("skipped: \(LiveFixtureSkip.missingMetallib.description)")
+            return
+        }
+        guard case .found = LiveInferenceFixtures.locate(LiveInferenceFixtures.tinyModelID) else {
+            Issue.record("skipped: \(LiveFixtureSkip.modelNotInCache(LiveInferenceFixtures.tinyModelID).description)")
+            return
+        }
+        guard case .found = LiveInferenceFixtures.locate(LiveInferenceFixtures.tinyModelFallbackID) else {
+            Issue.record("skipped: \(LiveFixtureSkip.modelNotInCache(LiveInferenceFixtures.tinyModelFallbackID).description)")
+            return
+        }
+        LiveInferenceFixtures.applyMemoryBudget(maxBytes: 16 * 1024 * 1024 * 1024)
+
+        let server = StandaloneServer(
+            config: StandaloneServerConfig(maxCachedModels: 2),
+            models: [
+                liveModelInfo(id: LiveInferenceFixtures.tinyModelID, quantization: "8bit"),
+                liveModelInfo(id: LiveInferenceFixtures.tinyModelFallbackID, quantization: "4bit"),
+            ]
+        )
+        let app = server.makeApplication()
+
+        try await app.test(.router) { client in
+            func assertChat(model: String, prompt: String) async throws {
+                let request = ChatCompletionRequest(
+                    model: model,
+                    messages: [ChatMessage(role: "user", content: prompt)],
+                    temperature: 0.0,
+                    max_tokens: 12,
+                    stream: false
+                )
+                let body = String(data: try JSONEncoder().encode(request), encoding: .utf8) ?? "{}"
+                try await client.execute(
+                    uri: "/v1/chat/completions",
+                    method: .post,
+                    headers: [.contentType: "application/json"],
+                    body: ByteBuffer(string: body)
+                ) { response in
+                    let responseBody = String(buffer: response.body)
+                    #expect(response.status == .ok, "standalone response for \(model): \(response.status) \(responseBody)")
+                    let decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: Data(responseBody.utf8))
+                    #expect(decoded.model == model)
+                    #expect(!decoded.choices.isEmpty)
+                    #expect(!decoded.choices[0].message.content.isEmpty)
+                    #expect(decoded.usage.completion_tokens > 0)
+                }
+            }
+
+            try await assertChat(model: LiveInferenceFixtures.tinyModelID, prompt: "Reply with one word: first.")
+            try await assertChat(model: LiveInferenceFixtures.tinyModelFallbackID, prompt: "Reply with one word: second.")
+            try await assertChat(model: LiveInferenceFixtures.tinyModelID, prompt: "Reply with one word: again.")
+        }
+    }
+
+    // MARK: 6. Gemma 26B
 
     @Test(
         "Gemma 26B produces plausible arithmetic answer",
@@ -310,7 +451,7 @@ struct InferenceLiveTests {
         )
     }
 
-    // MARK: 5. Chat-template fidelity (Phase 0)
+    // MARK: 7. Chat-template fidelity (Phase 0)
 
     @Test(
         "tokenizer chat template embeds system + user content in order",
@@ -407,4 +548,14 @@ struct InferenceLiveTests {
             "decode -> encode round-trip drifted by \(drift) tokens (orig: \(tokenIds.count), reencoded: \(reencoded.count))"
         )
     }
+}
+
+private func liveModelInfo(id: String, quantization: String) -> ModelInfo {
+    ModelInfo(
+        id: id,
+        modelType: "chat",
+        quantization: quantization,
+        sizeBytes: 0,
+        estimatedMemoryGb: 0.25
+    )
 }

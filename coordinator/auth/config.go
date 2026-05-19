@@ -3,6 +3,8 @@ package auth
 import (
 	"fmt"
 	"os"
+
+	"github.com/eigeninference/d-inference/coordinator/env"
 )
 
 // Config holds Privy authentication configuration.
@@ -16,15 +18,15 @@ type Config struct {
 // variables. Supports reading the verification key from a file when
 // EIGENINFERENCE_PRIVY_VERIFICATION_KEY_FILE is set.
 func ReadConfig() Config {
-	verificationKey := os.Getenv("EIGENINFERENCE_PRIVY_VERIFICATION_KEY")
-	if keyFile := os.Getenv("EIGENINFERENCE_PRIVY_VERIFICATION_KEY_FILE"); keyFile != "" {
+	verificationKey := os.Getenv(env.EnvPrefix + "_PRIVY_VERIFICATION_KEY")
+	if keyFile := os.Getenv(env.EnvPrefix + "_PRIVY_VERIFICATION_KEY_FILE"); keyFile != "" {
 		if data, err := os.ReadFile(keyFile); err == nil {
 			verificationKey = string(data)
 		}
 	}
 	return Config{
-		AppID:           os.Getenv("EIGENINFERENCE_PRIVY_APP_ID"),
-		AppSecret:       os.Getenv("EIGENINFERENCE_PRIVY_APP_SECRET"),
+		AppID:           os.Getenv(env.EnvPrefix + "_PRIVY_APP_ID"),
+		AppSecret:       os.Getenv(env.EnvPrefix + "_PRIVY_APP_SECRET"),
 		VerificationKey: verificationKey,
 	}
 }
@@ -35,7 +37,7 @@ func (c Config) Check() error {
 		return nil
 	}
 	if c.VerificationKey == "" {
-		return fmt.Errorf("EIGENINFERENCE_PRIVY_VERIFICATION_KEY is required when Privy is configured")
+		return fmt.Errorf(env.EnvPrefix + "_PRIVY_VERIFICATION_KEY is required when Privy is configured")
 	}
 	return nil
 }

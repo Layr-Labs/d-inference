@@ -1,6 +1,10 @@
 package mdm
 
-import "os"
+import (
+	"os"
+
+	"github.com/eigeninference/d-inference/coordinator/env"
+)
 
 const defaultMDMApiKey = "eigeninference-micromdm-api"
 
@@ -12,12 +16,12 @@ type Config struct {
 
 // ReadConfig reads MDM configuration from environment variables.
 func ReadConfig() Config {
-	apiKey := os.Getenv("EIGENINFERENCE_MDM_API_KEY")
+	apiKey := os.Getenv(env.EnvPrefix + "_MDM_API_KEY")
 	if apiKey == "" {
 		apiKey = defaultMDMApiKey
 	}
 	return Config{
-		URL:    os.Getenv("EIGENINFERENCE_MDM_URL"),
+		URL:    os.Getenv(env.EnvPrefix + "_MDM_URL"),
 		APIKey: apiKey,
 	}
 }

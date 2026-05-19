@@ -3,6 +3,8 @@ package api
 import (
 	"os"
 	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/env"
 )
 
 // ServerConfig holds coordinator HTTP server and URL configuration.
@@ -24,16 +26,16 @@ type ServerConfig struct {
 // ReadServerConfig reads server configuration from environment variables.
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
-		Port:                 envOr("EIGENINFERENCE_PORT", "8080"),
-		ConsoleURL:           os.Getenv("EIGENINFERENCE_CONSOLE_URL"),
+		Port:                 envOr(env.EnvPrefix+"_PORT", "8080"),
+		ConsoleURL:           os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
 		CORSOrigin:           os.Getenv("CORS_ORIGIN"),
-		BaseURL:              os.Getenv("EIGENINFERENCE_BASE_URL"),
-		R2CDNURL:             os.Getenv("EIGENINFERENCE_R2_CDN_URL"),
-		R2SitePackagesCDNURL: os.Getenv("EIGENINFERENCE_R2_SITE_PACKAGES_CDN_URL"),
-		MinProviderVersion:   os.Getenv("EIGENINFERENCE_MIN_PROVIDER_VERSION"),
-		AdminKey:             os.Getenv("EIGENINFERENCE_ADMIN_KEY"),
-		AdminEmails:          ParseCommaList(envOr("EIGENINFERENCE_ADMIN_EMAILS", "")),
-		ReleaseKey:           os.Getenv("EIGENINFERENCE_RELEASE_KEY"),
+		BaseURL:              os.Getenv(env.EnvPrefix + "_BASE_URL"),
+		R2CDNURL:             os.Getenv(env.EnvPrefix + "_R2_CDN_URL"),
+		R2SitePackagesCDNURL: os.Getenv(env.EnvPrefix + "_R2_SITE_PACKAGES_CDN_URL"),
+		MinProviderVersion:   os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION"),
+		AdminKey:             os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
+		AdminEmails:          ParseCommaList(envOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
+		ReleaseKey:           os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
 	}
 }
 

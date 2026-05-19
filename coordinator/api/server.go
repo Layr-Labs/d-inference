@@ -250,15 +250,15 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	if len(cfg.AdminEmails) > 0 {
 		s.adminEmails = make(map[string]bool)
 		for _, e := range cfg.AdminEmails {
-			s.adminEmails[e] = true
+			s.adminEmails[strings.ToLower(strings.TrimSpace(e))] = true
 		}
 	}
 	s.consoleURL = cfg.ConsoleURL
 	s.corsOrigin = cfg.CORSOrigin
-	s.baseURL = cfg.BaseURL
-	s.minProviderVersion = cfg.MinProviderVersion
-	s.r2CDNURL = cfg.R2CDNURL
-	s.r2SitePackagesCDNURL = cfg.R2SitePackagesCDNURL
+	s.baseURL = strings.TrimRight(cfg.BaseURL, "/")
+	s.minProviderVersion = strings.TrimSpace(cfg.MinProviderVersion)
+	s.r2CDNURL = strings.TrimRight(cfg.R2CDNURL, "/")
+	s.r2SitePackagesCDNURL = strings.TrimRight(cfg.R2SitePackagesCDNURL, "/")
 	s.releaseKey = cfg.ReleaseKey
 
 	return s

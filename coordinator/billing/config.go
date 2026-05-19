@@ -3,6 +3,8 @@ package billing
 import (
 	"os"
 	"strconv"
+
+	"github.com/eigeninference/d-inference/coordinator/env"
 )
 
 // Config holds billing service configuration, typically from environment variables.
@@ -39,21 +41,21 @@ func ReadConfig() Config {
 	cfg := Config{
 		EncryptionMnemonic: firstNonEmpty(
 			os.Getenv("MNEMONIC"),
-			os.Getenv("EIGENINFERENCE_MNEMONIC"),
-			os.Getenv("EIGENINFERENCE_SOLANA_MNEMONIC"),
+			os.Getenv(env.EnvPrefix+"_MNEMONIC"),
+			os.Getenv(env.EnvPrefix+"_SOLANA_MNEMONIC"),
 		),
-		StripeSecretKey:              os.Getenv("EIGENINFERENCE_STRIPE_SECRET_KEY"),
-		StripeWebhookSecret:          os.Getenv("EIGENINFERENCE_STRIPE_WEBHOOK_SECRET"),
-		StripeSuccessURL:             os.Getenv("EIGENINFERENCE_STRIPE_SUCCESS_URL"),
-		StripeCancelURL:              os.Getenv("EIGENINFERENCE_STRIPE_CANCEL_URL"),
-		StripeConnectWebhookSecret:   os.Getenv("EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET"),
-		StripeConnectPlatformCountry: envOr("EIGENINFERENCE_STRIPE_CONNECT_COUNTRY", "US"),
-		StripeConnectReturnURL:       os.Getenv("EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL"),
-		StripeConnectRefreshURL:      os.Getenv("EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL"),
-		MockMode:                     os.Getenv("EIGENINFERENCE_BILLING_MOCK") == "true",
+		StripeSecretKey:              os.Getenv(env.EnvPrefix + "_STRIPE_SECRET_KEY"),
+		StripeWebhookSecret:          os.Getenv(env.EnvPrefix + "_STRIPE_WEBHOOK_SECRET"),
+		StripeSuccessURL:             os.Getenv(env.EnvPrefix + "_STRIPE_SUCCESS_URL"),
+		StripeCancelURL:              os.Getenv(env.EnvPrefix + "_STRIPE_CANCEL_URL"),
+		StripeConnectWebhookSecret:   os.Getenv(env.EnvPrefix + "_STRIPE_CONNECT_WEBHOOK_SECRET"),
+		StripeConnectPlatformCountry: envOr(env.EnvPrefix+"_STRIPE_CONNECT_COUNTRY", "US"),
+		StripeConnectReturnURL:       os.Getenv(env.EnvPrefix + "_STRIPE_CONNECT_RETURN_URL"),
+		StripeConnectRefreshURL:      os.Getenv(env.EnvPrefix + "_STRIPE_CONNECT_REFRESH_URL"),
+		MockMode:                     os.Getenv(env.EnvPrefix+"_BILLING_MOCK") == "true",
 		ReferralSharePercent:         20,
 	}
-	if refShareStr := os.Getenv("EIGENINFERENCE_REFERRAL_SHARE_PCT"); refShareStr != "" {
+	if refShareStr := os.Getenv(env.EnvPrefix + "_REFERRAL_SHARE_PCT"); refShareStr != "" {
 		if v, err := strconv.ParseInt(refShareStr, 10, 64); err == nil {
 			cfg.ReferralSharePercent = v
 		}

@@ -131,7 +131,6 @@ func main() {
 	}
 
 	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
-	srv.SetAdminKey(adminKey)
 
 	// Per-account rate limiter on consumer (inference) endpoints.
 	if cfg.RateLimitCfg.RPS > 0 {
@@ -185,35 +184,7 @@ func main() {
 	// Sync the model catalog to the registry.
 	srv.SyncModelCatalog()
 
-	// Server configuration from env.
-	if v := cfg.ServerConfig.ConsoleURL; v != "" {
-		srv.SetConsoleURL(v)
-		logger.Info("console URL configured", "url", v)
-	}
-	if v := cfg.ServerConfig.CORSOrigin; v != "" {
-		srv.SetCORSOrigin(v)
-		logger.Info("CORS origin configured", "origin", v)
-	}
-	if v := cfg.ServerConfig.BaseURL; v != "" {
-		srv.SetBaseURL(v)
-		logger.Info("base URL configured", "url", v)
-	}
-	if v := cfg.ServerConfig.MinProviderVersion; v != "" {
-		srv.SetMinProviderVersion(v)
-		logger.Info("minimum provider version configured", "min_version", v)
-	}
-	if v := cfg.ServerConfig.R2CDNURL; v != "" {
-		srv.SetR2CDNURL(v)
-		logger.Info("R2 CDN URL configured", "url", v)
-	}
-	if v := cfg.ServerConfig.R2SitePackagesCDNURL; v != "" {
-		srv.SetR2SitePackagesCDNURL(v)
-		logger.Info("R2 site-packages CDN URL configured", "url", v)
-	}
-	if v := cfg.ReleaseKey; v != "" {
-		srv.SetReleaseKey(v)
-		logger.Info("release key configured")
-	}
+	// Server configuration applied from config.ServerConfig during NewServer().
 
 	// Sync known-good provider hashes from active releases in the store.
 	srv.SyncBinaryHashes()

@@ -3,12 +3,14 @@ package store
 import (
 	"fmt"
 	"os"
+
+	"github.com/eigeninference/d-inference/coordinator/env"
 )
 
 // Env var names for store config.
 const (
-	envDatabaseURL      = "EIGENINFERENCE_DATABASE_URL"
-	envAllowMemoryStore = "EIGENINFERENCE_ALLOW_MEMORY_STORE"
+	envDatabaseURL      = env.EnvPrefix + "_DATABASE_URL"
+	envAllowMemoryStore = env.EnvPrefix + "_ALLOW_MEMORY_STORE"
 )
 
 // Config holds store backend selection and connection parameters.
@@ -33,6 +35,6 @@ func ReadConfig() Config {
 	return Config{
 		DatabaseURL:      os.Getenv(envDatabaseURL),
 		AllowMemoryStore: os.Getenv(envAllowMemoryStore) == "true",
-		AdminKey:         os.Getenv("EIGENINFERENCE_ADMIN_KEY"),
+		AdminKey:         os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
 	}
 }

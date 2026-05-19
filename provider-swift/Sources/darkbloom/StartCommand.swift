@@ -112,7 +112,11 @@ struct Start: AsyncParsableCommand {
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
 
         let server = StandaloneServer(
-            config: StandaloneServerConfig(port: port, host: "127.0.0.1"),
+            config: StandaloneServerConfig(
+                port: port,
+                host: "127.0.0.1",
+                maxCachedModels: Int(clamping: config.backend.maxModelSlots)
+            ),
             models: advertised
         )
         try await server.start()

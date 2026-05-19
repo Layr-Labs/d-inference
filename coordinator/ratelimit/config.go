@@ -1,24 +1,59 @@
 package ratelimit
 
-// ReadConsumerConfig reads the consumer inference rate limiter config from env.
-func ReadConsumerConfig() Config {
-	return Config{
-		RPS:   envFloat("EIGENINFERENCE_RATE_LIMIT_RPS", DefaultRPS),
-		Burst: envInt("EIGENINFERENCE_RATE_LIMIT_BURST", DefaultBurst),
+import (
+	"os"
+	"strconv"
+	"time"
+)
+
+// Config controls the limiter's behavior. Zero values fall back to defaults.
+type Config struct {
+	RPS        float64
+	Burst      int
+	IdleEvict  time.Duration
+	PruneEvery time.Duration
+}
+
+// ConfigPair holds separate Configs for inference and financial endpoints.
+type ConfigPair struct {
+	Inference Config
+	Financial Config
+}
+
+// ReadConfig reads both rate limiter configs from environment variables.
+func ReadConfig() ConfigPair {
+	return ConfigPair{
+		Inference: Config{
+			RPS:   envFloat("EIGENINFERENCE_RATE_LIMIT_RPS", DefaultRPS),
+			Burst: envInt("EIGENINFERENCE_RATE_LIMIT_BURST", DefaultBurst),
+		},
+		Financial: Config{
+			RPS:   envFloat("EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS", 0.2),
+			Burst: envInt("EIGENINFERENCE_FINANCIAL_RATE_LIMIT_BURST", 3),
+		},
 	}
 }
 
-// ReadFinancialConfig reads the stricter financial-endpoint rate limiter config
-// from env. Defaults: 0.2 RPS = 1 req every 5s, burst 3.
-func ReadFinancialConfig() Config {
-	return Config{
-		RPS:   envFloat("EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS", 0.2),
-		Burst: envInt("EIGENINFERENCE_FINANCIAL_RATE_LIMIT_BURST", 3),
+// Check validates the config. Currently a no-op.
+func (c Config) Check() error { return nil }
+
+// Check is a no-op for ConfigPair.
+func (cp ConfigPair) Check() error { return nil }
+
+func envFloat(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
 	}
+	return fallback
 }
 
-// Check returns an error if the config is logically invalid.
-// Zero RPS means "disabled", so it's valid.
-func (c Config) Check() error {
-	return nil
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
 }

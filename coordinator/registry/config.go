@@ -13,3 +13,5 @@ func ReadConfig() Config {
 		MinTrustLevel: os.Getenv("EIGENINFERENCE_MIN_TRUST"),
 	}
 }
+
+func (c Config) Check() error { return nil }

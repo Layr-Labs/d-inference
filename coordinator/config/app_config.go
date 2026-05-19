@@ -13,13 +13,10 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// EnvPrefix is the namespace prefix for all environment variables
-// consumed by the coordinator binary.
+// EnvPrefix is the namespace prefix for all coordinator environment variables.
 const EnvPrefix = "EIGENINFERENCE"
 
-// AppConfig is the root configuration struct. It composes per-package configs
-// so main.go wires the entire service from a single validated struct instead of
-// reading dozens of environment variables inline.
+// AppConfig is the root configuration struct, composing per-package configs.
 type AppConfig struct {
 	StoreConfig   store.Config
 	ServerConfig  api.ServerConfig
@@ -35,11 +32,16 @@ type AppConfig struct {
 	ReleaseKey    string
 }
 
-// Check runs validation on every per-package config and returns the first
-// error. Call this before constructing services.
+// Check runs validation on every per-package config.
 func (c AppConfig) Check() error {
 	if err := c.StoreConfig.Check(); err != nil {
 		return fmt.Errorf("store: %w", err)
+	}
+	if err := c.BillingConfig.Check(); err != nil {
+		return fmt.Errorf("billing: %w", err)
+	}
+	if err := c.AuthConfig.Check(); err != nil {
+		return fmt.Errorf("auth: %w", err)
 	}
 	if err := c.RateLimitCfg.Check(); err != nil {
 		return fmt.Errorf("rate_limit: %w", err)
@@ -47,24 +49,30 @@ func (c AppConfig) Check() error {
 	if err := c.FinancialRL.Check(); err != nil {
 		return fmt.Errorf("financial_rate_limit: %w", err)
 	}
+	if err := c.RegistryCfg.Check(); err != nil {
+		return fmt.Errorf("registry: %w", err)
+	}
+	if err := c.MDMConfig.Check(); err != nil {
+		return fmt.Errorf("mdm: %w", err)
+	}
+	if err := c.DatadogConfig.Check(); err != nil {
+		return fmt.Errorf("datadog: %w", err)
+	}
 	return nil
 }
 
-// ReadAppConfig reads all per-package configs from the environment and
-// returns the composite AppConfig.
+// ReadAppConfig reads all per-package configs from the environment.
 func ReadAppConfig() AppConfig {
-	billingCfg := billing.ReadConfig()
-	mdmCfg := mdm.ReadConfig()
-
+	rlCfg := ratelimit.ReadConfig()
 	return AppConfig{
 		StoreConfig:   store.ReadConfig(),
 		ServerConfig:  api.ReadServerConfig(),
-		BillingConfig: billingCfg,
+		BillingConfig: billing.ReadConfig(),
 		AuthConfig:    auth.ReadConfig(),
-		RateLimitCfg:  ratelimit.ReadConsumerConfig(),
-		FinancialRL:   ratelimit.ReadFinancialConfig(),
+		RateLimitCfg:  rlCfg.Inference,
+		FinancialRL:   rlCfg.Financial,
 		RegistryCfg:   registry.ReadConfig(),
-		MDMConfig:     mdmCfg,
+		MDMConfig:     mdm.ReadConfig(),
 		DatadogConfig: datadog.ConfigFromEnv(),
 		AdminKey:      EnvOr(EnvPrefix+"_ADMIN_KEY", ""),
 		AdminEmails:   api.ParseCommaList(EnvOr(EnvPrefix+"_ADMIN_EMAILS", "")),

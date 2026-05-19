@@ -28,15 +28,6 @@ const (
 	maxRetryAfter     = 60 * time.Second
 )
 
-// Config controls the limiter's behavior. Zero values fall back to the
-// Default* constants so callers can pass an empty Config in tests.
-type Config struct {
-	RPS        float64       // sustained rate
-	Burst      int           // bucket capacity
-	IdleEvict  time.Duration // drop accounts not seen for this long
-	PruneEvery time.Duration // how often to scan for idle accounts
-}
-
 // Limiter holds a token bucket per account.
 type Limiter struct {
 	cfg Config

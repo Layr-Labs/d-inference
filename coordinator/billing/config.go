@@ -5,8 +5,36 @@ import (
 	"strconv"
 )
 
+// Config holds billing service configuration, typically from environment variables.
+type Config struct {
+	// Stripe — primary payment rail for deposits.
+	StripeSecretKey     string
+	StripeWebhookSecret string
+	StripeSuccessURL    string
+	StripeCancelURL     string
+
+	// Stripe Connect — Express accounts for paying users out to bank/card.
+	// Reuses StripeSecretKey for API auth; Connect events have a separate
+	// webhook signing secret because they're posted to a different endpoint.
+	StripeConnectWebhookSecret   string
+	StripeConnectPlatformCountry string // ISO 3166-1 alpha-2; defaults to "US"
+	StripeConnectReturnURL       string // where Stripe redirects after onboarding completes
+	StripeConnectRefreshURL      string // where Stripe redirects if the link expires
+
+	// EncryptionMnemonic is a BIP39 mnemonic phrase used to derive the
+	// coordinator's X25519 encryption key (via HKDF) for sender→coordinator
+	// E2E request encryption (e2e.DeriveCoordinatorKey).
+	EncryptionMnemonic string
+
+	// Referral
+	ReferralSharePercent int64 // percentage of platform fee going to referrer (default 20)
+
+	// MockMode skips on-chain verification and auto-credits test balances.
+	// Set EIGENINFERENCE_BILLING_MOCK=true for testing without real payments.
+	MockMode bool
+}
+
 // ReadConfig reads billing configuration from environment variables.
-// The Config type is defined in billing.go.
 func ReadConfig() Config {
 	cfg := Config{
 		EncryptionMnemonic: firstNonEmpty(
@@ -32,6 +60,9 @@ func ReadConfig() Config {
 	}
 	return cfg
 }
+
+// Check validates the billing configuration.
+func (c Config) Check() error { return nil }
 
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {

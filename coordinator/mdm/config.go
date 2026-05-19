@@ -21,3 +21,5 @@ func ReadConfig() Config {
 		APIKey: apiKey,
 	}
 }
+
+func (c Config) Check() error { return nil }

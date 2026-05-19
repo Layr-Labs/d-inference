@@ -1031,7 +1031,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/completions", s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions))))
 	s.mux.HandleFunc("POST /v1/messages", s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages))))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
-	s.mux.HandleFunc("GET /v1/openrouter/models", s.handleListOpenRouterModels) // public
 
 	// Sender encryption — public key publication for sender→coordinator E2E.
 	// Optional: senders may use this to encrypt request bodies; plaintext path

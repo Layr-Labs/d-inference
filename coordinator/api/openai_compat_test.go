@@ -969,7 +969,7 @@ func TestOpenAI_SDK_ChatCompletionNonStreaming(t *testing.T) {
 	<-providerDone
 }
 
-func TestOpenRouter_ListModelsFormat(t *testing.T) {
+func TestModels_ExtendedFields(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
@@ -987,7 +987,8 @@ func TestOpenRouter_ListModelsFormat(t *testing.T) {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/v1/openrouter/models", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer test-key")
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -1018,7 +1019,7 @@ func TestOpenRouter_ListModelsFormat(t *testing.T) {
 	}
 }
 
-func TestOpenRouter_PricingConversion(t *testing.T) {
+func TestModels_PricingConversion(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory("test-key")
 	reg := registry.New(logger)
@@ -1036,7 +1037,8 @@ func TestOpenRouter_PricingConversion(t *testing.T) {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/v1/openrouter/models", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer test-key")
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -1062,17 +1064,3 @@ func TestOpenRouter_PricingConversion(t *testing.T) {
 	t.Fatal("model not found in response")
 }
 
-func TestOpenRouter_NoAuthRequired(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory("test-key")
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, logger)
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-	req := httptest.NewRequest(http.MethodGet, "/v1/openrouter/models", nil)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 without auth, got %d", w.Code)
-	}
-}

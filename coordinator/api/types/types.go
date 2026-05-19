@@ -106,11 +106,25 @@ type ModelMetadata struct {
 
 // ModelEntry is a single model entry in the /v1/models response.
 type ModelEntry struct {
-	ID       string        `json:"id"`
-	Object   string        `json:"object"`
-	Created  int           `json:"created"`
-	OwnedBy  string        `json:"owned_by"`
-	Metadata ModelMetadata `json:"metadata"`
+	ID                          string            `json:"id"`
+	Object                      string            `json:"object"`
+	Created                     int               `json:"created"`
+	OwnedBy                     string            `json:"owned_by"`
+	Metadata                    ModelMetadata     `json:"metadata"`
+	Name                        string            `json:"name,omitempty"`
+	Description                 string            `json:"description,omitempty"`
+	ContextLength               int               `json:"context_length,omitempty"`
+	MaxOutputLength             int               `json:"max_output_length,omitempty"`
+	Quantization                string            `json:"quantization,omitempty"`
+	Pricing                     []PricingTier     `json:"pricing,omitempty"`
+	InputModalities             []string          `json:"input_modalities,omitempty"`
+	OutputModalities            []string          `json:"output_modalities,omitempty"`
+	SupportedSamplingParameters []string          `json:"supported_sampling_parameters,omitempty"`
+	SupportedFeatures           []string          `json:"supported_features,omitempty"`
+	HuggingFaceID               string            `json:"hugging_face_id,omitempty"`
+	DeprecationDate             *string           `json:"deprecation_date,omitempty"`
+	IsReady                     bool              `json:"is_ready,omitempty"`
+	Datacenters                 []DatacenterDetail `json:"datacenters,omitempty"`
 }
 
 // ModelListResponse is the top-level /v1/models response.
@@ -119,10 +133,10 @@ type ModelListResponse struct {
 	Data   []ModelEntry `json:"data"`
 }
 
-// ── OpenRouter provider spec ────────────────────────────────────────
+// ── Extended model metadata ─────────────────────────────────────────
 
-// OpenRouterPricingTier is a pricing tier in the OpenRouter provider spec.
-type OpenRouterPricingTier struct {
+// PricingTier is a pricing tier for a model.
+type PricingTier struct {
 	Prompt         string `json:"prompt"`
 	Completion     string `json:"completion"`
 	Image          string `json:"image"`
@@ -131,43 +145,12 @@ type OpenRouterPricingTier struct {
 	MinContext     *int64 `json:"min_context,omitempty"`
 }
 
-// OpenRouterDatacenter describes a hosting datacenter.
-type OpenRouterDatacenter struct {
+// DatacenterDetail describes a hosting datacenter.
+type DatacenterDetail struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Location  string `json:"location"`
 	LatencyMs int    `json:"latency_ms"`
-}
-
-// OpenRouterProviderMeta is the openrouter-specific metadata.
-type OpenRouterProviderMeta struct {
-	SupportedParameters []string `json:"supported_parameters"`
-}
-
-// OpenRouterModelEntry is a flat model entry for the OpenRouter provider spec.
-type OpenRouterModelEntry struct {
-	ID                          string                  `json:"id"`
-	Name                        string                  `json:"name"`
-	Created                     int64                   `json:"created"`
-	Description                 string                  `json:"description"`
-	ContextLength               int                     `json:"context_length"`
-	MaxOutputLength             int                     `json:"max_output_length"`
-	Quantization                string                  `json:"quantization"`
-	Pricing                     []OpenRouterPricingTier `json:"pricing"`
-	InputModalities             []string                `json:"input_modalities"`
-	OutputModalities            []string                `json:"output_modalities"`
-	SupportedSamplingParameters []string                `json:"supported_sampling_parameters"`
-	SupportedFeatures           []string                `json:"supported_features,omitempty"`
-	HuggingFaceID               string                  `json:"hugging_face_id"`
-	DeprecationDate             *string                 `json:"deprecation_date"`
-	IsReady                     bool                    `json:"is_ready"`
-	OpenRouter                  *OpenRouterProviderMeta `json:"openrouter,omitempty"`
-	Datacenters                 []OpenRouterDatacenter  `json:"datacenters"`
-}
-
-// OpenRouterModelListResponse is the /v1/openrouter/models response.
-type OpenRouterModelListResponse struct {
-	Data []OpenRouterModelEntry `json:"data"`
 }
 
 // ── Small handler responses ─────────────────────────────────────────

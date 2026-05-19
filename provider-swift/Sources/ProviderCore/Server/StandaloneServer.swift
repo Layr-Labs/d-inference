@@ -165,9 +165,11 @@ public actor StandaloneServer {
         }
 
         evictingModels.insert(evictKey)
-        schedulers.removeValue(forKey: evictKey)
+        defer { evictingModels.remove(evictKey) }
         await evicted.scheduler.unloadModel()
-        evictingModels.remove(evictKey)
+        if schedulers[evictKey]?.scheduler === evicted.scheduler {
+            schedulers.removeValue(forKey: evictKey)
+        }
         standaloneLogger.info("Evicted LRU model: \(evictKey)")
         return true
     }

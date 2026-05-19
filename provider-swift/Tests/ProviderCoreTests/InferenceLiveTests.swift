@@ -44,6 +44,7 @@
 // of unified RAM.
 
 import Foundation
+import Darwin
 import Hummingbird
 import HummingbirdTesting
 import MLX
@@ -408,6 +409,43 @@ struct InferenceLiveTests {
     }
 
     @Test(
+        "standalone socket disconnect cleans up scheduler reservations",
+        .enabled(
+            if: LiveInferenceFixtures.liveTestsEnabled,
+            "set DARKBLOOM_LIVE_MLX_TESTS=1 to run live MLX inference tests"
+        )
+    )
+    func liveStandaloneSocketDisconnectCleansUpSchedulerReservations() async throws {
+        guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
+            Issue.record("skipped: \(LiveFixtureSkip.missingMetallib.description)")
+            return
+        }
+        guard case .found = LiveInferenceFixtures.locate(LiveInferenceFixtures.tinyModelID) else {
+            Issue.record("skipped: \(LiveFixtureSkip.modelNotInCache(LiveInferenceFixtures.tinyModelID).description)")
+            return
+        }
+        LiveInferenceFixtures.applyMemoryBudget()
+
+        let port = try reserveUnusedTCPPort()
+        let server = StandaloneServer(
+            config: StandaloneServerConfig(port: port, maxCachedModels: 1),
+            models: [liveModelInfo(id: LiveInferenceFixtures.tinyModelID, quantization: "8bit")]
+        )
+        do {
+            try await server.start()
+            let listening = try await waitForTCPPort(port, timeout: .seconds(10))
+            try #require(listening, "standalone server did not listen on port \(port)")
+
+            try await assertStandaloneDisconnectCleanup(server: server, port: port, stream: true)
+            try await assertStandaloneDisconnectCleanup(server: server, port: port, stream: false)
+        } catch {
+            await server.stopAndWait()
+            throw error
+        }
+        await server.stopAndWait()
+    }
+
+    @Test(
         "provider loop coalesces duplicate live load_model requests",
         .enabled(
             if: LiveInferenceFixtures.liveTestsEnabled,
@@ -722,6 +760,15 @@ private func waitUntil(timeout: Duration, predicate: () -> Bool) async throws ->
     return predicate()
 }
 
+private func waitUntilAsync(timeout: Duration, predicate: () async -> Bool) async throws -> Bool {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while ContinuousClock.now < deadline {
+        if await predicate() { return true }
+        try await Task.sleep(for: .milliseconds(25))
+    }
+    return await predicate()
+}
+
 private func shutdownLiveProviderLoop(
     _ loopTask: Task<Void, any Error>,
     mock: MockCoordinator,
@@ -731,4 +778,179 @@ private func shutdownLiveProviderLoop(
     loopTask.cancel()
     _ = try? await loopTask.value
     await mock.shutdown()
+}
+
+private func assertStandaloneDisconnectCleanup(
+    server: StandaloneServer,
+    port: UInt16,
+    stream: Bool
+) async throws {
+    var fd: Int32? = try openRawStandaloneRequest(port: port, stream: stream)
+    defer {
+        if let fd { closeSocket(fd) }
+    }
+
+    let becameActive = try await waitUntilAsync(timeout: .seconds(90)) {
+        guard let capacity = await server.debugCapacity(modelId: LiveInferenceFixtures.tinyModelID) else {
+            return false
+        }
+        return capacity.activeRequests + capacity.pendingRequests > 0
+    }
+    try #require(becameActive, "standalone \(stream ? "streaming" : "non-streaming") request never became active")
+
+    if let openFD = fd {
+        abortSocket(openFD)
+        fd = nil
+    }
+
+    let cleanedUp = try await waitUntilAsync(timeout: .seconds(3)) {
+        guard let capacity = await server.debugCapacity(modelId: LiveInferenceFixtures.tinyModelID) else {
+            return false
+        }
+        let reservations = await server.debugSchedulerReservationCount(modelId: LiveInferenceFixtures.tinyModelID)
+        return capacity.activeRequests == 0
+            && capacity.pendingRequests == 0
+            && reservations == 0
+    }
+
+    let capacity = await server.debugCapacity(modelId: LiveInferenceFixtures.tinyModelID)
+    let reservations = await server.debugSchedulerReservationCount(modelId: LiveInferenceFixtures.tinyModelID)
+    #expect(
+        cleanedUp,
+        "standalone \(stream ? "streaming" : "non-streaming") disconnect left capacity=\(String(describing: capacity)), reservations=\(reservations)"
+    )
+}
+
+private func openRawStandaloneRequest(port: UInt16, stream: Bool) throws -> Int32 {
+    let request = ChatCompletionRequest(
+        model: LiveInferenceFixtures.tinyModelID,
+        messages: [
+            ChatMessage(
+                role: "user",
+                content: "Write a long, detailed story about a robot exploring Mars. Continue until you reach the token limit."
+            ),
+        ],
+        temperature: 0.7,
+        max_tokens: 512,
+        stream: stream
+    )
+    let body = String(data: try JSONEncoder().encode(request), encoding: .utf8) ?? "{}"
+    let raw = """
+        POST /v1/chat/completions HTTP/1.1\r
+        Host: 127.0.0.1:\(port)\r
+        Content-Type: application/json\r
+        Content-Length: \(body.utf8.count)\r
+        Connection: close\r
+        \r
+        \(body)
+        """
+
+    let fd = try connectSocket(port: port)
+    do {
+        try writeAll(fd: fd, Data(raw.utf8))
+        return fd
+    } catch {
+        closeSocket(fd)
+        throw error
+    }
+}
+
+private func waitForTCPPort(_ port: UInt16, timeout: Duration) async throws -> Bool {
+    try await waitUntil(timeout: timeout) {
+        guard let fd = try? connectSocket(port: port) else { return false }
+        closeSocket(fd)
+        return true
+    }
+}
+
+private func reserveUnusedTCPPort() throws -> UInt16 {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else { throw LiveSocketError.posix("socket", errno) }
+    defer { closeSocket(fd) }
+
+    var reuse: Int32 = 1
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = 0
+    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+    let bindResult = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+            Darwin.bind(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    guard bindResult == 0 else { throw LiveSocketError.posix("bind", errno) }
+
+    var bound = sockaddr_in()
+    var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+    let nameResult = withUnsafeMutablePointer(to: &bound) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+            getsockname(fd, sockaddrPointer, &length)
+        }
+    }
+    guard nameResult == 0 else { throw LiveSocketError.posix("getsockname", errno) }
+    return UInt16(bigEndian: bound.sin_port)
+}
+
+private func connectSocket(port: UInt16) throws -> Int32 {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else { throw LiveSocketError.posix("socket", errno) }
+
+    var noSigpipe: Int32 = 1
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe, socklen_t(MemoryLayout<Int32>.size))
+
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = port.bigEndian
+    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+    let connectResult = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+            Darwin.connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    guard connectResult == 0 else {
+        let err = errno
+        closeSocket(fd)
+        throw LiveSocketError.posix("connect", err)
+    }
+    return fd
+}
+
+private func writeAll(fd: Int32, _ data: Data) throws {
+    try data.withUnsafeBytes { rawBuffer in
+        guard let base = rawBuffer.baseAddress else { return }
+        var written = 0
+        while written < rawBuffer.count {
+            let result = Darwin.send(fd, base.advanced(by: written), rawBuffer.count - written, 0)
+            guard result > 0 else { throw LiveSocketError.posix("send", errno) }
+            written += result
+        }
+    }
+}
+
+private func closeSocket(_ fd: Int32) {
+    _ = Darwin.shutdown(fd, SHUT_RDWR)
+    _ = Darwin.close(fd)
+}
+
+private func abortSocket(_ fd: Int32) {
+    var lingerOption = linger(l_onoff: 1, l_linger: 0)
+    setsockopt(fd, SOL_SOCKET, SO_LINGER, &lingerOption, socklen_t(MemoryLayout<linger>.size))
+    _ = Darwin.close(fd)
+}
+
+private enum LiveSocketError: Error, CustomStringConvertible {
+    case posix(String, Int32)
+
+    var description: String {
+        switch self {
+        case .posix(let operation, let code):
+            return "\(operation) failed: \(String(cString: strerror(code)))"
+        }
+    }
 }

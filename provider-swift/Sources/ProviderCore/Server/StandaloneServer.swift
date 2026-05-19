@@ -15,6 +15,7 @@ import Hummingbird
 import MLX
 import MLXLLM
 import MLXLMCommon
+import NIOCore
 import os
 
 private enum StandaloneServerError: Error, LocalizedError {
@@ -48,6 +49,16 @@ private let standaloneLogger = Logger(
     subsystem: "dev.darkbloom.provider",
     category: "StandaloneServer"
 )
+
+struct StandaloneRequestContext: RequestContext {
+    var coreContext: CoreRequestContextStorage
+    let channelCloseFuture: EventLoopFuture<Void>
+
+    init(source: ApplicationRequestContextSource) {
+        self.coreContext = .init(source: source)
+        self.channelCloseFuture = source.channel.closeFuture
+    }
+}
 
 public actor StandaloneServer {
 
@@ -327,6 +338,29 @@ public actor StandaloneServer {
         serverTask = nil
     }
 
+    /// Test helper that waits for the Hummingbird service task to finish after
+    /// cancellation, so socket-level tests don't leak listeners across cases.
+    func stopAndWait() async {
+        let task = serverTask
+        serverTask = nil
+        task?.cancel()
+        _ = await task?.value
+        for cached in schedulers.values {
+            await cached.scheduler.unloadModel()
+        }
+        schedulers.removeAll()
+        schedulerReservations.removeAll()
+    }
+
+    func debugCapacity(modelId: String) async -> SchedulerCapacity? {
+        guard let cached = schedulers[modelId] else { return nil }
+        return await cached.scheduler.capacity()
+    }
+
+    func debugSchedulerReservationCount(modelId: String) -> Int {
+        schedulerReservations[modelId] ?? 0
+    }
+
     /// Returns the port the server is configured on.
     public var port: UInt16 {
         config.port
@@ -334,8 +368,8 @@ public actor StandaloneServer {
 
     /// Build a Hummingbird application for this server. This is internal so
     /// endpoint tests can exercise the router without opening a socket.
-    nonisolated func makeApplication() -> Application<RouterResponder<BasicRequestContext>> {
-        let router = Router()
+    nonisolated func makeApplication() -> Application<RouterResponder<StandaloneRequestContext>> {
+        let router = Router(context: StandaloneRequestContext.self)
         router.add(middleware: StandaloneHeadersMiddleware())
 
         router.get("/health") { _, _ async -> Response in
@@ -380,7 +414,7 @@ public actor StandaloneServer {
 
     private func chatCompletionsResponse(
         request: Request,
-        context: BasicRequestContext
+        context: StandaloneRequestContext
     ) async -> Response {
         if let contentType = request.headers[.contentType],
            !contentType.lowercased().hasPrefix("application/json")
@@ -439,9 +473,19 @@ public actor StandaloneServer {
         }
 
         let requestID = "standalone-\(UUID().uuidString.prefix(12))"
+        let stream = await cached.scheduler.submit(request: chatRequest, requestId: requestID)
+        let disconnectTask = Task { [closeFuture = context.channelCloseFuture, scheduler = cached.scheduler] in
+            do {
+                try await closeFuture.get()
+                await scheduler.cancel(requestId: requestID)
+            } catch {
+                // Normal completion cancels this watcher before the channel closes.
+            }
+        }
         defer { releaseScheduler(chatRequest.model) }
+        defer { disconnectTask.cancel() }
         return await withTaskCancellationHandler {
-            await nonStreamingCompletion(chatRequest, scheduler: cached.scheduler, requestID: requestID)
+            await nonStreamingCompletion(chatRequest, stream: stream)
         } onCancel: {
             Task { await cached.scheduler.cancel(requestId: requestID) }
         }
@@ -524,8 +568,7 @@ public actor StandaloneServer {
         return "event: error\ndata: \(json)\n\n"
     }
 
-    private func nonStreamingCompletion(_ chatRequest: ChatCompletionRequest, scheduler: BatchScheduler, requestID: String) async -> Response {
-        let stream = await scheduler.submit(request: chatRequest, requestId: requestID)
+    private func nonStreamingCompletion(_ chatRequest: ChatCompletionRequest, stream: AsyncStream<GenerationEvent>) async -> Response {
         let formatter = OpenAIFormatter()
         let completionID = formatter.makeCompletionID()
         let created = Int(Date().timeIntervalSince1970)

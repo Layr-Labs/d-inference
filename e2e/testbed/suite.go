@@ -91,7 +91,13 @@ func NewSuite(cfg SuiteConfig) *Suite {
 		cfg.ModelSpecs = []ModelSpec{{ModelID: resolveModelID(""), NumProviders: 1}}
 	}
 	for i := range cfg.ModelSpecs {
-		cfg.ModelSpecs[i].ModelID = resolveModelID(cfg.ModelSpecs[i].ModelID)
+		if len(cfg.ModelSpecs[i].ModelIDs) > 0 {
+			for j := range cfg.ModelSpecs[i].ModelIDs {
+				cfg.ModelSpecs[i].ModelIDs[j] = resolveModelID(cfg.ModelSpecs[i].ModelIDs[j])
+			}
+		} else {
+			cfg.ModelSpecs[i].ModelID = resolveModelID(cfg.ModelSpecs[i].ModelID)
+		}
 		if cfg.ModelSpecs[i].NumProviders <= 0 {
 			cfg.ModelSpecs[i].NumProviders = 1
 		}
@@ -160,6 +166,15 @@ func (s *Suite) Stop() {
 }
 
 func (s *Suite) startPostgres() error {
+	if s.Config.UseMemoryStore {
+		s.PgStore = NewMemoryStore()
+		if err := s.PgStore.Credit("admin", s.Config.SeedBalance, store.LedgerDeposit, "test-seed"); err != nil {
+			return fmt.Errorf("seed memory balance: %w", err)
+		}
+		s.Logger.Info("using in-memory testbed store")
+		return nil
+	}
+
 	s.Pg = deps.NewPostgresLifecycle(s.Logger, 0)
 	if err := s.Pg.Start(s.Ctx); err != nil {
 		return fmt.Errorf("postgres: %w", err)
@@ -234,13 +249,14 @@ func (s *Suite) startProviders() error {
 
 	providerIdx := 0
 	for _, spec := range s.Config.ModelSpecs {
+		modelIDs := spec.IDs()
 		for j := 0; j < spec.NumProviders; j++ {
 			if providerIdx > 0 {
 				time.Sleep(500 * time.Millisecond)
 			}
 			p := &Provider{
 				BinaryPath:    binaryPath,
-				Logger:        s.Logger.With("provider_index", providerIdx, "model", spec.ModelID),
+				Logger:        s.Logger.With("provider_index", providerIdx, "models", strings.Join(modelIDs, ",")),
 				ProviderIndex: providerIdx,
 			}
 			authDir, authTokenPath, err := s.prepareProviderAuth(providerIdx)
@@ -249,12 +265,12 @@ func (s *Suite) startProviders() error {
 			}
 			p.AuthDir = authDir
 			if err := p.Start(s.Ctx, s.Coordinator.BaseURL(), ProviderConfig{
-				ModelID:       spec.ModelID,
+				ModelIDs:      modelIDs,
 				TrustLevel:    TrustNone,
 				AuthTokenPath: authTokenPath,
 			}); err != nil {
 				_ = os.RemoveAll(authDir)
-				return fmt.Errorf("start provider %d (%s): %w", providerIdx, spec.ModelID, err)
+				return fmt.Errorf("start provider %d (%s): %w", providerIdx, strings.Join(modelIDs, ","), err)
 			}
 			s.Providers = append(s.Providers, p)
 			providerIdx++
@@ -394,7 +410,11 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 	}
 
 	args := []string{"start", "--foreground", "--coordinator-url", wsURL}
-	if cfg.ModelID != "" {
+	if len(cfg.ModelIDs) > 0 {
+		for _, modelID := range cfg.ModelIDs {
+			args = append(args, "--model", modelID)
+		}
+	} else if cfg.ModelID != "" {
 		args = append(args, "--model", cfg.ModelID)
 	}
 
@@ -403,6 +423,7 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 	cmd.Stderr = &logWriter{logger: p.Logger, prefix: "provider:stderr"}
 	cmd.Env = append(os.Environ(),
 		"DARKBLOOM_PID_FILE=/tmp/darkbloom-testbed-"+strconv.Itoa(p.ProviderIndex)+".pid",
+		"DARKBLOOM_NO_UPDATE_CHECK=1",
 	)
 	if cfg.AuthTokenPath != "" {
 		cmd.Env = append(cmd.Env, "DARKBLOOM_AUTH_TOKEN_PATH="+cfg.AuthTokenPath)

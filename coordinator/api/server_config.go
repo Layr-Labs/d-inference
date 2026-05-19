@@ -26,7 +26,7 @@ type ServerConfig struct {
 // ReadServerConfig reads server configuration from environment variables.
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
-		Port:                 envOr(env.EnvPrefix+"_PORT", "8080"),
+		Port:                 env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
 		ConsoleURL:           os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
 		CORSOrigin:           os.Getenv("CORS_ORIGIN"),
 		BaseURL:              os.Getenv(env.EnvPrefix + "_BASE_URL"),
@@ -34,7 +34,7 @@ func ReadServerConfig() ServerConfig {
 		R2SitePackagesCDNURL: os.Getenv(env.EnvPrefix + "_R2_SITE_PACKAGES_CDN_URL"),
 		MinProviderVersion:   os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION"),
 		AdminKey:             os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
-		AdminEmails:          ParseCommaList(envOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
+		AdminEmails:          ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
 		ReleaseKey:           os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
 	}
 }
@@ -54,13 +54,4 @@ func ParseCommaList(raw string) []string {
 		}
 	}
 	return result
-}
-
-// envOr reads key from the environment and returns fallback when the key is
-// missing or empty.
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }

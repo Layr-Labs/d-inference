@@ -33,13 +33,16 @@ type Config struct {
 
 	// MockMode skips on-chain verification and auto-credits test balances.
 	// Set EIGENINFERENCE_BILLING_MOCK=true for testing without real payments.
+	//
+	// TODO(linear): audit MockMode code paths — accidental enablement in a real
+	// deployment could silently skip payment verification. Tracked as DINF-XXX.
 	MockMode bool
 }
 
 // ReadConfig reads billing configuration from environment variables.
 func ReadConfig() Config {
 	cfg := Config{
-		EncryptionMnemonic: firstNonEmpty(
+		EncryptionMnemonic: env.FirstNonEmpty(
 			os.Getenv("MNEMONIC"),
 			os.Getenv(env.EnvPrefix+"_MNEMONIC"),
 			os.Getenv(env.EnvPrefix+"_SOLANA_MNEMONIC"),
@@ -49,7 +52,7 @@ func ReadConfig() Config {
 		StripeSuccessURL:             os.Getenv(env.EnvPrefix + "_STRIPE_SUCCESS_URL"),
 		StripeCancelURL:              os.Getenv(env.EnvPrefix + "_STRIPE_CANCEL_URL"),
 		StripeConnectWebhookSecret:   os.Getenv(env.EnvPrefix + "_STRIPE_CONNECT_WEBHOOK_SECRET"),
-		StripeConnectPlatformCountry: envOr(env.EnvPrefix+"_STRIPE_CONNECT_COUNTRY", "US"),
+		StripeConnectPlatformCountry: env.EnvOr(env.EnvPrefix+"_STRIPE_CONNECT_COUNTRY", "US"),
 		StripeConnectReturnURL:       os.Getenv(env.EnvPrefix + "_STRIPE_CONNECT_RETURN_URL"),
 		StripeConnectRefreshURL:      os.Getenv(env.EnvPrefix + "_STRIPE_CONNECT_REFRESH_URL"),
 		MockMode:                     os.Getenv(env.EnvPrefix+"_BILLING_MOCK") == "true",
@@ -65,19 +68,3 @@ func ReadConfig() Config {
 
 // Check validates the billing configuration.
 func (c Config) Check() error { return nil }
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}

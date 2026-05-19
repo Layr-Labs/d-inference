@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 
@@ -35,7 +36,7 @@ type Config struct {
 	// Set EIGENINFERENCE_BILLING_MOCK=true for testing without real payments.
 	//
 	// TODO(linear): audit MockMode code paths — accidental enablement in a real
-	// deployment could silently skip payment verification. Tracked as DINF-XXX.
+	// deployment could silently skip payment verification. Tracked as DAR-59.
 	MockMode bool
 }
 
@@ -66,5 +67,13 @@ func ReadConfig() Config {
 	return cfg
 }
 
-// Check validates the billing configuration.
-func (c Config) Check() error { return nil }
+// Check validates billing configuration invariants. At minimum it prevents
+// MockMode from coexisting with real Stripe credentials — accidental mock
+// enablement in a production deployment with live keys would silently skip
+// payment verification.
+func (c Config) Check() error {
+	if c.MockMode && c.StripeSecretKey != "" {
+		return fmt.Errorf("billing mock mode is enabled but a real Stripe secret key is configured — these are mutually exclusive; unset %s_STRIPE_SECRET_KEY or disable %s_BILLING_MOCK", env.EnvPrefix, env.EnvPrefix)
+	}
+	return nil
+}

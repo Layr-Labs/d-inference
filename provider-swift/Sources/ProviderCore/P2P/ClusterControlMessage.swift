@@ -111,6 +111,8 @@ public enum ClusterError: Error, Sendable {
     case notReady(ClusterHealth)
     /// All retry attempts exhausted — caller should return HTTP 429.
     case serviceUnavailable
+    /// No pinned SE key in Keychain for this peer IP. Run `cluster setup` first.
+    case peerSEKeyNotPinned
 }
 
 // MARK: - Health state

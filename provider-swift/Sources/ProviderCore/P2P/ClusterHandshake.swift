@@ -14,17 +14,13 @@ import Foundation
 //
 //   Session key = HKDF-SHA256(X25519(sk_local, pk_peer), salt: nonce_0 || nonce_1)
 //
-// SE key pinning (TOFU):
-//   On first connection, accept the peer's SE public key and pin it to disk.
-//   On subsequent connections, verify the received key matches the pinned one.
+// SE key pinning (coordinator-verified):
+//   `darkbloom cluster setup --peer-serial <serial> --peer-ip <ip>` fetches the
+//   peer's SE key from the coordinator (which verified it via Apple MDM attestation)
+//   and stores it in the macOS Keychain. The handshake verifies the received key
+//   against the Keychain entry — never accepting an unknown key.
 
 public struct ClusterHandshake: Sendable {
-
-    // MARK: - TOFU pinning path
-
-    static func pinnedKeyPath(peerIP: String) -> URL {
-        URL(fileURLWithPath: "/etc/darkbloom/cluster-peer-\(peerIP).sekey")
-    }
 
     // MARK: - Rank 0 initiates
 
@@ -60,8 +56,8 @@ public struct ClusterHandshake: Sendable {
         }
         let ack = try ClusterFrame.decodeJSON(HandshakeAck.self, from: ackFrame)
 
-        // 5. Pin / verify peer SE key.
-        try pinOrVerify(peerSEKey: ack.sePubKeyRaw, peerIP: peerIP)
+        // 5. Verify peer SE key against Keychain pin set by `cluster setup`.
+        try verifyAgainstKeychain(peerSEKey: ack.sePubKeyRaw, peerIP: peerIP)
 
         // 6. Verify ack signature: SHA256(nonce0 || ack.nonce || ack.x25519_pub)
         let commitment1 = Data(SHA256.hash(data: nonce0 + ack.nonce + ack.ephemeralX25519PubKey))
@@ -98,8 +94,8 @@ public struct ClusterHandshake: Sendable {
         }
         let hello = try ClusterFrame.decodeJSON(HandshakeHello.self, from: helloFrame)
 
-        // 2. Pin / verify peer SE key.
-        try pinOrVerify(peerSEKey: hello.sePubKeyRaw, peerIP: peerIP)
+        // 2. Verify peer SE key against Keychain pin set by `cluster setup`.
+        try verifyAgainstKeychain(peerSEKey: hello.sePubKeyRaw, peerIP: peerIP)
 
         // 3. Verify hello signature: SHA256(x25519_pub || nonce0)
         let commitment0 = Data(SHA256.hash(data: hello.ephemeralX25519PubKey + hello.nonce))
@@ -153,22 +149,19 @@ public struct ClusterHandshake: Sendable {
         )
     }
 
-    // MARK: - TOFU pinning
+    // MARK: - Keychain-based SE key verification
 
-    private static func pinOrVerify(peerSEKey: Data, peerIP: String) throws {
-        let path = pinnedKeyPath(peerIP: peerIP)
-
-        if FileManager.default.fileExists(atPath: path.path) {
-            let pinned = try Data(contentsOf: path)
+    /// Verify that the SE key received in the handshake matches the one pinned
+    /// by `darkbloom cluster setup`. Throws if no key is pinned (setup not run)
+    /// or if the key doesn't match (possible MitM or device swap).
+    private static func verifyAgainstKeychain(peerSEKey: Data, peerIP: String) throws {
+        do {
+            let pinned = try ClusterPeerKeychain.load(peerIP: peerIP)
             guard pinned == peerSEKey else {
                 throw ClusterError.peerSEKeyMismatch
             }
-        } else {
-            try FileManager.default.createDirectory(
-                at: path.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try peerSEKey.write(to: path, options: .atomic)
+        } catch ClusterPeerKeychainError.keyNotPinned {
+            throw ClusterError.peerSEKeyNotPinned
         }
     }
 

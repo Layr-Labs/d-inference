@@ -984,6 +984,10 @@ func (s *Server) routes() {
 	// to pin a peer's SE public key via the coordinator instead of TOFU.
 	s.mux.HandleFunc("GET /v1/cluster/peer-key", s.requirePrivyAuth(s.handleClusterPeerKey))
 
+	// RDMA-capable peer discovery — authenticated. Used by `darkbloom serve --rdma-enabled`
+	// to auto-discover Thunderbolt-connected peers without manual serial pairing.
+	s.mux.HandleFunc("GET /v1/cluster/rdma-peers", s.requirePrivyAuth(s.handleClusterRDMAPeers))
+
 	// ACME enrollment — generates per-device .mobileconfig for device-attest-01.
 	// No auth needed — security comes from Apple's attestation during ACME challenge.
 	s.mux.HandleFunc("POST /v1/enroll", s.handleEnroll)

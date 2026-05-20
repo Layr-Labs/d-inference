@@ -28,6 +28,10 @@ public enum ProviderMessage: Sendable, Equatable {
         public var runtimeHash: String?
         public var templateHashes: [String: String]
         public var privacyCapabilities: PrivacyCapabilities?
+        /// True when the provider started with --rdma-enabled. The coordinator
+        /// exposes this provider in GET /v1/cluster/rdma-peers so Thunderbolt-
+        /// connected peers can auto-discover and connect without manual setup.
+        public var rdmaEnabled: Bool
 
         public init(
             hardware: HardwareInfo,
@@ -44,7 +48,8 @@ public enum ProviderMessage: Sendable, Equatable {
             pythonHash: String? = nil,
             runtimeHash: String? = nil,
             templateHashes: [String: String] = [:],
-            privacyCapabilities: PrivacyCapabilities? = nil
+            privacyCapabilities: PrivacyCapabilities? = nil,
+            rdmaEnabled: Bool = false
         ) {
             self.hardware = hardware
             self.models = models
@@ -61,6 +66,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.runtimeHash = runtimeHash
             self.templateHashes = templateHashes
             self.privacyCapabilities = privacyCapabilities
+            self.rdmaEnabled = rdmaEnabled
         }
     }
 
@@ -232,6 +238,7 @@ extension ProviderMessage: Codable {
         case runtimeHash = "runtime_hash"
         case templateHashes = "template_hashes"
         case privacyCapabilities = "privacy_capabilities"
+        case rdmaEnabled = "rdma_enabled"
         // Heartbeat
         case status
         case activeModel = "active_model"
@@ -290,6 +297,9 @@ extension ProviderMessage: Codable {
                 try container.encode(r.templateHashes, forKey: .templateHashes)
             }
             try container.encodeIfPresent(r.privacyCapabilities, forKey: .privacyCapabilities)
+            if r.rdmaEnabled {
+                try container.encode(true, forKey: .rdmaEnabled)
+            }
 
         case .heartbeat(let h):
             try container.encode(TypeValue.heartbeat, forKey: .type)
@@ -377,7 +387,8 @@ extension ProviderMessage: Codable {
                 pythonHash: try container.decodeIfPresent(String.self, forKey: .pythonHash),
                 runtimeHash: try container.decodeIfPresent(String.self, forKey: .runtimeHash),
                 templateHashes: try container.decodeIfPresent([String: String].self, forKey: .templateHashes) ?? [:],
-                privacyCapabilities: try container.decodeIfPresent(PrivacyCapabilities.self, forKey: .privacyCapabilities)
+                privacyCapabilities: try container.decodeIfPresent(PrivacyCapabilities.self, forKey: .privacyCapabilities),
+                rdmaEnabled: try container.decodeIfPresent(Bool.self, forKey: .rdmaEnabled) ?? false
             ))
 
         case .heartbeat:

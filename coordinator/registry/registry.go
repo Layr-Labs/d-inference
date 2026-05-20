@@ -196,6 +196,11 @@ type Provider struct {
 	// coordinator-verified value. HypervisorActive is informational.
 	PrivacyCapabilities *protocol.PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
 
+	// RDMAEnabled is set when the provider registered with --rdma-enabled.
+	// Used by GET /v1/cluster/rdma-peers so Thunderbolt-connected peers can
+	// auto-discover each other without manual `cluster setup` serial pairing.
+	RDMAEnabled bool
+
 	// Coordinator-verified SIP status from the most recent attestation challenge.
 	// Unlike PrivacyCapabilities.SIPEnabled (provider self-report at registration),
 	// this is set by the coordinator after independently checking the challenge response.
@@ -927,6 +932,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		ChallengeVerifiedSIP:    false, // starts false; set true by attestation challenge handler after SIP check
 		PrivacyCapabilities:     msg.PrivacyCapabilities,
 		TemplateHashes:          CloneStringMap(msg.TemplateHashes),
+		RDMAEnabled:             msg.RDMAEnabled,
 		Status:                  StatusOnline,
 		Conn:                    conn,
 		LastHeartbeat:           time.Now(),
@@ -2105,6 +2111,50 @@ func (r *Registry) ProviderIDs() []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// RDMAEnabledPeer is a summary of a currently-connected provider that
+// registered with --rdma-enabled and has completed SE attestation.
+type RDMAEnabledPeer struct {
+	Serial      string
+	SEPublicKey string
+	TrustLevel  TrustLevel
+	MDAVerified bool
+}
+
+// ListRDMAEnabledPeers returns all currently-connected providers that
+// registered with --rdma-enabled and have a known SE public key.
+// Only providers that have completed attestation (and thus have a serial
+// number) are included. The result is a snapshot; it may be stale by the
+// time the caller uses it.
+func (r *Registry) ListRDMAEnabledPeers() []RDMAEnabledPeer {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var peers []RDMAEnabledPeer
+	for _, p := range r.providers {
+		p.mu.Lock()
+		rdma := p.RDMAEnabled
+		serial := ""
+		seKey := ""
+		trust := p.TrustLevel
+		mda := p.MDAVerified
+		if p.AttestationResult != nil {
+			serial = p.AttestationResult.SerialNumber
+			seKey = p.AttestationResult.PublicKey
+		}
+		p.mu.Unlock()
+
+		if rdma && serial != "" && seKey != "" {
+			peers = append(peers, RDMAEnabledPeer{
+				Serial:      serial,
+				SEPublicKey: seKey,
+				TrustLevel:  trust,
+				MDAVerified: mda,
+			})
+		}
+	}
+	return peers
 }
 
 // StartEvictionLoop starts a background goroutine that removes providers

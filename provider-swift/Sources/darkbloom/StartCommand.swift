@@ -34,6 +34,9 @@ struct Start: AsyncParsableCommand {
     @Option(help: "Local server port (used with --local).")
     var port: UInt16 = 8000
 
+    @Flag(help: "Register as RDMA-capable and auto-discover Thunderbolt-connected peers for pipeline inference. Requires a Secure Enclave and a logged-in account.")
+    var rdmaEnabled = false
+
     mutating func run() async throws {
         // GPU is required. Reject CPU fallback up-front so we never
         // come up reporting healthy and then silently churn at 0.5 tok/s.
@@ -210,8 +213,33 @@ struct Start: AsyncParsableCommand {
             config: config,
             authToken: authToken,
             runtimeHashes: runtimeHashes,
-            modelHashes: modelHashes
+            modelHashes: modelHashes,
+            rdmaEnabled: rdmaEnabled
         )
+
+        // Start RDMA auto-discovery in the background if --rdma-enabled is set.
+        // ClusterDiscovery watches NWPathMonitor for Thunderbolt wiredEthernet
+        // events and automatically establishes a ClusterSession or ClusterPeer
+        // without manual `darkbloom cluster setup`.
+        if rdmaEnabled {
+            do {
+                let signer = try PersistentEnclaveKey.loadOrCreate()
+                let token = authToken ?? ""
+                if token.isEmpty {
+                    printError("Warning: --rdma-enabled requires a logged-in account (run `darkbloom login` first)")
+                } else {
+                    let discovery = ClusterDiscovery(
+                        coordinatorURL: coordinatorURL,
+                        authToken: token,
+                        signer: signer
+                    )
+                    Task { await discovery.start() }
+                    print("RDMA cluster discovery enabled — watching for Thunderbolt peers")
+                }
+            } catch {
+                printError("Warning: --rdma-enabled requires Secure Enclave support: \(error.localizedDescription)")
+            }
+        }
 
         do {
             if let schedule {

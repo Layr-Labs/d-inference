@@ -20,6 +20,31 @@ public struct ClusterPeerKeyInfo: Decodable, Sendable {
     public var sePublicKeyData: Data? { Data(base64Encoded: sePublicKey) }
 }
 
+// MARK: - RDMAPeerInfo
+
+/// A provider that registered with --rdma-enabled and has completed SE attestation.
+public struct RDMAPeerInfo: Decodable, Sendable {
+    public let serial: String
+    /// Base64-encoded raw 64-byte P-256 public key (X ∥ Y, no prefix byte).
+    public let sePublicKey: String
+    public let trustLevel: String
+    public let mdaVerified: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case serial
+        case sePublicKey = "se_public_key"
+        case trustLevel  = "trust_level"
+        case mdaVerified = "mda_verified"
+    }
+
+    /// Decoded raw bytes of the SE public key.
+    public var sePublicKeyData: Data? { Data(base64Encoded: sePublicKey) }
+}
+
+private struct RDMAPeersResponse: Decodable {
+    let peers: [RDMAPeerInfo]
+}
+
 // MARK: - ClusterCoordinatorClient
 
 /// Thin HTTP client for cluster-related coordinator endpoints.
@@ -62,6 +87,44 @@ public enum ClusterCoordinatorClient {
         case 404:
             let body = String(data: data, encoding: .utf8) ?? ""
             throw ClusterCoordinatorError.peerNotFound(serial: serial, detail: body)
+        default:
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw ClusterCoordinatorError.requestFailed(http.statusCode, body)
+        }
+    }
+
+    /// Fetch the list of currently-connected providers that registered with
+    /// `--rdma-enabled` and have completed SE attestation.
+    ///
+    /// - Parameters:
+    ///   - coordinatorWSURL: The WebSocket coordinator URL from config.
+    ///   - authToken: Privy JWT from `darkbloom login`.
+    ///
+    /// - Returns: Array of `RDMAPeerInfo` (may be empty if no RDMA peers connected).
+    /// - Throws: `ClusterCoordinatorError` on network, auth, or parsing failures.
+    public static func fetchRDMAPeers(
+        coordinatorWSURL: String,
+        authToken: String
+    ) async throws -> [RDMAPeerInfo] {
+        let httpBase = httpBase(from: coordinatorWSURL)
+        guard let url = URL(string: "\(httpBase)/v1/cluster/rdma-peers") else {
+            throw ClusterCoordinatorError.invalidURL(coordinatorWSURL)
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ClusterCoordinatorError.networkError("no HTTP response")
+        }
+
+        switch http.statusCode {
+        case 200:
+            let resp = try JSONDecoder().decode(RDMAPeersResponse.self, from: data)
+            return resp.peers
+        case 401, 403:
+            throw ClusterCoordinatorError.unauthorized
         default:
             let body = String(data: data, encoding: .utf8) ?? ""
             throw ClusterCoordinatorError.requestFailed(http.statusCode, body)

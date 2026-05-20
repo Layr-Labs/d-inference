@@ -110,6 +110,11 @@ type RegisterMessage struct {
 	RuntimeHash         string               `json:"runtime_hash,omitempty"`    // SHA-256 of inference runtime (vllm-mlx)
 	TemplateHashes      map[string]string    `json:"template_hashes,omitempty"` // template_name -> SHA-256 hash
 	PrivacyCapabilities *PrivacyCapabilities `json:"privacy_capabilities,omitempty"`
+
+	// RDMAEnabled is true when the provider started with --rdma-enabled.
+	// The coordinator exposes this provider in GET /v1/cluster/rdma-peers so
+	// Thunderbolt-connected peers can auto-discover and connect to it.
+	RDMAEnabled bool `json:"rdma_enabled,omitempty"`
 }
 
 // PrivacyCapabilities describes the provider's privacy invariants at registration time.

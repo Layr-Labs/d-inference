@@ -51,3 +51,44 @@ func (s *Server) handleClusterPeerKey(w http.ResponseWriter, r *http.Request) {
 		MDAVerified: rec.MDAVerified,
 	})
 }
+
+// rdmaPeersResponse is the payload returned by GET /v1/cluster/rdma-peers.
+type rdmaPeersResponse struct {
+	Peers []rdmaPeerInfo `json:"peers"`
+}
+
+type rdmaPeerInfo struct {
+	Serial      string `json:"serial"`
+	SEPublicKey string `json:"se_public_key"`
+	TrustLevel  string `json:"trust_level"`
+	MDAVerified bool   `json:"mda_verified"`
+}
+
+// handleClusterRDMAPeers returns the list of currently-connected providers
+// that registered with --rdma-enabled and have completed SE attestation.
+//
+// A provider starting with --rdma-enabled calls this endpoint to discover
+// which other Mac on the same Thunderbolt fabric is also RDMA-capable.
+// The response omits the caller's own device — callers should filter by
+// their own serial if needed (all returned entries are other devices).
+//
+// Only providers with a completed SE attestation are included — the serial
+// and SE public key are required for Keychain key pinning and handshake
+// verification. Providers that registered very recently (attestation pending)
+// are excluded; retry after a few seconds.
+func (s *Server) handleClusterRDMAPeers(w http.ResponseWriter, r *http.Request) {
+	raw := s.registry.ListRDMAEnabledPeers()
+
+	peers := make([]rdmaPeerInfo, 0, len(raw))
+	for _, p := range raw {
+		peers = append(peers, rdmaPeerInfo{
+			Serial:      p.Serial,
+			SEPublicKey: p.SEPublicKey,
+			TrustLevel:  string(p.TrustLevel),
+			MDAVerified: p.MDAVerified,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, rdmaPeersResponse{Peers: peers})
+}
+

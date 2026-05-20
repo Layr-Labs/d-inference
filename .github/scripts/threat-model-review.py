@@ -182,15 +182,6 @@ def build_user_message(
 
 
 def call_claude(system_text: str, user_message: str) -> str:
-    import os as _os
-    if not _os.environ.get("ANTHROPIC_API_KEY"):
-        return (
-            f"{MARKER}\n\n"
-            "**Threat Model Review**: Skipped — `ANTHROPIC_API_KEY` is not available\n\n"
-            "This typically occurs on fork PRs where repository secrets are not shared. "
-            "The review will run automatically when the PR is merged or opened from a branch "
-            "in this repository."
-        )
     client = anthropic.Anthropic()
 
     response = client.messages.create(

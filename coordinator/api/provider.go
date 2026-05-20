@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -1005,11 +1006,11 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 
 	// Calculate cost — check provider's custom price, then platform DB price,
 	// then hardcoded defaults.
-	providerWalletForPricing := ""
+	providerAccountForPricing := ""
 	if p := s.registry.GetProvider(providerID); p != nil {
-		providerWalletForPricing = p.WalletAddress
+		providerAccountForPricing = providerPricingKeys(p)
 	}
-	customIn, customOut, hasCustom := s.store.GetModelPrice(providerWalletForPricing, pr.Model)
+	customIn, customOut, hasCustom := s.store.GetModelPrice(providerAccountForPricing, pr.Model)
 	if !hasCustom {
 		customIn, customOut, hasCustom = s.store.GetModelPrice("platform", pr.Model)
 	}
@@ -1036,13 +1037,20 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		totalCost = pr.ReservedMicroUSD
 	}
 	providerPayout := payments.ProviderPayout(totalCost)
+	billingFinalized := true
 
 	// Adjust billing against the pre-flight reservation. After the clamp above
 	// totalCost <= reserved, so the only path here is a refund of the unused
 	// portion. The old "charge extra" path is retained for the unreserved
 	// code path below (billing disabled / legacy requests).
 	if pr.ReservedMicroUSD > 0 {
-		if totalCost < pr.ReservedMicroUSD {
+		if !pr.MarkReservationFinalized() {
+			billingFinalized = false
+			s.logger.Warn("skipping completion billing for already-finalized reservation",
+				"provider_id", providerID,
+				"request_id", msg.RequestID,
+			)
+		} else if totalCost < pr.ReservedMicroUSD {
 			refund := pr.ReservedMicroUSD - totalCost
 			start := time.Now()
 			_ = s.store.Credit(pr.ConsumerKey, refund, store.LedgerRefund, msg.RequestID)
@@ -1061,76 +1069,73 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:charge"})
 	}
 
-	// Record usage entry — both in-memory (for current session) and persisted
-	// to database (survives coordinator restart).
-	s.ledger.RecordUsage(pr.ConsumerKey, payments.UsageEntry{
-		JobID:            msg.RequestID,
-		Model:            pr.Model,
-		PromptTokens:     msg.Usage.PromptTokens,
-		CompletionTokens: msg.Usage.CompletionTokens,
-		CostMicroUSD:     totalCost,
-		Timestamp:        time.Now(),
-	})
-	s.store.RecordUsageWithCost(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost)
-	s.ddIncr("inference.completions", []string{"model:" + pr.Model})
-	s.ddCount("inference.prompt_tokens_total", int64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
-	s.ddHistogram("inference.prompt_tokens", float64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
-	s.ddCount("inference.completion_tokens_total", int64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
-	s.ddHistogram("inference.completion_tokens", float64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
-
-	// Credit the provider's pending payout.
-	// If the provider is linked to an account (via device auth), credit that account.
-	// Otherwise, fall back to the provider's self-reported wallet address.
-	if p := s.registry.GetProvider(providerID); p != nil {
-		if p.AccountID != "" {
-			start := time.Now()
-			if err := s.store.CreditProviderAccount(&store.ProviderEarning{
-				AccountID:        p.AccountID,
-				ProviderID:       providerID,
-				ProviderKey:      p.PublicKey,
-				JobID:            msg.RequestID,
-				Model:            pr.Model,
-				AmountMicroUSD:   providerPayout,
-				PromptTokens:     msg.Usage.PromptTokens,
-				CompletionTokens: msg.Usage.CompletionTokens,
-				CreatedAt:        time.Now(),
-			}); err != nil {
-				s.logger.Error("failed to credit linked provider account",
-					"provider_id", providerID,
-					"account_id", p.AccountID,
-					"request_id", msg.RequestID,
-					"error", err,
-				)
-			}
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_account_credit"})
-			s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
-		} else if p.WalletAddress != "" {
-			start := time.Now()
-			if err := s.ledger.CreditProvider(p.WalletAddress, providerPayout, pr.Model, msg.RequestID); err != nil {
-				s.logger.Error("failed to credit provider wallet payout",
-					"provider_id", providerID,
-					"wallet_address", p.WalletAddress,
-					"request_id", msg.RequestID,
-					"error", err,
-				)
-			}
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_wallet_credit"})
-			s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:wallet"})
+	if billingFinalized {
+		// Record usage entry — both in-memory (for current session) and persisted
+		// to database (survives coordinator restart).
+		s.ledger.RecordUsage(pr.ConsumerKey, payments.UsageEntry{
+			JobID:            msg.RequestID,
+			Model:            pr.Model,
+			PromptTokens:     msg.Usage.PromptTokens,
+			CompletionTokens: msg.Usage.CompletionTokens,
+			CostMicroUSD:     totalCost,
+			Timestamp:        time.Now(),
+		})
+		s.store.RecordUsageWithCost(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost)
+		s.ddIncr("inference.completions", []string{"model:" + pr.Model})
+		s.ddCount("inference.prompt_tokens_total", int64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
+		s.ddHistogram("inference.prompt_tokens", float64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
+		s.ddCount("inference.completion_tokens_total", int64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
+		s.ddHistogram("inference.completion_tokens", float64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
+		// Credit the provider's pending payout.
+		// If the provider is linked to an account (via device auth), credit that account.
+		p := s.registry.GetProvider(providerID)
+		if p == nil {
+			p = provider
 		}
-	}
+		if p != nil {
+			p.Mu().Lock()
+			accountID := p.AccountID
+			publicKey := p.PublicKey
+			p.Mu().Unlock()
 
-	// Record platform fee, distributing referral rewards if applicable.
-	platformFee := payments.PlatformFee(totalCost)
-	if platformFee > 0 {
-		// Check if consumer has a referrer and distribute reward.
-		// The referral service deducts the referrer's share from the platform fee.
-		if s.billing != nil && s.billing.Referral() != nil {
-			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
+			if accountID != "" {
+				start := time.Now()
+				if err := s.store.CreditProviderAccount(&store.ProviderEarning{
+					AccountID:        accountID,
+					ProviderID:       providerID,
+					ProviderKey:      publicKey,
+					JobID:            msg.RequestID,
+					Model:            pr.Model,
+					AmountMicroUSD:   providerPayout,
+					PromptTokens:     msg.Usage.PromptTokens,
+					CompletionTokens: msg.Usage.CompletionTokens,
+					CreatedAt:        time.Now(),
+				}); err != nil {
+					s.logger.Error("failed to credit linked provider account",
+						"provider_id", providerID,
+						"account_id", accountID,
+						"request_id", msg.RequestID,
+						"error", err,
+					)
+				}
+				s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_account_credit"})
+				s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
+			}
 		}
-		start := time.Now()
-		_ = s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID)
-		s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:platform_fee"})
-		s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
+
+		// Record platform fee, distributing referral rewards if applicable.
+		platformFee := payments.PlatformFee(totalCost)
+		if platformFee > 0 {
+			// Check if consumer has a referrer and distribute reward.
+			// The referral service deducts the referrer's share from the platform fee.
+			if s.billing != nil && s.billing.Referral() != nil {
+				platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
+			}
+			start := time.Now()
+			_ = s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID)
+			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:platform_fee"})
+			s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
+		}
 	}
 
 	// Signal completion to the consumer response handler. This must happen
@@ -1170,7 +1175,11 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	close(pr.ErrorCh)
 
 	// Record job failure for reputation tracking.
-	s.registry.RecordJobFailure(providerID)
+	// token_budget_exhausted is a capacity rejection, not a provider fault —
+	// skip the reputation penalty so the provider isn't unfairly penalised.
+	if !strings.Contains(msg.Error, "token_budget_exhausted") {
+		s.registry.RecordJobFailure(providerID)
+	}
 
 	// Mark provider idle.
 	s.registry.SetProviderIdle(providerID)

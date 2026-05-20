@@ -104,8 +104,7 @@ type myProvider struct {
 	EarningsTotalMicroUSD int64 `json:"earnings_total_micro_usd"`
 	EarningsCount         int64 `json:"earnings_count"`
 
-	// Payout configuration
-	WalletAddress string `json:"wallet_address,omitempty"`
+	// Payout configuration (via Stripe Connect Express)
 
 	// Timestamps
 	RegisteredAt *time.Time `json:"registered_at,omitempty"`
@@ -134,7 +133,6 @@ type myFleetCounts struct {
 // mySummaryResponse is the page-level dashboard header at /v1/me/summary.
 type mySummaryResponse struct {
 	AccountID                   string        `json:"account_id"`
-	WalletAddress               string        `json:"wallet_address,omitempty"`
 	AvailableBalanceMicroUSD    int64         `json:"available_balance_micro_usd"`
 	WithdrawableBalanceMicroUSD int64         `json:"withdrawable_balance_micro_usd"`
 	PayoutReady                 bool          `json:"payout_ready"`
@@ -199,10 +197,9 @@ func (s *Server) handleMySummary(w http.ResponseWriter, r *http.Request) {
 
 	resp := mySummaryResponse{
 		AccountID:                   accountID,
-		WalletAddress:               user.SolanaWalletAddress,
 		AvailableBalanceMicroUSD:    s.store.GetBalance(accountID),
 		WithdrawableBalanceMicroUSD: s.store.GetWithdrawableBalance(accountID),
-		PayoutReady:                 user.StripeAccountStatus == "ready" || user.SolanaWalletAddress != "",
+		PayoutReady:                 user.StripeAccountStatus == "ready",
 		LifetimeMicroUSD:            summary.TotalMicroUSD,
 		LifetimeJobs:                summary.Count,
 		Last24hMicroUSD:             last24Money,
@@ -586,7 +583,6 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.LifetimeTokensGenerated = live.Stats.TokensGenerated
 		mp.PrefillTPS = live.PrefillTPS
 		mp.DecodeTPS = live.DecodeTPS
-		mp.WalletAddress = live.WalletAddress
 
 		if live.AttestationResult != nil {
 			ar := live.AttestationResult

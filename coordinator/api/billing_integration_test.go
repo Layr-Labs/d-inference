@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -27,6 +28,14 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
+
+type failingCreditStore struct {
+	store.Store
+}
+
+func (s failingCreditStore) Credit(accountID string, amountMicroUSD int64, entryType store.LedgerEntryType, reference string) error {
+	return errors.New("forced credit failure")
+}
 
 // billingTestServer creates a test server with billing enabled in mock mode.
 // Returns the server, underlying store, and ledger for assertion access.
@@ -58,6 +67,35 @@ func billingTestServer(t *testing.T) (*Server, *store.MemoryStore, *payments.Led
 // setupProviderForBilling connects a provider, sets trust, records challenge
 // success, and returns the WebSocket connection, provider ID, and public key.
 func setupProviderForBilling(t *testing.T, ctx context.Context, ts *httptest.Server, reg *registry.Registry, model string) (*websocket.Conn, string, string) {
+	t.Helper()
+	pubKey := testPublicKeyB64()
+	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
+
+	conn := connectProviderWithToken(t, ctx, ts.URL, models, pubKey, "")
+
+	for _, id := range reg.ProviderIDs() {
+		reg.SetTrustLevel(id, registry.TrustHardware)
+		reg.RecordChallengeSuccess(id)
+	}
+
+	providerIDs := reg.ProviderIDs()
+	if len(providerIDs) == 0 {
+		t.Fatal("no providers registered")
+	}
+
+	// Set AccountID for payout destination (required since wallet-based payouts removed).
+	for _, id := range providerIDs {
+		if p := reg.GetProvider(id); p != nil {
+			p.Mu().Lock()
+			p.AccountID = "test-account-" + id
+			p.Mu().Unlock()
+		}
+	}
+
+	return conn, providerIDs[len(providerIDs)-1], pubKey
+}
+
+func setupProviderForBillingNoPayoutDestination(t *testing.T, ctx context.Context, ts *httptest.Server, reg *registry.Registry, model string) (*websocket.Conn, string, string) {
 	t.Helper()
 	pubKey := testPublicKeyB64()
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
@@ -119,6 +157,55 @@ func serveOneInference(ctx context.Context, t *testing.T, conn *websocket.Conn, 
 
 			case protocol.TypeCancel:
 				// Ignore cancel messages sent after completion.
+			}
+		}
+	}()
+
+	return done
+}
+
+// serveChunkThenProviderError commits the request with one encrypted chunk, then
+// returns a provider error instead of a completion message.
+func serveChunkThenProviderError(ctx context.Context, t *testing.T, conn *websocket.Conn, pubKey string, statusCode int) <-chan struct{} {
+	t.Helper()
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for {
+			_, data, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			var env struct {
+				Type string `json:"type"`
+			}
+			json.Unmarshal(data, &env)
+
+			switch env.Type {
+			case protocol.TypeAttestationChallenge:
+				resp := makeValidChallengeResponse(data, pubKey)
+				conn.Write(ctx, websocket.MessageText, resp)
+
+			case protocol.TypeInferenceRequest:
+				var inferReq protocol.InferenceRequestMessage
+				json.Unmarshal(data, &inferReq)
+
+				writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
+					`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"partial"}}]}`+"\n\n")
+
+				errMsg := protocol.InferenceErrorMessage{
+					Type:       protocol.TypeInferenceError,
+					RequestID:  inferReq.RequestID,
+					Error:      "backend failed after first token",
+					StatusCode: statusCode,
+				}
+				errData, _ := json.Marshal(errMsg)
+				conn.Write(ctx, websocket.MessageText, errData)
+				return
+
+			case protocol.TypeCancel:
+				// Ignore cancels sent after the error response.
 			}
 		}
 	}()
@@ -360,6 +447,289 @@ func TestIntegration_ReservationRefundedOnCompletion(t *testing.T) {
 	}
 }
 
+// TestIntegration_ReservationRefundedOnCommittedProviderError verifies that a
+// provider failure after the first chunk does not leave the whole pre-flight
+// reservation deducted. No completion usage is available, so the reservation is
+// refunded and no usage is recorded.
+func TestIntegration_ReservationRefundedOnCommittedProviderError(t *testing.T) {
+	srv, _, ledger := billingTestServer(t)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	consumerID := "test-key"
+	initialBalance := ledger.Balance(consumerID)
+
+	model := "refund-error-model"
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	providerDone := serveChunkThenProviderError(ctx, t, conn, pubKey, http.StatusBadGateway)
+
+	chatBody := `{"model":"` + model + `","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":8192}`
+	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(chatBody))
+	httpReq.Header.Set("Authorization", "Bearer "+consumerID)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("http request: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body = %s", resp.StatusCode, body)
+	}
+	if got := ledger.Balance(consumerID); got != initialBalance {
+		t.Errorf("balance after provider error = %d, want %d (reservation should be refunded)", got, initialBalance)
+	}
+	if got := len(ledger.Usage(consumerID)); got != 0 {
+		t.Errorf("usage entries after provider error = %d, want 0", got)
+	}
+}
+
+func TestIntegration_SuccessfulInferenceCreditsProviderAccount(t *testing.T) {
+	srv, st, _ := billingTestServer(t)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	model := "provider-account-paid-model"
+	conn, providerID, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Get the account ID that was set by setupProviderForBilling.
+	p := srv.registry.GetProvider(providerID)
+	if p == nil {
+		t.Fatal("provider not found")
+	}
+	p.Mu().Lock()
+	accountID := p.AccountID
+	p.Mu().Unlock()
+
+	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
+	providerDone := serveOneInference(ctx, t, conn, pubKey, usage)
+
+	status := sendInferenceRequest(t, ctx, ts.URL, model, "test-key")
+	if status != http.StatusOK {
+		t.Fatalf("inference status = %d, want 200", status)
+	}
+
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	// Verify provider account was credited with 95% of the inference cost.
+	expectedPayout := payments.ProviderPayout(payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens))
+	if got := st.GetBalance(accountID); got != expectedPayout {
+		t.Errorf("provider account balance = %d, want %d", got, expectedPayout)
+	}
+}
+
+func TestIntegration_ProviderCustomPricePaidWithoutReservationClamp(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	consumerID := "test-key"
+	initialBalance := ledger.Balance(consumerID)
+
+	model := "provider-custom-price-model"
+	const customInputPrice int64 = 50_000
+	const customOutputPrice int64 = 10_000_000
+
+	conn, providerID, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Get the account ID that was set by setupProviderForBilling to use as pricing key.
+	p := srv.registry.GetProvider(providerID)
+	if p == nil {
+		t.Fatal("provider not found")
+	}
+	p.Mu().Lock()
+	accountID := p.AccountID
+	p.Mu().Unlock()
+
+	if err := st.SetModelPrice(accountID, model, customInputPrice, customOutputPrice); err != nil {
+		t.Fatalf("set provider custom price: %v", err)
+	}
+
+	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
+	providerDone := serveOneInference(ctx, t, conn, pubKey, usage)
+
+	status := sendInferenceRequest(t, ctx, ts.URL, model, consumerID)
+	if status != http.StatusOK {
+		t.Fatalf("inference status = %d, want 200", status)
+	}
+
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	expectedCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customInputPrice, customOutputPrice, true)
+	expectedPayout := payments.ProviderPayout(expectedCost)
+	if got := st.GetBalance(accountID); got != expectedPayout {
+		t.Errorf("provider account balance = %d, want %d", got, expectedPayout)
+	}
+	if got := ledger.Balance(consumerID); got != initialBalance-expectedCost {
+		t.Errorf("consumer balance = %d, want %d", got, initialBalance-expectedCost)
+	}
+	usageEntries := ledger.Usage(consumerID)
+	if len(usageEntries) != 1 {
+		t.Fatalf("usage entries = %d, want 1", len(usageEntries))
+	}
+	if got := usageEntries[0].CostMicroUSD; got != expectedCost {
+		t.Errorf("usage cost = %d, want %d", got, expectedCost)
+	}
+}
+
+func TestIntegration_BillingSkipsProviderWithoutPayoutDestination(t *testing.T) {
+	srv, _, ledger := billingTestServer(t)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	consumerID := "test-key"
+	initialBalance := ledger.Balance(consumerID)
+
+	model := "no-payout-destination-model"
+	conn, _, _ := setupProviderForBillingNoPayoutDestination(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	status := sendInferenceRequest(t, ctx, ts.URL, model, consumerID)
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("inference status = %d, want 503", status)
+	}
+	if got := ledger.Balance(consumerID); got != initialBalance {
+		t.Errorf("consumer balance = %d, want %d", got, initialBalance)
+	}
+	if got := len(ledger.Usage(consumerID)); got != 0 {
+		t.Errorf("usage entries = %d, want 0", got)
+	}
+}
+
+func TestNonStreamingCompleteObjectWithoutUsageDoesNotReturnSuccessAfterRefund(t *testing.T) {
+	srv, _, ledger := billingTestServer(t)
+
+	consumerID := "test-key"
+	initialBalance := ledger.Balance(consumerID)
+	const reservedMicroUSD int64 = 25_000
+	if err := ledger.Charge(consumerID, reservedMicroUSD, "reserve:"+consumerID); err != nil {
+		t.Fatalf("reserve balance: %v", err)
+	}
+
+	pr := &registry.PendingRequest{
+		RequestID:        "missing-usage-complete-object",
+		Model:            "missing-usage-model",
+		ConsumerKey:      consumerID,
+		ReservedMicroUSD: reservedMicroUSD,
+		ChunkCh:          make(chan string, 1),
+		CompleteCh:       make(chan protocol.UsageInfo, 1),
+		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+	}
+	close(pr.ChunkCh)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	rr := httptest.NewRecorder()
+	firstChunk := `data: {"id":"chatcmpl-missing-usage","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"ok"}}]}`
+
+	srv.handleNonStreamingResponseWithFirstChunk(rr, req, pr, firstChunk)
+
+	if rr.Code == http.StatusOK {
+		t.Fatalf("status = 200 with refunded reservation and no completion usage; body = %s", rr.Body.String())
+	}
+	if got := ledger.Balance(consumerID); got != initialBalance {
+		t.Fatalf("balance = %d, want refunded balance %d", got, initialBalance)
+	}
+}
+
+func TestLinkedProviderAccountCustomPriceUsedForSettlement(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+
+	model := "linked-provider-custom-price-model"
+	accountID := "linked-provider-account"
+	const customInputPrice int64 = 50_000
+	const customOutputPrice int64 = 10_000_000
+	if err := st.SetModelPrice(accountID, model, customInputPrice, customOutputPrice); err != nil {
+		t.Fatalf("set account custom price: %v", err)
+	}
+
+	provider := srv.registry.Register("linked-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+	provider.Mu().Lock()
+	provider.AccountID = accountID
+	provider.Mu().Unlock()
+
+	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
+	expectedCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customInputPrice, customOutputPrice, true)
+	expectedPayout := payments.ProviderPayout(expectedCost)
+
+	consumerID := "test-key"
+	initialBalance := ledger.Balance(consumerID)
+	if err := ledger.Charge(consumerID, expectedCost, "reserve:"+consumerID); err != nil {
+		t.Fatalf("reserve balance: %v", err)
+	}
+
+	pr := &registry.PendingRequest{
+		RequestID:        "linked-provider-custom-price",
+		Model:            model,
+		ConsumerKey:      consumerID,
+		ReservedMicroUSD: expectedCost,
+		ChunkCh:          make(chan string, 1),
+		CompleteCh:       make(chan protocol.UsageInfo, 1),
+		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type:      protocol.TypeInferenceComplete,
+		RequestID: pr.RequestID,
+		Usage:     usage,
+	})
+
+	if got := st.GetWithdrawableBalance(accountID); got != expectedPayout {
+		t.Fatalf("provider account payout = %d, want %d", got, expectedPayout)
+	}
+	if got := ledger.Balance(consumerID); got != initialBalance-expectedCost {
+		t.Fatalf("consumer balance = %d, want %d", got, initialBalance-expectedCost)
+	}
+}
+
+func TestRefundReservedBalanceDoesNotFinalizeWhenCreditFails(t *testing.T) {
+	srv, st, _ := billingTestServer(t)
+	srv.store = failingCreditStore{Store: st}
+
+	pr := &registry.PendingRequest{
+		RequestID:        "refund-credit-fails",
+		Model:            "refund-credit-fails-model",
+		ConsumerKey:      "test-key",
+		ReservedMicroUSD: 50_000,
+	}
+
+	if ok := srv.refundReservedBalance(pr, "forced-failure"); ok {
+		t.Fatal("refundReservedBalance returned true despite store credit failure")
+	}
+	if ok := pr.MarkReservationFinalized(); !ok {
+		t.Fatal("reservation was finalized even though refund credit failed")
+	}
+}
+
 // TestIntegration_ReferralRewardDistribution verifies the full referral flow:
 // a referrer registers a code, a consumer applies it, and after inference the
 // referrer receives their share of the platform fee.
@@ -398,8 +768,17 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 	}
 
 	model := "referral-test-model"
-	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, providerID, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Get the provider's account ID for payout verification.
+	p := srv.registry.GetProvider(providerID)
+	if p == nil {
+		t.Fatal("provider not found")
+	}
+	p.Mu().Lock()
+	providerAccountID := p.AccountID
+	p.Mu().Unlock()
 
 	// Provider serves one inference request.
 	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
@@ -429,19 +808,12 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 		t.Errorf("consumer balance = %d, want %d (charged %d)", actualConsumerBalance, expectedConsumerBalance, totalCost)
 	}
 
-	// Verify provider got 95% of the charge.
-	// The provider in this test has no account linkage (connected via connectProvider),
-	// so payout goes to the wallet address. Since connectProvider does not set a
-	// wallet address, let's check the ledger's pending payouts instead.
-	// Provider without AccountID and without WalletAddress won't receive payout
-	// via CreditProvider (the code checks p.WalletAddress). But the cost flow is:
-	// handleComplete checks p.AccountID first, then p.WalletAddress.
-	// connectProvider doesn't set either, so no provider credit occurs.
-	// Verify the math is correct by checking the provider payout calculation.
-	if expectedProviderPayout != payments.ProviderPayout(totalCost) {
-		t.Errorf("provider payout calculation mismatch")
+	// Verify provider got 95% of the charge credited to their account.
+	// setupProviderForBilling links the provider to an account via test-account-<id>.
+	if got := st.GetBalance(providerAccountID); got != expectedProviderPayout {
+		t.Errorf("provider account balance = %d, want %d (95%% of totalCost %d)",
+			got, expectedProviderPayout, totalCost)
 	}
-	_ = expectedProviderPayout // used in fee split check below
 
 	// Verify referrer got their share.
 	referrerBalance := st.GetBalance(referrerAccountID)
@@ -560,7 +932,7 @@ func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	pubKey := testPublicKeyB64()
 	model := "device-auth-model"
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
-	conn := connectProviderWithToken(t, ctx, ts.URL, models, pubKey, tokenResult.Token, "0xDeviceTestWallet")
+	conn := connectProviderWithToken(t, ctx, ts.URL, models, pubKey, tokenResult.Token)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Wait for registration to complete.
@@ -664,14 +1036,14 @@ func TestIntegration_MultiNodeSameAccount(t *testing.T) {
 
 	conn1 := connectProviderWithToken(t, ctx, ts.URL,
 		[]protocol.ModelInfo{{ID: model1, ModelType: "chat", Quantization: "4bit"}},
-		pubKey1, rawToken, "0xMultiNode1")
+		pubKey1, rawToken)
 	defer conn1.Close(websocket.StatusNormalClosure, "")
 
 	time.Sleep(200 * time.Millisecond)
 
 	conn2 := connectProviderWithToken(t, ctx, ts.URL,
 		[]protocol.ModelInfo{{ID: model2, ModelType: "chat", Quantization: "4bit"}},
-		pubKey2, rawToken, "0xMultiNode2")
+		pubKey2, rawToken)
 	defer conn2.Close(websocket.StatusNormalClosure, "")
 
 	time.Sleep(200 * time.Millisecond)

@@ -76,7 +76,6 @@ pub struct CoordinatorClient {
     heartbeat_interval: Duration,
     public_key: Option<String>,
     node_keypair: Arc<crate::crypto::NodeKeyPair>,
-    wallet_address: Option<String>,
     attestation: Option<Box<serde_json::value::RawValue>>,
     auth_token: Option<String>,
     /// Shared atomic counters — incremented by proxy tasks, read by heartbeats.
@@ -119,7 +118,6 @@ impl CoordinatorClient {
             heartbeat_interval,
             public_key,
             node_keypair,
-            wallet_address: None,
             attestation: None,
             auth_token: None,
             stats: Arc::new(AtomicProviderStats::new()),
@@ -138,12 +136,6 @@ impl CoordinatorClient {
     /// Set per-model weight hashes for all active models.
     pub fn with_model_hashes(mut self, hashes: std::collections::HashMap<String, String>) -> Self {
         self.model_hashes = hashes;
-        self
-    }
-
-    /// Set the wallet address for Tempo blockchain payouts (pathUSD).
-    pub fn with_wallet_address(mut self, wallet_address: Option<String>) -> Self {
-        self.wallet_address = wallet_address;
         self
     }
 
@@ -332,7 +324,6 @@ impl CoordinatorClient {
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
             public_key: self.public_key.clone(),
             encrypted_response_chunks: true,
-            wallet_address: self.wallet_address.clone(),
             attestation: self.attestation.clone(),
             prefill_tps: None,
             decode_tps: None,
@@ -806,18 +797,6 @@ pub fn build_register_message(
     models: &[ModelInfo],
     backend_name: &str,
     public_key: Option<String>,
-) -> ProviderMessage {
-    build_register_message_with_wallet(hardware, models, backend_name, public_key, None, None)
-}
-
-/// Build the register message with an optional wallet address for Tempo payouts.
-#[allow(dead_code)]
-pub fn build_register_message_with_wallet(
-    hardware: &HardwareInfo,
-    models: &[ModelInfo],
-    backend_name: &str,
-    public_key: Option<String>,
-    wallet_address: Option<String>,
     attestation: Option<Box<serde_json::value::RawValue>>,
 ) -> ProviderMessage {
     ProviderMessage::Register {
@@ -827,7 +806,6 @@ pub fn build_register_message_with_wallet(
         version: None,
         public_key,
         encrypted_response_chunks: true,
-        wallet_address,
         attestation,
         prefill_tps: None,
         decode_tps: None,
@@ -1010,7 +988,7 @@ mod tests {
             weight_hash: None,
         }];
 
-        let msg = build_register_message(&hw, &models, "vllm_mlx", None);
+        let msg = build_register_message(&hw, &models, "vllm_mlx", None, None);
         match msg {
             ProviderMessage::Register {
                 hardware,
@@ -1498,41 +1476,5 @@ mod tests {
         assert!(parsed.get("rdma_disabled").is_some());
         assert!(parsed.get("hypervisor_active").is_some());
         assert!(parsed.get("secure_boot_enabled").is_some());
-    }
-
-    #[test]
-    fn test_build_register_message_with_wallet() {
-        let hw = sample_hardware();
-        let models = vec![ModelInfo {
-            id: "test-model".to_string(),
-            model_type: None,
-            parameters: None,
-            quantization: None,
-            size_bytes: 1000,
-            estimated_memory_gb: 1.0,
-            weight_hash: None,
-        }];
-
-        let wallet_addr = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string();
-        let msg = build_register_message_with_wallet(
-            &hw,
-            &models,
-            "vllm_mlx",
-            Some("cHVia2V5".to_string()),
-            Some(wallet_addr.clone()),
-            None,
-        );
-
-        match msg {
-            ProviderMessage::Register {
-                wallet_address,
-                public_key,
-                ..
-            } => {
-                assert_eq!(wallet_address, Some(wallet_addr));
-                assert_eq!(public_key, Some("cHVia2V5".to_string()));
-            }
-            _ => panic!("Expected Register message"),
-        }
     }
 }

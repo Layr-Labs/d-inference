@@ -235,6 +235,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public var numWaiting: UInt32
     public var activeTokens: Int64
     public var maxTokensPotential: Int64
+    public var observedDecodeTps: Double
+    public var activeTokenBudgetUsed: Int64
+    public var activeTokenBudgetMax: Int64
+    public var queuedTokenBudget: Int64
+    public var kvBytesPerToken: Int64
 
     enum CodingKeys: String, CodingKey {
         case model
@@ -243,6 +248,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case numWaiting = "num_waiting"
         case activeTokens = "active_tokens"
         case maxTokensPotential = "max_tokens_potential"
+        case observedDecodeTps = "observed_decode_tps"
+        case activeTokenBudgetUsed = "active_token_budget_used"
+        case activeTokenBudgetMax = "active_token_budget_max"
+        case queuedTokenBudget = "queued_token_budget"
+        case kvBytesPerToken = "kv_bytes_per_token"
     }
 
     public init(
@@ -251,7 +261,12 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         numRunning: UInt32,
         numWaiting: UInt32,
         activeTokens: Int64,
-        maxTokensPotential: Int64
+        maxTokensPotential: Int64,
+        observedDecodeTps: Double = 0,
+        activeTokenBudgetUsed: Int64 = 0,
+        activeTokenBudgetMax: Int64 = 0,
+        queuedTokenBudget: Int64 = 0,
+        kvBytesPerToken: Int64 = 0
     ) {
         self.model = model
         self.state = state
@@ -259,6 +274,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.numWaiting = numWaiting
         self.activeTokens = activeTokens
         self.maxTokensPotential = maxTokensPotential
+        self.observedDecodeTps = observedDecodeTps
+        self.activeTokenBudgetUsed = activeTokenBudgetUsed
+        self.activeTokenBudgetMax = activeTokenBudgetMax
+        self.queuedTokenBudget = queuedTokenBudget
+        self.kvBytesPerToken = kvBytesPerToken
     }
 }
 

@@ -367,10 +367,8 @@ func TestUserLifecycle(t *testing.T) {
 	st := store.NewMemory("")
 
 	user := &store.User{
-		AccountID:           "acct-123",
-		PrivyUserID:         "did:privy:abc",
-		SolanaWalletAddress: "SoLaNaAdDr123",
-		SolanaWalletID:      "wallet-xyz",
+		AccountID:   "acct-123",
+		PrivyUserID: "did:privy:abc",
 	}
 
 	if err := st.CreateUser(user); err != nil {
@@ -381,7 +379,7 @@ func TestUserLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get by privy: %v", err)
 	}
-	if got.AccountID != "acct-123" || got.SolanaWalletAddress != "SoLaNaAdDr123" {
+	if got.AccountID != "acct-123" {
 		t.Fatalf("unexpected: %+v", got)
 	}
 

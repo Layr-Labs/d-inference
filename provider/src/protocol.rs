@@ -25,6 +25,10 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn is_zero_i64(value: &i64) -> bool {
+    *value == 0
+}
+
 /// Messages sent from provider to coordinator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -43,9 +47,6 @@ pub enum ProviderMessage {
         /// using the request's session key.
         #[serde(default, skip_serializing_if = "is_false")]
         encrypted_response_chunks: bool,
-        /// Ethereum-format hex wallet address for Tempo blockchain payouts (pathUSD).
-        #[serde(skip_serializing_if = "Option::is_none")]
-        wallet_address: Option<String>,
         /// Signed Secure Enclave attestation blob (raw JSON from Swift CLI tool).
         /// Uses RawValue to preserve exact byte encoding from Swift's JSONEncoder,
         /// which is critical for signature verification.
@@ -259,6 +260,21 @@ pub struct BackendSlotCapacity {
     pub active_tokens: i64,
     /// Sum of max_tokens across running requests (worst-case future growth).
     pub max_tokens_potential: i64,
+    /// EWMA of measured per-request decode TPS (0 = not reported).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_decode_tps: Option<f64>,
+    /// Tokens reserved by active requests (prompt + max_output). 0 = not reported.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub active_token_budget_used: i64,
+    /// Maximum token budget for this slot. 0 = not reported.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub active_token_budget_max: i64,
+    /// Tokens reserved by queued requests. 0 = not reported.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub queued_token_budget: i64,
+    /// Per-token KV cache memory cost in bytes (0 = unknown/not reported).
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub kv_bytes_per_token: i64,
 }
 
 /// Aggregate backend capacity across all slots on a provider. Reported in
@@ -346,7 +362,6 @@ mod tests {
             version: None,
             public_key: None,
             encrypted_response_chunks: true,
-            wallet_address: None,
             attestation: None,
             prefill_tps: None,
             decode_tps: None,
@@ -359,8 +374,6 @@ mod tests {
 
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"register\""));
-        // wallet_address should be omitted when None
-        assert!(!json.contains("wallet_address"));
         // attestation should be omitted when None
         assert!(!json.contains("attestation"));
         // benchmark fields should be omitted when None
@@ -370,40 +383,6 @@ mod tests {
         assert!(!json.contains("python_hash"));
         assert!(!json.contains("runtime_hash"));
         assert!(!json.contains("template_hashes"));
-        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg, deserialized);
-    }
-
-    #[test]
-    fn test_register_message_with_wallet_address() {
-        let msg = ProviderMessage::Register {
-            hardware: sample_hardware(),
-            models: vec![ModelInfo {
-                id: "mlx-community/Qwen2.5-7B-4bit".to_string(),
-                model_type: Some("qwen2".to_string()),
-                parameters: None,
-                quantization: Some("4bit".to_string()),
-                size_bytes: 4_000_000_000,
-                estimated_memory_gb: 4.5,
-                weight_hash: None,
-            }],
-            backend: "vllm_mlx".to_string(),
-            version: None,
-            public_key: None,
-            encrypted_response_chunks: true,
-            wallet_address: Some("0x1234567890abcdef1234567890abcdef12345678".to_string()),
-            attestation: None,
-            prefill_tps: None,
-            decode_tps: None,
-            auth_token: None,
-            python_hash: None,
-            runtime_hash: None,
-            template_hashes: std::collections::HashMap::new(),
-            privacy_capabilities: None,
-        };
-
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"wallet_address\":\"0x1234567890abcdef1234567890abcdef12345678\""));
         let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, deserialized);
     }
@@ -429,7 +408,6 @@ mod tests {
             version: None,
             public_key: Some("c29tZWtleQ==".to_string()),
             encrypted_response_chunks: true,
-            wallet_address: None,
             attestation: Some(attestation_raw),
             prefill_tps: Some(500.0),
             decode_tps: Some(100.0),
@@ -710,6 +688,11 @@ mod tests {
                     num_waiting: 1,
                     active_tokens: 5000,
                     max_tokens_potential: 12000,
+                    observed_decode_tps: None,
+                    active_token_budget_used: 0,
+                    active_token_budget_max: 0,
+                    queued_token_budget: 0,
+                    kv_bytes_per_token: 0,
                 },
                 BackendSlotCapacity {
                     model: "mlx-community/Gemma-4-27B-4bit".to_string(),
@@ -718,6 +701,11 @@ mod tests {
                     num_waiting: 0,
                     active_tokens: 0,
                     max_tokens_potential: 0,
+                    observed_decode_tps: None,
+                    active_token_budget_used: 0,
+                    active_token_budget_max: 0,
+                    queued_token_budget: 0,
+                    kv_bytes_per_token: 0,
                 },
             ],
             gpu_memory_active_gb: 45.2,
@@ -759,6 +747,11 @@ mod tests {
                     num_waiting: 0,
                     active_tokens: 3000,
                     max_tokens_potential: 8000,
+                    observed_decode_tps: None,
+                    active_token_budget_used: 0,
+                    active_token_budget_max: 0,
+                    queued_token_budget: 0,
+                    kv_bytes_per_token: 0,
                 }],
                 gpu_memory_active_gb: 25.5,
                 gpu_memory_peak_gb: 30.0,
@@ -951,7 +944,6 @@ mod tests {
                 version: None,
                 public_key: None,
                 encrypted_response_chunks: true,
-                wallet_address: None,
                 attestation: None,
                 prefill_tps: None,
                 decode_tps: None,
@@ -1198,7 +1190,6 @@ mod tests {
             version: None,
             public_key: None,
             encrypted_response_chunks: true,
-            wallet_address: None,
             attestation: None,
             prefill_tps: None,
             decode_tps: None,

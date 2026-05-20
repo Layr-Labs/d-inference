@@ -123,11 +123,9 @@ func (p *PrivyAuth) GetOrCreateUser(privyUserID string) (*store.User, error) {
 	}
 
 	user = &store.User{
-		AccountID:           uuid.New().String(),
-		PrivyUserID:         privyUserID,
-		Email:               details.Email,
-		SolanaWalletAddress: details.WalletAddress,
-		SolanaWalletID:      details.WalletID,
+		AccountID:   uuid.New().String(),
+		PrivyUserID: privyUserID,
+		Email:       details.Email,
 	}
 
 	if err := p.store.CreateUser(user); err != nil {
@@ -142,7 +140,6 @@ func (p *PrivyAuth) GetOrCreateUser(privyUserID string) (*store.User, error) {
 		"privy_user_id", privyUserID,
 		"account_id", user.AccountID,
 		"email", details.Email,
-		"has_wallet", details.WalletAddress != "",
 	)
 
 	return user, nil
@@ -155,19 +152,13 @@ type privyUserResponse struct {
 }
 
 type linkedAccount struct {
-	Type      string `json:"type"`
-	Address   string `json:"address,omitempty"`
-	ChainType string `json:"chain_type,omitempty"`
-	WalletID  string `json:"wallet_client_type,omitempty"`
-	// For embedded wallets, the ID is in a nested field.
-	ID string `json:"id,omitempty"`
+	Type    string `json:"type"`
+	Address string `json:"address,omitempty"`
 }
 
 // privyUserDetails holds extracted info from the Privy user API.
 type privyUserDetails struct {
-	Email         string
-	WalletAddress string
-	WalletID      string
+	Email string
 }
 
 // fetchUserDetails calls Privy's REST API to get the user's email and wallet.
@@ -203,14 +194,8 @@ func (p *PrivyAuth) fetchUserDetails(privyUserID string) (*privyUserDetails, err
 	details := &privyUserDetails{}
 
 	for _, acct := range userResp.LinkedAccounts {
-		switch acct.Type {
-		case "email":
+		if acct.Type == "email" {
 			details.Email = acct.Address
-		case "wallet":
-			if acct.ChainType == "solana" {
-				details.WalletAddress = acct.Address
-				details.WalletID = acct.ID
-			}
 		}
 	}
 

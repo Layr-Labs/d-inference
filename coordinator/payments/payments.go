@@ -73,18 +73,6 @@ func (l *Ledger) LedgerHistory(consumerID string) []store.LedgerEntry {
 	return l.store.LedgerHistory(consumerID)
 }
 
-// CreditProvider records a pending payout to a provider.
-func (l *Ledger) CreditProvider(providerAddr string, amountMicroUSD int64, model, jobID string) error {
-	return l.store.CreditProviderWallet(&store.ProviderPayout{
-		ProviderAddress: providerAddr,
-		AmountMicroUSD:  amountMicroUSD,
-		Model:           model,
-		JobID:           jobID,
-		Timestamp:       time.Now(),
-		Settled:         false,
-	})
-}
-
 // RecordUsage appends a usage entry for a consumer's history.
 func (l *Ledger) RecordUsage(consumerID string, entry UsageEntry) {
 	l.mu.Lock()

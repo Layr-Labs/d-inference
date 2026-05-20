@@ -551,3 +551,246 @@ func TestHeartbeatDrainsQueueAfterSlotRecovery(t *testing.T) {
 		t.Fatal("timed out waiting for recovered slot assignment")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Token-budget routing tests
+// ---------------------------------------------------------------------------
+
+func makeTokenBudgetProvider(t *testing.T, reg *Registry, id, model string, decodeTPS float64, budgetUsed, budgetMax int64, observedTPS float64) *Provider {
+	t.Helper()
+	p := makeSchedulerProvider(t, reg, id, model, decodeTPS)
+	p.mu.Lock()
+	if len(p.BackendCapacity.Slots) > 0 {
+		p.BackendCapacity.Slots[0].ActiveTokenBudgetUsed = budgetUsed
+		p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = budgetMax
+		p.BackendCapacity.Slots[0].ObservedDecodeTPS = observedTPS
+	}
+	p.mu.Unlock()
+	return p
+}
+
+func TestTokenBudgetAdmissionRejectsFullProvider(t *testing.T) {
+	reg := New(testLogger())
+	model := "budget-model"
+
+	// Provider with budget nearly full: 30K used of 32K max.
+	makeTokenBudgetProvider(t, reg, "full", model, 100, 30_000, 32_768, 80)
+	// Provider with plenty of budget: 4K used of 32K max.
+	makeTokenBudgetProvider(t, reg, "empty", model, 100, 4_000, 32_768, 80)
+
+	req := &PendingRequest{
+		RequestID:             "req-budget",
+		Model:                 model,
+		EstimatedPromptTokens: 500,
+		RequestedMaxTokens:    4096,
+	}
+	selected := reg.ReserveProvider(model, req)
+	if selected == nil {
+		t.Fatal("expected a provider, got nil")
+	}
+	if selected.ID != "empty" {
+		t.Fatalf("selected %q, want 'empty' (more budget headroom)", selected.ID)
+	}
+}
+
+func TestTokenBudgetAdmissionRejectsWhenOverBudget(t *testing.T) {
+	reg := New(testLogger())
+	model := "overbudget-model"
+
+	// Single provider with 31K used of 32K budget. Request needs 500+4096 = 4596 tokens.
+	makeTokenBudgetProvider(t, reg, "full", model, 100, 31_000, 32_768, 80)
+
+	req := &PendingRequest{
+		RequestID:             "req-over",
+		Model:                 model,
+		EstimatedPromptTokens: 500,
+		RequestedMaxTokens:    4096,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected != nil {
+		t.Fatalf("expected nil (over budget), got provider %q", selected.ID)
+	}
+	if decision.CapacityRejections != 1 {
+		t.Fatalf("CapacityRejections=%d, want 1", decision.CapacityRejections)
+	}
+}
+
+func TestObservedTPSPreferredOverBenchmark(t *testing.T) {
+	reg := New(testLogger())
+	model := "tps-model"
+
+	// Provider A: high benchmark TPS but low observed TPS (under load).
+	makeTokenBudgetProvider(t, reg, "bench-fast", model, 200, 0, 32_768, 30)
+	// Provider B: lower benchmark TPS but higher observed TPS (lightly loaded).
+	makeTokenBudgetProvider(t, reg, "bench-slow", model, 50, 0, 32_768, 70)
+
+	req := &PendingRequest{
+		RequestID:             "req-tps",
+		Model:                 model,
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    2048,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatal("expected a provider, got nil")
+	}
+	// Provider B has higher observed TPS (70 vs 30), so its thisReqMs is lower.
+	if selected.ID != "bench-slow" {
+		t.Fatalf("selected %q, want 'bench-slow' (higher observed TPS)", selected.ID)
+	}
+	if decision.EffectiveTPS <= 0 {
+		t.Fatalf("EffectiveTPS=%f, want > 0", decision.EffectiveTPS)
+	}
+}
+
+func TestTokenBudgetBacklogCost(t *testing.T) {
+	reg := New(testLogger())
+	model := "backlog-model"
+
+	// Provider A: large backlog (20K tokens used).
+	makeTokenBudgetProvider(t, reg, "heavy", model, 100, 20_000, 32_768, 80)
+	// Provider B: light backlog (2K tokens used).
+	makeTokenBudgetProvider(t, reg, "light", model, 100, 2_000, 32_768, 80)
+
+	req := &PendingRequest{
+		RequestID:             "req-backlog",
+		Model:                 model,
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    256,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatal("expected a provider, got nil")
+	}
+	if selected.ID != "light" {
+		t.Fatalf("selected %q, want 'light' (lower backlog)", selected.ID)
+	}
+	if decision.BacklogMs <= 0 {
+		t.Fatalf("BacklogMs=%f, want > 0 (should reflect token backlog)", decision.BacklogMs)
+	}
+}
+
+func TestMaxConcurrencyRaisedWithTokenBudget(t *testing.T) {
+	reg := New(testLogger())
+	model := "concurrency-model"
+
+	p := makeTokenBudgetProvider(t, reg, "budget-provider", model, 100, 0, 32_768, 80)
+	if got := p.MaxConcurrency(); got != 24 {
+		t.Fatalf("MaxConcurrency()=%d, want 24 (token budget reported)", got)
+	}
+}
+
+func TestMaxConcurrencyFallsBackWithoutTokenBudget(t *testing.T) {
+	reg := New(testLogger())
+	model := "legacy-model"
+
+	// Provider without token budget fields (legacy behavior).
+	p := makeSchedulerProvider(t, reg, "legacy", model, 100)
+	p.mu.Lock()
+	p.BackendCapacity.TotalMemoryGB = 48
+	p.mu.Unlock()
+
+	if got := p.MaxConcurrency(); got != 4 {
+		t.Fatalf("MaxConcurrency()=%d, want 4 (48GB legacy tier)", got)
+	}
+}
+
+func TestLegacyProviderFallsBackToOldRouting(t *testing.T) {
+	reg := New(testLogger())
+	model := "legacy-routing-model"
+
+	// Two legacy providers (no token budget fields) — should use old cost function.
+	p1 := makeSchedulerProvider(t, reg, "fast", model, 120)
+	p2 := makeSchedulerProvider(t, reg, "slow", model, 40)
+	_ = p1
+	_ = p2
+
+	req := &PendingRequest{
+		RequestID:             "req-legacy",
+		Model:                 model,
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    256,
+	}
+	selected := reg.ReserveProvider(model, req)
+	if selected == nil {
+		t.Fatal("expected a provider, got nil")
+	}
+	// Faster decode TPS should win when both idle with no budget reporting.
+	if selected.ID != "fast" {
+		t.Fatalf("selected %q, want 'fast' (higher decode TPS in legacy mode)", selected.ID)
+	}
+}
+
+func TestResolveEffectiveTPSFallback(t *testing.T) {
+	// When observedDecodeTPS is 0, should fall back to formula-based TPS.
+	snap := routingSnapshot{
+		decodeTPS:         100,
+		backendRunning:    2,
+		observedDecodeTPS: 0,
+	}
+	got := resolveEffectiveTPS(snap)
+	want := effectiveDecodeTPS(100, 2)
+	if got != want {
+		t.Fatalf("resolveEffectiveTPS()=%f, want %f (formula fallback)", got, want)
+	}
+
+	// When observedDecodeTPS is set, should use it directly.
+	snap.observedDecodeTPS = 55.5
+	got = resolveEffectiveTPS(snap)
+	if got != 55.5 {
+		t.Fatalf("resolveEffectiveTPS()=%f, want 55.5 (observed)", got)
+	}
+}
+
+func TestFreeMemoryAdmitsTokenBudget(t *testing.T) {
+	// With token budget, should use budget-based admission.
+	snap := routingSnapshot{
+		activeTokenBudgetUsed: 28_000,
+		activeTokenBudgetMax:  32_768,
+		modelSizeGB:           8,
+		totalMemoryGB:         64,
+	}
+	// Request for 500 + 4096 = 4596 tokens. 28000 + 4596 = 32596 <= 32768. Fits.
+	if !freeMemoryAdmits(snap, 500, 4096) {
+		t.Fatal("should admit: 28000 + 4596 = 32596 <= 32768")
+	}
+	// Request for 500 + 4500 = 5000 tokens. 28000 + 5000 = 33000 > 32768. Rejected.
+	if freeMemoryAdmits(snap, 500, 4500) {
+		t.Fatal("should reject: 28000 + 5000 = 33000 > 32768")
+	}
+}
+
+func TestFreeMemoryAdmitsIncludesQueuedBudget(t *testing.T) {
+	snap := routingSnapshot{
+		activeTokenBudgetUsed: 20_000,
+		activeTokenBudgetMax:  32_768,
+		queuedTokenBudget:     10_000,
+		modelSizeGB:           8,
+		totalMemoryGB:         64,
+	}
+	// active(20K) + queued(10K) + request(500+4096=4596) = 34596 > 32768. Rejected.
+	if freeMemoryAdmits(snap, 500, 4096) {
+		t.Fatal("should reject: active + queued + request exceeds budget")
+	}
+	// Without queued budget: active(20K) + request(4596) = 24596 <= 32768. Fits.
+	snap.queuedTokenBudget = 0
+	if !freeMemoryAdmits(snap, 500, 4096) {
+		t.Fatal("should admit when queued budget is zero")
+	}
+}
+
+func TestFreeMemoryAdmitsFallsBackWithoutBudget(t *testing.T) {
+	// Without token budget (max=0), should fall back to memory-based check.
+	snap := routingSnapshot{
+		activeTokenBudgetUsed: 0,
+		activeTokenBudgetMax:  0,
+		modelSizeGB:           8,
+		totalMemoryGB:         64,
+		gpuMemoryActiveGB:     10,
+		modelLoaded:           true,
+	}
+	// Model already loaded, so only KV matters. Lots of free memory.
+	if !freeMemoryAdmits(snap, 100, 256) {
+		t.Fatal("should admit with plenty of free memory in legacy mode")
+	}
+}

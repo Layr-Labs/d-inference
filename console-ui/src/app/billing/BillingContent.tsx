@@ -35,6 +35,7 @@ import {
   ArrowDownToLine,
 } from "lucide-react";
 import { UsageChart } from "@/components/UsageChart";
+import { STRIPE_CONNECT_COUNTRIES } from "@/lib/stripe-countries";
 
 function Modal({
   open,
@@ -88,6 +89,7 @@ export default function BillingContent() {
   const [withdrawAmount, setWithdrawAmount] = useState("10");
   const [withdrawMethod, setWithdrawMethod] = useState<"standard" | "instant">("standard");
   const [withdrawLoading, setWithdrawLoading] = useState(false);
+  const [selectedStripeCountry, setSelectedStripeCountry] = useState("");
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -162,7 +164,7 @@ export default function BillingContent() {
       const returnURL = typeof window !== "undefined"
         ? `${window.location.origin}${window.location.pathname}?stripe_return=1`
         : undefined;
-      const resp = await startStripeOnboarding(returnURL);
+      const resp = await startStripeOnboarding(returnURL, selectedStripeCountry || undefined);
       window.location.href = resp.url;
     } catch (e) {
       addToast(`Stripe onboarding failed: ${(e as Error).message}`);
@@ -333,6 +335,8 @@ export default function BillingContent() {
             withdrawals={stripeWithdrawals}
             balanceMicroUsd={balance?.balance_micro_usd ?? 0}
             onboardLoading={stripeOnboardLoading}
+            selectedCountry={selectedStripeCountry}
+            onCountryChange={setSelectedStripeCountry}
             onOnboard={handleStripeOnboard}
             onOpenWithdraw={() => {
               setWithdrawAmount("10");
@@ -548,6 +552,8 @@ function StripePayoutsCard({
   withdrawals,
   balanceMicroUsd,
   onboardLoading,
+  selectedCountry,
+  onCountryChange,
   onOnboard,
   onOpenWithdraw,
 }: {
@@ -555,6 +561,8 @@ function StripePayoutsCard({
   withdrawals: StripeWithdrawal[];
   balanceMicroUsd: number;
   onboardLoading: boolean;
+  selectedCountry: string;
+  onCountryChange: (country: string) => void;
   onOnboard: () => void;
   onOpenWithdraw: () => void;
 }) {
@@ -597,14 +605,34 @@ function StripePayoutsCard({
             Link a bank account or debit card via Stripe to withdraw your credits.
             Stripe handles identity verification — onboarding takes about 2 minutes.
           </p>
+          <label className="block text-xs font-mono text-text-tertiary uppercase tracking-wider mb-2">
+            Your country
+          </label>
+          <select
+            value={selectedCountry}
+            onChange={(e) => onCountryChange(e.target.value)}
+            className="w-full mb-4 bg-bg-primary border border-border-dim rounded-lg px-4 py-3 text-sm text-text-primary outline-none transition-colors hover:border-teal/40 focus:border-teal"
+          >
+            <option value="">Select your country</option>
+            {STRIPE_CONNECT_COUNTRIES.map((country) => (
+              <option key={country.code} value={country.code}>
+                {country.name} ({country.code})
+              </option>
+            ))}
+          </select>
           <button
             onClick={onOnboard}
-            disabled={onboardLoading}
+            disabled={onboardLoading || !selectedCountry}
             className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 transition-all"
           >
             {onboardLoading ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />}
             {onboardLoading ? "Redirecting..." : "Link bank via Stripe"}
           </button>
+          {!selectedCountry && (
+            <p className="text-xs text-text-tertiary mt-2">
+              Select your country to continue. This determines your payout currency and KYC requirements.
+            </p>
+          )}
         </>
       ) : ready ? (
         <>

@@ -120,7 +120,7 @@ type Store interface {
 
 	// --- Billing Sessions ---
 
-	// CreateBillingSession stores a new billing session (Stripe, EVM, Solana).
+	// CreateBillingSession stores a new billing session (Stripe).
 	CreateBillingSession(session *BillingSession) error
 
 	// GetBillingSession retrieves a billing session by ID.
@@ -494,12 +494,10 @@ type ModelPrice struct {
 
 // User represents a consumer account linked to a Privy identity.
 type User struct {
-	AccountID           string    `json:"account_id"`            // internal account ID (used in ledger)
-	PrivyUserID         string    `json:"privy_user_id"`         // Privy DID (e.g. "did:privy:abc123")
-	Email               string    `json:"email,omitempty"`       // from Privy linked accounts
-	SolanaWalletAddress string    `json:"solana_wallet_address"` // embedded wallet public address
-	SolanaWalletID      string    `json:"solana_wallet_id"`      // Privy's internal wallet ID (for signing API)
-	CreatedAt           time.Time `json:"created_at"`
+	AccountID   string    `json:"account_id"`      // internal account ID (used in ledger)
+	PrivyUserID string    `json:"privy_user_id"`   // Privy DID (e.g. "did:privy:abc123")
+	Email       string    `json:"email,omitempty"` // from Privy linked accounts
+	CreatedAt   time.Time `json:"created_at"`
 
 	// Stripe Connect Express — for bank/card payouts via Stripe.
 	// StripeAccountStatus mirrors the readiness of payouts on the connected
@@ -639,9 +637,9 @@ type ProviderEarningsSummary struct {
 	CompletionTokens int64 `json:"completion_tokens"`
 }
 
-// ProviderPayout records a provider wallet payout event. This is separate from
-// account-linked provider earnings because some providers are paid directly to a
-// wallet without being linked to a Privy account.
+// ProviderPayout records a provider payout event. This is separate from
+// account-linked provider earnings because some providers are paid directly
+// without being linked to a Privy account.
 type ProviderPayout struct {
 	ID              int64     `json:"id"`
 	ProviderAddress string    `json:"provider_address"`
@@ -652,12 +650,11 @@ type ProviderPayout struct {
 	Settled         bool      `json:"settled"`
 }
 
-// BillingSession tracks an in-progress payment via any method (Stripe, EVM, Solana).
+// BillingSession tracks an in-progress payment via any method (Stripe).
 type BillingSession struct {
 	ID             string     `json:"id"`
 	AccountID      string     `json:"account_id"`
-	PaymentMethod  string     `json:"payment_method"` // "stripe", "evm", "solana"
-	Chain          string     `json:"chain"`          // "ethereum", "tempo", "solana", ""
+	PaymentMethod  string     `json:"payment_method"` // "stripe"
 	AmountMicroUSD int64      `json:"amount_micro_usd"`
 	ExternalID     string     `json:"external_id"`   // Stripe session ID, tx hash, etc.
 	Status         string     `json:"status"`        // "pending", "completed", "expired"

@@ -2,6 +2,7 @@ package payments
 
 import (
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -81,14 +82,26 @@ func TestChargeNoAccount(t *testing.T) {
 	}
 }
 
-func TestCreditProvider(t *testing.T) {
+func TestCreditProviderWallet(t *testing.T) {
 	l := newTestLedger()
 
-	if err := l.CreditProvider("0xProvider1", 900_000, "qwen3.5-9b", "job-123"); err != nil {
-		t.Fatalf("CreditProvider(1): %v", err)
+	if err := l.store.CreditProviderWallet(&store.ProviderPayout{
+		ProviderAddress: "0xProvider1",
+		AmountMicroUSD:  900_000,
+		Model:           "qwen3.5-9b",
+		JobID:           "job-123",
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("CreditProviderWallet(1): %v", err)
 	}
-	if err := l.CreditProvider("0xProvider2", 450_000, "llama3-8b", "job-456"); err != nil {
-		t.Fatalf("CreditProvider(2): %v", err)
+	if err := l.store.CreditProviderWallet(&store.ProviderPayout{
+		ProviderAddress: "0xProvider2",
+		AmountMicroUSD:  450_000,
+		Model:           "llama3-8b",
+		JobID:           "job-456",
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("CreditProviderWallet(2): %v", err)
 	}
 
 	payouts := l.PendingPayouts()
@@ -111,11 +124,23 @@ func TestCreditProvider(t *testing.T) {
 func TestSettlePayout(t *testing.T) {
 	l := newTestLedger()
 
-	if err := l.CreditProvider("0xProvider1", 900_000, "qwen3.5-9b", "job-123"); err != nil {
-		t.Fatalf("CreditProvider(1): %v", err)
+	if err := l.store.CreditProviderWallet(&store.ProviderPayout{
+		ProviderAddress: "0xProvider1",
+		AmountMicroUSD:  900_000,
+		Model:           "qwen3.5-9b",
+		JobID:           "job-123",
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("CreditProviderWallet(1): %v", err)
 	}
-	if err := l.CreditProvider("0xProvider2", 450_000, "llama3-8b", "job-456"); err != nil {
-		t.Fatalf("CreditProvider(2): %v", err)
+	if err := l.store.CreditProviderWallet(&store.ProviderPayout{
+		ProviderAddress: "0xProvider2",
+		AmountMicroUSD:  450_000,
+		Model:           "llama3-8b",
+		JobID:           "job-456",
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("CreditProviderWallet(2): %v", err)
 	}
 
 	if err := l.SettlePayout(0); err != nil {
@@ -138,8 +163,14 @@ func TestSettlePayout(t *testing.T) {
 
 func TestSettlePayoutAlreadySettled(t *testing.T) {
 	l := newTestLedger()
-	if err := l.CreditProvider("0xProvider1", 900_000, "qwen3.5-9b", "job-123"); err != nil {
-		t.Fatalf("CreditProvider: %v", err)
+	if err := l.store.CreditProviderWallet(&store.ProviderPayout{
+		ProviderAddress: "0xProvider1",
+		AmountMicroUSD:  900_000,
+		Model:           "qwen3.5-9b",
+		JobID:           "job-123",
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("CreditProviderWallet: %v", err)
 	}
 
 	if err := l.SettlePayout(0); err != nil {
@@ -165,8 +196,14 @@ func TestPayoutsPersistAcrossLedgerInstances(t *testing.T) {
 	st := store.NewMemory("")
 	l1 := NewLedger(st)
 
-	if err := l1.CreditProvider("0xProvider1", 900_000, "qwen3.5-9b", "job-123"); err != nil {
-		t.Fatalf("CreditProvider: %v", err)
+	if err := l1.store.CreditProviderWallet(&store.ProviderPayout{
+		ProviderAddress: "0xProvider1",
+		AmountMicroUSD:  900_000,
+		Model:           "qwen3.5-9b",
+		JobID:           "job-123",
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("CreditProviderWallet: %v", err)
 	}
 
 	l2 := NewLedger(st)

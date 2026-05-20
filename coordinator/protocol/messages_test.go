@@ -365,35 +365,6 @@ func TestProviderMessageUnmarshalInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestRegisterMessageWithWalletAddress(t *testing.T) {
-	msg := RegisterMessage{
-		Type: TypeRegister,
-		Hardware: Hardware{
-			ChipName: "Apple M3 Max",
-			MemoryGB: 64,
-		},
-		Models: []ModelInfo{
-			{ID: "qwen3.5-9b", ModelType: "qwen3", Quantization: "4bit"},
-		},
-		Backend:       "vllm_mlx",
-		WalletAddress: "0x1234567890abcdef1234567890abcdef12345678",
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var decoded RegisterMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	if decoded.WalletAddress != "0x1234567890abcdef1234567890abcdef12345678" {
-		t.Errorf("wallet_address = %q", decoded.WalletAddress)
-	}
-}
-
 func TestRegisterMessageWithAttestation(t *testing.T) {
 	attestationJSON := json.RawMessage(`{"attestation":{"chipName":"Apple M3 Max","hardwareModel":"Mac15,8","publicKey":"dGVzdA=="},"signature":"c2ln"}`)
 	msg := RegisterMessage{
@@ -451,42 +422,6 @@ func TestRegisterMessageWithoutAttestation(t *testing.T) {
 	json.Unmarshal(data, &m)
 	if _, ok := m["attestation"]; ok {
 		t.Error("attestation should be omitted when nil")
-	}
-}
-
-func TestRegisterMessageWithoutWalletAddress(t *testing.T) {
-	// wallet_address should be omitted from JSON when empty.
-	msg := RegisterMessage{
-		Type:     TypeRegister,
-		Hardware: Hardware{ChipName: "M3 Max", MemoryGB: 64},
-		Models:   []ModelInfo{{ID: "test"}},
-		Backend:  "test",
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	// wallet_address should not appear when empty (omitempty)
-	var m map[string]any
-	json.Unmarshal(data, &m)
-	if _, ok := m["wallet_address"]; ok {
-		t.Error("wallet_address should be omitted when empty")
-	}
-}
-
-func TestProviderMessageUnmarshalRegisterWithWallet(t *testing.T) {
-	raw := `{"type":"register","hardware":{"chip_name":"M3 Max","memory_gb":64},"models":[{"id":"test"}],"backend":"test","wallet_address":"0xDeadBeef"}`
-
-	var pm ProviderMessage
-	if err := json.Unmarshal([]byte(raw), &pm); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	reg := pm.Payload.(*RegisterMessage)
-	if reg.WalletAddress != "0xDeadBeef" {
-		t.Errorf("wallet_address = %q, want 0xDeadBeef", reg.WalletAddress)
 	}
 }
 
@@ -784,5 +719,90 @@ func TestProviderMessageUnmarshalHeartbeatWithoutCapacity(t *testing.T) {
 	hb := pm.Payload.(*HeartbeatMessage)
 	if hb.BackendCapacity != nil {
 		t.Error("backend_capacity should be nil for old providers")
+	}
+}
+
+func TestBackendSlotCapacityTokenBudgetFields(t *testing.T) {
+	slot := BackendSlotCapacity{
+		Model:                 "mlx-community/Qwen2.5-7B-4bit",
+		State:                 "running",
+		NumRunning:            3,
+		NumWaiting:            1,
+		ActiveTokens:          5000,
+		MaxTokensPotential:    12000,
+		ObservedDecodeTPS:     85.5,
+		ActiveTokenBudgetUsed: 28000,
+		ActiveTokenBudgetMax:  32768,
+		QueuedTokenBudget:     4096,
+	}
+
+	data, err := json.Marshal(slot)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded BackendSlotCapacity
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if decoded.ObservedDecodeTPS != 85.5 {
+		t.Errorf("observed_decode_tps = %f, want 85.5", decoded.ObservedDecodeTPS)
+	}
+	if decoded.ActiveTokenBudgetUsed != 28000 {
+		t.Errorf("active_token_budget_used = %d, want 28000", decoded.ActiveTokenBudgetUsed)
+	}
+	if decoded.ActiveTokenBudgetMax != 32768 {
+		t.Errorf("active_token_budget_max = %d, want 32768", decoded.ActiveTokenBudgetMax)
+	}
+	if decoded.QueuedTokenBudget != 4096 {
+		t.Errorf("queued_token_budget = %d, want 4096", decoded.QueuedTokenBudget)
+	}
+}
+
+func TestBackendSlotCapacityOmitsZeroTokenBudget(t *testing.T) {
+	slot := BackendSlotCapacity{
+		Model:      "test-model",
+		State:      "running",
+		NumRunning: 1,
+	}
+
+	data, err := json.Marshal(slot)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var m map[string]any
+	json.Unmarshal(data, &m)
+
+	for _, key := range []string{"observed_decode_tps", "active_token_budget_used", "active_token_budget_max", "queued_token_budget"} {
+		if _, ok := m[key]; ok {
+			t.Errorf("%s should be omitted when zero (omitempty)", key)
+		}
+	}
+}
+
+func TestBackendSlotCapacityBackwardCompatDecode(t *testing.T) {
+	// Old provider sends a slot without the new token-budget fields.
+	raw := `{"model":"test","state":"running","num_running":2,"num_waiting":0,"active_tokens":3000,"max_tokens_potential":8000}`
+
+	var slot BackendSlotCapacity
+	if err := json.Unmarshal([]byte(raw), &slot); err != nil {
+		t.Fatalf("unmarshal old-format slot: %v", err)
+	}
+	if slot.ObservedDecodeTPS != 0 {
+		t.Errorf("observed_decode_tps = %f, want 0 (absent from JSON)", slot.ObservedDecodeTPS)
+	}
+	if slot.ActiveTokenBudgetUsed != 0 {
+		t.Errorf("active_token_budget_used = %d, want 0", slot.ActiveTokenBudgetUsed)
+	}
+	if slot.ActiveTokenBudgetMax != 0 {
+		t.Errorf("active_token_budget_max = %d, want 0", slot.ActiveTokenBudgetMax)
+	}
+	if slot.QueuedTokenBudget != 0 {
+		t.Errorf("queued_token_budget = %d, want 0", slot.QueuedTokenBudget)
+	}
+	if slot.NumRunning != 2 {
+		t.Errorf("num_running = %d, want 2", slot.NumRunning)
 	}
 }

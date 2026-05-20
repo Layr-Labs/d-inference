@@ -41,7 +41,6 @@ mod security;
 mod server;
 mod service;
 mod telemetry;
-mod wallet;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -1924,7 +1923,7 @@ async fn cmd_install(
     );
     println!();
 
-    // Step 2: Initialize config, keys, and wallet
+    // Step 2: Initialize config, keys
     println!("Step 2/6: Initializing configuration...");
     let config_path = config::default_config_path()?;
     if !config_path.exists() {
@@ -2778,11 +2777,6 @@ async fn cmd_serve(
             node_keypair.clone(),
         )
         .with_attestation(attestation)
-        .with_wallet_address(
-            wallet::Wallet::load_or_create()
-                .ok()
-                .map(|w| w.address.clone()),
-        )
         .with_auth_token(auth_token)
         .with_runtime_hashes(Some(runtime_hashes))
         .with_runtime_hash_command(Some(python_cmd.clone()))
@@ -3084,6 +3078,11 @@ async fn cmd_serve(
                                     num_waiting: 0,
                                     active_tokens: 0,
                                     max_tokens_potential: 0,
+                                    observed_decode_tps: None,
+                                    active_token_budget_used: 0,
+                                    active_token_budget_max: 0,
+                                    queued_token_budget: 0,
+                                    kv_bytes_per_token: 0,
                                 });
                                 continue;
                             }
@@ -3109,6 +3108,11 @@ async fn cmd_serve(
                                         num_waiting: status.num_waiting,
                                         active_tokens: status.active_tokens,
                                         max_tokens_potential: status.max_tokens_potential,
+                                        observed_decode_tps: None,
+                                        active_token_budget_used: 0,
+                                        active_token_budget_max: 0,
+                                        queued_token_budget: 0,
+                                        kv_bytes_per_token: 0,
                                     });
                                 }
                                 None => {
@@ -3128,6 +3132,11 @@ async fn cmd_serve(
                                         num_waiting: 0,
                                         active_tokens: 0,
                                         max_tokens_potential: 0,
+                                        observed_decode_tps: None,
+                                        active_token_budget_used: 0,
+                                        active_token_budget_max: 0,
+                                        queued_token_budget: 0,
+                                        kv_bytes_per_token: 0,
                                     });
                                 }
                             }
@@ -7193,7 +7202,6 @@ async fn cmd_logout() -> Result<()> {
 
     delete_auth_token()?;
     println!("Logged out. This machine is no longer linked to an account.");
-    println!("Provider earnings will use the local wallet until you log in again.");
     Ok(())
 }
 

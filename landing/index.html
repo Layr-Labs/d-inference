@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Darkbloom — Private AI Inference on Apple Silicon | Eigen Labs</title>
-  <meta name="description" content="Darkbloom is a decentralized inference network that runs on idle Apple Silicon machines. Every node is hardware-verified and every prompt is end-to-end encrypted. OpenAI-compatible API. 50% cheaper than centralized alternatives.">
+  <title>Darkbloom — Cost-Efficient Private AI Inference on Verified Macs</title>
+  <meta name="description" content="Darkbloom routes encrypted AI inference to hardware-verified Apple Silicon providers. Get comparable model performance at about 50% lower cost than typical API providers, with operator-blind privacy.">
   <meta name="keywords" content="Darkbloom, Eigen Labs, decentralized AI, private inference, Apple Silicon, end-to-end encryption, OpenAI compatible, Mac GPU compute, AI inference, hardware verification">
   <meta name="author" content="Eigen Labs">
   <meta name="robots" content="index, follow">
@@ -13,15 +13,15 @@
   <!-- Open Graph -->
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Darkbloom">
-  <meta property="og:title" content="Darkbloom — Private AI Inference on Apple Silicon">
-  <meta property="og:description" content="Decentralized inference on hardware-verified Apple Silicon. End-to-end encrypted. The node operator never sees your data. OpenAI-compatible — change one line.">
+  <meta property="og:title" content="Darkbloom — Cost-Efficient Private AI Inference on Verified Macs">
+  <meta property="og:description" content="Route encrypted AI requests to hardware-verified Apple Silicon providers. Comparable model performance, operator-blind privacy, and about 50% lower cost than typical API providers.">
   <meta property="og:url" content="https://darkbloom.dev">
 
   <!-- Twitter / X -->
   <meta name="twitter:card" content="summary">
   <meta name="twitter:site" content="@eigen_labs">
-  <meta name="twitter:title" content="Darkbloom — Private AI Inference on Apple Silicon">
-  <meta name="twitter:description" content="Decentralized inference on hardware-verified Apple Silicon. End-to-end encrypted. OpenAI-compatible.">
+  <meta name="twitter:title" content="Darkbloom — Cost-Efficient Private AI Inference on Verified Macs">
+  <meta name="twitter:description" content="Encrypted inference on hardware-verified Apple Silicon. Comparable model performance, operator-blind privacy, and about 50% lower cost.">
 
   <!-- Favicon -->
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 221 253'><path d='M126.46 126.46H94.85V189.67H63.22V126.44V0H0V126.44V189.67V252.89V252.91H63.22V252.89H94.85V252.91H126.46V252.89H189.69V189.67H126.46V126.46Z' fill='%231A0C6D'/><path d='M221.31 0H189.7V63.22H221.31V0Z' fill='%231A0C6D'/><path d='M158.08 0H126.46V0.01H96.13V31.62H126.46V126.44H158.08V126.43H189.69V63.2H158.08V0Z' fill='%231A0C6D'/></svg>">
@@ -32,7 +32,7 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "Darkbloom",
-    "description": "Decentralized AI inference network that runs on idle Apple Silicon machines. Every node is hardware-verified and every prompt is end-to-end encrypted.",
+    "description": "Cost-efficient private AI inference routed to hardware-verified Apple Silicon providers. Prompts are end-to-end encrypted and hidden from node operators.",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "macOS",
     "url": "https://darkbloom.dev",
@@ -343,17 +343,6 @@
       padding: 180px 0 100px;
     }
 
-    .hero-label {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      font-weight: 400;
-      color: var(--eigen-blue);
-      letter-spacing: 0.02em;
-      margin-bottom: 14px;
-      opacity: 0;
-      animation: slideUp 0.5s ease 0.2s forwards;
-    }
-
     .hero h1 {
       font-size: clamp(44px, 6.5vw, 80px);
       font-weight: 700;
@@ -390,6 +379,15 @@
     @keyframes slideUp {
       from { opacity: 0; transform: translateY(10px); }
       to { opacity: 1; transform: none; }
+    }
+
+    .hero-illustration {
+      width: 100%;
+      max-width: 400px;
+      height: auto;
+      flex-shrink: 0;
+      opacity: 0;
+      animation: slideUp 0.8s ease 0.8s forwards;
     }
 
     /* ==================== BUTTONS (brand book: black bg, mono font, arrow) ==================== */
@@ -752,50 +750,6 @@
     }
     .pnote { font-family: var(--font-mono); font-size: 11px; color: var(--grey-02); text-align: center; margin-top: 12px; }
 
-    .pmini-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 1px;
-      background: var(--grey-01);
-      border-radius: var(--radius-lg);
-      overflow: hidden;
-      margin-top: 20px;
-    }
-
-    .pmini {
-      background: var(--white);
-      padding: 28px;
-      text-align: center;
-    }
-
-    .pmini h4 {
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--grey-03);
-      margin-bottom: 8px;
-    }
-
-    .pmini .val {
-      font-family: var(--font-mono);
-      font-size: 24px;
-      font-weight: 500;
-      color: var(--eigen-blue);
-    }
-
-    .pmini .unit {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--grey-02);
-      margin-top: 4px;
-    }
-
-    .pmini .vs {
-      font-size: 11px;
-      color: var(--grey-02);
-      margin-top: 6px;
-      text-decoration: line-through;
-    }
-
     /* ==================== EARN / RUN A NODE ==================== */
     .install-box {
       border-radius: var(--radius-lg);
@@ -853,37 +807,60 @@
     .csec { margin-bottom: 24px; }
     .pills { display: flex; flex-wrap: wrap; gap: 5px; }
 
-    .cresults {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1px;
-      background: var(--grey-01);
-      border-radius: var(--radius-lg);
-      overflow: hidden;
-      margin-top: 28px;
+    .calc-hint { font-size: 12px; color: var(--grey-03); margin: -4px 0 12px; line-height: 1.45; }
+    .calc-model-list { border: 1px solid var(--grey-01); border-radius: var(--radius-sm); overflow: hidden; }
+    .calc-model-row {
+      display: flex; align-items: center; gap: 12px; width: 100%;
+      padding: 12px 16px; border: none; background: var(--white);
+      font-family: var(--font-sans); cursor: pointer; text-align: left;
+      border-left: 2px solid transparent;
     }
-
-    .rcard { background: var(--white); padding: 28px; text-align: center; }
-    .rbadge {
-      display: inline-block;
-      font-family: var(--font-mono);
-      font-size: 10px;
-      font-weight: 400;
-      letter-spacing: 0.02em;
-      padding: 3px 8px;
-      border-radius: var(--radius-sm);
-      margin-bottom: 8px;
+    .calc-model-row + .calc-model-row { border-top: 1px solid var(--grey-01); }
+    .calc-model-row.on { background: rgba(26, 12, 109, 0.06); border-left-color: var(--eigen-blue); }
+    .calc-model-row.disabled { opacity: 0.45; cursor: not-allowed; }
+    .calc-model-row .calc-radio {
+      width: 14px; height: 14px; border-radius: 3px; border: 2px solid var(--grey-02);
+      flex-shrink: 0; display: flex; align-items: center; justify-content: center;
     }
-    .rb-t { color: var(--eigen-blue); background: rgba(26, 12, 109, 0.06); }
-    .rb-i { color: #7c3aed; background: rgba(124, 58, 237, 0.06); }
-    .rmodel { font-size: 13px; color: var(--grey-03); margin-bottom: 4px; }
-    .rnum { font-size: 40px; font-weight: 700; letter-spacing: -0.03em; line-height: 1; }
-    .rnum-t { color: var(--eigen-blue); }
-    .rnum-i { color: #7c3aed; }
-    .rannual { font-family: var(--font-mono); font-size: 12px; color: var(--grey-02); margin-top: 6px; }
-    .rbreak { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--grey-01); }
-    .rbreak .lbl { font-family: var(--font-mono); font-size: 10px; color: var(--grey-02); letter-spacing: 0.02em; }
-    .rbreak .val { font-family: var(--font-mono); font-size: 12px; font-weight: 500; }
+    .calc-model-row.on .calc-radio { border-color: var(--eigen-blue); }
+    .calc-model-row.on .calc-radio::after {
+      content: ''; width: 6px; height: 6px; border-radius: 1px; background: var(--eigen-blue);
+    }
+    .calc-model-name { flex: 1; font-size: 14px; font-weight: 500; min-width: 0; }
+    .calc-model-net { font-family: var(--font-mono); font-size: 13px; white-space: nowrap; }
+    .calc-model-net.pos { color: var(--eigen-blue); }
+    .calc-model-net.neg { color: #b91c1c; }
+    .calc-model-row.unprofitable .calc-model-name { text-decoration: line-through; color: var(--grey-02); }
+    .calc-model-badge {
+      font-family: var(--font-mono); font-size: 10px; padding: 2px 8px;
+      border: 1px solid rgba(26, 12, 109, 0.2); color: var(--eigen-blue); border-radius: 4px;
+    }
+    .calc-model-note {
+      padding: 0 16px 12px 42px; font-size: 12px; color: var(--grey-03); line-height: 1.45;
+      border-top: 1px solid var(--grey-01); background: rgba(26, 12, 109, 0.03);
+    }
+    .calc-sliders { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+    .calc-elec-wrap { display: flex; align-items: baseline; gap: 6px; margin-top: 8px; }
+    .calc-elec-wrap input {
+      width: 80px; padding: 8px 10px; border: 1px solid var(--grey-01);
+      border-radius: 4px; font-family: var(--font-mono); font-size: 14px;
+    }
+    .calc-elec-hint { font-size: 11px; color: var(--grey-02); margin-top: 8px; font-family: var(--font-mono); }
+    .calc-results { margin-top: 28px; border-top: 1px solid var(--grey-01); padding-top: 28px; }
+    .calc-results-hero { text-align: center; padding-bottom: 24px; margin-bottom: 24px; border-bottom: 1px solid var(--grey-01); }
+    .calc-net-label { font-family: var(--font-mono); font-size: 11px; color: var(--grey-03); text-transform: uppercase; letter-spacing: 0.06em; }
+    .calc-net-big { font-size: 44px; font-weight: 700; color: var(--eigen-blue); letter-spacing: -0.03em; margin: 8px 0 4px; line-height: 1; }
+    .calc-net-annual { font-family: var(--font-mono); font-size: 13px; color: var(--grey-03); }
+    .calc-serving { font-size: 13px; color: var(--grey-03); margin-bottom: 20px; text-align: center; }
+    .calc-serving strong { color: var(--black); font-weight: 600; }
+    .calc-detail-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+    .calc-detail-grid .lbl { font-family: var(--font-mono); font-size: 10px; color: var(--grey-02); letter-spacing: 0.02em; }
+    .calc-detail-grid .val { font-family: var(--font-mono); font-size: 13px; font-weight: 500; margin-top: 4px; }
+    .calc-detail-grid .val.neg { color: #b91c1c; }
+    .calc-empty {
+      margin-top: 24px; padding: 24px; text-align: center; color: var(--grey-03); font-size: 14px;
+      border: 1px solid var(--grey-01); border-radius: var(--radius-sm); line-height: 1.5;
+    }
 
     input[type=range] {
       -webkit-appearance: none;
@@ -933,70 +910,6 @@
     }
     .paper-cta h4 { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; margin-bottom: 2px; }
     .paper-cta p { font-size: 13px; color: var(--grey-03); letter-spacing: 0.02em; }
-
-    /* Models */
-    .mlist { border: 1px solid var(--grey-01); border-radius: var(--radius-lg); overflow: hidden; }
-    .mitem {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 16px 24px; background: var(--white);
-      border-top: 1px solid var(--grey-01);
-      transition: background 0.1s;
-    }
-    .mitem:first-child { border-top: none; }
-    .mitem:hover { background: var(--off-white); }
-    .mname { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; display: flex; align-items: center; gap: 6px; }
-
-    /* Info tooltip */
-    .info-tip {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 16px;
-      height: 16px;
-      font-size: 11px;
-      font-weight: 400;
-      color: var(--grey-02);
-      cursor: help;
-      position: relative;
-      flex-shrink: 0;
-    }
-    .info-tip::after {
-      content: attr(data-tip);
-      position: absolute;
-      bottom: calc(100% + 8px);
-      left: 50%;
-      transform: translateX(-50%);
-      background: var(--black);
-      color: var(--white);
-      font-family: var(--font-mono);
-      font-size: 11px;
-      font-weight: 400;
-      letter-spacing: 0.01em;
-      line-height: 1.5;
-      padding: 10px 14px;
-      border-radius: var(--radius-sm);
-      width: 260px;
-      white-space: normal;
-      pointer-events: none;
-      opacity: 0;
-      transition: opacity 0.15s;
-      z-index: 10;
-    }
-    .info-tip:hover::after {
-      opacity: 1;
-    }
-    .mdesc { font-size: 12px; color: var(--grey-02); margin-top: 2px; letter-spacing: 0.02em; }
-    .mtag {
-      font-family: var(--font-mono);
-      font-size: 10px;
-      font-weight: 400;
-      letter-spacing: 0.02em;
-      padding: 3px 10px;
-      border-radius: var(--radius-sm);
-    }
-    .mt-text { color: var(--eigen-blue); background: rgba(26, 12, 109, 0.06); }
-    .mt-image { color: #7c3aed; background: rgba(124, 58, 237, 0.06); }
-    .mt-audio { color: #0369a1; background: rgba(3, 105, 161, 0.06); }
 
     /* Footer */
     footer {
@@ -1056,17 +969,14 @@
     @media (max-width: 768px) {
       .hero { padding: 170px 0 40px; }
       section { padding: 56px 0; }
-      .card-grid, .stat-grid, .cresults { grid-template-columns: 1fr; }
+      .card-grid, .stat-grid, .calc-sliders, .calc-detail-grid { grid-template-columns: 1fr; }
       .feat-grid { grid-template-columns: 1fr; }
-      .pmini-grid { grid-template-columns: 1fr; }
-      .mitem { flex-direction: column; align-items: flex-start; gap: 8px; }
       header nav { display: none; }
       .eigen-block { padding: 40px 28px; }
       .hero .container { display: flex !important; flex-direction: column; }
       .hero .container > div:first-child { display: contents; }
-      .hero-label { display: none; }
       .hero h1 { order: 2; margin-bottom: 0; }
-      .hero-illustration { order: 3; width: 100%; max-width: 240px; margin: 10px auto; height: auto; }
+      .hero-illustration { order: 3; width: 100%; max-width: min(100%, 360px); margin: 16px auto; height: auto; }
       .hero .lead { order: 4; margin-bottom: 0; }
       .hero .ctas, .ctas { order: 5; margin-top: 0; }
     }
@@ -1087,18 +997,18 @@
       <span class="logo-wordmark">Darkbloom</span>
     </a>
     <nav>
-      <a href="#thesis">Motivation</a>
-      <a href="#security">Approach</a>
-      <a href="#api">Implementation</a>
-      <a href="#pricing">Results</a>
-      <a href="#nodes">Operator Economics</a>
+      <a href="#thesis">Why</a>
+      <a href="#security">Privacy</a>
+      <a href="#api">API</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#nodes">Earn</a>
     </nav>
   </div>
 </header>
 
 <!-- ============ RESEARCH TAG ============ -->
 <div class="research-tag">
-  <span>Research Preview — An Eigen Labs Initiative</span>
+  <span>Research Preview - Private inference on verified Apple Silicon</span>
 </div>
 
 <main>
@@ -1107,87 +1017,86 @@
   <section class="hero">
     <div class="container" style="display: grid; grid-template-columns: 1fr auto; gap: 48px; align-items: center;">
       <div>
-        <div class="hero-label">Eigen Labs Research</div>
-        <h1 style="font-family: var(--font-logo); font-weight: 400;">Private inference on idle Macs</h1>
-        <p class="lead">We present Darkbloom, a decentralized inference network. AI compute today flows through three layers of markup — GPU manufacturers to hyperscalers to API providers to end users. Meanwhile, <strong>over 100 million Apple Silicon machines</strong> sit idle for most of each day. We built a network that connects them directly to demand. Operators cannot observe inference data. The API is <strong>OpenAI-compatible</strong>. Our measurements show <strong>up to 70% lower costs</strong> compared to centralized alternatives. Operators retain <strong>95% of revenue</strong>.</p>
+        <h1 style="font-family: var(--font-logo); font-weight: 400;">Cost-efficient private AI inference</h1>
+        <p class="lead">Darkbloom routes encrypted requests to hardware-verified Apple Silicon providers, delivering comparable model performance at about <strong>50% lower cost</strong> than typical API providers. Prompts stay hidden from operators, and Mac owners earn from compute they already own.</p>
         <div class="ctas">
-          <a href="https://console.darkbloom.dev" class="btn btn-primary" target="_blank">Use Darkbloom ↗</a>
-          <a href="https://console.darkbloom.dev/earn" class="btn btn-outline" target="_blank">Start Earning ↗</a>
+          <a href="https://console.darkbloom.dev" class="btn btn-primary" target="_blank">Start building ↗</a>
+          <a href="https://console.darkbloom.dev/earn" class="btn btn-outline" target="_blank">Estimate earnings ↗</a>
           <a href="https://github.com/Layr-Labs/d-inference/blob/master/papers/dginf-private-inference.pdf" class="btn btn-outline" target="_blank">Read the Paper ↗</a>
         </div>
       </div>
-      <!-- Architecture flow diagram -->
-      <svg class="hero-illustration" width="320" height="280" viewBox="0 0 320 280" fill="none" xmlns="http://www.w3.org/2000/svg" style="opacity: 0; animation: slideUp 0.8s ease 0.8s forwards;">
-        <!-- User / App -->
-        <rect x="60" y="8" width="200" height="44" rx="10" fill="white" stroke="#D8DCE5" stroke-width="1.2"/>
-        <text x="160" y="35" text-anchor="middle" style="font-family:'ABC Repro',sans-serif;font-size:14px;font-weight:600;fill:#000">User / App</text>
+      <!-- Product routing diagram -->
+      <svg class="hero-illustration" width="400" height="340" viewBox="0 0 400 340" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Darkbloom routes encrypted AI requests to verified Mac providers at lower cost">
+        <defs>
+          <linearGradient id="heroGlow" x1="80" y1="40" x2="320" y2="300" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#F7F8FA"/>
+            <stop offset="1" stop-color="#EEF4FF"/>
+          </linearGradient>
+          <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="#1A0C6D" flood-opacity="0.10"/>
+          </filter>
+          <style>
+            .hero-sans { font-family: 'ABC Repro', system-ui, sans-serif; }
+            .hero-mono { font-family: 'ABC Repro Mono', ui-monospace, monospace; }
+          </style>
+        </defs>
 
-        <!-- Arrow: encrypted -->
-        <line x1="160" y1="52" x2="160" y2="82" stroke="#1A0C6D" stroke-width="1.2"/>
-        <polygon points="156,79 160,87 164,79" fill="#1A0C6D"/>
-        <rect x="170" y="58" width="74" height="20" rx="10" fill="rgba(26,12,109,0.06)"/>
-        <text x="207" y="72" text-anchor="middle" style="font-family:'ABC Repro Mono',monospace;font-size:10px;fill:#1A0C6D">encrypted</text>
+        <rect x="16" y="18" width="368" height="304" rx="28" fill="url(#heroGlow)"/>
+        <circle cx="204" cy="164" r="94" fill="#fff" opacity="0.75"/>
 
-        <!-- Darkbloom coordinator (with Eigen symbol inside) -->
-        <rect x="60" y="88" width="200" height="56" rx="10" fill="white" stroke="#D8DCE5" stroke-width="1.2"/>
-        <!-- Eigen symbol inside box, centered above text -->
-        <g transform="translate(155,97) scale(0.045)">
-          <path d="M126.46 126.46H94.85V189.67H63.22V126.44V0H0V126.44V189.67V252.89V252.91H63.22V252.89H94.85V252.91H126.46V252.89H189.69V189.67H126.46V126.46Z" fill="#1A0C6D"/>
-          <path d="M221.31 0H189.7V63.22H221.31V0Z" fill="#1A0C6D"/>
-          <path d="M158.08 0H126.46V0.01H96.13V31.62H126.46V126.44H158.08V126.43H189.69V63.2H158.08V0Z" fill="#1A0C6D"/>
+        <!-- Main route -->
+        <path d="M98 132 C130 132 136 170 166 170" stroke="#1A0C6D" stroke-width="1.8" stroke-linecap="round"/>
+        <path d="M234 170 C268 170 272 132 306 132" stroke="#1A0C6D" stroke-width="1.8" stroke-linecap="round"/>
+        <polygon points="160,166 168,170 160,174" fill="#1A0C6D"/>
+        <polygon points="300,128 308,132 300,136" fill="#1A0C6D"/>
+
+        <!-- App -->
+        <g filter="url(#softShadow)">
+          <rect x="34" y="92" width="96" height="80" rx="16" fill="#fff" stroke="#D8DCE5"/>
+          <rect x="50" y="112" width="64" height="8" rx="4" fill="#1A0C6D" opacity="0.18"/>
+          <rect x="50" y="128" width="42" height="8" rx="4" fill="#95BFFF" opacity="0.75"/>
+          <text x="82" y="153" text-anchor="middle" class="hero-sans" font-size="13" font-weight="600" fill="#000">Your app</text>
         </g>
-        <text x="160" y="124" text-anchor="middle" style="font-family:'ABC Repro',sans-serif;font-size:14px;font-weight:600;fill:#000">Coordinator</text>
 
-        <!-- Trunk from coordinator to branch point -->
-        <line x1="160" y1="144" x2="160" y2="172" stroke="#1A0C6D" stroke-width="1.2"/>
-
-        <!-- "routes" label -->
-        <rect x="170" y="148" width="56" height="20" rx="10" fill="rgba(26,12,109,0.06)"/>
-        <text x="198" y="162" text-anchor="middle" style="font-family:'ABC Repro Mono',monospace;font-size:10px;fill:#1A0C6D">routes</text>
-
-        <!-- Branch: left -->
-        <path d="M160,172 L56,172 L56,204" fill="none" stroke="#1A0C6D" stroke-width="1.2"/>
-        <polygon points="52,201 56,209 60,201" fill="#1A0C6D"/>
-        <!-- Branch: center -->
-        <line x1="160" y1="172" x2="160" y2="204" stroke="#1A0C6D" stroke-width="1.2"/>
-        <polygon points="156,201 160,209 164,201" fill="#1A0C6D"/>
-        <!-- Branch: right -->
-        <path d="M160,172 L264,172 L264,204" fill="none" stroke="#1A0C6D" stroke-width="1.2"/>
-        <polygon points="260,201 264,209 268,201" fill="#1A0C6D"/>
-
-        <!-- Mac Studio (with Apple logo inside) -->
-        <rect x="12" y="210" width="88" height="58" rx="10" fill="white" stroke="#1A0C6D" stroke-width="1.5"/>
-        <g transform="translate(49,215) scale(0.35)">
-          <path d="M15.57 3.32C16.5 2.21 17.13.67 16.96 0c-1.5.06-3.31 1-4.38 2.25-.96 1.11-1.8 2.88-1.57 4.58 1.67.13 3.38-.85 4.56-3.51zM16.92 7.47c-2.66-.16-4.92 1.51-6.19 1.51s-3.22-1.43-5.3-1.39C2.7 7.63.19 9.22-1.21 11.66c-2.83 4.91-.73 12.18 2.03 16.16 1.35 1.95 2.96 4.14 5.08 4.06 2.03-.08 2.8-1.31 5.26-1.31s3.15 1.31 5.3 1.27c2.19-.04 3.59-1.99 4.94-3.95 1.55-2.25 2.19-4.43 2.23-4.55-.04-.04-4.27-1.63-4.31-6.48-.04-4.06 3.31-6.01 3.47-6.09-1.91-2.8-4.86-3.11-5.87-3.26z" fill="#D8DCE5"/>
+        <!-- Darkbloom -->
+        <g filter="url(#softShadow)">
+          <rect x="144" y="112" width="112" height="116" rx="22" fill="#fff" stroke="#1A0C6D" stroke-width="1.3"/>
+          <g transform="translate(184 128) scale(0.145)">
+            <path d="M126.46 126.46H94.85V189.67H63.22V126.44V0H0V126.44V189.67V252.89V252.91H63.22V252.89H94.85V252.91H126.46V252.89H189.69V189.67H126.46V126.46Z" fill="#1A0C6D"/>
+            <path d="M221.31 0H189.7V63.22H221.31V0Z" fill="#1A0C6D"/>
+            <path d="M158.08 0H126.46V0.01H96.13V31.62H126.46V126.44H158.08V126.43H189.69V63.2H158.08V0Z" fill="#1A0C6D"/>
+          </g>
+          <text x="200" y="194" text-anchor="middle" class="hero-sans" font-size="14" font-weight="600" fill="#000">Darkbloom</text>
         </g>
-        <text x="56" y="242" text-anchor="middle" style="font-family:'ABC Repro',sans-serif;font-size:11px;font-weight:600;fill:#000">Mac Studio</text>
-        <text x="56" y="257" text-anchor="middle" style="font-family:'ABC Repro Mono',monospace;font-size:9px;fill:#1A0C6D">&#x2713; verified</text>
 
-        <!-- MacBook Pro (with Apple logo inside) -->
-        <rect x="116" y="210" width="88" height="58" rx="10" fill="white" stroke="#1A0C6D" stroke-width="1.5"/>
-        <g transform="translate(153,215) scale(0.35)">
-          <path d="M15.57 3.32C16.5 2.21 17.13.67 16.96 0c-1.5.06-3.31 1-4.38 2.25-.96 1.11-1.8 2.88-1.57 4.58 1.67.13 3.38-.85 4.56-3.51zM16.92 7.47c-2.66-.16-4.92 1.51-6.19 1.51s-3.22-1.43-5.3-1.39C2.7 7.63.19 9.22-1.21 11.66c-2.83 4.91-.73 12.18 2.03 16.16 1.35 1.95 2.96 4.14 5.08 4.06 2.03-.08 2.8-1.31 5.26-1.31s3.15 1.31 5.3 1.27c2.19-.04 3.59-1.99 4.94-3.95 1.55-2.25 2.19-4.43 2.23-4.55-.04-.04-4.27-1.63-4.31-6.48-.04-4.06 3.31-6.01 3.47-6.09-1.91-2.8-4.86-3.11-5.87-3.26z" fill="#D8DCE5"/>
+        <!-- Verified provider stack -->
+        <g filter="url(#softShadow)">
+          <rect x="284" y="68" width="82" height="48" rx="12" fill="#fff" stroke="#D8DCE5"/>
+          <text x="325" y="90" text-anchor="middle" class="hero-sans" font-size="11" font-weight="600" fill="#000">Mac Studio</text>
+          <text x="325" y="105" text-anchor="middle" class="hero-mono" font-size="8" fill="#1A0C6D">verified</text>
+
+          <rect x="274" y="124" width="102" height="58" rx="14" fill="#fff" stroke="#1A0C6D" stroke-width="1.2"/>
+          <text x="325" y="149" text-anchor="middle" class="hero-sans" font-size="12" font-weight="600" fill="#000">Verified Macs</text>
+          <text x="325" y="166" text-anchor="middle" class="hero-mono" font-size="9" fill="#1A0C6D">serve inference</text>
+
+          <rect x="284" y="190" width="82" height="48" rx="12" fill="#fff" stroke="#D8DCE5"/>
+          <text x="325" y="212" text-anchor="middle" class="hero-sans" font-size="11" font-weight="600" fill="#000">MacBook</text>
+          <text x="325" y="227" text-anchor="middle" class="hero-mono" font-size="8" fill="#1A0C6D">verified</text>
         </g>
-        <text x="160" y="242" text-anchor="middle" style="font-family:'ABC Repro',sans-serif;font-size:11px;font-weight:600;fill:#000">MacBook Pro</text>
-        <text x="160" y="257" text-anchor="middle" style="font-family:'ABC Repro Mono',monospace;font-size:9px;fill:#1A0C6D">&#x2713; verified</text>
 
-        <!-- Mac Mini (with Apple logo inside) -->
-        <rect x="220" y="210" width="88" height="58" rx="10" fill="white" stroke="#1A0C6D" stroke-width="1.5"/>
-        <g transform="translate(257,215) scale(0.35)">
-          <path d="M15.57 3.32C16.5 2.21 17.13.67 16.96 0c-1.5.06-3.31 1-4.38 2.25-.96 1.11-1.8 2.88-1.57 4.58 1.67.13 3.38-.85 4.56-3.51zM16.92 7.47c-2.66-.16-4.92 1.51-6.19 1.51s-3.22-1.43-5.3-1.39C2.7 7.63.19 9.22-1.21 11.66c-2.83 4.91-.73 12.18 2.03 16.16 1.35 1.95 2.96 4.14 5.08 4.06 2.03-.08 2.8-1.31 5.26-1.31s3.15 1.31 5.3 1.27c2.19-.04 3.59-1.99 4.94-3.95 1.55-2.25 2.19-4.43 2.23-4.55-.04-.04-4.27-1.63-4.31-6.48-.04-4.06 3.31-6.01 3.47-6.09-1.91-2.8-4.86-3.11-5.87-3.26z" fill="#D8DCE5"/>
+        <!-- Benefit chips -->
+        <g>
+          <rect x="40" y="268" width="88" height="30" rx="15" fill="#fff" stroke="#D8DCE5"/>
+          <text x="84" y="287" text-anchor="middle" class="hero-mono" font-size="10" fill="#1A0C6D">Encrypted</text>
+
+          <rect x="142" y="268" width="116" height="30" rx="15" fill="#1A0C6D"/>
+          <text x="200" y="287" text-anchor="middle" class="hero-mono" font-size="10" fill="#fff">50% lower cost</text>
+
+          <rect x="272" y="268" width="88" height="30" rx="15" fill="#fff" stroke="#D8DCE5"/>
+          <text x="316" y="287" text-anchor="middle" class="hero-mono" font-size="10" fill="#1A0C6D">Private</text>
         </g>
-        <text x="264" y="242" text-anchor="middle" style="font-family:'ABC Repro',sans-serif;font-size:11px;font-weight:600;fill:#000">Mac Mini</text>
-        <text x="264" y="257" text-anchor="middle" style="font-family:'ABC Repro Mono',monospace;font-size:9px;fill:#1A0C6D">&#x2713; verified</text>
 
-        <!-- Response: Mac Studio → Coordinator → Your app -->
-        <path d="M12,239 L6,239 L6,30" fill="none" stroke="#95BFFF" stroke-width="1" stroke-dasharray="4,3"/>
-        <line x1="6" y1="116" x2="56" y2="116" stroke="#95BFFF" stroke-width="1" stroke-dasharray="4,3"/>
-        <polygon points="53,113 58,116 53,119" fill="#95BFFF"/>
-        <circle cx="6" cy="116" r="2.5" fill="#95BFFF"/>
-        <line x1="6" y1="30" x2="56" y2="30" stroke="#95BFFF" stroke-width="1" stroke-dasharray="4,3"/>
-        <polygon points="53,27 58,30 53,33" fill="#95BFFF"/>
-        <circle cx="6" cy="30" r="2.5" fill="#95BFFF"/>
-        <text x="6" y="180" text-anchor="middle" style="font-family:'ABC Repro Mono',monospace;font-size:9px;fill:#95BFFF" transform="rotate(-90,6,180)">response</text>
+        <text x="200" y="48" text-anchor="middle" class="hero-mono" font-size="10" fill="#6B7280">encrypted request in - private result out</text>
       </svg>
     </div>
   </section>
@@ -1198,19 +1107,19 @@
   <section>
     <div class="container">
       <div class="rv">
-        <div class="sec-label">01 — What this enables</div>
+        <div class="sec-label">01 - What You Get</div>
       </div>
       <div class="card-grid rv">
         <div class="card">
-          <div class="card-label">For users</div>
-          <h3>Inference at half the cost</h3>
-          <p>Idle hardware has near-zero marginal cost. That saving passes through to price. OpenAI-compatible API for chat completions. Every request is end-to-end encrypted.</p>
+          <div class="card-label">For developers</div>
+          <h3>Private inference without a new SDK</h3>
+          <p>Change the base URL and keep your existing OpenAI client. Requests are encrypted before they leave your app and routed to verified Apple Silicon providers.</p>
           <a href="https://console.darkbloom.dev" target="_blank" class="btn btn-primary" style="margin-top:20px;">Open Console ↗</a>
         </div>
         <div class="card">
-          <div class="card-label">For hardware owners</div>
-          <h3>Earn USD from idle Apple Silicon</h3>
-          <p>Your Mac already has the hardware. Operators keep 100% of inference revenue. Electricity cost on Apple Silicon runs $0.01–0.03 per hour depending on workload. The rest is profit.</p>
+          <div class="card-label">For Mac owners</div>
+          <h3>Turn idle Apple Silicon into earnings</h3>
+          <p>Run a provider on hardware you already own. Darkbloom matches your Mac with inference demand, and operators keep 100% of inference revenue during the research preview.</p>
           <a href="https://console.darkbloom.dev/earn" target="_blank" class="btn btn-primary" style="margin-top:20px;">Start Earning ↗</a>
         </div>
       </div>
@@ -1223,13 +1132,13 @@
   <section id="thesis">
     <div class="container" style="max-width: 680px;">
       <div class="rv">
-        <div class="sec-label">02 — Motivation</div>
+        <div class="sec-label">02 - Why It Costs Less</div>
         <div class="narrative">
-          <span class="dim">The AI compute market has three layers of margin.</span><br><br>
-          NVIDIA sells GPUs to hyperscalers. AWS, Google, Azure, and CoreWeave mark them up and rent capacity to AI companies. AI companies mark them up again and charge end users per token. Each layer takes a cut. End users pay multiples of what the silicon actually costs to run.
+          <span class="dim">Most inference pricing includes several layers between silicon and the developer.</span><br><br>
+          Capacity is bought, rented, repackaged, and metered before it reaches an API call. Each layer adds margin. Darkbloom routes demand to idle Apple Silicon instead, where the hardware is already paid for and the marginal cost is mostly electricity.
         </div>
         <div class="logo-strip">
-          <span class="strip-label">Current supply chain</span>
+          <span class="strip-label">Typical API supply chain</span>
           <img src="assets/logos/nvidia.svg" alt="NVIDIA" height="18">
           <span style="font-size:16px;color:var(--grey-01);">→</span>
           <img src="assets/logos/aws.svg" alt="AWS" height="20">
@@ -1242,18 +1151,16 @@
           <span style="font-family:var(--font-mono);font-size:11px;color:var(--grey-02);">End users</span>
         </div>
         <div class="narrative">
-          This concentrates both wealth and access. A small number of companies control the supply. Everyone else rents.<br><br>
-          Meanwhile, Apple has shipped over 100 million machines with serious ML hardware. Unified memory architectures. 273 to 819 GB/s memory bandwidth. Neural Engines. Machines capable of running 235-billion-parameter models. Most sit idle 18 or more hours a day. Their owners earn nothing from this compute.<br><br>
-          <strong>That is not a technology problem. It is a marketplace problem.</strong><br><br>
-          <span class="dim">The pattern is familiar. Airbnb connected idle rooms to travelers. Uber connected idle cars to riders. Rooftop solar turned idle rooftops into energy assets. In each case, distributed idle capacity undercut centralized incumbents on price because the marginal cost was near zero.</span><br><br>
-          Darkbloom does this for AI compute. Idle Macs serve inference. Users pay less because there is no hyperscaler in the middle. Operators earn from hardware they already own. Unlike those other networks, the operator cannot see the user's data.
+          Apple has shipped over 100 million machines with serious ML hardware: unified memory, high bandwidth, Neural Engines, and enough RAM in high-end systems to serve large MoE models. Most of that capacity sits idle for long stretches every day.<br><br>
+          <strong>Darkbloom turns that idle capacity into a private inference market.</strong><br><br>
+          Developers get lower prices without changing SDKs. Mac owners earn from machines they already own. The coordinator matches demand to providers, but prompts stay encrypted and hidden from the operator.
         </div>
       </div>
       <div class="stat-grid rv">
         <div class="stat-cell"><div class="stat-num">100M+</div><div class="stat-label">Apple Silicon machines shipped since 2020</div></div>
-        <div class="stat-cell"><div class="stat-num">3x+</div><div class="stat-label">markup from silicon to end-user API price</div></div>
+        <div class="stat-cell"><div class="stat-num">50%</div><div class="stat-label">lower cost at comparable model performance</div></div>
         <div class="stat-cell"><div class="stat-num">18hrs</div><div class="stat-label">average daily idle time per machine</div></div>
-        <div class="stat-cell"><div class="stat-num">100%</div><div class="stat-label">of revenue goes to the hardware owner</div></div>
+        <div class="stat-cell"><div class="stat-num">100%</div><div class="stat-label">of inference revenue goes to the hardware owner</div></div>
       </div>
     </div>
   </section>
@@ -1264,12 +1171,12 @@
   <section>
     <div class="container" style="max-width: 680px;">
       <div class="rv">
-        <div class="sec-label">03 — The Challenge</div>
+        <div class="sec-label">03 - The Privacy Problem</div>
         <div class="narrative">
-          <span class="dim">Other decentralized compute networks connect buyers and sellers. That is the easy part.</span><br><br>
-          The hard part is trust. You are sending prompts to a machine you do not own, operated by someone you have never met. Your company's internal data. Your users' conversations. Your competitive advantage, running on hardware in someone else's house.<br><br>
-          No enterprise will do this without guarantees stronger than a terms-of-service document.<br><br>
-          <strong>Without verifiable privacy, decentralized inference does not work.</strong>
+          <span class="dim">Routing to idle machines is only useful if the operator cannot read the request.</span><br><br>
+          Prompts can contain customer conversations, internal plans, source code, and other sensitive context. A marketplace promise is not enough when inference runs on hardware you do not own.<br><br>
+          Darkbloom is designed around a stricter guarantee: the coordinator can route requests, the provider can serve them, but neither should get a usable view of the prompt.<br><br>
+          <strong>Private inference requires privacy that can be verified, not just promised.</strong>
         </div>
       </div>
     </div>
@@ -1281,30 +1188,30 @@
   <section id="security">
     <div class="container">
       <div class="rv">
-        <div class="sec-label">04 — Our Approach</div>
-        <h2>Access path elimination</h2>
-        <p class="sec-desc">We eliminate every software path through which an operator could observe inference data. Four independent layers, each independently verifiable.</p>
+        <div class="sec-label">04 - Privacy Architecture</div>
+        <h2>Operator-blind by design</h2>
+        <p class="sec-desc">Darkbloom removes the practical software paths an operator could use to observe inference data. Four layers work together, each independently verifiable.</p>
       </div>
       <div class="card-grid rv">
         <div class="card">
           <div class="card-label">Encryption</div>
           <h3>Encrypted end-to-end</h3>
-          <p>Requests are encrypted on the user's device before transmission. The coordinator routes ciphertext. Only the target node's hardware-bound key can decrypt.</p>
+          <p>Requests are encrypted before transmission. The coordinator routes ciphertext, and only the matched provider's hardware-bound key can decrypt the request.</p>
         </div>
         <div class="card">
           <div class="card-label">Hardware</div>
           <h3>Hardware-verified</h3>
-          <p>Each node holds a key generated inside Apple's tamper-resistant secure hardware. The attestation chain traces back to Apple's root certificate authority.</p>
+          <p>Each provider uses a key generated inside Apple's tamper-resistant secure hardware. The attestation chain traces back to Apple's root certificate authority.</p>
         </div>
         <div class="card">
           <div class="card-label">Runtime</div>
           <h3>Hardened runtime</h3>
-          <p>The inference process is locked at the OS level. Debugger attachment is blocked. Memory inspection is blocked. The operator cannot extract data from a running process.</p>
+          <p>The inference process is locked down at the OS level. Debugger attachment and memory inspection are blocked so the operator cannot inspect a running request.</p>
         </div>
         <div class="card">
           <div class="card-label">Output</div>
           <h3>Traceable to hardware</h3>
-          <p>Every response is signed by the specific machine that produced it. The full attestation chain is published. Anyone can verify it independently.</p>
+          <p>Responses are signed by the specific machine that produced them. The attestation chain is public, so users can verify the hardware behind the result.</p>
         </div>
       </div>
 
@@ -1343,8 +1250,8 @@
 
       <!-- Eigen Blue showcase block — brand element -->
       <div class="eigen-block rv">
-        <h3>The operator runs your inference. They cannot see your data.</h3>
-        <p>Prompts are encrypted before they leave your machine. The coordinator routes traffic it cannot read. The provider decrypts inside a hardened process it cannot inspect. The attestation chain is public.</p>
+        <h3>The operator contributes compute, not visibility.</h3>
+        <p>Your prompt is encrypted before it leaves your app. The coordinator routes traffic it cannot read. The provider serves the request inside a hardened process the operator cannot inspect.</p>
         <a href="#paper" class="btn-white">Read the paper ↗</a>
       </div>
     </div>
@@ -1356,9 +1263,9 @@
   <section id="api">
     <div class="container">
       <div class="rv">
-        <div class="sec-label">05 — Implementation</div>
+        <div class="sec-label">05 - Developer Experience</div>
         <h2>OpenAI-compatible API</h2>
-        <p class="sec-desc">Change the base URL. Everything else works. Streaming, function calling, all existing SDKs.</p>
+        <p class="sec-desc">Keep your SDK, request shape, and streaming code. Point the client at Darkbloom and start routing private inference.</p>
       </div>
       <div class="code-block rv">
         <div class="code-bar">
@@ -1382,8 +1289,8 @@ response = client.chat.completions.create(
     <span class="kw">print</span>(chunk.choices[0].delta.content, end=<span class="str">""</span>)</code></pre>
       </div>
       <div class="feat-grid rv">
-        <div class="feat-item"><svg class="feat-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg><span><strong>Streaming</strong> — SSE, OpenAI format</span></div>
-        <div class="feat-item"><svg class="feat-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg><span><strong>Large MoE</strong> — up to 239B params</span></div>
+        <div class="feat-item"><svg class="feat-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg><span><strong>Streaming</strong> - SSE in the OpenAI format</span></div>
+        <div class="feat-item"><svg class="feat-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20,6 9,17 4,12"/></svg><span><strong>Large MoE</strong> - selected models up to 239B params</span></div>
       </div>
     </div>
   </section>
@@ -1394,25 +1301,22 @@ response = client.chat.completions.create(
   <section id="pricing">
     <div class="container">
       <div class="rv">
-        <div class="sec-label">06 — Results</div>
-        <h2>Cost comparison</h2>
-        <p class="sec-desc">Idle hardware has near-zero marginal cost, so the savings pass through. No subscriptions or minimums. Per-token pricing compared against OpenRouter equivalents.</p>
+        <div class="sec-label">06 - Pricing</div>
+        <h2>50% lower cost, comparable performance</h2>
+        <p class="sec-desc">Idle Apple Silicon keeps the cost structure simple. Pay per token with no subscription or minimum, with selected model prices set around 50% below typical API-provider rates for comparable models.</p>
       </div>
       <div class="rv" style="overflow-x:auto;">
         <table class="ptable">
-          <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>OpenRouter</th><th>Savings</th></tr></thead>
+          <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Typical API</th><th>vs typical API</th></tr></thead>
           <tbody>
-            <tr><td class="mc">Gemma 4 26B<small>4B active, fast multimodal MoE</small></td><td class="op">$0.03</td><td class="op">$0.20</td><td class="cp">$0.40</td><td><span class="stag">50%</span></td></tr>
-            <tr><td class="mc">Qwen3.5 27B<small>Dense, frontier reasoning</small></td><td class="op">$0.10</td><td class="op">$0.78</td><td class="cp">$1.56</td><td><span class="stag">50%</span></td></tr>
-            <tr><td class="mc">Qwen3.5 122B MoE<small>10B active, best quality</small></td><td class="op">$0.13</td><td class="op">$1.04</td><td class="cp">$2.08</td><td><span class="stag">50%</span></td></tr>
-            <tr><td class="mc">MiniMax M2.5 239B<small>11B active, SOTA coding</small></td><td class="op">$0.06</td><td class="op">$0.50</td><td class="cp">$1.00</td><td><span class="stag">50%</span></td></tr>
+            <tr><td class="mc">Gemma 4 26B<small>4B active, fast multimodal MoE</small></td><td class="op">$0.03</td><td class="op">$0.20</td><td class="cp">$0.40</td><td><span class="stag">50% lower</span></td></tr>
+            <tr><td class="mc">Qwen3.5 27B<small>Dense, frontier reasoning</small></td><td class="op">$0.10</td><td class="op">$0.78</td><td class="cp">$1.56</td><td><span class="stag">50% lower</span></td></tr>
+            <tr><td class="mc">Qwen3.5 122B MoE<small>10B active, best quality</small></td><td class="op">$0.13</td><td class="op">$1.04</td><td class="cp">$2.08</td><td><span class="stag">50% lower</span></td></tr>
+            <tr><td class="mc">MiniMax M2.5 239B<small>11B active, SOTA coding</small></td><td class="op">$0.06</td><td class="op">$0.50</td><td class="cp">$1.00</td><td><span class="stag">50% lower</span></td></tr>
           </tbody>
         </table>
       </div>
-      <p class="pnote">Prices per million tokens</p>
-      <div class="pmini-grid rv">
-        <div class="pmini"><h4>Platform Fee</h4><div class="val" style="color:var(--black);">0%</div><div class="unit">operators keep 100%</div><div class="vs" style="text-decoration:none;color:var(--eigen-blue);">transparent</div></div>
-      </div>
+      <p class="pnote">Prices per million tokens. Typical API means published list rates for comparable models from major API providers.</p>
     </div>
   </section>
 
@@ -1422,13 +1326,13 @@ response = client.chat.completions.create(
   <section id="nodes">
     <div class="container">
       <div class="rv">
-        <div class="sec-label">07 — Operator Economics</div>
-        <h2>Operator economics</h2>
-        <p class="sec-desc">Operators contribute idle Apple Silicon and earn USD. 100% of inference revenue goes to the operator. The only variable cost is electricity.</p>
+        <div class="sec-label">07 - Earn</div>
+        <h2>Earn from your Mac</h2>
+        <p class="sec-desc">Install the provider, choose when your Mac is available, and earn from inference jobs matched by the network. During the research preview, operators keep 100% of inference revenue.</p>
       </div>
       <div class="stat-grid rv">
-        <div class="stat-cell"><div class="stat-num">100%</div><div class="stat-label">revenue goes to you</div></div>
-        <div class="stat-cell"><div class="stat-num">~90%</div><div class="stat-label">profit margin</div></div>
+        <div class="stat-cell"><div class="stat-num">100%</div><div class="stat-label">of inference revenue goes to you</div></div>
+        <div class="stat-cell"><div class="stat-num">Low</div><div class="stat-label">marginal cost on Apple Silicon</div></div>
       </div>
       <div class="install-box rv" style="margin-top:24px;">
         <div class="install-tabs">
@@ -1437,60 +1341,75 @@ response = client.chat.completions.create(
         </div>
         <div id="panel-c" class="ipanel">
           <h4>Install via Terminal</h4>
-          <p class="desc">Downloads the provider binary and configures a launchd service.</p>
+          <p class="desc">Downloads the provider binary and configures a background launchd service.</p>
           <div class="code-block"><div class="code-bar"><span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span><span class="code-lang">terminal</span></div><pre><code><span style="color:rgba(255,255,255,0.25);user-select:none;">$ </span>curl -fsSL https://api.darkbloom.dev/install.sh | bash</code></pre></div>
           <div class="imeta" style="margin-top:14px;"><span>No dependencies</span><span>Auto-updates</span><span>Runs as launchd service</span></div>
         </div>
         <div id="panel-a" class="ipanel" style="display:none;">
           <h4>Native macOS Menu Bar App <span class="stag" style="margin-left:8px;">In Development</span></h4>
-          <p class="desc">One-click install. Runs in your menu bar. Currently in active development — use the CLI for now.</p>
+          <p class="desc">A guided setup flow for non-terminal users. The CLI is the supported path during the research preview.</p>
           <div style="width:100%;padding:14px;text-align:center;border-radius:var(--radius-sm);background:var(--off-white);color:var(--grey-03);font-family:var(--font-mono);font-size:13px;border:1px solid var(--grey-01);">Coming soon</div>
           <div class="imeta"><span>Apple Silicon only</span><span>macOS 14+</span><span>Includes CLI + backend</span></div>
         </div>
       </div>
       <script>function swTab(t){document.getElementById('tab-a').classList.toggle('on',t==='a');document.getElementById('tab-c').classList.toggle('on',t==='c');document.getElementById('panel-a').style.display=t==='a'?'block':'none';document.getElementById('panel-c').style.display=t==='c'?'block':'none';}</script>
 
-      <!-- Earnings Calculator -->
+      <!-- Earnings Calculator (logic synced with console-ui/src/app/earn/page.tsx) -->
       <div class="calc-box rv">
         <h3>Earnings estimate</h3>
-        <p class="calc-desc">Select hardware to model projected operator earnings.</p>
-        <div class="csec"><label class="clabel">Machine</label><div class="pills" id="mac-sel"></div></div>
+        <p class="calc-desc">Select your hardware, model, active hours, and electricity cost to estimate provider earnings.</p>
+        <div class="csec"><label class="clabel">1. Mac type</label><div class="pills" id="mac-sel"></div></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
-          <div class="csec"><label class="clabel">Chip</label><div class="pills" id="chip-sel"></div></div>
-          <div class="csec"><label class="clabel">Memory</label><div class="pills" id="ram-sel"></div></div>
+          <div class="csec"><label class="clabel">2. Chip</label><div class="pills" id="chip-sel"></div></div>
+          <div class="csec"><label class="clabel">3. Memory</label><div class="pills" id="ram-sel"></div></div>
         </div>
-        <div class="csec"><label class="clabel">Hours per day: <span id="hrs-val" style="color:var(--eigen-blue);">18</span></label><input type="range" id="hrs-slider" min="1" max="24" value="18"></div>
-        <div class="cresults" id="res-grid">
-          <div id="res-text" class="rcard"><span class="rbadge rb-t">Text</span><div id="t-name" class="rmodel">--</div><div id="t-mo" class="rnum rnum-t">$0</div><div id="t-yr" class="rannual">$0 / year</div><div class="rbreak"><div><div class="lbl">Revenue</div><div id="t-rev" class="val">$0</div></div><div><div class="lbl">Electricity</div><div id="t-elec" class="val" style="color:#b91c1c;">-$0</div></div></div></div>
-          <div id="res-img" class="rcard" style="display:none;"><span class="rbadge rb-i">Image</span><div id="i-name" class="rmodel">--</div><div id="i-mo" class="rnum rnum-i">$0</div><div id="i-yr" class="rannual">$0 / year</div><div class="rbreak"><div><div class="lbl">Revenue</div><div id="i-rev" class="val">$0</div></div><div><div class="lbl">Electricity</div><div id="i-elec" class="val" style="color:#b91c1c;">-$0</div></div></div></div>
+        <div class="csec" style="margin-top:8px;">
+          <label class="clabel">Model</label>
+          <p class="calc-hint" id="model-hint">Auto-selected: most profitable for your hardware</p>
+          <div class="calc-model-list" id="model-list"></div>
         </div>
-        <p id="calc-disc" style="font-family:var(--font-mono);font-size:10px;color:var(--grey-02);margin-top:16px;text-align:center;line-height:1.5;letter-spacing:0.01em;">Estimates only. Actual results depend on network demand and model popularity. Assumes you own the Mac.</p>
+        <div class="calc-sliders csec">
+          <div>
+            <label class="clabel">Inference hours per day: <span id="hrs-val" style="color:var(--eigen-blue);">18</span></label>
+            <input type="range" id="hrs-slider" min="1" max="24" value="18">
+          </div>
+          <div>
+            <label class="clabel">Electricity cost</label>
+            <div class="calc-elec-wrap">
+              <span style="font-size:14px;color:var(--grey-03);">$</span>
+              <input type="number" id="elec-cost" step="0.01" min="0" value="0.15">
+              <span style="font-size:14px;color:var(--grey-03);">/kWh</span>
+            </div>
+            <p class="calc-elec-hint">US avg: $0.15 · EU avg: $0.25 · CA avg: $0.22</p>
+          </div>
+        </div>
+        <div id="calc-empty" class="calc-empty" style="display:none;">No models fit in this memory configuration. Catalog models need at least 36 GB unified memory.</div>
+        <div id="calc-results" class="calc-results" style="display:none;">
+          <p class="calc-serving">Serving <strong id="res-model-name">—</strong> at <span id="res-hours">18</span> hrs/day</p>
+          <div class="calc-results-hero">
+            <p class="calc-net-label">Monthly net earnings</p>
+            <p class="calc-net-big" id="res-monthly-net">$0</p>
+            <p class="calc-net-annual" id="res-annual-net">$0 / year</p>
+          </div>
+          <div class="calc-detail-grid">
+            <div><div class="lbl">Batched decode speed</div><div class="val" id="res-decode">—</div></div>
+            <div><div class="lbl">Monthly revenue</div><div class="val" id="res-revenue">—</div></div>
+            <div><div class="lbl">Monthly electricity</div><div class="val neg" id="res-elec">—</div></div>
+            <div><div class="lbl">Electricity % of revenue</div><div class="val" id="res-elec-pct">—</div></div>
+            <div><div class="lbl">Revenue per hour</div><div class="val" id="res-rev-hr">—</div></div>
+            <div><div class="lbl">Electricity per hour</div><div class="val" id="res-elec-hr">—</div></div>
+            <div><div class="lbl">Net per hour</div><div class="val" id="res-net-hr">—</div></div>
+            <div><div class="lbl">Provider share</div><div class="val">100%</div></div>
+          </div>
+        </div>
+        <p id="calc-disc" style="font-family:var(--font-mono);font-size:10px;color:var(--grey-02);margin-top:16px;text-align:center;line-height:1.5;letter-spacing:0.01em;">Estimates only. Actual earnings depend on demand, model popularity, provider reputation, uptime, and local electricity cost.</p>
       </div>
 
       <!-- Paper CTA -->
       <div class="eigen-block rv" id="paper" style="margin-top: 48px;">
-        <h3>Read the research paper</h3>
-        <p>Architecture specification, threat model, security analysis, and economic model for hardware-verified private inference on distributed Apple Silicon.</p>
+        <h3>Read the technical paper</h3>
+        <p>Architecture, threat model, security analysis, and economic model for private inference on distributed Apple Silicon.</p>
         <a href="https://github.com/Layr-Labs/d-inference/blob/master/papers/dginf-private-inference.pdf" class="btn-white" target="_blank">Download PDF ↗</a>
-      </div>
-    </div>
-  </section>
-
-  <div class="container"><div class="rule"></div></div>
-
-  <!-- ============ MODELS ============ -->
-  <section>
-    <div class="container">
-      <div class="rv">
-        <div class="sec-label">Model Catalog</div>
-        <h2>Available models</h2>
-        <p class="sec-desc">Curated for quality. Only models worth paying for.</p>
-      </div>
-      <div class="mlist rv">
-        <div class="mitem"><div><div class="mname">Gemma 4 26B</div><div class="mdesc">Google's latest — fast multimodal MoE, 4B active params</div></div><span class="mtag mt-text">text</span></div>
-        <div class="mitem"><div><div class="mname">Qwen3.5 27B</div><div class="mdesc">Dense, frontier-quality reasoning (Claude Opus distilled)</div></div><span class="mtag mt-text">text</span></div>
-        <div class="mitem"><div><div class="mname">Qwen3.5 122B MoE <span class="info-tip" data-tip="Requires a high-RAM node (128GB+). Availability depends on provider hardware.">ⓘ</span></div><div class="mdesc">10B active — best quality per token</div></div><span class="mtag mt-text">text</span></div>
-        <div class="mitem"><div><div class="mname">MiniMax M2.5 239B <span class="info-tip" data-tip="Requires a high-RAM node (256GB+). Availability depends on provider hardware.">ⓘ</span></div><div class="mdesc">SOTA coding, 11B active, 100 tok/s on Mac Studio</div></div><span class="mtag mt-text">text</span></div>
       </div>
     </div>
   </section>
@@ -1515,36 +1434,7 @@ response = client.chat.completions.create(
   </div>
 </footer>
 
-<!-- ============ CALCULATOR JS ============ -->
-<script>
-(function(){
-  const C=[{t:"MacBook Air",c:"M3",r:[16,24],b:100,i:8,f:12},{t:"MacBook Air",c:"M4",r:[16,24,32],b:120,i:8,f:12},{t:"MacBook Pro",c:"M3 Pro",r:[18,36],b:150,i:15,f:35},{t:"MacBook Pro",c:"M3 Max",r:[36,48,64,96,128],b:300,i:20,f:45},{t:"MacBook Pro",c:"M4",r:[16,24,32],b:120,i:10,f:20},{t:"MacBook Pro",c:"M4 Pro",r:[24,48],b:273,i:12,f:30},{t:"MacBook Pro",c:"M4 Max",r:[36,48,64,128],b:546,i:20,f:50},{t:"MacBook Pro",c:"M5",r:[16,24,32],b:153,i:10,f:20},{t:"MacBook Pro",c:"M5 Pro",r:[24,48],b:307,i:12,f:30},{t:"MacBook Pro",c:"M5 Max",r:[36,48,64,128],b:614,i:20,f:50},{t:"Mac Mini",c:"M4",r:[16,24,32],b:120,i:5,f:15},{t:"Mac Mini",c:"M4 Pro",r:[24,48],b:273,i:8,f:25},{t:"Mac Studio",c:"M2 Ultra",r:[64,128,192],b:800,i:35,f:100},{t:"Mac Studio",c:"M3 Ultra",r:[96,256,512],b:819,i:35,f:110},{t:"Mac Studio",c:"M4 Max",r:[36,48,64,128],b:546,i:25,f:65},{t:"Mac Studio",c:"M5 Max",r:[36,48,64,128],b:614,i:25,f:65},{t:"Mac Pro",c:"M2 Ultra",r:[64,128,192],b:800,i:40,f:120},{t:"Mac Pro",c:"M3 Ultra",r:[96,256,512],b:819,i:40,f:120}];
-  const M=[{n:"Qwen3.5 27B",y:"text",mr:36,ag:27,sg:27,op:780000},{n:"Trinity Mini",y:"text",mr:48,ag:3,sg:26,op:75000},{n:"Qwen3.5 122B",y:"text",mr:128,ag:10,sg:122,op:1040000},{n:"MiniMax M2.5",y:"text",mr:256,ag:11,sg:243,op:500000}];
-  let s={t:"MacBook Pro",c:"M4 Max",r:48,h:18};
-  const ER={'US':.15,'CA':.12,'GB':.28,'DE':.35,'FR':.21,'AU':.28,'JP':.26,'IN':.08,'SG':.18,'KR':.11};
-  function dr(){try{const l=navigator.language||'en-US',p=l.split('-');if(p.length>=2){const c=p[p.length-1].toUpperCase();if(ER[c])return c;}return'US';}catch(e){return'US';}}
-  const rg=dr(),ec=ER[rg]||.15,lc=navigator.language||'en-US';
-  const fc=(n,d)=>new Intl.NumberFormat(lc,{style:'currency',currency:'USD',minimumFractionDigits:d??2,maximumFractionDigits:d??2}).format(n);
-  const fw=n=>new Intl.NumberFormat(lc,{style:'currency',currency:'USD',minimumFractionDigits:0,maximumFractionDigits:0}).format(n);
-  const gmt=()=>[...new Set(C.map(c=>c.t))],gch=t=>[...new Set(C.filter(c=>c.t===t).map(c=>c.c))],gcf=(t,c)=>C.find(x=>x.t===t&&x.c===c);
-  function calc(m,cf,r,h){let rph;if(m.y==='text'){const fr=r-m.sg,ba=Math.max(1,Math.min(16,Math.floor(fr/2))),be=ba<=4?.8:ba<=8?.85:.9,tp=(cf.b/m.ag)*.6*ba*be;rph=(tp*3600/1e6)*(m.op/1e6);}else{rph=m.bp*(cf.b/m.rb)*(m.pm/1e6);}const mw=cf.f-cf.i,eph=(mw/1000)*ec;return{n:m.n,mo:(rph-eph)*h*30,yr:((rph-eph)*h*30)*12,mr:rph*h*30,me:eph*h*30};}
-  function pill(l,a,fn){const b=document.createElement('button');b.textContent=l;Object.assign(b.style,{padding:'7px 14px',borderRadius:'4px',fontSize:'12px',fontWeight:a?'500':'400',fontFamily:'var(--font-mono)',cursor:'pointer',transition:'all .15s',border:'1px solid',outline:'none',letterSpacing:'0.02em',background:a?'var(--black)':'var(--white)',color:a?'var(--white)':'var(--grey-03)',borderColor:a?'var(--black)':'var(--grey-01)'});b.onmouseenter=()=>{if(!a)b.style.borderColor='var(--grey-03)';};b.onmouseleave=()=>{if(!a)b.style.borderColor='var(--grey-01)';};b.onclick=fn;return b;}
-  function render(){const cf=gcf(s.t,s.c);if(!cf)return;if(!cf.r.includes(s.r))s.r=cf.r[cf.r.length-1];
-    const ms=document.getElementById('mac-sel');ms.innerHTML='';gmt().forEach(t=>ms.appendChild(pill(t,s.t===t,()=>{s.t=t;s.c=gch(t).pop();render();})));
-    const cs=document.getElementById('chip-sel');cs.innerHTML='';gch(s.t).forEach(c=>cs.appendChild(pill(c,s.c===c,()=>{s.c=c;render();})));
-    const rs=document.getElementById('ram-sel');rs.innerHTML='';cf.r.forEach(r=>rs.appendChild(pill(r+' GB',s.r===r,()=>{s.r=r;render();})));
-    const el=M.filter(m=>m.mr<=s.r);let bt=null,bi=null;
-    el.forEach(m=>{const h=m.y==='text'?s.h:Math.min(s.h,12);const r=calc(m,cf,s.r,h);if(m.y==='text'&&(!bt||r.mo>bt.mo))bt=r;else if(m.y==='image'&&(!bi||r.mo>bi.mo))bi=r;});
-    const tc=document.getElementById('res-text');if(bt){tc.style.display='block';document.getElementById('t-name').textContent=bt.n;document.getElementById('t-mo').textContent=fw(bt.mo);document.getElementById('t-yr').textContent=fw(bt.yr)+' / year';document.getElementById('t-rev').textContent=fc(bt.mr);document.getElementById('t-elec').textContent='-'+fc(bt.me);}else tc.style.display='none';
-    const ic=document.getElementById('res-img');if(bi){ic.style.display='block';document.getElementById('i-name').textContent=bi.n;document.getElementById('i-mo').textContent=fw(bi.mo);document.getElementById('i-yr').textContent=fw(bi.yr)+' / year';document.getElementById('i-rev').textContent=fc(bi.mr);document.getElementById('i-elec').textContent='-'+fc(bi.me);}else ic.style.display='none';
-    document.getElementById('res-grid').style.gridTemplateColumns=(bt&&bi)?'1fr 1fr':'1fr';}
-  document.getElementById('hrs-slider').addEventListener('input',e=>{s.h=+e.target.value;document.getElementById('hrs-val').textContent=s.h;render();});
-  document.querySelectorAll('.op,.cp').forEach(el=>{const m=el.textContent.trim().match(/^\$?([\d.]+)$/);if(m)el.textContent=fc(+m[1]);});
-  document.querySelectorAll('.pmini .val').forEach(el=>{const r=el.textContent.trim();if(r==='0%')return;const m=r.match(/^\$?([\d.]+)$/);if(m)el.textContent=fc(+m[1],4);});
-  document.querySelectorAll('.vs').forEach(el=>{const m=el.textContent.trim().match(/([\w.]+):\s*\$?([\d.]+)/);if(m)el.textContent=m[1]+': '+fc(+m[2],4);});
-  render();
-})();
-</script>
+<script src="earn-calculator.js"></script>
 
 <!-- ============ SCROLL REVEAL ============ -->
 <script>

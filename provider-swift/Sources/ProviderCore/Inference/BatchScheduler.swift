@@ -49,6 +49,13 @@ public actor BatchScheduler {
     private var modelContainer: ModelContainer?
     private var modelId: String = ""
     private var modelWeightBytes: Int = 0
+    private var kvBytesPerToken: Int = 400_000
+    private var dynamicTokenBudgetMax: Int = 0
+
+    /// Queue planner for admission control, token budget tracking, and request
+    /// phase management. Created in `loadModel()` once the dynamic token budget
+    /// is known; `nil` before a model is loaded (inline fallback is used).
+    private var planner: BatchQueuePlanner?
 
     private var tokenizer: TokenizerBox?
     private var generator: BatchGenerator?
@@ -60,12 +67,26 @@ public actor BatchScheduler {
     private var cancelledUIDs = Set<Int>()
     private var generationEpoch: UInt64 = 0
     private var engineBusy = false
+    private var observedDecodeTpsEwma: Double = 0
+    private var ewmaInitialized = false
 
     /// Once every active row has received its first token, run several decode
     /// steps per actor/model hop. A single hop per token starves Gemma-class
     /// models because the CPU actor round trip is larger than one GPU step.
     private let decodeBurstSteps = 32
 
+    private var tokenBudgetMax: Int {
+        if dynamicTokenBudgetMax > 0 {
+            return dynamicTokenBudgetMax
+        }
+        return defaultMaxTokens * maxConcurrentRequests
+    }
+
+    private var currentTokenBudgetUsed: Int {
+        let activeBudget = active.values.reduce(0) { $0 + $1.promptTokens + $1.maxTokens }
+        let pendingBudget = pending.reduce(0) { $0 + $1.promptTokens.count + $1.maxTokens }
+        return activeBudget + pendingBudget
+    }
 
     public init(
         maxConcurrentRequests: Int = 4,
@@ -102,11 +123,95 @@ public actor BatchScheduler {
             if let id = ctx.tokenizer.convertTokenToId(ctx.tokenizer.eosToken ?? "") {
                 eos.append([id])
             }
+
+            // Read architecture metadata from config.json. This is more
+            // universal than the KVCacheDimensionProvider protocol (which
+            // some models like Gemma 3/3n don't conform to) and gives us
+            // access to hybrid-architecture fields (num_kv_shared_layers,
+            // global_head_dim, sliding_window_pattern, etc.).
+            var numLayers: Int?
+            var kvHeads: Int?
+            var headDim: Int?
+            var numKvSharedLayers: Int = 0
+            var globalHeadDim: Int?
+            var numGlobalKvHeads: Int?
+            var slidingWindowPattern: Int?
+            var layerTypes: [String]?
+
+            if case .directory(let modelDir) = ctx.configuration.id {
+                let configURL = modelDir.appendingPathComponent("config.json")
+                if let data = try? Data(contentsOf: configURL),
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    // Resolve nested text_config if present (Gemma 4 VLM wraps everything there)
+                    let cfg: [String: Any]
+                    if let textConfig = json["text_config"] as? [String: Any] {
+                        cfg = textConfig
+                    } else {
+                        cfg = json
+                    }
+
+                    numLayers = cfg["num_hidden_layers"] as? Int
+                    kvHeads = cfg["num_key_value_heads"] as? Int
+                        ?? cfg["num_attention_heads"] as? Int  // MHA fallback
+
+                    headDim = cfg["head_dim"] as? Int
+                    if headDim == nil,
+                       let hs = cfg["hidden_size"] as? Int,
+                       let nh = cfg["num_attention_heads"] as? Int, nh > 0 {
+                        headDim = hs / nh
+                    }
+
+                    // Hybrid architecture fields (Gemma 4, Gemma 3n)
+                    numKvSharedLayers = cfg["num_kv_shared_layers"] as? Int ?? 0
+                    globalHeadDim = cfg["global_head_dim"] as? Int
+                    numGlobalKvHeads = cfg["num_global_key_value_heads"] as? Int
+                    // sliding_window_pattern is an Int in Gemma 3/3n/4:
+                    // e.g. 5 means [sliding, sliding, sliding, sliding, full] repeating
+                    slidingWindowPattern = cfg["sliding_window_pattern"] as? Int
+                    layerTypes = cfg["layer_types"] as? [String]
+                }
+            }
+
+            // Clamp architecture values to prevent absurd token budgets from
+            // crafted config.json (operator-writable model directory).
+            let maxLayersBound = 1024
+            let maxHeadsBound = 1024
+            let maxHeadDimBound = 2048
+
+            if let l = numLayers { numLayers = min(max(l, 1), maxLayersBound) }
+            if let h = kvHeads { kvHeads = min(max(h, 1), maxHeadsBound) }
+            if let hd = headDim { headDim = min(max(hd, 1), maxHeadDimBound) }
+            if let ghd = globalHeadDim { globalHeadDim = min(max(ghd, 1), maxHeadDimBound) }
+            if let gkh = numGlobalKvHeads { numGlobalKvHeads = min(max(gkh, 1), maxHeadsBound) }
+            // Clamp numKvSharedLayers to [0, numLayers]
+            if let l = numLayers {
+                numKvSharedLayers = min(max(numKvSharedLayers, 0), l)
+            } else {
+                numKvSharedLayers = max(numKvSharedLayers, 0)
+            }
+            // Clamp slidingWindowPattern to [0, numLayers]
+            if let swp = slidingWindowPattern {
+                let upperBound = numLayers ?? maxLayersBound
+                slidingWindowPattern = min(max(swp, 0), upperBound)
+            }
+            // Cap layerTypes to first numLayers entries
+            if let lt = layerTypes, let l = numLayers, lt.count > l {
+                layerTypes = Array(lt.prefix(l))
+            }
+
             return LoadSnapshot(
                 bytes: bytes,
                 eos: eos,
                 tokenizer: TokenizerBox(ctx.tokenizer),
-                model: ctx.model
+                model: ctx.model,
+                numLayers: numLayers,
+                kvHeads: kvHeads,
+                headDim: headDim,
+                numKvSharedLayers: numKvSharedLayers,
+                globalHeadDim: globalHeadDim,
+                numGlobalKvHeads: numGlobalKvHeads,
+                slidingWindowPattern: slidingWindowPattern,
+                layerTypes: layerTypes
             )
         }
         guard loadEpoch == generationEpoch else { return }
@@ -123,6 +228,73 @@ public actor BatchScheduler {
             completionBatchSize: maxConcurrentRequests
         )
         startWorker()
+
+        // Compute per-token KV cache cost from architecture metadata in
+        // config.json.  This handles:
+        //   - Standard uniform models (Llama, Qwen, Mistral, Gemma 2)
+        //   - GQA / MQA (fewer KV heads than query heads)
+        //   - Hybrid sliding + global attention (Gemma 4, GPT-OSS)
+        //   - KV sharing (Gemma 4, Gemma 3n): only non-shared layers
+        //     allocate KV caches
+        //   - Differing head dimensions per attention type (Gemma 4:
+        //     sliding layers use head_dim, full-attention layers use
+        //     global_head_dim and possibly num_global_key_value_heads)
+        // Falls back to a weight-bytes heuristic when config metadata is
+        // unavailable (e.g. non-HuggingFace model directories).
+        let estimatedKV: Int
+        if let layers = snapshot.numLayers, let kvH = snapshot.kvHeads,
+           let hd = snapshot.headDim, layers > 0, kvH > 0, hd > 0 {
+            estimatedKV = Self.computeKVBytesPerToken(
+                numLayers: layers,
+                kvHeads: kvH,
+                headDim: hd,
+                numKvSharedLayers: snapshot.numKvSharedLayers,
+                globalHeadDim: snapshot.globalHeadDim,
+                numGlobalKvHeads: snapshot.numGlobalKvHeads,
+                slidingWindowPattern: snapshot.slidingWindowPattern,
+                layerTypes: snapshot.layerTypes
+            )
+        } else {
+            estimatedKV = max(snapshot.bytes / 25_000, 100_000)
+        }
+
+        // Cross-check: no real model has KV cache cost below ~1000 bytes per
+        // token (even tiny 2-layer models exceed this). If config.json
+        // produced an implausibly small value, log a warning and fall back
+        // to the weight-bytes heuristic to avoid an absurdly large token
+        // budget that could OOM the system.
+        let kvFloor = 1_000
+        let finalKV: Int
+        if estimatedKV < kvFloor && snapshot.numLayers != nil {
+            let heuristicKV = max(snapshot.bytes / 25_000, 100_000)
+            FileHandle.standardError.write(Data(
+                "[WARN] config.json produced implausibly small kvBytesPerToken=\(estimatedKV); falling back to heuristic=\(heuristicKV)\n".utf8
+            ))
+            finalKV = heuristicKV
+        } else {
+            finalKV = estimatedKV
+        }
+
+        self.kvBytesPerToken = finalKV
+        let totalMemory = Int(ProcessInfo.processInfo.physicalMemory)
+        let osReserve = 4 * 1024 * 1024 * 1024
+        let safetyMargin = totalMemory / 10
+        let availableForKV = totalMemory - snapshot.bytes - osReserve - safetyMargin
+        if availableForKV > 0 && finalKV > 0 {
+            self.dynamicTokenBudgetMax = max(availableForKV / finalKV, 1024)
+        } else {
+            self.dynamicTokenBudgetMax = 1024
+        }
+
+        // Create the planner now that tokenBudgetMax is determined.
+        self.planner = BatchQueuePlanner(
+            policy: BatchSchedulingPolicy(
+                maxConcurrentRequests: maxConcurrentRequests,
+                maxQueuedRequests: 128,
+                maxActiveTokenBudget: tokenBudgetMax,
+                maxTokensPerBatch: 4096
+            )
+        )
     }
 
     public func unloadModel() async {
@@ -134,7 +306,7 @@ public actor BatchScheduler {
     public func submit(
         request: ChatCompletionRequest,
         requestId: String? = nil
-    ) -> AsyncStream<GenerationEvent> {
+    ) async -> AsyncStream<GenerationEvent> {
         let id = requestId ?? "req-\(UUID().uuidString.prefix(12))"
         let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
 
@@ -159,6 +331,40 @@ public actor BatchScheduler {
         }
 
         let maxTokens = request.max_tokens ?? defaultMaxTokens
+
+        // Admission control: use planner when available, fall back to inline check.
+        let requestBudget = promptTokens.count + maxTokens
+        if let planner = self.planner {
+            let result = await planner.admit(
+                id: id,
+                promptTokenCount: promptTokens.count,
+                maxOutputTokens: maxTokens
+            )
+            if case .rejected(_, let reason) = result {
+                let errorMsg: String
+                switch reason {
+                case .requestExceedsActiveTokenBudget:
+                    errorMsg = "token_budget_exhausted: request exceeds active token budget"
+                case .requestExceedsBatchTokenBudget:
+                    errorMsg = "token_budget_exhausted: request exceeds batch token budget"
+                case .queueFull:
+                    errorMsg = "token_budget_exhausted: request queue full"
+                case .duplicateRequestID:
+                    errorMsg = "token_budget_exhausted: duplicate request ID"
+                case .invalidTokenCount:
+                    errorMsg = "token_budget_exhausted: invalid token count"
+                }
+                continuation.yield(.error(errorMsg))
+                continuation.finish()
+                return stream
+            }
+        } else if currentTokenBudgetUsed + requestBudget > tokenBudgetMax {
+            // Fallback: inline check when planner is not yet initialized (no model loaded).
+            continuation.yield(.error("token_budget_exhausted: request requires \(requestBudget) tokens but only \(tokenBudgetMax - currentTokenBudgetUsed) available"))
+            continuation.finish()
+            return stream
+        }
+
         let temperature = request.temperature ?? 0.0
         // Pass `nil` for greedy rows so GenerationBatch.step takes its
         // vectorized fast path (one batched argMax across all rows)
@@ -202,6 +408,11 @@ public actor BatchScheduler {
         let entry = pending.remove(at: index)
         entry.continuation.yield(.error("Request cancelled"))
         entry.continuation.finish()
+
+        // Also remove from the planner's pending queue.
+        if let planner = self.planner {
+            Task { await planner.cancel(requestID: requestId) }
+        }
     }
 
     public func cancelAll() {
@@ -231,16 +442,46 @@ public actor BatchScheduler {
         )
     }
 
-    public func backendCapacity() -> BackendCapacity {
+    public func backendCapacity() async -> BackendCapacity {
         let cap = capacity()
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
+
+        var activeTokens: Int64 = 0
+        var maxTokensPotential: Int64 = 0
+        var activeBudget: Int64 = 0
+        for entry in active.values {
+            activeTokens += Int64(entry.promptTokens + entry.completionTokens)
+            maxTokensPotential += Int64(entry.promptTokens + entry.maxTokens)
+            activeBudget += Int64(entry.promptTokens + entry.maxTokens)
+        }
+
+        var queuedBudget: Int64 = 0
+        for entry in pending {
+            queuedBudget += Int64(entry.promptTokens.count + entry.maxTokens)
+        }
+
+        // When the planner is available, prefer its authoritative snapshot
+        // for budget fields since it tracks the full admission lifecycle.
+        if let planner = self.planner {
+            let snapshot = await planner.snapshot()
+            activeBudget = Int64(snapshot.activeTokenBudgetUsed)
+            queuedBudget = Int64(snapshot.queuedTokenBudget)
+        }
+
+        let budgetMax = Int64(tokenBudgetMax)
+
         let slot = BackendSlotCapacity(
             model: cap.model,
             state: cap.activeRequests > 0 ? "running" : "idle",
             numRunning: UInt32(cap.activeRequests),
             numWaiting: UInt32(cap.pendingRequests),
-            activeTokens: 0,
-            maxTokensPotential: Int64(defaultMaxTokens * maxConcurrentRequests)
+            activeTokens: activeTokens,
+            maxTokensPotential: maxTokensPotential,
+            observedDecodeTps: observedDecodeTpsEwma,
+            activeTokenBudgetUsed: activeBudget,
+            activeTokenBudgetMax: budgetMax,
+            queuedTokenBudget: queuedBudget,
+            kvBytesPerToken: Int64(kvBytesPerToken)
         )
         return BackendCapacity(
             slots: [slot],
@@ -319,6 +560,7 @@ public actor BatchScheduler {
                 detokenizer: entry.detokenizer,
                 promptTokens: entry.promptTokens.count,
                 completionTokens: 0,
+                maxTokens: entry.maxTokens,
                 firstTokenAt: nil,
                 lastTokenAt: nil,
                 submittedAt: entry.submittedAt
@@ -368,6 +610,11 @@ public actor BatchScheduler {
         tokenizer = nil
         modelWeightBytes = 0
         modelId = ""
+        kvBytesPerToken = 400_000
+        dynamicTokenBudgetMax = 0
+        planner = nil
+        observedDecodeTpsEwma = 0
+        ewmaInitialized = false
 
         while engineBusy {
             try? await Task.sleep(for: .milliseconds(1))
@@ -441,6 +688,16 @@ public actor BatchScheduler {
                     ? Double(entry.completionTokens) / elapsedSeconds : 0
             }
 
+            if tps > 0 {
+                let alpha = 0.3
+                if ewmaInitialized {
+                    observedDecodeTpsEwma = alpha * tps + (1 - alpha) * observedDecodeTpsEwma
+                } else {
+                    observedDecodeTpsEwma = tps
+                    ewmaInitialized = true
+                }
+            }
+
             entry.continuation.yield(.info(
                 promptTokens: entry.promptTokens,
                 completionTokens: entry.completionTokens,
@@ -449,15 +706,34 @@ public actor BatchScheduler {
             entry.continuation.finish()
             active.removeValue(forKey: first.uid)
             requestIdToUid.removeValue(forKey: entry.requestId)
+
+            // Notify planner that this request is done so its token budget
+            // is released for future admissions. Use cancel() instead of
+            // complete() because the planner's nextBatch() is never called
+            // (BatchScheduler manages its own pending→active promotion),
+            // so entries remain in the planner's pending queue. cancel()
+            // removes from both pending and active; complete() only checks
+            // active, causing a permanent leak that eventually triggers
+            // queueFull rejection.
+            if let planner = self.planner {
+                let completedId = entry.requestId
+                Task { await planner.cancel(requestID: completedId) }
+            }
         }
     }
 
     private func finishRequest(uid: Int, error: String) {
         guard let entry = active.removeValue(forKey: uid) else { return }
         cancelledUIDs.insert(uid)
-        requestIdToUid.removeValue(forKey: entry.requestId)
+        let cancelledId = entry.requestId
+        requestIdToUid.removeValue(forKey: cancelledId)
         entry.continuation.yield(.error(error))
         entry.continuation.finish()
+
+        // Release the request's token budget in the planner.
+        if let planner = self.planner {
+            Task { await planner.cancel(requestID: cancelledId) }
+        }
     }
 
     private enum MemoryKind { case active, peak, cache }
@@ -473,6 +749,110 @@ public actor BatchScheduler {
         return 0
         #endif
     }
+
+    // MARK: - KV cache cost computation
+
+    /// Compute total KV cache bytes per token across all layers, accounting
+    /// for architecture-specific differences:
+    ///
+    /// - **KV sharing** (Gemma 4, Gemma 3n): only the first
+    ///   `numLayers - numKvSharedLayers` layers allocate real KV caches.
+    /// - **Hybrid attention** (Gemma 4, GPT-OSS): sliding-attention layers
+    ///   use `headDim` / `kvHeads`, while full-attention layers can use
+    ///   `globalHeadDim` / `numGlobalKvHeads`.
+    /// - **Standard models** (Llama, Qwen, Mistral, Gemma 2): all layers
+    ///   are uniform; degenerates to `cachedLayers * kvHeads * headDim * 4`.
+    static func computeKVBytesPerToken(
+        numLayers: Int,
+        kvHeads: Int,
+        headDim: Int,
+        numKvSharedLayers: Int,
+        globalHeadDim: Int?,
+        numGlobalKvHeads: Int?,
+        slidingWindowPattern: Int?,
+        layerTypes: [String]?
+    ) -> Int {
+        let bytesPerElement = 2  // float16
+        let kvTensors = 2        // K + V
+
+        let cachedLayers = numLayers - numKvSharedLayers
+        guard cachedLayers > 0 else { return 0 }
+
+        // Determine per-layer attention type. Three sources of truth:
+        //   1. Explicit layer_types array from config.json (Gemma 4, GPT-OSS)
+        //   2. slidingWindowPattern Int: e.g. 5 means [S,S,S,S,F] repeating
+        //      (Gemma 3, Gemma 3n, Gemma 4)
+        //   3. Neither: assume all layers are uniform full-attention
+        let resolvedLayerTypes: [String]?
+        if let lt = layerTypes, lt.count >= cachedLayers {
+            resolvedLayerTypes = lt
+        } else if let swp = slidingWindowPattern, swp > 1 {
+            // Derive the repeating pattern: first (swp-1) are sliding,
+            // last one is full attention.
+            var pattern = [String]()
+            for i in 0..<swp {
+                pattern.append(i == swp - 1 ? "full_attention" : "sliding_attention")
+            }
+            var types = [String]()
+            while types.count < cachedLayers {
+                types.append(contentsOf: pattern)
+            }
+            resolvedLayerTypes = Array(types.prefix(cachedLayers))
+        } else {
+            resolvedLayerTypes = nil
+        }
+
+        // Layer types that use fixed-size recurrent state (e.g. GatedDeltaNet/Mamba)
+        // instead of per-token KV cache. These contribute zero per-token KV bytes.
+        let recurrentLayerTypes: Set<String> = [
+            "linear_attention",   // Qwen3.5 GatedDeltaNet
+            "recurrent",          // Generic recurrent layers
+        ]
+
+        // If we have per-layer type information, sum only layers with KV cache.
+        let hasHybridDims = globalHeadDim != nil && globalHeadDim != headDim
+            || numGlobalKvHeads != nil && numGlobalKvHeads != kvHeads
+
+        if let types = resolvedLayerTypes {
+            var totalBytesPerToken = 0
+            for i in 0..<cachedLayers {
+                let layerType = types[i]
+
+                // Recurrent layers (linear_attention, etc.) use fixed-size
+                // state, not per-token KV cache. Skip them.
+                if recurrentLayerTypes.contains(layerType) {
+                    continue
+                }
+
+                let layerKvHeads: Int
+                let layerHeadDim: Int
+
+                if hasHybridDims && layerType == "full_attention" {
+                    // Full/global attention layer with different dimensions
+                    layerKvHeads = numGlobalKvHeads ?? kvHeads
+                    layerHeadDim = globalHeadDim ?? headDim
+                } else {
+                    // Sliding attention or standard full attention
+                    layerKvHeads = kvHeads
+                    layerHeadDim = headDim
+                }
+
+                totalBytesPerToken += layerKvHeads * layerHeadDim * kvTensors * bytesPerElement
+            }
+            return totalBytesPerToken
+        }
+
+        // If we have global_head_dim but no layer type information to
+        // distinguish which layers use it, conservatively use the larger
+        // dimension for all cached layers.
+        if let ghd = globalHeadDim, ghd > headDim {
+            let maxKvHeads = max(kvHeads, numGlobalKvHeads ?? kvHeads)
+            return cachedLayers * maxKvHeads * ghd * kvTensors * bytesPerElement
+        }
+
+        // Standard uniform architecture (no layer_types, no hybrid dims)
+        return cachedLayers * kvHeads * headDim * kvTensors * bytesPerElement
+    }
 }
 
 // MARK: - Supporting types
@@ -483,6 +863,7 @@ private struct ActiveRequest {
     var detokenizer: NaiveStreamingDetokenizer
     var promptTokens: Int
     var completionTokens: Int
+    let maxTokens: Int
     var firstTokenAt: ContinuousClock.Instant?
     var lastTokenAt: ContinuousClock.Instant?
     let submittedAt: ContinuousClock.Instant
@@ -503,6 +884,14 @@ private struct LoadSnapshot: @unchecked Sendable {
     let eos: [[Int]]
     let tokenizer: TokenizerBox
     let model: any LanguageModel
+    let numLayers: Int?
+    let kvHeads: Int?
+    let headDim: Int?
+    let numKvSharedLayers: Int
+    let globalHeadDim: Int?
+    let numGlobalKvHeads: Int?
+    let slidingWindowPattern: Int?
+    let layerTypes: [String]?
 }
 
 private final class TokenizerBox: @unchecked Sendable {

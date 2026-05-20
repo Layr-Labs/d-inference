@@ -94,10 +94,39 @@ type PendingRequest struct {
 	// ReservedMicroUSD is the balance atomically debited at pre-flight.
 	// The post-inference charge adjusts for the difference between the
 	// actual cost and this reservation, preventing billing race conditions.
-	ReservedMicroUSD int64
+	ReservedMicroUSD     int64
+	reservationMu        sync.Mutex
+	reservationFinalized bool
 
 	// Timing fields for latency decomposition.
 	Timing *RequestTiming
+}
+
+// MarkReservationFinalized returns true only for the first settlement or refund
+// of a pre-flight balance reservation. It prevents a terminal provider error
+// racing with a late completion from crediting or refunding the same reservation
+// twice.
+func (pr *PendingRequest) MarkReservationFinalized() bool {
+	ok, _ := pr.FinalizeReservation(nil)
+	return ok
+}
+
+// FinalizeReservation runs settle while holding the reservation finalization
+// lock and marks the reservation finalized only if settle succeeds. It returns
+// false when another terminal path already finalized the reservation.
+func (pr *PendingRequest) FinalizeReservation(settle func() error) (bool, error) {
+	pr.reservationMu.Lock()
+	defer pr.reservationMu.Unlock()
+	if pr.reservationFinalized {
+		return false, nil
+	}
+	if settle != nil {
+		if err := settle(); err != nil {
+			return false, err
+		}
+	}
+	pr.reservationFinalized = true
+	return true, nil
 }
 
 type RequestTiming struct {
@@ -118,7 +147,6 @@ type Provider struct {
 	Models            []protocol.ModelInfo
 	Backend           string
 	PublicKey         string // base64-encoded X25519 public key for E2E encryption
-	WalletAddress     string // Ethereum-format hex address for Tempo payouts
 	Attested          bool   // true if attestation was verified successfully
 	AttestationResult *attestation.VerificationResult
 	TrustLevel        TrustLevel             // attestation trust level
@@ -340,6 +368,15 @@ func (p *Provider) maxConcurrency() int {
 	if p.BackendCapacity == nil {
 		return DefaultMaxConcurrent
 	}
+
+	// Token-budget providers use budget-based admission; the concurrency
+	// cap is just a safety valve.
+	for _, slot := range p.BackendCapacity.Slots {
+		if slot.ActiveTokenBudgetMax > 0 {
+			return 24
+		}
+	}
+
 	// Hardware-based cap using total memory reported by the provider.
 	memGB := p.BackendCapacity.TotalMemoryGB
 	if memGB <= 0 {
@@ -374,6 +411,8 @@ type Registry struct {
 
 	store store.Store
 
+	tpsRegistry *TPSRegistry
+
 	logger *slog.Logger
 
 	onlineCount      atomic.Int64
@@ -387,6 +426,7 @@ func New(logger *slog.Logger) *Registry {
 		providers:      make(map[string]*Provider),
 		queue:          NewRequestQueue(10, 120*time.Second),
 		MinTrustLevel:  TrustHardware,
+		tpsRegistry:    NewTPSRegistry(),
 		modelProviders: make(map[string]*atomic.Int64),
 		logger:         logger,
 	}
@@ -707,12 +747,13 @@ func (r *Registry) SetQueue(q *RequestQueue) {
 // tok/s, max Mac Studio RAM is 512 GB) so legitimate future hardware isn't
 // clamped unnecessarily.
 const (
-	maxDecodeTPS          = 500.0
-	maxPrefillTPS         = 5000.0
-	maxMemoryBandwidthGBs = 2000.0
-	maxMemoryGB           = 1024
-	maxMemoryGBFloat      = 1024.0
-	maxTokensPotential    = 1_000_000
+	maxDecodeTPS                = 500.0
+	maxPrefillTPS               = 5000.0
+	maxMemoryBandwidthGBs       = 2000.0
+	maxMemoryGB                 = 1024
+	maxMemoryGBFloat            = 1024.0
+	maxTokensPotential          = 1_000_000
+	maxTokenBudgetCap     int64 = 10_000_000_000 // 10 billion — generous safety valve for total token budget capacity
 )
 
 // clampNonNeg returns v clamped into [0, max]; NaN/negative become 0.
@@ -768,6 +809,32 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 		}
 		if s.NumWaiting < 0 {
 			s.NumWaiting = 0
+		}
+		if v, changed := clampNonNeg(s.ObservedDecodeTPS, maxDecodeTPS); changed {
+			logger.Warn("provider slot observed_decode_tps out of range, clamping",
+				"provider_id", providerID, "model", s.Model, "reported", s.ObservedDecodeTPS, "clamped", v)
+			s.ObservedDecodeTPS = v
+		}
+		if s.ActiveTokenBudgetUsed < 0 || s.ActiveTokenBudgetUsed > maxTokenBudgetCap {
+			if s.ActiveTokenBudgetUsed < 0 {
+				s.ActiveTokenBudgetUsed = 0
+			} else {
+				s.ActiveTokenBudgetUsed = maxTokenBudgetCap
+			}
+		}
+		if s.ActiveTokenBudgetMax < 0 || s.ActiveTokenBudgetMax > maxTokenBudgetCap {
+			if s.ActiveTokenBudgetMax < 0 {
+				s.ActiveTokenBudgetMax = 0
+			} else {
+				s.ActiveTokenBudgetMax = maxTokenBudgetCap
+			}
+		}
+		if s.QueuedTokenBudget < 0 || s.QueuedTokenBudget > maxTokenBudgetCap {
+			if s.QueuedTokenBudget < 0 {
+				s.QueuedTokenBudget = 0
+			} else {
+				s.QueuedTokenBudget = maxTokenBudgetCap
+			}
 		}
 	}
 }
@@ -852,7 +919,6 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		Backend:                 msg.Backend,
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: msg.EncryptedResponseChunks,
-		WalletAddress:           msg.WalletAddress,
 		PrefillTPS:              msg.PrefillTPS,
 		DecodeTPS:               msg.DecodeTPS,
 		TrustLevel:              TrustNone,
@@ -973,6 +1039,12 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	// Update backend capacity from heartbeat (nil-safe for old providers).
 	if msg.BackendCapacity != nil {
 		p.BackendCapacity = msg.BackendCapacity
+		chipFamily := p.Hardware.ChipFamily
+		for _, slot := range msg.BackendCapacity.Slots {
+			if slot.ObservedDecodeTPS > 0 {
+				r.tpsRegistry.Record(slot.Model, chipFamily, slot.ObservedDecodeTPS)
+			}
+		}
 	}
 	// Update warm models from heartbeat
 	if len(msg.WarmModels) > 0 {
@@ -1781,6 +1853,238 @@ func (r *Registry) Snapshot() FleetSnapshot {
 		Idle:       idle,
 		QueueDepth: q,
 	}
+}
+
+// ModelCapacity describes the live capacity for a single model.
+type ModelCapacity struct {
+	ModelID              string  `json:"id"`
+	Ready                bool    `json:"ready"`                  // at least one routable provider with headroom
+	CanAccept            bool    `json:"can_accept"`             // ready AND queue not full
+	RoutableProviders    int     `json:"routable_providers"`     // passed all gates
+	WarmProviders        int     `json:"warm_providers"`         // model loaded (slot state "running")
+	ColdProviders        int     `json:"cold_providers"`         // model available but not loaded
+	ActiveRequests       int     `json:"active_requests"`        // in-flight across fleet
+	QueuedRequests       int     `json:"queued_requests"`        // waiting in coordinator queue
+	QueueLimit           int     `json:"queue_limit"`            // max queue depth per model
+	AggregateTPS         float64 `json:"aggregate_tps"`          // sum of effective decode TPS
+	EstimatedTTFTMs      int64   `json:"estimated_ttft_ms"`      // best-case TTFT from lowest-cost warm provider
+	TokenBudgetRemaining int64   `json:"token_budget_remaining"` // aggregate free budget across providers
+	TokenBudgetTotal     int64   `json:"token_budget_total"`     // aggregate total budget
+}
+
+// providerCapSnap is a per-provider snapshot collected under the registry
+// lock, then aggregated into ModelCapacity outside the lock.
+type providerCapSnap struct {
+	model                 string
+	warm                  bool
+	hasHeadroom           bool // pending < maxConcurrency
+	effectiveTPS          float64
+	prefillTPS            float64
+	activeRequests        int // numRunning + numWaiting from backend slot, or pendingCount
+	backlogTokens         float64
+	activeTokenBudgetMax  int64
+	activeTokenBudgetUsed int64
+	queuedTokenBudget     int64
+}
+
+// ModelCapacitySnapshot returns a capacity snapshot for every model served
+// by at least one provider. Providers must pass the same routing gates as
+// snapshotProviderLocked (status, trust, runtime, privacy, challenge
+// freshness, concurrency headroom) to be counted as routable.
+func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
+	now := time.Now()
+
+	// Phase 1: collect per-provider snapshots under the lock.
+	var snaps []providerCapSnap
+
+	r.mu.RLock()
+	for _, p := range r.providers {
+		p.mu.Lock()
+
+		// Apply the same gates as snapshotProviderLocked.
+		if p.Status == StatusOffline || p.Status == StatusUntrusted {
+			p.mu.Unlock()
+			continue
+		}
+		if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
+			p.mu.Unlock()
+			continue
+		}
+		if !p.RuntimeVerified {
+			p.mu.Unlock()
+			continue
+		}
+		if !providerSupportsPrivateTextLocked(p) {
+			p.mu.Unlock()
+			continue
+		}
+		if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+			p.mu.Unlock()
+			continue
+		}
+
+		hasHeadroom := p.pendingCount() < p.maxConcurrency()
+		decodeTPS := resolvedDecodeTPS(p)
+		prefillTPS := resolvedPrefillTPS(p)
+
+		// Enumerate every model this provider serves.
+		for _, m := range p.Models {
+			// Count only pending requests for this specific model, not the
+			// total across all models. Using the total inflates
+			// activeRequests for multi-model providers.
+			modelPending := 0
+			for _, pr := range p.pendingReqs {
+				if pr.Model == m.ID {
+					modelPending++
+				}
+			}
+
+			snap := providerCapSnap{
+				model:          m.ID,
+				hasHeadroom:    hasHeadroom,
+				effectiveTPS:   decodeTPS,
+				prefillTPS:     prefillTPS,
+				activeRequests: modelPending,
+			}
+
+			// Check backend capacity for this model's slot.
+			if p.BackendCapacity != nil {
+				for _, slot := range p.BackendCapacity.Slots {
+					if slot.Model != m.ID {
+						continue
+					}
+					snap.warm = slot.State == "running"
+					slotActive := int(slot.NumRunning) + int(slot.NumWaiting)
+					if slotActive > snap.activeRequests {
+						snap.activeRequests = slotActive
+					}
+					if slot.ObservedDecodeTPS > 0 {
+						snap.effectiveTPS = slot.ObservedDecodeTPS
+					}
+					snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
+					snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
+					snap.queuedTokenBudget = slot.QueuedTokenBudget
+					snap.backlogTokens = float64(slot.MaxTokensPotential)
+					break
+				}
+			} else {
+				// Without backend capacity, warm if currently serving this model.
+				snap.warm = p.CurrentModel == m.ID
+			}
+
+			snaps = append(snaps, snap)
+		}
+		p.mu.Unlock()
+	}
+	r.mu.RUnlock()
+
+	// Phase 2: aggregate per-model outside the lock.
+	type modelAgg struct {
+		routable         int
+		warm             int
+		cold             int
+		activeRequests   int
+		aggregateTPS     float64
+		budgetRemaining  int64
+		budgetTotal      int64
+		bestWarmTTFTMs   int64 // -1 = not set
+		bestColdTTFTMs   int64 // -1 = not set
+		anyImmediateSlot bool  // at least one provider with headroom
+	}
+	agg := make(map[string]*modelAgg)
+	for _, s := range snaps {
+		a, ok := agg[s.model]
+		if !ok {
+			a = &modelAgg{bestWarmTTFTMs: -1, bestColdTTFTMs: -1}
+			agg[s.model] = a
+		}
+		a.routable++
+		if s.warm {
+			a.warm++
+		} else {
+			a.cold++
+		}
+		a.activeRequests += s.activeRequests
+		a.aggregateTPS += s.effectiveTPS
+		if s.activeTokenBudgetMax > 0 {
+			headroom := s.activeTokenBudgetMax - s.activeTokenBudgetUsed - s.queuedTokenBudget
+			if headroom < 0 {
+				headroom = 0
+			}
+			a.budgetRemaining += headroom
+			a.budgetTotal += s.activeTokenBudgetMax
+		}
+		if s.hasHeadroom {
+			// anyImmediateSlot requires both concurrency headroom AND
+			// token budget headroom. A provider with concurrency room
+			// but exhausted token budget should not bypass the queue
+			// check.
+			if s.activeTokenBudgetMax <= 0 || s.activeTokenBudgetUsed+s.queuedTokenBudget < s.activeTokenBudgetMax {
+				a.anyImmediateSlot = true
+			}
+		}
+
+		// Estimate TTFT for this provider: prefill 500 tokens + backlog drain.
+		const defaultPromptTokens = 500
+		ttftMs := int64(0)
+		if s.prefillTPS > 0 {
+			ttftMs = int64(float64(defaultPromptTokens) / s.prefillTPS * 1000)
+		}
+		if s.effectiveTPS > 0 {
+			ttftMs += int64(s.backlogTokens / s.effectiveTPS * 1000)
+		}
+		if s.warm {
+			if a.bestWarmTTFTMs < 0 || ttftMs < a.bestWarmTTFTMs {
+				a.bestWarmTTFTMs = ttftMs
+			}
+		} else {
+			coldTTFT := ttftMs + 20_000 // 20s cold-start penalty
+			if a.bestColdTTFTMs < 0 || coldTTFT < a.bestColdTTFTMs {
+				a.bestColdTTFTMs = coldTTFT
+			}
+		}
+	}
+
+	// Phase 3: read queue sizes (separate lock, safe to call after releasing r.mu).
+	queueLimit := 0
+	if r.queue != nil {
+		queueLimit = r.queue.MaxSize()
+	}
+
+	result := make([]ModelCapacity, 0, len(agg))
+	for model, a := range agg {
+		queued := 0
+		if r.queue != nil {
+			queued = r.queue.QueueSize(model)
+		}
+		ready := a.routable > 0
+		canAccept := ready && (queued < queueLimit || a.anyImmediateSlot)
+
+		ttft := a.bestWarmTTFTMs
+		if ttft < 0 {
+			ttft = a.bestColdTTFTMs
+		}
+		if ttft < 0 {
+			ttft = 0
+		}
+
+		result = append(result, ModelCapacity{
+			ModelID:              model,
+			Ready:                ready,
+			CanAccept:            canAccept,
+			RoutableProviders:    a.routable,
+			WarmProviders:        a.warm,
+			ColdProviders:        a.cold,
+			ActiveRequests:       a.activeRequests,
+			QueuedRequests:       queued,
+			QueueLimit:           queueLimit,
+			AggregateTPS:         a.aggregateTPS,
+			EstimatedTTFTMs:      ttft,
+			TokenBudgetRemaining: a.budgetRemaining,
+			TokenBudgetTotal:     a.budgetTotal,
+		})
+	}
+	return result
 }
 
 // ForEachProvider iterates over all registered providers (read lock held).

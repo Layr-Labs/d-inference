@@ -81,6 +81,12 @@ type routingSnapshot struct {
 	totalMemoryGB      float64
 	modelSizeGB        float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
 	modelLoaded        bool    // true when the requested model is the currently-running slot
+
+	observedDecodeTPS     float64
+	activeTokenBudgetUsed int64
+	activeTokenBudgetMax  int64
+	queuedTokenBudget     int64
+	fleetMedianTPS        float64
 }
 
 type routingCandidate struct {
@@ -420,37 +426,47 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 			snap.backendRunning = int(slot.NumRunning)
 			snap.backendWaiting = int(slot.NumWaiting)
 			snap.maxTokensPotential = slot.MaxTokensPotential
+			snap.observedDecodeTPS = slot.ObservedDecodeTPS
+			snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
+			snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
+			snap.queuedTokenBudget = slot.QueuedTokenBudget
 			break
 		}
 	}
 	snap.modelLoaded = snap.slotState == "running"
+	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
 
 	return snap, true
 }
 
-// freeMemoryAdmits returns true when the provider has enough headroom
-// to serve the request. Disabled (always true) when the catalog has no
-// SizeGB for the model or the provider hasn't reported total memory —
-// no signal to gate on. Conservative on the load side: we assume a
-// cold provider needs full model + KV cache, while a provider already
-// running the model only needs incremental KV space.
+// freeMemoryAdmits returns true when the provider has enough headroom.
+// Providers that report a token budget use budget-based admission;
+// legacy providers fall back to memory-based estimation.
 func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) bool {
+	if snap.activeTokenBudgetMax > 0 {
+		requestTokens := int64(reqPromptTokens) + int64(reqMaxTokens)
+		// Include coordinator-side pending tokens not yet reflected in the
+		// provider's heartbeat. Avoid double-counting by subtracting the
+		// provider-reported maxTokensPotential which already covers committed
+		// tokens from the backend's perspective.
+		coordinatorExtra := int64(snap.pendingMaxTokens) - snap.maxTokensPotential
+		if coordinatorExtra < 0 {
+			coordinatorExtra = 0
+		}
+		return snap.activeTokenBudgetUsed+snap.queuedTokenBudget+coordinatorExtra+requestTokens <= snap.activeTokenBudgetMax
+	}
+
 	if snap.modelSizeGB <= 0 || snap.totalMemoryGB <= 0 {
 		return true
 	}
 	required := snap.modelSizeGB
 	if snap.modelLoaded {
-		required = 0 // weights already resident; only KV is incremental
+		required = 0
 	}
 	tokens := int64(reqPromptTokens) + int64(reqMaxTokens)
 	if tokens < 0 {
 		tokens = 0
 	}
-	// Defensive cap on token count for the KV calc. Realistic prompts top
-	// out around 1 M tokens on the largest context windows (Gemini-class);
-	// 16 M leaves comfortable slack for synthetic/abusive inputs without
-	// risking int64 overflow when multiplied by kvCacheBytesPerToken
-	// (16 M × 0.5 MB = 8 TB, comfortably under int64 max).
 	const maxTokensForCalc = 16 << 20
 	if tokens > maxTokensForCalc {
 		tokens = maxTokensForCalc
@@ -500,17 +516,17 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 		unaccountedPendingTokens = 0
 	}
 
-	// Phase 4: load-scale decode TPS by current backend batch size.
-	// Static benchmarked TPS represents batch=1 throughput, but real
-	// per-request TPS degrades as the backend takes on more concurrent
-	// decodes. Using the load-adjusted value in cost makes a heavily
-	// batched fast provider effectively as slow as an idle slow one,
-	// which is the actual user-perceived behavior.
-	effectiveTPS := effectiveDecodeTPS(snap.decodeTPS, snap.backendRunning)
+	effectiveTPS := resolveEffectiveTPS(snap)
 
 	queueMs := float64(effectiveQueue) * queueDepthPenaltyMs
 	pendingMs := float64(snap.totalPending) * totalPendingPenaltyMs
-	backlogMs := backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, effectiveTPS)
+	var backlogMs float64
+	if snap.activeTokenBudgetMax > 0 {
+		tokensAhead := float64(snap.activeTokenBudgetUsed) + float64(snap.queuedTokenBudget)
+		backlogMs = tokensAhead / effectiveTPS * 1000.0
+	} else {
+		backlogMs = backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, effectiveTPS)
+	}
 	thisReqMs := float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
 	healthMs := healthPenaltyMs(snap.systemMetrics, snap.gpuMemoryActiveGB, snap.totalMemoryGB)
 	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs
@@ -578,6 +594,18 @@ func healthPenaltyMs(m protocol.SystemMetrics, gpuActiveGB, totalMemGB float64) 
 		penalty += gpuUtil * gpuUtilizationPenaltyMs
 	}
 	return penalty
+}
+
+// resolveEffectiveTPS returns the best available decode TPS estimate.
+// Fallback chain: observed EWMA → fleet median → load-scaled benchmark.
+func resolveEffectiveTPS(snap routingSnapshot) float64 {
+	if snap.observedDecodeTPS > 0 {
+		return snap.observedDecodeTPS
+	}
+	if snap.fleetMedianTPS > 0 {
+		return snap.fleetMedianTPS
+	}
+	return effectiveDecodeTPS(snap.decodeTPS, snap.backendRunning)
 }
 
 // effectiveDecodeTPS scales the static decode TPS down by current
@@ -675,6 +703,134 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string) bool {
 		}
 	}
 	return true
+}
+
+// QuickCapacityCheck performs a fast, read-only scan of the provider fleet to
+// determine whether any provider could serve a request for the given model
+// right now. It runs the same gates as the full routing path (status, trust,
+// runtime, privacy, challenge freshness, concurrency headroom, slot state,
+// free memory) but does NOT reserve capacity or create pending requests.
+//
+// Returns:
+//   - candidateCount: providers that passed ALL gates (could route right now)
+//   - capacityRejections: providers that serve the model and passed structural
+//     gates but were rejected for capacity reasons (full concurrency, no free
+//     memory, etc.)
+//
+// This is used for the pre-flight 429 check: if candidateCount == 0 &&
+// capacityRejections > 0, providers exist but are all at capacity (429).
+// If candidateCount == 0 && capacityRejections == 0, no provider serves
+// the model at all (404/503).
+func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, allowedSerials ...string) (candidateCount, capacityRejections int) {
+	// Use a dummy PendingRequest with the caller's actual token estimates
+	// for the admission gate (freeMemoryAdmits).
+	if estimatedPromptTokens <= 0 {
+		estimatedPromptTokens = 500
+	}
+	if requestedMaxTokens <= 0 {
+		requestedMaxTokens = defaultRequestedMaxTokens
+	}
+	dummyPR := &PendingRequest{
+		RequestID:             "capacity-check",
+		Model:                 model,
+		EstimatedPromptTokens: estimatedPromptTokens,
+		RequestedMaxTokens:    requestedMaxTokens,
+	}
+
+	// Build allowed serial set for optional provider filtering.
+	allowedSet := make(map[string]struct{}, len(allowedSerials))
+	for _, s := range allowedSerials {
+		allowedSet[s] = struct{}{}
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	now := time.Now()
+	for _, p := range r.providers {
+		// Filter by allowed serials before acquiring the provider lock
+		// (providerMatchesAllowedSerial takes p.mu internally).
+		if len(allowedSet) > 0 && !providerMatchesAllowedSerial(p, allowedSet) {
+			continue
+		}
+
+		p.mu.Lock()
+
+		// Structural gates (same as snapshotProviderLocked).
+		if !providerServesModelLocked(p, model) {
+			p.mu.Unlock()
+			continue
+		}
+		if p.Status == StatusOffline || p.Status == StatusUntrusted {
+			p.mu.Unlock()
+			continue
+		}
+		if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
+			p.mu.Unlock()
+			continue
+		}
+		if !p.RuntimeVerified {
+			p.mu.Unlock()
+			continue
+		}
+		if !providerSupportsPrivateTextLocked(p) {
+			p.mu.Unlock()
+			continue
+		}
+		if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+			p.mu.Unlock()
+			continue
+		}
+
+		// Concurrency gate.
+		if p.pendingCount() >= p.maxConcurrency() {
+			p.mu.Unlock()
+			capacityRejections++
+			continue
+		}
+
+		// Build a snapshot for the admission gate (slot state + free memory).
+		snap := routingSnapshot{
+			provider:      p,
+			model:         model,
+			slotState:     "unknown",
+			totalMemoryGB: float64(p.Hardware.MemoryGB),
+			modelSizeGB:   r.catalogSizeGBLocked(model),
+		}
+		if p.BackendCapacity != nil {
+			snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
+			if p.BackendCapacity.TotalMemoryGB > 0 {
+				snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
+			}
+			for _, slot := range p.BackendCapacity.Slots {
+				if slot.Model != model {
+					continue
+				}
+				snap.slotState = slot.State
+				snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
+				snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
+				snap.queuedTokenBudget = slot.QueuedTokenBudget
+				break
+			}
+		}
+		snap.modelLoaded = snap.slotState == "running"
+
+		p.mu.Unlock()
+
+		// Slot state gate (crashed/reloading are ineligible).
+		if _, eligible := slotStatePenalty(snap.slotState); !eligible {
+			continue
+		}
+
+		// Free memory / token budget admission gate.
+		if !freeMemoryAdmits(snap, dummyPR.EstimatedPromptTokens, dummyPR.RequestedMaxTokens) {
+			capacityRejections++
+			continue
+		}
+
+		candidateCount++
+	}
+	return candidateCount, capacityRejections
 }
 
 func (r *Registry) drainQueuedRequestsForModels(models []string) {

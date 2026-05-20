@@ -1,0 +1,22 @@
+DARKBLOOM LICENSE AGREEMENT
+Copyright © 2026 Eigen Labs, Inc.
+
+Subject to the terms and conditions of this license, Eigen Labs, Inc. grants you a limited, non-exclusive, non-transferable right to access and use the Software solely as expressly permitted herein. Any use of the Software not expressly permitted by this license requires a separate written commercial license agreement with Eigen Labs, Inc.
+
+For purposes of this license, "Software" means all source code, object code, scripts, configuration files, and other materials contained in this repository, excluding third-party components which are governed by their own respective licenses.
+
+1. Platform Requirement. The Software, and any derivative works thereof, may only be deployed or operated as a component of the Darkbloom inference platform as operated by Eigen Labs, Inc. or its authorized successors, including operation of the provider agent software on authorized provider hardware as part of the Darkbloom network. Any deployment, operation, or use of the Software to power, enable, or operate any service, platform, or product other than the Darkbloom platform is strictly prohibited without prior written permission from Eigen Labs, Inc.
+
+2. Permitted Uses. Notwithstanding Section 1, the following uses are permitted without prior written permission: (a) academic and security research; (b) auditing the Software for privacy and security verification purposes; (c) contributing modifications to the Darkbloom project under a Contributor License Agreement.
+
+3. Non-Commercial Restriction. The Software may not be used to provide, operate, or enable any hosted service, platform, marketplace, or product that offers AI inference coordination, private inference services, or decentralized compute marketplace capabilities that compete with Darkbloom, without a separate written commercial license agreement with Eigen Labs, Inc.
+
+4. Attribution. All copies or substantial portions of the Software must include this license and the above copyright notice.
+
+5. No Sublicensing. You may not sublicense the Software or grant any third party rights to use the Software outside the scope of this license.
+
+6. No Trademark License. This license does not grant any right to use the name, trademarks, or logos of Eigen Labs, Inc., including "Darkbloom," except as required for reasonable attribution under Section 4.
+
+7. Termination. Your rights under this license terminate automatically if you breach any condition of this license. Sections 3, 4, 6, and the warranty disclaimer survive termination.
+
+THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. EIGEN LABS, INC. EXPRESSLY DISCLAIMS ANY WARRANTY THAT THE SOFTWARE WILL OPERATE UNINTERRUPTED OR ERROR-FREE; THAT ITS SECURITY OR PRIVACY ARCHITECTURE WILL BE EFFECTIVE AGAINST ALL ATTACKS OR ADVERSARIES; THAT THE SOFTWARE WILL REMAIN COMPATIBLE WITH ANY APPLE HARDWARE, OPERATING SYSTEM, OR INFRASTRUCTURE; OR THAT ANY PARTICULAR LEVEL OF PERFORMANCE OR AVAILABILITY WILL BE ACHIEVED. IN NO EVENT SHALL EIGEN LABS, INC. BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM USE OF THE SOFTWARE.

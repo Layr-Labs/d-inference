@@ -216,7 +216,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			id TEXT PRIMARY KEY,
 			account_id TEXT NOT NULL,
 			payment_method TEXT NOT NULL,
-			chain TEXT NOT NULL DEFAULT '',
 			amount_micro_usd BIGINT NOT NULL,
 			external_id TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL DEFAULT 'pending',
@@ -226,6 +225,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_billing_sessions_account ON billing_sessions(account_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_billing_sessions_external ON billing_sessions(external_id)`,
+		`DO $$ BEGIN
+			ALTER TABLE billing_sessions DROP COLUMN IF EXISTS chain;
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
 
 		// Custom pricing — per-account model price overrides
 		`CREATE TABLE IF NOT EXISTS model_prices (
@@ -237,17 +240,31 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			PRIMARY KEY (account_id, model)
 		)`,
 
+		// Clean up wallet-keyed custom prices: with the removal of wallet-based
+		// payouts, model_prices rows keyed by Solana wallet addresses are unreachable.
+		// Providers must re-enter custom prices under their Stripe Connect account ID.
+		`DO $$ BEGIN
+			DELETE FROM model_prices WHERE account_id NOT IN (SELECT account_id FROM users);
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
+
 		// Users — Privy identity → internal account mapping
 		`CREATE TABLE IF NOT EXISTS users (
 			account_id TEXT PRIMARY KEY,
 			privy_user_id TEXT UNIQUE NOT NULL,
 			email TEXT NOT NULL DEFAULT '',
-			solana_wallet_address TEXT NOT NULL DEFAULT '',
-			solana_wallet_id TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`DO $$ BEGIN
 			ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT '';
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
+		`DO $$ BEGIN
+			ALTER TABLE users DROP COLUMN IF EXISTS solana_wallet_address;
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
+		`DO $$ BEGIN
+			ALTER TABLE users DROP COLUMN IF EXISTS solana_wallet_id;
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy ON users(privy_user_id)`,
@@ -1223,9 +1240,9 @@ func (s *PostgresStore) CreateBillingSession(session *BillingSession) error {
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO billing_sessions (id, account_id, payment_method, chain, amount_micro_usd, external_id, status, referral_code)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		session.ID, session.AccountID, session.PaymentMethod, session.Chain,
+		`INSERT INTO billing_sessions (id, account_id, payment_method, amount_micro_usd, external_id, status, referral_code)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		session.ID, session.AccountID, session.PaymentMethod,
 		session.AmountMicroUSD, session.ExternalID, session.Status, session.ReferralCode,
 	)
 	if err != nil {
@@ -1241,9 +1258,9 @@ func (s *PostgresStore) GetBillingSession(sessionID string) (*BillingSession, er
 
 	var bs BillingSession
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, account_id, payment_method, chain, amount_micro_usd, external_id, status, referral_code, created_at, completed_at
+		`SELECT id, account_id, payment_method, amount_micro_usd, external_id, status, referral_code, created_at, completed_at
 		 FROM billing_sessions WHERE id = $1`, sessionID,
-	).Scan(&bs.ID, &bs.AccountID, &bs.PaymentMethod, &bs.Chain,
+	).Scan(&bs.ID, &bs.AccountID, &bs.PaymentMethod,
 		&bs.AmountMicroUSD, &bs.ExternalID, &bs.Status, &bs.ReferralCode,
 		&bs.CreatedAt, &bs.CompletedAt)
 	if err != nil {
@@ -1366,9 +1383,9 @@ func (s *PostgresStore) CreateUser(user *User) error {
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO users (account_id, privy_user_id, email, solana_wallet_address, solana_wallet_id)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		user.AccountID, user.PrivyUserID, user.Email, user.SolanaWalletAddress, user.SolanaWalletID,
+		`INSERT INTO users (account_id, privy_user_id, email)
+		 VALUES ($1, $2, $3)`,
+		user.AccountID, user.PrivyUserID, user.Email,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create user: %w", err)
@@ -1376,7 +1393,7 @@ func (s *PostgresStore) CreateUser(user *User) error {
 	return nil
 }
 
-const userSelectColumns = `account_id, privy_user_id, email, solana_wallet_address, solana_wallet_id,
+const userSelectColumns = `account_id, privy_user_id, email,
 	stripe_account_id, stripe_account_status, stripe_destination_type,
 	stripe_destination_last4, stripe_instant_eligible, created_at`
 
@@ -1384,7 +1401,7 @@ func scanUser(row interface {
 	Scan(...any) error
 }) (*User, error) {
 	var u User
-	if err := row.Scan(&u.AccountID, &u.PrivyUserID, &u.Email, &u.SolanaWalletAddress, &u.SolanaWalletID,
+	if err := row.Scan(&u.AccountID, &u.PrivyUserID, &u.Email,
 		&u.StripeAccountID, &u.StripeAccountStatus, &u.StripeDestinationType,
 		&u.StripeDestinationLast4, &u.StripeInstantEligible, &u.CreatedAt); err != nil {
 		return nil, err

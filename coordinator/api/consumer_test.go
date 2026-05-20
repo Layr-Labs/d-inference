@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -1023,42 +1024,41 @@ func TestResponsesInputToolTranscriptToChatMessages(t *testing.T) {
 }
 
 func TestChatCompletionToResponses(t *testing.T) {
-	chat := map[string]any{
-		"id":      "chatcmpl-test",
-		"object":  "chat.completion",
-		"created": float64(123),
-		"model":   "local-path",
-		"choices": []any{
-			map[string]any{
-				"finish_reason": "tool_calls",
-				"message": map[string]any{
-					"role":      "assistant",
-					"content":   "",
-					"reasoning": "need weather",
-					"tool_calls": []any{
-						map[string]any{
-							"id":   "call_123",
-							"type": "function",
-							"function": map[string]any{
-								"name":      "get_current_weather",
-								"arguments": `{"city":"Paris"}`,
-							},
+	chat := types.ChatCompletionResponse{
+		ID:      "chatcmpl-test",
+		Object:  "chat.completion",
+		Created: 123,
+		Model:   "local-path",
+		Choices: []types.ChatCompletionChoice{{
+			FinishReason: "tool_calls",
+			Message: types.ChatCompletionMessage{
+				Role:      "assistant",
+				Content:   "",
+				Reasoning: "need weather",
+				ToolCalls: []map[string]any{
+					{
+						"id":   "call_123",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "get_current_weather",
+							"arguments": `{"city":"Paris"}`,
 						},
 					},
 				},
 			},
-		},
-		"usage": map[string]any{
-			"prompt_tokens":     float64(10),
-			"completion_tokens": float64(5),
+		}},
+		Usage: types.ChatCompletionUsage{
+			PromptTokens:     10,
+			CompletionTokens: 5,
+			TotalTokens:      15,
 		},
 	}
 
 	got := chatCompletionToResponses(chat, "mlx-community/gemma-4-26b-a4b-it-8bit", "", "")
-	if got["object"] != "response" || got["model"] != "mlx-community/gemma-4-26b-a4b-it-8bit" {
+	if got.Object != "response" || got.Model != "mlx-community/gemma-4-26b-a4b-it-8bit" {
 		t.Fatalf("response metadata = %#v", got)
 	}
-	output := got["output"].([]any)
+	output := got.Output
 	if output[0].(map[string]any)["type"] != "reasoning" {
 		t.Fatalf("first output = %#v", output[0])
 	}
@@ -1066,9 +1066,25 @@ func TestChatCompletionToResponses(t *testing.T) {
 	if call["type"] != "function_call" || call["call_id"] != "call_123" {
 		t.Fatalf("function call output = %#v", call)
 	}
-	usage := got["usage"].(map[string]any)
-	if usage["input_tokens"] != uint64(10) || usage["output_tokens"] != uint64(5) {
+	usage := got.Usage
+	if usage.InputTokens != 10 || usage.OutputTokens != 5 {
 		t.Fatalf("usage = %#v", usage)
+	}
+
+	// Verify wire format preserves zero-valued fields.
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	wire := string(b)
+	if !strings.Contains(wire, `"incomplete_details"`) {
+		t.Errorf("wire output missing incomplete_details field: %s", wire)
+	}
+	if !strings.Contains(wire, `"cached_tokens"`) {
+		t.Errorf("wire output missing cached_tokens in usage details: %s", wire)
+	}
+	if !strings.Contains(wire, `"reasoning_tokens"`) {
+		t.Errorf("wire output missing reasoning_tokens in usage details: %s", wire)
 	}
 }
 
@@ -1124,10 +1140,6 @@ func TestProviderEarningsEndpoint(t *testing.T) {
 	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
 
-	if resp["wallet_address"] != providerWallet {
-		t.Errorf("wallet_address = %v, want %v", resp["wallet_address"], providerWallet)
-	}
-
 	// Balance should be 450,000 + 900,000 = 1,350,000 micro-USD
 	balance := resp["balance_micro_usd"].(float64)
 	if balance != 1_350_000 {
@@ -1150,8 +1162,13 @@ func TestProviderEarningsUsesStoredPayoutRecords(t *testing.T) {
 	srv, _ := testServer(t)
 
 	wallet := "0xStoredPayoutWallet1234567890abcdef1234"
-	if err := srv.ledger.CreditProvider(wallet, 250_000, "qwen3.5-9b", "job-stored"); err != nil {
-		t.Fatalf("CreditProvider: %v", err)
+	if err := srv.store.CreditProviderWallet(&store.ProviderPayout{
+		ProviderAddress: wallet,
+		AmountMicroUSD:  250_000,
+		Model:           "qwen3.5-9b",
+		JobID:           "job-stored",
+	}); err != nil {
+		t.Fatalf("CreditProviderWallet: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/provider/earnings?wallet="+wallet, nil)

@@ -46,7 +46,7 @@ const InstantFeeBps int64 = 150
 const InstantFeeMinMicroUSD int64 = 500_000 // $0.50
 
 // MinWithdrawMicroUSD is the smallest withdrawal accepted on the Stripe rail.
-// $1 lines up with both Stripe's ACH minimum and the Solana withdraw minimum.
+// $1 lines up with Stripe's ACH minimum.
 const MinWithdrawMicroUSD int64 = 1_000_000
 
 // FeeForInstantPayoutMicroUSD computes the platform fee for an instant payout
@@ -131,7 +131,8 @@ type ExpressAccount struct {
 }
 
 // CreateExpressAccountParams gates which prefilled fields we pass to Stripe on
-// account creation. Email/first/last come from Privy; country defaults to US.
+// account creation. Email/first/last come from Privy; country should come from
+// the onboarding UI because Stripe locks it once the connected account exists.
 type CreateExpressAccountParams struct {
 	Email     string
 	FirstName string

@@ -235,6 +235,11 @@ func (q *RequestQueue) RequeueFront(req *QueuedRequest) {
 	q.queues[req.Model] = queue
 }
 
+// MaxSize returns the per-model maximum queue depth.
+func (q *RequestQueue) MaxSize() int {
+	return q.maxSize
+}
+
 // QueueSize returns the number of queued requests for a model.
 func (q *RequestQueue) QueueSize(model string) int {
 	q.mu.Lock()

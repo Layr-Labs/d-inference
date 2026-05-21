@@ -794,3 +794,92 @@ func TestFreeMemoryAdmitsFallsBackWithoutBudget(t *testing.T) {
 		t.Fatal("should admit with plenty of free memory in legacy mode")
 	}
 }
+
+// TestReserveProviderExSkipsClusterRank1 is the regression test for the
+// scheduler-bypass critical: PR 4d's cluster_role exclusion was wired into
+// FindProvider/FindProviderWithTrust but missed snapshotProviderLocked,
+// which is the actual production routing path called from
+// ReserveProviderEx. Without the gate, a rank-1 cluster provider would
+// win routing decisions and the consumer request would fail downstream.
+func TestReserveProviderExSkipsClusterRank1(t *testing.T) {
+	reg := New(testLogger())
+	model := "cluster-rank-routing-model"
+
+	rank0 := makeSchedulerProvider(t, reg, "rank0", model, 100)
+	rank1 := makeSchedulerProvider(t, reg, "rank1", model, 200) // higher TPS — would win without the gate
+
+	rank0Role := 0
+	rank0.mu.Lock()
+	rank0.ClusterRole = &rank0Role
+	rank0.mu.Unlock()
+
+	rank1Role := 1
+	rank1.mu.Lock()
+	rank1.ClusterRole = &rank1Role
+	rank1.mu.Unlock()
+
+	req := &PendingRequest{
+		RequestID:          "req-cluster-route",
+		Model:              model,
+		RequestedMaxTokens: 128,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatal("ReserveProviderEx returned nil — rank 0 should still be selectable")
+	}
+	if selected.ID != rank0.ID {
+		t.Fatalf("selected %q, want rank-0 %q (rank-1 must be excluded)", selected.ID, rank0.ID)
+	}
+	if decision.CandidateCount != 1 {
+		t.Fatalf("decision.CandidateCount=%d, want 1 (only rank-0 eligible)", decision.CandidateCount)
+	}
+}
+
+// TestReserveProviderExRank1OnlyReturnsNil ensures that when the only
+// online provider is rank-1, ReserveProviderEx returns nil — capacity
+// signalling must treat rank-1 as no-capacity rather than as a routable
+// candidate that will then fail.
+func TestReserveProviderExRank1OnlyReturnsNil(t *testing.T) {
+	reg := New(testLogger())
+	model := "cluster-rank-only-model"
+
+	r1 := makeSchedulerProvider(t, reg, "rank1-only", model, 200)
+	rank1Role := 1
+	r1.mu.Lock()
+	r1.ClusterRole = &rank1Role
+	r1.mu.Unlock()
+
+	req := &PendingRequest{
+		RequestID:          "req-rank1-only",
+		Model:              model,
+		RequestedMaxTokens: 128,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected != nil {
+		t.Fatalf("selected %q, want nil (rank-1 must not be routable)", selected.ID)
+	}
+	if decision.CandidateCount != 0 {
+		t.Fatalf("decision.CandidateCount=%d, want 0", decision.CandidateCount)
+	}
+}
+
+// TestQuickCapacityCheckExcludesRank1 verifies the parallel fix to
+// QuickCapacityCheck — the pre-flight 429/503 path must not count rank-1
+// providers as candidates either, otherwise the system reports capacity
+// that the real router immediately rejects.
+func TestQuickCapacityCheckExcludesRank1(t *testing.T) {
+	reg := New(testLogger())
+	model := "quick-capacity-cluster-model"
+
+	makeSchedulerProvider(t, reg, "rank0", model, 100) // routable
+	r1 := makeSchedulerProvider(t, reg, "rank1", model, 200)
+	rank1Role := 1
+	r1.mu.Lock()
+	r1.ClusterRole = &rank1Role
+	r1.mu.Unlock()
+
+	candidates, _ := reg.QuickCapacityCheck(model, 100, 256)
+	if candidates != 1 {
+		t.Fatalf("QuickCapacityCheck candidates=%d, want 1 (rank-1 must be skipped)", candidates)
+	}
+}

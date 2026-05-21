@@ -442,9 +442,9 @@ struct ClusterRun: AsyncParsableCommand {
         let peer = ClusterPeer(port: port, signer: signer, peerIP: peerIP)
         print("Rank 1 listening on port \(port) (peer IP for pinning: \(peerIP))…")
 
-        // Serve with a static model state and a no-op inference handler.
-        // Replace the inferenceHandler with EncryptedPipelineServer.makeInferenceHandler()
-        // once a model is loaded.
+        // Serve with a static model state and no-op handlers.
+        // Replace the inferenceHandler with TensorParallelServer.handleFrame()
+        // and the bootstrapHandler with the jaccl bootstrap logic once a model is loaded.
         try await peer.serve(
             modelState: {
                 PongPayload(modelLoaded: false, inferenceInFlight: false, memoryPressure: .normal)
@@ -453,6 +453,10 @@ struct ClusterRun: AsyncParsableCommand {
                 // No model loaded — send sessionEnd to signal rank 0 to retry later.
                 let endFrame = ClusterFrame.encode(type: .sessionEnd)
                 try? await conn.send(endFrame)
+            },
+            bootstrapHandler: { _, _, _ in
+                // Bootstrap is handled by ClusterDiscovery; this path is only reached
+                // when the ClusterCommand directly serves without ClusterDiscovery.
             }
         )
     }

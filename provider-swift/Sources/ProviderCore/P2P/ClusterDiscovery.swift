@@ -30,6 +30,13 @@ public actor ClusterDiscovery {
     private let authToken: String
     private let signer: any AttestationSigner
 
+    /// Optional model directory. When set before or during jaccl bootstrap,
+    /// `ClusterDiscovery` will automatically construct `TensorParallelEngine`
+    /// (rank 0) or `TensorParallelServer` (rank 1) and expose them via
+    /// `currentEngine()` / `currentServer()`. PR 4d sets this from the provider
+    /// loop after the model is loaded; if nil, construction is skipped.
+    public private(set) var modelDirectory: URL?
+
     private var pathMonitor: NWPathMonitor?
     private var sessionTask: Task<Void, Never>?
     private var peerTask: Task<Void, Never>?
@@ -40,6 +47,20 @@ public actor ClusterDiscovery {
     /// Subsequent PRs (4b+) read this via `distributedGroup` to access the
     /// group for TP inference allreduces.
     private var _distributedGroup: DistributedGroup?
+
+    // MARK: - TP engine/server (set after jaccl bootstrap + model load)
+
+    /// Rank 0 engine. Set after jaccl bootstrap completes and LlamaModelTP is loaded.
+    /// PR 4d calls `currentEngine()` to dispatch consumer requests through this.
+    private var _engine: TensorParallelEngine?
+
+    /// Rank 1 server. Set after jaccl bootstrap completes and LlamaModelTP is loaded.
+    private var _server: TensorParallelServer?
+
+    /// Held for the running rank (for diagnostics only; actual session ref lives
+    /// inside _engine / _server).
+    private var _activeSession: ClusterSession?
+    private var _activePeer: ClusterPeer?
 
     private let logger = Logger(subsystem: "io.darkbloom.provider", category: "ClusterDiscovery")
 
@@ -74,13 +95,35 @@ public actor ClusterDiscovery {
         peerTask?.cancel()
         peerTask = nil
         _distributedGroup = nil
+        _engine = nil
+        _server = nil
+        _activeSession = nil
+        _activePeer = nil
         logger.info("ClusterDiscovery stopped")
+    }
+
+    /// Set the model directory so ClusterDiscovery can construct the TP engine/server
+    /// after jaccl bootstrap completes. Call this from the provider loop once the
+    /// active model is loaded. Idempotent — re-setting with the same path is a no-op.
+    public func setModelDirectory(_ url: URL) {
+        guard url != modelDirectory else { return }
+        modelDirectory = url
+        logger.info("ClusterDiscovery: model directory set to \(url.path)")
     }
 
     /// The initialized jaccl `DistributedGroup`. Nil until after a successful
     /// `jacclBootstrap` exchange on both ranks. Check this before kicking off
     /// TP inference; if nil, fall back to PP or single-rank.
     public var distributedGroup: DistributedGroup? { _distributedGroup }
+
+    /// The rank-0 `TensorParallelEngine` for this cluster session. Non-nil on rank 0
+    /// after jaccl bootstrap completes and `LlamaModelTP` is loaded. Nil on rank 1.
+    /// PR 4d dispatches consumer requests through this.
+    public func currentEngine() -> TensorParallelEngine? { _engine }
+
+    /// The rank-1 `TensorParallelServer` for this cluster session. Non-nil on rank 1
+    /// after jaccl bootstrap completes and `LlamaModelTP` is loaded. Nil on rank 0.
+    public func currentServer() -> TensorParallelServer? { _server }
 
     // MARK: - Path change handler
 
@@ -182,6 +225,7 @@ public actor ClusterDiscovery {
         sessionTask?.cancel()
         let config = ClusterSessionConfig(peerIP: peerIP)
         let session = ClusterSession(config: config, signer: signer)
+        _activeSession = session
         let log = logger
         let me = self
         sessionTask = Task {
@@ -240,9 +284,51 @@ public actor ClusterDiscovery {
                 let group = try DistributedGroupBootstrap.bootstrap(bootstrapConfig)
                 await me.setDistributedGroup(group)
                 log.info("jaccl DistributedGroup ready (rank 0): size=\(group.size)")
+
+                // 4. Construct TensorParallelEngine if a model directory is available.
+                //    We do this here (instead of in setModelDirectory) so either ordering
+                //    works: model loaded before jaccl, or jaccl ready before model.
+                await me.tryBuildRank0Engine(session: session)
             } catch {
                 log.warning("jaccl bootstrap failed (rank 0): \(error)")
             }
+        }
+    }
+
+    /// Build `TensorParallelEngine` on rank 0 once both the jaccl group (env vars set
+    /// by bootstrap) and the model directory are available. Safe to call multiple times —
+    /// bails early if either dependency is missing or the engine is already built.
+    private func tryBuildRank0Engine(session: ClusterSession) {
+        guard _engine == nil else { return }
+        guard let modelDir = modelDirectory else {
+            logger.info("TP engine deferred: modelDirectory not yet set (will build when set)")
+            return
+        }
+        do {
+            // ClusterModelLoader reads the jaccl group from the process environment
+            // (set by DistributedGroupBootstrap.setEnvironmentVariables during bootstrap).
+            let model = try ClusterModelLoader.load(modelDirectory: modelDir)
+            let tpConfig = TensorParallelConfig(
+                numLayers: model.kvHeads.count,
+                hiddenDim: 0,  // informational only; not used in the decode loop
+                vocabSize: model.vocabularySize,
+                worldSize: model.group.size)
+            // Construct a stub tokenizer — engine.generate takes raw token IDs so
+            // the tokenizer is only needed for chat-template formatting (PR 4d).
+            let tokenizer = StubTokenizer()
+            // Box model in an @unchecked Sendable wrapper so Swift 6 accepts the
+            // actor boundary crossing. LlamaModelTP is constructed here, owned by
+            // the TensorParallelEngine actor from this point forward.
+            let sendableModel = UncheckedSendableLLMModel(value: model)
+            let engine = TensorParallelEngine(
+                config: tpConfig,
+                model: sendableModel,
+                tokenizer: tokenizer,
+                session: session)
+            setEngine(engine)
+            logger.info("TensorParallelEngine constructed (rank 0): vocab=\(model.vocabularySize)")
+        } catch {
+            logger.warning("Failed to build TensorParallelEngine: \(error)")
         }
     }
 
@@ -251,22 +337,38 @@ public actor ClusterDiscovery {
     private func startAsRank1(ownIP: String, peerIP: String) {
         peerTask?.cancel()
         let peer = ClusterPeer(signer: signer, peerIP: peerIP)
+        _activePeer = peer
         let log = logger
         let me = self
         peerTask = Task {
             log.info("Starting ClusterPeer (rank 1), expecting rank 0 from \(peerIP)")
             do {
+                // Build a mutable holder for the TensorParallelServer handler so we can
+                // wire it in once the server is constructed after jaccl bootstrap.
+                // `inferenceHandler` is captured by reference via an actor-isolated
+                // server instance.
                 try await peer.serve(
                     modelState: {
                         PongPayload(modelLoaded: false, inferenceInFlight: false, memoryPressure: .normal)
                     },
-                    inferenceHandler: { conn, _, frame in
-                        // Intercept the jacclBootstrap frame from rank 0.
-                        guard let msgType = try? ClusterFrame.decodeType(from: frame),
-                              msgType == .jacclBootstrap else {
-                            // TODO: wire up actual rank-1 inference handler (PR 4b)
+                    inferenceHandler: { _, _, frame in
+                        // Route to TensorParallelServer if it's been constructed.
+                        // If not yet constructed (bootstrap in progress), drop the frame
+                        // with a warning — rank 0 won't send inference frames before
+                        // bootstrap completes in normal operation.
+                        let server = await me.currentServer()
+                        guard let server else {
+                            log.warning("Rank 1: inference frame received before TensorParallelServer is ready — dropping")
                             return
                         }
+                        // Route frame to actor-isolated handleFrame method.
+                        // Rank 1 never sends back in TP; conn/key are not needed.
+                        try await server.handleFrame(frame)
+                    },
+                    bootstrapHandler: { _, _, frame in
+                        // Dedicated handler for the jacclBootstrap frame — cleanly
+                        // separated from inference frames (PR 4a used inferenceHandler
+                        // as a stopgap; this dedicated path is correct).
                         let payload = try ClusterFrame.decodeJSON(JacclBootstrapPayload.self, from: frame)
                         log.info("Rank 1 received jacclBootstrap: port=\(payload.port), session=\(payload.sessionID)")
 
@@ -282,6 +384,9 @@ public actor ClusterDiscovery {
                             let group = try DistributedGroupBootstrap.bootstrap(bootstrapConfig)
                             await me.setDistributedGroup(group)
                             log.info("jaccl DistributedGroup ready (rank 1): size=\(group.size)")
+
+                            // Construct TensorParallelServer if model directory is set.
+                            await me.tryBuildRank1Server()
                         } catch {
                             log.warning("jaccl bootstrap failed (rank 1): \(error)")
                         }
@@ -293,10 +398,43 @@ public actor ClusterDiscovery {
         }
     }
 
+    /// Build `TensorParallelServer` on rank 1 once both the jaccl group (env vars set
+    /// by bootstrap) and the model directory are available.
+    private func tryBuildRank1Server() {
+        guard _server == nil else { return }
+        guard let modelDir = modelDirectory else {
+            logger.info("TP server deferred: modelDirectory not yet set (will build when set)")
+            return
+        }
+        do {
+            let model = try ClusterModelLoader.load(modelDirectory: modelDir)
+            let tpConfig = TensorParallelConfig(
+                numLayers: model.kvHeads.count,
+                hiddenDim: 0,
+                vocabSize: model.vocabularySize,
+                worldSize: model.group.size)
+            let sendableModel = UncheckedSendableLLMModel(value: model)
+            let server = TensorParallelServer(config: tpConfig, model: sendableModel)
+            setServer(server)
+            logger.info("TensorParallelServer constructed (rank 1): vocab=\(model.vocabularySize)")
+        } catch {
+            logger.warning("Failed to build TensorParallelServer: \(error)")
+        }
+    }
+
     /// Actor-isolated setter for the distributed group.
     /// Called from within Task closures after jaccl initializes.
     private func setDistributedGroup(_ group: DistributedGroup) {
         _distributedGroup = group
+    }
+
+    /// Actor-isolated setters for engine/server. Called after model load completes.
+    private func setEngine(_ engine: TensorParallelEngine) {
+        _engine = engine
+    }
+
+    private func setServer(_ server: TensorParallelServer) {
+        _server = server
     }
 
     // MARK: - SE key pinning check

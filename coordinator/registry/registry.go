@@ -1956,6 +1956,14 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			p.mu.Unlock()
 			continue
 		}
+		// Rank-1 cluster providers do not serve consumer requests
+		// (see scheduler.go:snapshotProviderLocked). Counting them here
+		// inflates RoutableProviders / WarmProviders / CanAccept and lies
+		// to upstream routers polling /v1/models/capacity before dispatch.
+		if p.ClusterRole != nil && *p.ClusterRole == 1 {
+			p.mu.Unlock()
+			continue
+		}
 		if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
 			p.mu.Unlock()
 			continue

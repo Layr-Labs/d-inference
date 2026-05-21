@@ -883,3 +883,36 @@ func TestQuickCapacityCheckExcludesRank1(t *testing.T) {
 		t.Fatalf("QuickCapacityCheck candidates=%d, want 1 (rank-1 must be skipped)", candidates)
 	}
 }
+
+// TestModelCapacitySnapshotExcludesRank1 is the regression test for the
+// /v1/models/capacity bypass (round 42 finding). The snapshot feeds
+// upstream routers polling for capacity before dispatch; counting
+// rank-1 providers inflates RoutableProviders / WarmProviders /
+// CanAccept and leads upstream to dispatch to a coordinator that then
+// has nothing routable.
+func TestModelCapacitySnapshotExcludesRank1(t *testing.T) {
+	reg := New(testLogger())
+	model := "model-cap-cluster-model"
+
+	makeSchedulerProvider(t, reg, "rank0", model, 100)
+	r1 := makeSchedulerProvider(t, reg, "rank1", model, 200)
+	rank1Role := 1
+	r1.mu.Lock()
+	r1.ClusterRole = &rank1Role
+	r1.mu.Unlock()
+
+	caps := reg.ModelCapacitySnapshot()
+	var found *ModelCapacity
+	for i := range caps {
+		if caps[i].ModelID == model {
+			found = &caps[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("ModelCapacitySnapshot returned no entry for %q", model)
+	}
+	if found.RoutableProviders != 1 {
+		t.Errorf("RoutableProviders=%d, want 1 (rank-1 must be skipped)", found.RoutableProviders)
+	}
+}

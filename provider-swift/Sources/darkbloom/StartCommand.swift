@@ -261,7 +261,8 @@ struct Start: AsyncParsableCommand {
                     let discovery = ClusterDiscovery(
                         coordinatorURL: coordinatorURL,
                         authToken: token,
-                        signer: signer
+                        signer: signer,
+                        parallelismPreference: parallelism
                     )
                     Task { await discovery.start() }
                     clusterDiscovery = discovery

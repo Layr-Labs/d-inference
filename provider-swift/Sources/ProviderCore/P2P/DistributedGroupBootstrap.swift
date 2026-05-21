@@ -164,16 +164,28 @@ public enum DistributedGroupBootstrap {
     // MARK: - jaccl initialization
 
     /// Call `DistributedGroup.initialize(strict: true)` and convert nil into a
-    /// thrown error. Using the strict variant ensures failures surface rather than
-    /// silently degrading to a singleton group.
+    /// thrown error. Using strict mode is critical: with `strict: false`,
+    /// `mlx_distributed_init` falls back to a singleton group (size=1) when
+    /// jaccl can't form a real distributed group, and the bootstrap silently
+    /// "succeeds" with a degraded group that does no actual cross-rank work.
+    /// Strict mode returns a nil ctx on failure, which the wrapper turns into
+    /// a nil return → we throw and the caller can fall back cleanly.
+    ///
+    /// Additionally verifies `group.size > 1`: even with strict mode, a future
+    /// MLX version could change semantics. We assert the group represents at
+    /// least two ranks before declaring success.
     static func initializeGroup() throws -> DistributedGroup {
-        guard let group = DistributedGroup.initialize(strict: false) else {
-            // `initialize(strict: false)` can still return nil when the
-            // underlying mlx_distributed_init returns a context whose ctx
-            // pointer is nil (e.g., rdma_ctl not enabled, wrong macOS version).
-            // Surface this as a typed error rather than propagating nil upward.
+        guard let group = DistributedGroup.initialize(strict: true) else {
             throw DistributedGroupBootstrapError.jacclInitFailed(
-                "mlx_distributed_init returned nil — check RDMA availability and env vars")
+                "mlx_distributed_init(strict: true) returned nil — jaccl backend could not form a real distributed group (check RDMA availability, env vars, peer reachability)")
+        }
+        // Defense in depth: even if strict mode returned a group, ensure it's
+        // actually multi-rank. A singleton group (size=1) means we silently
+        // degraded; the TP engine would construct successfully but do no work
+        // distribution and waste the peer Mac's compute.
+        guard group.size > 1 else {
+            throw DistributedGroupBootstrapError.jacclInitFailed(
+                "jaccl returned a singleton group (size=\(group.size)); expected at least 2 ranks — peer did not join the group")
         }
         return group
     }

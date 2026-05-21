@@ -99,11 +99,21 @@ public protocol ClusterSessionSendable: Sendable {
 // MARK: - ClusterSession conformance
 
 extension ClusterSession: ClusterSessionSendable {
-    /// Send `data` as a raw inference frame over the active ThunderboltLink connection.
-    /// Throws `ClusterError.notReady` if the session is unavailable.
+    /// Send `data` as a sealed inference frame over the active ThunderboltLink
+    /// connection. The frame is wrapped in AES-256-GCM using the session key
+    /// established at handshake, so all post-handshake control + inference
+    /// traffic (TP and PP) is encrypted on the wire. PP's inner sealing via
+    /// TensorCrypto remains in place — it provides defense in depth and lets
+    /// rank-1's PP server validate the inner ciphertext against tampering
+    /// independently of the outer link layer.
+    ///
+    /// Throws `ClusterError.notReady` if the session isn't ready, or any
+    /// underlying CryptoKit error if sealing fails.
     public func sendInferenceFrame(_ data: Data) async throws {
         let conn = try connection()
-        try await conn.send(data)
+        let key = try sessionKey()
+        let sealed = try ClusterLinkSeal.seal(data, key: key)
+        try await conn.send(sealed)
     }
 }
 

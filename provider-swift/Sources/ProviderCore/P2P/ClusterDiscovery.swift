@@ -349,11 +349,15 @@ public actor ClusterDiscovery {
             let jacclPort: UInt16 = 29400
 
             // 2. Send jacclBootstrap frame to rank 1 via the control channel.
+            //    Go through `sendInferenceFrame` so the frame is AES-GCM sealed
+            //    at the link layer alongside all other post-handshake traffic
+            //    — sending the bootstrap config in plaintext would leak the
+            //    jaccl coordinator port and session ID to anyone sniffing the
+            //    Thunderbolt cable.
             let bootstrapPayload = JacclBootstrapPayload(port: jacclPort, sessionID: sessionID)
             do {
-                let conn = try await session.connection()
                 let frame = try ClusterFrame.encodeJSON(type: .jacclBootstrap, value: bootstrapPayload)
-                try await conn.send(frame)
+                try await session.sendInferenceFrame(frame)
                 log.info("Sent jacclBootstrap to rank 1: port=\(jacclPort), session=\(sessionID)")
             } catch {
                 log.warning("Failed to send jacclBootstrap frame: \(error) — jaccl not initialized")

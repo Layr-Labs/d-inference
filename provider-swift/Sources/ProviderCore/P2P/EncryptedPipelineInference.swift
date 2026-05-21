@@ -52,10 +52,15 @@ public protocol PPClusterSession: ClusterSessionSendable {
 // the two PP-specific methods to complete the PPClusterSession conformance.
 
 extension ClusterSession: PPClusterSession {
-    /// Receive the next raw frame from rank 1. Throws `ClusterError.notReady` if not ready.
+    /// Receive the next inference frame from rank 1, unsealing the outer AES-256-GCM
+    /// link-layer wrapping that `sendInferenceFrame` applies. Throws
+    /// `ClusterError.notReady` if the session isn't ready, or a CryptoKit error
+    /// if the ciphertext fails authentication (tampering / wrong key).
     public func receiveInferenceFrame() async throws -> Data {
         let conn = try connection()
-        return try await conn.receive()
+        let key = try sessionKey()
+        let sealed = try await conn.receive()
+        return try ClusterLinkSeal.open(sealed, key: key)
     }
 
     /// Return the current AES-256-GCM session key. Throws if the session isn't ready.
@@ -432,14 +437,16 @@ public final class EncryptedPipelineServer: @unchecked Sendable {
                     tokenID = Int32(tokenArr.item(Int32.self))
                 }
 
-                // Seal token and send ppToken back to rank 0. Wrap send in
-                // do/catch so a transient link issue doesn't kill the loop —
-                // rank 0 will retry on its end.
+                // Seal token (inner TensorCrypto), wrap the JSON frame, then
+                // seal the WHOLE frame at the link layer with the session key
+                // before sending — matches the outer encryption that
+                // sendInferenceFrame applies on rank 0.
                 do {
                     let sealedToken = try TensorCrypto.sealToken(tokenID, key: key)
                     let tokenResponse = PPTokenPayload(uid: payload.uid, sealedToken: sealedToken)
                     let tokenFrame = try ClusterFrame.encodeJSON(type: .ppToken, value: tokenResponse)
-                    try await conn.send(tokenFrame)
+                    let sealedFrame = try ClusterLinkSeal.seal(tokenFrame, key: key)
+                    try await conn.send(sealedFrame)
                 } catch {
                     logger.warning("PP server: failed to send ppToken for uid=\(payload.uid): \(error)")
                     // Don't break the loop — the next frame from rank 0 may
@@ -459,12 +466,14 @@ public final class EncryptedPipelineServer: @unchecked Sendable {
                     "PP server: unexpected frame type \(msgType.rawValue) — not a PP frame, ignoring")
             }
 
-            // Receive next frame from rank 0.
+            // Receive next frame from rank 0. The wire format is link-sealed
+            // (ClusterLinkSeal); unwrap with the session key.
             let nextFrame: Data
             do {
-                nextFrame = try await conn.receive()
+                let sealed = try await conn.receive()
+                nextFrame = try ClusterLinkSeal.open(sealed, key: key)
             } catch {
-                logger.warning("PP server: receive failed: \(error)")
+                logger.warning("PP server: receive/unseal failed: \(error)")
                 return
             }
             frame = nextFrame

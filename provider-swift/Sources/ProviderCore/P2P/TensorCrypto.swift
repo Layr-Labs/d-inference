@@ -14,6 +14,38 @@ import Cmlx
 //   [4 bytes: seqLen as Int32 little-endian]   ← -1 = stop sentinel
 //   [N bytes: raw bfloat16 tensor bytes]        ← absent when seqLen == -1
 
+// MARK: - Generic frame sealing helpers
+//
+// Used by ClusterSession.sendInferenceFrame / receiveInferenceFrame and by
+// rank 1's handleConnection to seal every post-handshake ClusterFrame on the
+// wire with AES-256-GCM. Without these, TP control frames (promptTokens,
+// stepToken, sessionStop, jacclBootstrap, ping, pong) would travel in
+// plaintext over the Thunderbolt cable — anyone with physical link access
+// could observe prompt and response token IDs and trivially recover the
+// consumer's content via the tokenizer.
+//
+// PP's TensorCrypto.sealActivation / openActivation provide a SECOND inner
+// seal on activation/token payloads for defense in depth; that path is
+// unchanged.
+
+public enum ClusterLinkSeal {
+    /// Wrap a raw cluster frame in AES-256-GCM using the session key.
+    public static func seal(_ frame: Data, key: SymmetricKey) throws -> Data {
+        let sealed = try AES.GCM.seal(frame, using: key)
+        guard let combined = sealed.combined else {
+            throw TensorCryptoError.arrayDataUnavailable
+        }
+        return combined
+    }
+
+    /// Unwrap an AES-256-GCM sealed cluster frame. Throws on auth failure
+    /// (tampered ciphertext, wrong key) or malformed envelope.
+    public static func open(_ sealed: Data, key: SymmetricKey) throws -> Data {
+        let box = try AES.GCM.SealedBox(combined: sealed)
+        return try AES.GCM.open(box, using: key)
+    }
+}
+
 public enum TensorCrypto {
 
     // MARK: - Seal activation (rank 0 → rank 1)

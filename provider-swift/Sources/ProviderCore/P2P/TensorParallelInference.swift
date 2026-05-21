@@ -66,7 +66,13 @@ public struct TensorParallelConfig: Sendable {
 /// failures, `ClusterError.serviceUnavailable` is thrown.
 public actor TensorParallelEngine {
     private let config: TensorParallelConfig
-    private let model: LlamaModelTP
+    /// Held as `any LLMModel` so callers can pass either the fp16 variant
+    /// (`LlamaModelTP`) or the quantized variant (`LlamaModelTPQ`) without
+    /// the engine needing to be templated on the concrete type. Callers
+    /// (typically the dispatcher in `ClusterDiscovery`) are responsible
+    /// for passing a TP-capable model — passing a non-TP `LlamaModel`
+    /// would type-check but produce single-rank semantics.
+    private let model: any LLMModel
     private let tokenizer: any Tokenizer
     private var cache: [any KVCache]
     private let session: ClusterSession
@@ -76,7 +82,7 @@ public actor TensorParallelEngine {
 
     public init(
         config: TensorParallelConfig,
-        model: LlamaModelTP,
+        model: any LLMModel,
         tokenizer: any Tokenizer,
         session: ClusterSession
     ) {
@@ -125,7 +131,8 @@ public actor TensorParallelEngine {
 /// over the ThunderboltLink control channel.
 public actor TensorParallelServer {
     private let config: TensorParallelConfig
-    private let model: LlamaModelTP
+    /// See `TensorParallelEngine.model` — same polymorphism rationale.
+    private let model: any LLMModel
     private let peer: ClusterPeer
 
     private let logger = Logger(
@@ -133,7 +140,7 @@ public actor TensorParallelServer {
 
     public init(
         config: TensorParallelConfig,
-        model: LlamaModelTP,
+        model: any LLMModel,
         peer: ClusterPeer
     ) {
         self.config = config

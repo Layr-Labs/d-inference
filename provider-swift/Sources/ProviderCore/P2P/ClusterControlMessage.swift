@@ -10,6 +10,9 @@ public enum ClusterMsgType: UInt8, Sendable {
     case inferenceStep     = 0x05  // rank 0 → rank 1: encrypted (seqLen || activation)
     case inferenceToken    = 0x06  // rank 1 → rank 0: encrypted token ID
     case jacclBootstrap    = 0x07  // rank 0 → rank 1: jaccl coordinator port + session ID
+    case promptTokens      = 0x08  // rank 0 → rank 1: { uid, tokens, maxTokens } — begin TP request
+    case stepToken         = 0x09  // rank 0 → rank 1: { uid, token } — advance decode by one token
+    case sessionStop       = 0x0A  // rank 0 → rank 1: { uid } — abort / end of request
     case sessionEnd        = 0xFF
 }
 
@@ -74,15 +77,66 @@ public struct JacclBootstrapPayload: Codable, Sendable {
     }
 }
 
+// MARK: - TP inference payloads (PR 4b)
+
+/// Sent by rank 0 → rank 1 at the start of a tensor-parallel inference request.
+/// Carries the prompt token IDs and generation budget. Rank 1 uses these to reset
+/// its KV cache and run the prefill forward pass in lockstep with rank 0.
+public struct PromptTokensPayload: Codable, Sendable {
+    /// Unique request identifier (UUID string). Used to correlate frames
+    /// for this request; becomes load-bearing in PR 4d's concurrent-request path.
+    public let uid: String
+    /// Prompt token IDs in order.
+    public let tokens: [Int]
+    /// Maximum number of new tokens to generate (not including the prompt).
+    public let maxTokens: Int
+
+    public init(uid: String, tokens: [Int], maxTokens: Int) {
+        self.uid = uid
+        self.tokens = tokens
+        self.maxTokens = maxTokens
+    }
+}
+
+/// Sent by rank 0 → rank 1 after each greedy-sampled token.
+/// Rank 1 feeds this token as input for the next decode step, running
+/// `model.callAsFunction` in lockstep with rank 0's matching call.
+public struct StepTokenPayload: Codable, Sendable {
+    /// Request identifier — must match the `uid` in the leading `promptTokens` frame.
+    public let uid: String
+    /// The token ID sampled by rank 0 on the previous decode step.
+    public let token: Int
+
+    public init(uid: String, token: Int) {
+        self.uid = uid
+        self.token = token
+    }
+}
+
+/// Sent by rank 0 → rank 1 when generation ends (EOS reached, maxTokens exhausted,
+/// or a fatal error occurred on rank 0). Rank 1 exits its decode loop cleanly.
+public struct SessionStopPayload: Codable, Sendable {
+    /// Request identifier that is being stopped.
+    public let uid: String
+
+    public init(uid: String) {
+        self.uid = uid
+    }
+}
+
 // MARK: - Frame encoding
 //
 // Every ThunderboltLink frame:
 //   [1 byte: ClusterMsgType.rawValue] [N bytes: payload]
 //
 // Payload encoding by type:
-//   handshakeHello / handshakeAck / pong / jacclBootstrap → JSON-encoded Codable struct
-//   ping / sessionEnd                                      → empty (0 bytes)
-//   inferenceStep / inferenceToken                         → raw AES-GCM ciphertext (opaque bytes)
+//   handshakeHello / handshakeAck / pong / jacclBootstrap          → JSON-encoded Codable struct
+//   promptTokens / stepToken / sessionStop                          → JSON-encoded Codable struct
+//   ping / sessionEnd                                               → empty (0 bytes)
+//   inferenceStep / inferenceToken                                  → raw AES-GCM ciphertext (opaque bytes)
+//
+// All frames travel over the encrypted ThunderboltLink; the link-layer
+// AES-256-GCM wrapping in ClusterFrame.encode/decode covers every type.
 
 public enum ClusterFrame {
 

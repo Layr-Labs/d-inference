@@ -216,16 +216,29 @@ public final class ClusterPeer: @unchecked Sendable {
     // MARK: - Start
 
     /// Listen for rank 0, accept exactly one connection, run handshake, then serve.
-    /// `modelState` is called each time a ping arrives to get current status.
-    /// `inferenceHandler` is called each time rank 0 sends an inference step.
+    ///
+    /// - Parameters:
+    ///   - modelState: Called on every incoming ping; returns the current health payload.
+    ///   - inferenceHandler: Called for `promptTokens`, `stepToken`, and `sessionStop`
+    ///     frames — the live TP inference frames produced during a generation request.
+    ///     Receives the connection, session key, and the raw frame data.
+    ///   - bootstrapHandler: Called for the `jacclBootstrap` frame that rank 0 sends
+    ///     immediately after the SE handshake completes. Separated from `inferenceHandler`
+    ///     so the jaccl bootstrap path can be wired independently of the TP engine.
     public func serve(
         modelState: @Sendable @escaping () -> PongPayload,
-        inferenceHandler: @Sendable @escaping (ThunderboltConnection, SymmetricKey, Data) async throws -> Void
+        inferenceHandler: @Sendable @escaping (ThunderboltConnection, SymmetricKey, Data) async throws -> Void,
+        bootstrapHandler: @Sendable @escaping (ThunderboltConnection, SymmetricKey, Data) async throws -> Void
     ) async throws {
         let listener = try ThunderboltLink.listen(on: port) { [weak self] conn in
             guard let self else { return }
             Task {
-                await self.handleConnection(conn, modelState: modelState, inferenceHandler: inferenceHandler)
+                await self.handleConnection(
+                    conn,
+                    modelState: modelState,
+                    inferenceHandler: inferenceHandler,
+                    bootstrapHandler: bootstrapHandler
+                )
             }
         }
         // Keep listener alive indefinitely.
@@ -236,7 +249,8 @@ public final class ClusterPeer: @unchecked Sendable {
     private func handleConnection(
         _ conn: ThunderboltConnection,
         modelState: @Sendable @escaping () -> PongPayload,
-        inferenceHandler: @Sendable @escaping (ThunderboltConnection, SymmetricKey, Data) async throws -> Void
+        inferenceHandler: @Sendable @escaping (ThunderboltConnection, SymmetricKey, Data) async throws -> Void,
+        bootstrapHandler: @Sendable @escaping (ThunderboltConnection, SymmetricKey, Data) async throws -> Void
     ) async {
         do {
             logger.info("Rank 0 connected. Running handshake.")
@@ -260,11 +274,13 @@ public final class ClusterPeer: @unchecked Sendable {
                     let pongFrame = try ClusterFrame.encodeJSON(type: .pong, value: status)
                     try await conn.send(pongFrame)
 
-                case .jacclBootstrap, .inferenceStep, .inferenceToken:
-                    // Pass the full triggering frame so the handler can extract its payload.
-                    // jacclBootstrap is handled by ClusterDiscovery's inferenceHandler
-                    // before the TP engine is wired up; inferenceStep/inferenceToken are
-                    // handled by the TP/PP engine once it's running (PR 4b+).
+                case .jacclBootstrap:
+                    // Dedicated handler — jaccl bootstrap runs before the TP engine is
+                    // wired up and must not share the inferenceHandler path.
+                    try await bootstrapHandler(conn, key, frame)
+
+                case .promptTokens, .stepToken, .sessionStop, .inferenceStep, .inferenceToken:
+                    // Live TP/PP inference frames — dispatched to the active engine's handler.
                     try await inferenceHandler(conn, key, frame)
 
                 case .sessionEnd:

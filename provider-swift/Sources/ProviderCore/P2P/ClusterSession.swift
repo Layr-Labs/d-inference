@@ -260,8 +260,11 @@ public final class ClusterPeer: @unchecked Sendable {
                     let pongFrame = try ClusterFrame.encodeJSON(type: .pong, value: status)
                     try await conn.send(pongFrame)
 
-                case .inferenceStep, .inferenceToken:
+                case .jacclBootstrap, .inferenceStep, .inferenceToken:
                     // Pass the full triggering frame so the handler can extract its payload.
+                    // jacclBootstrap is handled by ClusterDiscovery's inferenceHandler
+                    // before the TP engine is wired up; inferenceStep/inferenceToken are
+                    // handled by the TP/PP engine once it's running (PR 4b+).
                     try await inferenceHandler(conn, key, frame)
 
                 case .sessionEnd:

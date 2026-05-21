@@ -2,6 +2,8 @@ import Foundation
 import ArgumentParser
 import ProviderCore
 
+extension Parallelism: ExpressibleByArgument {}
+
 struct Start: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Start the provider as a background service.",
@@ -36,6 +38,12 @@ struct Start: AsyncParsableCommand {
 
     @Flag(help: "Register as RDMA-capable and auto-discover Thunderbolt-connected peers for pipeline inference. Requires a Secure Enclave and a logged-in account.")
     var rdmaEnabled = false
+
+    @Option(
+        help:
+            "Cluster parallelism strategy: auto (default — prefer TP, fall back to PP), tp (tensor-parallel — both Macs run all layers in parallel; requires Llama-class model + M5 + rdma_ctl enabled), pp (pipeline-parallel — split layers across Macs), single (no clustering)."
+    )
+    var parallelism: Parallelism = .auto
 
     mutating func run() async throws {
         // GPU is required. Reject CPU fallback up-front so we never
@@ -252,6 +260,7 @@ struct Start: AsyncParsableCommand {
                     )
                     Task { await discovery.start() }
                     print("RDMA cluster discovery enabled — watching for Thunderbolt peers")
+                    print("Cluster parallelism preference: \(parallelism) (resolved at session handshake)")
                 }
             } catch {
                 printError("Warning: --rdma-enabled requires Secure Enclave support: \(error.localizedDescription)")

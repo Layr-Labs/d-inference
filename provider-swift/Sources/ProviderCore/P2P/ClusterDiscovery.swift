@@ -133,13 +133,30 @@ public actor ClusterDiscovery {
         logger.info("ClusterDiscovery stopped")
     }
 
-    /// Set the model directory so ClusterDiscovery can construct the TP engine/server
-    /// after jaccl bootstrap completes. Call this from the provider loop once the
-    /// active model is loaded. Idempotent — re-setting with the same path is a no-op.
+    /// Set the model directory so ClusterDiscovery can construct the TP / PP
+    /// engine after jaccl bootstrap completes. Call this from the provider
+    /// loop once a model is loaded.
+    ///
+    /// On a directory change after engines were already built (consumer
+    /// requested a different model than the one currently in the cluster
+    /// engine), the existing engines are torn down so the next inference
+    /// request gets fresh engines built against the new model. Without this
+    /// tear-down, the cluster engine would serve consumer-requested model B
+    /// using model A's weights — silently producing garbage tokens because
+    /// the vocabularies and parameters don't match.
     public func setModelDirectory(_ url: URL) {
         guard url != modelDirectory else { return }
+        let priorEngineCount = (_engine == nil ? 0 : 1) + (_ppEngine == nil ? 0 : 1)
         modelDirectory = url
-        logger.info("ClusterDiscovery: model directory set to \(url.path)")
+        if priorEngineCount > 0 {
+            logger.info("ClusterDiscovery: model directory changed — tearing down \(priorEngineCount) existing cluster engine(s) so the next request rebuilds against \(url.lastPathComponent)")
+            _engine = nil
+            _server = nil
+            _ppEngine = nil
+            _ppServer = nil
+        } else {
+            logger.info("ClusterDiscovery: model directory set to \(url.path)")
+        }
     }
 
     /// The initialized jaccl `DistributedGroup`. Nil until after a successful

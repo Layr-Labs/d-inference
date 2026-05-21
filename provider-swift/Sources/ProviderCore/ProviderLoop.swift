@@ -1008,6 +1008,18 @@ public actor ProviderLoop {
         state.warmModels = [modelId]
         state.currentModelHash = loopConfig.modelHashes[modelId]
 
+        // Hand the model directory to ClusterDiscovery so it can construct the
+        // TP / PP engine once jaccl bootstrap completes. Without this call the
+        // cluster path is unreachable: tryBuildRank{0,1}Engine bails on the
+        // missing `modelDirectory` guard, both `currentEngine()` and
+        // `currentPPEngine()` stay nil, and every inference request falls
+        // through to the local BatchScheduler — silently making the whole
+        // 4-PR cluster stack dead code in production.
+        if let discovery = clusterDiscovery {
+            await discovery.setModelDirectory(modelPath)
+            logger.info("ClusterDiscovery model directory set: \(modelPath.path)")
+        }
+
         logger.info("Model loaded: \(modelId)")
     }
 

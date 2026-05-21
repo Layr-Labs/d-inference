@@ -2540,3 +2540,296 @@ func TestFindProviderCrashedOnlyStillRoutes(t *testing.T) {
 		t.Error("FindProvider should still route to a crashed-only provider (it can attempt reload)")
 	}
 }
+
+// makeRDMAEnabledProvider creates an attested, RDMA-enabled provider under the
+// given account. Used by TestListRDMAEnabledPeersForCaller.
+func makeRDMAEnabledProvider(reg *Registry, id, accountID, serial, sePubKey string) *Provider {
+	msg := testRegisterMessage()
+	msg.RDMAEnabled = true
+	p := reg.Register(id, nil, msg)
+	p.AccountID = accountID
+	p.RDMAEnabled = true
+	p.TrustLevel = TrustHardware
+	p.Attested = true
+	p.Status = StatusOnline
+	p.AttestationResult = &attestation.VerificationResult{
+		Valid:                  true,
+		SecureEnclaveAvailable: true,
+		SIPEnabled:             true,
+		SecureBootEnabled:      true,
+		SerialNumber:           serial,
+		PublicKey:              sePubKey,
+		RDMAEnabled:            true,
+	}
+	p.MDAVerified = true
+	return p
+}
+
+func TestListRDMAEnabledPeersForCaller_NonProviderDenied(t *testing.T) {
+	reg := New(testLogger())
+	makeRDMAEnabledProvider(reg, "p1", "acct-alice", "SERIAL-A", "PUBKEY-A")
+	makeRDMAEnabledProvider(reg, "p2", "acct-bob", "SERIAL-B", "PUBKEY-B")
+
+	peers, allowed := reg.ListRDMAEnabledPeersForCaller("acct-consumer-no-providers")
+	if allowed {
+		t.Fatal("non-provider account must not be allowed to enumerate RDMA peers")
+	}
+	if peers != nil {
+		t.Errorf("peers must be nil for denied caller, got %v", peers)
+	}
+}
+
+func TestListRDMAEnabledPeersForCaller_EmptyAccountDenied(t *testing.T) {
+	reg := New(testLogger())
+	makeRDMAEnabledProvider(reg, "p1", "acct-alice", "SERIAL-A", "PUBKEY-A")
+
+	if _, allowed := reg.ListRDMAEnabledPeersForCaller(""); allowed {
+		t.Fatal("empty caller account must be denied")
+	}
+}
+
+func TestListRDMAEnabledPeersForCaller_ProviderSeesOthersNotSelf(t *testing.T) {
+	reg := New(testLogger())
+	makeRDMAEnabledProvider(reg, "p1", "acct-alice", "SERIAL-A", "PUBKEY-A")
+	makeRDMAEnabledProvider(reg, "p2", "acct-bob", "SERIAL-B", "PUBKEY-B")
+
+	peers, allowed := reg.ListRDMAEnabledPeersForCaller("acct-alice")
+	if !allowed {
+		t.Fatal("alice owns an RDMA provider; must be allowed")
+	}
+	if len(peers) != 1 {
+		t.Fatalf("expected exactly 1 peer (bob), got %d", len(peers))
+	}
+	if peers[0].Serial != "SERIAL-B" {
+		t.Errorf("expected to see bob's serial, got %q", peers[0].Serial)
+	}
+	for _, p := range peers {
+		if p.Serial == "SERIAL-A" {
+			t.Error("caller must not see its own provider in the peer list")
+		}
+	}
+}
+
+func TestListRDMAEnabledPeersForCaller_NonRDMAProviderDenied(t *testing.T) {
+	// A user who owns a regular (non-RDMA) provider is still not allowed —
+	// access requires owning a currently-connected RDMA-enabled provider.
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	msg.RDMAEnabled = false
+	p := reg.Register("p-plain", nil, msg)
+	p.AccountID = "acct-carol"
+	p.TrustLevel = TrustHardware
+	p.AttestationResult = &attestation.VerificationResult{
+		Valid:                  true,
+		SecureEnclaveAvailable: true,
+		SIPEnabled:             true,
+		SecureBootEnabled:      true,
+		SerialNumber:           "SERIAL-C",
+		PublicKey:              "PUBKEY-C",
+	}
+
+	makeRDMAEnabledProvider(reg, "p-rdma", "acct-bob", "SERIAL-B", "PUBKEY-B")
+
+	if _, allowed := reg.ListRDMAEnabledPeersForCaller("acct-carol"); allowed {
+		t.Fatal("account with only a non-RDMA provider must be denied")
+	}
+}
+
+func TestListRDMAEnabledPeersForCaller_UnattestedExcluded(t *testing.T) {
+	reg := New(testLogger())
+	makeRDMAEnabledProvider(reg, "p1", "acct-alice", "SERIAL-A", "PUBKEY-A")
+
+	// Bob's provider has RDMA flag but no completed attestation (no SerialNumber).
+	msg := testRegisterMessage()
+	msg.RDMAEnabled = true
+	pb := reg.Register("p2", nil, msg)
+	pb.AccountID = "acct-bob"
+	pb.RDMAEnabled = true
+	// no AttestationResult — attestation pending
+
+	peers, allowed := reg.ListRDMAEnabledPeersForCaller("acct-alice")
+	if !allowed {
+		t.Fatal("alice must be allowed")
+	}
+	if len(peers) != 0 {
+		t.Errorf("unattested provider must be excluded, got %d peers", len(peers))
+	}
+}
+
+func TestSetRDMAEnabledOverwritesUnsignedClaim(t *testing.T) {
+	// Simulates a tampered provider that sends rdma_enabled=true in its
+	// unsigned RegisterMessage but whose SE-signed attestation says false
+	// (because the binary refused to honor the flag — e.g. non-M5 hardware
+	// or rdma_ctl disabled). The coordinator must overwrite the in-memory
+	// flag with the attested value so the provider is NOT visible in the
+	// RDMA peer list.
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	msg.RDMAEnabled = true // unsigned lie
+	p := reg.Register("p1", nil, msg)
+	p.AccountID = "acct-alice"
+	p.TrustLevel = TrustHardware
+	p.AttestationResult = &attestation.VerificationResult{
+		Valid:                  true,
+		SecureEnclaveAvailable: true,
+		SIPEnabled:             true,
+		SecureBootEnabled:      true,
+		SerialNumber:           "SERIAL-A",
+		PublicKey:              "PUBKEY-A",
+		RDMAEnabled:            false, // attested truth
+	}
+	if !p.RDMAEnabled {
+		t.Fatal("precondition: unsigned-claimed RDMAEnabled must initially be true")
+	}
+
+	// Coordinator applies the attested value.
+	reg.SetRDMAEnabled("p1", p.AttestationResult.RDMAEnabled)
+
+	if p.RDMAEnabled {
+		t.Error("provider RDMAEnabled must be false after SetRDMAEnabled with attested=false")
+	}
+
+	// And a separate RDMA-enabled provider on bob's account should be the
+	// only one alice sees (in fact alice now isn't even a provider).
+	makeRDMAEnabledProvider(reg, "p2", "acct-bob", "SERIAL-B", "PUBKEY-B")
+	if _, allowed := reg.ListRDMAEnabledPeersForCaller("acct-alice"); allowed {
+		t.Error("alice's tampered RDMAEnabled=true was overwritten to false; she must no longer pass the symmetric gate")
+	}
+}
+
+func TestSetRDMAEnabledIsNoOpForUnknownProvider(t *testing.T) {
+	reg := New(testLogger())
+	// Must not panic or error when called with an unknown provider ID.
+	reg.SetRDMAEnabled("does-not-exist", true)
+}
+
+// TestListRDMAEnabledPeersForCaller_TamperedAttestationExcluded confirms that
+// a provider whose signed attestation failed verification (signature mismatch,
+// crypto malformed, etc.) is NOT visible in the RDMA peer list, even though
+// attestation.Verify populates SerialNumber and PublicKey from the unverified
+// blob before checking the signature.
+//
+// Regression: prior to the Attested+Status filter, a malicious provider could
+// register with msg.RDMAEnabled=true and a tampered attestation blob whose
+// SerialNumber/PublicKey populated AttestationResult but whose signature
+// failed. The provider would have Attested=false and Status=StatusUntrusted
+// but still appear in the peer list (presence-of-identifiers was the only
+// gate). That bypassed the symmetric-access protection (T-045) by letting a
+// tampered provider both enumerate peers and inject keys into other Macs'
+// Keychain pins.
+func TestListRDMAEnabledPeersForCaller_TamperedAttestationExcluded(t *testing.T) {
+	reg := New(testLogger())
+	// Legitimate, fully-attested caller.
+	makeRDMAEnabledProvider(reg, "p-good", "acct-alice", "SERIAL-A", "PUBKEY-A")
+
+	// Tampered provider — registered with rdma_enabled=true, AttestationResult
+	// populated (because Verify pre-fills SerialNumber/PublicKey from the blob
+	// before checking the signature), but Attested=false because verification
+	// ultimately failed.
+	msg := testRegisterMessage()
+	msg.RDMAEnabled = true
+	pTamper := reg.Register("p-tamper", nil, msg)
+	pTamper.AccountID = "acct-mallory"
+	pTamper.RDMAEnabled = true
+	pTamper.TrustLevel = TrustNone // verification failed → trust never upgraded
+	pTamper.Attested = false       // SetAttested never called
+	pTamper.Status = StatusUntrusted
+	pTamper.AttestationResult = &attestation.VerificationResult{
+		Valid:        false,
+		Error:        "signature verification failed",
+		SerialNumber: "TAMPERED-SERIAL",
+		PublicKey:    "TAMPERED-PUBKEY",
+	}
+
+	peers, allowed := reg.ListRDMAEnabledPeersForCaller("acct-alice")
+	if !allowed {
+		t.Fatal("alice (legitimate RDMA provider) must be allowed")
+	}
+	for _, p := range peers {
+		if p.Serial == "TAMPERED-SERIAL" {
+			t.Errorf("tampered provider must NOT appear in peer list, got %+v", p)
+		}
+	}
+	if len(peers) != 0 {
+		t.Errorf("expected empty peer list (only the tampered provider exists besides alice), got %d peers", len(peers))
+	}
+}
+
+// TestListRDMAEnabledPeersForCaller_UntrustedExcluded confirms that a provider
+// that was previously trusted but later marked StatusUntrusted (e.g. after
+// challenge-response failures or MDM contradictions) is no longer visible in
+// the peer list.
+func TestListRDMAEnabledPeersForCaller_UntrustedExcluded(t *testing.T) {
+	reg := New(testLogger())
+	makeRDMAEnabledProvider(reg, "p-alice", "acct-alice", "SERIAL-A", "PUBKEY-A")
+	pBob := makeRDMAEnabledProvider(reg, "p-bob", "acct-bob", "SERIAL-B", "PUBKEY-B")
+
+	// Sanity: bob is initially visible.
+	peers, _ := reg.ListRDMAEnabledPeersForCaller("acct-alice")
+	if len(peers) != 1 || peers[0].Serial != "SERIAL-B" {
+		t.Fatalf("precondition: alice should see bob, got %+v", peers)
+	}
+
+	// Now bob fails enough challenges to be marked untrusted.
+	pBob.Status = StatusUntrusted
+
+	peers, _ = reg.ListRDMAEnabledPeersForCaller("acct-alice")
+	for _, p := range peers {
+		if p.Serial == "SERIAL-B" {
+			t.Errorf("untrusted provider must NOT appear in peer list, got %+v", p)
+		}
+	}
+}
+
+// TestListRDMAEnabledPeersForCaller_OfflineExcluded confirms that a provider
+// in StatusOffline (gracefully paused / disconnected) is not visible in the
+// peer list. This matches the project-wide "actively eligible" predicate
+// used by scheduler.go and FindProvider — being offline excludes a provider
+// from routing AND from RDMA discovery.
+func TestListRDMAEnabledPeersForCaller_OfflineExcluded(t *testing.T) {
+	reg := New(testLogger())
+	makeRDMAEnabledProvider(reg, "p-alice", "acct-alice", "SERIAL-A", "PUBKEY-A")
+	pBob := makeRDMAEnabledProvider(reg, "p-bob", "acct-bob", "SERIAL-B", "PUBKEY-B")
+
+	peers, _ := reg.ListRDMAEnabledPeersForCaller("acct-alice")
+	if len(peers) != 1 || peers[0].Serial != "SERIAL-B" {
+		t.Fatalf("precondition: alice should see bob, got %+v", peers)
+	}
+
+	pBob.Status = StatusOffline
+
+	peers, _ = reg.ListRDMAEnabledPeersForCaller("acct-alice")
+	for _, p := range peers {
+		if p.Serial == "SERIAL-B" {
+			t.Errorf("offline provider must NOT appear in peer list, got %+v", p)
+		}
+	}
+}
+
+// TestListRDMAEnabledPeersForCaller_CallerSelfTamperedDoesNotPassGate confirms
+// that a caller whose own provider failed attestation cannot bypass the
+// symmetric-access gate by claiming RDMA in the unsigned RegisterMessage.
+func TestListRDMAEnabledPeersForCaller_CallerSelfTamperedDoesNotPassGate(t *testing.T) {
+	reg := New(testLogger())
+	makeRDMAEnabledProvider(reg, "p-bob", "acct-bob", "SERIAL-B", "PUBKEY-B")
+
+	// Mallory's own provider has rdma_enabled=true in the unsigned message
+	// and a populated (but invalid) AttestationResult. She must not be able
+	// to use this as the "caller is an RDMA provider" credential.
+	msg := testRegisterMessage()
+	msg.RDMAEnabled = true
+	pMallory := reg.Register("p-mallory", nil, msg)
+	pMallory.AccountID = "acct-mallory"
+	pMallory.RDMAEnabled = true
+	pMallory.Attested = false
+	pMallory.Status = StatusUntrusted
+	pMallory.AttestationResult = &attestation.VerificationResult{
+		Valid:        false,
+		SerialNumber: "MALLORY-SERIAL",
+		PublicKey:    "MALLORY-PUBKEY",
+	}
+
+	if _, allowed := reg.ListRDMAEnabledPeersForCaller("acct-mallory"); allowed {
+		t.Error("mallory's tampered provider must not let her pass the symmetric-access gate")
+	}
+}

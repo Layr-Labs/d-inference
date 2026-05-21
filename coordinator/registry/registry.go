@@ -1170,6 +1170,22 @@ func (r *Registry) MarkUntrusted(providerID string) {
 	)
 }
 
+// SetRDMAEnabled overwrites the in-memory rdma_enabled flag for a connected
+// provider. The coordinator calls this after attestation verification with
+// the SE-signed value, so the registry never advertises a provider as RDMA
+// peer-eligible based on the unsigned RegisterMessage field alone.
+func (r *Registry) SetRDMAEnabled(providerID string, enabled bool) {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+	p.mu.Lock()
+	p.RDMAEnabled = enabled
+	p.mu.Unlock()
+}
+
 func (r *Registry) ForceTrustProvider(providerID string) {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
@@ -2122,19 +2138,42 @@ type RDMAEnabledPeer struct {
 	MDAVerified bool
 }
 
-// ListRDMAEnabledPeers returns all currently-connected providers that
-// registered with --rdma-enabled and have a known SE public key.
-// Only providers that have completed attestation (and thus have a serial
-// number) are included. The result is a snapshot; it may be stale by the
-// time the caller uses it.
-func (r *Registry) ListRDMAEnabledPeers() []RDMAEnabledPeer {
+// ListRDMAEnabledPeersForCaller returns RDMA peers visible to the given
+// account. The endpoint is symmetric: callers can only enumerate the peer
+// list if they themselves own a currently-connected RDMA-enabled provider
+// — non-providers (consumers, anonymous Privy users) get (nil, false) and
+// the handler returns 403.
+//
+// The caller's own providers are excluded from the returned list (a user
+// with two RDMA-enabled Macs does not see itself).
+//
+// Empty callerAccountID is treated as "not a provider" and returns (nil, false).
+//
+// Eligibility: a provider is included only if (a) the unsigned msg.RDMAEnabled
+// flag, after attestation-overwrite reconciliation, is true; (b) its serial
+// and SE key are present; (c) Attested is true (signature verification
+// succeeded end-to-end); and (d) Status is neither StatusUntrusted (challenge
+// failures, MDM contradictions, etc.) nor StatusOffline (gracefully paused
+// or disconnected, matching the project-wide "actively eligible" predicate
+// used by scheduler.go and ListModels). attestation.Verify populates serial
+// and pubkey from the blob BEFORE signature verification — without the
+// Attested gate, a tampered provider whose signature failed would still
+// satisfy the presence-of-identifiers check.
+func (r *Registry) ListRDMAEnabledPeersForCaller(callerAccountID string) ([]RDMAEnabledPeer, bool) {
+	if callerAccountID == "" {
+		return nil, false
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	callerIsRDMAProvider := false
 	var peers []RDMAEnabledPeer
 	for _, p := range r.providers {
 		p.mu.Lock()
 		rdma := p.RDMAEnabled
+		account := p.AccountID
+		attested := p.Attested
+		status := p.Status
 		serial := ""
 		seKey := ""
 		trust := p.TrustLevel
@@ -2145,16 +2184,27 @@ func (r *Registry) ListRDMAEnabledPeers() []RDMAEnabledPeer {
 		}
 		p.mu.Unlock()
 
-		if rdma && serial != "" && seKey != "" {
-			peers = append(peers, RDMAEnabledPeer{
-				Serial:      serial,
-				SEPublicKey: seKey,
-				TrustLevel:  trust,
-				MDAVerified: mda,
-			})
+		if !rdma || serial == "" || seKey == "" {
+			continue
 		}
+		if !attested || status == StatusUntrusted || status == StatusOffline {
+			continue
+		}
+		if account == callerAccountID {
+			callerIsRDMAProvider = true
+			continue
+		}
+		peers = append(peers, RDMAEnabledPeer{
+			Serial:      serial,
+			SEPublicKey: seKey,
+			TrustLevel:  trust,
+			MDAVerified: mda,
+		})
 	}
-	return peers
+	if !callerIsRDMAProvider {
+		return nil, false
+	}
+	return peers, true
 }
 
 // StartEvictionLoop starts a background goroutine that removes providers

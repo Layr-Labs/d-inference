@@ -53,12 +53,21 @@ type AttestationBlob struct {
 	OSVersion                string `json:"osVersion"`
 	PublicKey                string `json:"publicKey"`
 	RDMADisabled             bool   `json:"rdmaDisabled"`
-	SecureBootEnabled        bool   `json:"secureBootEnabled"`
-	SecureEnclaveAvailable   bool   `json:"secureEnclaveAvailable"`
-	SerialNumber             string `json:"serialNumber,omitempty"`
-	SIPEnabled               bool   `json:"sipEnabled"`
-	SystemVolumeHash         string `json:"systemVolumeHash,omitempty"`
-	Timestamp                string `json:"timestamp"`
+	// RDMAEnabled is signed by the provider's SE: true iff the operator
+	// passed --rdma-enabled AND the provider binary verified the hardware
+	// can honor it (M5+ with rdma_ctl reporting enabled). The coordinator
+	// MUST treat this signed value as the source of truth and reject any
+	// RegisterMessage whose unsigned rdma_enabled disagrees.
+	//
+	// Field is always emitted (Swift's Codable always encodes non-optional
+	// Bool); no omitempty so marshalSortedJSON produces matching bytes.
+	RDMAEnabled            bool   `json:"rdmaEnabled"`
+	SecureBootEnabled      bool   `json:"secureBootEnabled"`
+	SecureEnclaveAvailable bool   `json:"secureEnclaveAvailable"`
+	SerialNumber           string `json:"serialNumber,omitempty"`
+	SIPEnabled             bool   `json:"sipEnabled"`
+	SystemVolumeHash       string `json:"systemVolumeHash,omitempty"`
+	Timestamp              string `json:"timestamp"`
 }
 
 // SignedAttestation is a signed attestation blob with a base64-encoded
@@ -92,18 +101,23 @@ func (s *SignedAttestation) UnmarshalJSON(data []byte) error {
 
 // VerificationResult contains the outcome of attestation verification.
 type VerificationResult struct {
-	Valid                    bool
-	PublicKey                string
-	EncryptionPublicKey      string
-	BinaryHash               string
-	HardwareModel            string
-	ChipName                 string
-	SerialNumber             string
-	SecureEnclaveAvailable   bool
-	SIPEnabled               bool
-	SecureBootEnabled        bool
-	HypervisorActive         bool
-	RDMADisabled             bool
+	Valid                  bool
+	PublicKey              string
+	EncryptionPublicKey    string
+	BinaryHash             string
+	HardwareModel          string
+	ChipName               string
+	SerialNumber           string
+	SecureEnclaveAvailable bool
+	SIPEnabled             bool
+	SecureBootEnabled      bool
+	HypervisorActive       bool
+	RDMADisabled           bool
+	// RDMAEnabled is the SE-attested value: the provider binary has
+	// confirmed M5+ hardware with rdma_ctl reporting enabled, and the
+	// operator passed --rdma-enabled. Callers should treat this as the
+	// source of truth — never the unsigned RegisterMessage field.
+	RDMAEnabled              bool
 	AuthenticatedRootEnabled bool
 	SystemVolumeHash         string
 	Timestamp                time.Time
@@ -137,6 +151,7 @@ func Verify(signed SignedAttestation) VerificationResult {
 		SecureBootEnabled:        signed.Attestation.SecureBootEnabled,
 		HypervisorActive:         signed.Attestation.HypervisorActive,
 		RDMADisabled:             signed.Attestation.RDMADisabled,
+		RDMAEnabled:              signed.Attestation.RDMAEnabled,
 		AuthenticatedRootEnabled: signed.Attestation.AuthenticatedRootEnabled,
 		SystemVolumeHash:         signed.Attestation.SystemVolumeHash,
 	}
@@ -302,6 +317,7 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 		"osVersion":                blob.OSVersion,
 		"publicKey":                blob.PublicKey,
 		"rdmaDisabled":             blob.RDMADisabled,
+		"rdmaEnabled":              blob.RDMAEnabled,
 		"secureBootEnabled":        blob.SecureBootEnabled,
 		"secureEnclaveAvailable":   blob.SecureEnclaveAvailable,
 		"sipEnabled":               blob.SIPEnabled,

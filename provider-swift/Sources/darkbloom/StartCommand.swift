@@ -158,6 +158,23 @@ struct Start: AsyncParsableCommand {
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
         let authToken = AuthTokenStore.load()
 
+        // Capability gate for --rdma-enabled. The operator can pass the flag,
+        // but the binary refuses to honor it on hardware that cannot support
+        // cluster RDMA. The effective value is what gets signed by the SE and
+        // sent to the coordinator — so a non-M5 (or RDMA-disabled-OS) Mac
+        // cannot lie its way into the RDMA peer list.
+        let effectiveRDMA: Bool
+        if rdmaEnabled {
+            if let reason = RDMACapability.unavailableReason() {
+                printError("Warning: --rdma-enabled ignored: \(reason)")
+                effectiveRDMA = false
+            } else {
+                effectiveRDMA = true
+            }
+        } else {
+            effectiveRDMA = false
+        }
+
         if config.provider.autoUpdate {
             try await runStartupAutoUpdate(coordinatorURL: coordinatorURL)
         }
@@ -214,14 +231,14 @@ struct Start: AsyncParsableCommand {
             authToken: authToken,
             runtimeHashes: runtimeHashes,
             modelHashes: modelHashes,
-            rdmaEnabled: rdmaEnabled
+            rdmaEnabled: effectiveRDMA
         )
 
-        // Start RDMA auto-discovery in the background if --rdma-enabled is set.
-        // ClusterDiscovery watches NWPathMonitor for Thunderbolt wiredEthernet
-        // events and automatically establishes a ClusterSession or ClusterPeer
-        // without manual `darkbloom cluster setup`.
-        if rdmaEnabled {
+        // Start RDMA auto-discovery in the background if --rdma-enabled was
+        // accepted by the capability gate above. ClusterDiscovery watches
+        // NWPathMonitor for Thunderbolt wiredEthernet events and automatically
+        // establishes a ClusterSession or ClusterPeer without manual setup.
+        if effectiveRDMA {
             do {
                 let signer = try PersistentEnclaveKey.loadOrCreate()
                 let token = authToken ?? ""

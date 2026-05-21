@@ -20,6 +20,7 @@ scope:
     - Provider in-process MLX inference engine
     - Coordinator → Solana payment network
     - Apple attestation trust chain (cross-cutting)
+    - Provider ↔ Provider Thunderbolt cluster (RDMA auto-discovery + SE mutual auth)
   out_of_scope:
     - Dev / staging environment (api.dev.darkbloom.xyz)
     - GitHub Actions / R2 release supply chain
@@ -701,6 +702,67 @@ trust_boundaries:
       - "The entire MDM→MDA trust upgrade path is asynchronous and runs in a background
         goroutine. A provider is routable at TrustSelfSigned during the window between
         registration and completion of the full verification chain."
+
+  - id: TB-010
+    name: provider_to_provider_cluster
+    description: >
+      Two darkbloom providers connected over Apple Thunderbolt 5 form a private
+      point-to-point cluster for pipeline inference. One provider acts as rank 0
+      (initiator, ClusterSession) and the other as rank 1 (responder, ClusterPeer).
+      Neither node is inherently trusted by the other; mutual authentication uses
+      the Secure Enclave P-256 keys that have already been independently attested
+      to the coordinator. The coordinator acts as a key distribution point only;
+      it is not in the data path during active inference.
+    how_it_works: >
+      Discovery: when a provider starts with --rdma-enabled it includes
+      rdma_enabled=true in its coordinator RegisterMessage. The coordinator exposes
+      currently-connected RDMA-enabled providers (with completed SE attestation)
+      via GET /v1/cluster/rdma-peers (authenticated with the provider's Privy JWT).
+      On Thunderbolt link-up, NWPathMonitor fires a .wiredEthernet satisfied event.
+      ClusterDiscovery reads its own Thunderbolt IP (getifaddrs), fetches the RDMA
+      peer list from the coordinator, finds the peer's Thunderbolt IP via arp -a,
+      pins the peer's SE public key to the macOS Keychain
+      (kSecAttrAccessibleWhenUnlockedThisDeviceOnly), and elects a rank based on
+      lower IPv4 address.
+
+      Authentication: ClusterHandshake performs SE mutual authentication and
+      ephemeral X25519 ECDH over the Thunderbolt ThunderboltLink transport.
+      Both sides verify that the connected peer's SE private key corresponds to the
+      public key pinned in the Keychain (TOFU: first connection pins the key; subsequent
+      connections verify it matches). Session keys are derived with HKDF-SHA-256 and
+      rotate per-session.
+
+      DoS prevention: providers that do not start with --rdma-enabled send
+      rdma_enabled=false; their SE key is never pinned; the handshake rejects them
+      with peerSEKeyNotPinned.
+
+      Capability-gated attestation: the rdma_enabled flag is signed by the
+      Secure Enclave inside the AttestationBlob (alphabetical position between
+      rdmaDisabled and secureBootEnabled). Before signing, the Swift binary
+      verifies M5+ chip family and that /usr/bin/rdma_ctl reports enabled. If
+      either fails, the effective value is forced to false regardless of what
+      the operator passed on the command line. The coordinator's
+      attestation.Verify exposes RDMAEnabled on the VerificationResult; if it
+      disagrees with the unsigned RegisterMessage field, the registry is pinned
+      to the attested value via SetRDMAEnabled and a warning is logged.
+    current_limitations:
+      - "ARP-to-serial mapping is positional for multi-peer clusters — the first ARP
+        neighbor is matched to the first coordinator RDMA peer. Mismatched pins are
+        caught by the handshake but not surfaced as operator alerts (T-041)."
+      - "ARP retry loop (6 × 2 s) is not cancellable mid-flight; a cable unplug during
+        the window delays reconnect handling by up to 12 s (T-042)."
+      - "shouldPinSEKey silently overwrites the Keychain entry when the coordinator
+        returns a different SE key; no operator alert is emitted for unexpected key
+        changes (T-043)."
+      - "The Privy JWT used to query GET /v1/cluster/rdma-peers is retained as a plain
+        String in ClusterDiscovery actor memory for the process lifetime (T-044)."
+      - "rdma_enabled is now covered by the SE signature in the attestation blob.
+        The Swift provider applies a hardware capability gate before signing —
+        --rdma-enabled is downgraded to false unless the chip family is M5+ and
+        /usr/bin/rdma_ctl reports enabled. The coordinator treats the attested
+        value as source of truth (registry.SetRDMAEnabled is invoked from the
+        attestation verifier when the unsigned RegisterMessage disagrees with
+        the signed blob)."
 
 # ─────────────────────────────────────────────────────────────
 # THREATS
@@ -1742,3 +1804,205 @@ threats:
       Changes to URL generation in server.go, enroll.go, or consumer.go should
       verify that production baseURL is required and the Host-header fallback
       cannot be reached in production deployments.
+
+  - id: T-041
+    trust_boundary: TB-010
+    stride: Spoofing
+    title: ARP-to-serial mapping is positional, not cryptographic, in multi-peer clusters
+    description: >
+      ClusterDiscovery matches the first ARP neighbor on the Thunderbolt interface
+      (arpPeerIP) to the first RDMA peer returned by the coordinator (fetchRDMAPeers).
+      For the intended 2-Mac cluster this is always correct. In a hypothetical
+      multi-peer or multi-interface topology the positional match could pair the
+      wrong ARP IP with the wrong coordinator-supplied SE key, causing the Keychain
+      pin to store a key for the wrong identity. The SE handshake will then fail
+      (peerSEKeyNotPinned or signature mismatch), so no connection is established
+      with the wrong machine, but an operator alert is not surfaced.
+    adversaries: [ADV-001]
+    affected_assets: [A-002]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/P2P/ClusterDiscovery.swift
+    mitigations:
+      - description: >
+          SE mutual-auth handshake in ClusterHandshake rejects any peer whose
+          SE private key does not match the pinned public key — worst-case outcome
+          is connection failure, not a wrong-machine session.
+        status: implemented
+      - description: >
+          Explicit ARP-to-serial binding (e.g. coordinator returns Thunderbolt IP
+          alongside serial, or mDNS/link-local service advertisement carries the
+          serial) would eliminate positional ambiguity.
+        status: open
+    open_findings: []
+    severity: low
+    detection_hint: >
+      If ClusterDiscovery is extended beyond 2-Mac clusters, audit the peer-matching
+      logic in tryEstablishCluster to ensure ARP entries are bound to serials
+      before Keychain pinning.
+
+  - id: T-042
+    trust_boundary: TB-010
+    stride: Denial_of_Service
+    title: ARP retry loop continues for 12 s after Thunderbolt cable is unplugged
+    description: >
+      When the cable is connected, tryEstablishCluster enters a 6 × 2 s ARP retry
+      loop (lines 128–133 of ClusterDiscovery.swift). If the cable is unplugged
+      during this window, NWPathMonitor queues a disconnect event, but the actor's
+      handlePathChange is not called until the in-progress loop yields. The loop
+      holds the actor busy for up to 12 s and then exits. A subsequent reconnect
+      fires a new tryEstablishCluster call, so no permanent DoS results, but the
+      reconnect attempt may be delayed by up to 12 s and may leave partially
+      established state (e.g. a Keychain pin written for a peer IP that is no
+      longer reachable).
+    adversaries: [ADV-001]
+    affected_assets: []
+    affected_files:
+      - provider-swift/Sources/ProviderCore/P2P/ClusterDiscovery.swift
+    mitigations:
+      - description: >
+          Task.isCancelled checks or a structured-concurrency timeout on the
+          inner loop (e.g. withTaskCancellationHandler) would allow early exit
+          when the disconnect event arrives.
+        status: open
+    open_findings: []
+    severity: low
+    detection_hint: >
+      Changes to the ARP retry loop in tryEstablishCluster should verify that
+      Task.isCancelled is checked each iteration so a cable-unplug event unblocks
+      the actor promptly.
+
+  - id: T-043
+    trust_boundary: TB-010
+    stride: Tampering
+    title: shouldPinSEKey silently overwrites the Keychain pin on coordinator-supplied key change
+    description: >
+      ClusterDiscovery.shouldPinSEKey compares the existing Keychain entry for a
+      peer IP against the coordinator's current value. If they differ it silently
+      overwrites the pin and logs at INFO level (ClusterDiscovery.swift:141–153).
+      This is by design for the device-replacement case, but it also means a
+      temporary coordinator compromise (e.g. stolen admin credentials or a
+      coordinator-side injection into the registry) can cause a new SE key to be
+      pinned before the provider notices. The SE handshake will reject the peer
+      immediately, preventing a session with the wrong machine, but the Keychain
+      pin now stores an attacker-controlled key and will continue to be tried on
+      future reconnects until an operator manually clears it.
+    adversaries: [ADV-003]
+    affected_assets: [A-002]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/P2P/ClusterDiscovery.swift
+      - provider-swift/Sources/ProviderCore/P2P/ClusterPeerKeychain.swift
+    mitigations:
+      - description: >
+          SE handshake rejects the peer if the stored public key does not match
+          the connected peer's SE private key, so no unauthorized session is
+          established even with a poisoned Keychain pin.
+        status: implemented
+      - description: >
+          Operator-visible warning (printError / OS notification) should be emitted
+          when the pinned key for a known peer IP is replaced, so device-replacement
+          and coordinator-compromise can be distinguished by the operator.
+        status: open
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Any change to shouldPinSEKey or ClusterPeerKeychain.store should verify that
+      key-replacement events are surfaced to the operator at warning severity, not
+      silently logged at info.
+
+  - id: T-044
+    trust_boundary: TB-010
+    stride: Information_Disclosure
+    title: Privy JWT held as plain String in ClusterDiscovery actor memory for process lifetime
+    description: >
+      ClusterDiscovery accepts an authToken String in its initialiser and retains
+      it as a stored property for the lifetime of the provider process
+      (ClusterDiscovery.swift:30). The token is used to call GET /v1/cluster/rdma-peers.
+      This is the same pattern used throughout the Swift provider (ProviderLoop,
+      CoordinatorClientConfig), so the risk profile is consistent. However, because
+      ClusterDiscovery is a long-lived actor that holds the token even between
+      discovery attempts, a heap dump or memory-read primitive against the provider
+      process exposes the Privy JWT alongside the coordinator WebSocket client.
+      Compromise of the JWT enables an attacker to impersonate the provider on
+      the coordinator API. Because /v1/cluster/rdma-peers is now gated by
+      provider ownership (T-045), the JWT alone does not enable arbitrary fleet
+      enumeration unless the account also owns a currently-connected RDMA-enabled
+      provider — which is the case here by construction.
+    adversaries: [ADV-001]
+    affected_assets: [A-002, A-008]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/P2P/ClusterDiscovery.swift
+    mitigations:
+      - description: >
+          SIP and Hardened Runtime (PT_DENY_ATTACH) prevent OS-level memory reads
+          by unprivileged processes. The provider process is hardened against
+          debugger attachment.
+        status: implemented
+      - description: >
+          The exposed SE public keys are not secret (they are coordinator-distributed);
+          the primary risk is JWT exfiltration enabling coordinator API calls, not
+          SE key compromise.
+        status: implemented
+      - description: >
+          Zeroising the token after each use or fetching it on demand from the
+          Keychain rather than retaining it as a stored property would reduce the
+          in-memory exposure window.
+        status: open
+    open_findings: []
+    severity: low
+    detection_hint: >
+      If ClusterDiscovery is refactored to hold the token for longer periods or
+      to cache coordinator responses, re-evaluate whether the token should instead
+      be fetched on demand from the Keychain to minimize the in-memory window.
+
+  - id: T-045
+    trust_boundary: TB-010
+    stride: Information_Disclosure
+    title: Unrestricted enumeration of RDMA-capable provider fleet via /v1/cluster/rdma-peers
+    description: >
+      Initial implementation gated GET /v1/cluster/rdma-peers with requirePrivyAuth,
+      which only requires a valid Privy JWT and does not distinguish providers from
+      consumers. Any authenticated user — including any signed-up consumer browsing
+      the web UI — could call the endpoint and enumerate the network's RDMA-capable
+      Mac hardware serial numbers, SE public keys, trust levels, and MDA verification
+      status. Hardware serial numbers are unique device identifiers; the disclosure
+      enables fleet mapping by arbitrary platform users.
+    adversaries: [ADV-002, ADV-003]
+    affected_assets: [A-002, A-010]
+    affected_files:
+      - coordinator/api/cluster_handlers.go
+      - coordinator/api/server.go
+      - coordinator/registry/registry.go
+    mitigations:
+      - description: >
+          Access is now symmetric: ListRDMAEnabledPeersForCaller requires the
+          caller's account to own at least one currently-connected --rdma-enabled
+          provider. Non-providers receive 403. The caller's own providers are
+          excluded from the response so a user with multiple RDMA Macs does not
+          see itself.
+        status: implemented
+      - description: >
+          Tampered-attestation bypass closed: the peer-list filter requires
+          Provider.Attested=true AND Status != StatusUntrusted, not just
+          presence of SerialNumber/PublicKey. attestation.Verify populates
+          those identifier fields from the blob BEFORE signature verification,
+          so a malicious provider whose signature failed would otherwise still
+          appear in the list with msg.RDMAEnabled=true. The Attested gate is
+          only set by SetAttested at the end of the full verify chain, so
+          tampered providers cannot satisfy it.
+        status: implemented
+      - description: >
+          The endpoint still uses requirePrivyAuth as the first layer; the
+          provider-ownership check is applied inside the handler. Adding a
+          dedicated requireProviderAuth middleware would centralise the gating
+          if more provider-only HTTP endpoints are introduced.
+        status: open
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Any new HTTP endpoint that returns provider serial numbers, SE keys, or
+      attestation metadata must use ListRDMAEnabledPeersForCaller (or an
+      equivalent ownership-checking accessor) — never the raw registry listing.
+      Changes to cluster_handlers.go or server.go route registration should
+      audit that /v1/cluster/* endpoints remain provider-gated. Reviewers
+      should also verify the in-handler filter requires both Attested=true
+      and Status != StatusUntrusted, not just identifier presence.

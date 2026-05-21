@@ -363,7 +363,8 @@ public actor ProviderLoop {
         do {
             let jsonData = try builder.buildAttestationJSON(
                 encryptionPublicKey: keyPair.publicKeyBase64,
-                binaryHash: binaryHash
+                binaryHash: binaryHash,
+                rdmaEnabled: loopConfig.rdmaEnabled
             )
             return RawJSON(rawBytes: jsonData)
         } catch {

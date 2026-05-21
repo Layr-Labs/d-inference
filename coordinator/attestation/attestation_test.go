@@ -542,3 +542,100 @@ func findStringIndex(s, substr string) int {
 	}
 	return -1
 }
+
+// TestVerifyPropagatesRDMAEnabled exercises the new attested rdma_enabled
+// field. We sign two attestations — one true, one false — and verify the
+// VerificationResult carries the signed value through unmodified.
+func TestVerifyPropagatesRDMAEnabled(t *testing.T) {
+	cases := []struct {
+		name        string
+		rdmaEnabled bool
+	}{
+		{"attested_true", true},
+		{"attested_false", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pubKeyBytes := marshalUncompressedP256(privKey)
+
+			blob := AttestationBlob{
+				PublicKey:                base64.StdEncoding.EncodeToString(pubKeyBytes),
+				Timestamp:                time.Now().UTC().Format(time.RFC3339),
+				HardwareModel:            "Mac17,1",
+				ChipName:                 "Apple M5 Max",
+				OSVersion:                "26.0.0",
+				SecureEnclaveAvailable:   true,
+				SIPEnabled:               true,
+				SecureBootEnabled:        true,
+				RDMADisabled:             false,
+				RDMAEnabled:              tc.rdmaEnabled,
+				AuthenticatedRootEnabled: true,
+			}
+			signed := signBlob(t, blob, privKey)
+
+			result := Verify(signed)
+			if !result.Valid {
+				t.Fatalf("expected valid attestation, got %q", result.Error)
+			}
+			if result.RDMAEnabled != tc.rdmaEnabled {
+				t.Errorf("RDMAEnabled = %v, want %v", result.RDMAEnabled, tc.rdmaEnabled)
+			}
+
+			// Canonical JSON must contain the field — without it, a future
+			// fallback re-encode (when AttestationRaw is unavailable) would
+			// produce different bytes from what Swift signs.
+			canonical, err := marshalSortedJSON(blob)
+			if err != nil {
+				t.Fatal(err)
+			}
+			canonicalStr := string(canonical)
+			if findStringIndex(canonicalStr, "\"rdmaEnabled\":") < 0 {
+				t.Errorf("rdmaEnabled missing from canonical JSON: %s", canonicalStr)
+			}
+		})
+	}
+}
+
+// TestRDMAEnabledTamperingInvalidatesSignature confirms that flipping the
+// rdmaEnabled bit on a signed attestation breaks verification — the SE
+// signature covers the bit, so it cannot be silently altered in transit
+// or by a coordinator-side bug that reads the unsigned field.
+func TestRDMAEnabledTamperingInvalidatesSignature(t *testing.T) {
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubKeyBytes := marshalUncompressedP256(privKey)
+
+	blob := AttestationBlob{
+		PublicKey:                base64.StdEncoding.EncodeToString(pubKeyBytes),
+		Timestamp:                time.Now().UTC().Format(time.RFC3339),
+		HardwareModel:            "Mac17,1",
+		ChipName:                 "Apple M5 Max",
+		OSVersion:                "26.0.0",
+		SecureEnclaveAvailable:   true,
+		SIPEnabled:               true,
+		SecureBootEnabled:        true,
+		RDMADisabled:             false,
+		RDMAEnabled:              false, // attested false
+		AuthenticatedRootEnabled: true,
+	}
+	signed := signBlob(t, blob, privKey)
+
+	// Flip the bit in the typed struct and clear the raw bytes so Verify
+	// is forced to re-marshal (simulating tampering on the wire).
+	signed.Attestation.RDMAEnabled = true
+	signed.AttestationRaw = nil
+
+	result := Verify(signed)
+	if result.Valid {
+		t.Fatal("expected verification to fail after flipping signed rdmaEnabled bit")
+	}
+	if result.Error != "signature verification failed" {
+		t.Errorf("unexpected error: %s", result.Error)
+	}
+}

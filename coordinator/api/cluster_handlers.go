@@ -67,17 +67,27 @@ type rdmaPeerInfo struct {
 // handleClusterRDMAPeers returns the list of currently-connected providers
 // that registered with --rdma-enabled and have completed SE attestation.
 //
-// A provider starting with --rdma-enabled calls this endpoint to discover
-// which other Mac on the same Thunderbolt fabric is also RDMA-capable.
-// The response omits the caller's own device — callers should filter by
-// their own serial if needed (all returned entries are other devices).
+// Access is symmetric: only callers who themselves own a currently-connected
+// RDMA-enabled provider can enumerate the list. Consumers and Privy users
+// without an RDMA-enabled provider receive 403. This prevents arbitrary
+// authenticated users from scraping hardware serial numbers + SE public keys
+// of the RDMA-capable fleet.
+//
+// The caller's own providers are filtered out of the response — callers see
+// only other devices.
 //
 // Only providers with a completed SE attestation are included — the serial
 // and SE public key are required for Keychain key pinning and handshake
 // verification. Providers that registered very recently (attestation pending)
 // are excluded; retry after a few seconds.
 func (s *Server) handleClusterRDMAPeers(w http.ResponseWriter, r *http.Request) {
-	raw := s.registry.ListRDMAEnabledPeers()
+	callerAccountID := consumerKeyFromContext(r.Context())
+	raw, allowed := s.registry.ListRDMAEnabledPeersForCaller(callerAccountID)
+	if !allowed {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden",
+			"this endpoint is restricted to accounts with a currently-connected --rdma-enabled provider"))
+		return
+	}
 
 	peers := make([]rdmaPeerInfo, 0, len(raw))
 	for _, p := range raw {
@@ -91,4 +101,3 @@ func (s *Server) handleClusterRDMAPeers(w http.ResponseWriter, r *http.Request) 
 
 	writeJSON(w, http.StatusOK, rdmaPeersResponse{Peers: peers})
 }
-

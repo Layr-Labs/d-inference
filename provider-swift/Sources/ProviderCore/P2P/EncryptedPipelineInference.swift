@@ -233,24 +233,23 @@ public actor EncryptedPipelineEngine {
     // MARK: - Step helpers
 
     /// Seal the activation, send a `ppActivation` frame to rank 1, then wait for
-    /// and decrypt the `ppToken` response. Retries up to 3 times on failure.
+    /// and decrypt the `ppToken` response.
+    ///
+    /// Does NOT retry on failure. A previous version retried up to 3 times, but
+    /// PP is stateful in a way that breaks under retry: if the send succeeded
+    /// but the receive timed out, rank 1 has already advanced its KV cache and
+    /// sent the response. Re-sending the same activation would advance rank 1's
+    /// cache a second time, producing wrong tokens for the rest of the request.
+    /// Fail-fast is correct here; the caller bubbles the failure to the
+    /// consumer as a 503 and the coordinator retries on a different provider
+    /// with fresh state.
     private func sendActivationAndReceiveToken(
         uid: String,
         seqLen: Int,
         activation: MLXArray
     ) async throws -> Int {
-        for attempt in 0 ..< 3 {
-            do {
-                return try await attemptActivationExchange(
-                    uid: uid, seqLen: seqLen, activation: activation)
-            } catch {
-                logger.warning("PP step attempt \(attempt + 1)/3 failed: \(error). Retrying in 3s.")
-                if attempt < 2 {
-                    try? await Task.sleep(for: .seconds(3))
-                }
-            }
-        }
-        throw ClusterError.serviceUnavailable
+        return try await attemptActivationExchange(
+            uid: uid, seqLen: seqLen, activation: activation)
     }
 
     private func attemptActivationExchange(
@@ -307,6 +306,13 @@ public final class EncryptedPipelineServer: @unchecked Sendable {
     private let model: LlamaModel
     private var cache: [any KVCache]
 
+    /// The uid of the in-flight request. Used to detect when rank 0 starts a new
+    /// request without sending `ppSessionEnd` for the previous one — happens
+    /// when rank 0 crashes / restarts / has a transient error mid-decode. On
+    /// uid change we reset the KV cache to avoid feeding the new prefill into
+    /// stale K/V state.
+    private var activeUID: String?
+
     private let logger = Logger(subsystem: "io.darkbloom.provider", category: "EncryptedPipelineServer")
 
     public init(config: EncryptedPipelineConfig, model: LlamaModel) {
@@ -318,6 +324,13 @@ public final class EncryptedPipelineServer: @unchecked Sendable {
             .map { $0 }
         logger.info(
             "EncryptedPipelineServer: splitLayer=\(config.splitLayer) numLayers=\(config.numLayers) hidden=\(config.hiddenDim)")
+    }
+
+    /// Reset the local KV cache to a fresh state for layers `splitLayer..numLayers`.
+    private func resetCacheLocal() {
+        cache = model.newCache(parameters: nil)
+            .suffix(config.numLayers - config.splitLayer)
+            .map { $0 }
     }
 
     /// Returns a handler compatible with `ClusterPeer.serve(modelState:inferenceHandler:)`.
@@ -361,53 +374,83 @@ public final class EncryptedPipelineServer: @unchecked Sendable {
                 do {
                     payload = try ClusterFrame.decodeJSON(PPActivationPayload.self, from: frame)
                 } catch {
+                    // Malformed JSON. Log and continue — don't kill the serve loop
+                    // for a single corrupted frame. The peer will eventually time
+                    // out or send sessionEnd.
                     logger.warning("PP server: failed to decode ppActivation payload: \(error)")
-                    return
+                    break
                 }
 
-                // Decrypt activation (inner AES-GCM layer via TensorCrypto).
-                let (_, activation) = try TensorCrypto.openActivation(
-                    payload.sealedActivation, key: key, hiddenDim: config.hiddenDim)
+                // Cache-reset on uid transition. If the previous request didn't
+                // emit `ppSessionEnd` (rank 0 crashed, link dropped mid-decode),
+                // the cache holds stale state that would corrupt the new prefill.
+                if let prior = activeUID, prior != payload.uid {
+                    logger.info(
+                        "PP server: new request uid=\(payload.uid) while prior=\(prior) still active — resetting stale cache")
+                    resetCacheLocal()
+                }
+                activeUID = payload.uid
 
-                guard let act = activation else {
+                // Decrypt activation. Wrap in do/catch so a single corrupted /
+                // tampered payload doesn't kill the long-lived serve loop —
+                // log and continue.
+                let opened: (seqLen: Int32, activation: MLXArray?)
+                do {
+                    opened = try TensorCrypto.openActivation(
+                        payload.sealedActivation, key: key, hiddenDim: config.hiddenDim)
+                } catch {
+                    logger.warning("PP server: openActivation failed for uid=\(payload.uid): \(error) — dropping frame")
+                    break
+                }
+
+                guard let act = opened.activation else {
                     // seqLen == -1 is the legacy stop sentinel — treat as session end.
                     logger.info("PP server: received stop sentinel (seqLen=-1), ending request")
-                    cache = model.newCache(parameters: nil)
-                        .suffix(config.numLayers - config.splitLayer)
-                        .map { $0 }
+                    resetCacheLocal()
+                    activeUID = nil
                     return
                 }
 
                 // Run layers splitLayer..numLayers + norm + lm_head → logits.
-                let logits = model.callPartial(
-                    act,
-                    layerRange: config.rank1Range,
-                    applyEmbedding: false,
-                    applyNorm: true,
-                    applyHead: true,
-                    cache: cache)
-                eval(logits)
+                // Catch MLX-level failures (shape mismatch, OOM) so a single bad
+                // request doesn't poison the serve loop.
+                let tokenID: Int32
+                do {
+                    let logits = model.callPartial(
+                        act,
+                        layerRange: config.rank1Range,
+                        applyEmbedding: false,
+                        applyNorm: true,
+                        applyHead: true,
+                        cache: cache)
+                    eval(logits)
+                    // Greedy sample: argmax over the last token's logits.
+                    // logits shape: [1, seqLen, vocabSize]
+                    let lastLogits = logits[0..., -1, 0...]
+                    let tokenArr = lastLogits.argMax(axis: -1)
+                    eval(tokenArr)
+                    tokenID = Int32(tokenArr.item(Int32.self))
+                }
 
-                // Greedy sample: argmax over the last token's logits.
-                // logits shape: [1, seqLen, vocabSize]
-                let lastLogits = logits[0..., -1, 0...]
-                let tokenArr = lastLogits.argMax(axis: -1)
-                eval(tokenArr)
-                let tokenID = Int32(tokenArr.item(Int32.self))
-
-                // Seal token and send ppToken back to rank 0.
-                let sealedToken = try TensorCrypto.sealToken(tokenID, key: key)
-                let tokenResponse = PPTokenPayload(uid: payload.uid, sealedToken: sealedToken)
-                let tokenFrame = try ClusterFrame.encodeJSON(type: .ppToken, value: tokenResponse)
-                try await conn.send(tokenFrame)
+                // Seal token and send ppToken back to rank 0. Wrap send in
+                // do/catch so a transient link issue doesn't kill the loop —
+                // rank 0 will retry on its end.
+                do {
+                    let sealedToken = try TensorCrypto.sealToken(tokenID, key: key)
+                    let tokenResponse = PPTokenPayload(uid: payload.uid, sealedToken: sealedToken)
+                    let tokenFrame = try ClusterFrame.encodeJSON(type: .ppToken, value: tokenResponse)
+                    try await conn.send(tokenFrame)
+                } catch {
+                    logger.warning("PP server: failed to send ppToken for uid=\(payload.uid): \(error)")
+                    // Don't break the loop — the next frame from rank 0 may
+                    // succeed (or be sessionEnd).
+                }
 
             case .ppSessionEnd:
                 let payload = try? ClusterFrame.decodeJSON(PPSessionEndPayload.self, from: frame)
                 logger.info("PP server: ppSessionEnd uid=\(payload?.uid ?? "<unknown>"), resetting cache")
-                // Reset cache for the next request.
-                cache = model.newCache(parameters: nil)
-                    .suffix(config.numLayers - config.splitLayer)
-                    .map { $0 }
+                resetCacheLocal()
+                activeUID = nil
                 return
 
             default:

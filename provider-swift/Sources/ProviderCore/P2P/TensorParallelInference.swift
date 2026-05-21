@@ -364,10 +364,15 @@ public actor TensorParallelServer {
             logger.info("TP rank 1: prefill uid=\(payload.uid), \(payload.tokens.count) tokens")
 
             // Run prefill — syncs with rank 0's matching callAsFunction via allreduce.
+            // CRITICAL: rank 1 MUST `eval()` the result. MLX is lazy — without eval
+            // the computation graph (including the per-layer allreduce nodes) is
+            // built but never executed. Rank 0 evals its result and triggers its
+            // allreduce, which would block forever waiting for rank 1 to participate.
             let prefillInput = MLXArray(payload.tokens.map { Int32($0) }, [1, payload.tokens.count])
-            let _ = model.callAsFunction(prefillInput, cache: cache)
-            // Rank 1 discards logits. Rank 0 samples the first token and
-            // sends it back as a stepToken frame.
+            let prefillLogits = model.callAsFunction(prefillInput, cache: cache)
+            eval(prefillLogits)
+            // Rank 1 discards the evaluated logits. Rank 0 samples the first
+            // token and sends it back as a stepToken frame.
 
         case .stepToken:
             let payload: StepTokenPayload
@@ -378,9 +383,11 @@ public actor TensorParallelServer {
                 return
             }
             // Run decode step with rank 0's sampled token — syncs via allreduce.
+            // See the .promptTokens case above for why eval() is required.
             let decodeInput = MLXArray([Int32(payload.token)], [1, 1])
-            let _ = model.callAsFunction(decodeInput, cache: cache)
-            // Rank 1 discards logits; rank 0 continues sampling.
+            let decodeLogits = model.callAsFunction(decodeInput, cache: cache)
+            eval(decodeLogits)
+            // Rank 1 discards the evaluated logits; rank 0 continues sampling.
 
         case .sessionStop:
             // Generation complete for this request. Reset cache so the server

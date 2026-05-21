@@ -20,6 +20,12 @@ public enum TensorCrypto {
 
     /// Encrypt seqLen + activation tensor into a single AES-GCM sealed blob.
     /// Pass seqLen = -1 (with any activation) to produce a stop sentinel.
+    ///
+    /// The activation MUST be bfloat16. Llama-3.x checkpoints are bf16; if
+    /// a future TP-supported model ships with fp16 or fp32 activations, this
+    /// will throw `dtypeMismatch` rather than silently produce wrong bytes.
+    /// The fix at that point is to embed a dtype byte in the wire format and
+    /// update `openActivation` to decode according to it.
     public static func sealActivation(
         seqLen: Int32,
         activation: MLXArray,
@@ -30,6 +36,15 @@ public enum TensorCrypto {
 
         if seqLen != -1 {
             mlx_array_eval(activation.ctx)
+            // Validate dtype up-front rather than relying on
+            // `mlx_array_data_bfloat16` to return nil for non-bf16 — its
+            // documented behavior on type mismatch is unspecified in older
+            // mlx-c versions, and a silent reinterpret would corrupt the
+            // sealed payload.
+            guard activation.dtype == .bfloat16 else {
+                throw TensorCryptoError.dtypeMismatch(
+                    expected: "bfloat16", got: "\(activation.dtype)")
+            }
             guard let ptr = mlx_array_data_bfloat16(activation.ctx) else {
                 throw TensorCryptoError.arrayDataUnavailable
             }
@@ -117,7 +132,19 @@ public enum TensorCrypto {
 
 // MARK: - Errors
 
-public enum TensorCryptoError: Error, Sendable {
+public enum TensorCryptoError: Error, CustomStringConvertible, Sendable {
     case arrayDataUnavailable
     case truncatedPayload
+    case dtypeMismatch(expected: String, got: String)
+
+    public var description: String {
+        switch self {
+        case .arrayDataUnavailable:
+            return "MLXArray data pointer was nil"
+        case .truncatedPayload:
+            return "sealed tensor payload is too short"
+        case .dtypeMismatch(let expected, let got):
+            return "tensor dtype mismatch: expected \(expected), got \(got)"
+        }
+    }
 }

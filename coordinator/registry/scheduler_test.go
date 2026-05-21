@@ -884,6 +884,95 @@ func TestQuickCapacityCheckExcludesRank1(t *testing.T) {
 	}
 }
 
+// TestHeartbeatClampsMalformedClusterRole is the regression test for the
+// ingest-validation gap (round 43, C12). The wire protocol only defines
+// cluster_role ∈ {nil, 0, 1}; any other value (provider bug, or a
+// malicious rank-1 lying as 2 to evade the routing-excluded gate which
+// only matches *p.ClusterRole == 1) must be clamped to 1 so the
+// existing predicates fail-closed. Without this fix, a provider sending
+// `cluster_role=2` would pass every == 1 gate and receive traffic.
+func TestHeartbeatClampsMalformedClusterRole(t *testing.T) {
+	model := "clamp-cluster-role-model"
+	reg := New(testLogger())
+	p := makeSchedulerProvider(t, reg, "clamp-p", model, 100)
+
+	// Send a heartbeat with an out-of-range cluster_role.
+	bogus := 2
+	reg.Heartbeat(p.ID, &protocol.HeartbeatMessage{
+		Type:        protocol.TypeHeartbeat,
+		Status:      "idle",
+		ActiveModel: nil,
+		Stats:       protocol.HeartbeatStats{},
+		SystemMetrics: protocol.SystemMetrics{
+			MemoryPressure: 0.1,
+			CPUUsage:       0.1,
+			ThermalState:   "nominal",
+		},
+		ClusterRole: &bogus,
+	})
+
+	got := reg.GetProvider(p.ID)
+	if got == nil {
+		t.Fatal("provider not found after heartbeat")
+	}
+	if got.ClusterRole == nil {
+		t.Fatal("ClusterRole was cleared; want clamped to 1")
+	}
+	if *got.ClusterRole != 1 {
+		t.Fatalf("ClusterRole=%d, want 1 (fail-closed clamp)", *got.ClusterRole)
+	}
+
+	// And confirm the clamp actually excludes the provider from routing
+	// (i.e. the existing == 1 gates now see it as rank-1).
+	req := &PendingRequest{
+		RequestID:          "req-clamp",
+		Model:              model,
+		RequestedMaxTokens: 64,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected != nil {
+		t.Errorf("ReserveProviderEx selected %q after clamp; want nil", selected.ID)
+	}
+	if decision.CandidateCount != 0 {
+		t.Errorf("CandidateCount=%d after clamp, want 0", decision.CandidateCount)
+	}
+}
+
+// TestHeartbeatPreservesValidClusterRoles ensures the clamp does not
+// affect well-formed values — both 0 and 1 must round-trip unchanged.
+func TestHeartbeatPreservesValidClusterRoles(t *testing.T) {
+	reg := New(testLogger())
+	model := "preserve-cluster-role-model"
+
+	makeAndHB := func(id string, role int) *Provider {
+		p := makeSchedulerProvider(t, reg, id, model, 100)
+		r := role
+		reg.Heartbeat(p.ID, &protocol.HeartbeatMessage{
+			Type:        protocol.TypeHeartbeat,
+			Status:      "idle",
+			ActiveModel: nil,
+			Stats:       protocol.HeartbeatStats{},
+			SystemMetrics: protocol.SystemMetrics{
+				MemoryPressure: 0.1,
+				CPUUsage:       0.1,
+				ThermalState:   "nominal",
+			},
+			ClusterRole: &r,
+		})
+		return reg.GetProvider(p.ID)
+	}
+
+	r0 := makeAndHB("preserve-0", 0)
+	if r0.ClusterRole == nil || *r0.ClusterRole != 0 {
+		t.Errorf("rank-0 round-trip: got %v, want 0", r0.ClusterRole)
+	}
+
+	r1 := makeAndHB("preserve-1", 1)
+	if r1.ClusterRole == nil || *r1.ClusterRole != 1 {
+		t.Errorf("rank-1 round-trip: got %v, want 1", r1.ClusterRole)
+	}
+}
+
 // TestModelCapacitySnapshotExcludesRank1 is the regression test for the
 // /v1/models/capacity bypass (round 42 finding). The snapshot feeds
 // upstream routers polling for capacity before dispatch; counting

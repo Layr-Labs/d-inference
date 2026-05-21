@@ -1079,7 +1079,18 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	}
 	// Track cluster role. nil = not clustered (eligible for routing).
 	// 1 = rank-1 responder (routing excluded). 0 = rank-0 initiator (routable).
-	p.ClusterRole = msg.ClusterRole
+	// Validate the wire value: only {nil, 0, 1} are well-defined. A malformed
+	// value (provider bug or malicious lie to evade the rank-1 exclusion)
+	// is clamped to 1 — fail-closed treats unknown cluster state as
+	// non-routable rather than letting a misconfigured node draw traffic.
+	if msg.ClusterRole != nil && *msg.ClusterRole != 0 && *msg.ClusterRole != 1 {
+		r.logger.Warn("provider sent malformed cluster_role; clamping to rank-1",
+			"providerID", p.ID, "value", *msg.ClusterRole)
+		one := 1
+		p.ClusterRole = &one
+	} else {
+		p.ClusterRole = msg.ClusterRole
+	}
 	// Only update status from heartbeat if provider is not actively serving
 	// (serving status is managed by request lifecycle). Crucially, an
 	// untrusted provider must NOT transition back to StatusOnline here —

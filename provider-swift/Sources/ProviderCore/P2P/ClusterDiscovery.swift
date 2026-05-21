@@ -137,25 +137,53 @@ public actor ClusterDiscovery {
     /// engine after jaccl bootstrap completes. Call this from the provider
     /// loop once a model is loaded.
     ///
-    /// On a directory change after engines were already built (consumer
-    /// requested a different model than the one currently in the cluster
-    /// engine), the existing engines are torn down so the next inference
-    /// request gets fresh engines built against the new model. Without this
-    /// tear-down, the cluster engine would serve consumer-requested model B
-    /// using model A's weights — silently producing garbage tokens because
-    /// the vocabularies and parameters don't match.
+    /// Behavior depends on what state the cluster is in:
+    ///
+    ///   - **jaccl/session already established AND no engine built yet**:
+    ///     immediately attempts to build the engine. This handles the common
+    ///     case where the cluster handshake completes BEFORE the first model
+    ///     loads (the engine constructor bailed on a nil modelDirectory then
+    ///     and never retried — without this triggered build, the cluster
+    ///     stays dead).
+    ///   - **engine already built against a different model**: tears down the
+    ///     existing engines so the next inference request rebuilds against
+    ///     the new model. Otherwise the cluster engine would serve
+    ///     consumer-requested model B using model A's weights — silently
+    ///     producing garbage tokens because the vocabularies and parameters
+    ///     don't match.
+    ///   - **no peer yet**: just records the path; engine construction will
+    ///     happen later when the jaccl bootstrap finishes.
     public func setModelDirectory(_ url: URL) {
         guard url != modelDirectory else { return }
-        let priorEngineCount = (_engine == nil ? 0 : 1) + (_ppEngine == nil ? 0 : 1)
+        let hadEngines = _engine != nil || _ppEngine != nil
         modelDirectory = url
-        if priorEngineCount > 0 {
-            logger.info("ClusterDiscovery: model directory changed — tearing down \(priorEngineCount) existing cluster engine(s) so the next request rebuilds against \(url.lastPathComponent)")
+        if hadEngines {
+            logger.info("ClusterDiscovery: model directory changed — tearing down existing cluster engine(s) so the next request rebuilds against \(url.lastPathComponent)")
             _engine = nil
             _server = nil
             _ppEngine = nil
             _ppServer = nil
         } else {
             logger.info("ClusterDiscovery: model directory set to \(url.path)")
+        }
+
+        // If a cluster session already exists, attempt to build the engine
+        // now. The session-establishment path (startAsRank0 / rank-1
+        // bootstrapHandler) tries to build engines after jaccl init but
+        // exits cleanly if modelDirectory was nil. This is the retry hook.
+        if let session = _activeSession {
+            if _distributedGroup != nil {
+                tryBuildRank0Engine(session: session)
+            } else {
+                tryBuildRank0PPEngine(session: session)
+            }
+        }
+        if _activePeer != nil {
+            if _distributedGroup != nil {
+                tryBuildRank1Server()
+            } else {
+                tryBuildRank1PPServer()
+            }
         }
     }
 

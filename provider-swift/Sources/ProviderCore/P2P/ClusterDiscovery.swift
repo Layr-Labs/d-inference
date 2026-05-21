@@ -227,6 +227,14 @@ public actor ClusterDiscovery {
         _ppEngine = nil
         _ppServer = nil
         _clusterRole = nil
+        // Clear the session/peer handles too — without this, a follow-up
+        // setModelDirectory call (which retries engine construction if a
+        // session is "active") would happily build an engine pointing at
+        // a dead session. The next inference request would then 503 on
+        // the first send. Clearing here makes the cluster genuinely inert
+        // until a fresh handshake re-establishes it.
+        _activeSession = nil
+        _activePeer = nil
         logger.info("ClusterDiscovery: session degraded — engines cleared, cluster role reset to nil")
     }
 

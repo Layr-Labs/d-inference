@@ -14,12 +14,50 @@ import Cmlx
 //   [4 bytes: seqLen as Int32 little-endian]   ← -1 = stop sentinel
 //   [N bytes: raw bfloat16 tensor bytes]        ← absent when seqLen == -1
 
+// MARK: - Generic frame sealing helpers
+//
+// Used by ClusterSession.sendInferenceFrame / receiveInferenceFrame and by
+// rank 1's handleConnection to seal every post-handshake ClusterFrame on the
+// wire with AES-256-GCM. Without these, TP control frames (promptTokens,
+// stepToken, sessionStop, jacclBootstrap, ping, pong) would travel in
+// plaintext over the Thunderbolt cable — anyone with physical link access
+// could observe prompt and response token IDs and trivially recover the
+// consumer's content via the tokenizer.
+//
+// PP's TensorCrypto.sealActivation / openActivation provide a SECOND inner
+// seal on activation/token payloads for defense in depth; that path is
+// unchanged.
+
+public enum ClusterLinkSeal {
+    /// Wrap a raw cluster frame in AES-256-GCM using the session key.
+    public static func seal(_ frame: Data, key: SymmetricKey) throws -> Data {
+        let sealed = try AES.GCM.seal(frame, using: key)
+        guard let combined = sealed.combined else {
+            throw TensorCryptoError.arrayDataUnavailable
+        }
+        return combined
+    }
+
+    /// Unwrap an AES-256-GCM sealed cluster frame. Throws on auth failure
+    /// (tampered ciphertext, wrong key) or malformed envelope.
+    public static func open(_ sealed: Data, key: SymmetricKey) throws -> Data {
+        let box = try AES.GCM.SealedBox(combined: sealed)
+        return try AES.GCM.open(box, using: key)
+    }
+}
+
 public enum TensorCrypto {
 
     // MARK: - Seal activation (rank 0 → rank 1)
 
     /// Encrypt seqLen + activation tensor into a single AES-GCM sealed blob.
     /// Pass seqLen = -1 (with any activation) to produce a stop sentinel.
+    ///
+    /// The activation MUST be bfloat16. Llama-3.x checkpoints are bf16; if
+    /// a future TP-supported model ships with fp16 or fp32 activations, this
+    /// will throw `dtypeMismatch` rather than silently produce wrong bytes.
+    /// The fix at that point is to embed a dtype byte in the wire format and
+    /// update `openActivation` to decode according to it.
     public static func sealActivation(
         seqLen: Int32,
         activation: MLXArray,
@@ -30,6 +68,15 @@ public enum TensorCrypto {
 
         if seqLen != -1 {
             mlx_array_eval(activation.ctx)
+            // Validate dtype up-front rather than relying on
+            // `mlx_array_data_bfloat16` to return nil for non-bf16 — its
+            // documented behavior on type mismatch is unspecified in older
+            // mlx-c versions, and a silent reinterpret would corrupt the
+            // sealed payload.
+            guard activation.dtype == .bfloat16 else {
+                throw TensorCryptoError.dtypeMismatch(
+                    expected: "bfloat16", got: "\(activation.dtype)")
+            }
             guard let ptr = mlx_array_data_bfloat16(activation.ctx) else {
                 throw TensorCryptoError.arrayDataUnavailable
             }
@@ -117,7 +164,19 @@ public enum TensorCrypto {
 
 // MARK: - Errors
 
-public enum TensorCryptoError: Error, Sendable {
+public enum TensorCryptoError: Error, CustomStringConvertible, Sendable {
     case arrayDataUnavailable
     case truncatedPayload
+    case dtypeMismatch(expected: String, got: String)
+
+    public var description: String {
+        switch self {
+        case .arrayDataUnavailable:
+            return "MLXArray data pointer was nil"
+        case .truncatedPayload:
+            return "sealed tensor payload is too short"
+        case .dtypeMismatch(let expected, let got):
+            return "tensor dtype mismatch: expected \(expected), got \(got)"
+        }
+    }
 }

@@ -170,11 +170,14 @@ public actor ClusterSession {
     }
 
     private func sendPing(conn: ThunderboltConnection) async throws -> PongPayload {
+        guard let key = _sessionKey else { throw ClusterError.notReady(_health) }
+
         let pingFrame = ClusterFrame.encode(type: .ping)
-        try await conn.send(pingFrame)
+        let sealedPing = try ClusterLinkSeal.seal(pingFrame, key: key)
+        try await conn.send(sealedPing)
 
         // Wait for pong with a timeout.
-        let pongFrame = try await withThrowingTaskGroup(of: Data.self) { group in
+        let sealedPong = try await withThrowingTaskGroup(of: Data.self) { group in
             group.addTask { try await conn.receive() }
             group.addTask {
                 try await Task.sleep(for: .seconds(self.config.pingTimeout))
@@ -184,6 +187,7 @@ public actor ClusterSession {
             group.cancelAll()
             return result
         }
+        let pongFrame = try ClusterLinkSeal.open(sealedPong, key: key)
 
         guard try ClusterFrame.decodeType(from: pongFrame) == .pong else {
             throw ClusterError.unexpectedMessage(expected: .pong, got: try ClusterFrame.decodeType(from: pongFrame))
@@ -263,16 +267,28 @@ public final class ClusterPeer: @unchecked Sendable {
             sessionKey = key
             connection = conn
 
-            // Message dispatch loop.
+            // Message dispatch loop. Every post-handshake frame is sealed at
+            // the link layer with AES-256-GCM via ClusterLinkSeal; unwrap on
+            // receive so the rest of this loop sees plaintext ClusterFrame
+            // bytes (type byte + payload).
             while true {
-                let frame = try await conn.receive()
+                let sealedFrame = try await conn.receive()
+                let frame: Data
+                do {
+                    frame = try ClusterLinkSeal.open(sealedFrame, key: key)
+                } catch {
+                    logger.warning("Link-layer unseal failed (tamper / wrong key): \(error)")
+                    conn.cancel()
+                    return
+                }
                 let msgType = try ClusterFrame.decodeType(from: frame)
 
                 switch msgType {
                 case .ping:
                     let status = modelState()
                     let pongFrame = try ClusterFrame.encodeJSON(type: .pong, value: status)
-                    try await conn.send(pongFrame)
+                    let sealedPong = try ClusterLinkSeal.seal(pongFrame, key: key)
+                    try await conn.send(sealedPong)
 
                 case .jacclBootstrap:
                     // Dedicated handler — jaccl bootstrap runs before the TP engine is

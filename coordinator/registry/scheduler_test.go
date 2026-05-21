@@ -794,3 +794,214 @@ func TestFreeMemoryAdmitsFallsBackWithoutBudget(t *testing.T) {
 		t.Fatal("should admit with plenty of free memory in legacy mode")
 	}
 }
+
+// TestReserveProviderExSkipsClusterRank1 is the regression test for the
+// scheduler-bypass critical: PR 4d's cluster_role exclusion was wired into
+// FindProvider/FindProviderWithTrust but missed snapshotProviderLocked,
+// which is the actual production routing path called from
+// ReserveProviderEx. Without the gate, a rank-1 cluster provider would
+// win routing decisions and the consumer request would fail downstream.
+func TestReserveProviderExSkipsClusterRank1(t *testing.T) {
+	reg := New(testLogger())
+	model := "cluster-rank-routing-model"
+
+	rank0 := makeSchedulerProvider(t, reg, "rank0", model, 100)
+	rank1 := makeSchedulerProvider(t, reg, "rank1", model, 200) // higher TPS — would win without the gate
+
+	rank0Role := 0
+	rank0.mu.Lock()
+	rank0.ClusterRole = &rank0Role
+	rank0.mu.Unlock()
+
+	rank1Role := 1
+	rank1.mu.Lock()
+	rank1.ClusterRole = &rank1Role
+	rank1.mu.Unlock()
+
+	req := &PendingRequest{
+		RequestID:          "req-cluster-route",
+		Model:              model,
+		RequestedMaxTokens: 128,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatal("ReserveProviderEx returned nil — rank 0 should still be selectable")
+	}
+	if selected.ID != rank0.ID {
+		t.Fatalf("selected %q, want rank-0 %q (rank-1 must be excluded)", selected.ID, rank0.ID)
+	}
+	if decision.CandidateCount != 1 {
+		t.Fatalf("decision.CandidateCount=%d, want 1 (only rank-0 eligible)", decision.CandidateCount)
+	}
+}
+
+// TestReserveProviderExRank1OnlyReturnsNil ensures that when the only
+// online provider is rank-1, ReserveProviderEx returns nil — capacity
+// signalling must treat rank-1 as no-capacity rather than as a routable
+// candidate that will then fail.
+func TestReserveProviderExRank1OnlyReturnsNil(t *testing.T) {
+	reg := New(testLogger())
+	model := "cluster-rank-only-model"
+
+	r1 := makeSchedulerProvider(t, reg, "rank1-only", model, 200)
+	rank1Role := 1
+	r1.mu.Lock()
+	r1.ClusterRole = &rank1Role
+	r1.mu.Unlock()
+
+	req := &PendingRequest{
+		RequestID:          "req-rank1-only",
+		Model:              model,
+		RequestedMaxTokens: 128,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected != nil {
+		t.Fatalf("selected %q, want nil (rank-1 must not be routable)", selected.ID)
+	}
+	if decision.CandidateCount != 0 {
+		t.Fatalf("decision.CandidateCount=%d, want 0", decision.CandidateCount)
+	}
+}
+
+// TestQuickCapacityCheckExcludesRank1 verifies the parallel fix to
+// QuickCapacityCheck — the pre-flight 429/503 path must not count rank-1
+// providers as candidates either, otherwise the system reports capacity
+// that the real router immediately rejects.
+func TestQuickCapacityCheckExcludesRank1(t *testing.T) {
+	reg := New(testLogger())
+	model := "quick-capacity-cluster-model"
+
+	makeSchedulerProvider(t, reg, "rank0", model, 100) // routable
+	r1 := makeSchedulerProvider(t, reg, "rank1", model, 200)
+	rank1Role := 1
+	r1.mu.Lock()
+	r1.ClusterRole = &rank1Role
+	r1.mu.Unlock()
+
+	candidates, _ := reg.QuickCapacityCheck(model, 100, 256)
+	if candidates != 1 {
+		t.Fatalf("QuickCapacityCheck candidates=%d, want 1 (rank-1 must be skipped)", candidates)
+	}
+}
+
+// TestHeartbeatClampsMalformedClusterRole is the regression test for the
+// ingest-validation gap (round 43, C12). The wire protocol only defines
+// cluster_role ∈ {nil, 0, 1}; any other value (provider bug, or a
+// malicious rank-1 lying as 2 to evade the routing-excluded gate which
+// only matches *p.ClusterRole == 1) must be clamped to 1 so the
+// existing predicates fail-closed. Without this fix, a provider sending
+// `cluster_role=2` would pass every == 1 gate and receive traffic.
+func TestHeartbeatClampsMalformedClusterRole(t *testing.T) {
+	model := "clamp-cluster-role-model"
+	reg := New(testLogger())
+	p := makeSchedulerProvider(t, reg, "clamp-p", model, 100)
+
+	// Send a heartbeat with an out-of-range cluster_role.
+	bogus := 2
+	reg.Heartbeat(p.ID, &protocol.HeartbeatMessage{
+		Type:        protocol.TypeHeartbeat,
+		Status:      "idle",
+		ActiveModel: nil,
+		Stats:       protocol.HeartbeatStats{},
+		SystemMetrics: protocol.SystemMetrics{
+			MemoryPressure: 0.1,
+			CPUUsage:       0.1,
+			ThermalState:   "nominal",
+		},
+		ClusterRole: &bogus,
+	})
+
+	got := reg.GetProvider(p.ID)
+	if got == nil {
+		t.Fatal("provider not found after heartbeat")
+	}
+	if got.ClusterRole == nil {
+		t.Fatal("ClusterRole was cleared; want clamped to 1")
+	}
+	if *got.ClusterRole != 1 {
+		t.Fatalf("ClusterRole=%d, want 1 (fail-closed clamp)", *got.ClusterRole)
+	}
+
+	// And confirm the clamp actually excludes the provider from routing
+	// (i.e. the existing == 1 gates now see it as rank-1).
+	req := &PendingRequest{
+		RequestID:          "req-clamp",
+		Model:              model,
+		RequestedMaxTokens: 64,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected != nil {
+		t.Errorf("ReserveProviderEx selected %q after clamp; want nil", selected.ID)
+	}
+	if decision.CandidateCount != 0 {
+		t.Errorf("CandidateCount=%d after clamp, want 0", decision.CandidateCount)
+	}
+}
+
+// TestHeartbeatPreservesValidClusterRoles ensures the clamp does not
+// affect well-formed values — both 0 and 1 must round-trip unchanged.
+func TestHeartbeatPreservesValidClusterRoles(t *testing.T) {
+	reg := New(testLogger())
+	model := "preserve-cluster-role-model"
+
+	makeAndHB := func(id string, role int) *Provider {
+		p := makeSchedulerProvider(t, reg, id, model, 100)
+		r := role
+		reg.Heartbeat(p.ID, &protocol.HeartbeatMessage{
+			Type:        protocol.TypeHeartbeat,
+			Status:      "idle",
+			ActiveModel: nil,
+			Stats:       protocol.HeartbeatStats{},
+			SystemMetrics: protocol.SystemMetrics{
+				MemoryPressure: 0.1,
+				CPUUsage:       0.1,
+				ThermalState:   "nominal",
+			},
+			ClusterRole: &r,
+		})
+		return reg.GetProvider(p.ID)
+	}
+
+	r0 := makeAndHB("preserve-0", 0)
+	if r0.ClusterRole == nil || *r0.ClusterRole != 0 {
+		t.Errorf("rank-0 round-trip: got %v, want 0", r0.ClusterRole)
+	}
+
+	r1 := makeAndHB("preserve-1", 1)
+	if r1.ClusterRole == nil || *r1.ClusterRole != 1 {
+		t.Errorf("rank-1 round-trip: got %v, want 1", r1.ClusterRole)
+	}
+}
+
+// TestModelCapacitySnapshotExcludesRank1 is the regression test for the
+// /v1/models/capacity bypass (round 42 finding). The snapshot feeds
+// upstream routers polling for capacity before dispatch; counting
+// rank-1 providers inflates RoutableProviders / WarmProviders /
+// CanAccept and leads upstream to dispatch to a coordinator that then
+// has nothing routable.
+func TestModelCapacitySnapshotExcludesRank1(t *testing.T) {
+	reg := New(testLogger())
+	model := "model-cap-cluster-model"
+
+	makeSchedulerProvider(t, reg, "rank0", model, 100)
+	r1 := makeSchedulerProvider(t, reg, "rank1", model, 200)
+	rank1Role := 1
+	r1.mu.Lock()
+	r1.ClusterRole = &rank1Role
+	r1.mu.Unlock()
+
+	caps := reg.ModelCapacitySnapshot()
+	var found *ModelCapacity
+	for i := range caps {
+		if caps[i].ModelID == model {
+			found = &caps[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("ModelCapacitySnapshot returned no entry for %q", model)
+	}
+	if found.RoutableProviders != 1 {
+		t.Errorf("RoutableProviders=%d, want 1 (rank-1 must be skipped)", found.RoutableProviders)
+	}
+}

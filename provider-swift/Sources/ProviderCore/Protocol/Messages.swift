@@ -77,6 +77,12 @@ public enum ProviderMessage: Sendable, Equatable {
         public var stats: ProviderStats
         public var systemMetrics: SystemMetrics
         public var backendCapacity: BackendCapacity?
+        /// Cluster rank for this provider within a two-Mac cluster session.
+        /// 0 = rank 0 (initiator, eligible for consumer request routing).
+        /// 1 = rank 1 (responder, skipped by coordinator routing).
+        /// nil = not clustered, or cluster session not yet established.
+        /// Pre-PR-4d providers omit this field; coordinator treats nil as eligible.
+        public var clusterRole: Int?
 
         public init(
             status: ProviderStatus,
@@ -84,7 +90,8 @@ public enum ProviderMessage: Sendable, Equatable {
             warmModels: [String] = [],
             stats: ProviderStats,
             systemMetrics: SystemMetrics,
-            backendCapacity: BackendCapacity? = nil
+            backendCapacity: BackendCapacity? = nil,
+            clusterRole: Int? = nil
         ) {
             self.status = status
             self.activeModel = activeModel
@@ -92,6 +99,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.stats = stats
             self.systemMetrics = systemMetrics
             self.backendCapacity = backendCapacity
+            self.clusterRole = clusterRole
         }
     }
 
@@ -246,6 +254,7 @@ extension ProviderMessage: Codable {
         case stats
         case systemMetrics = "system_metrics"
         case backendCapacity = "backend_capacity"
+        case clusterRole = "cluster_role"
         // Common
         case requestId = "request_id"
         // InferenceResponseChunk
@@ -311,6 +320,7 @@ extension ProviderMessage: Codable {
             try container.encode(h.stats, forKey: .stats)
             try container.encode(h.systemMetrics, forKey: .systemMetrics)
             try container.encodeIfPresent(h.backendCapacity, forKey: .backendCapacity)
+            try container.encodeIfPresent(h.clusterRole, forKey: .clusterRole)
 
         case .inferenceAccepted(let a):
             try container.encode(TypeValue.inferenceAccepted, forKey: .type)
@@ -398,7 +408,8 @@ extension ProviderMessage: Codable {
                 warmModels: try container.decodeIfPresent([String].self, forKey: .warmModels) ?? [],
                 stats: try container.decode(ProviderStats.self, forKey: .stats),
                 systemMetrics: try container.decode(SystemMetrics.self, forKey: .systemMetrics),
-                backendCapacity: try container.decodeIfPresent(BackendCapacity.self, forKey: .backendCapacity)
+                backendCapacity: try container.decodeIfPresent(BackendCapacity.self, forKey: .backendCapacity),
+                clusterRole: try container.decodeIfPresent(Int.self, forKey: .clusterRole)
             ))
 
         case .inferenceAccepted:

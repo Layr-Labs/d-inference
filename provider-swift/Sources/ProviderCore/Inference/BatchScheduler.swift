@@ -297,6 +297,14 @@ public actor BatchScheduler {
         )
     }
 
+    /// Returns the tokenizer for the currently loaded model, or nil if no model
+    /// is loaded. Used by the cluster dispatch path in ProviderLoop to decode
+    /// raw token IDs from the cluster engine into text strings before streaming
+    /// them back to the consumer.
+    public func currentTokenizer() -> (any MLXLMCommon.Tokenizer)? {
+        tokenizer?.inner
+    }
+
     public func unloadModel() async {
         await stopCurrentEngine()
     }

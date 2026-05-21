@@ -246,6 +246,11 @@ struct Start: AsyncParsableCommand {
         // accepted by the capability gate above. ClusterDiscovery watches
         // NWPathMonitor for Thunderbolt wiredEthernet events and automatically
         // establishes a ClusterSession or ClusterPeer without manual setup.
+        //
+        // PR 4d: the discovery instance is stored and injected into ProviderLoop
+        // so `handleInferenceRequest` can dispatch through the cluster engine and
+        // the heartbeat loop can report `cluster_role` to the coordinator.
+        var clusterDiscovery: ClusterDiscovery?
         if effectiveRDMA {
             do {
                 let signer = try PersistentEnclaveKey.loadOrCreate()
@@ -256,9 +261,11 @@ struct Start: AsyncParsableCommand {
                     let discovery = ClusterDiscovery(
                         coordinatorURL: coordinatorURL,
                         authToken: token,
-                        signer: signer
+                        signer: signer,
+                        parallelismPreference: parallelism
                     )
                     Task { await discovery.start() }
+                    clusterDiscovery = discovery
                     print("RDMA cluster discovery enabled — watching for Thunderbolt peers")
                     print("Cluster parallelism preference: \(parallelism) (resolved at session handshake)")
                 }
@@ -269,9 +276,10 @@ struct Start: AsyncParsableCommand {
 
         do {
             if let schedule {
-                try await runScheduled(loopConfig: loopConfig, schedule: schedule)
+                try await runScheduled(loopConfig: loopConfig, schedule: schedule, clusterDiscovery: clusterDiscovery)
             } else {
                 let loop = try ProviderLoop(config: loopConfig)
+                await loop.setClusterDiscovery(clusterDiscovery)
                 try await loop.run()
             }
         } catch {
@@ -314,7 +322,8 @@ struct Start: AsyncParsableCommand {
 
     private func runScheduled(
         loopConfig: ProviderLoopConfig,
-        schedule: Schedule
+        schedule: Schedule,
+        clusterDiscovery: ClusterDiscovery? = nil
     ) async throws {
         while !Task.isCancelled {
             if !schedule.isActiveNow() {
@@ -328,6 +337,7 @@ struct Start: AsyncParsableCommand {
             print("Availability window active for \(formatDuration(activeFor)).")
 
             let loop = try ProviderLoop(config: loopConfig)
+            await loop.setClusterDiscovery(clusterDiscovery)
             try await withThrowingTaskGroup(of: ScheduledLoopResult.self) { group in
                 group.addTask {
                     try await loop.run()

@@ -373,6 +373,15 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
 		return routingSnapshot{}, false
 	}
+	// Rank-1 cluster providers must not receive consumer inference requests —
+	// they only run the server-side decode loop for their rank-0 partner.
+	// PR 4d added this check to FindProviderWithTrust but missed
+	// snapshotProviderLocked, which is the actual production routing path
+	// invoked from ReserveProviderEx. Without this gate the cluster_role
+	// opt-out is bypassed for the main inference flow.
+	if p.ClusterRole != nil && *p.ClusterRole == 1 {
+		return routingSnapshot{}, false
+	}
 	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) {
 		return routingSnapshot{}, false
 	}
@@ -762,6 +771,14 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 			continue
 		}
 		if p.Status == StatusOffline || p.Status == StatusUntrusted {
+			p.mu.Unlock()
+			continue
+		}
+		// Exclude rank-1 cluster providers (same reason as snapshotProviderLocked).
+		// QuickCapacityCheck feeds the pre-flight 429 / 503 decision; counting
+		// rank 1 as a candidate would let requests through that immediately
+		// fail downstream when ReserveProviderEx correctly skips them.
+		if p.ClusterRole != nil && *p.ClusterRole == 1 {
 			p.mu.Unlock()
 			continue
 		}

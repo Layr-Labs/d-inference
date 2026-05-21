@@ -60,7 +60,59 @@ public enum ClusterModelLoader {
     private static let logger = Logger(
         subsystem: "io.darkbloom.provider", category: "ClusterModelLoader")
 
-    // MARK: - Public entry point
+    // MARK: - PP entry point
+
+    /// Load a single-rank `LlamaModel` from `modelDirectory` for pipeline-parallel inference.
+    ///
+    /// PP does not require a jaccl `DistributedGroup` — each rank runs its own contiguous
+    /// layer slice on an independent `LlamaModel` instance. This loader reads `config.json`
+    /// and the weight safetensors, constructs a `LlamaModel` (not `LlamaModelTP`), and
+    /// applies all weights. The caller is responsible for only running its own layer range
+    /// via `callPartial`.
+    ///
+    /// This function is synchronous for weight loading (MLX arrays are CPU-backed until eval)
+    /// but may block for several seconds on large checkpoints. Call from a `Task` or
+    /// background thread as appropriate.
+    ///
+    /// - Parameters:
+    ///   - modelDirectory: Directory containing `config.json` and `*.safetensors` weight files.
+    /// - Returns: Loaded `LlamaModel` ready for `callPartial` inference.
+    /// - Throws: `ClusterModelLoaderError` on any failure.
+    public static func loadLlamaModel(modelDirectory: URL) throws -> LlamaModel {
+        // Step 1: Read config.json.
+        let configURL = modelDirectory.appendingPathComponent("config.json")
+        guard FileManager.default.fileExists(atPath: configURL.path) else {
+            throw ClusterModelLoaderError.configNotFound(configURL)
+        }
+        let configData: Data
+        do {
+            configData = try Data(contentsOf: configURL)
+        } catch {
+            throw ClusterModelLoaderError.configDecodeFailed("Cannot read config.json: \(error)")
+        }
+        let config: LlamaConfiguration
+        do {
+            config = try JSONDecoder().decode(LlamaConfiguration.self, from: configData)
+        } catch {
+            throw ClusterModelLoaderError.configDecodeFailed("JSON decode failed: \(error)")
+        }
+        logger.info("ClusterModelLoader.loadLlamaModel: loading from \(modelDirectory.lastPathComponent)")
+
+        // Step 2: Construct LlamaModel (single-rank, no DistributedGroup needed).
+        let model = LlamaModel(config)
+
+        // Step 3: Load weights using the shared MLXLMCommon helper.
+        do {
+            try loadWeights(modelDirectory: modelDirectory, model: model)
+        } catch {
+            throw ClusterModelLoaderError.weightLoadFailed("\(error)")
+        }
+
+        logger.info("ClusterModelLoader.loadLlamaModel: LlamaModel loaded successfully")
+        return model
+    }
+
+    // MARK: - TP entry point
 
     /// Load `LlamaModelTP` from `modelDirectory`.
     ///

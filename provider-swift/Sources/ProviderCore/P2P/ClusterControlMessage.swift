@@ -13,6 +13,9 @@ public enum ClusterMsgType: UInt8, Sendable {
     case promptTokens      = 0x08  // rank 0 → rank 1: { uid, tokens, maxTokens } — begin TP request
     case stepToken         = 0x09  // rank 0 → rank 1: { uid, token } — advance decode by one token
     case sessionStop       = 0x0A  // rank 0 → rank 1: { uid } — abort / end of request
+    case ppActivation      = 0x0B  // rank 0 → rank 1: { uid, seqLen, sealedActivation } — PP activation
+    case ppToken           = 0x0C  // rank 1 → rank 0: { uid, sealedToken } — PP sampled token
+    case ppSessionEnd      = 0x0D  // rank 0 → rank 1: { uid } — PP request complete
     case sessionEnd        = 0xFF
 }
 
@@ -124,6 +127,66 @@ public struct SessionStopPayload: Codable, Sendable {
     }
 }
 
+// MARK: - PP inference payloads (PR 4c)
+
+/// Sent by rank 0 → rank 1 for each pipeline-parallel decode step.
+///
+/// `sealedActivation` is the AES-GCM ciphertext produced by
+/// `TensorCrypto.sealActivation(seqLen:activation:key:)`. It carries the
+/// activation tensor for layers 0..splitLayer.
+///
+/// Note on double-encryption: `sealedActivation` is itself AES-GCM sealed by
+/// TensorCrypto before being embedded in this JSON payload. The outer
+/// ThunderboltLink `ClusterFrame.encode/decode` wraps the whole frame in a
+/// second layer of AES-256-GCM. Double encryption is intentional — it matches
+/// the design established by `inferenceStep`/`inferenceToken` (raw ciphertext
+/// sent as frame payload, then ClusterFrame wraps again) and gives defence-in-
+/// depth against link-layer stripping. TensorCrypto's docstring does not flag
+/// the outer encryption as redundant; both layers are kept.
+public struct PPActivationPayload: Codable, Sendable {
+    /// Unique request identifier (UUID string).
+    public let uid: String
+    /// Sequence length of the activation tensor. Rank 1 uses this to reshape
+    /// the decrypted bytes into `[1, seqLen, hiddenDim]`.
+    public let seqLen: Int
+    /// AES-GCM sealed activation tensor bytes (from TensorCrypto.sealActivation).
+    public let sealedActivation: Data
+
+    public init(uid: String, seqLen: Int, sealedActivation: Data) {
+        self.uid = uid
+        self.seqLen = seqLen
+        self.sealedActivation = sealedActivation
+    }
+}
+
+/// Sent by rank 1 → rank 0 after sampling the next token.
+///
+/// `sealedToken` is the AES-GCM ciphertext of a single `Int32` token ID,
+/// produced by `TensorCrypto.sealToken(_:key:)`.
+public struct PPTokenPayload: Codable, Sendable {
+    /// Request identifier — must match the `uid` in the leading `ppActivation` frame.
+    public let uid: String
+    /// AES-GCM sealed token ID bytes (from TensorCrypto.sealToken).
+    public let sealedToken: Data
+
+    public init(uid: String, sealedToken: Data) {
+        self.uid = uid
+        self.sealedToken = sealedToken
+    }
+}
+
+/// Sent by rank 0 → rank 1 when generation ends (EOS reached, maxTokens
+/// exhausted, or a fatal error occurred on rank 0). Rank 1 exits its decode
+/// loop cleanly and resets its KV cache.
+public struct PPSessionEndPayload: Codable, Sendable {
+    /// Request identifier that is ending.
+    public let uid: String
+
+    public init(uid: String) {
+        self.uid = uid
+    }
+}
+
 // MARK: - Frame encoding
 //
 // Every ThunderboltLink frame:
@@ -132,6 +195,7 @@ public struct SessionStopPayload: Codable, Sendable {
 // Payload encoding by type:
 //   handshakeHello / handshakeAck / pong / jacclBootstrap          → JSON-encoded Codable struct
 //   promptTokens / stepToken / sessionStop                          → JSON-encoded Codable struct
+//   ppActivation / ppToken / ppSessionEnd                           → JSON-encoded Codable struct
 //   ping / sessionEnd                                               → empty (0 bytes)
 //   inferenceStep / inferenceToken                                  → raw AES-GCM ciphertext (opaque bytes)
 //

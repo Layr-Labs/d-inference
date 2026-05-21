@@ -279,7 +279,8 @@ public final class ClusterPeer: @unchecked Sendable {
                     // wired up and must not share the inferenceHandler path.
                     try await bootstrapHandler(conn, key, frame)
 
-                case .promptTokens, .stepToken, .sessionStop, .inferenceStep, .inferenceToken:
+                case .promptTokens, .stepToken, .sessionStop, .inferenceStep, .inferenceToken,
+                     .ppActivation, .ppToken, .ppSessionEnd:
                     // Live TP/PP inference frames — dispatched to the active engine's handler.
                     try await inferenceHandler(conn, key, frame)
 

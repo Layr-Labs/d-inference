@@ -57,6 +57,15 @@ public actor ClusterDiscovery {
     /// Rank 1 server. Set after jaccl bootstrap completes and LlamaModelTP is loaded.
     private var _server: TensorParallelServer?
 
+    // MARK: - PP engine/server (set when jaccl bootstrap fails or PP is selected)
+
+    /// Rank 0 PP engine. Set when the Parallelism decision is `.pp` (or jaccl bootstrap
+    /// failed). Uses `LlamaModel.callPartial` over ThunderboltLink activation transfer.
+    private var _ppEngine: EncryptedPipelineEngine?
+
+    /// Rank 1 PP server. Counterpart to `_ppEngine` on rank 1.
+    private var _ppServer: EncryptedPipelineServer?
+
     /// Held for the running rank (for diagnostics only; actual session ref lives
     /// inside _engine / _server).
     private var _activeSession: ClusterSession?
@@ -97,6 +106,8 @@ public actor ClusterDiscovery {
         _distributedGroup = nil
         _engine = nil
         _server = nil
+        _ppEngine = nil
+        _ppServer = nil
         _activeSession = nil
         _activePeer = nil
         logger.info("ClusterDiscovery stopped")
@@ -124,6 +135,14 @@ public actor ClusterDiscovery {
     /// The rank-1 `TensorParallelServer` for this cluster session. Non-nil on rank 1
     /// after jaccl bootstrap completes and `LlamaModelTP` is loaded. Nil on rank 0.
     public func currentServer() -> TensorParallelServer? { _server }
+
+    /// The rank-0 `EncryptedPipelineEngine`. Non-nil on rank 0 when the parallelism
+    /// decision is `.pp` (either by operator choice or jaccl bootstrap failure fallback).
+    /// PR 4d dispatches consumer requests through this when `currentEngine()` is nil.
+    public func currentPPEngine() -> EncryptedPipelineEngine? { _ppEngine }
+
+    /// The rank-1 `EncryptedPipelineServer`. Non-nil on rank 1 when PP is selected.
+    public func currentPPServer() -> EncryptedPipelineServer? { _ppServer }
 
     // MARK: - Path change handler
 
@@ -290,7 +309,11 @@ public actor ClusterDiscovery {
                 //    works: model loaded before jaccl, or jaccl ready before model.
                 await me.tryBuildRank0Engine(session: session)
             } catch {
-                log.warning("jaccl bootstrap failed (rank 0): \(error)")
+                log.warning("jaccl bootstrap failed (rank 0): \(error) — falling back to PP")
+                // PP fallback: jaccl failed (e.g. pre-M5 hardware, RDMA unavailable).
+                // Build EncryptedPipelineEngine instead — it uses plain TCP activation
+                // transfer and doesn't require a DistributedGroup.
+                await me.tryBuildRank0PPEngine(session: session)
             }
         }
     }
@@ -388,7 +411,9 @@ public actor ClusterDiscovery {
                             // Construct TensorParallelServer if model directory is set.
                             await me.tryBuildRank1Server()
                         } catch {
-                            log.warning("jaccl bootstrap failed (rank 1): \(error)")
+                            log.warning("jaccl bootstrap failed (rank 1): \(error) — falling back to PP")
+                            // PP fallback on rank 1: build EncryptedPipelineServer.
+                            await me.tryBuildRank1PPServer()
                         }
                     }
                 )
@@ -422,6 +447,62 @@ public actor ClusterDiscovery {
         }
     }
 
+    // MARK: - PP engine/server builders
+
+    /// Build `EncryptedPipelineEngine` (rank 0) using `LlamaModel.callPartial`.
+    /// Called when the Parallelism decision is `.pp` or when jaccl bootstrap fails.
+    private func tryBuildRank0PPEngine(session: ClusterSession) {
+        guard _ppEngine == nil else { return }
+        guard let modelDir = modelDirectory else {
+            logger.info("PP engine deferred: modelDirectory not yet set")
+            return
+        }
+        do {
+            let model = try ClusterModelLoader.loadLlamaModel(modelDirectory: modelDir)
+            let numLayers = model.kvHeads.count
+            let splitLayer = numLayers / 2
+            let ppConfig = EncryptedPipelineConfig(
+                splitLayer: splitLayer,
+                numLayers: numLayers,
+                hiddenDim: model.vocabularySize > 0 ? model.kvHeads.count : 0,
+                vocabSize: model.vocabularySize)
+            let engine = EncryptedPipelineEngine(config: ppConfig, model: model, session: session)
+            setPPEngine(engine)
+            logger.info(
+                "EncryptedPipelineEngine constructed (rank 0): splitLayer=\(splitLayer) numLayers=\(numLayers)")
+        } catch {
+            logger.warning("Failed to build EncryptedPipelineEngine: \(error)")
+        }
+    }
+
+    /// Build `EncryptedPipelineServer` (rank 1) using `LlamaModel.callPartial`.
+    /// Called when the Parallelism decision is `.pp` or when jaccl bootstrap fails.
+    private func tryBuildRank1PPServer() {
+        guard _ppServer == nil else { return }
+        guard let modelDir = modelDirectory else {
+            logger.info("PP server deferred: modelDirectory not yet set")
+            return
+        }
+        do {
+            let model = try ClusterModelLoader.loadLlamaModel(modelDirectory: modelDir)
+            let numLayers = model.kvHeads.count
+            let splitLayer = numLayers / 2
+            let ppConfig = EncryptedPipelineConfig(
+                splitLayer: splitLayer,
+                numLayers: numLayers,
+                hiddenDim: model.vocabularySize > 0 ? model.kvHeads.count : 0,
+                vocabSize: model.vocabularySize)
+            let server = EncryptedPipelineServer(config: ppConfig, model: model)
+            setPPServer(server)
+            logger.info(
+                "EncryptedPipelineServer constructed (rank 1): splitLayer=\(splitLayer) numLayers=\(numLayers)")
+        } catch {
+            logger.warning("Failed to build EncryptedPipelineServer: \(error)")
+        }
+    }
+
+    // MARK: - Actor-isolated setters
+
     /// Actor-isolated setter for the distributed group.
     /// Called from within Task closures after jaccl initializes.
     private func setDistributedGroup(_ group: DistributedGroup) {
@@ -435,6 +516,14 @@ public actor ClusterDiscovery {
 
     private func setServer(_ server: TensorParallelServer) {
         _server = server
+    }
+
+    private func setPPEngine(_ engine: EncryptedPipelineEngine) {
+        _ppEngine = engine
+    }
+
+    private func setPPServer(_ server: EncryptedPipelineServer) {
+        _ppServer = server
     }
 
     // MARK: - SE key pinning check

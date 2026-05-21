@@ -34,6 +34,13 @@ public actor ClusterDiscovery {
     private var sessionTask: Task<Void, Never>?
     private var peerTask: Task<Void, Never>?
 
+    /// The initialized jaccl DistributedGroup. Available after the jaccl
+    /// bootstrap step completes on either rank. Nil until then.
+    ///
+    /// Subsequent PRs (4b+) read this via `distributedGroup` to access the
+    /// group for TP inference allreduces.
+    private var _distributedGroup: DistributedGroup?
+
     private let logger = Logger(subsystem: "io.darkbloom.provider", category: "ClusterDiscovery")
 
     public init(coordinatorURL: String, authToken: String, signer: any AttestationSigner) {
@@ -66,8 +73,14 @@ public actor ClusterDiscovery {
         sessionTask = nil
         peerTask?.cancel()
         peerTask = nil
+        _distributedGroup = nil
         logger.info("ClusterDiscovery stopped")
     }
+
+    /// The initialized jaccl `DistributedGroup`. Nil until after a successful
+    /// `jacclBootstrap` exchange on both ranks. Check this before kicking off
+    /// TP inference; if nil, fall back to PP or single-rank.
+    public var distributedGroup: DistributedGroup? { _distributedGroup }
 
     // MARK: - Path change handler
 
@@ -157,30 +170,89 @@ public actor ClusterDiscovery {
         logger.info("Rank election: own=\(ownIP) peer=\(peerIP) → \(isRank0 ? "rank 0 (initiator)" : "rank 1 (responder)")")
 
         if isRank0 {
-            startAsRank0(peerIP: peerIP)
+            startAsRank0(ownIP: ownIP, peerIP: peerIP)
         } else {
-            startAsRank1(peerIP: peerIP)
+            startAsRank1(ownIP: ownIP, peerIP: peerIP)
         }
     }
 
     // MARK: - Rank 0: initiate session
 
-    private func startAsRank0(peerIP: String) {
+    private func startAsRank0(ownIP: String, peerIP: String) {
         sessionTask?.cancel()
         let config = ClusterSessionConfig(peerIP: peerIP)
         let session = ClusterSession(config: config, signer: signer)
+        let log = logger
+        let me = self
         sessionTask = Task {
-            logger.info("Starting ClusterSession (rank 0) → \(peerIP)")
-            await session.start()
+            log.info("Starting ClusterSession (rank 0) → \(peerIP)")
+            // Run the session connect loop in a child task so we can observe
+            // when the session becomes ready and trigger jaccl bootstrap without
+            // waiting for the infinite reconnect loop to exit.
+            async let _ = session.start()
+
+            // Poll until the session health becomes non-unavailable, meaning the
+            // SE handshake completed and a connection is established.
+            // Bounded at 60 s (120 × 500 ms) — beyond that something is broken.
+            var attempts = 0
+            while attempts < 120 {
+                let h = await session.health
+                if case .unavailable = h {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    attempts += 1
+                } else {
+                    break
+                }
+            }
+            // If still unavailable after polling, abort.
+            if case .unavailable = await session.health {
+                log.warning("Session never became ready after 60 s — jaccl bootstrap skipped")
+                return
+            }
+
+            // SE handshake completed. Now bootstrap jaccl on rank 0.
+            //
+            // 1. Generate a unique session ID and pick the jaccl coordinator port.
+            let sessionID = UUID().uuidString
+            let jacclPort: UInt16 = 29400
+
+            // 2. Send jacclBootstrap frame to rank 1 via the control channel.
+            let bootstrapPayload = JacclBootstrapPayload(port: jacclPort, sessionID: sessionID)
+            do {
+                let conn = try await session.connection()
+                let frame = try ClusterFrame.encodeJSON(type: .jacclBootstrap, value: bootstrapPayload)
+                try await conn.send(frame)
+                log.info("Sent jacclBootstrap to rank 1: port=\(jacclPort), session=\(sessionID)")
+            } catch {
+                log.warning("Failed to send jacclBootstrap frame: \(error) — jaccl not initialized")
+                return
+            }
+
+            // 3. Initialize jaccl DistributedGroup as rank 0.
+            let bootstrapConfig = DistributedGroupBootstrapConfig(
+                ownRank: 0,
+                ownIP: ownIP,
+                peerIP: peerIP,
+                port: jacclPort,
+                sessionID: sessionID
+            )
+            do {
+                let group = try DistributedGroupBootstrap.bootstrap(bootstrapConfig)
+                await me.setDistributedGroup(group)
+                log.info("jaccl DistributedGroup ready (rank 0): size=\(group.size)")
+            } catch {
+                log.warning("jaccl bootstrap failed (rank 0): \(error)")
+            }
         }
     }
 
     // MARK: - Rank 1: listen for connection
 
-    private func startAsRank1(peerIP: String) {
+    private func startAsRank1(ownIP: String, peerIP: String) {
         peerTask?.cancel()
         let peer = ClusterPeer(signer: signer, peerIP: peerIP)
         let log = logger
+        let me = self
         peerTask = Task {
             log.info("Starting ClusterPeer (rank 1), expecting rank 0 from \(peerIP)")
             do {
@@ -188,14 +260,43 @@ public actor ClusterDiscovery {
                     modelState: {
                         PongPayload(modelLoaded: false, inferenceInFlight: false, memoryPressure: .normal)
                     },
-                    inferenceHandler: { _, _, _ in
-                        // TODO: wire up actual rank-1 inference handler
+                    inferenceHandler: { conn, _, frame in
+                        // Intercept the jacclBootstrap frame from rank 0.
+                        guard let msgType = try? ClusterFrame.decodeType(from: frame),
+                              msgType == .jacclBootstrap else {
+                            // TODO: wire up actual rank-1 inference handler (PR 4b)
+                            return
+                        }
+                        let payload = try ClusterFrame.decodeJSON(JacclBootstrapPayload.self, from: frame)
+                        log.info("Rank 1 received jacclBootstrap: port=\(payload.port), session=\(payload.sessionID)")
+
+                        // Initialize jaccl DistributedGroup as rank 1.
+                        let bootstrapConfig = DistributedGroupBootstrapConfig(
+                            ownRank: 1,
+                            ownIP: ownIP,
+                            peerIP: peerIP,
+                            port: payload.port,
+                            sessionID: payload.sessionID
+                        )
+                        do {
+                            let group = try DistributedGroupBootstrap.bootstrap(bootstrapConfig)
+                            await me.setDistributedGroup(group)
+                            log.info("jaccl DistributedGroup ready (rank 1): size=\(group.size)")
+                        } catch {
+                            log.warning("jaccl bootstrap failed (rank 1): \(error)")
+                        }
                     }
                 )
             } catch {
                 log.warning("ClusterPeer ended: \(error)")
             }
         }
+    }
+
+    /// Actor-isolated setter for the distributed group.
+    /// Called from within Task closures after jaccl initializes.
+    private func setDistributedGroup(_ group: DistributedGroup) {
+        _distributedGroup = group
     }
 
     // MARK: - SE key pinning check

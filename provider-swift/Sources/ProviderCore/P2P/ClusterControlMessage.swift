@@ -9,6 +9,7 @@ public enum ClusterMsgType: UInt8, Sendable {
     case pong              = 0x04
     case inferenceStep     = 0x05  // rank 0 → rank 1: encrypted (seqLen || activation)
     case inferenceToken    = 0x06  // rank 1 → rank 0: encrypted token ID
+    case jacclBootstrap    = 0x07  // rank 0 → rank 1: jaccl coordinator port + session ID
     case sessionEnd        = 0xFF
 }
 
@@ -54,15 +55,34 @@ public struct PongPayload: Codable, Sendable {
     }
 }
 
+// MARK: - jaccl bootstrap
+
+/// Sent by rank 0 → rank 1 immediately after the SE handshake completes.
+/// Carries the TCP port rank 0 will bind for jaccl's coordinator side channel
+/// and a session identifier used to name the shared topology JSON file.
+public struct JacclBootstrapPayload: Codable, Sendable {
+    /// TCP port rank 0 binds for jaccl's coordinator side channel.
+    /// Rank 1 connects to rank 0's Thunderbolt IP on this port.
+    public let port: UInt16
+    /// Unique session identifier (UUID string). Both ranks use this to
+    /// derive the topology file path `/tmp/darkbloom-jaccl-topology-<sessionID>.json`.
+    public let sessionID: String
+
+    public init(port: UInt16, sessionID: String) {
+        self.port = port
+        self.sessionID = sessionID
+    }
+}
+
 // MARK: - Frame encoding
 //
 // Every ThunderboltLink frame:
 //   [1 byte: ClusterMsgType.rawValue] [N bytes: payload]
 //
 // Payload encoding by type:
-//   handshakeHello / handshakeAck / pong  → JSON-encoded Codable struct
-//   ping / sessionEnd                     → empty (0 bytes)
-//   inferenceStep / inferenceToken        → raw AES-GCM ciphertext (opaque bytes)
+//   handshakeHello / handshakeAck / pong / jacclBootstrap → JSON-encoded Codable struct
+//   ping / sessionEnd                                      → empty (0 bytes)
+//   inferenceStep / inferenceToken                         → raw AES-GCM ciphertext (opaque bytes)
 
 public enum ClusterFrame {
 

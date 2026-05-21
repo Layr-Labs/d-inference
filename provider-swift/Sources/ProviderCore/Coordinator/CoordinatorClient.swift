@@ -59,6 +59,12 @@ public final class ProviderState: @unchecked Sendable {
     private var _warmModels: [String] = []
     private var _currentModelHash: String? = nil
     private var _backendCapacity: BackendCapacity? = nil
+    /// Cluster role for this Mac in the active cluster session.
+    /// 0 = rank 0 (initiator, routable). 1 = rank 1 (responder, skipped by
+    /// coordinator routing). nil = not clustered or session not yet ready.
+    /// Written by ProviderLoop when ClusterDiscovery reports a role change;
+    /// read by CoordinatorClient when building heartbeat messages.
+    private var _clusterRole: Int? = nil
 
     public init() {}
 
@@ -85,6 +91,11 @@ public final class ProviderState: @unchecked Sendable {
     public var backendCapacity: BackendCapacity? {
         get { lock.withLock { _backendCapacity } }
         set { lock.withLock { _backendCapacity = newValue } }
+    }
+
+    public var clusterRole: Int? {
+        get { lock.withLock { _clusterRole } }
+        set { lock.withLock { _clusterRole = newValue } }
     }
 }
 
@@ -607,6 +618,7 @@ public actor CoordinatorClient {
         let activeModel = state.currentModel
         let warmModels = state.warmModels
         let capacity = state.backendCapacity
+        let clusterRole = state.clusterRole
         let metrics = SystemMetricsCollector.collect(cpuCores: config.hardware.cpuCores.total)
 
         let message = CoordinatorClientCodec.heartbeatMessage(
@@ -618,7 +630,8 @@ public actor CoordinatorClient {
                 tokensGenerated: stats.tokensGenerated
             ),
             systemMetrics: metrics,
-            backendCapacity: capacity
+            backendCapacity: capacity,
+            clusterRole: clusterRole
         )
 
         guard let data = try? ProviderProtocolCodec.encodeProviderMessage(message),

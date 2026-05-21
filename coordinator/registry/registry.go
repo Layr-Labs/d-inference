@@ -201,6 +201,14 @@ type Provider struct {
 	// auto-discover each other without manual `cluster setup` serial pairing.
 	RDMAEnabled bool
 
+	// ClusterRole is the rank of this Mac within a two-Mac cluster session.
+	// 0 = rank 0 (initiator, handles consumer requests on behalf of the pair).
+	// 1 = rank 1 (responder, only runs the server-side decode loop).
+	// nil = not clustered, or the cluster session is not yet established.
+	// The coordinator must not route consumer inference requests to rank-1
+	// providers — they can't generate a complete response on their own.
+	ClusterRole *int
+
 	// Coordinator-verified SIP status from the most recent attestation challenge.
 	// Unlike PrivacyCapabilities.SIPEnabled (provider self-report at registration),
 	// this is set by the coordinator after independently checking the challenge response.
@@ -316,6 +324,16 @@ func (p *Provider) SetChallengeVerifiedSIP(v bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.ChallengeVerifiedSIP = v
+}
+
+// IsClusterRank1 reports whether this provider is the rank-1 (responder) Mac
+// in a two-Mac cluster session. Rank-1 providers must not receive consumer
+// inference requests — they only run the server-side decode loop.
+// Returns false for non-clustered providers (ClusterRole == nil) or rank 0.
+func (p *Provider) IsClusterRank1() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ClusterRole != nil && *p.ClusterRole == 1
 }
 
 // Mu returns the provider's mutex for external callers that need to read
@@ -1059,6 +1077,9 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	if msg.ActiveModel != nil {
 		p.CurrentModel = *msg.ActiveModel
 	}
+	// Track cluster role. nil = not clustered (eligible for routing).
+	// 1 = rank-1 responder (routing excluded). 0 = rank-0 initiator (routable).
+	p.ClusterRole = msg.ClusterRole
 	// Only update status from heartbeat if provider is not actively serving
 	// (serving status is managed by request lifecycle). Crucially, an
 	// untrusted provider must NOT transition back to StatusOnline here —
@@ -1497,9 +1518,16 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 		lastChallenge := p.LastChallengeVerified
 		runtimeVerified := p.RuntimeVerified
 		privateReady := providerSupportsPrivateTextLocked(p)
+		clusterRole := p.ClusterRole
 		p.mu.Unlock()
 
 		if status == StatusOffline || status == StatusUntrusted {
+			continue
+		}
+		// Skip rank-1 cluster providers — they only run the server-side decode
+		// loop and cannot produce a complete response for a consumer request.
+		// Pre-PR-4d providers have ClusterRole == nil and are treated as eligible.
+		if clusterRole != nil && *clusterRole == 1 {
 			continue
 		}
 		if trustRank(trust) < trustRank(effectiveMin) {

@@ -71,6 +71,12 @@ public actor ClusterDiscovery {
     private var _activeSession: ClusterSession?
     private var _activePeer: ClusterPeer?
 
+    /// Current cluster rank for this Mac in the active session.
+    /// 0 = rank 0 (initiator), 1 = rank 1 (responder), nil = not yet elected
+    /// or session not ready. Updated when rank election completes and cleared
+    /// when the session degrades so the coordinator stops routing here.
+    private var _clusterRole: Int?
+
     private let logger = Logger(subsystem: "io.darkbloom.provider", category: "ClusterDiscovery")
 
     public init(coordinatorURL: String, authToken: String, signer: any AttestationSigner) {
@@ -144,6 +150,27 @@ public actor ClusterDiscovery {
     /// The rank-1 `EncryptedPipelineServer`. Non-nil on rank 1 when PP is selected.
     public func currentPPServer() -> EncryptedPipelineServer? { _ppServer }
 
+    /// The cluster role elected for this Mac in the active session.
+    /// 0 = rank 0 (initiator, routable for consumer requests).
+    /// 1 = rank 1 (responder, skipped by coordinator routing).
+    /// nil = not clustered, or the session has not completed rank election yet.
+    /// The heartbeat loop reads this to populate `cluster_role` in each heartbeat.
+    public var clusterRole: Int? { _clusterRole }
+
+    /// Called when the cluster session degrades (peer disconnect, link failure).
+    /// Clears the engine/server accessors so `currentEngine()` / `currentPPEngine()`
+    /// return nil and the coordinator stops routing cluster requests to this provider.
+    /// Also clears `_clusterRole` so the next heartbeat reports nil (= eligible for
+    /// routing as a single-rank provider).
+    public func sessionDegraded() {
+        _engine = nil
+        _server = nil
+        _ppEngine = nil
+        _ppServer = nil
+        _clusterRole = nil
+        logger.info("ClusterDiscovery: session degraded — engines cleared, cluster role reset to nil")
+    }
+
     // MARK: - Path change handler
 
     private func handlePathChange(_ path: NWPath) async {
@@ -161,6 +188,10 @@ public actor ClusterDiscovery {
             sessionTask = nil
             peerTask?.cancel()
             peerTask = nil
+            // Clear engines and role so heartbeats immediately reflect the
+            // degraded state and the coordinator stops routing to this provider
+            // as a cluster node.
+            sessionDegraded()
         }
     }
 
@@ -230,6 +261,11 @@ public actor ClusterDiscovery {
         // 7. Rank election: lower IPv4 address becomes rank 0.
         let isRank0 = compareIPv4(ownIP, peerIP) == .orderedAscending
         logger.info("Rank election: own=\(ownIP) peer=\(peerIP) → \(isRank0 ? "rank 0 (initiator)" : "rank 1 (responder)")")
+        // Record cluster role now so heartbeats sent during bootstrap already
+        // reflect the rank. The coordinator will skip rank-1 providers, which
+        // is correct: rank 1 is not eligible for consumer request routing even
+        // while the jaccl/PP bootstrap is still in progress.
+        _clusterRole = isRank0 ? 0 : 1
 
         if isRank0 {
             startAsRank0(ownIP: ownIP, peerIP: peerIP)

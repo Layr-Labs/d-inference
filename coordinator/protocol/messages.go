@@ -139,6 +139,13 @@ type HeartbeatMessage struct {
 	WarmModels      []string         `json:"warm_models,omitempty"`      // models currently loaded in memory
 	SystemMetrics   SystemMetrics    `json:"system_metrics"`             // live resource utilization
 	BackendCapacity *BackendCapacity `json:"backend_capacity,omitempty"` // live backend capacity (nil for old providers)
+	// ClusterRole is 0 for the rank-0 (initiator) Mac in a two-Mac cluster and
+	// 1 for the rank-1 (responder) Mac. nil means not clustered or the cluster
+	// session is not yet ready. The coordinator skips rank-1 providers when
+	// routing consumer inference requests (they only execute the server-side
+	// half of the TP/PP decode loop). Pre-PR-4d providers omit this field;
+	// the coordinator treats the missing value as nil (eligible for routing).
+	ClusterRole *int `json:"cluster_role,omitempty"`
 }
 
 // BackendSlotCapacity describes the capacity state of a single backend slot

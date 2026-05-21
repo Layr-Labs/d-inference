@@ -91,6 +91,11 @@ public actor ProviderLoop {
     private let state: ProviderState
     private let cancellationRegistry: InferenceCancellationRegistry
 
+    /// Optional cluster discovery instance. When non-nil, `handleInferenceRequest`
+    /// checks `clusterDiscovery.currentEngine()` (TP) or `currentPPEngine()` (PP)
+    /// before falling back to the local `BatchScheduler`.
+    public private(set) var clusterDiscovery: ClusterDiscovery?
+
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     private var inflightTasks: [String: Task<Void, Never>] = [:]
 
@@ -130,6 +135,12 @@ public actor ProviderLoop {
         )
     }
 
+    /// Inject a `ClusterDiscovery` instance before calling `run()`.
+    /// Must be called from within the actor's isolation domain (i.e. using `await`).
+    public func setClusterDiscovery(_ discovery: ClusterDiscovery?) {
+        self.clusterDiscovery = discovery
+    }
+
     /// Try persistent keychain-backed SE key first; fall back to ephemeral CryptoKit key.
     private static func createAttestationSigner() -> (any AttestationSigner)? {
         let log = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
@@ -151,6 +162,10 @@ public actor ProviderLoop {
             return nil
         }
     }
+
+    /// Background task that syncs `ClusterDiscovery.clusterRole` into
+    /// `ProviderState.clusterRole` so heartbeats carry the correct value.
+    private var clusterRoleSyncTask: Task<Void, Never>?
 
     // MARK: - Main Run Loop
 
@@ -211,6 +226,11 @@ public actor ProviderLoop {
         // timer.
         startIdleMonitor()
 
+        // Sync cluster role from ClusterDiscovery into ProviderState so
+        // heartbeats include the correct cluster_role field. Poll every 5 s —
+        // fast enough to be reflected in the next heartbeat (default 30 s).
+        startClusterRoleSync()
+
         logger.info("Coordinator client started, entering event loop")
 
         // 5. Process events. Cancellation is used by schedule enforcement
@@ -263,6 +283,8 @@ public actor ProviderLoop {
         logger.info("Event stream ended, shutting down")
         idleMonitorTask?.cancel()
         idleMonitorTask = nil
+        clusterRoleSyncTask?.cancel()
+        clusterRoleSyncTask = nil
         await coordinator.shutdown()
         await cancelAllInflight()
     }
@@ -448,7 +470,35 @@ public actor ProviderLoop {
         let signingIdentity = self.signer
         let log = self.logger
 
-        // 7. Spawn inference task
+        // 7. Check for an active cluster engine (rank 0 only).
+        //    Rank 1 never reaches this point for cluster-bound requests because
+        //    the coordinator skips it (ClusterRole=1). If somehow a rank-1 provider
+        //    receives a direct request (bypassing the coordinator), it falls through
+        //    to the local BatchScheduler — correct behaviour, never dispatch to serve().
+        let clusterEngine: ClusterEngine?
+        if let discovery = clusterDiscovery {
+            if let tpEngine = await discovery.currentEngine() {
+                clusterEngine = .tp(tpEngine)
+            } else if let ppEngine = await discovery.currentPPEngine() {
+                clusterEngine = .pp(ppEngine)
+            } else {
+                clusterEngine = nil
+            }
+        } else {
+            clusterEngine = nil
+        }
+
+        // 8. Tokenizer for the cluster path (decode raw token IDs → text).
+        //    Only fetched when a cluster engine is available; nil means fall
+        //    back to the local BatchScheduler path regardless.
+        let clusterTokenizer: (any MLXLMCommon.Tokenizer)? = clusterEngine != nil
+            ? await sched.currentTokenizer()
+            : nil
+
+        // 9. Resolve the request's max-token budget (mirrors the local path default).
+        let requestMaxTokens = chatRequest.max_tokens ?? 4096
+
+        // 10. Spawn inference task
         let task = Task.detached {
             defer {
                 Task { await registry.finish(requestId: requestId) }
@@ -487,6 +537,184 @@ public actor ProviderLoop {
             ) {
                 emitSSE(roleChunk.formatted)
             }
+
+            // ----------------------------------------------------------------
+            // Cluster path: dispatch through TensorParallelEngine or
+            // EncryptedPipelineEngine when a cluster session is active.
+            // ----------------------------------------------------------------
+            if let engine = clusterEngine, let tokenizer = clusterTokenizer {
+                log.info("[\(requestId)] Dispatching via cluster engine (\(engine.label))")
+
+                // Tokenize the chat prompt into token IDs using the model's
+                // chat template. This mirrors what BatchScheduler.submit() does.
+                let promptTokens: [Int]
+                do {
+                    let messages: [[String: any Sendable]] = chatRequest.messages.map { msg in
+                        ["role": msg.role, "content": msg.content]
+                    }
+                    promptTokens = try tokenizer.applyChatTemplate(
+                        messages: messages, tools: nil, additionalContext: nil)
+                } catch {
+                    log.error("[\(requestId)] Cluster path: chat prompt tokenization failed: \(error)")
+                    send.send(.inferenceError(
+                        requestId: requestId,
+                        error: "tokenization failed: \(error.localizedDescription)",
+                        statusCode: 500))
+                    return
+                }
+
+                usageAccumulator.setPromptTokens(promptTokens.count)
+
+                // Build EOS token set from the tokenizer.
+                var eosTokenIDs = Set<Int>()
+                if let eosToken = tokenizer.eosToken,
+                   let eosId = tokenizer.convertTokenToId(eosToken) {
+                    eosTokenIDs.insert(eosId)
+                }
+
+                // Run the generate loop with a per-request timeout budget.
+                // If the cluster stream ends before EOS/maxTokens without
+                // Task cancellation, treat it as a link failure → 503.
+                //
+                // Swift 6 concurrency note: we cannot mutate `fullResponseText`
+                // inside `group.addTask` because the outer closure also captures it.
+                // Instead, the token-consumer task returns the accumulated text +
+                // token count as its result, and we write to `fullResponseText`
+                // after the task group completes.
+                let requestTimeout: Duration = .seconds(120)
+
+                let tokenStream = await engine.generate(
+                    promptTokens: promptTokens,
+                    maxTokens: requestMaxTokens,
+                    eosTokenIDs: eosTokenIDs)
+
+                // Wrap the stream in a timeout task group so we don't hang
+                // indefinitely if the peer dies mid-decode.
+                let timeoutResult = await withTaskGroup(of: ClusterStreamResult.self) { group in
+                    // Task A: consume the token stream.
+                    // All SSE emission happens inside this task via `emitSSE`;
+                    // text is accumulated locally and returned with the result
+                    // so it never crosses the task boundary as a mutable var.
+                    group.addTask {
+                        var detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
+                        var localText = ""
+                        var count = 0
+                        for await tokenID in tokenStream {
+                            if token.isCancelled { break }
+                            detokenizer.append(token: tokenID)
+                            if let piece = detokenizer.next(), !piece.isEmpty {
+                                localText += piece
+                                if let chunk = try? formatter.contentChunk(
+                                    id: responseId,
+                                    model: chatRequest.model,
+                                    created: created,
+                                    text: piece
+                                ) {
+                                    emitSSE(chunk.formatted)
+                                }
+                            }
+                            count += 1
+                        }
+                        // Flush any remaining text from the detokenizer.
+                        if let tail = detokenizer.next(), !tail.isEmpty {
+                            localText += tail
+                            if let chunk = try? formatter.contentChunk(
+                                id: responseId,
+                                model: chatRequest.model,
+                                created: created,
+                                text: tail
+                            ) {
+                                emitSSE(chunk.formatted)
+                            }
+                        }
+                        return .completed(tokenCount: count, text: localText)
+                    }
+
+                    // Task B: timeout watchdog.
+                    group.addTask {
+                        try? await Task.sleep(for: requestTimeout)
+                        return .timedOut
+                    }
+
+                    // First result wins.
+                    let first = await group.next() ?? .completed(tokenCount: 0, text: "")
+                    group.cancelAll()
+                    return first
+                }
+
+                var tokenCount = 0
+                switch timeoutResult {
+                case .completed(let count, let text):
+                    tokenCount = count
+                    fullResponseText = text
+                case .timedOut:
+                    log.warning("[\(requestId)] Cluster engine timed out after \(requestTimeout) — returning 503")
+                    send.send(.inferenceError(
+                        requestId: requestId,
+                        error: "cluster inference timed out",
+                        statusCode: 503))
+                    return
+                }
+
+                if token.isCancelled {
+                    log.info("[\(requestId)] Cluster path: cancelled during generation")
+                    send.send(.inferenceError(
+                        requestId: requestId,
+                        error: "request cancelled",
+                        statusCode: 499))
+                    return
+                }
+
+                // Detect premature stream end: stream finished but we got 0
+                // tokens and the prompt was non-empty — link failure.
+                if tokenCount == 0 && !promptTokens.isEmpty {
+                    log.warning("[\(requestId)] Cluster engine stream ended prematurely (0 tokens) — returning 503")
+                    send.send(.inferenceError(
+                        requestId: requestId,
+                        error: "cluster peer disconnected mid-generation",
+                        statusCode: 503))
+                    return
+                }
+
+                usageAccumulator.setCompletionTokens(tokenCount)
+                let usage = usageAccumulator.snapshot
+
+                if let finishChunk = try? formatter.finishChunk(
+                    id: responseId,
+                    model: chatRequest.model,
+                    created: created,
+                    reason: .stop,
+                    usage: usage
+                ) {
+                    emitSSE(finishChunk.formatted)
+                    emitSSE(SSEChunk.done.formatted)
+                }
+
+                providerStats.incrementRequestsServed()
+                providerStats.addTokensGenerated(UInt64(usage.completionTokens))
+                providerState.inferenceActive = false
+
+                let attestation = computeResponseAttestation(
+                    identity: signingIdentity,
+                    requestId: requestId,
+                    completionTokens: UInt64(max(usage.completionTokens, 0)),
+                    responseBody: fullResponseText
+                )
+                send.send(.inferenceComplete(
+                    requestId: requestId,
+                    usage: usage.protocolUsageInfo,
+                    seSignature: attestation.signature,
+                    responseHash: attestation.hash
+                ))
+
+                log.info("[\(requestId)] Cluster complete: \(usage.promptTokens) prompt + \(usage.completionTokens) completion tokens")
+                return
+            }
+
+            // ----------------------------------------------------------------
+            // Local path: submit to the BatchScheduler (existing behaviour).
+            // ----------------------------------------------------------------
+            log.info("[\(requestId)] Dispatching via local BatchScheduler")
 
             // Submit to the BatchScheduler
             let generationStream = await sched.submit(
@@ -570,6 +798,51 @@ public actor ProviderLoop {
 
         inflightTasks[requestId] = task
         lastInferenceAt = .now
+    }
+
+    // MARK: - Cluster engine dispatch helpers
+
+    /// Tagged union for the two cluster engine types so the dispatch closure
+    /// can call `.generate()` without knowing which protocol is in use.
+    private enum ClusterEngine {
+        case tp(TensorParallelEngine)
+        case pp(EncryptedPipelineEngine)
+
+        var label: String {
+            switch self {
+            case .tp: return "TP"
+            case .pp: return "PP"
+            }
+        }
+
+        /// Generate a stream of token IDs using the appropriate engine.
+        func generate(
+            promptTokens: [Int],
+            maxTokens: Int,
+            eosTokenIDs: Set<Int>
+        ) async -> AsyncStream<Int> {
+            switch self {
+            case .tp(let engine):
+                return await engine.generate(
+                    promptTokens: promptTokens,
+                    maxTokens: maxTokens,
+                    eosTokenIDs: eosTokenIDs)
+            case .pp(let engine):
+                return await engine.generate(
+                    promptTokens: promptTokens,
+                    maxTokens: maxTokens,
+                    eosTokenIDs: eosTokenIDs)
+            }
+        }
+    }
+
+    /// Result type for the cluster stream timeout task group.
+    /// `completed` carries the accumulated response text and token count so
+    /// the outer closure doesn't need to mutate a captured `var` from inside
+    /// the task group (which would be a Swift 6 data-race violation).
+    private enum ClusterStreamResult {
+        case completed(tokenCount: Int, text: String)
+        case timedOut
     }
 
     // MARK: - Coordinator-driven preload
@@ -684,6 +957,30 @@ public actor ProviderLoop {
         let hours = minutes / 60
         let remMinutes = minutes % 60
         return remMinutes == 0 ? "\(hours)h" : "\(hours)h\(remMinutes)m"
+    }
+
+    // MARK: - Cluster role sync
+
+    /// Periodically reads `ClusterDiscovery.clusterRole` and copies it into
+    /// `ProviderState.clusterRole` so the heartbeat loop picks it up. Runs
+    /// every 5 seconds (much faster than the 30-second heartbeat interval).
+    private func startClusterRoleSync() {
+        clusterRoleSyncTask?.cancel()
+        guard clusterDiscovery != nil else { return }
+        let me = self
+        clusterRoleSyncTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                if Task.isCancelled { break }
+                await me.syncClusterRole()
+            }
+        }
+    }
+
+    private func syncClusterRole() async {
+        guard let discovery = clusterDiscovery else { return }
+        let role = await discovery.clusterRole
+        state.clusterRole = role
     }
 
     // MARK: - Model Loading

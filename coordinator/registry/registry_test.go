@@ -2833,3 +2833,158 @@ func TestListRDMAEnabledPeersForCaller_CallerSelfTamperedDoesNotPassGate(t *test
 		t.Error("mallory's tampered provider must not let her pass the symmetric-access gate")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// PR 4d: cluster rank-1 routing exclusion tests
+// ---------------------------------------------------------------------------
+
+// testMakeMLXSwiftRoutable sets a provider to be routable as an mlx-swift
+// backend (the Swift provider path used by cluster nodes). Wraps
+// testMakeTextRoutable and also sets the backend and encrypted response chunks
+// field to satisfy providerSupportsPrivateTextLocked.
+func testMakeMLXSwiftRoutable(reg *Registry, p *Provider) {
+	p.Backend = BackendMLXSwift
+	p.PublicKey = "fX6XYH7p2hmM3ogeXaAsY+p8M6UKD1df/LJUN9Nj9Nw="
+	p.EncryptedResponseChunks = true
+	testMakeTextRoutable(p)
+}
+
+// TestClusterRank1ExcludedFromRouting verifies that a provider with ClusterRole=1
+// (rank-1 responder) is skipped by FindProvider and FindProviderWithTrust.
+// Pre-PR-4d providers (ClusterRole==nil) and rank-0 providers must remain eligible.
+func TestClusterRank1ExcludedFromRouting(t *testing.T) {
+	model := "mlx-community/Qwen3.5-9B-Instruct-4bit"
+
+	// Shared message template — both providers advertise the same model.
+	makeMsg := func() *protocol.RegisterMessage {
+		return testRegisterMessage()
+	}
+
+	t.Run("rank1 excluded, rank0 selected", func(t *testing.T) {
+		reg := New(testLogger())
+
+		// Rank-0 provider — should be routable.
+		p0 := reg.Register("p0", nil, makeMsg())
+		testMakeMLXSwiftRoutable(reg, p0)
+		rank0 := 0
+		p0.ClusterRole = &rank0
+
+		// Rank-1 provider — must NOT be routable.
+		p1 := reg.Register("p1", nil, makeMsg())
+		testMakeMLXSwiftRoutable(reg, p1)
+		rank1 := 1
+		p1.ClusterRole = &rank1
+
+		found := reg.FindProvider(model)
+		if found == nil {
+			t.Fatal("FindProvider returned nil — expected rank-0 provider")
+		}
+		if found.ID != "p0" {
+			t.Errorf("FindProvider returned %q, want %q", found.ID, "p0")
+		}
+	})
+
+	t.Run("nil ClusterRole treated as eligible", func(t *testing.T) {
+		reg := New(testLogger())
+
+		// Non-clustered provider (nil ClusterRole) — eligible.
+		p := reg.Register("p-nocluster", nil, makeMsg())
+		testMakeMLXSwiftRoutable(reg, p)
+		// ClusterRole is nil by default — no assignment needed.
+
+		found := reg.FindProvider(model)
+		if found == nil {
+			t.Fatal("FindProvider returned nil — expected non-clustered provider to be eligible")
+		}
+		if found.ID != "p-nocluster" {
+			t.Errorf("FindProvider returned %q, want %q", found.ID, "p-nocluster")
+		}
+	})
+
+	t.Run("rank1 only — no eligible providers", func(t *testing.T) {
+		reg := New(testLogger())
+
+		p1 := reg.Register("p1-only", nil, makeMsg())
+		testMakeMLXSwiftRoutable(reg, p1)
+		rank1 := 1
+		p1.ClusterRole = &rank1
+
+		found := reg.FindProvider(model)
+		if found != nil {
+			t.Errorf("FindProvider returned %q, expected nil (no eligible provider)", found.ID)
+		}
+	})
+
+	t.Run("IsClusterRank1 helper", func(t *testing.T) {
+		reg := New(testLogger())
+		p := reg.Register("p-helper", nil, makeMsg())
+
+		if p.IsClusterRank1() {
+			t.Error("newly registered provider with nil ClusterRole should not be rank 1")
+		}
+
+		rank0 := 0
+		p.ClusterRole = &rank0
+		if p.IsClusterRank1() {
+			t.Error("provider with ClusterRole=0 should not be rank 1")
+		}
+
+		rank1 := 1
+		p.ClusterRole = &rank1
+		if !p.IsClusterRank1() {
+			t.Error("provider with ClusterRole=1 must be rank 1")
+		}
+	})
+
+	t.Run("Heartbeat updates ClusterRole", func(t *testing.T) {
+		reg := New(testLogger())
+		p := reg.Register("p-hb", nil, makeMsg())
+
+		if p.ClusterRole != nil {
+			t.Fatal("ClusterRole should be nil before any heartbeat")
+		}
+
+		// Simulate heartbeat carrying ClusterRole=1.
+		rank1 := 1
+		reg.Heartbeat("p-hb", &protocol.HeartbeatMessage{
+			Type:        protocol.TypeHeartbeat,
+			Status:      "idle",
+			ActiveModel: nil,
+			Stats:       protocol.HeartbeatStats{},
+			SystemMetrics: protocol.SystemMetrics{
+				MemoryPressure: 0.1,
+				CPUUsage:       0.1,
+				ThermalState:   "nominal",
+			},
+			ClusterRole: &rank1,
+		})
+
+		p2 := reg.GetProvider("p-hb")
+		if p2 == nil {
+			t.Fatal("provider not found after heartbeat")
+		}
+		if p2.ClusterRole == nil || *p2.ClusterRole != 1 {
+			t.Errorf("ClusterRole after heartbeat = %v, want 1", p2.ClusterRole)
+		}
+
+		// Heartbeat with nil ClusterRole clears the role.
+		reg.Heartbeat("p-hb", &protocol.HeartbeatMessage{
+			Type:   protocol.TypeHeartbeat,
+			Status: "idle",
+			Stats:  protocol.HeartbeatStats{},
+			SystemMetrics: protocol.SystemMetrics{
+				MemoryPressure: 0.1,
+				CPUUsage:       0.1,
+				ThermalState:   "nominal",
+			},
+			ClusterRole: nil,
+		})
+		p3 := reg.GetProvider("p-hb")
+		if p3 == nil {
+			t.Fatal("provider not found after second heartbeat")
+		}
+		if p3.ClusterRole != nil {
+			t.Errorf("ClusterRole after nil heartbeat = %v, want nil", p3.ClusterRole)
+		}
+	})
+}

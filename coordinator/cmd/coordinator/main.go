@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -37,6 +38,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/config"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	"github.com/eigeninference/d-inference/coordinator/liveness"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
@@ -125,6 +127,38 @@ func main() {
 	if cfg.RegistryCfg.MinTrustLevel != "" {
 		reg.MinTrustLevel = registry.TrustLevel(cfg.RegistryCfg.MinTrustLevel)
 		logger.Info("minimum trust level override", "level", cfg.RegistryCfg.MinTrustLevel)
+	}
+
+	// Liveness sink — historical heartbeats + session intervals + reliability
+	// features. Optional; defaults to ON when a real store is configured.
+	// Set EIGENINFERENCE_LIVENESS=0 to disable (useful for narrow load tests).
+	var livenessWriter *liveness.Writer
+	if os.Getenv("EIGENINFERENCE_LIVENESS") != "0" {
+		// coordinatorID gets stamped on every session row so a blue-green
+		// deploy can keep the old + new coordinators' sessions distinct. HOSTNAME
+		// is set in containerized environments but not guaranteed in every
+		// runtime, so fall back to os.Hostname() (the syscall).
+		coordinatorID := os.Getenv("HOSTNAME")
+		if coordinatorID == "" {
+			if h, err := os.Hostname(); err == nil {
+				coordinatorID = h
+			}
+		}
+		livenessWriter = liveness.NewWriter(st, logger, nil, liveness.Config{})
+		livenessWriter.Start()
+		tracker := liveness.NewSessionTracker(st, logger, coordinatorID)
+		reg.SetLivenessSink(liveness.NewSink(livenessWriter, tracker))
+
+		// Close any sessions left open by a previous coordinator process.
+		// Stamps reason=coordinator_restart on each.
+		orphanCtx, orphanCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		closed, err := tracker.CloseOrphans(orphanCtx)
+		orphanCancel()
+		if err != nil {
+			logger.Warn("close orphan liveness sessions failed", "error", err)
+		} else if closed > 0 {
+			logger.Info("closed orphan liveness sessions", "count", closed)
+		}
 	}
 
 	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
@@ -369,6 +403,27 @@ func main() {
 	// Start background eviction of stale providers.
 	reg.StartEvictionLoop(ctx, 90*time.Second)
 
+	// Retention prune for provider_heartbeats. Defaults to 28d window,
+	// hourly cadence, 10k-row batches. Skipped if liveness sink is off.
+	if livenessWriter != nil {
+		retentionDays := envInt("EIGENINFERENCE_LIVENESS_RETENTION_DAYS", liveness.DefaultRetentionDays())
+		retentionBatch := envInt("EIGENINFERENCE_LIVENESS_RETENTION_BATCH", liveness.DefaultRetentionBatch())
+		retentionInterval := envDuration("EIGENINFERENCE_LIVENESS_RETENTION_INTERVAL", liveness.DefaultRetentionInterval())
+		liveness.StartRetentionLoop(ctx, st, logger, nil, liveness.RetentionConfig{
+			Interval: retentionInterval,
+			Window:   time.Duration(retentionDays) * 24 * time.Hour,
+			Batch:    retentionBatch,
+		})
+
+		// Reliability features rollup. Defaults: 5m cadence, 14d window.
+		featureInterval := envDuration("EIGENINFERENCE_LIVENESS_FEATURES_INTERVAL", liveness.DefaultFeatureInterval())
+		featureWindowDays := envInt("EIGENINFERENCE_LIVENESS_FEATURES_WINDOW_DAYS", liveness.DefaultFeatureWindowDays())
+		liveness.StartFeaturesLoop(ctx, st, logger, nil, liveness.FeaturesConfig{
+			Interval:   featureInterval,
+			WindowDays: featureWindowDays,
+		})
+	}
+
 	// Push gauge values to DogStatsD periodically.
 	go srv.StartDDGaugeLoop(ctx)
 
@@ -406,7 +461,33 @@ func main() {
 		logger.Error("shutdown error", "error", err)
 	}
 
+	// Drain buffered liveness events. Must come after HTTP shutdown so no
+	// new heartbeats arrive while the writer is draining.
+	if livenessWriter != nil {
+		livenessWriter.Close()
+	}
+
 	logger.Info("coordinator stopped")
+}
+
+// envInt + envDuration are used by the liveness retention/features wiring
+// above. The rest of the env reads moved to config.ReadAppConfig.
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return fallback
 }
 
 // seedModelCatalog is retained only for stale tests during the registry

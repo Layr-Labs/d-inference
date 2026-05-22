@@ -1,32 +1,43 @@
-# EigenInference - Decentralized GPU Inference
+# CLAUDE.md
 
-Decentralized inference network for Apple Silicon Macs. Providers offer GPU compute, consumers send OpenAI-compatible requests, the coordinator matches them.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## EigenInference / Darkbloom
+
+Decentralized inference network for Apple Silicon Macs. Providers offer GPU compute, consumers send OpenAI-compatible requests, the coordinator matches them. End-user-facing brand is **Darkbloom**; repo and internal naming is **EigenInference / d-inference**.
+
+Parallel docs: `README.md` (public overview), `AGENTS.md` (alternate agent guidance — has overlap with this file and may drift; trust this file's paths over AGENTS.md when they conflict), `CONTRIBUTING.md` (contributor flow), `docs/` (deep architecture + runbooks).
 
 ## Project Structure
 
 ```
 coordinator/          Go — central matchmaking server (runs on EigenCloud in prod)
+│                     NOTE: Go packages live at the TOP LEVEL of coordinator/, NOT under internal/.
+│                     coordinator/internal/ only holds an e2e/ subdir; everything else is here.
 ├── cmd/coordinator/  entrypoint
 ├── cmd/verify-attestation/  attestation blob verification utility
-├── internal/
-│   ├── api/          HTTP + WebSocket handlers (consumer.go, provider.go, billing_handlers.go, device_auth.go, invite_handlers.go, release_handlers.go, enroll.go, stats.go, server.go)
-│   ├── attestation/  Secure Enclave + MDA attestation verification
-│   ├── auth/         Privy JWT verification + user provisioning
-│   ├── billing/      Stripe, Solana USDC deposits, referral system
-│   ├── e2e/          End-to-end encryption (X25519 key exchange)
-│   ├── mdm/          MicroMDM integration for device attestation
-│   ├── payments/     Internal ledger, pricing tables, payout tracking
-│   ├── protocol/     WebSocket message types shared with provider
-│   ├── registry/     Provider registry, scoring, reputation, request queue
-│   └── store/        Persistence (in-memory or Postgres)
+├── api/              HTTP + WebSocket handlers (consumer.go, provider.go, billing_handlers.go, device_auth.go, invite_handlers.go, release_handlers.go, enroll.go, stats.go, server.go, install.sh, model_catalog_filter.go, telemetry_handlers.go, …)
+├── attestation/      Secure Enclave + MDA attestation verification
+├── auth/             Privy JWT verification + user provisioning
+├── billing/          Stripe, Solana USDC deposits, referral system
+├── datadog/          Datadog client / tracing wiring
+├── mdm/              MicroMDM integration for device attestation
+├── payments/         Internal ledger, pricing tables, payout tracking
+├── protocol/         WebSocket message types shared with provider (messages.go, telemetry.go)
+├── ratelimit/        Per-user / per-key rate limiting
+├── registry/         Provider registry, scoring, reputation, request queue
+├── saferun/          Panic-safe goroutine helpers
+├── store/            Persistence (in-memory or Postgres)
+├── telemetry/        Telemetry pipeline
+└── internal/e2e/     Server-side end-to-end encryption helpers
 
-provider/             Rust — runs on Apple Silicon Macs
+provider/             Rust — runs on Apple Silicon Macs (legacy, in production)
 ├── src/
 │   ├── main.rs       CLI entry (serve, start, stop, models, benchmark, status, doctor, login, etc.)
 │   ├── coordinator.rs WebSocket client with auto-reconnect
 │   ├── proxy.rs      Forwards text requests to local backends
 │   ├── hardware.rs   Apple Silicon detection, system metrics (memory/CPU/thermal)
-│   ├── protocol.rs   Message types (mirrors coordinator/internal/protocol)
+│   ├── protocol.rs   Message types (mirrors coordinator/protocol)
 │   ├── backend/      Backend process management (vllm_mlx.rs, health checks)
 │   ├── crypto.rs     X25519 key pair (NaCl), E2E decryption
 │   ├── security.rs   SIP checks, binary self-hash, anti-debug (PT_DENY_ATTACH)
@@ -38,23 +49,37 @@ provider/             Rust — runs on Apple Silicon Macs
 │   ├── scheduling.rs Time-based availability windows
 │   ├── service.rs    launchd user agent management
 │   └── wallet.rs     Legacy provider wallet (secp256k1)
-├── stt_server.py     Local speech-to-text server script
+└── tests/
 
-provider-swift/       Swift — CLI replacement for the Rust provider (in progress)
+provider-swift/       Swift — CLI replacement for the Rust provider (cutover in progress)
 ├── Package.swift     SwiftPM manifest, depends on libs/mlx-swift{,-lm}
 ├── Sources/
-│   ├── ProviderCore/                  shared library (protocol, hardware, crypto, security, inference, coordinator client, scheduling, server, telemetry, models, attestation)
-│   ├── darkbloom/                     CLI executable (serve, start, stop, status, doctor, models, login, logout, benchmark, update, verify)
-│   └── darkbloom-enclave-cli/    Secure Enclave attestation/sign helper (replaces the legacy enclave/ FFI bridge)
+│   ├── ProviderCore/            shared library (protocol, hardware, crypto, security, inference, coordinator client, scheduling, server, telemetry, models, attestation)
+│   ├── darkbloom/               CLI executable (serve, start, stop, status, doctor, models, login, logout, benchmark, update, verify)
+│   └── darkbloom-enclave-cli/   Secure Enclave attestation/sign helper (replaces the legacy enclave/ FFI bridge)
 └── Tests/ProviderCoreTests/
+
+enclave/              Swift Secure Enclave helper + FFI bridge (separate SwiftPM project from provider-swift/)
+├── Package.swift
+├── Sources/          enclave key + attestation library + FFI bridge + CLI
+└── Tests/
 
 console-ui/           Next.js 16 / React 19 frontend (chat, billing, models, images)
 ├── src/app/          Pages: chat (/), billing, images, models, stats, providers, settings, link, api-console, earn
 ├── src/app/api/      Proxy routes: chat, models, auth/keys, payments/*, invite, health, pricing
 ├── src/components/   Chat UI, sidebar, top bar, trust badges, invite banner, verification panel
-├── src/lib/          API client (api.ts), Zustand store (store.ts)
+├── src/lib/          API client (api.ts), Zustand store (store.ts), telemetry-types.ts
 ├── src/hooks/        Auth (useAuth.ts), toast notifications (useToast.ts)
 └── proxy.ts          Next.js 16 proxy (replaces middleware.ts)
+
+analytics/            Standalone Go module — analytics ingest/queries (separate go.mod from coordinator)
+deploy/               Deploy configs (datadog, environments, gcp, provider-fleet)
+e2e/                  Root-level end-to-end Go tests + testbed framework (integration_test.go, benchmark_test.go, profile_test.go, testbed/)
+libs/                 Vendored / submoduled deps (mlx-swift, mlx-swift-lm) — used by provider-swift
+tests/                Root cross-language tests (test_crypto_interop.py)
+papers/               Research notes and writeups
+landing/              Static landing page (index.html)
+docs/                 Architecture docs, deploy runbook, MDM/ACME notes, dev-environment.md
 
 scripts/
 ├── install.sh        curl one-liner installer (fetches release, verifies SHA-256 + code signature)
@@ -64,9 +89,8 @@ scripts/
 ├── benchmark-*.py    Benchmark utilities
 └── entitlements.plist Hardened Runtime entitlements (hypervisor, network)
 
-docs/                 Architecture docs, deploy runbook, MDM/ACME notes
-landing/              Static landing page (index.html)
 .github/workflows/    CI (ci.yml) and Swift release automation (release-swift.yml)
+.githooks/            pre-commit (fast format check on staged files) + pre-push (fmt + build + tests)
 
 .external/            Git-ignored; holds external forks used by the project (NOT part of this repo)
 └── vllm-mlx/         Our fork of vllm-mlx (github.com/Gajesh2007/vllm-mlx)
@@ -196,7 +220,7 @@ CI (`.github/workflows/release-swift.yml`) builds, signs, notarizes, and uploads
 - **Idle GPU timeout**: Backend (vllm-mlx) process is killed after 1 hour of no requests to free GPU memory. Lazy-reloaded when the next request arrives (cold-start penalty of ~10-30s for model reload).
 - **E2E encryption**: Consumer requests encrypted with provider's X25519 public key (NaCl box). Coordinator never sees plaintext prompts. Decryption only inside the hardened provider process.
 - **Attestation chain**: Secure Enclave P-256 key → signs attestation blob → coordinator verifies signature (self_signed) → MDM SecurityInfo cross-check (hardware trust) → Apple Enterprise Attestation Root CA signs device cert chain via MDA (mda_verified). Full chain exposed at `GET /v1/providers/attestation` for user-side verification.
-- **Protocol symmetry**: `provider/src/protocol.rs` and `coordinator/internal/protocol/messages.go` define the same WebSocket message types. Changes to one must be mirrored in the other.
+- **Protocol symmetry**: `provider/src/protocol.rs` and `coordinator/protocol/messages.go` define the same WebSocket message types. Changes to one must be mirrored in the other.
 - **Model catalog**: Coordinator maintains a catalog of supported models. Provider CLI filters local models against this catalog for serving and display. Only catalog models are served.
 - **Billing**: Solana USDC deposits verified on-chain. Coordinator wallet derived from BIP39 mnemonic via SLIP-0010 (m/44'/501'/0'/0'). Stripe wired but inactive. Referral system gives referrers a share of platform fees.
 - **Request queue**: When all providers are busy, requests queue with 120s timeout. Frontend shows "providers are busy" on 503.
@@ -225,15 +249,15 @@ Always think from first principles. When fixing a bug or designing a feature:
 
 ## Common Pitfalls
 
-- Protocol changes require updating both `provider/src/protocol.rs` (Rust) AND `coordinator/internal/protocol/messages.go` (Go). They must stay in sync.
-- Telemetry wire types are mirrored in three places: `coordinator/internal/protocol/telemetry.go`, `provider/src/telemetry/event.rs`, and `console-ui/src/lib/telemetry-types.ts`. The field allowlist (`coordinator/internal/api/telemetry_handlers.go`) is the privacy backstop — never add prompt/completion fields. See `docs/telemetry.md`.
+- Protocol changes require updating both `provider/src/protocol.rs` (Rust) AND `coordinator/protocol/messages.go` (Go). They must stay in sync.
+- Telemetry wire types are mirrored in three places: `coordinator/protocol/telemetry.go`, `provider/src/telemetry/event.rs`, and `console-ui/src/lib/telemetry-types.ts`. The field allowlist (`coordinator/api/telemetry_handlers.go`) is the privacy backstop — never add prompt/completion fields. See `docs/telemetry.md`.
 - Attestation tests need `AuthenticatedRootEnabled: true` in test blobs or the ARV check fails and overwrites earlier error messages (the checks run sequentially, last failure wins).
 - The `python` feature flag in the provider Cargo.toml links PyO3. Use `--no-default-features` when building for distribution to avoid Python linking issues.
 - The coordinator uses in-memory store by default. Provider state is lost on restart. Postgres store exists but is not used in production yet.
 - Binary files like `coordinator/eigeninference-coordinator` and `coordinator/eigeninference-coordinator-linux` should NOT be committed to git (15MB+ each).
 - CI release workflow must compute binary SHA-256 hashes AFTER code signing, not before. Providers verify hashes of the signed binary.
-- Provider bundle semantics span multiple files: `.github/workflows/release-swift.yml`, `scripts/install.sh` (and the embedded copy at `coordinator/internal/api/install.sh`), and `LatestProviderVersion` in `coordinator/internal/api/server.go`. Keep them in sync.
-- Image generation and audio transcription are not supported. The platform serves only text inference; the model catalog filter (`coordinator/internal/api/model_catalog_filter.go`) rejects any `ModelType` other than `text`.
+- Provider bundle semantics span multiple files: `.github/workflows/release-swift.yml`, `scripts/install.sh` (and the embedded copy at `coordinator/api/install.sh`), and `LatestProviderVersion` in `coordinator/api/server.go`. Keep them in sync.
+- Image generation and audio transcription are not supported. The platform serves only text inference; the model catalog filter (`coordinator/api/model_catalog_filter.go`) rejects any `ModelType` other than `text`.
 - Device linking changes span coordinator device auth endpoints and provider `login`/`logout` commands.
 - The repo contains mixed payment language: current code implements Privy + Solana + Stripe, but some provider comments still reference Tempo/pathUSD.
 

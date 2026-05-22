@@ -49,6 +49,10 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 		"provider_earnings",
 		"provider_payouts",
 		"providers",
+		"provider_heartbeats",
+		"provider_heartbeats_hourly",
+		"provider_sessions",
+		"provider_reliability_features",
 		"stripe_withdrawals",
 	} {
 		if _, err := s.pool.Exec(ctx, "TRUNCATE "+table+" CASCADE"); err != nil {

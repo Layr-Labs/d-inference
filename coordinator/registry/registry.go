@@ -499,6 +499,11 @@ type Registry struct {
 	// load_model command and are awaiting completion. Prevents duplicate
 	// sends across heartbeat cycles.
 	pendingModelLoads map[string]time.Time // key: "providerID:modelID"
+
+	// Liveness sink — optional; nil-safe at every call site. Wired by
+	// cmd/coordinator/main.go so tests can construct a Registry without
+	// dragging in the liveness package.
+	liveness LivenessSink
 }
 
 const pendingModelLoadTTL = 2 * time.Minute
@@ -506,6 +511,15 @@ const pendingModelLoadTTL = 2 * time.Minute
 type modelLoadAction struct {
 	providerID string
 	modelID    string
+}
+
+// LivenessSink is the minimal interface the registry needs to record provider
+// liveness history. Defined here (rather than imported from the liveness pkg)
+// to avoid a package cycle and to keep tests free of liveness wiring.
+type LivenessSink interface {
+	EmitHeartbeat(event store.HeartbeatEvent)
+	OpenSession(providerID string)
+	CloseSession(providerID, reason string, lastHeartbeat time.Time, requestsServed, tokensGenerated int64)
 }
 
 // New creates a new Registry.
@@ -525,6 +539,13 @@ func New(logger *slog.Logger) *Registry {
 // When set, provider state and reputation are persisted to the store.
 func (r *Registry) SetStore(st store.Store) {
 	r.store = st
+}
+
+// SetLivenessSink wires the historical liveness recorder. Optional — when
+// nil, the registry behaves exactly as before (no per-heartbeat / per-session
+// persistence beyond the in-memory state).
+func (r *Registry) SetLivenessSink(sink LivenessSink) {
+	r.liveness = sink
 }
 
 // LoadStoredProviders loads provider records and reputation from the store
@@ -1090,6 +1111,12 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	// Persist provider record to store (async).
 	r.persistProviderNow(p)
 
+	// Open a liveness session for this connection. Disconnect / evictStale
+	// will close it. Nil-safe.
+	if r.liveness != nil {
+		r.liveness.OpenSession(id)
+	}
+
 	return p
 }
 
@@ -1136,7 +1163,7 @@ func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
 			"kept_id", keepID,
 			"serial", serial,
 		)
-		r.Disconnect(id)
+		r.RecordDisconnect(id, store.DisconnectReasonDuplicateSerial)
 
 		if p != nil && p.Conn != nil {
 			p.Conn.Close(websocket.StatusNormalClosure, "replaced by new connection from same device")
@@ -1211,6 +1238,13 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	p.mu.Unlock()
 
 	r.PersistProviderThrottled(p)
+
+	// Emit a heartbeat event to the liveness sink. Non-blocking — if the
+	// buffer is full the sink drops the event and increments its drop counter.
+	// Nil-safe.
+	if r.liveness != nil {
+		r.liveness.EmitHeartbeat(buildHeartbeatEvent(id, msg))
+	}
 
 	// Heartbeats can make a recovered slot routable again (for example after a
 	// crash auto-restart). Drain matching queues using the canonical scheduler
@@ -1595,6 +1629,41 @@ func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
 	}
 }
 
+// buildHeartbeatEvent converts a protocol HeartbeatMessage into the
+// store-level event row, mapping nullable fields and extracting indexed
+// columns from the optional BackendCapacity blob.
+func buildHeartbeatEvent(id string, msg *protocol.HeartbeatMessage) store.HeartbeatEvent {
+	ev := store.HeartbeatEvent{
+		ProviderID:     id,
+		At:             time.Now(),
+		Status:         msg.Status,
+		MemoryPressure: float32(msg.SystemMetrics.MemoryPressure),
+		CPUUsage:       float32(msg.SystemMetrics.CPUUsage),
+		ThermalState:   msg.SystemMetrics.ThermalState,
+	}
+	if msg.ActiveModel != nil {
+		ev.ActiveModel = *msg.ActiveModel
+	}
+	if msg.BackendCapacity != nil {
+		active := float32(msg.BackendCapacity.GPUMemoryActiveGB)
+		cache := float32(msg.BackendCapacity.GPUMemoryCacheGB)
+		ev.GPUMemoryActiveGB = &active
+		ev.GPUMemoryCacheGB = &cache
+		// Backend state aggregates slot states; "running" wins if any slot
+		// is serving, else first non-empty, else "".
+		for _, slot := range msg.BackendCapacity.Slots {
+			if slot.State == "running" {
+				ev.BackendState = "running"
+				break
+			}
+			if ev.BackendState == "" {
+				ev.BackendState = slot.State
+			}
+		}
+	}
+	return ev
+}
+
 func cumulativeDelta(previous, current int64) int64 {
 	if current <= 0 {
 		return 0
@@ -1604,6 +1673,35 @@ func cumulativeDelta(previous, current int64) int64 {
 	}
 	// The provider process restarted and reset its in-memory counters.
 	return current
+}
+
+// RecordDisconnect closes the provider's liveness session with the given
+// reason (one of store.DisconnectReason* constants) and then delegates to
+// Disconnect. Use this from call sites that know the reason (clean WS close,
+// read error, stale-heartbeat eviction). Internal callers that don't have a
+// clean reason can keep calling Disconnect directly — those sessions get
+// swept on next coordinator restart.
+func (r *Registry) RecordDisconnect(id, reason string) {
+	if r.liveness != nil {
+		// Snapshot session-end counters and last-heartbeat under the
+		// provider lock so they're consistent with what Disconnect about to
+		// tear down.
+		r.mu.RLock()
+		p, ok := r.providers[id]
+		r.mu.RUnlock()
+
+		var lastHB time.Time
+		var reqs, toks int64
+		if ok {
+			p.mu.Lock()
+			lastHB = p.LastHeartbeat
+			reqs = p.Stats.RequestsServed
+			toks = p.Stats.TokensGenerated
+			p.mu.Unlock()
+		}
+		r.liveness.CloseSession(id, reason, lastHB, reqs, toks)
+	}
+	r.Disconnect(id)
 }
 
 // Disconnect removes a provider from the registry and cleans up pending requests.
@@ -2590,7 +2688,11 @@ func (r *Registry) ProviderIDs() []string {
 // that haven't sent a heartbeat within the given timeout. It stops when
 // the context is cancelled.
 func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration) {
-	ticker := time.NewTicker(timeout / 3)
+	tickEvery := timeout / 3
+	if tickEvery < time.Millisecond {
+		tickEvery = time.Millisecond
+	}
+	ticker := time.NewTicker(tickEvery)
 	saferun.Go(r.logger, "registry.evictionLoop", func() {
 		defer ticker.Stop()
 		for {
@@ -2617,6 +2719,6 @@ func (r *Registry) evictStale(timeout time.Duration) {
 
 	for _, id := range stale {
 		r.logger.Warn("evicting stale provider", "provider_id", id, "timeout", timeout)
-		r.Disconnect(id)
+		r.RecordDisconnect(id, store.DisconnectReasonStaleHeartbeat)
 	}
 }

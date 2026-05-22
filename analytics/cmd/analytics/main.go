@@ -13,6 +13,7 @@ import (
 	"github.com/eigeninference/analytics/internal/config"
 	"github.com/eigeninference/analytics/internal/httpapi"
 	"github.com/eigeninference/analytics/internal/leaderboard"
+	"github.com/eigeninference/analytics/internal/liveness"
 	"github.com/eigeninference/analytics/internal/pseudonym"
 )
 
@@ -44,7 +45,18 @@ func main() {
 	defer store.Close()
 
 	service := leaderboard.NewService(store, aliaser, time.Now)
-	handler := httpapi.NewHandler(logger, service, cfg.AllowOrigin)
+
+	// Liveness service uses the same Postgres pool in postgres mode; in
+	// memory mode it gets an empty MemoryStore (returns 404 / empty lists).
+	livenessStore, err := buildLivenessStore(ctx, cfg)
+	if err != nil {
+		logger.Error("failed to initialize liveness store", "error", err)
+		os.Exit(1)
+	}
+	defer livenessStore.Close()
+	livenessSvc := liveness.NewService(livenessStore, aliaser, time.Now)
+
+	handler := httpapi.NewHandler(logger, service, livenessSvc, cfg.AllowOrigin)
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
@@ -78,6 +90,17 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("analytics service failed", "error", err)
 		os.Exit(1)
+	}
+}
+
+func buildLivenessStore(ctx context.Context, cfg config.Config) (liveness.Store, error) {
+	switch cfg.Backend {
+	case config.BackendMemory:
+		return liveness.NewMemoryStore(), nil
+	case config.BackendPostgres:
+		return liveness.NewPostgresStore(ctx, cfg.DatabaseURL)
+	default:
+		return nil, errors.New("unsupported backend")
 	}
 }
 

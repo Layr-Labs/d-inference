@@ -121,11 +121,15 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	var provider *registry.Provider
 	tracker := newChallengeTracker()
 
+	// Disconnect reason for the liveness session. Defaults to the clean-close
+	// case; flipped to read_error when conn.Read returns a non-CloseStatus error.
+	disconnectReason := store.DisconnectReasonCleanClose
+
 	// Cancel context for cleanup of the challenge loop goroutine.
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
 		loopCancel()
-		s.registry.Disconnect(providerID)
+		s.registry.RecordDisconnect(providerID, disconnectReason)
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
 
@@ -135,6 +139,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			if websocket.CloseStatus(err) != -1 {
 				s.logger.Info("provider websocket closed", "provider_id", providerID)
 			} else {
+				disconnectReason = store.DisconnectReasonReadError
 				s.logger.Error("provider websocket read error", "provider_id", providerID, "error", err)
 				s.emit(context.Background(), protocol.SeverityWarn, protocol.KindConnectivity,
 					"provider websocket read error",

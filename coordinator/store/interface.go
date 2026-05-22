@@ -351,6 +351,63 @@ type Store interface {
 	// Used by the ingestion handler and the coordinator emitter. The primary
 	// destination is Datadog; this is secondary for debugging.
 	InsertTelemetryEvents(ctx context.Context, events []TelemetryEventRecord) error
+
+	// --- Provider Liveness Persistence ---
+	//
+	// AppendHeartbeats bulk-inserts buffered heartbeat samples. Caller
+	// (coordinator/liveness.Writer) batches these on a background goroutine
+	// so the heartbeat handler stays non-blocking.
+	AppendHeartbeats(ctx context.Context, events []HeartbeatEvent) error
+
+	// OpenSession records that a provider connected. Returns the session ID
+	// so the caller can later close it.
+	OpenSession(ctx context.Context, s SessionStart) (int64, error)
+
+	// CloseSession marks a session closed with the given reason and timestamp.
+	// If lastHeartbeat is non-zero it is also recorded for clean MTBF math.
+	CloseSession(ctx context.Context, sessionID int64, reason string, at time.Time, lastHeartbeat time.Time, requestsServed, tokensGenerated int64) error
+
+	// CloseOrphanSessions closes any sessions left open (disconnected_at IS NULL),
+	// stamping the given reason and timestamp. Called once on coordinator boot
+	// to clean up sessions that survived a coordinator crash.
+	//
+	// coordinatorID, if non-empty, restricts the close to sessions owned by
+	// that coordinator instance. This is required for blue-green deploys
+	// where multiple coordinator processes run concurrently — without the
+	// filter, a new coordinator's boot would erroneously close the live
+	// sessions owned by the previous coordinator. Pass "" only when there
+	// is exactly one coordinator instance.
+	CloseOrphanSessions(ctx context.Context, reason string, at time.Time, coordinatorID string) (int64, error)
+
+	// DeleteHeartbeatsBefore deletes up to `limit` rows older than `before`.
+	// Returns the number of rows actually deleted. Used by the retention cron.
+	// Loop until 0 is returned to drain a backlog incrementally.
+	DeleteHeartbeatsBefore(ctx context.Context, before time.Time, limit int) (int64, error)
+
+	// ListSessionsSince returns sessions that connected or were open at any
+	// point in [since, now]. Used by the feature rollup. Rows with
+	// disconnected_at IS NULL are still-open sessions.
+	ListSessionsSince(ctx context.Context, since time.Time) ([]SessionRow, error)
+
+	// UpsertReliabilityFeatures writes one pre-aggregated reliability row.
+	UpsertReliabilityFeatures(ctx context.Context, row ReliabilityFeatures) error
+
+	// GetReliabilityFeatures returns the most recent reliability row for
+	// the given provider, or ErrNotFound if none exists yet.
+	GetReliabilityFeatures(ctx context.Context, providerID string) (*ReliabilityFeatures, error)
+
+	// ListReliabilityFeatures returns reliability rows for all providers
+	// meeting the given filter, ordered by uptime_pct DESC then provider_id.
+	ListReliabilityFeatures(ctx context.Context, filter ReliabilityFilter) ([]ReliabilityFeatures, error)
+
+	// ListRecentHeartbeats returns the most recent heartbeat rows for a
+	// provider, newest-first, capped at `limit`. Powers the
+	// /v1/providers/:id/heartbeats analytics endpoint.
+	ListRecentHeartbeats(ctx context.Context, providerID string, since time.Time, limit int) ([]HeartbeatEvent, error)
+
+	// ListRecentSessions is the read-side counterpart to ListSessionsSince
+	// scoped to one provider, newest-first, capped at `limit`.
+	ListRecentSessions(ctx context.Context, providerID string, since time.Time, limit int) ([]SessionRow, error)
 }
 
 // TelemetryEventRecord is the persistence-layer representation of a telemetry
@@ -702,4 +759,84 @@ type ReputationRecord struct {
 	AvgResponseTimeMs  int64 `json:"avg_response_time_ms"`
 	ChallengesPassed   int   `json:"challenges_passed"`
 	ChallengesFailed   int   `json:"challenges_failed"`
+}
+
+// HeartbeatEvent is one row appended to provider_heartbeats. Fields mirror
+// protocol.HeartbeatMessage but live here so the store stays free of protocol
+// imports. Pointer fields are nullable in the column (older providers may not
+// report them).
+type HeartbeatEvent struct {
+	ProviderID        string          `json:"provider_id"`
+	At                time.Time       `json:"at"`
+	Status            string          `json:"status"`
+	MemoryPressure    float32         `json:"memory_pressure"`
+	CPUUsage          float32         `json:"cpu_usage"`
+	ThermalState      string          `json:"thermal_state"`
+	MemoryAvailableGB *float32        `json:"memory_available_gb,omitempty"`
+	GPUMemoryActiveGB *float32        `json:"gpu_memory_active_gb,omitempty"`
+	GPUMemoryCacheGB  *float32        `json:"gpu_memory_cache_gb,omitempty"`
+	BackendState      string          `json:"backend_state"`
+	ActiveModel       string          `json:"active_model"`
+	Capacity          json.RawMessage `json:"capacity,omitempty"`
+}
+
+// SessionStart is the payload for opening a provider session.
+type SessionStart struct {
+	ProviderID    string    `json:"provider_id"`
+	ConnectedAt   time.Time `json:"connected_at"`
+	CoordinatorID string    `json:"coordinator_id"`
+}
+
+// Disconnect reason constants written to provider_sessions.disconnect_reason.
+// Stable, lowercase, snake_case so dashboards can filter on them.
+const (
+	DisconnectReasonCleanClose         = "clean_close"
+	DisconnectReasonReadError          = "read_error"
+	DisconnectReasonStaleHeartbeat     = "stale_heartbeat"
+	DisconnectReasonCoordinatorRestart = "coordinator_restart"
+	DisconnectReasonDuplicateSerial    = "duplicate_serial"
+)
+
+// SessionRow is one provider_sessions row in the shape consumers expect.
+// Open sessions have a zero DisconnectedAt.
+type SessionRow struct {
+	ID               int64     `json:"id"`
+	ProviderID       string    `json:"provider_id"`
+	ConnectedAt      time.Time `json:"connected_at"`
+	DisconnectedAt   time.Time `json:"disconnected_at,omitempty"`
+	DisconnectReason string    `json:"disconnect_reason,omitempty"`
+	LastHeartbeatAt  time.Time `json:"last_heartbeat_at,omitempty"`
+	RequestsServed   int64     `json:"requests_served"`
+	TokensGenerated  int64     `json:"tokens_generated"`
+	CoordinatorID    string    `json:"coordinator_id,omitempty"`
+}
+
+// ReliabilityFeatures is one provider_reliability_features row. The hourly
+// availability and disconnect reason histograms are pre-serialized JSON so
+// the store impls don't need to know the consumer shape.
+type ReliabilityFeatures struct {
+	ProviderID                 string          `json:"provider_id"`
+	UpdatedAt                  time.Time       `json:"updated_at"`
+	WindowDays                 int             `json:"window_days"`
+	UptimePct                  float64         `json:"uptime_pct"`
+	SessionsCount              int             `json:"sessions_count"`
+	MTBFSeconds                int64           `json:"mtbf_seconds"`
+	MedianSessionSeconds       int64           `json:"median_session_seconds"`
+	P10SessionSeconds          int64           `json:"p10_session_seconds"`
+	P90SessionSeconds          int64           `json:"p90_session_seconds"`
+	HourlyAvailability         json.RawMessage `json:"hourly_availability,omitempty"`
+	DisconnectReasons          json.RawMessage `json:"disconnect_reasons,omitempty"`
+	PStays4h                   float64         `json:"p_stays_4h"`
+	PStays8h                   float64         `json:"p_stays_8h"`
+	LastDisconnectAt           time.Time       `json:"last_disconnect_at,omitempty"`
+	LastSessionDurationSeconds int64           `json:"last_session_duration_seconds"`
+}
+
+// ReliabilityFilter narrows the providers returned from
+// ListReliabilityFeatures. Zero values mean "no filter on that field".
+type ReliabilityFilter struct {
+	MinUptimePct float64
+	MinPStays4h  float64
+	MinPStays8h  float64
+	Limit        int
 }

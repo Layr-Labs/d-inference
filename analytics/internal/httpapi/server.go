@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/analytics/internal/leaderboard"
+	"github.com/eigeninference/analytics/internal/liveness"
 )
 
 type Service interface {
@@ -19,7 +21,19 @@ type Service interface {
 	EarningsLeaderboard(ctx context.Context, query leaderboard.Query) (leaderboard.Leaderboard, error)
 }
 
-func NewHandler(logger *slog.Logger, service Service, allowOrigin string) http.Handler {
+// LivenessService is the subset of the liveness package's Service that the
+// HTTP layer needs. Separate interface so the httpapi tests can stub it.
+type LivenessService interface {
+	ProviderSummary(ctx context.Context, providerID string) (*liveness.Summary, error)
+	ProviderSessions(ctx context.Context, providerID string, window liveness.Window, limit int) ([]liveness.SessionEntry, error)
+	ProviderHeartbeats(ctx context.Context, providerID string, window liveness.Window, limit int) ([]liveness.HeartbeatEntry, error)
+	ReliableProviders(ctx context.Context, filter liveness.ReliabilityFilterInput) ([]liveness.ReliabilityEntry, error)
+	FleetAvailability(ctx context.Context) (liveness.FleetAvailability, error)
+}
+
+// NewHandler returns the analytics HTTP handler. livenessSvc may be nil
+// when liveness endpoints aren't wired (e.g., memory-mode dev runs).
+func NewHandler(logger *slog.Logger, service Service, livenessSvc LivenessService, allowOrigin string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -98,7 +112,155 @@ func NewHandler(logger *slog.Logger, service Service, allowOrigin string) http.H
 		writeJSON(w, http.StatusOK, board)
 	})
 
+	if livenessSvc != nil {
+		registerLivenessRoutes(mux, logger, livenessSvc)
+	}
+
 	return withCORS(allowOrigin, mux)
+}
+
+// registerLivenessRoutes wires the provider-liveness endpoints. Split out
+// from NewHandler so it's easy to see what's gated behind livenessSvc != nil.
+func registerLivenessRoutes(mux *http.ServeMux, logger *slog.Logger, svc LivenessService) {
+	mux.HandleFunc("GET /v1/providers/{id}/liveness", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		providerID := r.PathValue("id")
+		summary, err := svc.ProviderSummary(ctx, providerID)
+		if err != nil {
+			logger.Error("provider summary failed", "provider_id", providerID, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "failed to load provider summary")
+			return
+		}
+		if summary == nil {
+			writeError(w, http.StatusNotFound, "not_found", "no reliability data for provider")
+			return
+		}
+		writeJSON(w, http.StatusOK, summary)
+	})
+
+	mux.HandleFunc("GET /v1/providers/{id}/sessions", func(w http.ResponseWriter, r *http.Request) {
+		window, limit, err := parseLivenessQuery(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		entries, err := svc.ProviderSessions(ctx, r.PathValue("id"), window, limit)
+		if err != nil {
+			logger.Error("provider sessions failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "failed to load sessions")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"window":  string(window),
+			"entries": entries,
+		})
+	})
+
+	mux.HandleFunc("GET /v1/providers/{id}/heartbeats", func(w http.ResponseWriter, r *http.Request) {
+		window, limit, err := parseLivenessQuery(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		entries, err := svc.ProviderHeartbeats(ctx, r.PathValue("id"), window, limit)
+		if err != nil {
+			logger.Error("provider heartbeats failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "failed to load heartbeats")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"window":  string(window),
+			"entries": entries,
+		})
+	})
+
+	mux.HandleFunc("GET /v1/providers/reliability", func(w http.ResponseWriter, r *http.Request) {
+		filter := liveness.ReliabilityFilterInput{
+			MinUptimePct: parseFloat(r.URL.Query().Get("min_uptime"), 0),
+			MinPStays4h:  parseFloat(r.URL.Query().Get("min_stays_4h"), 0),
+			MinPStays8h:  parseFloat(r.URL.Query().Get("min_stays_8h"), 0),
+			Limit:        parseIntDefault(r.URL.Query().Get("limit"), liveness.DefaultLimit),
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		entries, err := svc.ReliableProviders(ctx, filter)
+		if err != nil {
+			logger.Error("reliable providers failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "failed to load reliable providers")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"min_uptime":   filter.MinUptimePct,
+			"min_stays_4h": filter.MinPStays4h,
+			"min_stays_8h": filter.MinPStays8h,
+			"entries":      entries,
+		})
+	})
+
+	mux.HandleFunc("GET /v1/network/availability", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		summary, err := svc.FleetAvailability(ctx)
+		if err != nil {
+			logger.Error("network availability failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "failed to load fleet availability")
+			return
+		}
+		writeJSON(w, http.StatusOK, summary)
+	})
+}
+
+// parseLivenessQuery extracts the shared `window` + `limit` query params
+// used by the per-provider endpoints.
+func parseLivenessQuery(r *http.Request) (liveness.Window, int, error) {
+	window, err := liveness.ParseWindow(r.URL.Query().Get("window"))
+	if err != nil {
+		var pe *liveness.ParseError
+		if errors.As(err, &pe) {
+			return "", 0, err
+		}
+		return "", 0, err
+	}
+	limit := parseIntDefault(r.URL.Query().Get("limit"), liveness.DefaultLimit)
+	return window, limit, nil
+}
+
+func parseFloat(raw string, fallback float64) float64 {
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return fallback
+	}
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+func parseIntDefault(raw string, fallback int) int {
+	if strings.TrimSpace(raw) == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		return fallback
+	}
+	return v
 }
 
 func withCORS(allowOrigin string, next http.Handler) http.Handler {

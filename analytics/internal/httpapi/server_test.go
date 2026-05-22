@@ -127,5 +127,5 @@ func testHandler(t *testing.T) http.Handler {
 
 	service := leaderboard.NewService(store, aliaser, now)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewHandler(logger, service, "*")
+	return NewHandler(logger, service, nil, "*")
 }

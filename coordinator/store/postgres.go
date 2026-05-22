@@ -477,6 +477,71 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			WHERE account_id = b.account_id
 			  AND entry_type IN ('payout', 'referral_reward', 'admin_reward', 'stripe_payout')
 		), 0)) WHERE b.withdrawable_micro_usd = 0`,
+
+		// Provider liveness — historical heartbeats, session intervals, and
+		// pre-aggregated reliability features. Powers the analytics service
+		// and future job-aware scheduling. See plan: /plans/what-i-d-extend-given-crispy-rivest.md
+		`CREATE TABLE IF NOT EXISTS provider_heartbeats (
+			id BIGSERIAL PRIMARY KEY,
+			provider_id TEXT NOT NULL,
+			at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			status TEXT NOT NULL DEFAULT '',
+			memory_pressure REAL NOT NULL DEFAULT 0,
+			cpu_usage REAL NOT NULL DEFAULT 0,
+			thermal_state TEXT NOT NULL DEFAULT '',
+			memory_available_gb REAL,
+			gpu_memory_active_gb REAL,
+			gpu_memory_cache_gb REAL,
+			backend_state TEXT NOT NULL DEFAULT '',
+			active_model TEXT NOT NULL DEFAULT '',
+			capacity JSONB
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_heartbeats_provider_at ON provider_heartbeats(provider_id, at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_heartbeats_at ON provider_heartbeats(at DESC)`,
+
+		`CREATE TABLE IF NOT EXISTS provider_heartbeats_hourly (
+			provider_id TEXT NOT NULL,
+			hour TIMESTAMPTZ NOT NULL,
+			heartbeat_count INT NOT NULL DEFAULT 0,
+			avg_memory_pressure REAL NOT NULL DEFAULT 0,
+			avg_cpu_usage REAL NOT NULL DEFAULT 0,
+			max_thermal_state TEXT NOT NULL DEFAULT '',
+			avg_memory_available_gb REAL,
+			PRIMARY KEY (provider_id, hour)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_heartbeats_hourly_hour ON provider_heartbeats_hourly(hour DESC)`,
+
+		`CREATE TABLE IF NOT EXISTS provider_sessions (
+			id BIGSERIAL PRIMARY KEY,
+			provider_id TEXT NOT NULL,
+			connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			disconnected_at TIMESTAMPTZ,
+			disconnect_reason TEXT NOT NULL DEFAULT '',
+			last_heartbeat_at TIMESTAMPTZ,
+			requests_served BIGINT NOT NULL DEFAULT 0,
+			tokens_generated BIGINT NOT NULL DEFAULT 0,
+			coordinator_id TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_provider_connected ON provider_sessions(provider_id, connected_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_open ON provider_sessions(provider_id) WHERE disconnected_at IS NULL`,
+
+		`CREATE TABLE IF NOT EXISTS provider_reliability_features (
+			provider_id TEXT PRIMARY KEY,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			window_days INT NOT NULL DEFAULT 14,
+			uptime_pct REAL NOT NULL DEFAULT 0,
+			sessions_count INT NOT NULL DEFAULT 0,
+			mtbf_seconds BIGINT NOT NULL DEFAULT 0,
+			median_session_seconds BIGINT NOT NULL DEFAULT 0,
+			p10_session_seconds BIGINT NOT NULL DEFAULT 0,
+			p90_session_seconds BIGINT NOT NULL DEFAULT 0,
+			hourly_availability JSONB NOT NULL DEFAULT '{}'::jsonb,
+			disconnect_reasons JSONB NOT NULL DEFAULT '{}'::jsonb,
+			p_stays_4h REAL NOT NULL DEFAULT 0,
+			p_stays_8h REAL NOT NULL DEFAULT 0,
+			last_disconnect_at TIMESTAMPTZ,
+			last_session_duration_seconds BIGINT NOT NULL DEFAULT 0
+		)`,
 	}
 
 	for _, m := range migrations {
@@ -2655,4 +2720,413 @@ func (s *PostgresStore) GetReputation(ctx context.Context, providerID string) (*
 		return nil, fmt.Errorf("store: reputation not found: %w", err)
 	}
 	return &rep, nil
+}
+
+// --- Provider Liveness ---
+
+// heartbeatColumns mirrors the column order used by AppendHeartbeats CopyFrom.
+var heartbeatColumns = []string{
+	"provider_id", "at", "status", "memory_pressure", "cpu_usage",
+	"thermal_state", "memory_available_gb", "gpu_memory_active_gb",
+	"gpu_memory_cache_gb", "backend_state", "active_model", "capacity",
+}
+
+func nullableFloat32(p *float32) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func (s *PostgresStore) AppendHeartbeats(ctx context.Context, events []HeartbeatEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rows := make([][]any, len(events))
+	for i, e := range events {
+		var capacity any
+		if len(e.Capacity) > 0 {
+			capacity = []byte(e.Capacity)
+		}
+		rows[i] = []any{
+			e.ProviderID,
+			e.At,
+			e.Status,
+			e.MemoryPressure,
+			e.CPUUsage,
+			e.ThermalState,
+			nullableFloat32(e.MemoryAvailableGB),
+			nullableFloat32(e.GPUMemoryActiveGB),
+			nullableFloat32(e.GPUMemoryCacheGB),
+			e.BackendState,
+			e.ActiveModel,
+			capacity,
+		}
+	}
+
+	if _, err := s.pool.CopyFrom(ctx,
+		pgx.Identifier{"provider_heartbeats"},
+		heartbeatColumns,
+		pgx.CopyFromRows(rows),
+	); err != nil {
+		return fmt.Errorf("store: bulk insert heartbeats: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) OpenSession(ctx context.Context, sess SessionStart) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	connectedAt := sess.ConnectedAt
+	if connectedAt.IsZero() {
+		connectedAt = time.Now()
+	}
+
+	var id int64
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO provider_sessions (provider_id, connected_at, coordinator_id)
+		 VALUES ($1, $2, $3) RETURNING id`,
+		sess.ProviderID, connectedAt, sess.CoordinatorID,
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("store: open session: %w", err)
+	}
+	return id, nil
+}
+
+func (s *PostgresStore) CloseSession(ctx context.Context, sessionID int64, reason string, at time.Time, lastHeartbeat time.Time, requestsServed, tokensGenerated int64) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if at.IsZero() {
+		at = time.Now()
+	}
+	var lastHB any
+	if !lastHeartbeat.IsZero() {
+		lastHB = lastHeartbeat
+	}
+
+	_, err := s.pool.Exec(ctx,
+		`UPDATE provider_sessions
+		   SET disconnected_at = $2,
+		       disconnect_reason = $3,
+		       last_heartbeat_at = COALESCE($4, last_heartbeat_at),
+		       requests_served = $5,
+		       tokens_generated = $6
+		 WHERE id = $1 AND disconnected_at IS NULL`,
+		sessionID, at, reason, lastHB, requestsServed, tokensGenerated,
+	)
+	if err != nil {
+		return fmt.Errorf("store: close session: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) CloseOrphanSessions(ctx context.Context, reason string, at time.Time, coordinatorID string) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if at.IsZero() {
+		at = time.Now()
+	}
+	// The $3 = '' OR clause keeps the old behavior available for callers
+	// running in a single-coordinator deployment (or in tests); production
+	// callers should always pass a non-empty coordinatorID to avoid
+	// stomping on sessions owned by a sibling coordinator process.
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE provider_sessions
+		   SET disconnected_at = $1, disconnect_reason = $2
+		 WHERE disconnected_at IS NULL
+		   AND ($3 = '' OR coordinator_id = $3)`,
+		at, reason, coordinatorID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: close orphan sessions: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+func (s *PostgresStore) DeleteHeartbeatsBefore(ctx context.Context, before time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Two-step delete keeps the lock set small: pick rows in an unindexed
+	// subquery (planner uses idx_provider_heartbeats_at), then delete by id.
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM provider_heartbeats
+		 WHERE id IN (
+		   SELECT id FROM provider_heartbeats
+		   WHERE at < $1
+		   ORDER BY at ASC
+		   LIMIT $2
+		 )`,
+		before, limit,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: delete heartbeats: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+func (s *PostgresStore) ListSessionsSince(ctx context.Context, since time.Time) ([]SessionRow, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, provider_id, connected_at, disconnected_at,
+		        disconnect_reason, last_heartbeat_at,
+		        requests_served, tokens_generated, coordinator_id
+		   FROM provider_sessions
+		  WHERE disconnected_at IS NULL OR disconnected_at >= $1`,
+		since,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list sessions since: %w", err)
+	}
+	defer rows.Close()
+	return scanSessionRows(rows)
+}
+
+func (s *PostgresStore) ListRecentSessions(ctx context.Context, providerID string, since time.Time, limit int) ([]SessionRow, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, provider_id, connected_at, disconnected_at,
+		        disconnect_reason, last_heartbeat_at,
+		        requests_served, tokens_generated, coordinator_id
+		   FROM provider_sessions
+		  WHERE provider_id = $1 AND connected_at >= $2
+		  ORDER BY connected_at DESC
+		  LIMIT $3`,
+		providerID, since, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list recent sessions: %w", err)
+	}
+	defer rows.Close()
+	return scanSessionRows(rows)
+}
+
+func (s *PostgresStore) ListRecentHeartbeats(ctx context.Context, providerID string, since time.Time, limit int) ([]HeartbeatEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT provider_id, at, status, memory_pressure, cpu_usage, thermal_state,
+		        memory_available_gb, gpu_memory_active_gb, gpu_memory_cache_gb,
+		        backend_state, active_model, capacity
+		   FROM provider_heartbeats
+		  WHERE provider_id = $1 AND at >= $2
+		  ORDER BY at DESC
+		  LIMIT $3`,
+		providerID, since, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list recent heartbeats: %w", err)
+	}
+	defer rows.Close()
+
+	var out []HeartbeatEvent
+	for rows.Next() {
+		var (
+			hb       HeartbeatEvent
+			memAvail *float32
+			gpuAct   *float32
+			gpuCache *float32
+			capacity []byte
+		)
+		if err := rows.Scan(
+			&hb.ProviderID, &hb.At, &hb.Status, &hb.MemoryPressure, &hb.CPUUsage,
+			&hb.ThermalState, &memAvail, &gpuAct, &gpuCache,
+			&hb.BackendState, &hb.ActiveModel, &capacity,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan heartbeat: %w", err)
+		}
+		hb.MemoryAvailableGB = memAvail
+		hb.GPUMemoryActiveGB = gpuAct
+		hb.GPUMemoryCacheGB = gpuCache
+		if len(capacity) > 0 {
+			hb.Capacity = capacity
+		}
+		out = append(out, hb)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) UpsertReliabilityFeatures(ctx context.Context, row ReliabilityFeatures) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var lastDisc any
+	if !row.LastDisconnectAt.IsZero() {
+		lastDisc = row.LastDisconnectAt
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO provider_reliability_features (
+		   provider_id, updated_at, window_days, uptime_pct, sessions_count,
+		   mtbf_seconds, median_session_seconds, p10_session_seconds, p90_session_seconds,
+		   hourly_availability, disconnect_reasons, p_stays_4h, p_stays_8h,
+		   last_disconnect_at, last_session_duration_seconds
+		 ) VALUES ($1, NOW(), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		 ON CONFLICT (provider_id) DO UPDATE SET
+		   updated_at = NOW(),
+		   window_days = EXCLUDED.window_days,
+		   uptime_pct = EXCLUDED.uptime_pct,
+		   sessions_count = EXCLUDED.sessions_count,
+		   mtbf_seconds = EXCLUDED.mtbf_seconds,
+		   median_session_seconds = EXCLUDED.median_session_seconds,
+		   p10_session_seconds = EXCLUDED.p10_session_seconds,
+		   p90_session_seconds = EXCLUDED.p90_session_seconds,
+		   hourly_availability = EXCLUDED.hourly_availability,
+		   disconnect_reasons = EXCLUDED.disconnect_reasons,
+		   p_stays_4h = EXCLUDED.p_stays_4h,
+		   p_stays_8h = EXCLUDED.p_stays_8h,
+		   last_disconnect_at = EXCLUDED.last_disconnect_at,
+		   last_session_duration_seconds = EXCLUDED.last_session_duration_seconds`,
+		row.ProviderID, row.WindowDays, row.UptimePct, row.SessionsCount,
+		row.MTBFSeconds, row.MedianSessionSeconds, row.P10SessionSeconds, row.P90SessionSeconds,
+		[]byte(row.HourlyAvailability), []byte(row.DisconnectReasons),
+		row.PStays4h, row.PStays8h, lastDisc, row.LastSessionDurationSeconds,
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert reliability features: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetReliabilityFeatures(ctx context.Context, providerID string) (*ReliabilityFeatures, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var (
+		row      ReliabilityFeatures
+		lastDisc *time.Time
+		hourly   []byte
+		reasons  []byte
+	)
+	err := s.pool.QueryRow(ctx,
+		`SELECT provider_id, updated_at, window_days, uptime_pct, sessions_count,
+		        mtbf_seconds, median_session_seconds, p10_session_seconds, p90_session_seconds,
+		        hourly_availability, disconnect_reasons, p_stays_4h, p_stays_8h,
+		        last_disconnect_at, last_session_duration_seconds
+		   FROM provider_reliability_features WHERE provider_id = $1`,
+		providerID,
+	).Scan(
+		&row.ProviderID, &row.UpdatedAt, &row.WindowDays, &row.UptimePct, &row.SessionsCount,
+		&row.MTBFSeconds, &row.MedianSessionSeconds, &row.P10SessionSeconds, &row.P90SessionSeconds,
+		&hourly, &reasons, &row.PStays4h, &row.PStays8h,
+		&lastDisc, &row.LastSessionDurationSeconds,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("store: get reliability features: %w", err)
+	}
+	if lastDisc != nil {
+		row.LastDisconnectAt = *lastDisc
+	}
+	row.HourlyAvailability = hourly
+	row.DisconnectReasons = reasons
+	return &row, nil
+}
+
+func (s *PostgresStore) ListReliabilityFeatures(ctx context.Context, filter ReliabilityFilter) ([]ReliabilityFeatures, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	limit := filter.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT provider_id, updated_at, window_days, uptime_pct, sessions_count,
+		        mtbf_seconds, median_session_seconds, p10_session_seconds, p90_session_seconds,
+		        hourly_availability, disconnect_reasons, p_stays_4h, p_stays_8h,
+		        last_disconnect_at, last_session_duration_seconds
+		   FROM provider_reliability_features
+		  WHERE uptime_pct >= $1 AND p_stays_4h >= $2 AND p_stays_8h >= $3
+		  ORDER BY uptime_pct DESC, provider_id ASC
+		  LIMIT $4`,
+		filter.MinUptimePct, filter.MinPStays4h, filter.MinPStays8h, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list reliability features: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ReliabilityFeatures
+	for rows.Next() {
+		var (
+			row      ReliabilityFeatures
+			lastDisc *time.Time
+			hourly   []byte
+			reasons  []byte
+		)
+		if err := rows.Scan(
+			&row.ProviderID, &row.UpdatedAt, &row.WindowDays, &row.UptimePct, &row.SessionsCount,
+			&row.MTBFSeconds, &row.MedianSessionSeconds, &row.P10SessionSeconds, &row.P90SessionSeconds,
+			&hourly, &reasons, &row.PStays4h, &row.PStays8h,
+			&lastDisc, &row.LastSessionDurationSeconds,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan reliability features: %w", err)
+		}
+		if lastDisc != nil {
+			row.LastDisconnectAt = *lastDisc
+		}
+		row.HourlyAvailability = hourly
+		row.DisconnectReasons = reasons
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// scanSessionRows is the shared SessionRow scanner used by ListSessionsSince
+// and ListRecentSessions. Both queries SELECT the same column order.
+func scanSessionRows(rows pgx.Rows) ([]SessionRow, error) {
+	var out []SessionRow
+	for rows.Next() {
+		var (
+			r       SessionRow
+			discAt  *time.Time
+			lastHB  *time.Time
+			reason  *string
+			coordID *string
+		)
+		if err := rows.Scan(
+			&r.ID, &r.ProviderID, &r.ConnectedAt, &discAt,
+			&reason, &lastHB, &r.RequestsServed, &r.TokensGenerated, &coordID,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan session row: %w", err)
+		}
+		if discAt != nil {
+			r.DisconnectedAt = *discAt
+		}
+		if reason != nil {
+			r.DisconnectReason = *reason
+		}
+		if lastHB != nil {
+			r.LastHeartbeatAt = *lastHB
+		}
+		if coordID != nil {
+			r.CoordinatorID = *coordID
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

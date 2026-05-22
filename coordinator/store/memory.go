@@ -105,6 +105,31 @@ type MemoryStore struct {
 	// Provider log reports
 	logReports   []LogReport
 	logReportSeq int64
+
+	// Provider liveness — historical heartbeats and session intervals.
+	// heartbeats is unbounded in memory mode; callers wanting retention must
+	// run the same DeleteHeartbeatsBefore cron the postgres backend runs.
+	// (Memory store is for dev/test; not expected to accumulate forever.)
+	heartbeats     []HeartbeatEvent
+	sessions       map[int64]*memorySession
+	sessionsByOpen map[string]int64 // providerID → most-recent open sessionID (for fast lookup)
+	sessionSeq     int64
+
+	// Pre-aggregated reliability features (one row per provider).
+	reliability map[string]*ReliabilityFeatures
+}
+
+// memorySession mirrors a row in provider_sessions.
+type memorySession struct {
+	ID               int64
+	ProviderID       string
+	ConnectedAt      time.Time
+	DisconnectedAt   time.Time // zero if open
+	DisconnectReason string
+	LastHeartbeatAt  time.Time
+	RequestsServed   int64
+	TokensGenerated  int64
+	CoordinatorID    string
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -150,6 +175,10 @@ func NewMemory(scfg Config) *MemoryStore {
 		providerRecords:               make(map[string]*ProviderRecord),
 		reputationRecords:             make(map[string]*ReputationRecord),
 		serialToProviderID:            make(map[string]string),
+		heartbeats:                    make([]HeartbeatEvent, 0),
+		sessions:                      make(map[int64]*memorySession),
+		sessionsByOpen:                make(map[string]int64),
+		reliability:                   make(map[string]*ReliabilityFeatures),
 	}
 	if scfg.AdminKey != "" {
 		s.keys[scfg.AdminKey] = true
@@ -2324,4 +2353,246 @@ func (s *MemoryStore) GetLogReport(id int64) (*LogReport, error) {
 func sha256Hex(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])
+}
+
+// --- Provider Liveness ---
+
+func (s *MemoryStore) AppendHeartbeats(_ context.Context, events []HeartbeatEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.heartbeats = append(s.heartbeats, events...)
+	return nil
+}
+
+func (s *MemoryStore) OpenSession(_ context.Context, sess SessionStart) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	connectedAt := sess.ConnectedAt
+	if connectedAt.IsZero() {
+		connectedAt = time.Now()
+	}
+	s.sessionSeq++
+	row := &memorySession{
+		ID:            s.sessionSeq,
+		ProviderID:    sess.ProviderID,
+		ConnectedAt:   connectedAt,
+		CoordinatorID: sess.CoordinatorID,
+	}
+	s.sessions[row.ID] = row
+	s.sessionsByOpen[sess.ProviderID] = row.ID
+	return row.ID, nil
+}
+
+func (s *MemoryStore) CloseSession(_ context.Context, sessionID int64, reason string, at time.Time, lastHeartbeat time.Time, requestsServed, tokensGenerated int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	row, ok := s.sessions[sessionID]
+	if !ok {
+		return fmt.Errorf("session %d not found", sessionID)
+	}
+	if !row.DisconnectedAt.IsZero() {
+		return nil // idempotent: already closed
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	row.DisconnectedAt = at
+	row.DisconnectReason = reason
+	if !lastHeartbeat.IsZero() {
+		row.LastHeartbeatAt = lastHeartbeat
+	}
+	row.RequestsServed = requestsServed
+	row.TokensGenerated = tokensGenerated
+	if openID, ok := s.sessionsByOpen[row.ProviderID]; ok && openID == sessionID {
+		delete(s.sessionsByOpen, row.ProviderID)
+	}
+	return nil
+}
+
+func (s *MemoryStore) CloseOrphanSessions(_ context.Context, reason string, at time.Time, coordinatorID string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if at.IsZero() {
+		at = time.Now()
+	}
+	var closed int64
+	for _, row := range s.sessions {
+		if !row.DisconnectedAt.IsZero() {
+			continue
+		}
+		if coordinatorID != "" && row.CoordinatorID != coordinatorID {
+			continue
+		}
+		row.DisconnectedAt = at
+		row.DisconnectReason = reason
+		delete(s.sessionsByOpen, row.ProviderID)
+		closed++
+	}
+	return closed, nil
+}
+
+func (s *MemoryStore) DeleteHeartbeatsBefore(_ context.Context, before time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Walk the slice and drop rows older than `before`, up to `limit`.
+	// We can't assume chronological order — out-of-order heartbeats can
+	// arrive on coordinator restart or under clock skew.
+	kept := s.heartbeats[:0]
+	var deleted int64
+	for _, hb := range s.heartbeats {
+		if deleted < int64(limit) && hb.At.Before(before) {
+			deleted++
+			continue
+		}
+		kept = append(kept, hb)
+	}
+	s.heartbeats = kept
+	return deleted, nil
+}
+
+func (s *MemoryStore) ListSessionsSince(_ context.Context, since time.Time) ([]SessionRow, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]SessionRow, 0, len(s.sessions))
+	for _, sess := range s.sessions {
+		// Include if still open, or closed within window.
+		if !sess.DisconnectedAt.IsZero() && sess.DisconnectedAt.Before(since) {
+			continue
+		}
+		out = append(out, memSessionToRow(sess))
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) ListRecentSessions(_ context.Context, providerID string, since time.Time, limit int) ([]SessionRow, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	matches := make([]*memorySession, 0)
+	for _, sess := range s.sessions {
+		if sess.ProviderID != providerID {
+			continue
+		}
+		if sess.ConnectedAt.Before(since) {
+			continue
+		}
+		matches = append(matches, sess)
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].ConnectedAt.After(matches[j].ConnectedAt)
+	})
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	out := make([]SessionRow, len(matches))
+	for i, sess := range matches {
+		out[i] = memSessionToRow(sess)
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) ListRecentHeartbeats(_ context.Context, providerID string, since time.Time, limit int) ([]HeartbeatEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var matched []HeartbeatEvent
+	for _, hb := range s.heartbeats {
+		if hb.ProviderID == providerID && !hb.At.Before(since) {
+			matched = append(matched, hb)
+		}
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		return matched[i].At.After(matched[j].At)
+	})
+	if len(matched) > limit {
+		matched = matched[:limit]
+	}
+	return matched, nil
+}
+
+func (s *MemoryStore) UpsertReliabilityFeatures(_ context.Context, row ReliabilityFeatures) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := row
+	cp.UpdatedAt = time.Now()
+	s.reliability[row.ProviderID] = &cp
+	return nil
+}
+
+func (s *MemoryStore) GetReliabilityFeatures(_ context.Context, providerID string) (*ReliabilityFeatures, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.reliability[providerID]
+	if !ok {
+		return nil, nil
+	}
+	cp := *r
+	return &cp, nil
+}
+
+func (s *MemoryStore) ListReliabilityFeatures(_ context.Context, filter ReliabilityFilter) ([]ReliabilityFeatures, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	limit := filter.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+
+	out := make([]ReliabilityFeatures, 0, len(s.reliability))
+	for _, r := range s.reliability {
+		if r.UptimePct < filter.MinUptimePct {
+			continue
+		}
+		if r.PStays4h < filter.MinPStays4h {
+			continue
+		}
+		if r.PStays8h < filter.MinPStays8h {
+			continue
+		}
+		out = append(out, *r)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UptimePct != out[j].UptimePct {
+			return out[i].UptimePct > out[j].UptimePct
+		}
+		return out[i].ProviderID < out[j].ProviderID
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// memSessionToRow converts the internal memorySession struct (memory.go) into
+// the exported SessionRow shape used by store consumers.
+func memSessionToRow(sess *memorySession) SessionRow {
+	return SessionRow{
+		ID:               sess.ID,
+		ProviderID:       sess.ProviderID,
+		ConnectedAt:      sess.ConnectedAt,
+		DisconnectedAt:   sess.DisconnectedAt,
+		DisconnectReason: sess.DisconnectReason,
+		LastHeartbeatAt:  sess.LastHeartbeatAt,
+		RequestsServed:   sess.RequestsServed,
+		TokensGenerated:  sess.TokensGenerated,
+		CoordinatorID:    sess.CoordinatorID,
+	}
 }

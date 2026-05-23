@@ -299,9 +299,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			family TEXT NOT NULL DEFAULT '',
 			architecture TEXT NOT NULL DEFAULT '',
 			quantization TEXT NOT NULL DEFAULT '',
-			context_length INTEGER NOT NULL DEFAULT 0,
+			max_context_length INTEGER NOT NULL DEFAULT 0,
+			max_output_length INTEGER NOT NULL DEFAULT 0,
 			min_ram_gb INTEGER NOT NULL DEFAULT 0,
-			recommended_ram_gb INTEGER NOT NULL DEFAULT 0,
 			capabilities TEXT[] NOT NULL DEFAULT '{}',
 			status TEXT NOT NULL DEFAULT 'beta',
 			description TEXT NOT NULL DEFAULT '',
@@ -315,8 +315,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			model_id TEXT NOT NULL REFERENCES model_registry(id) ON DELETE CASCADE,
 			version TEXT NOT NULL,
 			r2_prefix TEXT NOT NULL,
-			source_hf_id TEXT NOT NULL DEFAULT '',
-			source_hf_revision TEXT NOT NULL DEFAULT '',
 			aggregate_sha256 TEXT NOT NULL,
 			total_size_bytes BIGINT NOT NULL,
 			file_count INTEGER NOT NULL,
@@ -327,6 +325,14 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			metadata JSONB NOT NULL DEFAULT '{}',
 			UNIQUE(model_id, version)
 		)`,
+		`DO $$ BEGIN
+			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS max_context_length INTEGER NOT NULL DEFAULT 0;
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
+		`DO $$ BEGIN
+			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS max_output_length INTEGER NOT NULL DEFAULT 0;
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_model_versions_model ON model_versions(model_id)`,
 		`CREATE TABLE IF NOT EXISTS model_version_files (
 			id BIGSERIAL PRIMARY KEY,

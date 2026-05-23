@@ -28,8 +28,8 @@ struct ModelCatalogTests {
               "file_count": 2,
               "family": "qwen",
               "quantization": "8bit",
-              "context_length": 32768,
-              "recommended_ram_gb": 8,
+              "max_context_length": 32768,
+              "max_output_length": 8192,
               "capabilities": ["chat"]
             }
           ]
@@ -52,8 +52,8 @@ struct ModelCatalogTests {
         #expect(m.fileCount == 2)
         #expect(m.family == "qwen")
         #expect(m.quantization == "8bit")
-        #expect(m.contextLength == 32768)
-        #expect(m.recommendedRamGb == 8)
+        #expect(m.maxContextLength == 32768)
+        #expect(m.maxOutputLength == 8192)
         #expect(m.capabilities == ["chat"])
     }
 

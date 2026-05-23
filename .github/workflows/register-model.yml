@@ -25,24 +25,20 @@ on:
         default: ''
       quantization:
         description: Quantization
-        required: false
-        default: ''
+        required: true
       capabilities_csv:
         description: Comma-separated capabilities
         required: false
         default: chat
-      context_length:
-        description: Context length
-        required: false
-        default: '0'
+      max_context_length:
+        description: Maximum context length
+        required: true
+      max_output_length:
+        description: Maximum output length
+        required: true
       min_ram_gb:
         description: Minimum RAM in GB
-        required: false
-        default: '0'
-      recommended_ram_gb:
-        description: Recommended RAM in GB
-        required: false
-        default: '0'
+        required: true
       description:
         description: Model description
         required: false
@@ -51,14 +47,6 @@ on:
         description: Metadata JSON object
         required: false
         default: '{}'
-      source_hf_id:
-        description: Source Hugging Face ID
-        required: false
-        default: ''
-      source_hf_revision:
-        description: Source Hugging Face revision
-        required: false
-        default: ''
       promote:
         description: Promote this version after registration
         required: false
@@ -82,13 +70,11 @@ jobs:
           ARCHITECTURE: ${{ inputs.architecture }}
           QUANTIZATION: ${{ inputs.quantization }}
           CAPABILITIES_CSV: ${{ inputs.capabilities_csv }}
-          CONTEXT_LENGTH: ${{ inputs.context_length }}
+          MAX_CONTEXT_LENGTH: ${{ inputs.max_context_length }}
+          MAX_OUTPUT_LENGTH: ${{ inputs.max_output_length }}
           MIN_RAM_GB: ${{ inputs.min_ram_gb }}
-          RECOMMENDED_RAM_GB: ${{ inputs.recommended_ram_gb }}
           DESCRIPTION: ${{ inputs.description }}
           METADATA_JSON: ${{ inputs.metadata_json }}
-          SOURCE_HF_ID: ${{ inputs.source_hf_id }}
-          SOURCE_HF_REVISION: ${{ inputs.source_hf_revision }}
           PROMOTE: ${{ inputs.promote }}
         run: |
           jq -n \
@@ -99,13 +85,11 @@ jobs:
             --arg architecture "$ARCHITECTURE" \
             --arg quantization "$QUANTIZATION" \
             --arg capabilities_csv "$CAPABILITIES_CSV" \
-            --argjson context_length "$CONTEXT_LENGTH" \
+            --argjson max_context_length "$MAX_CONTEXT_LENGTH" \
+            --argjson max_output_length "$MAX_OUTPUT_LENGTH" \
             --argjson min_ram_gb "$MIN_RAM_GB" \
-            --argjson recommended_ram_gb "$RECOMMENDED_RAM_GB" \
             --arg description "$DESCRIPTION" \
             --argjson metadata "$METADATA_JSON" \
-            --arg source_hf_id "$SOURCE_HF_ID" \
-            --arg source_hf_revision "$SOURCE_HF_REVISION" \
             --argjson promote "$PROMOTE" \
             '{
               model_id: $model_id,
@@ -114,14 +98,12 @@ jobs:
               family: $family,
               architecture: $architecture,
               quantization: $quantization,
-              context_length: $context_length,
+              max_context_length: $max_context_length,
+              max_output_length: $max_output_length,
               min_ram_gb: $min_ram_gb,
-              recommended_ram_gb: $recommended_ram_gb,
               capabilities: ($capabilities_csv | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))),
               description: $description,
               metadata: $metadata,
-              source_hf_id: $source_hf_id,
-              source_hf_revision: $source_hf_revision,
               promote: $promote
             }' > payload.json
           jq . payload.json

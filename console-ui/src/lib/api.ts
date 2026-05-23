@@ -40,7 +40,8 @@ export interface Model {
   display_name?: string;
   size_gb?: number;
   min_ram_gb?: number;
-  recommended_ram_gb?: number;
+  max_context_length?: number;
+  max_output_length?: number;
   architecture?: string;
   family?: string;
   capabilities?: string[];
@@ -115,7 +116,8 @@ export async function fetchModels(): Promise<Model[]> {
       size_bytes: m.size_bytes ?? meta.size_bytes,
       size_gb: m.size_gb ?? meta.size_gb,
       min_ram_gb: m.min_ram_gb ?? meta.min_ram_gb,
-      recommended_ram_gb: m.recommended_ram_gb ?? meta.recommended_ram_gb,
+      max_context_length: m.max_context_length ?? meta.max_context_length,
+      max_output_length: m.max_output_length ?? meta.max_output_length,
       architecture: m.architecture ?? meta.architecture,
       family: m.family ?? meta.family,
       capabilities: m.capabilities ?? meta.capabilities,

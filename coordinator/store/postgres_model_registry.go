@@ -22,14 +22,14 @@ func (s *PostgresStore) UpsertModelRegistryEntry(entry *ModelRegistryEntry) erro
 		return err
 	}
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO model_registry (id, display_name, family, architecture, quantization, context_length, min_ram_gb, recommended_ram_gb, capabilities, status, description, metadata, created_at, updated_at)
+		INSERT INTO model_registry (id, display_name, family, architecture, quantization, max_context_length, max_output_length, min_ram_gb, capabilities, status, description, metadata, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE(NULLIF($13::timestamptz, '0001-01-01 00:00:00+00'::timestamptz), NOW()), NOW())
 		ON CONFLICT (id) DO UPDATE SET
-		  display_name = $2, family = $3, architecture = $4, quantization = $5, context_length = $6,
-		  min_ram_gb = $7, recommended_ram_gb = $8, capabilities = $9, status = $10,
+		  display_name = $2, family = $3, architecture = $4, quantization = $5, max_context_length = $6,
+		  max_output_length = $7, min_ram_gb = $8, capabilities = $9, status = $10,
 		  description = $11, metadata = $12, updated_at = NOW()`,
 		entry.ID, entry.DisplayName, entry.Family, entry.Architecture, entry.Quantization,
-		entry.ContextLength, entry.MinRAMGB, entry.RecommendedRAMGB, entry.Capabilities,
+		entry.MaxContextLength, entry.MaxOutputLength, entry.MinRAMGB, entry.Capabilities,
 		entry.Status, entry.Description, metadata, entry.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("store: upsert model registry entry: %w", err)
@@ -52,14 +52,14 @@ func (s *PostgresStore) SetModelVersion(entry *ModelRegistryEntry, version *Mode
 		return err
 	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO model_registry (id, display_name, family, architecture, quantization, context_length, min_ram_gb, recommended_ram_gb, capabilities, status, description, metadata, created_at, updated_at)
+		INSERT INTO model_registry (id, display_name, family, architecture, quantization, max_context_length, max_output_length, min_ram_gb, capabilities, status, description, metadata, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
 		ON CONFLICT (id) DO UPDATE SET
-		  display_name = $2, family = $3, architecture = $4, quantization = $5, context_length = $6,
-		  min_ram_gb = $7, recommended_ram_gb = $8, capabilities = $9, status = $10,
+		  display_name = $2, family = $3, architecture = $4, quantization = $5, max_context_length = $6,
+		  max_output_length = $7, min_ram_gb = $8, capabilities = $9, status = $10,
 		  description = $11, metadata = $12, updated_at = NOW()`,
 		entry.ID, entry.DisplayName, entry.Family, entry.Architecture, entry.Quantization,
-		entry.ContextLength, entry.MinRAMGB, entry.RecommendedRAMGB, entry.Capabilities,
+		entry.MaxContextLength, entry.MaxOutputLength, entry.MinRAMGB, entry.Capabilities,
 		entry.Status, entry.Description, entryMetadata)
 	if err != nil {
 		return fmt.Errorf("store: upsert model in version tx: %w", err)
@@ -70,15 +70,15 @@ func (s *PostgresStore) SetModelVersion(entry *ModelRegistryEntry, version *Mode
 		return err
 	}
 	err = tx.QueryRow(ctx, `
-		INSERT INTO model_versions (model_id, version, r2_prefix, source_hf_id, source_hf_revision, aggregate_sha256, total_size_bytes, file_count, status, uploaded_by, uploaded_at, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11)
+		INSERT INTO model_versions (model_id, version, r2_prefix, aggregate_sha256, total_size_bytes, file_count, status, uploaded_by, uploaded_at, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9)
 		ON CONFLICT (model_id, version) DO UPDATE SET
-		  r2_prefix = $3, source_hf_id = $4, source_hf_revision = $5, aggregate_sha256 = $6,
-		  total_size_bytes = $7, file_count = $8, status = $9, uploaded_by = $10, metadata = $11
+		  r2_prefix = $3, aggregate_sha256 = $4, total_size_bytes = $5, file_count = $6,
+		  status = $7, uploaded_by = $8, metadata = $9
 		RETURNING id, uploaded_at, promoted_at`,
-		version.ModelID, version.Version, version.R2Prefix, version.SourceHFID, version.SourceHFRevision,
-		version.AggregateSHA256, version.TotalSizeBytes, version.FileCount, version.Status,
-		version.UploadedBy, versionMetadata).Scan(&version.ID, &version.UploadedAt, &version.PromotedAt)
+		version.ModelID, version.Version, version.R2Prefix, version.AggregateSHA256,
+		version.TotalSizeBytes, version.FileCount, version.Status, version.UploadedBy,
+		versionMetadata).Scan(&version.ID, &version.UploadedAt, &version.PromotedAt)
 	if err != nil {
 		return fmt.Errorf("store: upsert model version: %w", err)
 	}
@@ -241,11 +241,11 @@ func (s *PostgresStore) MarkPublishingAPIKeyUsed(id string) error {
 }
 
 const activeModelRegistryQuery = `
-	SELECT mr.id, mr.display_name, mr.family, mr.architecture, mr.quantization, mr.context_length,
-	       mr.min_ram_gb, mr.recommended_ram_gb, mr.capabilities, mr.status, mr.description,
+	SELECT mr.id, mr.display_name, mr.family, mr.architecture, mr.quantization, mr.max_context_length,
+	       mr.max_output_length, mr.min_ram_gb, mr.capabilities, mr.status, mr.description,
 	       mr.metadata, mr.created_at, mr.updated_at,
-	       mv.id, mv.model_id, mv.version, mv.r2_prefix, mv.source_hf_id, mv.source_hf_revision,
-	       mv.aggregate_sha256, mv.total_size_bytes, mv.file_count, mv.status, mv.uploaded_by,
+	       mv.id, mv.model_id, mv.version, mv.r2_prefix, mv.aggregate_sha256,
+	       mv.total_size_bytes, mv.file_count, mv.status, mv.uploaded_by,
 	       mv.uploaded_at, mv.promoted_at, mv.metadata
 	FROM model_registry mr
 	JOIN model_active_versions mav ON mav.model_id = mr.id
@@ -257,11 +257,11 @@ func scanModelRegistryRecord(row scanner) (*ModelRegistryRecord, error) {
 	var version ModelVersion
 	var entryMetadata, versionMetadata []byte
 	err := row.Scan(
-		&rec.ID, &rec.DisplayName, &rec.Family, &rec.Architecture, &rec.Quantization, &rec.ContextLength,
-		&rec.MinRAMGB, &rec.RecommendedRAMGB, &rec.Capabilities, &rec.Status, &rec.Description,
+		&rec.ID, &rec.DisplayName, &rec.Family, &rec.Architecture, &rec.Quantization, &rec.MaxContextLength,
+		&rec.MaxOutputLength, &rec.MinRAMGB, &rec.Capabilities, &rec.Status, &rec.Description,
 		&entryMetadata, &rec.CreatedAt, &rec.UpdatedAt,
-		&version.ID, &version.ModelID, &version.Version, &version.R2Prefix, &version.SourceHFID, &version.SourceHFRevision,
-		&version.AggregateSHA256, &version.TotalSizeBytes, &version.FileCount, &version.Status, &version.UploadedBy,
+		&version.ID, &version.ModelID, &version.Version, &version.R2Prefix, &version.AggregateSHA256,
+		&version.TotalSizeBytes, &version.FileCount, &version.Status, &version.UploadedBy,
 		&version.UploadedAt, &version.PromotedAt, &versionMetadata,
 	)
 	if err != nil {

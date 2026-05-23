@@ -27,14 +27,12 @@ type registerModelRequest struct {
 	Family           string         `json:"family"`
 	Architecture     string         `json:"architecture"`
 	Quantization     string         `json:"quantization"`
-	ContextLength    int            `json:"context_length"`
+	MaxContextLength int            `json:"max_context_length"`
+	MaxOutputLength  int            `json:"max_output_length"`
 	MinRAMGB         int            `json:"min_ram_gb"`
-	RecommendedRAMGB int            `json:"recommended_ram_gb"`
 	Capabilities     []string       `json:"capabilities"`
 	Description      string         `json:"description"`
 	Metadata         map[string]any `json:"metadata"`
-	SourceHFID       string         `json:"source_hf_id"`
-	SourceHFRevision string         `json:"source_hf_revision"`
 	Promote          bool           `json:"promote"`
 }
 
@@ -105,9 +103,9 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 		Family:           req.Family,
 		Architecture:     req.Architecture,
 		Quantization:     req.Quantization,
-		ContextLength:    req.ContextLength,
+		MaxContextLength: req.MaxContextLength,
+		MaxOutputLength:  req.MaxOutputLength,
 		MinRAMGB:         req.MinRAMGB,
-		RecommendedRAMGB: req.RecommendedRAMGB,
 		Capabilities:     req.Capabilities,
 		Status:           "beta",
 		Description:      req.Description,
@@ -117,17 +115,15 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 		entry.DisplayName = req.ModelID
 	}
 	version := &store.ModelVersion{
-		ModelID:          req.ModelID,
-		Version:          req.Version,
-		R2Prefix:         r2Prefix,
-		SourceHFID:       req.SourceHFID,
-		SourceHFRevision: req.SourceHFRevision,
-		AggregateSHA256:  manifest.AggregateSHA256,
-		TotalSizeBytes:   manifest.TotalSizeBytes,
-		FileCount:        manifest.FileCount,
-		Status:           "ready",
-		UploadedBy:       actor.Name,
-		Metadata:         req.Metadata,
+		ModelID:         req.ModelID,
+		Version:         req.Version,
+		R2Prefix:        r2Prefix,
+		AggregateSHA256: manifest.AggregateSHA256,
+		TotalSizeBytes:  manifest.TotalSizeBytes,
+		FileCount:       manifest.FileCount,
+		Status:          "ready",
+		UploadedBy:      actor.Name,
+		Metadata:        req.Metadata,
 	}
 	files := make([]store.ModelVersionFile, len(manifest.Files))
 	for i, f := range manifest.Files {
@@ -284,6 +280,18 @@ func validateRegisterModelRequest(req registerModelRequest) error {
 	}
 	if !validRegistryIdentifier(req.Version, false) {
 		return fmt.Errorf("version contains invalid characters or path components")
+	}
+	if strings.TrimSpace(req.Quantization) == "" {
+		return fmt.Errorf("quantization is required")
+	}
+	if req.MaxContextLength <= 0 {
+		return fmt.Errorf("max_context_length must be greater than zero")
+	}
+	if req.MaxOutputLength <= 0 {
+		return fmt.Errorf("max_output_length must be greater than zero")
+	}
+	if req.MinRAMGB <= 0 {
+		return fmt.Errorf("min_ram_gb must be greater than zero")
 	}
 	return nil
 }
@@ -461,8 +469,8 @@ func catalogModelFromRegistryRecord(rec *store.ModelRegistryRecord) map[string]a
 		"weight_hash":        supported.WeightHash,
 		"family":             rec.Family,
 		"quantization":       rec.Quantization,
-		"context_length":     rec.ContextLength,
-		"recommended_ram_gb": rec.RecommendedRAMGB,
+		"max_context_length": rec.MaxContextLength,
+		"max_output_length":  rec.MaxOutputLength,
 		"capabilities":       rec.Capabilities,
 		"metadata":           rec.Metadata,
 		"status":             rec.Status,

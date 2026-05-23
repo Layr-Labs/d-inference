@@ -575,9 +575,9 @@ type ModelRegistryEntry struct {
 	Family           string         `json:"family"`
 	Architecture     string         `json:"architecture"`
 	Quantization     string         `json:"quantization"`
-	ContextLength    int            `json:"context_length"`
+	MaxContextLength int            `json:"max_context_length"`
+	MaxOutputLength  int            `json:"max_output_length"`
 	MinRAMGB         int            `json:"min_ram_gb"`
-	RecommendedRAMGB int            `json:"recommended_ram_gb"`
 	Capabilities     []string       `json:"capabilities"`
 	Status           string         `json:"status"`
 	Description      string         `json:"description"`
@@ -588,20 +588,18 @@ type ModelRegistryEntry struct {
 
 // ModelVersion is an uploaded manifest version for a registered model.
 type ModelVersion struct {
-	ID               int64          `json:"id"`
-	ModelID          string         `json:"model_id"`
-	Version          string         `json:"version"`
-	R2Prefix         string         `json:"r2_prefix"`
-	SourceHFID       string         `json:"source_hf_id,omitempty"`
-	SourceHFRevision string         `json:"source_hf_revision,omitempty"`
-	AggregateSHA256  string         `json:"aggregate_sha256"`
-	TotalSizeBytes   int64          `json:"total_size_bytes"`
-	FileCount        int            `json:"file_count"`
-	Status           string         `json:"status"`
-	UploadedBy       string         `json:"uploaded_by,omitempty"`
-	UploadedAt       time.Time      `json:"uploaded_at"`
-	PromotedAt       *time.Time     `json:"promoted_at,omitempty"`
-	Metadata         map[string]any `json:"metadata"`
+	ID              int64          `json:"id"`
+	ModelID         string         `json:"model_id"`
+	Version         string         `json:"version"`
+	R2Prefix        string         `json:"r2_prefix"`
+	AggregateSHA256 string         `json:"aggregate_sha256"`
+	TotalSizeBytes  int64          `json:"total_size_bytes"`
+	FileCount       int            `json:"file_count"`
+	Status          string         `json:"status"`
+	UploadedBy      string         `json:"uploaded_by,omitempty"`
+	UploadedAt      time.Time      `json:"uploaded_at"`
+	PromotedAt      *time.Time     `json:"promoted_at,omitempty"`
+	Metadata        map[string]any `json:"metadata"`
 }
 
 // ModelVersionFile is one file in a model version manifest.

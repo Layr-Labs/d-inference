@@ -49,12 +49,16 @@ func TestRegisterValidationAndR2Prefix(t *testing.T) {
 		{ModelID: "../bad", Version: "v1"},
 		{ModelID: "ok/model", Version: "bad/version"},
 		{ModelID: "ok/model", Version: "bad..version"},
+		{ModelID: "ok/model", Version: "v1", Quantization: "", MaxContextLength: 1, MaxOutputLength: 1, MinRAMGB: 1},
+		{ModelID: "ok/model", Version: "v1", Quantization: "8bit", MaxContextLength: 0, MaxOutputLength: 1, MinRAMGB: 1},
+		{ModelID: "ok/model", Version: "v1", Quantization: "8bit", MaxContextLength: 1, MaxOutputLength: 0, MinRAMGB: 1},
+		{ModelID: "ok/model", Version: "v1", Quantization: "8bit", MaxContextLength: 1, MaxOutputLength: 1, MinRAMGB: 0},
 	} {
 		if err := validateRegisterModelRequest(req); err == nil {
 			t.Fatalf("expected invalid request to fail: %#v", req)
 		}
 	}
-	if err := validateRegisterModelRequest(registerModelRequest{ModelID: "mlx-community/gemma-4-26b-a4b-it-8bit", Version: "2026-05-23-r1"}); err != nil {
+	if err := validateRegisterModelRequest(registerModelRequest{ModelID: "mlx-community/gemma-4-26b-a4b-it-8bit", Version: "2026-05-23-r1", Quantization: "8bit", MaxContextLength: 32768, MaxOutputLength: 8192, MinRAMGB: 36}); err != nil {
 		t.Fatalf("expected valid request: %v", err)
 	}
 	if modelR2Prefix("foo/bar", "v1") == modelR2Prefix("foo__bar", "v1") {
@@ -106,13 +110,12 @@ func TestRegisterModelHandlerPromotesActiveRecord(t *testing.T) {
 		"family":             "qwen",
 		"architecture":       "dense",
 		"quantization":       "4bit",
-		"context_length":     32768,
+		"max_context_length": 32768,
+		"max_output_length":  8192,
 		"min_ram_gb":         16,
-		"recommended_ram_gb": 32,
 		"capabilities":       []string{"chat"},
 		"description":        "test",
 		"metadata":           map[string]any{"tier": "test"},
-		"source_hf_id":       "mlx-community/test",
 		"promote":            true,
 	}
 	body, _ := json.Marshal(payload)

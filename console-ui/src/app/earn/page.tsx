@@ -119,7 +119,7 @@ function buildCatalogModels(models: Model[], pricing: PricingResponse | null): C
       return {
         id: model.id,
         name: model.display_name || model.id.split("/").pop() || model.id,
-        minRAMGB: model.min_ram_gb || model.recommended_ram_gb || Math.ceil(size * 1.35),
+        minRAMGB: model.min_ram_gb || Math.ceil(size * 1.35),
         demandNote: "Uses the live coordinator catalog and current per-token pricing.",
         activeParamsGB: activeParamsGB(model, size),
         modelSizeGB: size,

@@ -37,8 +37,8 @@ public struct CatalogModel: Codable, Sendable, Equatable {
     public let fileCount: Int?
     public let family: String?
     public let quantization: String?
-    public let contextLength: Int?
-    public let recommendedRamGb: Int?
+    public let maxContextLength: Int?
+    public let maxOutputLength: Int?
     public let capabilities: [String]?
     public let metadata: [String: JSONValue]?
 
@@ -60,8 +60,8 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         case fileCount = "file_count"
         case family
         case quantization
-        case contextLength = "context_length"
-        case recommendedRamGb = "recommended_ram_gb"
+        case maxContextLength = "max_context_length"
+        case maxOutputLength = "max_output_length"
         case capabilities
         case metadata
     }
@@ -84,8 +84,8 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         fileCount: Int? = nil,
         family: String? = nil,
         quantization: String? = nil,
-        contextLength: Int? = nil,
-        recommendedRamGb: Int? = nil,
+        maxContextLength: Int? = nil,
+        maxOutputLength: Int? = nil,
         capabilities: [String]? = nil,
         metadata: [String: JSONValue]? = nil
     ) {
@@ -106,8 +106,8 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         self.fileCount = fileCount
         self.family = family
         self.quantization = quantization
-        self.contextLength = contextLength
-        self.recommendedRamGb = recommendedRamGb
+        self.maxContextLength = maxContextLength
+        self.maxOutputLength = maxOutputLength
         self.capabilities = capabilities
         self.metadata = metadata
     }

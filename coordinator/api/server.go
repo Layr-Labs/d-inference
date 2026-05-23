@@ -1042,8 +1042,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/models", s.requireAuth(s.handleAdminListModels))
 	s.mux.HandleFunc("POST /v1/admin/models", s.requireAuth(s.handleAdminSetModel))
 	s.mux.HandleFunc("DELETE /v1/admin/models", s.requireAuth(s.handleAdminDeleteModel))
-	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
-	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin
+	s.mux.HandleFunc("GET /v1/admin/releases", s.requireAuth(s.handleAdminListReleases))     // admin key or Privy admin
+	s.mux.HandleFunc("DELETE /v1/admin/releases", s.requireAuth(s.handleAdminDeleteRelease)) // admin key or Privy admin
 
 	// Admin CLI auth — Privy email OTP for getting admin tokens without a browser.
 	s.mux.HandleFunc("POST /v1/admin/auth/init", s.handleAdminAuthInit)     // no auth (sends OTP)
@@ -1089,7 +1089,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/telemetry/events", s.handleTelemetryIngest)
 
 	// Metrics snapshot (admin only)
-	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
+	s.mux.HandleFunc("GET /v1/admin/metrics", s.requireAuth(s.handleAdminMetrics))
 
 	// Catch-all for unimplemented OpenAI-compatible endpoints.
 	// Registered last (old-style pattern) so explicit method+path routes
@@ -1217,9 +1217,10 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// requireAuth wraps a handler with authentication. It tries Privy JWT first
-// (if configured), then falls back to API key validation. The authenticated
-// identity is stored in the request context for downstream use.
+// requireAuth wraps a handler with authentication. It accepts the exact admin
+// key first, then tries Privy JWT auth (if configured), then falls back to API
+// key validation. The authenticated identity is stored in the request context
+// for downstream use.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := extractBearerToken(r)
@@ -1228,7 +1229,15 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Try Privy JWT first (JWTs start with "eyJ").
+		// Accept admin key (admin endpoints handle further authorization in-handler).
+		if s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
+			ctx := context.WithValue(r.Context(), ctxKeyConsumer, "admin")
+			next(w, r.WithContext(ctx))
+			return
+		}
+
+		// Try Privy JWT after exact admin-key matching so admin keys that happen
+		// to share JWT-looking prefixes are not rejected before comparison.
 		if s.privyAuth != nil && strings.HasPrefix(token, "eyJ") {
 			privyUserID, err := s.privyAuth.VerifyToken(token)
 			if err != nil {
@@ -1243,13 +1252,6 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
 			ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
-			next(w, r.WithContext(ctx))
-			return
-		}
-
-		// Accept admin key (admin endpoints handle further authorization in-handler).
-		if s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
-			ctx := context.WithValue(r.Context(), ctxKeyConsumer, "admin")
 			next(w, r.WithContext(ctx))
 			return
 		}

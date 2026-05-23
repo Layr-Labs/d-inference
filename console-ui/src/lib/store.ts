@@ -139,17 +139,11 @@ export const useStore = create<AppState>()(
       setSelectedModel: (model) => set({ selectedModel: model }),
       setModels: (models) => {
         const current = get().selectedModel;
-        // Prefer Gemma 4, then Qwen 27B, then first available
-        const preferred = ["gemma-4", "qwen3.5-27b"];
-        const defaultModel =
-          preferred
-            .map((pref) => models.find((m) => m.id.toLowerCase().includes(pref)))
-            .find(Boolean)?.id ||
-          models[0]?.id ||
-          "";
+        const hasCurrent = models.some((m) => m.id === current);
+        const defaultModel = hasCurrent ? current : (models[0]?.id ?? "");
         set({
           models,
-          selectedModel: current || defaultModel,
+          selectedModel: defaultModel,
         });
       },
       setSidebarOpen: (open) => set({ sidebarOpen: open }),

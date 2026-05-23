@@ -22,6 +22,7 @@ import {
 const API_KEY_STORAGE = "darkbloom_api_key";
 const COORDINATOR_STORAGE = "darkbloom_coordinator_url";
 const DEFAULT_COORDINATOR = "https://api.darkbloom.dev";
+const EXAMPLE_MODEL = "<model-id-from-/v1/models>";
 
 function getApiKey() {
   if (typeof window === "undefined") return "";
@@ -41,7 +42,7 @@ const ENDPOINTS = [
     icon: MessageSquare,
     auth: true,
     request: `{
-  "model": "qwen3.5-27b-claude-opus-8bit",
+  "model": "${EXAMPLE_MODEL}",
   "messages": [
     {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": "Hello!"}
@@ -52,7 +53,7 @@ const ENDPOINTS = [
     response: `{
   "id": "chatcmpl-...",
   "object": "chat.completion.chunk",
-  "model": "qwen3.5-27b-claude-opus-8bit",
+  "model": "${EXAMPLE_MODEL}",
   "choices": [{
     "index": 0,
     "delta": {"role": "assistant", "content": "Hello"},
@@ -68,7 +69,7 @@ const ENDPOINTS = [
     icon: MessageSquare,
     auth: true,
     request: `{
-  "model": "qwen3.5-27b-claude-opus-8bit",
+  "model": "${EXAMPLE_MODEL}",
   "input": "Explain how decentralized inference works.",
   "stream": true,
   "max_output_tokens": 1024
@@ -76,7 +77,7 @@ const ENDPOINTS = [
     response: `{
   "id": "resp_...",
   "object": "response",
-  "model": "qwen3.5-27b-claude-opus-8bit",
+  "model": "${EXAMPLE_MODEL}",
   "output": [{
     "type": "message",
     "role": "assistant",
@@ -101,7 +102,7 @@ const ENDPOINTS = [
     response: `{
   "data": [
     {
-      "id": "qwen3.5-27b-claude-opus-8bit",
+      "id": "${EXAMPLE_MODEL}",
       "object": "model",
       "model_type": "chat",
       "quantization": "8bit",
@@ -158,7 +159,7 @@ const ENDPOINTS = [
     auth: false,
     response: `{
   "prices": [
-    {"model": "qwen3.5-27b-claude-opus-8bit", "input_price": 100000, "output_price": 780000, "input_usd": "$0.10", "output_usd": "$0.78"}
+    {"model": "${EXAMPLE_MODEL}", "input_price": 100000, "output_price": 780000, "input_usd": "$0.10", "output_usd": "$0.78"}
   ]
 }`,
   },
@@ -183,7 +184,7 @@ const ENDPOINTS = [
   "usage": [
     {
       "request_id": "...",
-      "model": "qwen3.5-27b-claude-opus-8bit",
+      "model": "${EXAMPLE_MODEL}",
       "prompt_tokens": 150,
       "completion_tokens": 500,
       "cost_micro_usd": 420,
@@ -369,7 +370,7 @@ export DARKBLOOM_BASE_URL="${u}/v1"`,
   -H "Authorization: Bearer ${k}" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "mlx-community/gemma-4-26b-a4b-it-8bit",
+    "model": "${EXAMPLE_MODEL}",
     "messages": [{"role": "user", "content": "Explain quantum computing"}],
     "stream": true,
     "max_tokens": 1024
@@ -386,7 +387,7 @@ client = OpenAI(
 )
 
 stream = client.chat.completions.create(
-    model="mlx-community/gemma-4-26b-a4b-it-8bit",
+    model="${EXAMPLE_MODEL}",
     messages=[{"role": "user", "content": "Explain quantum computing"}],
     stream=True,
     max_tokens=1024,
@@ -408,7 +409,7 @@ const client = new OpenAI({
 });
 
 const stream = await client.chat.completions.create({
-  model: "mlx-community/gemma-4-26b-a4b-it-8bit",
+  model: "${EXAMPLE_MODEL}",
   messages: [{ role: "user", content: "Explain quantum computing" }],
   stream: true,
   max_tokens: 1024,
@@ -433,7 +434,7 @@ const darkbloom = createOpenAICompatible({
 
 // Streaming response
 const { textStream } = streamText({
-  model: darkbloom.chatModel("mlx-community/gemma-4-26b-a4b-it-8bit"),
+  model: darkbloom.chatModel("${EXAMPLE_MODEL}"),
   prompt: "Explain quantum computing",
 });
 
@@ -443,7 +444,7 @@ for await (const text of textStream) {
 
 // Single response
 const { text } = await generateText({
-  model: darkbloom.chatModel("mlx-community/gemma-4-26b-a4b-it-8bit"),
+  model: darkbloom.chatModel("${EXAMPLE_MODEL}"),
   prompt: "Write a haiku about Apple Silicon",
 });
 console.log(text);`,
@@ -571,10 +572,7 @@ for model in models.data:
                 </thead>
                 <tbody>
                   {[
-                    { id: "mlx-community/gemma-4-26b-a4b-it-8bit", type: "text", arch: "26B MoE, 4B active — recommended" },
-                    { id: "qwen3.5-27b-claude-opus-8bit", type: "text", arch: "27B dense, Claude Opus distilled" },
-                    { id: "mlx-community/Qwen3.5-122B-A10B-8bit", type: "text", arch: "122B MoE, 10B active" },
-                    { id: "mlx-community/MiniMax-M2.5-8bit", type: "text", arch: "239B MoE, 11B active" },
+                    { id: EXAMPLE_MODEL, type: "text", arch: "Returned by /v1/models" },
                   ].map((m) => (
                     <tr key={m.id} className="border-b border-border-dim/50 last:border-0">
                       <td className="px-4 py-2.5 text-sm font-mono text-text-primary">{m.id}</td>

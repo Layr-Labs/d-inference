@@ -179,7 +179,7 @@ extension Models {
             }
 
             print("Downloading \(entry.displayName) (\(entry.id))…")
-            let downloader = ModelDownloader(r2CDNURL: r2CDN)
+            let downloader = ModelDownloader(r2CDNURL: r2CDN, catalogClient: client)
             do {
                 try await downloader.download(model: entry) { progress in
                     let mb = Double(progress.bytesDownloaded) / 1_048_576

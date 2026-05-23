@@ -130,9 +130,6 @@ func main() {
 		})
 	}
 
-	// Seed the model catalog if empty (first startup or fresh DB).
-	seedModelCatalog(st, logger)
-
 	reg := registry.New(logger)
 
 	// Set minimum trust level for routing. Default: hardware (production).
@@ -568,52 +565,22 @@ func envInt(key string, fallback int) int {
 	return fallback
 }
 
-// seedModelCatalog ensures all hardcoded models exist in the catalog.
-// On first startup it populates everything; on subsequent starts it adds
-// any new models that were added to the code but not yet in the DB and removes
-// catalog entries that should no longer be provider-selectable.
+// seedModelCatalog is retained only for stale tests during the registry
+// transition. Startup no longer calls it, and model registration is now backed
+// by DB rows plus R2 manifests rather than hardcoded coordinator seed data.
 func seedModelCatalog(st store.Store, logger *slog.Logger) {
-	existing := st.ListSupportedModels()
-	existingIDs := make(map[string]bool, len(existing))
 	removed := 0
-	for _, m := range existing {
-		if api.IsRetiredProviderModel(m) {
-			if err := st.DeleteSupportedModel(m.ID); err != nil {
-				logger.Warn("failed to remove retired model", "id", m.ID, "error", err)
-			} else {
-				removed++
-			}
+	for _, m := range st.ListSupportedModels() {
+		if !api.IsRetiredProviderModel(m) {
 			continue
 		}
-		existingIDs[m.ID] = true
-	}
-
-	models := []store.SupportedModel{
-		// --- Text generation (8-bit quantization) ---
-		{ID: "qwen3.5-27b-claude-opus-8bit", S3Name: "qwen35-27b-claude-opus-8bit", DisplayName: "Qwen3.5 27B Claude Opus Distilled", ModelType: "text", SizeGB: 27.0, Architecture: "27B dense, Claude Opus distilled", Description: "Frontier quality reasoning", MinRAMGB: 36, Active: true},
-		{ID: "mlx-community/Trinity-Mini-8bit", S3Name: "Trinity-Mini-8bit", DisplayName: "Trinity Mini", ModelType: "text", SizeGB: 26.0, Architecture: "27B Adaptive MoE", Description: "Fast agentic inference", MinRAMGB: 48, Active: true},
-		{ID: "mlx-community/gemma-4-26b-a4b-it-8bit", S3Name: "gemma-4-26b-a4b-it-8bit", DisplayName: "Gemma 4 26B", ModelType: "text", SizeGB: 28.0, Architecture: "26B MoE, 4B active", Description: "Fast multimodal MoE", MinRAMGB: 36, Active: true},
-		{ID: "mlx-community/Qwen3.5-122B-A10B-8bit", S3Name: "Qwen3.5-122B-A10B-8bit", DisplayName: "Qwen3.5 122B", ModelType: "text", SizeGB: 122.0, Architecture: "122B MoE, 10B active", Description: "Best quality", MinRAMGB: 128, Active: true},
-		{ID: "mlx-community/MiniMax-M2.5-8bit", S3Name: "MiniMax-M2.5-8bit", DisplayName: "MiniMax M2.5", ModelType: "text", SizeGB: 243.0, Architecture: "239B MoE, 11B active", Description: "SOTA coding, 100 tok/s", MinRAMGB: 256, Active: true},
-	}
-
-	added := 0
-	for i := range models {
-		if api.IsRetiredProviderModel(models[i]) {
-			continue
-		}
-		if existingIDs[models[i].ID] {
-			continue
-		}
-		if err := st.SetSupportedModel(&models[i]); err != nil {
-			logger.Warn("failed to seed model", "id", models[i].ID, "error", err)
+		if err := st.DeleteSupportedModel(m.ID); err != nil {
+			logger.Warn("failed to remove retired model", "id", m.ID, "error", err)
 		} else {
-			added++
+			removed++
 		}
 	}
-	if added > 0 || removed > 0 {
-		logger.Info("model catalog reconciled", "added", added, "removed", removed, "total", len(existing)+added-removed)
-	} else {
-		logger.Info("model catalog loaded", "count", len(existing))
+	if removed > 0 {
+		logger.Info("retired model catalog entries removed", "removed", removed)
 	}
 }

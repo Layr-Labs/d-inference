@@ -1920,10 +1920,27 @@ func TestIsModelInCatalog(t *testing.T) {
 		t.Error("expected model-c to NOT be in catalog")
 	}
 
+	// Empty but configured catalog means deny-all. This is the production
+	// startup state for a fresh DB-backed model registry with no promoted rows.
+	reg.SetModelCatalog([]CatalogEntry{})
+	if reg.IsModelInCatalog("model-a") {
+		t.Error("expected configured empty catalog to deny all models")
+	}
+
 	// Clear catalog.
 	reg.SetModelCatalog(nil)
 	if !reg.IsModelInCatalog("model-c") {
 		t.Error("expected IsModelInCatalog to return true after clearing catalog")
+	}
+}
+
+func TestRegisterWithEmptyConfiguredCatalogDropsAllModels(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetModelCatalog([]CatalogEntry{})
+
+	provider := reg.Register("p-empty-catalog", nil, testRegisterMessage())
+	if len(provider.Models) != 0 {
+		t.Fatalf("expected empty configured catalog to reject all provider models, got %#v", provider.Models)
 	}
 }
 

@@ -724,11 +724,13 @@ type CatalogEntry struct {
 
 // SetModelCatalog updates the set of active models. Only models in this
 // set will be accepted from providers during registration and routable to
-// consumers. Pass nil or empty to disable catalog filtering.
+// consumers. Pass nil to disable catalog filtering for tests/dev flows. Passing
+// an empty non-nil slice configures a deny-all catalog, which is what a fresh
+// DB-backed registry should do until an operator registers and promotes models.
 func (r *Registry) SetModelCatalog(entries []CatalogEntry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(entries) == 0 {
+	if entries == nil {
 		r.modelCatalog = nil
 		return
 	}
@@ -757,12 +759,12 @@ func (r *Registry) ModelType(model string) string {
 	return "unknown"
 }
 
-// IsModelInCatalog returns true if the model is in the active catalog,
-// or if no catalog is configured (all models allowed).
+// IsModelInCatalog returns true if the model is in the active catalog, or if
+// catalog filtering has been explicitly disabled by setting a nil catalog.
 func (r *Registry) IsModelInCatalog(model string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if len(r.modelCatalog) == 0 {
+	if r.modelCatalog == nil {
 		return true
 	}
 	_, ok := r.modelCatalog[model]
@@ -954,7 +956,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	r.mu.RLock()
 	catalog := r.modelCatalog
 	r.mu.RUnlock()
-	if len(catalog) > 0 {
+	if catalog != nil {
 		filtered := make([]protocol.ModelInfo, 0, len(models))
 		for _, m := range models {
 			entry, inCatalog := catalog[m.ID]

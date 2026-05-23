@@ -1,5 +1,8 @@
 name: Register Model
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:

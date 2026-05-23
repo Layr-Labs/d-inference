@@ -121,7 +121,7 @@ func connectProvider(t *testing.T, ctx context.Context, tsURL string, models []p
 }
 
 // connectProviderWithToken dials the WebSocket with an auth token.
-func connectProviderWithToken(t *testing.T, ctx context.Context, tsURL string, models []protocol.ModelInfo, publicKey, authToken, walletAddress string) *websocket.Conn {
+func connectProviderWithToken(t *testing.T, ctx context.Context, tsURL string, models []protocol.ModelInfo, publicKey, authToken string) *websocket.Conn {
 	t.Helper()
 	wsURL := "ws" + strings.TrimPrefix(tsURL, "http") + "/ws/provider"
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
@@ -141,7 +141,6 @@ func connectProviderWithToken(t *testing.T, ctx context.Context, tsURL string, m
 		EncryptedResponseChunks: true,
 		PrivacyCapabilities:     testPrivacyCaps(),
 		AuthToken:               authToken,
-		WalletAddress:           walletAddress,
 	}
 	regData, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
@@ -577,9 +576,8 @@ func TestIntegration_AccountLinkedEarnings(t *testing.T) {
 	pubKey := testPublicKeyB64()
 	model := "earnings-model"
 	models := []protocol.ModelInfo{{ID: model, ModelType: "test", Quantization: "4bit"}}
-	walletAddr := "0xProviderWalletShouldNotBeUsed"
 
-	conn := connectProviderWithToken(t, ctx, ts.URL, models, pubKey, rawToken, walletAddr)
+	conn := connectProviderWithToken(t, ctx, ts.URL, models, pubKey, rawToken)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Wait for registration + attestation to fully complete before
@@ -658,15 +656,10 @@ func TestIntegration_AccountLinkedEarnings(t *testing.T) {
 	// Give handleComplete a moment to process credits.
 	time.Sleep(300 * time.Millisecond)
 
-	// Verify the account received credits, not the wallet address.
+	// Verify the account received credits.
 	accountBalance := st.GetBalance(accountID)
 	if accountBalance <= 0 {
 		t.Errorf("account balance = %d, want > 0 (provider payout should be credited)", accountBalance)
-	}
-
-	walletBalance := st.GetBalance(walletAddr)
-	if walletBalance != 0 {
-		t.Errorf("wallet balance = %d, want 0 (account-linked provider should not credit wallet)", walletBalance)
 	}
 
 	// Verify provider earnings were recorded.

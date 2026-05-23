@@ -29,8 +29,6 @@ import (
 	"nhooyr.io/websocket"
 )
 
-const billingTestWalletAddress = "0xBillingTestWallet"
-
 type failingCreditStore struct {
 	store.Store
 }
@@ -73,7 +71,7 @@ func setupProviderForBilling(t *testing.T, ctx context.Context, ts *httptest.Ser
 	pubKey := testPublicKeyB64()
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
-	conn := connectProviderWithToken(t, ctx, ts.URL, models, pubKey, "", billingTestWalletAddress)
+	conn := connectProviderWithToken(t, ctx, ts.URL, models, pubKey, "")
 
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
@@ -83,6 +81,15 @@ func setupProviderForBilling(t *testing.T, ctx context.Context, ts *httptest.Ser
 	providerIDs := reg.ProviderIDs()
 	if len(providerIDs) == 0 {
 		t.Fatal("no providers registered")
+	}
+
+	// Set AccountID for payout destination (required since wallet-based payouts removed).
+	for _, id := range providerIDs {
+		if p := reg.GetProvider(id); p != nil {
+			p.Mu().Lock()
+			p.AccountID = "test-account-" + id
+			p.Mu().Unlock()
+		}
 	}
 
 	return conn, providerIDs[len(providerIDs)-1], pubKey
@@ -486,7 +493,7 @@ func TestIntegration_ReservationRefundedOnCommittedProviderError(t *testing.T) {
 	}
 }
 
-func TestIntegration_SuccessfulInferenceCreditsProviderWallet(t *testing.T) {
+func TestIntegration_SuccessfulInferenceCreditsProviderAccount(t *testing.T) {
 	srv, st, _ := billingTestServer(t)
 
 	ts := httptest.NewServer(srv.Handler())
@@ -495,9 +502,18 @@ func TestIntegration_SuccessfulInferenceCreditsProviderWallet(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	model := "provider-wallet-paid-model"
-	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	model := "provider-account-paid-model"
+	conn, providerID, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Get the account ID that was set by setupProviderForBilling.
+	p := srv.registry.GetProvider(providerID)
+	if p == nil {
+		t.Fatal("provider not found")
+	}
+	p.Mu().Lock()
+	accountID := p.AccountID
+	p.Mu().Unlock()
 
 	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
 	providerDone := serveOneInference(ctx, t, conn, pubKey, usage)
@@ -510,12 +526,10 @@ func TestIntegration_SuccessfulInferenceCreditsProviderWallet(t *testing.T) {
 	<-providerDone
 	time.Sleep(300 * time.Millisecond)
 
+	// Verify provider account was credited with 95% of the inference cost.
 	expectedPayout := payments.ProviderPayout(payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens))
-	if got := st.GetBalance(billingTestWalletAddress); got != expectedPayout {
-		t.Errorf("provider wallet balance = %d, want %d", got, expectedPayout)
-	}
-	if got := st.GetWithdrawableBalance(billingTestWalletAddress); got != expectedPayout {
-		t.Errorf("provider wallet withdrawable = %d, want %d", got, expectedPayout)
+	if got := st.GetBalance(accountID); got != expectedPayout {
+		t.Errorf("provider account balance = %d, want %d", got, expectedPayout)
 	}
 }
 
@@ -534,12 +548,22 @@ func TestIntegration_ProviderCustomPricePaidWithoutReservationClamp(t *testing.T
 	model := "provider-custom-price-model"
 	const customInputPrice int64 = 50_000
 	const customOutputPrice int64 = 10_000_000
-	if err := st.SetModelPrice(billingTestWalletAddress, model, customInputPrice, customOutputPrice); err != nil {
+
+	conn, providerID, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Get the account ID that was set by setupProviderForBilling to use as pricing key.
+	p := srv.registry.GetProvider(providerID)
+	if p == nil {
+		t.Fatal("provider not found")
+	}
+	p.Mu().Lock()
+	accountID := p.AccountID
+	p.Mu().Unlock()
+
+	if err := st.SetModelPrice(accountID, model, customInputPrice, customOutputPrice); err != nil {
 		t.Fatalf("set provider custom price: %v", err)
 	}
-
-	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
-	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
 	providerDone := serveOneInference(ctx, t, conn, pubKey, usage)
@@ -554,8 +578,8 @@ func TestIntegration_ProviderCustomPricePaidWithoutReservationClamp(t *testing.T
 
 	expectedCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customInputPrice, customOutputPrice, true)
 	expectedPayout := payments.ProviderPayout(expectedCost)
-	if got := st.GetBalance(billingTestWalletAddress); got != expectedPayout {
-		t.Errorf("provider wallet balance = %d, want %d", got, expectedPayout)
+	if got := st.GetBalance(accountID); got != expectedPayout {
+		t.Errorf("provider account balance = %d, want %d", got, expectedPayout)
 	}
 	if got := ledger.Balance(consumerID); got != initialBalance-expectedCost {
 		t.Errorf("consumer balance = %d, want %d", got, initialBalance-expectedCost)
@@ -639,7 +663,6 @@ func TestLinkedProviderAccountCustomPriceUsedForSettlement(t *testing.T) {
 
 	model := "linked-provider-custom-price-model"
 	accountID := "linked-provider-account"
-	walletAddress := "0xLinkedProviderWallet"
 	const customInputPrice int64 = 50_000
 	const customOutputPrice int64 = 10_000_000
 	if err := st.SetModelPrice(accountID, model, customInputPrice, customOutputPrice); err != nil {
@@ -647,8 +670,7 @@ func TestLinkedProviderAccountCustomPriceUsedForSettlement(t *testing.T) {
 	}
 
 	provider := srv.registry.Register("linked-provider", nil, &protocol.RegisterMessage{
-		Models:        []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
-		WalletAddress: walletAddress,
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
 	})
 	provider.Mu().Lock()
 	provider.AccountID = accountID
@@ -746,8 +768,17 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 	}
 
 	model := "referral-test-model"
-	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	conn, providerID, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Get the provider's account ID for payout verification.
+	p := srv.registry.GetProvider(providerID)
+	if p == nil {
+		t.Fatal("provider not found")
+	}
+	p.Mu().Lock()
+	providerAccountID := p.AccountID
+	p.Mu().Unlock()
 
 	// Provider serves one inference request.
 	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
@@ -777,12 +808,11 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 		t.Errorf("consumer balance = %d, want %d (charged %d)", actualConsumerBalance, expectedConsumerBalance, totalCost)
 	}
 
-	// Verify provider got 95% of the charge.
-	if got := st.GetBalance(billingTestWalletAddress); got != expectedProviderPayout {
-		t.Errorf("provider wallet balance = %d, want %d", got, expectedProviderPayout)
-	}
-	if got := st.GetWithdrawableBalance(billingTestWalletAddress); got != expectedProviderPayout {
-		t.Errorf("provider wallet withdrawable = %d, want %d", got, expectedProviderPayout)
+	// Verify provider got 95% of the charge credited to their account.
+	// setupProviderForBilling links the provider to an account via test-account-<id>.
+	if got := st.GetBalance(providerAccountID); got != expectedProviderPayout {
+		t.Errorf("provider account balance = %d, want %d (95%% of totalCost %d)",
+			got, expectedProviderPayout, totalCost)
 	}
 
 	// Verify referrer got their share.
@@ -902,7 +932,7 @@ func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	pubKey := testPublicKeyB64()
 	model := "device-auth-model"
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
-	conn := connectProviderWithToken(t, ctx, ts.URL, models, pubKey, tokenResult.Token, "0xDeviceTestWallet")
+	conn := connectProviderWithToken(t, ctx, ts.URL, models, pubKey, tokenResult.Token)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Wait for registration to complete.
@@ -1006,14 +1036,14 @@ func TestIntegration_MultiNodeSameAccount(t *testing.T) {
 
 	conn1 := connectProviderWithToken(t, ctx, ts.URL,
 		[]protocol.ModelInfo{{ID: model1, ModelType: "chat", Quantization: "4bit"}},
-		pubKey1, rawToken, "0xMultiNode1")
+		pubKey1, rawToken)
 	defer conn1.Close(websocket.StatusNormalClosure, "")
 
 	time.Sleep(200 * time.Millisecond)
 
 	conn2 := connectProviderWithToken(t, ctx, ts.URL,
 		[]protocol.ModelInfo{{ID: model2, ModelType: "chat", Quantization: "4bit"}},
-		pubKey2, rawToken, "0xMultiNode2")
+		pubKey2, rawToken)
 	defer conn2.Close(websocket.StatusNormalClosure, "")
 
 	time.Sleep(200 * time.Millisecond)

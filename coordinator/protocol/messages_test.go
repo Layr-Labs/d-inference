@@ -461,35 +461,6 @@ func TestProviderMessageUnmarshalInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestRegisterMessageWithWalletAddress(t *testing.T) {
-	msg := RegisterMessage{
-		Type: TypeRegister,
-		Hardware: Hardware{
-			ChipName: "Apple M3 Max",
-			MemoryGB: 64,
-		},
-		Models: []ModelInfo{
-			{ID: "qwen3.5-9b", ModelType: "qwen3", Quantization: "4bit"},
-		},
-		Backend:       "vllm_mlx",
-		WalletAddress: "0x1234567890abcdef1234567890abcdef12345678",
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var decoded RegisterMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	if decoded.WalletAddress != "0x1234567890abcdef1234567890abcdef12345678" {
-		t.Errorf("wallet_address = %q", decoded.WalletAddress)
-	}
-}
-
 func TestRegisterMessageWithAttestation(t *testing.T) {
 	attestationJSON := json.RawMessage(`{"attestation":{"chipName":"Apple M3 Max","hardwareModel":"Mac15,8","publicKey":"dGVzdA=="},"signature":"c2ln"}`)
 	msg := RegisterMessage{
@@ -547,42 +518,6 @@ func TestRegisterMessageWithoutAttestation(t *testing.T) {
 	json.Unmarshal(data, &m)
 	if _, ok := m["attestation"]; ok {
 		t.Error("attestation should be omitted when nil")
-	}
-}
-
-func TestRegisterMessageWithoutWalletAddress(t *testing.T) {
-	// wallet_address should be omitted from JSON when empty.
-	msg := RegisterMessage{
-		Type:     TypeRegister,
-		Hardware: Hardware{ChipName: "M3 Max", MemoryGB: 64},
-		Models:   []ModelInfo{{ID: "test"}},
-		Backend:  "test",
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	// wallet_address should not appear when empty (omitempty)
-	var m map[string]any
-	json.Unmarshal(data, &m)
-	if _, ok := m["wallet_address"]; ok {
-		t.Error("wallet_address should be omitted when empty")
-	}
-}
-
-func TestProviderMessageUnmarshalRegisterWithWallet(t *testing.T) {
-	raw := `{"type":"register","hardware":{"chip_name":"M3 Max","memory_gb":64},"models":[{"id":"test"}],"backend":"test","wallet_address":"0xDeadBeef"}`
-
-	var pm ProviderMessage
-	if err := json.Unmarshal([]byte(raw), &pm); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	reg := pm.Payload.(*RegisterMessage)
-	if reg.WalletAddress != "0xDeadBeef" {
-		t.Errorf("wallet_address = %q, want 0xDeadBeef", reg.WalletAddress)
 	}
 }
 

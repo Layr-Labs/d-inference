@@ -147,7 +147,6 @@ type Provider struct {
 	Models            []protocol.ModelInfo
 	Backend           string
 	PublicKey         string // base64-encoded X25519 public key for E2E encryption
-	WalletAddress     string // Ethereum-format hex address for Tempo payouts
 	Attested          bool   // true if attestation was verified successfully
 	AttestationResult *attestation.VerificationResult
 	TrustLevel        TrustLevel             // attestation trust level
@@ -999,7 +998,6 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		Backend:                 msg.Backend,
 		PublicKey:               pubKey,
 		EncryptedResponseChunks: msg.EncryptedResponseChunks,
-		WalletAddress:           msg.WalletAddress,
 		PrefillTPS:              msg.PrefillTPS,
 		DecodeTPS:               msg.DecodeTPS,
 		TrustLevel:              TrustNone,

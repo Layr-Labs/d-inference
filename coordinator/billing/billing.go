@@ -39,10 +39,10 @@ type Config struct {
 	StripeConnectReturnURL       string // where Stripe redirects after onboarding completes
 	StripeConnectRefreshURL      string // where Stripe redirects if the link expires
 
-	// SolanaMnemonic is a BIP39 mnemonic phrase used to derive the coordinator's
-	// X25519 encryption key (via HKDF). Kept for backward compatibility with
-	// the e2e.DeriveCoordinatorKey() call path.
-	SolanaMnemonic string
+	// EncryptionMnemonic is a BIP39 mnemonic phrase used to derive the
+	// coordinator's X25519 encryption key (via HKDF) for sender→coordinator
+	// E2E request encryption (e2e.DeriveCoordinatorKey).
+	EncryptionMnemonic string
 
 	// Referral
 	ReferralSharePercent int64 // percentage of platform fee going to referrer (default 20)

@@ -100,7 +100,6 @@ type RegisterMessage struct {
 	Version                 string          `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
 	PublicKey               string          `json:"public_key,omitempty"`                // base64-encoded X25519 public key for E2E encryption
 	EncryptedResponseChunks bool            `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are returned encrypted to the coordinator
-	WalletAddress           string          `json:"wallet_address,omitempty"`            // Ethereum-format hex address for Tempo payouts
 	Attestation             json.RawMessage `json:"attestation,omitempty"`               // signed Secure Enclave attestation blob
 	PrefillTPS              float64         `json:"prefill_tps,omitempty"`               // benchmark: prefill tokens per second
 	DecodeTPS               float64         `json:"decode_tps,omitempty"`                // benchmark: decode tokens per second

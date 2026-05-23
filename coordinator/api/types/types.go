@@ -165,7 +165,6 @@ type UsageResponse struct {
 
 // ProviderEarningsResponse is the GET /v1/provider/earnings response.
 type ProviderEarningsResponse struct {
-	WalletAddress       string              `json:"wallet_address"`
 	BalanceMicroUSD     int64               `json:"balance_micro_usd"`
 	BalanceUSD          string              `json:"balance_usd"`
 	TotalEarnedMicroUSD int64               `json:"total_earned_micro_usd"`

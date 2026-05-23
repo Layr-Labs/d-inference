@@ -969,7 +969,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/payments/balance", s.requireAuth(s.handleBalance))
 	s.mux.HandleFunc("GET /v1/payments/usage", s.requireAuth(s.handleUsage))
 
-	// Provider earnings — no API key auth (providers identify by wallet address).
+	// Provider earnings — no API key auth (providers identify by provider address).
 	s.mux.HandleFunc("GET /v1/provider/earnings", s.handleProviderEarnings)
 
 	// Per-node provider earnings — public by provider_key, or auth'd by account.

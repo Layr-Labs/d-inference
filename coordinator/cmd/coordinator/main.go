@@ -314,7 +314,11 @@ func main() {
 	// Configure billing service (Stripe-only).
 	billingCfg := billing.Config{
 		// Mnemonic — used for coordinator encryption key derivation (e2e.DeriveCoordinatorKey).
-		SolanaMnemonic: envOr("MNEMONIC", os.Getenv("EIGENINFERENCE_SOLANA_MNEMONIC")),
+		EncryptionMnemonic: firstNonEmpty(
+			os.Getenv("MNEMONIC"),
+			os.Getenv("EIGENINFERENCE_MNEMONIC"),
+			os.Getenv("EIGENINFERENCE_SOLANA_MNEMONIC"), // legacy alias
+		),
 
 		// Stripe — primary payment rail for deposits.
 		StripeSecretKey:     os.Getenv("EIGENINFERENCE_STRIPE_SECRET_KEY"),
@@ -354,7 +358,7 @@ func main() {
 	// with a coordinator-specific domain. Optional: dev environments without a
 	// mnemonic just get the /v1/encryption-key endpoint disabled (senders fall
 	// back to plaintext).
-	if coordKey, err := e2e.DeriveCoordinatorKey(billingCfg.SolanaMnemonic); err == nil {
+	if coordKey, err := e2e.DeriveCoordinatorKey(billingCfg.EncryptionMnemonic); err == nil {
 		srv.SetCoordinatorKey(coordKey)
 		logger.Info("sender→coordinator encryption enabled",
 			"kid", coordKey.KID,
@@ -534,6 +538,16 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// firstNonEmpty returns the first non-empty string from its arguments.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func envFloat(key string, fallback float64) float64 {

@@ -1140,10 +1140,6 @@ func TestProviderEarningsEndpoint(t *testing.T) {
 	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
 
-	if resp["wallet_address"] != providerWallet {
-		t.Errorf("wallet_address = %v, want %v", resp["wallet_address"], providerWallet)
-	}
-
 	// Balance should be 450,000 + 900,000 = 1,350,000 micro-USD
 	balance := resp["balance_micro_usd"].(float64)
 	if balance != 1_350_000 {
@@ -1166,8 +1162,13 @@ func TestProviderEarningsUsesStoredPayoutRecords(t *testing.T) {
 	srv, _ := testServer(t)
 
 	wallet := "0xStoredPayoutWallet1234567890abcdef1234"
-	if err := srv.ledger.CreditProvider(wallet, 250_000, "qwen3.5-9b", "job-stored"); err != nil {
-		t.Fatalf("CreditProvider: %v", err)
+	if err := srv.store.CreditProviderWallet(&store.ProviderPayout{
+		ProviderAddress: wallet,
+		AmountMicroUSD:  250_000,
+		Model:           "qwen3.5-9b",
+		JobID:           "job-stored",
+	}); err != nil {
+		t.Fatalf("CreditProviderWallet: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/provider/earnings?wallet="+wallet, nil)

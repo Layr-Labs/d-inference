@@ -1016,14 +1016,10 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// Calculate cost — check provider's custom price, then platform DB price,
 	// then hardcoded defaults.
 	providerAccountForPricing := ""
-	providerWalletForPricing := ""
 	if p := s.registry.GetProvider(providerID); p != nil {
-		providerAccountForPricing, providerWalletForPricing = providerPricingKeys(p)
+		providerAccountForPricing = providerPricingKeys(p)
 	}
 	customIn, customOut, hasCustom := s.store.GetModelPrice(providerAccountForPricing, pr.Model)
-	if providerAccountForPricing == "" || !hasCustom {
-		customIn, customOut, hasCustom = s.store.GetModelPrice(providerWalletForPricing, pr.Model)
-	}
 	if !hasCustom {
 		customIn, customOut, hasCustom = s.store.GetModelPrice("platform", pr.Model)
 	}
@@ -1099,10 +1095,8 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		s.ddHistogram("inference.prompt_tokens", float64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
 		s.ddCount("inference.completion_tokens_total", int64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
 		s.ddHistogram("inference.completion_tokens", float64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
-
 		// Credit the provider's pending payout.
 		// If the provider is linked to an account (via device auth), credit that account.
-		// Otherwise, fall back to the provider's self-reported wallet address.
 		p := s.registry.GetProvider(providerID)
 		if p == nil {
 			p = provider
@@ -1110,7 +1104,6 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		if p != nil {
 			p.Mu().Lock()
 			accountID := p.AccountID
-			walletAddress := p.WalletAddress
 			publicKey := p.PublicKey
 			p.Mu().Unlock()
 
@@ -1136,18 +1129,6 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 				}
 				s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_account_credit"})
 				s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
-			} else if walletAddress != "" {
-				start := time.Now()
-				if err := s.ledger.CreditProvider(walletAddress, providerPayout, pr.Model, msg.RequestID); err != nil {
-					s.logger.Error("failed to credit provider wallet payout",
-						"provider_id", providerID,
-						"wallet_address", walletAddress,
-						"request_id", msg.RequestID,
-						"error", err,
-					)
-				}
-				s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_wallet_credit"})
-				s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:wallet"})
 			}
 		}
 

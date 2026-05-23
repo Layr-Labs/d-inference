@@ -46,7 +46,7 @@ const InstantFeeBps int64 = 150
 const InstantFeeMinMicroUSD int64 = 500_000 // $0.50
 
 // MinWithdrawMicroUSD is the smallest withdrawal accepted on the Stripe rail.
-// $1 lines up with both Stripe's ACH minimum and the Solana withdraw minimum.
+// $1 lines up with Stripe's ACH minimum.
 const MinWithdrawMicroUSD int64 = 1_000_000
 
 // FeeForInstantPayoutMicroUSD computes the platform fee for an instant payout

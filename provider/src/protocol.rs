@@ -47,9 +47,6 @@ pub enum ProviderMessage {
         /// using the request's session key.
         #[serde(default, skip_serializing_if = "is_false")]
         encrypted_response_chunks: bool,
-        /// Ethereum-format hex wallet address for Tempo blockchain payouts (pathUSD).
-        #[serde(skip_serializing_if = "Option::is_none")]
-        wallet_address: Option<String>,
         /// Signed Secure Enclave attestation blob (raw JSON from Swift CLI tool).
         /// Uses RawValue to preserve exact byte encoding from Swift's JSONEncoder,
         /// which is critical for signature verification.
@@ -365,7 +362,6 @@ mod tests {
             version: None,
             public_key: None,
             encrypted_response_chunks: true,
-            wallet_address: None,
             attestation: None,
             prefill_tps: None,
             decode_tps: None,
@@ -378,8 +374,6 @@ mod tests {
 
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"register\""));
-        // wallet_address should be omitted when None
-        assert!(!json.contains("wallet_address"));
         // attestation should be omitted when None
         assert!(!json.contains("attestation"));
         // benchmark fields should be omitted when None
@@ -389,40 +383,6 @@ mod tests {
         assert!(!json.contains("python_hash"));
         assert!(!json.contains("runtime_hash"));
         assert!(!json.contains("template_hashes"));
-        let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg, deserialized);
-    }
-
-    #[test]
-    fn test_register_message_with_wallet_address() {
-        let msg = ProviderMessage::Register {
-            hardware: sample_hardware(),
-            models: vec![ModelInfo {
-                id: "mlx-community/Qwen2.5-7B-4bit".to_string(),
-                model_type: Some("qwen2".to_string()),
-                parameters: None,
-                quantization: Some("4bit".to_string()),
-                size_bytes: 4_000_000_000,
-                estimated_memory_gb: 4.5,
-                weight_hash: None,
-            }],
-            backend: "vllm_mlx".to_string(),
-            version: None,
-            public_key: None,
-            encrypted_response_chunks: true,
-            wallet_address: Some("0x1234567890abcdef1234567890abcdef12345678".to_string()),
-            attestation: None,
-            prefill_tps: None,
-            decode_tps: None,
-            auth_token: None,
-            python_hash: None,
-            runtime_hash: None,
-            template_hashes: std::collections::HashMap::new(),
-            privacy_capabilities: None,
-        };
-
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"wallet_address\":\"0x1234567890abcdef1234567890abcdef12345678\""));
         let deserialized: ProviderMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, deserialized);
     }
@@ -448,7 +408,6 @@ mod tests {
             version: None,
             public_key: Some("c29tZWtleQ==".to_string()),
             encrypted_response_chunks: true,
-            wallet_address: None,
             attestation: Some(attestation_raw),
             prefill_tps: Some(500.0),
             decode_tps: Some(100.0),
@@ -985,7 +944,6 @@ mod tests {
                 version: None,
                 public_key: None,
                 encrypted_response_chunks: true,
-                wallet_address: None,
                 attestation: None,
                 prefill_tps: None,
                 decode_tps: None,
@@ -1232,7 +1190,6 @@ mod tests {
             version: None,
             public_key: None,
             encrypted_response_chunks: true,
-            wallet_address: None,
             attestation: None,
             prefill_tps: None,
             decode_tps: None,

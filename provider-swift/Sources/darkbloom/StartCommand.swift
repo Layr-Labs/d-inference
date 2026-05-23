@@ -34,6 +34,9 @@ struct Start: AsyncParsableCommand {
     @Option(help: "Local server port (used with --local).")
     var port: UInt16 = 8000
 
+    @Flag(help: "Register as RDMA-capable and auto-discover Thunderbolt-connected peers for pipeline inference. Requires a Secure Enclave and a logged-in account.")
+    var rdmaEnabled = false
+
     mutating func run() async throws {
         // GPU is required. Reject CPU fallback up-front so we never
         // come up reporting healthy and then silently churn at 0.5 tok/s.
@@ -153,6 +156,23 @@ struct Start: AsyncParsableCommand {
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
         let authToken = AuthTokenStore.load()
 
+        // Capability gate for --rdma-enabled. The operator can pass the flag,
+        // but the binary refuses to honor it on hardware that cannot support
+        // cluster RDMA. The effective value is what gets signed by the SE and
+        // sent to the coordinator — so a non-M5 (or RDMA-disabled-OS) Mac
+        // cannot lie its way into the RDMA peer list.
+        let effectiveRDMA: Bool
+        if rdmaEnabled {
+            if let reason = RDMACapability.unavailableReason() {
+                printError("Warning: --rdma-enabled ignored: \(reason)")
+                effectiveRDMA = false
+            } else {
+                effectiveRDMA = true
+            }
+        } else {
+            effectiveRDMA = false
+        }
+
         if config.provider.autoUpdate {
             try await runStartupAutoUpdate(coordinatorURL: coordinatorURL)
         }
@@ -208,8 +228,33 @@ struct Start: AsyncParsableCommand {
             config: config,
             authToken: authToken,
             runtimeHashes: runtimeHashes,
-            modelHashes: modelHashes
+            modelHashes: modelHashes,
+            rdmaEnabled: effectiveRDMA
         )
+
+        // Start RDMA auto-discovery in the background if --rdma-enabled was
+        // accepted by the capability gate above. ClusterDiscovery watches
+        // NWPathMonitor for Thunderbolt wiredEthernet events and automatically
+        // establishes a ClusterSession or ClusterPeer without manual setup.
+        if effectiveRDMA {
+            do {
+                let signer = try PersistentEnclaveKey.loadOrCreate()
+                let token = authToken ?? ""
+                if token.isEmpty {
+                    printError("Warning: --rdma-enabled requires a logged-in account (run `darkbloom login` first)")
+                } else {
+                    let discovery = ClusterDiscovery(
+                        coordinatorURL: coordinatorURL,
+                        authToken: token,
+                        signer: signer
+                    )
+                    Task { await discovery.start() }
+                    print("RDMA cluster discovery enabled — watching for Thunderbolt peers")
+                }
+            } catch {
+                printError("Warning: --rdma-enabled requires Secure Enclave support: \(error.localizedDescription)")
+            }
+        }
 
         do {
             if let schedule {

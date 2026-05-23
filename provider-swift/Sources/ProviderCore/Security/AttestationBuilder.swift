@@ -33,6 +33,10 @@ public struct AttestationBlob: Codable, Sendable {
     public let osVersion: String
     public let publicKey: String
     public let rdmaDisabled: Bool
+    /// True iff the operator passed --rdma-enabled AND the binary verified
+    /// that the hardware can honor it (M5+ with rdma_ctl reporting enabled).
+    /// SE-signed, so the coordinator sees the hardware-validated answer.
+    public let rdmaEnabled: Bool
     public let secureBootEnabled: Bool
     public let secureEnclaveAvailable: Bool
     public let serialNumber: String?
@@ -49,6 +53,7 @@ public struct AttestationBlob: Codable, Sendable {
         case osVersion
         case publicKey
         case rdmaDisabled
+        case rdmaEnabled
         case secureBootEnabled
         case secureEnclaveAvailable
         case serialNumber
@@ -175,7 +180,8 @@ public final class AttestationBuilder: @unchecked Sendable {
     ///     coordinator verifies this matches the expected blessed version.
     public func buildAttestation(
         encryptionPublicKey: String? = nil,
-        binaryHash: String? = nil
+        binaryHash: String? = nil,
+        rdmaEnabled: Bool = false
     ) throws -> SignedAttestation {
         let blob = AttestationBlob(
             authenticatedRootEnabled: checkAuthenticatedRootEnabled(),
@@ -186,6 +192,7 @@ public final class AttestationBuilder: @unchecked Sendable {
             osVersion: detectOSVersion(),
             publicKey: identity.publicKeyBase64,
             rdmaDisabled: checkRDMADisabled(),
+            rdmaEnabled: rdmaEnabled,
             secureBootEnabled: checkSecureBootEnabled(),
             secureEnclaveAvailable: SecureEnclave.isAvailable,
             serialNumber: detectSerialNumber(),
@@ -217,11 +224,13 @@ public final class AttestationBuilder: @unchecked Sendable {
     /// preserve the exact encoding needed for signature verification.
     public func buildAttestationJSON(
         encryptionPublicKey: String? = nil,
-        binaryHash: String? = nil
+        binaryHash: String? = nil,
+        rdmaEnabled: Bool = false
     ) throws -> Data {
         let signed = try buildAttestation(
             encryptionPublicKey: encryptionPublicKey,
-            binaryHash: binaryHash
+            binaryHash: binaryHash,
+            rdmaEnabled: rdmaEnabled
         )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

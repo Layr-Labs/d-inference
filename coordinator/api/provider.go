@@ -1254,6 +1254,21 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		return
 	}
 
+	// The unsigned RegisterMessage carries an rdma_enabled flag that a
+	// compromised provider OS can flip freely. Treat the SE-signed value in
+	// the attestation blob as the source of truth. If they disagree, the
+	// provider is lying (either OS-level tampering or a hardware-capability
+	// downgrade between the binary's gate and the wire) — log loudly and
+	// pin the registry to the attested value.
+	if provider.RDMAEnabled != result.RDMAEnabled {
+		s.logger.Warn("provider rdma_enabled mismatch between unsigned message and signed attestation — using attested value",
+			"provider_id", providerID,
+			"unsigned_rdma_enabled", provider.RDMAEnabled,
+			"attested_rdma_enabled", result.RDMAEnabled,
+		)
+		s.registry.SetRDMAEnabled(providerID, result.RDMAEnabled)
+	}
+
 	// Bind the WebSocket X25519 key used for E2E text encryption to the
 	// attested Secure Enclave identity. If a provider wants to serve private
 	// text, the attestation must carry the same encryption public key.

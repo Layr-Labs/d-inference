@@ -71,6 +71,9 @@ public struct ProviderLoopConfig: Sendable {
     public let authToken: String?
     public let runtimeHashes: RuntimeHashes?
     public let modelHashes: [String: String]
+    /// When true the registration message includes `rdma_enabled: true`, making
+    /// this provider visible in GET /v1/cluster/rdma-peers for peer auto-discovery.
+    public let rdmaEnabled: Bool
 
     public init(
         coordinatorURL: String,
@@ -79,7 +82,8 @@ public struct ProviderLoopConfig: Sendable {
         config: ProviderConfig,
         authToken: String? = nil,
         runtimeHashes: RuntimeHashes? = nil,
-        modelHashes: [String: String] = [:]
+        modelHashes: [String: String] = [:],
+        rdmaEnabled: Bool = false
     ) {
         self.coordinatorURL = coordinatorURL
         self.hardware = hardware
@@ -88,6 +92,7 @@ public struct ProviderLoopConfig: Sendable {
         self.authToken = authToken
         self.runtimeHashes = runtimeHashes
         self.modelHashes = modelHashes
+        self.rdmaEnabled = rdmaEnabled
     }
 }
 
@@ -284,7 +289,8 @@ public actor ProviderLoop {
             authToken: loopConfig.authToken,
             runtimeHashes: runtimeWithMetallib,
             modelHashes: loopConfig.modelHashes,
-            privacyCapabilities: privacyCapabilitiesForRegistration()
+            privacyCapabilities: privacyCapabilitiesForRegistration(),
+            rdmaEnabled: loopConfig.rdmaEnabled
         )
 
         // 4. Create coordinator client and start connection
@@ -484,7 +490,8 @@ public actor ProviderLoop {
         do {
             let jsonData = try builder.buildAttestationJSON(
                 encryptionPublicKey: keyPair.publicKeyBase64,
-                binaryHash: binaryHash
+                binaryHash: binaryHash,
+                rdmaEnabled: loopConfig.rdmaEnabled
             )
             return RawJSON(rawBytes: jsonData)
         } catch {

@@ -46,6 +46,7 @@ let package = Package(
         .target(
             name: "ProviderCore",
             dependencies: [
+                .product(name: "Cmlx", package: "mlx-swift"),
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
@@ -71,6 +72,7 @@ let package = Package(
             name: "darkbloom",
             dependencies: [
                 "ProviderCore",
+                .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/darkbloom"

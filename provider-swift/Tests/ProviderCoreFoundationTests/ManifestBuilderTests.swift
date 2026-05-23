@@ -44,7 +44,7 @@ final class ManifestBuilderTests: XCTestCase {
 
         XCTAssertEqual(manifest.fileCount, 15)
         XCTAssertEqual(manifest.files.count, 15)
-        XCTAssertEqual(manifest.r2Prefix, "v2/\(ManifestBuilder.safeModelID("test/model"))/v1")
+        XCTAssertEqual(manifest.r2Prefix, "v2/test-model--bbae3530039b/v1")
         XCTAssertEqual(manifest.schemaVersion, 1)
         XCTAssertEqual(manifest.modelID, "test/model")
         XCTAssertEqual(manifest.version, "v1")
@@ -131,11 +131,13 @@ final class ManifestBuilderTests: XCTestCase {
             modelID: "mlx-community/openai-gpt-oss-20b",
             version: "2026-05-23-r1"
         )
-        XCTAssertEqual(manifest.r2Prefix, "v2/\(ManifestBuilder.safeModelID("mlx-community/openai-gpt-oss-20b"))/2026-05-23-r1")
+        XCTAssertEqual(manifest.r2Prefix, "v2/mlx-community-openai-gpt-oss-20b--8f458c9d97d4/2026-05-23-r1")
 
         let slashID = ManifestBuilder.safeModelID("foo/bar")
         let underscoreID = ManifestBuilder.safeModelID("foo__bar")
         XCTAssertNotEqual(slashID, underscoreID, "R2-safe model IDs must be collision-free")
+        XCTAssertEqual(slashID, "foo-bar--cc5d46bdb499")
+        XCTAssertEqual(underscoreID, "foo__bar--a3a759156e88")
     }
 
     private func makeFixtureDir() throws -> URL {

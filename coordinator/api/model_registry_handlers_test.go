@@ -60,6 +60,15 @@ func TestRegisterValidationAndR2Prefix(t *testing.T) {
 	if modelR2Prefix("foo/bar", "v1") == modelR2Prefix("foo__bar", "v1") {
 		t.Fatal("modelR2Prefix must not collide for slash vs underscore model IDs")
 	}
+	if got := modelR2Prefix("mlx-community/openai-gpt-oss-20b", "2026-05-23-r1"); got != "v2/mlx-community-openai-gpt-oss-20b--8f458c9d97d4/2026-05-23-r1" {
+		t.Fatalf("unexpected human-readable R2 prefix: %s", got)
+	}
+	if got := modelR2Prefix("foo/bar", "v1"); got != "v2/foo-bar--cc5d46bdb499/v1" {
+		t.Fatalf("unexpected slash slug prefix: %s", got)
+	}
+	if got := modelR2Prefix("foo__bar", "v1"); got != "v2/foo__bar--a3a759156e88/v1" {
+		t.Fatalf("unexpected underscore slug prefix: %s", got)
+	}
 }
 
 func TestRegisterModelHandlerPromotesActiveRecord(t *testing.T) {

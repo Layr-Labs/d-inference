@@ -97,9 +97,9 @@ public enum ManifestBuilder {
     /// Scan `modelDirectory`, hash every integrity file (with the expanded
     /// allow-list and recursion), and produce a `ModelManifest`.
     ///
-    /// - `r2_prefix = "v2/\(safeID)/\(version)"` where `safeID` is
-    ///   unpadded base64url(modelID). This is reversible and avoids collisions
-    ///   such as `foo/bar` vs. `foo__bar`.
+    /// - `r2_prefix = "v2/\(safeID)/\(version)"` where `safeID` is a
+    ///   human-readable model slug plus a short SHA-256 suffix. The suffix
+    ///   prevents collisions such as `foo/bar` vs. `foo__bar`.
     /// - `aggregate_sha256` = SHA-256 over the concatenated raw 32-byte
     ///   per-file digests, sorted by relative POSIX path. Location-independent
     ///   so the same bytes laid out under a different parent path produce
@@ -227,11 +227,26 @@ public enum ManifestBuilder {
     // MARK: - Internals
 
     public static func safeModelID(_ modelID: String) -> String {
-        Data(modelID.utf8)
-            .base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .trimmingCharacters(in: CharacterSet(charactersIn: "="))
+        var slug = ""
+        slug.reserveCapacity(modelID.count)
+        for ch in modelID {
+            if let ascii = ch.asciiValue,
+               (ascii >= 0x30 && ascii <= 0x39 || ascii >= 0x41 && ascii <= 0x5A || ascii >= 0x61 && ascii <= 0x7A || ascii == 0x2E || ascii == 0x5F || ascii == 0x2D) {
+                slug.append(ch)
+            } else if ch == "/" {
+                slug.append("-")
+            } else {
+                slug.append("-")
+            }
+        }
+        slug = slug.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        if slug.isEmpty {
+            slug = "model"
+        }
+        let digest = SHA256.hash(data: Data(modelID.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "\(slug)--\(digest.prefix(12))"
     }
 
     private static func hashOne(file: URL, basePrefix: String) throws -> (relativePath: String, digest: SHA256Digest, sizeBytes: Int64, role: String) {

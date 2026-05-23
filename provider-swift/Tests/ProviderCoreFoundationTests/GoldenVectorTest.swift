@@ -49,7 +49,7 @@ final class GoldenVectorTest: XCTestCase {
 
         XCTAssertEqual(manifest.fileCount, 3)
         XCTAssertEqual(manifest.totalSizeBytes, Int64(1 + 2 + 3))
-        XCTAssertEqual(manifest.r2Prefix, "v2/\(ManifestBuilder.safeModelID("golden/vec"))/v1")
+        XCTAssertEqual(manifest.r2Prefix, "v2/golden-vec--8b3ee36178a0/v1")
 
         let byPath = Dictionary(uniqueKeysWithValues: manifest.files.map { ($0.path, $0) })
         for (path, expected) in Self.expectedPerFile {

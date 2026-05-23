@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -509,8 +508,28 @@ func registryCDNBaseURL() string {
 }
 
 func modelR2Prefix(modelID, version string) string {
-	encodedModelID := base64.RawURLEncoding.EncodeToString([]byte(modelID))
-	return "v2/" + encodedModelID + "/" + version
+	return "v2/" + readableModelSlug(modelID) + "/" + version
+}
+
+func readableModelSlug(modelID string) string {
+	var b strings.Builder
+	b.Grow(len(modelID) + 14)
+	for _, r := range modelID {
+		switch {
+		case r >= '0' && r <= '9', r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		case r == '/':
+			b.WriteByte('-')
+		default:
+			b.WriteByte('-')
+		}
+	}
+	slug := strings.Trim(b.String(), "-")
+	if slug == "" {
+		slug = "model"
+	}
+	sum := sha256.Sum256([]byte(modelID))
+	return slug + "--" + hex.EncodeToString(sum[:])[:12]
 }
 
 func publishingSHA256Hex(value string) string {

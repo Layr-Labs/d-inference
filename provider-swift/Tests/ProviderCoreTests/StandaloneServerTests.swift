@@ -70,7 +70,7 @@ import Testing
     }
 }
 
-@Test func standaloneServerReportsNoModelLoadedForNonStreamingChat() async throws {
+@Test func standaloneServerReportsModelNotAvailableForNonStreamingChat() async throws {
     let app = standaloneTestServer().makeApplication()
 
     try await app.test(.router) { client in
@@ -80,15 +80,32 @@ import Testing
             headers: [.contentType: "application/json"],
             body: ByteBuffer(string: #"{"model":"mlx-test","messages":[{"role":"user","content":"hello"}],"stream":false}"#)
         ) { response in
-            #expect(response.status == .internalServerError)
-            #expect(String(buffer: response.body).contains("No model loaded"))
+            #expect(response.status == .notFound)
+            #expect(String(buffer: response.body).contains("not found locally"))
         }
     }
 }
 
+@Test func standaloneServerClassifiesSchedulerAdmissionErrors() {
+    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: request exceeds active token budget") == .serviceUnavailable)
+    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: request queue full") == .tooManyRequests)
+    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: invalid token count") == .badRequest)
+    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: duplicate request ID") == .badRequest)
+    #expect(StandaloneServer.schedulerErrorStatus(for: "token_budget_exhausted: request exceeds batch token budget") == .badRequest)
+    #expect(StandaloneServer.schedulerErrorStatus(for: "unexpected backend failure") == .internalServerError)
+}
+
+@Test func standaloneServerFormatsTerminalStreamingErrorEvent() {
+    let event = StandaloneServer.sseErrorEvent(message: "token_budget_exhausted: request queue full")
+
+    #expect(event.contains("event: error"))
+    #expect(event.contains("token_budget_exhausted"))
+    #expect(!event.contains("[DONE]"))
+    #expect(!event.contains("finish_reason"))
+}
+
 private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer {
     StandaloneServer(
-        scheduler: BatchScheduler(maxConcurrentRequests: 1),
         models: models
     )
 }

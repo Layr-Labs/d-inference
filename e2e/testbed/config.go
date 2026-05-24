@@ -3,8 +3,21 @@ package testbed
 import "time"
 
 type ModelSpec struct {
-	ModelID      string
+	// ModelID is the single-model shorthand. ModelIDs takes precedence when set.
+	ModelID string
+	// ModelIDs lets one provider process advertise multiple models.
+	ModelIDs     []string
 	NumProviders int
+}
+
+func (ms ModelSpec) IDs() []string {
+	if len(ms.ModelIDs) > 0 {
+		return ms.ModelIDs
+	}
+	if ms.ModelID != "" {
+		return []string{ms.ModelID}
+	}
+	return nil
 }
 
 var KnownModelSizes = map[string]string{
@@ -23,7 +36,9 @@ const (
 type ProviderConfig struct {
 	TrustLevel          TrustLevel
 	ModelID             string
+	ModelIDs            []string
 	AttestationInterval time.Duration
+	AuthTokenPath       string
 }
 
 func DefaultProviderConfig() ProviderConfig {
@@ -89,11 +104,12 @@ type UserAccount struct {
 }
 
 type SuiteConfig struct {
-	ModelSpecs    []ModelSpec
-	NumUsers      int
-	QueueCapacity int
-	QueueTimeout  time.Duration
-	SeedBalance   int64
+	ModelSpecs     []ModelSpec
+	NumUsers       int
+	QueueCapacity  int
+	QueueTimeout   time.Duration
+	SeedBalance    int64
+	UseMemoryStore bool
 }
 
 func DefaultSuiteConfig() SuiteConfig {
@@ -110,9 +126,11 @@ func (sc SuiteConfig) AllModelIDs() []string {
 	seen := make(map[string]bool)
 	var ids []string
 	for _, spec := range sc.ModelSpecs {
-		if !seen[spec.ModelID] {
-			seen[spec.ModelID] = true
-			ids = append(ids, spec.ModelID)
+		for _, id := range spec.IDs() {
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
 		}
 	}
 	return ids
@@ -128,7 +146,10 @@ func (sc SuiteConfig) TotalProviders() int {
 
 func (sc SuiteConfig) PrimaryModelID() string {
 	if len(sc.ModelSpecs) > 0 {
-		return sc.ModelSpecs[0].ModelID
+		ids := sc.ModelSpecs[0].IDs()
+		if len(ids) > 0 {
+			return ids[0]
+		}
 	}
 	return "mlx-community/Qwen3.5-0.8B-MLX-4bit"
 }

@@ -33,6 +33,23 @@ public final class SendHandle: @unchecked Sendable {
     }
 }
 
+private final class OneShotBoolContinuation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(returning value: Bool) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: value)
+    }
+}
+
 private enum ProviderLoopError: Error, CustomStringConvertible {
     case binaryHashUnavailable
 
@@ -81,13 +98,56 @@ public actor ProviderLoop {
     private let keyPair: NodeKeyPair
     private let signer: (any AttestationSigner)?
     private let attestationBuilder: AttestationBuilder?
-    private let scheduler: BatchScheduler
     private let stats: AtomicProviderStats
     private let state: ProviderState
     private let cancellationRegistry: InferenceCancellationRegistry
+    private let kvBudget: GlobalKVCacheBudget
+    private let powerAssertion: InferencePowerAssertion
+    private let preloadTaskStarted: (@Sendable (String) -> Void)?
+    private let beforeModelLoad: (@Sendable (String) async -> Void)?
+
+    /// Per-model inference slots. Each loaded model gets its own
+    /// BatchScheduler and worker task. Keyed by model ID.
+    private var modelSlots: [String: ModelSlot] = [:]
+
+    /// Hard cap on concurrent model slots to prevent coordinator-driven OOM.
+    private let maxModelSlots: Int
+
+    /// Maps request IDs to the model they're running on, so the idle
+    /// monitor knows which model has in-flight work.
+    private var requestToModel: [String: String] = [:]
+
+    /// Guards against concurrent loads. `modelsLoading` tracks which models
+    /// are mid-load; waiters suspend until the first loader finishes.
+    /// `isLoadingAny` serializes loads so two large models don't interleave
+    /// eviction decisions and overcommit memory.
+    private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
+    private var modelsLoading: Set<String> = []
+    private var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
+    private var isLoadingAny: Bool = false
+    private var isShuttingDown: Bool = false
+
+    /// Models remain tracked while their scheduler is tearing down so
+    /// reentrant loads cannot start against memory that has not been freed yet.
+    private var modelsUnloading: Set<String> = []
+    private var unloadingWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
 
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     private var inflightTasks: [String: Task<Void, Never>] = [:]
+
+    /// A detached task can finish before the actor stores it in `inflightTasks`.
+    /// Track that edge so the post-spawn registration does not leave a stale task.
+    private var completedBeforeTaskRegistration = Set<String>()
+
+    /// Tracks coordinator-driven preload tasks so they can be cancelled on shutdown.
+    private var preloadTasks: [String: Task<Void, Never>] = [:]
+
+    /// Senders waiting for the terminal status of an in-flight preload.
+    private var preloadStatusSubscribers: [String: [SendHandle]] = [:]
+
+    /// Ownership tokens for preload tasks — ensures deferred cleanup only
+    /// removes an entry if it still belongs to the completing task.
+    private var preloadTaskIds: [String: UUID] = [:]
 
     /// Cached security posture from startup verification.
     private var securityPosture: SecurityPosture?
@@ -95,34 +155,72 @@ public actor ProviderLoop {
     /// Cached binary hash for attestation responses.
     private var binaryHash: String?
 
-    /// Timestamp of the last inference-related activity (request submitted
-    /// or finished). The idle monitor compares this to `now` and unloads
-    /// the model if no work has happened in `idleTimeoutMins`.
-    private var lastInferenceAt: ContinuousClock.Instant = .now
-
     /// Background task that periodically checks idle state and unloads
     /// the model when the timeout has elapsed. nil when disabled
     /// (`idleTimeoutMins == 0`) or before `run()` starts it.
     private var idleMonitorTask: Task<Void, Never>?
 
+    /// Periodically refreshes provider-reported backend capacity so heartbeats
+    /// reflect active/queued requests and adaptive batch-cap changes while
+    /// long-running generations are still in flight.
+    private var capacityRefreshTask: Task<Void, Never>?
+
     private let logger = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
+
+    private static let shutdownDrainTimeout: Duration = .seconds(600)
+    private static let preloadShutdownTimeout: Duration = .seconds(10)
+    private static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
 
     // MARK: - Initialization
 
     public init(config: ProviderLoopConfig) throws {
+        try self.init(
+            config: config,
+            purgeLegacyFiles: true,
+            attestationSigner: Self.createAttestationSigner()
+        )
+    }
+
+    init(
+        config: ProviderLoopConfig,
+        purgeLegacyFiles: Bool,
+        attestationSigner: (any AttestationSigner)?,
+        preloadTaskStarted: (@Sendable (String) -> Void)? = nil,
+        beforeModelLoad: (@Sendable (String) async -> Void)? = nil
+    ) throws {
         self.loopConfig = config
-        NodeKeyPair.purgeLegacyFiles()
+        if purgeLegacyFiles {
+            NodeKeyPair.purgeLegacyFiles()
+        }
         self.keyPair = NodeKeyPair.generate()
-        self.signer = Self.createAttestationSigner()
+        self.signer = attestationSigner
         self.attestationBuilder = signer.map { AttestationBuilder(identity: $0) }
         self.stats = AtomicProviderStats()
         self.state = ProviderState()
         self.cancellationRegistry = InferenceCancellationRegistry()
-        self.scheduler = BatchScheduler(
-            maxConcurrentRequests: 4,
-            pendingTimeout: .seconds(120),
-            defaultMaxTokens: 4096
-        )
+        self.maxModelSlots = max(1, min(config.models.count, Int(config.config.backend.maxModelSlots)))
+        let reserveBytes = Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB)
+        self.kvBudget = GlobalKVCacheBudget(reserveBytes: reserveBytes)
+        self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
+        self.preloadTaskStarted = preloadTaskStarted
+        self.beforeModelLoad = beforeModelLoad
+    }
+
+    static func memoryReserveBytes(forGiB gb: UInt64) -> UInt64 {
+        let (bytes, overflow) = gb.multipliedReportingOverflow(by: bytesPerGiB)
+        return overflow ? UInt64.max : bytes
+    }
+
+    // MARK: - Model Slot
+
+    private static let schedulerMaxConcurrent = 24
+    private static let schedulerPendingTimeout: Duration = .seconds(120)
+    private static let schedulerDefaultMaxTokens = 4096
+
+    private struct ModelSlot {
+        let scheduler: BatchScheduler
+        let container: MLXLMCommon.ModelContainer
+        var lastInferenceAt: ContinuousClock.Instant
     }
 
     /// Try persistent keychain-backed SE key first; fall back to ephemeral CryptoKit key.
@@ -204,6 +302,7 @@ public actor ProviderLoop {
         // followed by a long disconnect is still subject to the unload
         // timer.
         startIdleMonitor()
+        startCapacityRefreshMonitor()
 
         logger.info("Coordinator client started, entering event loop")
 
@@ -255,10 +354,38 @@ public actor ProviderLoop {
         }
 
         logger.info("Event stream ended, shutting down")
+        isShuttingDown = true
         idleMonitorTask?.cancel()
         idleMonitorTask = nil
+        capacityRefreshTask?.cancel()
+        capacityRefreshTask = nil
+        let preloads = Array(preloadTasks.values)
+        for task in preloads { task.cancel() }
+        cancelLoadWaiters()
+        let preloadsFinished = await waitForPreloads(preloads, timeout: Self.preloadShutdownTimeout)
+        if !preloadsFinished {
+            logger.warning("Timed out waiting for coordinator-driven preloads to cancel during shutdown")
+        }
+        preloadTasks.removeAll()
+        preloadTaskIds.removeAll()
+        preloadStatusSubscribers.removeAll()
+
+        let drained = await waitForInflightDrain(timeout: Self.shutdownDrainTimeout)
+        if !drained {
+            logger.warning("Timed out waiting for active inference to drain; cancelling remaining requests")
+            await cancelAllInflight()
+        }
         await coordinator.shutdown()
-        await cancelAllInflight()
+        while !modelSlots.isEmpty {
+            if let unloading = modelsUnloading.first {
+                await waitForModelUnload(unloading)
+                continue
+            }
+            for modelId in Array(modelSlots.keys) {
+                await unloadModel(modelId)
+            }
+        }
+        powerAssertion.releaseAll()
     }
 
     // MARK: - Security Hardening
@@ -376,6 +503,15 @@ public actor ProviderLoop {
     ) async {
         logger.info("Processing inference request: \(requestId)")
 
+        if isShuttingDown {
+            send.send(.inferenceError(
+                requestId: requestId,
+                error: "provider is shutting down",
+                statusCode: 503
+            ))
+            return
+        }
+
         // 1. Decrypt the request body. Both `ciphertext` and
         // `senderPublicKey` are already base64-decoded by CoordinatorClient,
         // so we hand the raw bytes straight to NodeKeyPair.decrypt.
@@ -418,36 +554,68 @@ public actor ProviderLoop {
         // 3. Send inference_accepted
         send.send(.inferenceAccepted(requestId: requestId))
 
-        // 4. Ensure model is loaded
+        // 4. Mark the request before loading so concurrent preloads cannot
+        // evict the model this accepted request is waiting for.
         let modelId = chatRequest.model
+        requestToModel[requestId] = modelId
+        powerAssertion.acquire()
+        syncWarmModelState()
+        let token = await cancellationRegistry.register(requestId: requestId)
+
+        // 5. Ensure model is loaded
         do {
             try await ensureModelLoaded(modelId: modelId)
         } catch {
+            if requestToModel.removeValue(forKey: requestId) != nil {
+                powerAssertion.release()
+                syncWarmModelState()
+                await updateAggregateCapacity()
+            }
+            await cancellationRegistry.finish(requestId: requestId)
             logger.error("[\(requestId)] Failed to load model '\(modelId)': \(error)")
             send.send(.inferenceError(requestId: requestId, error: "model load failed: \(error.localizedDescription)", statusCode: 500))
             return
         }
 
-        // 5. Register cancellation token
-        let token = await cancellationRegistry.register(requestId: requestId)
+        guard requestToModel[requestId] == modelId else {
+            await cancellationRegistry.finish(requestId: requestId)
+            logger.info("[\(requestId)] Request cancelled during model load")
+            return
+        }
+
+        guard let slot = modelSlots[modelId] else {
+            if requestToModel.removeValue(forKey: requestId) != nil {
+                powerAssertion.release()
+                syncWarmModelState()
+                await updateAggregateCapacity()
+            }
+            await cancellationRegistry.finish(requestId: requestId)
+            logger.error("[\(requestId)] Model '\(modelId)' disappeared after load")
+            send.send(.inferenceError(requestId: requestId, error: "model unavailable", statusCode: 500))
+            return
+        }
+
+        modelSlots[modelId]?.lastInferenceAt = .now
+        syncWarmModelState()
 
         // 6. Capture values for the spawned task
         let responsePublicKeyData: Data = senderKey
         let kp = self.keyPair
-        let sched = self.scheduler
+        let sched = slot.scheduler
         let providerStats = self.stats
-        let providerState = self.state
         let registry = self.cancellationRegistry
         let signingIdentity = self.signer
         let log = self.logger
 
         // 7. Spawn inference task
+        let me = self
         let task = Task.detached {
             defer {
-                Task { await registry.finish(requestId: requestId) }
+                Task {
+                    await registry.finish(requestId: requestId)
+                    await me.finishInflightRequest(requestId: requestId)
+                }
             }
-
-            providerState.inferenceActive = true
 
             var usageAccumulator = UsageAccumulator()
             var fullResponseText = ""
@@ -455,22 +623,31 @@ public actor ProviderLoop {
             let responseId = "chatcmpl-\(UUID().uuidString.prefix(12).lowercased())"
             let created = Int(Date().timeIntervalSince1970)
 
-            let emitSSE: @Sendable (String) -> Void = { sseData in
-                var encryptedPayload: EncryptedPayload?
+            /// Encrypts and emits an SSE chunk. Returns `false` if encryption
+            /// failed — callers must abort the inference task immediately.
+            let emitSSE: @Sendable (String) -> Bool = { sseData in
+                let encryptedPayload: EncryptedPayload
                 do {
                     encryptedPayload = try kp.encryptPayload(
                         recipientPublicKey: responsePublicKeyData,
                         plaintext: Data(sseData.utf8)
                     )
                 } catch {
-                    log.warning("[\(requestId)] Chunk encryption failed: \(error)")
+                    log.error("[\(requestId)] Chunk encryption failed: \(error)")
+                    send.send(.inferenceError(
+                        requestId: requestId,
+                        error: "response encryption failed",
+                        statusCode: 500
+                    ))
+                    return false
                 }
 
                 send.send(.inferenceChunk(
                     requestId: requestId,
-                    data: encryptedPayload != nil ? "" : sseData,
+                    data: "",
                     encryptedData: encryptedPayload
                 ))
+                return true
             }
 
             if let roleChunk = try? formatter.roleChunk(
@@ -478,7 +655,7 @@ public actor ProviderLoop {
                 model: chatRequest.model,
                 created: created
             ) {
-                emitSSE(roleChunk.formatted)
+                if !emitSSE(roleChunk.formatted) { return }
             }
 
             // Submit to the BatchScheduler
@@ -486,6 +663,7 @@ public actor ProviderLoop {
                 request: chatRequest,
                 requestId: requestId
             )
+            await me.updateAggregateCapacity()
 
             for await event in generationStream {
                 // Check cancellation
@@ -506,7 +684,7 @@ public actor ProviderLoop {
                         created: created,
                         text: text
                     ) {
-                        emitSSE(contentChunk.formatted)
+                        if !emitSSE(contentChunk.formatted) { return }
                     }
 
                 case .info(let promptTokens, let completionTokens, _):
@@ -529,8 +707,8 @@ public actor ProviderLoop {
                 reason: .stop,
                 usage: usage
             ) {
-                emitSSE(finishChunk.formatted)
-                emitSSE(SSEChunk.done.formatted)
+                if !emitSSE(finishChunk.formatted) { return }
+                if !emitSSE(SSEChunk.done.formatted) { return }
             }
 
             // Update stats
@@ -538,11 +716,7 @@ public actor ProviderLoop {
             providerStats.addTokensGenerated(UInt64(usage.completionTokens))
 
             // Update state
-            let cap = await sched.backendCapacity()
-            providerState.backendCapacity = cap
-            if await sched.capacity().activeRequests == 0 {
-                providerState.inferenceActive = false
-            }
+            await me.updateAggregateCapacity()
 
             // Send completion
             let attestation = computeResponseAttestation(
@@ -562,7 +736,10 @@ public actor ProviderLoop {
         }
 
         inflightTasks[requestId] = task
-        lastInferenceAt = .now
+        if completedBeforeTaskRegistration.remove(requestId) != nil {
+            inflightTasks.removeValue(forKey: requestId)
+        }
+        modelSlots[modelId]?.lastInferenceAt = .now
     }
 
     // MARK: - Coordinator-driven preload
@@ -577,7 +754,16 @@ public actor ProviderLoop {
     /// `succeeded` -- the coordinator can use this as an idempotent
     /// "ensure warm" call.
     private func handleLoadModelRequest(modelId: String, send: SendHandle) {
-        if state.currentModel == modelId {
+        if isShuttingDown {
+            send.send(.loadModelStatus(
+                modelId: modelId,
+                status: .failed,
+                error: "provider is shutting down"
+            ))
+            return
+        }
+
+        if modelSlots[modelId] != nil, !modelsUnloading.contains(modelId) {
             logger.info("Preload for \(modelId): already loaded, replying succeeded")
             send.send(.loadModelStatus(
                 modelId: modelId,
@@ -587,6 +773,18 @@ public actor ProviderLoop {
             return
         }
 
+        if preloadTasks[modelId] != nil {
+            logger.info("Preload for \(modelId): already in progress, coalescing duplicate request")
+            preloadStatusSubscribers[modelId, default: []].append(send)
+            send.send(.loadModelStatus(
+                modelId: modelId,
+                status: .started,
+                error: nil
+            ))
+            return
+        }
+
+        preloadStatusSubscribers[modelId] = [send]
         send.send(.loadModelStatus(
             modelId: modelId,
             status: .started,
@@ -594,28 +792,91 @@ public actor ProviderLoop {
         ))
 
         let me = self
-        Task {
+        let taskId = UUID()
+        preloadTaskIds[modelId] = taskId
+        preloadTaskStarted?(modelId)
+        preloadTasks[modelId] = Task {
+            defer { Task { await me.removePreloadTask(modelId: modelId, taskId: taskId) } }
             do {
                 try await me.ensureModelLoaded(modelId: modelId)
-                send.send(.loadModelStatus(
-                    modelId: modelId,
-                    status: .succeeded,
-                    error: nil
-                ))
+                try Task.checkCancellation()
+                let shuttingDown = await me.isProviderShuttingDown()
+                guard !shuttingDown else { return }
+                await me.finishPreloadTask(modelId: modelId, taskId: taskId, status: .succeeded, error: nil)
+            } catch is CancellationError {
+                return
             } catch {
                 let message = error.localizedDescription
                 await me.logPreloadFailure(modelId: modelId, error: message)
-                send.send(.loadModelStatus(
-                    modelId: modelId,
-                    status: .failed,
-                    error: message
-                ))
+                await me.finishPreloadTask(modelId: modelId, taskId: taskId, status: .failed, error: message)
             }
         }
     }
 
+    private func finishPreloadTask(
+        modelId: String,
+        taskId: UUID,
+        status: ProviderMessage.LoadModelStatus.Status,
+        error: String?
+    ) {
+        guard preloadTaskIds[modelId] == taskId else { return }
+        preloadTasks.removeValue(forKey: modelId)
+        preloadTaskIds.removeValue(forKey: modelId)
+        let subscribers = preloadStatusSubscribers.removeValue(forKey: modelId) ?? []
+        for subscriber in subscribers {
+            subscriber.send(.loadModelStatus(
+                modelId: modelId,
+                status: status,
+                error: error
+            ))
+        }
+    }
+
+    private func waitForPreloads(_ preloads: [Task<Void, Never>], timeout: Duration) async -> Bool {
+        guard !preloads.isEmpty else { return true }
+        return await withCheckedContinuation { continuation in
+            let oneShot = OneShotBoolContinuation(continuation)
+
+            Task {
+                for task in preloads { await task.value }
+                oneShot.resume(returning: true)
+            }
+
+            DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(Int(timeout.components.seconds))) {
+                oneShot.resume(returning: false)
+            }
+        }
+    }
+
+    private func cancelLoadWaiters() {
+        for waiters in loadingWaiters.values {
+            for waiter in waiters { waiter.resume(throwing: CancellationError()) }
+        }
+        loadingWaiters.removeAll()
+        releaseLoadGateWaiters()
+        for waiters in unloadingWaiters.values {
+            for waiter in waiters { waiter.resume() }
+        }
+        unloadingWaiters.removeAll()
+    }
+
     private func logPreloadFailure(modelId: String, error: String) {
         logger.error("Preload for \(modelId) failed: \(error)")
+    }
+
+    private func isProviderShuttingDown() -> Bool {
+        isShuttingDown
+    }
+
+    /// Only remove the preload entry if it still belongs to this task,
+    /// preventing a newer preload's entry from being removed by an older
+    /// task's deferred cleanup.
+    private func removePreloadTask(modelId: String, taskId: UUID) {
+        if preloadTaskIds[modelId] == taskId {
+            preloadTasks.removeValue(forKey: modelId)
+            preloadTaskIds.removeValue(forKey: modelId)
+            preloadStatusSubscribers.removeValue(forKey: modelId)
+        }
     }
 
     // MARK: - Idle timeout
@@ -649,24 +910,48 @@ public actor ProviderLoop {
         logger.info("Idle monitor started (timeout: \(timeoutMinutes) min)")
     }
 
-    /// Single tick: unload the model if it's been idle longer than `timeout`.
-    /// Runs on the actor so reads of `inflightTasks` and `state.currentModel`
-    /// are coherent with request submission.
+    /// Single tick: check each loaded model for idle timeout. Unloads any
+    /// model that has no in-flight requests and has exceeded the timeout.
+    /// Re-validates each candidate before unloading since `await unloadModel`
+    /// is a suspension point that could allow new requests to arrive.
     private func tickIdleMonitor(timeout: Duration) async {
-        guard let modelId = state.currentModel else { return }
-        let elapsed = ContinuousClock.now - lastInferenceAt
-        guard IdleTimeoutPolicy.shouldUnload(
-            elapsed: elapsed,
-            timeout: timeout,
-            hasInflight: !inflightTasks.isEmpty,
-            hasLoadedModel: true
-        ) else { return }
+        guard !modelSlots.isEmpty else { return }
 
-        logger.info("Idle timeout exceeded (\(formatDuration(elapsed)) since last activity); unloading \(modelId)")
-        await scheduler.unloadModel()
-        state.currentModel = nil
-        state.warmModels = []
-        state.currentModelHash = nil
+        let now = ContinuousClock.now
+
+        var candidates: [String] = []
+        let modelsWithInflight = Set(requestToModel.values)
+        for (modelId, slot) in modelSlots {
+            if modelsUnloading.contains(modelId) { continue }
+            let elapsed = now - slot.lastInferenceAt
+            let hasInflight = modelsWithInflight.contains(modelId)
+            if IdleTimeoutPolicy.shouldUnload(
+                elapsed: elapsed,
+                timeout: timeout,
+                hasInflight: hasInflight,
+                hasLoadedModel: true
+            ) {
+                candidates.append(modelId)
+            }
+        }
+
+        for modelId in candidates {
+            let currentInflight = Set(requestToModel.values)
+            guard !currentInflight.contains(modelId),
+                  !modelsUnloading.contains(modelId),
+                  let slot = modelSlots[modelId] else { continue }
+
+            let elapsed = ContinuousClock.now - slot.lastInferenceAt
+            guard IdleTimeoutPolicy.shouldUnload(
+                elapsed: elapsed,
+                timeout: timeout,
+                hasInflight: false,
+                hasLoadedModel: true
+            ) else { continue }
+
+            logger.info("Idle timeout exceeded (\(formatDuration(elapsed)) since last activity); unloading \(modelId)")
+            await unloadModel(modelId)
+        }
     }
 
     private func formatDuration(_ duration: Duration) -> String {
@@ -679,32 +964,248 @@ public actor ProviderLoop {
         return remMinutes == 0 ? "\(hours)h" : "\(hours)h\(remMinutes)m"
     }
 
+    // MARK: - Capacity Refresh
+
+    private func startCapacityRefreshMonitor() {
+        capacityRefreshTask?.cancel()
+        let heartbeatInterval = max(1, loopConfig.config.coordinator.heartbeatIntervalSecs)
+        let pollInterval = Duration.seconds(Int64(max(1, heartbeatInterval / 2)))
+        let me = self
+        capacityRefreshTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: pollInterval)
+                if Task.isCancelled { break }
+                await me.updateAggregateCapacity()
+            }
+        }
+    }
+
     // MARK: - Model Loading
 
     private func ensureModelLoaded(modelId: String) async throws {
-        // Check if already loaded
-        if state.currentModel == modelId {
+        if isShuttingDown {
+            throw CancellationError()
+        }
+
+        while modelsUnloading.contains(modelId) {
+            await waitForModelUnload(modelId)
+            if isShuttingDown { throw CancellationError() }
+        }
+
+        if modelSlots[modelId] != nil {
             return
         }
 
-        // Resolve local path
+        if modelsLoading.contains(modelId) {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
+                loadingWaiters[modelId, default: []].append(cont)
+            }
+            try Task.checkCancellation()
+            if isShuttingDown { throw CancellationError() }
+            while modelsUnloading.contains(modelId) {
+                await waitForModelUnload(modelId)
+                if isShuttingDown { throw CancellationError() }
+            }
+            if modelSlots[modelId] != nil { return }
+            try await ensureModelLoaded(modelId: modelId)
+            return
+        }
+
         guard let modelPath = ModelScanner.resolveLocalPath(modelID: modelId) else {
             throw InferenceError.invalidModelDirectory(
                 "Model '\(modelId)' not found in local HuggingFace cache"
             )
         }
 
-        logger.info("Loading model: \(modelId) from \(modelPath.path)")
+        guard let modelInfo = loopConfig.models.first(where: { $0.id == modelId }) else {
+            throw InferenceError.invalidModelDirectory(
+                "Model '\(modelId)' not in advertised model list"
+            )
+        }
 
-        let container = try await loadModelContainer(from: modelPath)
-        await scheduler.loadModel(container: container, modelId: modelId)
+        // Serialize loads so concurrent eviction decisions don't interleave
+        while isLoadingAny {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                loadGateWaiters.append(cont)
+            }
+            // Honor cancellation (e.g. shutdown cancelled this preload task
+            // while it was suspended at the gate).
+            try Task.checkCancellation()
+            if isShuttingDown { throw CancellationError() }
+            while modelsUnloading.contains(modelId) {
+                await waitForModelUnload(modelId)
+                if isShuttingDown { throw CancellationError() }
+            }
+            if modelSlots[modelId] != nil { return }
+        }
+        isLoadingAny = true
 
-        // Update shared state
-        state.currentModel = modelId
-        state.warmModels = [modelId]
-        state.currentModelHash = loopConfig.modelHashes[modelId]
+        // Re-check slot cap after gate (another load may have consumed a slot)
+        if modelSlots.count >= maxModelSlots {
+            let modelsWithInflight = Set(requestToModel.values)
+            let evictable = modelSlots.filter {
+                !modelsWithInflight.contains($0.key) && !modelsUnloading.contains($0.key)
+            }
+            if evictable.isEmpty {
+                isLoadingAny = false
+                releaseLoadGateWaiters()
+                throw InferenceError.invalidModelDirectory(
+                    "All \(maxModelSlots) model slot(s) are active; cannot load '\(modelId)'"
+                )
+            }
+            if let lru = evictable.min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt }) {
+                await unloadModel(lru.key)
+            }
+        }
 
-        logger.info("Model loaded: \(modelId)")
+        modelsLoading.insert(modelId)
+        do {
+            try Task.checkCancellation()
+            if isShuttingDown { throw CancellationError() }
+
+            // Budget enough headroom to warm the model. Per-request KV safety is
+            // enforced later by BatchScheduler's live token budget, so this load
+            // gate should not assume the engine's full adaptive slot ceiling is
+            // simultaneously filled with maximum-context requests.
+            let requiredGb = modelInfo.estimatedMemoryGb * 3.0
+            try await evictUntilAvailable(requiredGb: requiredGb)
+            try Task.checkCancellation()
+            if isShuttingDown { throw CancellationError() }
+
+            logger.info("Loading model: \(modelId) from \(modelPath.path)")
+
+            if let beforeModelLoad {
+                await beforeModelLoad(modelId)
+                try Task.checkCancellation()
+                if isShuttingDown { throw CancellationError() }
+            }
+            let container = try await loadModelContainer(from: modelPath)
+            try Task.checkCancellation()
+            if isShuttingDown { throw CancellationError() }
+            let scheduler = BatchScheduler(
+                maxConcurrentRequests: Self.schedulerMaxConcurrent,
+                pendingTimeout: Self.schedulerPendingTimeout,
+                defaultMaxTokens: Self.schedulerDefaultMaxTokens,
+                kvBudget: kvBudget
+            )
+            await scheduler.loadModel(container: container, modelId: modelId)
+            if isShuttingDown || Task.isCancelled {
+                await scheduler.unloadModel()
+                throw CancellationError()
+            }
+
+            modelSlots[modelId] = ModelSlot(
+                scheduler: scheduler,
+                container: container,
+                lastInferenceAt: .now
+            )
+
+            syncWarmModelState()
+            await updateAggregateCapacity()
+            logger.info("Model loaded: \(modelId) (\(modelSlots.count) model(s) in memory)")
+
+            modelsLoading.remove(modelId)
+            isLoadingAny = false
+            for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
+                waiter.resume()
+            }
+            releaseLoadGateWaiters()
+        } catch {
+            modelsLoading.remove(modelId)
+            isLoadingAny = false
+            for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
+                waiter.resume(throwing: error)
+            }
+            releaseLoadGateWaiters()
+            throw error
+        }
+    }
+
+    private func releaseLoadGateWaiters() {
+        let waiters = loadGateWaiters
+        loadGateWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    private func waitForModelUnload(_ modelId: String) async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            unloadingWaiters[modelId, default: []].append(cont)
+        }
+    }
+
+    private func unloadModel(_ modelId: String) async {
+        guard let slot = modelSlots[modelId], !modelsUnloading.contains(modelId) else { return }
+        modelsUnloading.insert(modelId)
+        await slot.scheduler.unloadModel()
+        modelSlots.removeValue(forKey: modelId)
+        modelsUnloading.remove(modelId)
+        let waiters = unloadingWaiters.removeValue(forKey: modelId) ?? []
+        for waiter in waiters { waiter.resume() }
+        syncWarmModelState()
+        await updateAggregateCapacity()
+        logger.info("Unloaded model: \(modelId) (\(modelSlots.count) model(s) remaining)")
+    }
+
+    private func syncWarmModelState() {
+        let loaded = modelSlots.keys.filter { !modelsUnloading.contains($0) }.sorted()
+        state.warmModels = loaded
+        let activeSlots = modelSlots.filter { !modelsUnloading.contains($0.key) }
+        let inflightModels = Set(requestToModel.values)
+        let currentCandidates = activeSlots.filter { inflightModels.contains($0.key) }
+        let candidates = currentCandidates.isEmpty ? activeSlots : currentCandidates
+        if let mostRecent = candidates.max(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt }) {
+            state.currentModel = mostRecent.key
+            state.currentModelHash = loopConfig.modelHashes[mostRecent.key]
+        } else {
+            state.currentModel = nil
+            state.currentModelHash = nil
+        }
+    }
+
+    private func availableMemoryGb() -> Double {
+        let total = ProcessInfo.processInfo.physicalMemory
+        let active = UInt64(MLX.GPU.activeMemory)
+        let cache = UInt64(MLX.GPU.cacheMemory)
+        let reserve = Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB)
+        let used = Self.saturatingAdd(active, cache, reserve)
+        let usable = total > used ? total - used : 0
+        return Double(usable) * 0.7 / (1024.0 * 1024.0 * 1024.0)
+    }
+
+    private static func saturatingAdd(_ values: UInt64...) -> UInt64 {
+        var total: UInt64 = 0
+        for value in values {
+            let (sum, overflow) = total.addingReportingOverflow(value)
+            if overflow { return UInt64.max }
+            total = sum
+        }
+        return total
+    }
+
+    /// Evict idle models (LRU order) until `requiredGb` is available or
+    /// no more idle models remain. Re-checks in-flight state before each
+    /// eviction since `await unloadModel` is a suspension point.
+    /// Throws if the memory target cannot be met after exhausting evictable models.
+    private func evictUntilAvailable(requiredGb: Double) async throws {
+        while availableMemoryGb() < requiredGb {
+            let modelsWithInflight = Set(requestToModel.values)
+            let candidate = modelSlots
+                .filter { !modelsWithInflight.contains($0.key) && !modelsUnloading.contains($0.key) }
+                .min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })
+
+            guard let (modelId, _) = candidate else {
+                let available = String(format: "%.1f", availableMemoryGb())
+                let required = String(format: "%.1f", requiredGb)
+                throw InferenceError.modelLoadFailed(
+                    "Insufficient memory (\(available) GB free, need \(required) GB) and all loaded models are actively serving"
+                )
+            }
+
+            logger.info("Evicting idle model \(modelId) to free memory")
+            await unloadModel(modelId)
+        }
     }
 
     private func loadModelContainer(from directory: URL) async throws -> MLXLMCommon.ModelContainer {
@@ -719,13 +1220,18 @@ public actor ProviderLoop {
     private func handleCancellation(requestId: String) async {
         logger.info("Cancelling request: \(requestId)")
 
-        // Cancel in the registry (triggers the token)
         await cancellationRegistry.cancel(requestId: requestId)
 
-        // Cancel in the scheduler
-        await scheduler.cancel(requestId: requestId)
+        if let modelId = requestToModel.removeValue(forKey: requestId) {
+            powerAssertion.release()
+            if let slot = modelSlots[modelId] {
+                await slot.scheduler.cancel(requestId: requestId)
+            }
+        }
 
-        // Cancel the inflight task
+        syncWarmModelState()
+        await updateAggregateCapacity()
+
         if let task = inflightTasks.removeValue(forKey: requestId) {
             task.cancel()
         }
@@ -737,11 +1243,67 @@ public actor ProviderLoop {
             await handleCancellation(requestId: requestId)
         }
         inflightTasks.removeAll()
+        completedBeforeTaskRegistration.removeAll()
+        if !requestToModel.isEmpty {
+            powerAssertion.releaseAll()
+        }
+        requestToModel.removeAll()
+        syncWarmModelState()
     }
 
-    private func removeInflightTask(requestId: String) {
-        inflightTasks.removeValue(forKey: requestId)
-        lastInferenceAt = .now
+    private func finishInflightRequest(requestId: String) async {
+        let hadRegisteredTask = inflightTasks.removeValue(forKey: requestId) != nil
+        let modelId = requestToModel.removeValue(forKey: requestId)
+        if !hadRegisteredTask, modelId != nil {
+            completedBeforeTaskRegistration.insert(requestId)
+        }
+        if let modelId {
+            powerAssertion.release()
+            modelSlots[modelId]?.lastInferenceAt = .now
+            syncWarmModelState()
+        }
+        await updateAggregateCapacity()
+    }
+
+    private func waitForInflightDrain(timeout: Duration) async -> Bool {
+        guard !inflightTasks.isEmpty || !requestToModel.isEmpty else { return true }
+        logger.info("Waiting up to \(timeout.components.seconds)s for active inference to finish before shutdown")
+        let started = ContinuousClock.now
+        while !inflightTasks.isEmpty || !requestToModel.isEmpty {
+            if Task.isCancelled { return false }
+            if ContinuousClock.now - started >= timeout {
+                return false
+            }
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+            } catch {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func updateAggregateCapacity() async {
+        var allSlots: [BackendSlotCapacity] = []
+        var totalActive = 0
+        let slots = modelSlots.filter { !modelsUnloading.contains($0.key) }
+        for (_, slot) in slots {
+            let cap = await slot.scheduler.backendCapacity()
+            allSlots.append(contentsOf: cap.slots)
+            let schedCap = await slot.scheduler.capacity()
+            totalActive += schedCap.activeRequests
+        }
+
+        let gbDivisor = 1024.0 * 1024.0 * 1024.0
+        let totalMem = ProcessInfo.processInfo.physicalMemory
+        state.backendCapacity = BackendCapacity(
+            slots: allSlots,
+            gpuMemoryActiveGb: Double(MLX.GPU.activeMemory) / gbDivisor,
+            gpuMemoryPeakGb: Double(MLX.GPU.peakMemory) / gbDivisor,
+            gpuMemoryCacheGb: Double(MLX.GPU.cacheMemory) / gbDivisor,
+            totalMemoryGb: Double(totalMem) / gbDivisor
+        )
+        state.inferenceActive = totalActive > 0
     }
 
     // MARK: - Attestation Challenge

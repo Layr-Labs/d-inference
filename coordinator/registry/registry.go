@@ -355,6 +355,15 @@ func (p *Provider) MaxConcurrency() int {
 	return p.maxConcurrency()
 }
 
+// MaxConcurrencyForModel returns the concurrency limit for a specific model.
+// A positive provider-reported slot cap wins; zero/missing preserves the
+// legacy provider-level fallback.
+func (p *Provider) MaxConcurrencyForModel(model string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.maxConcurrencyForModelLocked(model)
+}
+
 // maxConcurrency is the lock-free version (caller must hold p.mu).
 //
 // Tier values were lowered in Phase 2 of the routing-algorithm rework
@@ -396,6 +405,66 @@ func (p *Provider) maxConcurrency() int {
 		cap = 12
 	}
 	return cap
+}
+
+// maxConcurrencyForModelLocked is the lock-free model-aware concurrency cap.
+// Caller must hold p.mu.
+func (p *Provider) maxConcurrencyForModelLocked(model string) int {
+	if p.BackendCapacity != nil {
+		for _, slot := range p.BackendCapacity.Slots {
+			if slot.Model == model && slot.MaxConcurrency > 0 {
+				return slot.MaxConcurrency
+			}
+		}
+	}
+	return p.maxConcurrency()
+}
+
+func (p *Provider) pendingCountForModelLocked(model string) int {
+	count := 0
+	for _, pr := range p.pendingReqs {
+		if pr.Model == model {
+			count++
+		}
+	}
+	return count
+}
+
+func (p *Provider) hasReportedMaxConcurrencyForModelLocked(model string) bool {
+	if p.BackendCapacity == nil {
+		return false
+	}
+	for _, slot := range p.BackendCapacity.Slots {
+		if slot.Model == model && slot.MaxConcurrency > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Provider) pendingLoadForModelLocked(model string) int {
+	if !p.hasReportedMaxConcurrencyForModelLocked(model) {
+		return p.pendingCount()
+	}
+	load := p.pendingCountForModelLocked(model)
+	if p.BackendCapacity != nil {
+		for _, slot := range p.BackendCapacity.Slots {
+			if slot.Model != model {
+				continue
+			}
+			backendLoad := slot.NumRunning + slot.NumWaiting
+			if backendLoad > load {
+				load = backendLoad
+			}
+			break
+		}
+	}
+	return load
+}
+
+func (p *Provider) hasConcurrencyHeadroomForModelLocked(model string) bool {
+	return p.pendingLoadForModelLocked(model) < p.maxConcurrencyForModelLocked(model) &&
+		p.pendingCount() < p.maxConcurrency()
 }
 
 // Registry holds all connected providers and provides routing.
@@ -747,13 +816,14 @@ func (r *Registry) SetQueue(q *RequestQueue) {
 // tok/s, max Mac Studio RAM is 512 GB) so legitimate future hardware isn't
 // clamped unnecessarily.
 const (
-	maxDecodeTPS                = 500.0
-	maxPrefillTPS               = 5000.0
-	maxMemoryBandwidthGBs       = 2000.0
-	maxMemoryGB                 = 1024
-	maxMemoryGBFloat            = 1024.0
-	maxTokensPotential          = 1_000_000
-	maxTokenBudgetCap     int64 = 10_000_000_000 // 10 billion — generous safety valve for total token budget capacity
+	maxDecodeTPS                    = 500.0
+	maxPrefillTPS                   = 5000.0
+	maxMemoryBandwidthGBs           = 2000.0
+	maxMemoryGB                     = 1024
+	maxMemoryGBFloat                = 1024.0
+	maxReportedMaxConcurrency       = 24
+	maxTokensPotential              = 1_000_000
+	maxTokenBudgetCap         int64 = 10_000_000_000 // 10 billion — generous safety valve for total token budget capacity
 )
 
 // clampNonNeg returns v clamped into [0, max]; NaN/negative become 0.
@@ -809,6 +879,15 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 		}
 		if s.NumWaiting < 0 {
 			s.NumWaiting = 0
+		}
+		if s.MaxConcurrency < 0 || s.MaxConcurrency > maxReportedMaxConcurrency {
+			logger.Warn("provider slot max_concurrency out of range, clamping",
+				"provider_id", providerID, "model", s.Model, "reported", s.MaxConcurrency)
+			if s.MaxConcurrency < 0 {
+				s.MaxConcurrency = 0
+			} else {
+				s.MaxConcurrency = maxReportedMaxConcurrency
+			}
 		}
 		if v, changed := clampNonNeg(s.ObservedDecodeTPS, maxDecodeTPS); changed {
 			logger.Warn("provider slot observed_decode_tps out of range, clamping",
@@ -1036,11 +1115,12 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	p.Stats.TokensGenerated += cumulativeDelta(p.lastSessionStats.TokensGenerated, msg.Stats.TokensGenerated)
 	p.lastSessionStats = msg.Stats
 	p.SystemMetrics = msg.SystemMetrics
-	// Update backend capacity from heartbeat (nil-safe for old providers).
-	if msg.BackendCapacity != nil {
-		p.BackendCapacity = msg.BackendCapacity
+	// Update backend capacity from heartbeat. A nil report clears prior live
+	// capacity so stale slot state cannot keep influencing routing.
+	p.BackendCapacity = msg.BackendCapacity
+	if p.BackendCapacity != nil {
 		chipFamily := p.Hardware.ChipFamily
-		for _, slot := range msg.BackendCapacity.Slots {
+		for _, slot := range p.BackendCapacity.Slots {
 			if slot.ObservedDecodeTPS > 0 {
 				r.tpsRegistry.Record(slot.Model, chipFamily, slot.ObservedDecodeTPS)
 			}
@@ -1304,10 +1384,11 @@ func ScoreProvider(p *Provider, model string) float64 {
 	}
 
 	// Load: gradient from 0.0 (idle) to 1.0 (at max concurrency).
-	// Uses dynamic max based on hardware when backend capacity is reported.
-	pending := float64(p.PendingCount())
+	// Uses a positive provider-reported slot cap when present, otherwise the
+	// legacy provider-level dynamic max.
 	p.mu.Lock()
-	maxConc := p.maxConcurrency()
+	maxConc := p.maxConcurrencyForModelLocked(model)
+	pending := float64(p.pendingLoadForModelLocked(model))
 	p.mu.Unlock()
 	load := pending / float64(maxConc)
 	if load > 1.0 {
@@ -1489,7 +1570,10 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 		if lastChallenge.IsZero() || now.Sub(lastChallenge) > challengeMaxAge {
 			continue
 		}
-		if p.PendingCount() >= p.MaxConcurrency() {
+		p.mu.Lock()
+		hasHeadroom := p.hasConcurrencyHeadroomForModelLocked(model)
+		p.mu.Unlock()
+		if !hasHeadroom {
 			continue
 		}
 		for _, m := range p.Models {
@@ -1923,12 +2007,12 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			continue
 		}
 
-		hasHeadroom := p.pendingCount() < p.maxConcurrency()
 		decodeTPS := resolvedDecodeTPS(p)
 		prefillTPS := resolvedPrefillTPS(p)
 
 		// Enumerate every model this provider serves.
 		for _, m := range p.Models {
+			hasHeadroom := p.hasConcurrencyHeadroomForModelLocked(m.ID)
 			// Count only pending requests for this specific model, not the
 			// total across all models. Using the total inflates
 			// activeRequests for multi-model providers.
@@ -1998,7 +2082,6 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			a = &modelAgg{bestWarmTTFTMs: -1, bestColdTTFTMs: -1}
 			agg[s.model] = a
 		}
-		a.routable++
 		if s.warm {
 			a.warm++
 		} else {
@@ -2014,14 +2097,14 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			a.budgetRemaining += headroom
 			a.budgetTotal += s.activeTokenBudgetMax
 		}
-		if s.hasHeadroom {
-			// anyImmediateSlot requires both concurrency headroom AND
-			// token budget headroom. A provider with concurrency room
-			// but exhausted token budget should not bypass the queue
-			// check.
-			if s.activeTokenBudgetMax <= 0 || s.activeTokenBudgetUsed+s.queuedTokenBudget < s.activeTokenBudgetMax {
-				a.anyImmediateSlot = true
-			}
+		// Routable providers require both concurrency headroom AND token-budget
+		// headroom. A provider with exhausted token budget should not make the
+		// model appear immediately ready.
+		hasBudgetHeadroom := s.activeTokenBudgetMax <= 0 ||
+			s.activeTokenBudgetUsed+s.queuedTokenBudget < s.activeTokenBudgetMax
+		if s.hasHeadroom && hasBudgetHeadroom {
+			a.routable++
+			a.anyImmediateSlot = true
 		}
 
 		// Estimate TTFT for this provider: prefill 500 tokens + backlog drain.

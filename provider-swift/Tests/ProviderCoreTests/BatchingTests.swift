@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ProviderCore
 
@@ -352,4 +353,108 @@ import Testing
     #expect(policy.maxQueuedRequests == 128)
     #expect(policy.maxActiveTokenBudget == 8192)
     #expect(policy.maxTokensPerBatch == 4096)
+}
+
+@Test func adaptiveCapDoesNotExpandBeforeEnoughSamples() {
+    let policy = AdaptiveBatchCapPolicy(targetMinPerRequestTps: 15, expansionHeadroomMultiplier: 1.15)
+    let cap = policy.nextCap(
+        currentCap: 2,
+        hardCap: 4,
+        observedBatchSize: 2,
+        performanceByBatchSize: [2: AdaptiveBatchPerformanceBucket(aggregateTps: 80, perRequestTps: 40, samples: 7)]
+    )
+
+    #expect(cap == 2)
+}
+
+@Test func adaptiveCapExpandsWithTpsHeadroom() {
+    let policy = AdaptiveBatchCapPolicy(targetMinPerRequestTps: 15, expansionHeadroomMultiplier: 1.15)
+    let cap = policy.nextCap(
+        currentCap: 2,
+        hardCap: 4,
+        observedBatchSize: 2,
+        performanceByBatchSize: [2: AdaptiveBatchPerformanceBucket(aggregateTps: 80, perRequestTps: 18, samples: 8)]
+    )
+
+    #expect(cap == 3)
+}
+
+@Test func adaptiveCapShrinksBelowTargetTps() {
+    let policy = AdaptiveBatchCapPolicy(targetMinPerRequestTps: 15, expansionHeadroomMultiplier: 1.15)
+    let cap = policy.nextCap(
+        currentCap: 4,
+        hardCap: 4,
+        observedBatchSize: 4,
+        performanceByBatchSize: [
+            2: AdaptiveBatchPerformanceBucket(aggregateTps: 36, perRequestTps: 18, samples: 8),
+            4: AdaptiveBatchPerformanceBucket(aggregateTps: 40, perRequestTps: 10, samples: 8),
+        ]
+    )
+
+    #expect(cap == 2)
+}
+
+@Test func adaptiveCapDoesNotExpandWhenNextBucketHasBadSignal() {
+    let policy = AdaptiveBatchCapPolicy(targetMinPerRequestTps: 15, expansionHeadroomMultiplier: 1.15)
+    let cap = policy.nextCap(
+        currentCap: 2,
+        hardCap: 4,
+        observedBatchSize: 2,
+        performanceByBatchSize: [
+            2: AdaptiveBatchPerformanceBucket(aggregateTps: 80, perRequestTps: 18, samples: 8),
+            3: AdaptiveBatchPerformanceBucket(aggregateTps: 36, perRequestTps: 12, samples: 8),
+        ]
+    )
+
+    #expect(cap == 2)
+}
+
+@Test func adaptiveBucketRecordKeepsEwmaAndSampleCount() {
+    var bucket = AdaptiveBatchPerformanceBucket()
+
+    bucket.record(aggregateTps: 40, perRequestTps: 20)
+    bucket.record(aggregateTps: 20, perRequestTps: 10)
+
+    #expect(bucket.samples == 2)
+    #expect(bucket.aggregateTps == 35)
+    #expect(bucket.perRequestTps == 17.5)
+}
+
+@Test func plannerQueuesFittingRequestEvenWhenActiveBudgetIsCurrentlyFull() async {
+    let planner = BatchQueuePlanner(
+        policy: BatchSchedulingPolicy(
+            maxConcurrentRequests: 2,
+            maxQueuedRequests: 10,
+            maxActiveTokenBudget: 10,
+            maxTokensPerBatch: 10
+        )
+    )
+
+    #expect(await planner.admit(id: "active", promptTokenCount: 5, maxOutputTokens: 5) == .queued(requestID: "active", position: 1))
+    #expect(await planner.nextBatch()?.prefill?.id == "active")
+    #expect(await planner.markPrefillComplete(requestID: "active"))
+
+    #expect(await planner.admit(id: "queued", promptTokenCount: 5, maxOutputTokens: 5) == .queued(requestID: "queued", position: 1))
+    #expect(await planner.admit(id: "oversize", promptTokenCount: 6, maxOutputTokens: 5) == .rejected(requestID: "oversize", reason: .requestExceedsActiveTokenBudget))
+}
+
+@Test func schedulerUsesDefaultReservationWhenMaxTokensIsOmitted() {
+    #expect(BatchScheduler.resolvedMaxTokens(requested: nil, defaultMaxTokens: 4096) == 4096)
+    #expect(BatchScheduler.resolvedMaxTokens(requested: 128, defaultMaxTokens: 4096) == 128)
+}
+
+@Test func schedulerBoundsConfigJSONBeforeReading() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("BatchSchedulerTests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let smallConfig = directory.appendingPathComponent("small-config.json")
+    try Data(#"{"num_hidden_layers":1}"#.utf8).write(to: smallConfig)
+    #expect(BatchScheduler.readBoundedConfigJSON(smallConfig) != nil)
+
+    let largeConfig = directory.appendingPathComponent("large-config.json")
+    let oversized = Data(repeating: UInt8(ascii: "{"), count: BatchScheduler.maxConfigJSONBytes + 1)
+    try oversized.write(to: largeConfig)
+    #expect(BatchScheduler.readBoundedConfigJSON(largeConfig) == nil)
 }

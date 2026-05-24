@@ -1,5 +1,90 @@
 import Foundation
 
+public struct AdaptiveBatchPerformanceBucket: Sendable, Equatable {
+    public var aggregateTps: Double
+    public var perRequestTps: Double
+    public var samples: Int
+
+    public init(aggregateTps: Double = 0, perRequestTps: Double = 0, samples: Int = 0) {
+        self.aggregateTps = aggregateTps
+        self.perRequestTps = perRequestTps
+        self.samples = samples
+    }
+
+    public var hasSignal: Bool {
+        samples >= 8
+    }
+
+    public mutating func record(aggregateTps newAggregateTps: Double, perRequestTps newPerRequestTps: Double) {
+        let alpha = 0.25
+        if samples == 0 {
+            aggregateTps = newAggregateTps
+            perRequestTps = newPerRequestTps
+        } else {
+            aggregateTps = alpha * newAggregateTps + (1 - alpha) * aggregateTps
+            perRequestTps = alpha * newPerRequestTps + (1 - alpha) * perRequestTps
+        }
+        samples += 1
+    }
+}
+
+public struct AdaptiveBatchCapPolicy: Sendable, Equatable {
+    public let targetMinPerRequestTps: Double
+    public let expansionHeadroomMultiplier: Double
+
+    public init(
+        targetMinPerRequestTps: Double = 15.0,
+        expansionHeadroomMultiplier: Double = 1.15
+    ) {
+        self.targetMinPerRequestTps = targetMinPerRequestTps
+        self.expansionHeadroomMultiplier = expansionHeadroomMultiplier
+    }
+
+    public static let `default` = AdaptiveBatchCapPolicy()
+
+    public func nextCap(
+        currentCap rawCurrentCap: Int,
+        hardCap rawHardCap: Int,
+        observedBatchSize: Int,
+        performanceByBatchSize: [Int: AdaptiveBatchPerformanceBucket]
+    ) -> Int {
+        let hardCap = max(1, rawHardCap)
+        let currentCap = max(1, min(rawCurrentCap, hardCap))
+
+        let signaled = performanceByBatchSize
+            .filter { $0.value.hasSignal }
+            .sorted { $0.key < $1.key }
+        guard !signaled.isEmpty else { return currentCap }
+
+        if let currentBucket = performanceByBatchSize[observedBatchSize],
+           currentBucket.hasSignal,
+           observedBatchSize >= currentCap,
+           currentBucket.perRequestTps < targetMinPerRequestTps {
+            let sustainableLowerCap = signaled
+                .filter { $0.key < observedBatchSize && $0.value.perRequestTps >= targetMinPerRequestTps }
+                .map(\.key)
+                .max()
+            return max(1, sustainableLowerCap ?? observedBatchSize - 1)
+        }
+
+        guard currentCap < hardCap,
+              observedBatchSize >= currentCap,
+              let currentBucket = performanceByBatchSize[currentCap],
+              currentBucket.hasSignal,
+              currentBucket.perRequestTps >= targetMinPerRequestTps * expansionHeadroomMultiplier else {
+            return currentCap
+        }
+
+        if let nextBucket = performanceByBatchSize[currentCap + 1],
+           nextBucket.hasSignal,
+           nextBucket.perRequestTps < targetMinPerRequestTps {
+            return currentCap
+        }
+
+        return currentCap + 1
+    }
+}
+
 public struct BatchSchedulingPolicy: Sendable, Equatable {
     public let maxConcurrentRequests: Int
     public let maxQueuedRequests: Int
@@ -192,7 +277,7 @@ public actor BatchQueuePlanner {
         var generatedTokenCount: Int
     }
 
-    public let policy: BatchSchedulingPolicy
+    public private(set) var policy: BatchSchedulingPolicy
 
     private var nextRequestSequence: UInt64 = 0
     private var nextBatchSequence: UInt64 = 0
@@ -201,6 +286,10 @@ public actor BatchQueuePlanner {
     private var activeOrder: [String] = []
 
     public init(policy: BatchSchedulingPolicy = .default) {
+        self.policy = policy
+    }
+
+    public func updatePolicy(_ policy: BatchSchedulingPolicy) {
         self.policy = policy
     }
 

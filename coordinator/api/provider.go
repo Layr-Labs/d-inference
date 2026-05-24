@@ -304,6 +304,15 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			respMsg := msg.Payload.(*protocol.AttestationResponseMessage)
 			s.handleAttestationResponse(providerID, provider, respMsg, tracker)
 
+		case protocol.TypeLoadModelStatus:
+			statusMsg := msg.Payload.(*protocol.LoadModelStatusMessage)
+			s.logger.Info("provider load_model_status",
+				"provider_id", providerID,
+				"model_id", statusMsg.ModelID,
+				"status", statusMsg.Status,
+				"error", statusMsg.Error,
+			)
+
 		default:
 			s.logger.Warn("unhandled provider message type", "provider_id", providerID, "type", msg.Type)
 		}

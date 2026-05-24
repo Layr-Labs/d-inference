@@ -92,13 +92,12 @@ Register with GitHub Actions:
     -f architecture="<architecture>" \
     -f quantization="<quantization>" \
     -f capabilities_csv="chat" \
-    -f context_length="0" \
-    -f min_ram_gb="0" \
-    -f recommended_ram_gb="0" \
+    -f max_context_length="<max context tokens>" \
+    -f max_output_length="<max output tokens>" \
+    -f min_ram_gb="<minimum RAM GB>" \
     -f description="" \
+    -f runtime_parameters_json='{}' \
     -f metadata_json='{}' \
-    -f source_hf_id="$MODEL_ID" \
-    -f source_hf_revision="" \
     -f promote="false" \
     -f coordinator_url="https://api.darkbloom.dev"
 EOF

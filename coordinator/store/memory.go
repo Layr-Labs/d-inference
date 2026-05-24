@@ -859,6 +859,7 @@ func (s *MemoryStore) SetModelVersion(entry *ModelRegistryEntry, version *ModelV
 	entryCopy := cloneModelRegistryEntry(entry)
 	if existing, ok := s.modelRegistry[entry.ID]; ok && !existing.CreatedAt.IsZero() {
 		entryCopy.CreatedAt = existing.CreatedAt
+		entryCopy.Status = existing.Status
 	} else if entryCopy.CreatedAt.IsZero() {
 		entryCopy.CreatedAt = now
 	}

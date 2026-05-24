@@ -41,6 +41,30 @@ func TestValidateModelManifestRejectsTraversalAndBadHashes(t *testing.T) {
 	if err := validateModelManifest(manifest, "mlx-community/test", "v1", prefix); err == nil {
 		t.Fatal("expected mismatched total_size_bytes to be rejected")
 	}
+
+	manifest = validTestManifest()
+	manifest.Files = nil
+	manifest.FileCount = 0
+	manifest.TotalSizeBytes = 0
+	if err := validateModelManifest(manifest, "mlx-community/test", "v1", prefix); err == nil {
+		t.Fatal("expected empty manifest to be rejected")
+	}
+
+	manifest = validTestManifest()
+	manifest.Files = append(manifest.Files, manifest.Files[0])
+	manifest.FileCount = 2
+	manifest.TotalSizeBytes = 246
+	if err := validateModelManifest(manifest, "mlx-community/test", "v1", prefix); err == nil {
+		t.Fatal("expected duplicate manifest paths to be rejected")
+	}
+
+	for _, badPath := range []string{"a//b", "./x", "x/.", "x/../y"} {
+		manifest = validTestManifest()
+		manifest.Files[0].Path = badPath
+		if err := validateModelManifest(manifest, "mlx-community/test", "v1", prefix); err == nil {
+			t.Fatalf("expected path %q to be rejected", badPath)
+		}
+	}
 }
 
 func TestRegisterValidationAndR2Prefix(t *testing.T) {
@@ -205,6 +229,29 @@ func TestModelCatalogFallbackAndRegistryPreference(t *testing.T) {
 	}
 	if len(registryCatalog.Models) != 1 || registryCatalog.Models[0]["id"] != entry.ID {
 		t.Fatalf("expected registry catalog, got %#v", registryCatalog.Models)
+	}
+}
+
+func TestRegisteringNewVersionPreservesRetiredStatus(t *testing.T) {
+	st := store.NewMemory("")
+	entry := &store.ModelRegistryEntry{ID: "mlx-community/retired", DisplayName: "Retired", Status: "retired", Quantization: "8bit", MaxContextLength: 32768, MaxOutputLength: 8192, MinRAMGB: 32}
+	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
+	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: entry.ID, Version: "v1", R2Prefix: modelR2Prefix(entry.ID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PromoteModelVersion(entry.ID, "v1"); err != nil {
+		t.Fatal(err)
+	}
+
+	entry.Status = "beta"
+	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: entry.ID, Version: "v2", R2Prefix: modelR2Prefix(entry.ID, "v2"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PromoteModelVersion(entry.ID, "v2"); err != nil {
+		t.Fatal(err)
+	}
+	if active := st.ListActiveModelRegistry(); len(active) != 0 {
+		t.Fatalf("expected retired model to remain hidden after registering a new version, got %#v", active)
 	}
 }
 

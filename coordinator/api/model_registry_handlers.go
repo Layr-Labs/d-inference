@@ -317,11 +317,19 @@ func validateModelManifest(manifest *store.ModelManifest, modelID, version, r2Pr
 	if manifest.FileCount != len(manifest.Files) {
 		return fmt.Errorf("manifest file_count does not match files length")
 	}
+	if len(manifest.Files) == 0 {
+		return fmt.Errorf("manifest must contain at least one file")
+	}
 	var totalSize int64
+	seenPaths := make(map[string]bool, len(manifest.Files))
 	for _, file := range manifest.Files {
 		if err := validateManifestFile(file); err != nil {
 			return err
 		}
+		if seenPaths[file.Path] {
+			return fmt.Errorf("manifest file path %q is duplicated", file.Path)
+		}
+		seenPaths[file.Path] = true
 		totalSize += file.SizeBytes
 	}
 	if totalSize != manifest.TotalSizeBytes {
@@ -331,7 +339,7 @@ func validateModelManifest(manifest *store.ModelManifest, modelID, version, r2Pr
 }
 
 func validateManifestFile(file store.ManifestFile) error {
-	if file.Path == "" || strings.HasPrefix(file.Path, "/") || strings.Contains(file.Path, "\\") || containsTraversal(file.Path) {
+	if !validManifestRelativePath(file.Path) {
 		return fmt.Errorf("manifest file path %q is invalid", file.Path)
 	}
 	if file.SizeBytes < 0 {
@@ -341,6 +349,18 @@ func validateManifestFile(file store.ManifestFile) error {
 		return fmt.Errorf("manifest file %q sha256 must be 64 lowercase hex characters", file.Path)
 	}
 	return nil
+}
+
+func validManifestRelativePath(path string) bool {
+	if path == "" || strings.HasPrefix(path, "/") || strings.Contains(path, "\\") {
+		return false
+	}
+	for _, part := range strings.Split(path, "/") {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 func containsTraversal(value string) bool {

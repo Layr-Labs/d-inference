@@ -64,7 +64,7 @@ func (s *PostgresStore) SetModelVersion(entry *ModelRegistryEntry, version *Mode
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
 		ON CONFLICT (id) DO UPDATE SET
 		  display_name = $2, family = $3, architecture = $4, quantization = $5, max_context_length = $6,
-		  max_output_length = $7, min_ram_gb = $8, capabilities = $9, status = $10,
+		  max_output_length = $7, min_ram_gb = $8, capabilities = $9,
 		  description = $11, runtime_parameters = $12, metadata = $13, updated_at = NOW()`,
 		entry.ID, entry.DisplayName, entry.Family, entry.Architecture, entry.Quantization,
 		entry.MaxContextLength, entry.MaxOutputLength, entry.MinRAMGB, entry.Capabilities,

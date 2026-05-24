@@ -675,15 +675,6 @@ func resolvedPrefillTPS(p *Provider) float64 {
 	return resolvedDecodeTPS(p) * 4.0
 }
 
-func providerServesModelLocked(p *Provider, model string) bool {
-	for _, m := range p.Models {
-		if m.ID == model {
-			return true
-		}
-	}
-	return false
-}
-
 func providerModelIDs(p *Provider) []string {
 	if p == nil {
 		return nil

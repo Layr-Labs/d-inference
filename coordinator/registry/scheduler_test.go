@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -457,6 +458,120 @@ func TestDrainQueuedRequestsUsesAllAvailableCapacity(t *testing.T) {
 	}
 }
 
+func TestDrainQueuedRequestsRespectsPerSlotCapsAcrossModels(t *testing.T) {
+	reg := New(testLogger())
+	modelA := "queue-slot-full-a"
+	modelB := "queue-slot-open-b"
+	p := makeSchedulerProvider(t, reg, "multi-slot", modelA, 100)
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: modelB, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
+		{Model: modelA, State: "running", NumRunning: 0, NumWaiting: 0, MaxConcurrency: 1},
+		{Model: modelB, State: "running", NumRunning: 0, NumWaiting: 0, MaxConcurrency: 1},
+	}
+	p.mu.Unlock()
+
+	p.AddPending(&PendingRequest{RequestID: "existing-a", Model: modelA, RequestedMaxTokens: 128})
+	queuedA := &QueuedRequest{
+		RequestID:  "queued-a",
+		Model:      modelA,
+		ResponseCh: make(chan *Provider, 1),
+		Pending:    &PendingRequest{RequestID: "queued-a", Model: modelA, RequestedMaxTokens: 128},
+	}
+	queuedB := &QueuedRequest{
+		RequestID:  "queued-b",
+		Model:      modelB,
+		ResponseCh: make(chan *Provider, 1),
+		Pending:    &PendingRequest{RequestID: "queued-b", Model: modelB, RequestedMaxTokens: 128},
+	}
+	if err := reg.Queue().Enqueue(queuedA); err != nil {
+		t.Fatalf("enqueue A: %v", err)
+	}
+	if err := reg.Queue().Enqueue(queuedB); err != nil {
+		t.Fatalf("enqueue B: %v", err)
+	}
+
+	reg.SetProviderIdle(p.ID)
+
+	select {
+	case assigned := <-queuedB.ResponseCh:
+		if assigned == nil || assigned.ID != p.ID {
+			t.Fatalf("queued B assigned %#v, want provider %q", assigned, p.ID)
+		}
+	default:
+		t.Fatal("queued B should drain while model A is at its per-slot cap")
+	}
+	select {
+	case assigned := <-queuedA.ResponseCh:
+		t.Fatalf("queued A should remain queued at per-slot cap, got %#v", assigned)
+	default:
+	}
+	if got := reg.Queue().QueueSize(modelA); got != 1 {
+		t.Fatalf("model A queue size = %d, want 1", got)
+	}
+	if got := reg.Queue().QueueSize(modelB); got != 0 {
+		t.Fatalf("model B queue size = %d, want 0", got)
+	}
+}
+
+func TestSetProviderIdleDrainsOnlyFreedModelCapacity(t *testing.T) {
+	reg := New(testLogger())
+	modelA := "idle-freed-a"
+	modelB := "idle-unchanged-b"
+	p := makeSchedulerProvider(t, reg, "idle-multi", modelA, 100)
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: modelB, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
+		{Model: modelA, State: "running", NumRunning: 0, NumWaiting: 0, MaxConcurrency: 1},
+		{Model: modelB, State: "running", NumRunning: 0, NumWaiting: 0, MaxConcurrency: 1},
+	}
+	p.mu.Unlock()
+
+	p.AddPending(&PendingRequest{RequestID: "active-a", Model: modelA, RequestedMaxTokens: 128})
+	p.AddPending(&PendingRequest{RequestID: "active-b", Model: modelB, RequestedMaxTokens: 128})
+	queuedA := &QueuedRequest{
+		RequestID:  "queued-a-after-free",
+		Model:      modelA,
+		ResponseCh: make(chan *Provider, 1),
+		Pending:    &PendingRequest{RequestID: "queued-a-after-free", Model: modelA, RequestedMaxTokens: 128},
+	}
+	queuedB := &QueuedRequest{
+		RequestID:  "queued-b-still-full",
+		Model:      modelB,
+		ResponseCh: make(chan *Provider, 1),
+		Pending:    &PendingRequest{RequestID: "queued-b-still-full", Model: modelB, RequestedMaxTokens: 128},
+	}
+	if err := reg.Queue().Enqueue(queuedA); err != nil {
+		t.Fatalf("enqueue A: %v", err)
+	}
+	if err := reg.Queue().Enqueue(queuedB); err != nil {
+		t.Fatalf("enqueue B: %v", err)
+	}
+
+	p.RemovePending("active-a")
+	reg.SetProviderIdle(p.ID)
+
+	select {
+	case assigned := <-queuedA.ResponseCh:
+		if assigned == nil || assigned.ID != p.ID {
+			t.Fatalf("queued A assigned %#v, want provider %q", assigned, p.ID)
+		}
+	default:
+		t.Fatal("queued A should drain after model A capacity is freed")
+	}
+	select {
+	case assigned := <-queuedB.ResponseCh:
+		t.Fatalf("queued B should remain queued because model B capacity was not freed, got %#v", assigned)
+	default:
+	}
+	if got := reg.Queue().QueueSize(modelA); got != 0 {
+		t.Fatalf("model A queue size = %d, want 0", got)
+	}
+	if got := reg.Queue().QueueSize(modelB); got != 1 {
+		t.Fatalf("model B queue size = %d, want 1", got)
+	}
+}
+
 func TestReserveProviderUsesModelSpecificSlotState(t *testing.T) {
 	reg := New(testLogger())
 	modelA := "model-a"
@@ -615,6 +730,79 @@ func TestTokenBudgetAdmissionRejectsWhenOverBudget(t *testing.T) {
 	}
 }
 
+func TestTokenBudgetAdmissionCountsPendingPromptAndMaxTokens(t *testing.T) {
+	reg := New(testLogger())
+	model := "pending-budget-model"
+	p := makeTokenBudgetProvider(t, reg, "budget", model, 100, 0, 5_000, 80)
+	p.AddPending(&PendingRequest{
+		RequestID:             "existing",
+		Model:                 model,
+		EstimatedPromptTokens: 3_000,
+		RequestedMaxTokens:    1_000,
+	})
+
+	req := &PendingRequest{
+		RequestID:             "new",
+		Model:                 model,
+		EstimatedPromptTokens: 1_000,
+		RequestedMaxTokens:    256,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected != nil {
+		t.Fatalf("selected %q, want nil because pending prompt+max exhausts budget", selected.ID)
+	}
+	if decision.CapacityRejections != 1 {
+		t.Fatalf("CapacityRejections=%d, want 1", decision.CapacityRejections)
+	}
+}
+
+func TestQuickCapacityCheckCountsPendingPromptAndMaxTokens(t *testing.T) {
+	reg := New(testLogger())
+	model := "quick-pending-budget-model"
+	p := makeTokenBudgetProvider(t, reg, "budget", model, 100, 0, 5_000, 80)
+	p.AddPending(&PendingRequest{
+		RequestID:             "existing",
+		Model:                 model,
+		EstimatedPromptTokens: 3_000,
+		RequestedMaxTokens:    1_000,
+	})
+
+	candidates, rejections := reg.QuickCapacityCheck(model, 1_000, 256)
+	if candidates != 0 || rejections != 1 {
+		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 0/1", candidates, rejections)
+	}
+}
+
+func TestTokenBudgetDoesNotDoubleCountBackendQueuedBudget(t *testing.T) {
+	reg := New(testLogger())
+	model := "queued-overlap-budget-model"
+	p := makeTokenBudgetProvider(t, reg, "budget", model, 100, 1_000, 5_000, 80)
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].MaxTokensPotential = 1_000
+	p.BackendCapacity.Slots[0].QueuedTokenBudget = 3_000
+	p.mu.Unlock()
+	p.AddPending(&PendingRequest{
+		RequestID:             "existing",
+		Model:                 model,
+		EstimatedPromptTokens: 3_000,
+		RequestedMaxTokens:    1_000,
+	})
+
+	req := &PendingRequest{
+		RequestID:             "new",
+		Model:                 model,
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    128,
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil {
+		t.Fatalf("selected nil, want provider; decision=%+v", decision)
+	}
+	if selected.ID != p.ID {
+		t.Fatalf("selected %q, want %q", selected.ID, p.ID)
+	}
+}
+
 func TestObservedTPSPreferredOverBenchmark(t *testing.T) {
 	reg := New(testLogger())
 	model := "tps-model"
@@ -692,6 +880,177 @@ func TestMaxConcurrencyFallsBackWithoutTokenBudget(t *testing.T) {
 
 	if got := p.MaxConcurrency(); got != 4 {
 		t.Fatalf("MaxConcurrency()=%d, want 4 (48GB legacy tier)", got)
+	}
+}
+
+func TestPerSlotMaxConcurrencyLimitsRoutingForModel(t *testing.T) {
+	reg := New(testLogger())
+	model := "slot-capped-model"
+	p := makeSchedulerProvider(t, reg, "capped", model, 100)
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].MaxConcurrency = 1
+	p.mu.Unlock()
+
+	first := &PendingRequest{RequestID: "req-first", Model: model, RequestedMaxTokens: 128}
+	if selected := reg.ReserveProvider(model, first); selected == nil {
+		t.Fatal("first request should route")
+	}
+
+	second := &PendingRequest{RequestID: "req-second", Model: model, RequestedMaxTokens: 128}
+	selected, decision := reg.ReserveProviderEx(model, second)
+	if selected != nil {
+		t.Fatalf("second request selected %q, want nil at per-slot cap", selected.ID)
+	}
+	if decision.CandidateCount != 0 || decision.CapacityRejections != 1 {
+		t.Fatalf("decision=%+v, want one capacity rejection at per-slot cap", decision)
+	}
+
+	candidates, rejections := reg.QuickCapacityCheck(model, 100, 128)
+	if candidates != 0 || rejections != 1 {
+		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 0/1", candidates, rejections)
+	}
+	if found := reg.FindProvider(model); found != nil {
+		t.Fatalf("FindProvider selected %q, want nil at per-slot cap", found.ID)
+	}
+	if score := ScoreProvider(p, model); score != 0 {
+		t.Fatalf("ScoreProvider=%f, want 0 at per-slot cap", score)
+	}
+}
+
+func TestPerSlotMaxConcurrencyZeroFallsBack(t *testing.T) {
+	reg := New(testLogger())
+	model := "slot-zero-model"
+	p := makeSchedulerProvider(t, reg, "fallback", model, 100)
+	p.mu.Lock()
+	p.BackendCapacity.TotalMemoryGB = 64
+	p.BackendCapacity.Slots[0].MaxConcurrency = 0
+	p.mu.Unlock()
+
+	if got := p.MaxConcurrencyForModel(model); got != 6 {
+		t.Fatalf("MaxConcurrencyForModel()=%d, want fallback 6", got)
+	}
+	for i := range 4 {
+		p.AddPending(&PendingRequest{RequestID: fmt.Sprintf("existing-%d", i), Model: model})
+	}
+	candidates, rejections := reg.QuickCapacityCheck(model, 100, 128)
+	if candidates != 1 || rejections != 0 {
+		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 1/0", candidates, rejections)
+	}
+	if found := reg.FindProvider(model); found == nil {
+		t.Fatal("FindProvider should use fallback cap when max_concurrency is zero")
+	}
+}
+
+func TestPerSlotMaxConcurrencyUsesBackendReportedLoad(t *testing.T) {
+	reg := New(testLogger())
+	model := "backend-loaded-model"
+	p := makeSchedulerProvider(t, reg, "backend-loaded", model, 100)
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].MaxConcurrency = 1
+	p.BackendCapacity.Slots[0].NumRunning = 1
+	p.mu.Unlock()
+
+	selected, decision := reg.ReserveProviderEx(model, &PendingRequest{
+		RequestID:          "req-over-backend-cap",
+		Model:              model,
+		RequestedMaxTokens: 128,
+	})
+	if selected != nil {
+		t.Fatalf("selected %q, want nil at backend-reported slot cap", selected.ID)
+	}
+	if decision.CandidateCount != 0 || decision.CapacityRejections != 1 {
+		t.Fatalf("decision=%+v, want one capacity rejection from backend slot load", decision)
+	}
+
+	candidates, rejections := reg.QuickCapacityCheck(model, 100, 128)
+	if candidates != 0 || rejections != 1 {
+		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 0/1", candidates, rejections)
+	}
+}
+
+func TestManyPerSlotCapsRespectProviderWideAggregateCap(t *testing.T) {
+	reg := New(testLogger())
+	models := make([]string, 0, 8)
+	for i := range 8 {
+		models = append(models, fmt.Sprintf("aggregate-cap-model-%d", i))
+	}
+	p := makeSchedulerProvider(t, reg, "aggregate-cap", models[0], 100)
+	p.mu.Lock()
+	p.Models = p.Models[:0]
+	p.BackendCapacity.Slots = p.BackendCapacity.Slots[:0]
+	for _, model := range models {
+		p.Models = append(p.Models, protocol.ModelInfo{ID: model, ModelType: "chat", Quantization: "4bit"})
+		p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, protocol.BackendSlotCapacity{
+			Model:                model,
+			State:                "running",
+			MaxConcurrency:       8,
+			ActiveTokenBudgetMax: 32_768,
+		})
+	}
+	p.mu.Unlock()
+
+	for i := range 24 {
+		p.AddPending(&PendingRequest{
+			RequestID:          fmt.Sprintf("existing-%d", i),
+			Model:              models[i%len(models)],
+			RequestedMaxTokens: 128,
+		})
+	}
+
+	selected, decision := reg.ReserveProviderEx(models[0], &PendingRequest{
+		RequestID:             "req-over-aggregate-cap",
+		Model:                 models[0],
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    128,
+	})
+	if selected != nil {
+		t.Fatalf("selected %q, want nil at provider-wide aggregate cap", selected.ID)
+	}
+	if decision.CandidateCount != 0 || decision.CapacityRejections != 1 {
+		t.Fatalf("decision=%+v, want one capacity rejection at aggregate cap", decision)
+	}
+	candidates, rejections := reg.QuickCapacityCheck(models[0], 100, 128)
+	if candidates != 0 || rejections != 1 {
+		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 0/1", candidates, rejections)
+	}
+}
+
+func TestModelCapacitySnapshotRespectsPerSlotMaxConcurrency(t *testing.T) {
+	reg := New(testLogger())
+	modelA := "snapshot-full-model"
+	modelB := "snapshot-open-model"
+	p := makeSchedulerProvider(t, reg, "snapshot-provider", modelA, 100)
+	p.mu.Lock()
+	p.Models = append(p.Models, protocol.ModelInfo{ID: modelB, ModelType: "chat", Quantization: "4bit"})
+	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
+		{Model: modelA, State: "running", NumRunning: 1, MaxConcurrency: 1},
+		{Model: modelB, State: "running", NumRunning: 0, MaxConcurrency: 2},
+	}
+	p.mu.Unlock()
+
+	snapshots := reg.ModelCapacitySnapshot()
+	byModel := make(map[string]ModelCapacity, len(snapshots))
+	for _, snap := range snapshots {
+		byModel[snap.ModelID] = snap
+	}
+
+	full, ok := byModel[modelA]
+	if !ok {
+		t.Fatalf("missing snapshot for %s", modelA)
+	}
+	if full.Ready || full.CanAccept || full.RoutableProviders != 0 {
+		t.Fatalf("full model snapshot=%+v, want not ready/routable", full)
+	}
+	if full.ActiveRequests != 1 {
+		t.Fatalf("full model active_requests=%d, want 1", full.ActiveRequests)
+	}
+
+	open, ok := byModel[modelB]
+	if !ok {
+		t.Fatalf("missing snapshot for %s", modelB)
+	}
+	if !open.Ready || !open.CanAccept || open.RoutableProviders != 1 {
+		t.Fatalf("open model snapshot=%+v, want ready with one routable provider", open)
 	}
 }
 
@@ -792,5 +1151,31 @@ func TestFreeMemoryAdmitsFallsBackWithoutBudget(t *testing.T) {
 	// Model already loaded, so only KV matters. Lots of free memory.
 	if !freeMemoryAdmits(snap, 100, 256) {
 		t.Fatal("should admit with plenty of free memory in legacy mode")
+	}
+}
+
+func TestSlotHeadroomWithExhaustedTokenBudgetRejectsCapacity(t *testing.T) {
+	reg := New(testLogger())
+	model := "budget-headroom-model"
+	p := makeTokenBudgetProvider(t, reg, "budget-headroom", model, 100, 32_000, 32_768, 80)
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].MaxConcurrency = 8
+	p.mu.Unlock()
+
+	selected, decision := reg.ReserveProviderEx(model, &PendingRequest{
+		RequestID:             "req-budget-reject",
+		Model:                 model,
+		EstimatedPromptTokens: 256,
+		RequestedMaxTokens:    1024,
+	})
+	if selected != nil {
+		t.Fatalf("selected %q, want nil with exhausted token budget", selected.ID)
+	}
+	if decision.CandidateCount != 0 || decision.CapacityRejections != 1 {
+		t.Fatalf("decision=%+v, want one capacity rejection from token budget", decision)
+	}
+	candidates, rejections := reg.QuickCapacityCheck(model, 256, 1024)
+	if candidates != 0 || rejections != 1 {
+		t.Fatalf("QuickCapacityCheck candidates=%d rejections=%d, want 0/1", candidates, rejections)
 	}
 }

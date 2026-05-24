@@ -165,10 +165,21 @@ func (s *Server) dispatchOneProvider(
 	if provider == nil {
 		return nil, nil, decision, "no provider available", http.StatusServiceUnavailable
 	}
+	pendingCleanup := true
+	cleanupPending := func() {
+		if pendingCleanup {
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			pendingCleanup = false
+		}
+	}
+	defer cleanupPending()
+	if pr.Timing != nil {
+		pr.Timing.RoutedAt = time.Now()
+	}
 
 	if s.billing != nil && !providerHasPayoutDestination(provider) {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
+		cleanupPending()
 		excludeProviders[provider.ID] = struct{}{}
 		return nil, nil, decision, "provider missing payout destination", http.StatusServiceUnavailable
 	}
@@ -176,13 +187,11 @@ func (s *Server) dispatchOneProvider(
 	if s.billing != nil {
 		_, err := s.reserveAdditionalForProvider(pr, provider)
 		if err != nil {
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
+			cleanupPending()
 			excludeProviders[provider.ID] = struct{}{}
 			return nil, nil, decision, "insufficient funds for provider price", http.StatusPaymentRequired
 		}
 	}
-
 	// refundExtra credits back the provider-specific surcharge that
 	// reserveAdditionalForProvider may have added. The caller's
 	// refundReservation only covers the base reservation.
@@ -200,7 +209,7 @@ func (s *Server) dispatchOneProvider(
 	// E2E encryption
 	if provider.PublicKey == "" {
 		refundExtra()
-		s.registry.SetProviderIdle(provider.ID)
+		cleanupPending()
 		excludeProviders[provider.ID] = struct{}{}
 		return nil, nil, decision, "no provider with E2E encryption", http.StatusServiceUnavailable
 	}
@@ -208,7 +217,7 @@ func (s *Server) dispatchOneProvider(
 	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
 	if err != nil {
 		refundExtra()
-		s.registry.SetProviderIdle(provider.ID)
+		cleanupPending()
 		excludeProviders[provider.ID] = struct{}{}
 		return nil, nil, decision, "provider public key invalid", http.StatusServiceUnavailable
 	}
@@ -216,15 +225,18 @@ func (s *Server) dispatchOneProvider(
 	sessionKeys, err := e2e.GenerateSessionKeys()
 	if err != nil {
 		refundExtra()
-		s.registry.SetProviderIdle(provider.ID)
+		cleanupPending()
 		return nil, nil, decision, "failed to generate session keys", http.StatusInternalServerError
 	}
 
 	encrypted, err := e2e.Encrypt(rawBody, providerPubKey, sessionKeys)
 	if err != nil {
 		refundExtra()
-		s.registry.SetProviderIdle(provider.ID)
+		cleanupPending()
 		return nil, nil, decision, "failed to encrypt request", http.StatusInternalServerError
+	}
+	if pr.Timing != nil {
+		pr.Timing.EncryptedAt = time.Now()
 	}
 
 	wireMsg := map[string]any{
@@ -243,17 +255,16 @@ func (s *Server) dispatchOneProvider(
 	data, err := json.Marshal(wireMsg)
 	if err != nil {
 		refundExtra()
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
+		cleanupPending()
 		return nil, nil, decision, "failed to marshal request", http.StatusInternalServerError
 	}
 	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
 		refundExtra()
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
+		cleanupPending()
 		excludeProviders[provider.ID] = struct{}{}
 		return nil, nil, decision, "failed to send request to provider", http.StatusBadGateway
 	}
+	pendingCleanup = false
 	pr.Timing.DispatchedAt = time.Now()
 
 	return provider, pr, decision, "", 0
@@ -1043,6 +1054,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// Use the queue PR's channels.
 			pr = queuePR
 			requestID = pr.RequestID
+			timing.RoutedAt = time.Now()
 
 			// Payout destination check — same as dispatchOneProvider.
 			if s.billing != nil && !providerHasPayoutDestination(provider) {
@@ -1050,6 +1062,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					"request_id", requestID,
 					"provider_id", provider.ID,
 				)
+				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
 				excludeProviders[provider.ID] = struct{}{}
 				lastErr = "provider missing payout destination"
@@ -1066,6 +1079,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 						"provider_id", provider.ID,
 						"error", err,
 					)
+					provider.RemovePending(requestID)
 					s.registry.SetProviderIdle(provider.ID)
 					excludeProviders[provider.ID] = struct{}{}
 					lastErr = "insufficient funds for provider price"
@@ -1073,9 +1087,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
-
 			// Perform E2E encryption and send the request.
 			if provider.PublicKey == "" {
+				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
 				excludeProviders[provider.ID] = struct{}{}
 				lastErr = "no provider with E2E encryption"
@@ -1083,6 +1097,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
 			if err != nil {
+				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
 				excludeProviders[provider.ID] = struct{}{}
 				lastErr = "provider public key invalid"
@@ -1090,12 +1105,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			sessionKeys, err := e2e.GenerateSessionKeys()
 			if err != nil {
+				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
 				lastErr = "failed to generate session keys"
 				continue
 			}
 			encrypted, err := e2e.Encrypt(rawBody, providerPubKey, sessionKeys)
 			if err != nil {
+				provider.RemovePending(requestID)
 				s.registry.SetProviderIdle(provider.ID)
 				lastErr = "failed to encrypt request"
 				continue
@@ -1123,7 +1140,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			pr.Timing.DispatchedAt = time.Now()
 		}
 		requestID = pr.RequestID
-		timing.RoutedAt = time.Now()
+		if timing.RoutedAt.IsZero() {
+			timing.RoutedAt = time.Now()
+		}
 		s.ddIncr("routing.decisions", []string{"model:" + model, "outcome:selected"})
 		s.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
 
@@ -3373,9 +3392,17 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if decision.EffectiveTPS > 0 {
 		s.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
 	}
+	pendingCleanup := true
+	cleanupPending := func() {
+		if pendingCleanup {
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			pendingCleanup = false
+		}
+	}
+	defer cleanupPending()
 	if s.billing != nil && !providerHasPayoutDestination(provider) {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
+		cleanupPending()
 		refundExtra()
 		refundReservation()
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
@@ -3384,8 +3411,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 	if s.billing != nil {
 		if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
+			cleanupPending()
 			refundExtra()
 			refundReservation()
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
@@ -3397,7 +3423,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	inferenceBody, _ := json.Marshal(parsed)
 
 	if provider.PublicKey == "" {
-		s.registry.SetProviderIdle(provider.ID)
+		cleanupPending()
 		refundExtra()
 		refundReservation()
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
@@ -3407,7 +3433,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
 	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
+		cleanupPending()
 		refundExtra()
 		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "provider public key invalid"))
@@ -3416,7 +3442,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	sessionKeys, err := e2e.GenerateSessionKeys()
 	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
+		cleanupPending()
 		refundExtra()
 		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to generate session keys"))
@@ -3425,7 +3451,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	encrypted, err := e2e.Encrypt(inferenceBody, providerPubKey, sessionKeys)
 	if err != nil {
-		s.registry.SetProviderIdle(provider.ID)
+		cleanupPending()
 		refundExtra()
 		refundReservation()
 		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to encrypt request"))
@@ -3445,13 +3471,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	data, _ := json.Marshal(wireMsg)
 	if err := provider.Conn.Write(r.Context(), websocket.MessageText, data); err != nil {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
+		cleanupPending()
 		refundExtra()
 		refundReservation()
 		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
 		return
 	}
+	pendingCleanup = false
 
 	s.logger.Info("inference request dispatched",
 		"request_id", requestID,

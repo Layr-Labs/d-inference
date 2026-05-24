@@ -22,6 +22,7 @@ public struct SchedulerCapacity: Sendable {
     public let activeRequests: Int
     public let pendingRequests: Int
     public let maxConcurrent: Int
+    public let engineMaxConcurrent: Int
     public let gpuMemoryActiveBytes: Int
     public let gpuMemoryPeakBytes: Int
     public let gpuMemoryCacheBytes: Int
@@ -45,6 +46,7 @@ public actor BatchScheduler {
     private let maxConcurrentRequests: Int
     private let pendingTimeout: Duration
     private let defaultMaxTokens: Int
+    private let kvBudget: GlobalKVCacheBudget?
 
     private var modelContainer: ModelContainer?
     private var modelId: String = ""
@@ -69,33 +71,73 @@ public actor BatchScheduler {
     private var engineBusy = false
     private var observedDecodeTpsEwma: Double = 0
     private var ewmaInitialized = false
+    private var performanceByBatchSize: [Int: AdaptiveBatchPerformanceBucket] = [:]
+    private var dynamicMaxConcurrentRequests: Int
 
     /// Once every active row has received its first token, run several decode
     /// steps per actor/model hop. A single hop per token starves Gemma-class
     /// models because the CPU actor round trip is larger than one GPU step.
     private let decodeBurstSteps = 32
+    private let adaptiveCapPolicy = AdaptiveBatchCapPolicy.default
+    static let maxConfigJSONBytes = 4 * 1024 * 1024
 
     private var tokenBudgetMax: Int {
-        if dynamicTokenBudgetMax > 0 {
-            return dynamicTokenBudgetMax
+        let staticBudget = dynamicTokenBudgetMax > 0
+            ? dynamicTokenBudgetMax
+            : defaultMaxTokens * maxConcurrentRequests
+        guard modelWeightBytes > 0, kvBytesPerToken > 0 else {
+            return staticBudget
         }
-        return defaultMaxTokens * maxConcurrentRequests
+
+        let totalMemory = Int(ProcessInfo.processInfo.physicalMemory)
+        let osReserve = 4 * 1024 * 1024 * 1024
+        let safetyMargin = totalMemory / 10
+        let globalUsed = Int(MLX.GPU.activeMemory) + Int(MLX.GPU.cacheMemory)
+        let availableHeadroom = max(0, totalMemory - osReserve - safetyMargin - globalUsed)
+        let liveBudget = activeTokenBudgetUsed + (availableHeadroom / kvBytesPerToken)
+        return max(1024, min(staticBudget, liveBudget))
+    }
+
+    private var activeTokenBudgetUsed: Int {
+        active.values.reduce(0) { $0 + $1.promptTokens + $1.maxTokens }
+    }
+
+    private var queuedTokenBudget: Int {
+        pending.reduce(0) { $0 + $1.promptTokens.count + $1.maxTokens }
     }
 
     private var currentTokenBudgetUsed: Int {
-        let activeBudget = active.values.reduce(0) { $0 + $1.promptTokens + $1.maxTokens }
-        let pendingBudget = pending.reduce(0) { $0 + $1.promptTokens.count + $1.maxTokens }
-        return activeBudget + pendingBudget
+        activeTokenBudgetUsed + queuedTokenBudget
+    }
+
+    private var averageReservedTokensForAdmission: Int {
+        let requestCount = active.count + pending.count
+        guard requestCount > 0 else { return defaultMaxTokens }
+        return max(1, currentTokenBudgetUsed / requestCount)
+    }
+
+    private var memoryBoundMaxConcurrentRequests: Int {
+        let budget = tokenBudgetMax
+        let averageReserved = averageReservedTokensForAdmission
+        guard budget > 0, averageReserved > 0 else { return 1 }
+        return max(1, min(maxConcurrentRequests, budget / averageReserved))
+    }
+
+    private var effectiveMaxConcurrentRequests: Int {
+        max(1, min(maxConcurrentRequests, dynamicMaxConcurrentRequests, memoryBoundMaxConcurrentRequests))
     }
 
     public init(
         maxConcurrentRequests: Int = 4,
         pendingTimeout: Duration = .seconds(120),
-        defaultMaxTokens: Int = 4096
+        defaultMaxTokens: Int = 4096,
+        kvBudget: GlobalKVCacheBudget? = nil
     ) {
         self.maxConcurrentRequests = max(1, maxConcurrentRequests)
         self.pendingTimeout = pendingTimeout
         self.defaultMaxTokens = defaultMaxTokens
+        self.kvBudget = kvBudget
+        self.dynamicMaxConcurrentRequests = min(4, max(1, maxConcurrentRequests))
     }
 
     // MARK: - Model lifecycle
@@ -140,8 +182,8 @@ public actor BatchScheduler {
 
             if case .directory(let modelDir) = ctx.configuration.id {
                 let configURL = modelDir.appendingPathComponent("config.json")
-                if let data = try? Data(contentsOf: configURL),
-                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let data = Self.readBoundedConfigJSON(configURL),
+                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     // Resolve nested text_config if present (Gemma 4 VLM wraps everything there)
                     let cfg: [String: Any]
                     if let textConfig = json["text_config"] as? [String: Any] {
@@ -285,16 +327,11 @@ public actor BatchScheduler {
         } else {
             self.dynamicTokenBudgetMax = 1024
         }
+        self.dynamicMaxConcurrentRequests = min(4, maxConcurrentRequests)
+        self.performanceByBatchSize.removeAll()
 
         // Create the planner now that tokenBudgetMax is determined.
-        self.planner = BatchQueuePlanner(
-            policy: BatchSchedulingPolicy(
-                maxConcurrentRequests: maxConcurrentRequests,
-                maxQueuedRequests: 128,
-                maxActiveTokenBudget: tokenBudgetMax,
-                maxTokensPerBatch: 4096
-            )
-        )
+        self.planner = makePlanner(activeTokenBudget: tokenBudgetMax)
     }
 
     public func unloadModel() async {
@@ -330,11 +367,19 @@ public actor BatchScheduler {
             return stream
         }
 
-        let maxTokens = request.max_tokens ?? defaultMaxTokens
+        let maxTokens = Self.resolvedMaxTokens(requested: request.max_tokens, defaultMaxTokens: defaultMaxTokens)
 
         // Admission control: use planner when available, fall back to inline check.
         let requestBudget = promptTokens.count + maxTokens
+        guard requestBudget <= tokenBudgetMax else {
+            continuation.yield(.error("token_budget_exhausted: request requires \(requestBudget) tokens but only \(tokenBudgetMax) available"))
+            continuation.finish()
+            return stream
+        }
+
         if let planner = self.planner {
+            await refreshPlannerPolicy(activeTokenBudget: tokenBudgetMax)
+            let planner = self.planner ?? planner
             let result = await planner.admit(
                 id: id,
                 promptTokenCount: promptTokens.count,
@@ -363,6 +408,22 @@ public actor BatchScheduler {
             continuation.yield(.error("token_budget_exhausted: request requires \(requestBudget) tokens but only \(tokenBudgetMax - currentTokenBudgetUsed) available"))
             continuation.finish()
             return stream
+        }
+
+        if let kvBudget {
+            let reserved = await kvBudget.reserve(
+                requestID: id,
+                kvBytesPerToken: kvBytesPerToken,
+                tokenCount: requestBudget
+            )
+            guard reserved else {
+                if let planner = self.planner {
+                    await planner.cancel(requestID: id)
+                }
+                continuation.yield(.error("token_budget_exhausted: insufficient global KV cache headroom"))
+                continuation.finish()
+                return stream
+            }
         }
 
         let temperature = request.temperature ?? 0.0
@@ -399,13 +460,14 @@ public actor BatchScheduler {
         return stream
     }
 
-    public func cancel(requestId: String) {
+    public func cancel(requestId: String) async {
         if let uid = requestIdToUid[requestId] {
-            finishRequest(uid: uid, error: "Request cancelled")
+            await finishRequest(uid: uid, error: "Request cancelled")
             return
         }
         guard let index = pending.firstIndex(where: { $0.requestId == requestId }) else { return }
         let entry = pending.remove(at: index)
+        await releaseKVReservation(requestID: entry.requestId)
         entry.continuation.yield(.error("Request cancelled"))
         entry.continuation.finish()
 
@@ -415,16 +477,40 @@ public actor BatchScheduler {
         }
     }
 
-    public func cancelAll() {
-        let uids = Array(active.keys)
-        for uid in uids {
-            finishRequest(uid: uid, error: "Scheduler shutting down")
-        }
-        for entry in pending {
+    public func cancelAll() async {
+        let activeEntries = active
+        let pendingEntries = pending
+        active.removeAll()
+        pending.removeAll()
+
+        var releaseIDs: [String] = []
+        releaseIDs.reserveCapacity(activeEntries.count + pendingEntries.count)
+
+        for (uid, entry) in activeEntries {
+            cancelledUIDs.insert(uid)
+            requestIdToUid.removeValue(forKey: entry.requestId)
+            releaseIDs.append(entry.requestId)
             entry.continuation.yield(.error("Scheduler shutting down"))
             entry.continuation.finish()
+            if let planner = self.planner {
+                let cancelledId = entry.requestId
+                Task { await planner.cancel(requestID: cancelledId) }
+            }
         }
-        pending.removeAll()
+
+        for entry in pendingEntries {
+            releaseIDs.append(entry.requestId)
+            entry.continuation.yield(.error("Scheduler shutting down"))
+            entry.continuation.finish()
+            if let planner = self.planner {
+                let cancelledId = entry.requestId
+                Task { await planner.cancel(requestID: cancelledId) }
+            }
+        }
+
+        for requestID in releaseIDs {
+            await releaseKVReservation(requestID: requestID)
+        }
     }
 
     // MARK: - Capacity
@@ -432,9 +518,10 @@ public actor BatchScheduler {
     public func capacity() -> SchedulerCapacity {
         SchedulerCapacity(
             model: modelId,
-            activeRequests: active.count + cancelledUIDs.count,
+            activeRequests: active.count,
             pendingRequests: pending.count,
-            maxConcurrent: maxConcurrentRequests,
+            maxConcurrent: effectiveMaxConcurrentRequests,
+            engineMaxConcurrent: maxConcurrentRequests,
             gpuMemoryActiveBytes: gpuMemory(.active),
             gpuMemoryPeakBytes: gpuMemory(.peak),
             gpuMemoryCacheBytes: gpuMemory(.cache),
@@ -448,24 +535,9 @@ public actor BatchScheduler {
 
         var activeTokens: Int64 = 0
         var maxTokensPotential: Int64 = 0
-        var activeBudget: Int64 = 0
         for entry in active.values {
             activeTokens += Int64(entry.promptTokens + entry.completionTokens)
             maxTokensPotential += Int64(entry.promptTokens + entry.maxTokens)
-            activeBudget += Int64(entry.promptTokens + entry.maxTokens)
-        }
-
-        var queuedBudget: Int64 = 0
-        for entry in pending {
-            queuedBudget += Int64(entry.promptTokens.count + entry.maxTokens)
-        }
-
-        // When the planner is available, prefer its authoritative snapshot
-        // for budget fields since it tracks the full admission lifecycle.
-        if let planner = self.planner {
-            let snapshot = await planner.snapshot()
-            activeBudget = Int64(snapshot.activeTokenBudgetUsed)
-            queuedBudget = Int64(snapshot.queuedTokenBudget)
         }
 
         let budgetMax = Int64(tokenBudgetMax)
@@ -477,10 +549,11 @@ public actor BatchScheduler {
             numWaiting: UInt32(cap.pendingRequests),
             activeTokens: activeTokens,
             maxTokensPotential: maxTokensPotential,
+            maxConcurrency: UInt32(cap.maxConcurrent),
             observedDecodeTps: observedDecodeTpsEwma,
-            activeTokenBudgetUsed: activeBudget,
+            activeTokenBudgetUsed: Int64(activeTokenBudgetUsed),
             activeTokenBudgetMax: budgetMax,
-            queuedTokenBudget: queuedBudget,
+            queuedTokenBudget: Int64(queuedTokenBudget),
             kvBytesPerToken: Int64(kvBytesPerToken)
         )
         return BackendCapacity(
@@ -510,12 +583,21 @@ public actor BatchScheduler {
     private func stepEngine() async -> Bool {
         guard let gen = generator, let container = modelContainer else { return false }
         let epoch = generationEpoch
-        expireTimedOutPending()
+        await expireTimedOutPending()
+        guard epoch == generationEpoch, generator === gen else {
+            return false
+        }
         applyCancelledRequests(to: gen)
-        admitPendingRequests(into: gen)
+        await admitPendingRequests(into: gen)
+        guard epoch == generationEpoch, generator === gen else {
+            return false
+        }
         if !gen.hasWork { return false }
 
-        let burstSteps = shouldPrioritizeFirstToken ? 1 : decodeBurstSteps
+        let prioritizeFirstToken = shouldPrioritizeFirstToken
+        let burstSteps = prioritizeFirstToken ? 1 : decodeBurstSteps
+        let activeBefore = max(1, gen.activeCount)
+        let startedAt = ContinuousClock.now
         engineBusy = true
         let responses: [GenerationBatchResponse] = await container.perform { _ in
             var all: [GenerationBatchResponse] = []
@@ -527,11 +609,19 @@ public actor BatchScheduler {
             return all
         }
         engineBusy = false
+        let elapsed = Self.seconds(between: startedAt, and: .now)
         guard epoch == generationEpoch, generator === gen else {
             return false
         }
+        if !prioritizeFirstToken, !responses.isEmpty, elapsed > 0 {
+            recordBatchPerformance(
+                batchSize: activeBefore,
+                tokenCount: responses.count,
+                elapsedSeconds: elapsed
+            )
+        }
         applyCancelledRequests(to: gen)
-        dispatchResponses(responses, producedAt: .now)
+        await dispatchResponses(responses, producedAt: .now)
         return true
     }
 
@@ -539,13 +629,41 @@ public actor BatchScheduler {
         active.values.contains { $0.completionTokens == 0 }
     }
 
-    private func admitPendingRequests(into gen: BatchGenerator) {
+    private func admitPendingRequests(into gen: BatchGenerator) async {
         guard !pending.isEmpty else { return }
-        let freeSlots = max(0, maxConcurrentRequests - active.count)
+        let freeSlots = max(0, effectiveMaxConcurrentRequests - active.count)
         guard freeSlots > 0 else { return }
 
-        let batch = Array(pending.prefix(freeSlots))
-        pending.removeFirst(batch.count)
+        var activeBudgetAfterAdmission = activeTokenBudgetUsed
+        let budgetMax = tokenBudgetMax
+        var batch: [PendingRequest] = []
+        var rejected: [(entry: PendingRequest, error: String)] = []
+        batch.reserveCapacity(freeSlots)
+
+        var pendingIndex = 0
+        while batch.count < freeSlots, pendingIndex < pending.count {
+            let next = pending[pendingIndex]
+            let requestBudget = next.promptTokens.count + next.maxTokens
+            if requestBudget > budgetMax {
+                pending.remove(at: pendingIndex)
+                rejected.append((
+                    entry: next,
+                    error: "token_budget_exhausted: request requires \(requestBudget) tokens but only \(budgetMax) available"
+                ))
+                continue
+            }
+            if activeBudgetAfterAdmission + requestBudget > budgetMax {
+                pendingIndex += 1
+                continue
+            }
+            batch.append(pending.remove(at: pendingIndex))
+            activeBudgetAfterAdmission += requestBudget
+        }
+
+        guard !batch.isEmpty else {
+            await rejectPendingRequests(rejected)
+            return
+        }
 
         let assignedUids = gen.insert(
             prompts: batch.map(\.promptTokens),
@@ -570,26 +688,53 @@ public actor BatchScheduler {
 
         if assignedUids.count < batch.count {
             for entry in batch.dropFirst(assignedUids.count) {
-                entry.continuation.yield(.error("BatchGenerator rejected the prompt"))
-                entry.continuation.finish()
+                rejected.append((entry: entry, error: "BatchGenerator rejected the prompt"))
+            }
+        }
+
+        await rejectPendingRequests(rejected)
+    }
+
+    private func rejectPendingRequests(_ rejected: [(entry: PendingRequest, error: String)]) async {
+        guard !rejected.isEmpty else { return }
+        let planner = self.planner
+        for rejection in rejected {
+            await releaseKVReservation(requestID: rejection.entry.requestId)
+            rejection.entry.continuation.yield(.error(rejection.error))
+            rejection.entry.continuation.finish()
+            if let planner {
+                let rejectedId = rejection.entry.requestId
+                Task { await planner.cancel(requestID: rejectedId) }
             }
         }
     }
 
-    private func expireTimedOutPending(now: ContinuousClock.Instant = .now) {
+    private func expireTimedOutPending(now: ContinuousClock.Instant = .now) async {
         guard !pending.isEmpty else { return }
 
         var stillPending: [PendingRequest] = []
+        var timedOut: [PendingRequest] = []
         stillPending.reserveCapacity(pending.count)
         for entry in pending {
             if now - entry.submittedAt >= pendingTimeout {
-                entry.continuation.yield(.error("Request timed out waiting for capacity"))
-                entry.continuation.finish()
+                timedOut.append(entry)
             } else {
                 stillPending.append(entry)
             }
         }
         pending = stillPending
+
+        for entry in timedOut {
+            entry.continuation.yield(.error("Request timed out waiting for capacity"))
+            entry.continuation.finish()
+            if let planner = self.planner {
+                let timedOutId = entry.requestId
+                Task { await planner.cancel(requestID: timedOutId) }
+            }
+        }
+        for entry in timedOut {
+            await releaseKVReservation(requestID: entry.requestId)
+        }
     }
 
     private func applyCancelledRequests(to gen: BatchGenerator) {
@@ -601,13 +746,13 @@ public actor BatchScheduler {
     }
 
     private func stopCurrentEngine() async {
-        cancelAll()
         generationEpoch &+= 1
         workerTask?.cancel()
         workerTask = nil
         generator = nil
         modelContainer = nil
         tokenizer = nil
+        await cancelAll()
         modelWeightBytes = 0
         modelId = ""
         kvBytesPerToken = 400_000
@@ -615,6 +760,8 @@ public actor BatchScheduler {
         planner = nil
         observedDecodeTpsEwma = 0
         ewmaInitialized = false
+        performanceByBatchSize.removeAll()
+        dynamicMaxConcurrentRequests = min(4, maxConcurrentRequests)
 
         while engineBusy {
             try? await Task.sleep(for: .milliseconds(1))
@@ -625,7 +772,7 @@ public actor BatchScheduler {
     private func dispatchResponses(
         _ responses: [GenerationBatchResponse],
         producedAt: ContinuousClock.Instant
-    ) {
+    ) async {
         var byUID: [Int: [GenerationBatchResponse]] = [:]
         byUID.reserveCapacity(responses.count)
         for response in responses {
@@ -634,14 +781,14 @@ public actor BatchScheduler {
 
         for uid in responses.map(\.uid) where byUID[uid] != nil {
             let rowResponses = byUID.removeValue(forKey: uid)!
-            dispatchRowResponses(rowResponses, producedAt: producedAt)
+            await dispatchRowResponses(rowResponses, producedAt: producedAt)
         }
     }
 
     private func dispatchRowResponses(
         _ responses: [GenerationBatchResponse],
         producedAt: ContinuousClock.Instant
-    ) {
+    ) async {
         guard let first = responses.first, var entry = active[first.uid] else { return }
 
         var finalResponse: GenerationBatchResponse?
@@ -706,6 +853,7 @@ public actor BatchScheduler {
             entry.continuation.finish()
             active.removeValue(forKey: first.uid)
             requestIdToUid.removeValue(forKey: entry.requestId)
+            await releaseKVReservation(requestID: entry.requestId)
 
             // Notify planner that this request is done so its token budget
             // is released for future admissions. Use cancel() instead of
@@ -722,11 +870,44 @@ public actor BatchScheduler {
         }
     }
 
-    private func finishRequest(uid: Int, error: String) {
+    private func recordBatchPerformance(
+        batchSize: Int,
+        tokenCount: Int,
+        elapsedSeconds: Double
+    ) {
+        guard batchSize > 0, tokenCount > 0, elapsedSeconds > 0 else { return }
+
+        let aggregateTps = Double(tokenCount) / elapsedSeconds
+        let perRequestTps = aggregateTps / Double(batchSize)
+        performanceByBatchSize[batchSize, default: AdaptiveBatchPerformanceBucket()]
+            .record(aggregateTps: aggregateTps, perRequestTps: perRequestTps)
+        updateDynamicMaxConcurrentRequests(observedBatchSize: batchSize)
+    }
+
+    private func updateDynamicMaxConcurrentRequests(observedBatchSize: Int) {
+        dynamicMaxConcurrentRequests = adaptiveCapPolicy.nextCap(
+            currentCap: dynamicMaxConcurrentRequests,
+            hardCap: maxConcurrentRequests,
+            observedBatchSize: observedBatchSize,
+            performanceByBatchSize: performanceByBatchSize
+        )
+    }
+
+    private static func seconds(
+        between start: ContinuousClock.Instant,
+        and end: ContinuousClock.Instant
+    ) -> Double {
+        let elapsed = end - start
+        return Double(elapsed.components.seconds)
+            + Double(elapsed.components.attoseconds) / 1e18
+    }
+
+    private func finishRequest(uid: Int, error: String) async {
         guard let entry = active.removeValue(forKey: uid) else { return }
         cancelledUIDs.insert(uid)
         let cancelledId = entry.requestId
         requestIdToUid.removeValue(forKey: cancelledId)
+        await releaseKVReservation(requestID: cancelledId)
         entry.continuation.yield(.error(error))
         entry.continuation.finish()
 
@@ -737,6 +918,57 @@ public actor BatchScheduler {
     }
 
     private enum MemoryKind { case active, peak, cache }
+
+    private func releaseKVReservation(requestID: String) async {
+        guard let kvBudget else { return }
+        await kvBudget.release(requestID: requestID)
+    }
+
+    static func resolvedMaxTokens(requested: Int?, defaultMaxTokens: Int) -> Int {
+        requested ?? defaultMaxTokens
+    }
+
+    private func makePlanner(activeTokenBudget: Int) -> BatchQueuePlanner {
+        BatchQueuePlanner(
+            policy: BatchSchedulingPolicy(
+                maxConcurrentRequests: maxConcurrentRequests,
+                maxQueuedRequests: 128,
+                maxActiveTokenBudget: activeTokenBudget,
+                maxTokensPerBatch: 4096
+            )
+        )
+    }
+
+    private func refreshPlannerPolicy(activeTokenBudget: Int) async {
+        guard let planner else { return }
+        let updatedPolicy = BatchSchedulingPolicy(
+            maxConcurrentRequests: maxConcurrentRequests,
+            maxQueuedRequests: 128,
+            maxActiveTokenBudget: activeTokenBudget,
+            maxTokensPerBatch: 4096
+        )
+        let snapshot = await planner.snapshot()
+        guard snapshot.policy != updatedPolicy else { return }
+
+        if activeTokenBudget >= snapshot.policy.maxActiveTokenBudget {
+            await planner.updatePolicy(updatedPolicy)
+            return
+        }
+
+        guard snapshot.pendingRequests.isEmpty,
+              snapshot.activeRequests.isEmpty else { return }
+        await planner.updatePolicy(updatedPolicy)
+    }
+
+    static func readBoundedConfigJSON(_ url: URL) -> Data? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return nil
+        }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: maxConfigJSONBytes + 1),
+              data.count <= maxConfigJSONBytes else { return nil }
+        return data
+    }
 
     private func gpuMemory(_ kind: MemoryKind) -> Int {
         #if canImport(Metal)

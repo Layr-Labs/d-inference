@@ -28,6 +28,9 @@ enum LiveInferenceFixtures {
     /// Additional env var required for the multi-GB Gemma test.
     static let gemmaEnvVar = "DARKBLOOM_LIVE_MLX_GEMMA"
 
+    /// Additional env var required for tests that need two distinct local models.
+    static let multiModelEnvVar = "DARKBLOOM_LIVE_MLX_MULTI_MODEL"
+
     // MARK: Gating
 
     /// True when the operator opted into running live tests.
@@ -39,6 +42,12 @@ enum LiveInferenceFixtures {
     static var gemmaTestsEnabled: Bool {
         liveTestsEnabled
             && (ProcessInfo.processInfo.environment[gemmaEnvVar].map { !$0.isEmpty } ?? false)
+    }
+
+    /// True when the operator opted into tests that require two small local models.
+    static var multiModelLiveTestsEnabled: Bool {
+        liveTestsEnabled
+            && (ProcessInfo.processInfo.environment[multiModelEnvVar].map { !$0.isEmpty } ?? false)
     }
 
     // MARK: Model location

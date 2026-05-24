@@ -60,7 +60,8 @@ import Testing
                     numRunning: 1,
                     numWaiting: 0,
                     activeTokens: 512,
-                    maxTokensPotential: 2048
+                    maxTokensPotential: 2048,
+                    maxConcurrency: 4
                 )],
                 gpuMemoryActiveGb: 8.5,
                 gpuMemoryPeakGb: 9.0,
@@ -203,6 +204,147 @@ import Testing
         encoding: .utf8
     ) ?? ""
     #expect(!runtimeJSON.contains("mismatches"))
+}
+
+@Test func backendSlotCapacityRoundTripsAdaptiveBatchingFields() throws {
+    let slot = BackendSlotCapacity(
+        model: "mlx-community/Qwen2.5-7B-4bit",
+        state: "running",
+        numRunning: 3,
+        numWaiting: 2,
+        activeTokens: 5_000,
+        maxTokensPotential: 12_000,
+        maxConcurrency: 6,
+        observedDecodeTps: 85.5,
+        activeTokenBudgetUsed: 28_000,
+        activeTokenBudgetMax: 32_768,
+        queuedTokenBudget: 4_096,
+        kvBytesPerToken: 393_216
+    )
+
+    let data = try JSONEncoder().encode(slot)
+    let object = try jsonObject(data)
+    #expect(object["max_concurrency"] as? Int == 6)
+    #expect(object["observed_decode_tps"] as? Double == 85.5)
+    #expect(object["active_token_budget_used"] as? Int == 28_000)
+    #expect(object["active_token_budget_max"] as? Int == 32_768)
+    #expect(object["queued_token_budget"] as? Int == 4_096)
+    #expect(object["kv_bytes_per_token"] as? Int == 393_216)
+
+    let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: data)
+    #expect(decoded == slot)
+}
+
+@Test func backendSlotCapacityDecodesMaxConcurrencyPresentAndNonzero() throws {
+    let raw = #"{"model":"test","state":"running","num_running":2,"num_waiting":1,"active_tokens":3000,"max_tokens_potential":8000,"max_concurrency":4}"#
+    let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: Data(raw.utf8))
+
+    #expect(decoded.maxConcurrency == 4)
+}
+
+@Test func backendSlotCapacityDecodesOldPayloadWithoutAdaptiveFields() throws {
+    let raw = #"{"model":"test","state":"running","num_running":2,"num_waiting":0,"active_tokens":3000,"max_tokens_potential":8000}"#
+    let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: Data(raw.utf8))
+
+    #expect(decoded.model == "test")
+    #expect(decoded.numRunning == 2)
+    #expect(decoded.maxConcurrency == 0)
+    #expect(decoded.observedDecodeTps == 0)
+    #expect(decoded.activeTokenBudgetUsed == 0)
+    #expect(decoded.activeTokenBudgetMax == 0)
+    #expect(decoded.queuedTokenBudget == 0)
+    #expect(decoded.kvBytesPerToken == 0)
+}
+
+@Test func backendSlotCapacityDecodesMaxConcurrencyZero() throws {
+    let raw = #"{"model":"test","state":"running","num_running":2,"num_waiting":1,"active_tokens":3000,"max_tokens_potential":8000,"max_concurrency":0}"#
+    let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: Data(raw.utf8))
+
+    #expect(decoded.maxConcurrency == 0)
+}
+
+@Test func backendSlotCapacityOmitsZeroAdditiveFields() throws {
+    let slot = BackendSlotCapacity(
+        model: "test",
+        state: "running",
+        numRunning: 1,
+        numWaiting: 0,
+        activeTokens: 0,
+        maxTokensPotential: 0,
+        maxConcurrency: 0,
+        observedDecodeTps: 0,
+        activeTokenBudgetUsed: 0,
+        activeTokenBudgetMax: 0,
+        queuedTokenBudget: 0,
+        kvBytesPerToken: 0
+    )
+
+    let object = try jsonObject(JSONEncoder().encode(slot))
+
+    #expect(object["active_tokens"] as? Int == 0)
+    #expect(object["max_tokens_potential"] as? Int == 0)
+    #expect(object["max_concurrency"] == nil)
+    #expect(object["observed_decode_tps"] == nil)
+    #expect(object["active_token_budget_used"] == nil)
+    #expect(object["active_token_budget_max"] == nil)
+    #expect(object["queued_token_budget"] == nil)
+    #expect(object["kv_bytes_per_token"] == nil)
+}
+
+@Test func privacyCapabilitiesDecodesMissingHypervisorActiveAsFalse() throws {
+    let raw = #"{"text_backend_inprocess":true,"text_proxy_disabled":true,"python_runtime_locked":true,"dangerous_modules_blocked":true,"sip_enabled":true,"anti_debug_enabled":true,"core_dumps_disabled":true,"env_scrubbed":true}"#
+    let decoded = try JSONDecoder().decode(PrivacyCapabilities.self, from: Data(raw.utf8))
+
+    #expect(decoded.hypervisorActive == false)
+}
+
+@Test func heartbeatBackendCapacityEncodesSnakeCaseFields() throws {
+    let heartbeat = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+        status: .serving,
+        activeModel: "mlx-community/Qwen2.5-7B-4bit",
+        stats: ProviderStats(requestsServed: 1, tokensGenerated: 2),
+        systemMetrics: SystemMetrics(memoryPressure: 0.1, cpuUsage: 0.2, thermalState: .nominal),
+        backendCapacity: BackendCapacity(
+            slots: [BackendSlotCapacity(
+                model: "mlx-community/Qwen2.5-7B-4bit",
+                state: "running",
+                numRunning: 1,
+                numWaiting: 2,
+                activeTokens: 3000,
+                maxTokensPotential: 8000,
+                maxConcurrency: 4,
+                observedDecodeTps: 90,
+                activeTokenBudgetUsed: 5000,
+                activeTokenBudgetMax: 12000,
+                queuedTokenBudget: 7000,
+                kvBytesPerToken: 262144
+            )],
+            gpuMemoryActiveGb: 5.5,
+            gpuMemoryPeakGb: 6.5,
+            gpuMemoryCacheGb: 1.5,
+            totalMemoryGb: 36
+        )
+    ))
+
+    let data = try ProviderProtocolCodec.encodeProviderMessage(heartbeat)
+    let object = try jsonObject(data)
+    let capacity = object["backend_capacity"] as? [String: Any]
+    let slot = (capacity?["slots"] as? [[String: Any]])?.first
+
+    #expect(capacity?["gpu_memory_active_gb"] as? Double == 5.5)
+    #expect(capacity?["gpu_memory_peak_gb"] as? Double == 6.5)
+    #expect(capacity?["gpu_memory_cache_gb"] as? Double == 1.5)
+    #expect(capacity?["total_memory_gb"] as? Double == 36)
+    #expect(slot?["num_running"] as? Int == 1)
+    #expect(slot?["num_waiting"] as? Int == 2)
+    #expect(slot?["active_tokens"] as? Int == 3000)
+    #expect(slot?["max_tokens_potential"] as? Int == 8000)
+    #expect(slot?["max_concurrency"] as? Int == 4)
+    #expect(slot?["observed_decode_tps"] as? Double == 90)
+    #expect(slot?["active_token_budget_used"] as? Int == 5000)
+    #expect(slot?["active_token_budget_max"] as? Int == 12000)
+    #expect(slot?["queued_token_budget"] as? Int == 7000)
+    #expect(slot?["kv_bytes_per_token"] as? Int == 262144)
 }
 
 private func sampleHardware() -> HardwareInfo {

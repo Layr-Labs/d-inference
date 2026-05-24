@@ -93,7 +93,8 @@ struct Start: AsyncParsableCommand {
         let advertised = advertisedModels(
             from: snapshot.models,
             config: config,
-            modelOverrides: model
+            modelOverrides: model,
+            includeDisabled: all
         )
 
         print("darkbloom \(ProviderCore.version) (standalone)")
@@ -110,15 +111,12 @@ struct Start: AsyncParsableCommand {
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
 
-        let scheduler = BatchScheduler(
-            maxConcurrentRequests: 4,
-            pendingTimeout: .seconds(120),
-            defaultMaxTokens: 4096
-        )
-
         let server = StandaloneServer(
-            config: StandaloneServerConfig(port: port, host: "127.0.0.1"),
-            scheduler: scheduler,
+            config: StandaloneServerConfig(
+                port: port,
+                host: "127.0.0.1",
+                maxCachedModels: Int(clamping: config.backend.maxModelSlots)
+            ),
             models: advertised
         )
         try await server.start()

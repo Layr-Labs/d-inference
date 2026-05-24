@@ -51,7 +51,8 @@ func TestClampBackendCapacityMaliciousValues(t *testing.T) {
 		GPUMemoryPeakGB:   math.NaN(),
 		GPUMemoryCacheGB:  2048,
 		Slots: []protocol.BackendSlotCapacity{
-			{Model: "qwen", MaxTokensPotential: 1 << 60, NumRunning: -1, NumWaiting: -1},
+			{Model: "qwen", MaxTokensPotential: 1 << 60, NumRunning: -1, NumWaiting: -1, MaxConcurrency: -3},
+			{Model: "huge", MaxConcurrency: 99},
 		},
 	}
 	clampBackendCapacity(logger, "p1", bc)
@@ -75,6 +76,12 @@ func TestClampBackendCapacityMaliciousValues(t *testing.T) {
 	if s.NumRunning != 0 || s.NumWaiting != 0 {
 		t.Errorf("NumRunning=%d NumWaiting=%d, want both 0", s.NumRunning, s.NumWaiting)
 	}
+	if s.MaxConcurrency != 0 {
+		t.Errorf("negative MaxConcurrency = %d, want 0", s.MaxConcurrency)
+	}
+	if bc.Slots[1].MaxConcurrency != maxReportedMaxConcurrency {
+		t.Errorf("huge MaxConcurrency = %d, want %d", bc.Slots[1].MaxConcurrency, maxReportedMaxConcurrency)
+	}
 }
 
 func TestClampBackendCapacityReasonableValues(t *testing.T) {
@@ -86,7 +93,7 @@ func TestClampBackendCapacityReasonableValues(t *testing.T) {
 		GPUMemoryPeakGB:   50.1,
 		GPUMemoryCacheGB:  5.2,
 		Slots: []protocol.BackendSlotCapacity{
-			{Model: "qwen", MaxTokensPotential: 32000, NumRunning: 2, NumWaiting: 0},
+			{Model: "qwen", MaxTokensPotential: 32000, NumRunning: 2, NumWaiting: 0, MaxConcurrency: 8},
 		},
 	}
 	clampBackendCapacity(logger, "p1", bc)
@@ -96,5 +103,8 @@ func TestClampBackendCapacityReasonableValues(t *testing.T) {
 	}
 	if bc.Slots[0].MaxTokensPotential != 32000 {
 		t.Errorf("MaxTokensPotential mutated: %v", bc.Slots[0].MaxTokensPotential)
+	}
+	if bc.Slots[0].MaxConcurrency != 8 {
+		t.Errorf("MaxConcurrency mutated: %v", bc.Slots[0].MaxConcurrency)
 	}
 }

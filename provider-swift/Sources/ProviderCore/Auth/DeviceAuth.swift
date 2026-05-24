@@ -14,16 +14,67 @@ import Foundation
 
 public enum AuthTokenStore: Sendable {
 
-    /// Path to the stored auth token: ~/.darkbloom/auth_token
+    /// Path to the canonical stored auth token. Test harnesses can override this with
+    /// DARKBLOOM_AUTH_TOKEN_PATH to avoid touching the user's login state.
     public static func tokenPath() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        if let override = tokenPathOverride() {
+            return URL(fileURLWithPath: override)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".darkbloom")
             .appendingPathComponent("auth_token")
     }
 
+    private static func tokenPathOverride() -> String? {
+        guard let override = ProcessInfo.processInfo.environment["DARKBLOOM_AUTH_TOKEN_PATH"], !override.isEmpty else {
+            return nil
+        }
+        return override
+    }
+
+    static func legacyTokenPaths() -> [URL] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first
+
+        var paths = [
+            home
+                .appendingPathComponent(".config")
+                .appendingPathComponent("eigeninference")
+                .appendingPathComponent("auth_token"),
+        ]
+        if let appSupport {
+            paths.append(
+                appSupport
+                    .appendingPathComponent("eigeninference")
+                    .appendingPathComponent("auth_token")
+            )
+        }
+        return paths
+    }
+
     /// Load the saved auth token, if any.
     public static func load() -> String? {
-        let path = tokenPath()
+        load(canonicalPath: tokenPath(), legacyPaths: tokenPathOverride() == nil ? legacyTokenPaths() : [])
+    }
+
+    static func load(canonicalPath: URL, legacyPaths: [URL]) -> String? {
+        if let token = readToken(from: canonicalPath) {
+            return token
+        }
+
+        for legacyPath in legacyPaths where legacyPath != canonicalPath {
+            if let token = readToken(from: legacyPath) {
+                try? save(token, to: canonicalPath)
+                return token
+            }
+        }
+        return nil
+    }
+
+    private static func readToken(from path: URL) -> String? {
         guard let content = try? String(contentsOf: path, encoding: .utf8) else {
             return nil
         }
@@ -33,7 +84,10 @@ public enum AuthTokenStore: Sendable {
 
     /// Save an auth token to disk with restricted permissions (owner read/write only).
     public static func save(_ token: String) throws {
-        let path = tokenPath()
+        try save(token, to: tokenPath())
+    }
+
+    private static func save(_ token: String, to path: URL) throws {
         let dir = path.deletingLastPathComponent()
         try FileManager.default.createDirectory(
             at: dir,
@@ -50,9 +104,15 @@ public enum AuthTokenStore: Sendable {
 
     /// Delete the auth token file.
     public static func delete() throws {
-        let path = tokenPath()
-        if FileManager.default.fileExists(atPath: path.path) {
-            try FileManager.default.removeItem(at: path)
+        try delete(canonicalPath: tokenPath(), legacyPaths: tokenPathOverride() == nil ? legacyTokenPaths() : [])
+    }
+
+    static func delete(canonicalPath: URL, legacyPaths: [URL]) throws {
+        var seen = Set<String>()
+        for path in [canonicalPath] + legacyPaths where seen.insert(path.path).inserted {
+            if FileManager.default.fileExists(atPath: path.path) {
+                try FileManager.default.removeItem(at: path)
+            }
         }
     }
 }

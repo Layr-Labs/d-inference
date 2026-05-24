@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -597,6 +598,61 @@ func TestIntegration_SwiftProviderRealRoutingGates(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", string(respBody[:min(len(respBody), 500)]))
 
 	t.Logf("Swift provider real routing: status=200 via challenge-verified path")
+}
+
+func TestIntegration_FullNetworkSingleSwiftProviderMultiModelRouting(t *testing.T) {
+	if os.Getenv("DARKBLOOM_FULL_NETWORK_SMOKE") == "" {
+		t.Skip("set DARKBLOOM_FULL_NETWORK_SMOKE=1 to run the full coordinator + real Swift provider multi-model smoke")
+	}
+
+	modelA := envOr("DARKBLOOM_FULL_NETWORK_MODEL_A", "mlx-community/Qwen3-0.6B-8bit")
+	modelB := envOr("DARKBLOOM_FULL_NETWORK_MODEL_B", "mlx-community/Qwen2.5-0.5B-Instruct-4bit")
+	require.NotEqual(t, modelA, modelB, "full-network smoke requires two distinct model IDs")
+
+	ctx := context.Background()
+	s := testbed.NewSuite(testbed.SuiteConfig{
+		ModelSpecs:     []testbed.ModelSpec{{ModelIDs: []string{modelA, modelB}, NumProviders: 1}},
+		NumUsers:       1,
+		SeedBalance:    500_000_000,
+		UseMemoryStore: true,
+	})
+	require.NoError(t, s.Start(ctx), "suite startup failed")
+	t.Cleanup(s.Stop)
+	require.Equal(t, 1, s.Coordinator.Registry.ProviderCount(), "smoke must route both models through one provider")
+
+	models := []string{modelA, modelB, modelA}
+	var providerID string
+	for _, model := range models {
+		resp := postChatCompletionsWithModel(t, s, model, "Reply with one short word.", false, 16)
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode, "model %s body: %s", model, string(respBody[:min(len(respBody), 500)]))
+
+		currentProviderID := resp.Header.Get("X-Provider-Id")
+		require.NotEmpty(t, currentProviderID, "coordinator should report provider id for model %s", model)
+		if providerID == "" {
+			providerID = currentProviderID
+		} else {
+			require.Equal(t, providerID, currentProviderID, "all requests should route to the same multi-model provider")
+		}
+
+		var decoded struct {
+			Model   string `json:"model"`
+			Choices []struct {
+				Message struct {
+					Content   string `json:"content"`
+					Reasoning string `json:"reasoning"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		require.NoError(t, json.Unmarshal(respBody, &decoded))
+		require.Equal(t, model, decoded.Model)
+		require.NotEmpty(t, decoded.Choices)
+		message := decoded.Choices[0].Message
+		require.NotEmpty(t, message.Content+message.Reasoning)
+	}
+
+	t.Logf("full-network multi-model smoke routed %v through provider %s", models, providerID)
 }
 
 func TestIntegration_ReferralRewardDistribution(t *testing.T) {

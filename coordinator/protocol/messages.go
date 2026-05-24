@@ -139,12 +139,13 @@ type HeartbeatMessage struct {
 // BackendSlotCapacity describes the capacity state of a single backend slot
 // (one vllm-mlx instance serving one model).
 type BackendSlotCapacity struct {
-	Model              string `json:"model"`                // model ID for this slot
-	State              string `json:"state"`                // "running", "idle_shutdown", "crashed", "reloading"
-	NumRunning         int    `json:"num_running"`          // requests actively generating
-	NumWaiting         int    `json:"num_waiting"`          // requests queued in backend scheduler
-	ActiveTokens       int64  `json:"active_tokens"`        // sum of (prompt_tokens + completion_tokens) across running requests
-	MaxTokensPotential int64  `json:"max_tokens_potential"` // sum of max_tokens across running requests (worst-case growth)
+	Model              string `json:"model"`                     // model ID for this slot
+	State              string `json:"state"`                     // "running", "idle_shutdown", "crashed", "reloading"
+	NumRunning         int    `json:"num_running"`               // requests actively generating
+	NumWaiting         int    `json:"num_waiting"`               // requests queued in backend scheduler
+	MaxConcurrency     int    `json:"max_concurrency,omitempty"` // provider-reported concurrent request cap for this slot
+	ActiveTokens       int64  `json:"active_tokens"`             // sum of (prompt_tokens + completion_tokens) across running requests
+	MaxTokensPotential int64  `json:"max_tokens_potential"`      // sum of max_tokens across running requests (worst-case growth)
 
 	ObservedDecodeTPS     float64 `json:"observed_decode_tps,omitempty"`      // EWMA of measured per-request decode TPS
 	ActiveTokenBudgetUsed int64   `json:"active_token_budget_used,omitempty"` // tokens reserved by active requests (prompt + max_output)
@@ -420,6 +421,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg AttestationResponseMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal attestation_response: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeLoadModelStatus:
+		var msg LoadModelStatusMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal load_model_status: %w", err)
 		}
 		pm.Payload = &msg
 

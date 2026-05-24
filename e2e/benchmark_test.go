@@ -125,11 +125,13 @@ func runBenchmark(t *testing.T, name string, suiteCfg testbed.SuiteConfig, reqCf
 		suiteCfg.TotalProviders(), suiteCfg.NumUsers, reqCfg.TotalRequests, reqCfg.Concurrency, reqCfg.Streaming))
 	benchmarkMarkdown.WriteString("| Model | Providers | RAM |\n|---|---|---|\n")
 	for _, spec := range suiteCfg.ModelSpecs {
-		ram, ok := testbed.KnownModelSizes[spec.ModelID]
-		if !ok {
-			ram = "unknown"
+		for _, modelID := range spec.IDs() {
+			ram, ok := testbed.KnownModelSizes[modelID]
+			if !ok {
+				ram = "unknown"
+			}
+			benchmarkMarkdown.WriteString(fmt.Sprintf("| %s | %d | %s |\n", modelID, spec.NumProviders, ram))
 		}
-		benchmarkMarkdown.WriteString(fmt.Sprintf("| %s | %d | %s |\n", spec.ModelID, spec.NumProviders, ram))
 	}
 	benchmarkMarkdown.WriteString("\n")
 	benchmarkMarkdown.WriteString(result.SummaryMarkdown())

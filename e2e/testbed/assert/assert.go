@@ -37,15 +37,19 @@ func NewAsserter(thresholds []Threshold) *Asserter {
 
 func DefaultThresholds() []Threshold {
 	return []Threshold{
+		{Segment: testbed.SegmentTotalE2E, MaxMean: 2 * time.Minute, MaxP95: 5 * time.Minute},
+		{Segment: testbed.SegmentTTFT, MaxMean: 30 * time.Second, MaxP95: 90 * time.Second},
+		{Segment: testbed.SegmentQueueWait, MaxMean: 30 * time.Second, MaxP95: 120 * time.Second},
+	}
+}
+
+func CoordinatorOverheadThresholds() []Threshold {
+	return []Threshold{
 		{Segment: testbed.SegmentParse, MaxMean: 1 * time.Millisecond, MaxP95: 5 * time.Millisecond},
 		{Segment: testbed.SegmentReserve, MaxMean: 50 * time.Millisecond, MaxP95: 200 * time.Millisecond},
 		{Segment: testbed.SegmentEncrypt, MaxMean: 5 * time.Millisecond, MaxP95: 50 * time.Millisecond},
 		{Segment: testbed.SegmentDispatch, MaxMean: 5 * time.Millisecond, MaxP95: 50 * time.Millisecond},
 	}
-}
-
-func CoordinatorOverheadThresholds() []Threshold {
-	return DefaultThresholds()
 }
 
 type SegmentStatsView = testbed.SegmentStatsView

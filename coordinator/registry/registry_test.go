@@ -2343,6 +2343,33 @@ func TestBackwardCompatNoCapacity(t *testing.T) {
 	}
 }
 
+func TestHeartbeatClearsStaleBackendCapacity(t *testing.T) {
+	reg := New(testLogger())
+	msg := testRegisterMessage()
+	p := reg.Register("p1", nil, msg)
+	p.mu.Lock()
+	p.BackendCapacity = &protocol.BackendCapacity{
+		TotalMemoryGB: 64,
+		Slots: []protocol.BackendSlotCapacity{{
+			Model: "mlx-community/Qwen3.5-9B-Instruct-4bit",
+			State: "crashed",
+		}},
+	}
+	p.mu.Unlock()
+
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
+		Type:   protocol.TypeHeartbeat,
+		Status: "idle",
+		Stats:  protocol.HeartbeatStats{},
+	})
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.BackendCapacity != nil {
+		t.Fatalf("BackendCapacity=%+v, want nil after omitted heartbeat capacity", p.BackendCapacity)
+	}
+}
+
 // TestSetProviderIdleDynamicCap verifies that SetProviderIdle drains queued
 // requests using dynamic concurrency limits. A provider with max=8 and
 // pending=5 should still try to drain after completing a request.

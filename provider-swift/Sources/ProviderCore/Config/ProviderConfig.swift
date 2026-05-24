@@ -54,19 +54,25 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// Minutes of inactivity before the backend is shut down to free GPU memory.
     /// 0 = never shut down. Default: 60 (1 hour).
     public var idleTimeoutMins: UInt64
+    /// Maximum number of models to keep resident at once. This bounds
+    /// coordinator-driven preloads so advertised model count cannot become a
+    /// memory-unbounded slot cap.
+    public var maxModelSlots: UInt64
 
     public init(
         port: UInt16 = 8100,
         model: String? = nil,
         continuousBatching: Bool = true,
         enabledModels: [String] = [],
-        idleTimeoutMins: UInt64 = 60
+        idleTimeoutMins: UInt64 = 60,
+        maxModelSlots: UInt64 = 3
     ) {
         self.port = port
         self.model = model
         self.continuousBatching = continuousBatching
         self.enabledModels = enabledModels
         self.idleTimeoutMins = idleTimeoutMins
+        self.maxModelSlots = maxModelSlots
     }
 
     enum CodingKeys: String, CodingKey {
@@ -75,6 +81,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case continuousBatching = "continuous_batching"
         case enabledModels = "enabled_models"
         case idleTimeoutMins = "idle_timeout_mins"
+        case maxModelSlots = "max_model_slots"
     }
 
     public init(from decoder: Decoder) throws {
@@ -84,6 +91,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.continuousBatching = try container.decodeIfPresent(Bool.self, forKey: .continuousBatching) ?? true
         self.enabledModels = try container.decodeIfPresent([String].self, forKey: .enabledModels) ?? []
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
+        self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
     }
 }
 
@@ -154,7 +162,8 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
                 model: nil,
                 continuousBatching: true,
                 enabledModels: [],
-                idleTimeoutMins: 60
+                idleTimeoutMins: 60,
+                maxModelSlots: 3
             ),
             coordinator: CoordinatorSettings(
                 url: "ws://localhost:8080/ws/provider",

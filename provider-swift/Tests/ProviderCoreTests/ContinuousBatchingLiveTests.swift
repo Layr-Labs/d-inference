@@ -8,8 +8,10 @@ import Tokenizers
 
 /// Greedy-decoding diff tests: batched output must match single-stream
 /// output token-for-token (subject to bf16/fp16 reduction-order drift on
-/// later tokens). Gated by `DARKBLOOM_LIVE_MLX_TESTS=1`; the Gemma case
-/// is additionally gated by `DARKBLOOM_LIVE_MLX_GEMMA=1` (27 GB load).
+/// later tokens). Drives `MLXLMCommon.BatchedEngine` directly so we test
+/// engine semantics independent of `BatchScheduler`. Gated by
+/// `DARKBLOOM_LIVE_MLX_TESTS=1`; Gemma additionally needs
+/// `DARKBLOOM_LIVE_MLX_GEMMA=1` (27 GB load).
 @Suite(
     "continuous batching: greedy diff against single-stream reference",
     .serialized
@@ -114,26 +116,12 @@ struct ContinuousBatchingLiveTests {
         let prompts = Array(repeating: encoded, count: 4)
         let maxTokens = 8
 
-        let batched: [[Int]] = await container.perform { ctx in
-            let gen = BatchGenerator(
-                model: ctx.model,
-                eosTokens: [],
-                defaultMaxTokens: maxTokens
-            )
-            let uids = gen.insert(prompts: prompts)
-            var output: [Int: [Int]] = [:]
-            for u in uids { output[u] = [] }
-            var iter = 0
-            while gen.hasWork {
-                iter += 1
-                if iter > maxTokens * 4 { break }
-                for r in gen.next() {
-                    output[r.uid]?.append(r.token)
-                }
-            }
-            gen.close()
-            return uids.map { output[$0]! }
-        }
+        let batched = try await runBatchedEngine(
+            container: container,
+            modelID: modelID,
+            prompts: prompts,
+            maxTokens: maxTokens
+        )
 
         let reference = batched[0]
         for (k, b) in batched.enumerated().dropFirst() {
@@ -181,8 +169,9 @@ struct ContinuousBatchingLiveTests {
             maxTokens: maxTokens
         )
 
-        let batched = await batchedGreedy(
+        let batched = try await runBatchedEngine(
             container: container,
+            modelID: modelID,
             prompts: encodedPrompts,
             maxTokens: maxTokens
         )
@@ -237,38 +226,87 @@ struct ContinuousBatchingLiveTests {
         }
     }
 
-    private func batchedGreedy(
+    /// Construct a `BatchedEngine` directly (bypassing `BatchScheduler`) and
+    /// drive `prompts.count` greedy requests through it. Returns one token
+    /// list per request, in the order `prompts` were submitted.
+    private func runBatchedEngine(
         container: ModelContainer,
+        modelID: String,
         prompts: [[Int]],
         maxTokens: Int
-    ) async -> [[Int]] {
-        await container.perform { ctx in
-            let gen = BatchGenerator(
+    ) async throws -> [[Int]] {
+        // Build the engine inside the container actor so we can pass the
+        // LanguageModel reference; the engine then runs on its own queue.
+        let engine = await container.perform { ctx -> BatchedEngine in
+            let scheduler = Scheduler(
                 model: ctx.model,
-                eosTokens: [],
-                defaultMaxTokens: maxTokens,
-                prefillStepSize: 2048,
-                prefillBatchSize: 8,
-                completionBatchSize: 32
+                tokenizer: ctx.tokenizer,
+                config: SchedulerConfig(
+                    maxNumSeqs: max(4, prompts.count),
+                    maxNumBatchedTokens: 8192,
+                    prefillStepSize: 2048,
+                    streamInterval: 1
+                ),
+                eosTokenIds: ctx.configuration.eosTokenIds,
+                prefixCache: nil
             )
-            let uids = gen.insert(prompts: prompts)
-            var output: [Int: [Int]] = [:]
-            for u in uids { output[u] = [] }
+            return BatchedEngine(
+                scheduler: scheduler,
+                tokenizer: ctx.tokenizer,
+                modelName: modelID,
+                config: ContinuousBatchingConfig(
+                    schedulerConfig: scheduler.config,
+                    stepInterval: 0.001,
+                    prefixCacheConfig: nil,
+                    mtpEnabled: false
+                ),
+                externalChatTemplate: nil
+            )
+        }
+        await engine.start()
 
-            var iterations = 0
-            while gen.hasWork {
-                iterations += 1
-                if iterations > maxTokens * 4 {
-                    Issue.record("BatchGenerator made no progress after \(iterations) iterations")
-                    break
-                }
-                for r in gen.next() {
-                    output[r.uid]?.append(r.token)
+        // `[Int]` prompts so the engine does not re-tokenize, matching
+        // how `BatchScheduler` dispatches.
+        struct Slot: Sendable {
+            let index: Int
+            let id: String
+        }
+        var slots: [Slot] = []
+        slots.reserveCapacity(prompts.count)
+        for (i, prompt) in prompts.enumerated() {
+            let id = "test-\(i)-\(UUID().uuidString.prefix(6))"
+            let req = Request(
+                requestId: id,
+                prompt: prompt as AnyHashable,
+                samplingParams: SamplingParams(maxTokens: maxTokens, temperature: 0.0)
+            )
+            _ = await engine.core.addRequest(req)
+            slots.append(Slot(index: i, id: id))
+        }
+
+        // Drain per-request streams in parallel.
+        var collected: [[Int]] = Array(repeating: [], count: prompts.count)
+        await withTaskGroup(of: (Int, [Int]).self) { group in
+            for slot in slots {
+                group.addTask { [engine] in
+                    var tokens: [Int] = []
+                    for await output in engine.core.streamOutputs(requestId: slot.id) {
+                        tokens.append(contentsOf: output.newTokenIds)
+                        if output.finished || output.error != nil { break }
+                    }
+                    return (slot.index, tokens)
                 }
             }
-            gen.close()
-            return uids.map { output[$0]! }
+            for await (idx, toks) in group {
+                collected[idx] = toks
+            }
         }
+
+        // Synchronous stop: a detached teardown would race the next
+        // helper invocation against a live engine on the shared
+        // `ModelContainer`.
+        await engine.stop()
+        return collected
     }
 
     /// Place the matching `mlx.metallib` next to the test runner so the MLX
@@ -283,16 +321,10 @@ struct ContinuousBatchingLiveTests {
 
     // MARK: - Eviction-and-admission
 
-    /// The continuous-batching invariant: when row 0 finishes mid-batch and
-    /// row C is admitted into the slot row 0 vacated, row C's tokens must
-    /// match a solo run of the same prompt -- i.e. the new admission is
-    /// not corrupted by the still-running row's KV state, and the still-
-    /// running row is not corrupted by the eviction + new admission.
-    ///
-    /// This exercises `BatchKVCache.filterBatched` (row removal) and
-    /// `extendBatched` (row append) under a real running batch, which the
-    /// other diff tests don't reach because they admit everything up
-    /// front and never evict mid-stream.
+    /// Continuous-batching invariant: when row 0 finishes mid-batch and
+    /// row C is admitted into the vacated slot, row C's tokens must match
+    /// a solo run of the same prompt. Exercises `BatchedEngine`'s
+    /// auto-admission path.
     @Test(
         "eviction and re-admission: row 0 evicted, row C admitted, deterministic match (Qwen3 0.6B)",
         .enabled(if: ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_TESTS"] != nil)
@@ -326,9 +358,6 @@ struct ContinuousBatchingLiveTests {
             return (try enc(promptA), try enc(promptB), try enc(promptC))
         }
 
-        // 1. Solo references for B (post-eviction) and C (post-admission).
-        //    Generate enough tokens to validate the windows we're about
-        //    to compare.
         let bMaxTokens = 12
         let cMaxTokens = 10
         let aMaxTokens = 2
@@ -341,77 +370,83 @@ struct ContinuousBatchingLiveTests {
         let bSolo = solo[0]
         let cSolo = solo[1]
 
-        // 2. Eviction-and-admission run: insert A and B together, wait
-        //    for A to finish (its `finishReason` arrives), then insert C
-        //    while B is still mid-stream.
-        let (bBatch, cBatch): ([Int], [Int]) = await container.perform { ctx in
-            let gen = BatchGenerator(
+        // Drive A + B, submit C the instant A finishes, capture B + C streams.
+        let engine = await container.perform { ctx -> BatchedEngine in
+            let scheduler = Scheduler(
                 model: ctx.model,
-                eosTokens: [],
-                defaultMaxTokens: 32,
-                prefillStepSize: 2048,
-                prefillBatchSize: 2,
-                completionBatchSize: 2
+                tokenizer: ctx.tokenizer,
+                config: SchedulerConfig(
+                    maxNumSeqs: 2,
+                    maxNumBatchedTokens: 8192,
+                    prefillStepSize: 2048,
+                    streamInterval: 1
+                ),
+                eosTokenIds: ctx.configuration.eosTokenIds,
+                prefixCache: nil
             )
-            let uidsAB = gen.insert(
-                prompts: [encoded.a, encoded.b],
-                maxTokens: [aMaxTokens, bMaxTokens]
+            return BatchedEngine(
+                scheduler: scheduler,
+                tokenizer: ctx.tokenizer,
+                modelName: modelID,
+                config: ContinuousBatchingConfig(
+                    schedulerConfig: scheduler.config,
+                    stepInterval: 0.001,
+                    prefixCacheConfig: nil,
+                    mtpEnabled: false
+                ),
+                externalChatTemplate: nil
             )
-            let uidA = uidsAB[0]
-            let uidB = uidsAB[1]
-
-            var bOut: [Int] = []
-            var cOut: [Int] = []
-            var uidC: Int? = nil
-            var aFinished = false
-
-            // Hard cap to prevent runaway loops on bugs.
-            var iter = 0
-            while gen.hasWork {
-                iter += 1
-                if iter > (aMaxTokens + bMaxTokens + cMaxTokens) * 4 {
-                    Issue.record("eviction loop did not converge after \(iter) steps")
-                    break
-                }
-
-                for r in gen.next() {
-                    if r.uid == uidA, r.finishReason != nil {
-                        aFinished = true
-                    } else if r.uid == uidB {
-                        bOut.append(r.token)
-                    } else if let cId = uidC, r.uid == cId {
-                        cOut.append(r.token)
-                    }
-                }
-
-                // The instant A finishes, admit C. The next gen.next()
-                // call will admit C into the same running batch as B
-                // (capacity = completionBatchSize - active = 2 - 1 = 1).
-                if aFinished, uidC == nil {
-                    let admitted = gen.insert(
-                        prompts: [encoded.c],
-                        maxTokens: [cMaxTokens]
-                    )
-                    uidC = admitted.first
-                }
-            }
-            gen.close()
-            return (bOut, cOut)
         }
+        await engine.start()
 
-        // 3. The invariant: C's tokens (post-admission) must match C
-        //    solo. If `extendBatched` were buggy or B's KV cache leaked
-        //    into C's row, this would diverge immediately.
+        let idA = "evict-A"
+        let idB = "evict-B"
+        let idC = "evict-C"
+
+        _ = await engine.core.addRequest(Request(
+            requestId: idA, prompt: encoded.a as AnyHashable,
+            samplingParams: SamplingParams(maxTokens: aMaxTokens, temperature: 0.0)
+        ))
+        _ = await engine.core.addRequest(Request(
+            requestId: idB, prompt: encoded.b as AnyHashable,
+            samplingParams: SamplingParams(maxTokens: bMaxTokens, temperature: 0.0)
+        ))
+
+        async let bTokensTask: [Int] = {
+            var t: [Int] = []
+            for await output in engine.core.streamOutputs(requestId: idB) {
+                t.append(contentsOf: output.newTokenIds)
+                if output.finished || output.error != nil { break }
+            }
+            return t
+        }()
+
+        // Watch A; on finish, submit C and then capture C's tokens.
+        let cTokensTask = Task { [engine] () -> [Int] in
+            for await output in engine.core.streamOutputs(requestId: idA) {
+                if output.finished || output.error != nil { break }
+            }
+            // A finished — submit C.
+            _ = await engine.core.addRequest(Request(
+                requestId: idC, prompt: encoded.c as AnyHashable,
+                samplingParams: SamplingParams(maxTokens: cMaxTokens, temperature: 0.0)
+            ))
+            var t: [Int] = []
+            for await output in engine.core.streamOutputs(requestId: idC) {
+                t.append(contentsOf: output.newTokenIds)
+                if output.finished || output.error != nil { break }
+            }
+            return t
+        }
+        let bBatch = await bTokensTask
+        let cBatch = await cTokensTask.value
+
         let cMatched = zip(cBatch, cSolo).prefix(while: ==).count
         let cRequired = max(1, min(4, cMaxTokens / 2))
         let cFailMsg = "row C (post-admission): \(cMatched)/\(cBatch.count) match solo "
             + "(batch=\(cBatch), solo=\(cSolo.prefix(cBatch.count)))"
         #expect(cMatched >= cRequired, Comment(rawValue: cFailMsg))
 
-        // 4. B was running through eviction + admission; its prefix
-        //    (tokens generated before A finished) should match a solo
-        //    run of B. Tokens after admission can drift on close-call
-        //    argmax just like the static-batch tests.
         let bMatched = zip(bBatch, bSolo).prefix(while: ==).count
         let bRequired = max(1, min(4, bMaxTokens / 2))
         let bFailMsg = "row B (across eviction): \(bMatched)/\(bBatch.count) match solo "
@@ -424,5 +459,9 @@ struct ContinuousBatchingLiveTests {
                     + "C prefix \(cMatched)/\(cBatch.count)"
             )
         }
+
+        // Synchronous teardown so the next test does not race a live
+        // engine on the shared `ModelContainer`.
+        await engine.stop()
     }
 }

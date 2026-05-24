@@ -34,7 +34,10 @@ let package = Package(
         .package(url: "https://github.com/mattt/EventSource.git", exact: "1.3.0"),
         .package(url: "https://github.com/jedisct1/swift-sodium.git", from: "0.9.1"),
         .package(url: "https://github.com/LebJe/TOMLKit.git", from: "0.6.0"),
-        .package(url: "https://github.com/hummingbird-project/hummingbird.git", exact: "2.22.0"),
+        // Bumped 2.22.0 -> 2.23.0 to satisfy mlx-swift-lm's MLXLMServer
+        // target which declares `from: "2.23.0"` (introduced in upstream
+        // PR #26, "Add OpenAI-compatible inference server").
+        .package(url: "https://github.com/hummingbird-project/hummingbird.git", exact: "2.23.0"),
         // Test-only: WebSocket upgrade support so the mock coordinator under
         // Tests/ProviderCoreTests/Helpers can host a `/ws/provider` route.
         .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", exact: "2.6.0"),

@@ -927,6 +927,11 @@ func (s *MemoryStore) SetModelStatus(modelID, status string) error {
 }
 
 func (s *MemoryStore) ListActiveModelRegistry() []ModelRegistryRecord {
+	records, _ := s.ListActiveModelRegistryWithError()
+	return records
+}
+
+func (s *MemoryStore) ListActiveModelRegistryWithError() ([]ModelRegistryRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -942,7 +947,7 @@ func (s *MemoryStore) ListActiveModelRegistry() []ModelRegistryRecord {
 		}
 		return records[i].MinRAMGB < records[j].MinRAMGB
 	})
-	return records
+	return records, nil
 }
 
 func (s *MemoryStore) GetModelRegistryRecord(modelID string) (*ModelRegistryRecord, error) {
@@ -978,6 +983,11 @@ func (s *MemoryStore) UpsertPublishingAPIKey(key *PublishingAPIKey) error {
 }
 
 func (s *MemoryStore) FindPublishingAPIKeys() []PublishingAPIKey {
+	keys, _ := s.FindPublishingAPIKeysWithError()
+	return keys
+}
+
+func (s *MemoryStore) FindPublishingAPIKeysWithError() ([]PublishingAPIKey, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -988,7 +998,7 @@ func (s *MemoryStore) FindPublishingAPIKeys() []PublishingAPIKey {
 		keys = append(keys, cp)
 	}
 	sort.Slice(keys, func(i, j int) bool { return keys[i].CreatedAt.Before(keys[j].CreatedAt) })
-	return keys
+	return keys, nil
 }
 
 func (s *MemoryStore) MarkPublishingAPIKeyUsed(id string) error {

@@ -417,7 +417,11 @@ func (s *Server) SetMDMClient(client *mdm.Client) {
 // SyncModelCatalog reads active models from the store and updates the
 // registry's model catalog. Call this at startup and after admin catalog changes.
 func (s *Server) SyncModelCatalog() {
-	registryRows := s.store.ListActiveModelRegistry()
+	registryRows, err := s.store.ListActiveModelRegistryWithError()
+	if err != nil {
+		s.logger.Error("model registry catalog sync failed", "error", err)
+		return
+	}
 	if len(registryRows) > 0 {
 		entries := make([]registry.CatalogEntry, 0, len(registryRows))
 		for _, row := range registryRows {

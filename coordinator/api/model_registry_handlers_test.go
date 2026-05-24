@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -63,6 +64,16 @@ func TestValidateModelManifestRejectsTraversalAndBadHashes(t *testing.T) {
 	manifest.TotalSizeBytes = 246
 	if err := validateModelManifest(manifest, "mlx-community/test", "v1", prefix); err == nil {
 		t.Fatal("expected duplicate manifest paths to be rejected")
+	}
+
+	manifest = validTestManifest()
+	caseCollidingFile := manifest.Files[0]
+	caseCollidingFile.Path = "Config.json"
+	manifest.Files = append(manifest.Files, caseCollidingFile)
+	manifest.FileCount = 2
+	manifest.TotalSizeBytes = 246
+	if err := validateModelManifest(manifest, "mlx-community/test", "v1", prefix); err == nil {
+		t.Fatal("expected case-colliding manifest paths to be rejected")
 	}
 
 	for _, badPath := range []string{"a//b", "./x", "x/.", "x/../y"} {
@@ -250,6 +261,60 @@ func TestModelCatalogFallbackAndRegistryPreference(t *testing.T) {
 	}
 }
 
+func TestModelRegistryListErrorSurfacesAndDoesNotFallback(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := &failingModelRegistryStore{MemoryStore: store.NewMemory(""), listErr: errors.New("database unavailable")}
+	reg := registry.New(logger)
+	reg.SetModelCatalog([]registry.CatalogEntry{{ID: "sentinel"}})
+	srv := NewServer(reg, st, logger)
+	if err := st.SetSupportedModel(&store.SupportedModel{ID: "legacy", DisplayName: "Legacy", ModelType: "text", Active: true, WeightHash: testHash, SizeGB: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models/catalog", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("catalog status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.handleListModels(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("list models status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	srv.SyncModelCatalog()
+	if !reg.IsModelInCatalog("sentinel") || reg.IsModelInCatalog("legacy") {
+		t.Fatal("expected sync error to preserve existing catalog without falling back to legacy catalog")
+	}
+}
+
+func TestPublishingAPIKeyStoreErrorSurfacesButBootstrapStillWorks(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := &failingModelRegistryStore{MemoryStore: store.NewMemory(""), keyErr: errors.New("database unavailable")}
+	srv := NewServer(registry.New(logger), st, logger)
+
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "")
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/register", nil)
+	req.Header.Set("Authorization", "Bearer db-key")
+	rec := httptest.NewRecorder()
+	if _, ok := srv.requirePublishingAPIKey(rec, req); ok {
+		t.Fatal("expected DB-backed key lookup to fail")
+	}
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("auth failure status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "bootstrap")
+	req = httptest.NewRequest(http.MethodPost, "/v1/admin/models/register", nil)
+	req.Header.Set("Authorization", "Bearer bootstrap")
+	rec = httptest.NewRecorder()
+	if actor, ok := srv.requirePublishingAPIKey(rec, req); !ok || actor.ID != "env-bootstrap" {
+		t.Fatalf("expected bootstrap key to bypass DB, actor=%#v ok=%v", actor, ok)
+	}
+}
+
 func TestRegisteringNewVersionPreservesRetiredStatus(t *testing.T) {
 	st := store.NewMemory("")
 	entry := &store.ModelRegistryEntry{ID: "mlx-community/retired", DisplayName: "Retired", Status: "retired", Quantization: "8bit", MaxContextLength: 32768, MaxOutputLength: 8192, MinRAMGB: 32}
@@ -271,6 +336,26 @@ func TestRegisteringNewVersionPreservesRetiredStatus(t *testing.T) {
 	if active := st.ListActiveModelRegistry(); len(active) != 0 {
 		t.Fatalf("expected retired model to remain hidden after registering a new version, got %#v", active)
 	}
+}
+
+type failingModelRegistryStore struct {
+	*store.MemoryStore
+	listErr error
+	keyErr  error
+}
+
+func (s *failingModelRegistryStore) ListActiveModelRegistryWithError() ([]store.ModelRegistryRecord, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	return s.MemoryStore.ListActiveModelRegistryWithError()
+}
+
+func (s *failingModelRegistryStore) FindPublishingAPIKeysWithError() ([]store.PublishingAPIKey, error) {
+	if s.keyErr != nil {
+		return nil, s.keyErr
+	}
+	return s.MemoryStore.FindPublishingAPIKeysWithError()
 }
 
 func TestUpsertModelRegistryEntryPreservesExistingStatus(t *testing.T) {

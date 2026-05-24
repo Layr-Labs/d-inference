@@ -153,12 +153,20 @@ func (s *PostgresStore) SetModelStatus(modelID, status string) error {
 }
 
 func (s *PostgresStore) ListActiveModelRegistry() []ModelRegistryRecord {
+	records, err := s.ListActiveModelRegistryWithError()
+	if err != nil {
+		return nil
+	}
+	return records
+}
+
+func (s *PostgresStore) ListActiveModelRegistryWithError() ([]ModelRegistryRecord, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx, activeModelRegistryQuery+` ORDER BY mr.min_ram_gb ASC, mr.id ASC`)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("store: list active model registry: %w", err)
 	}
 	defer rows.Close()
 
@@ -166,14 +174,17 @@ func (s *PostgresStore) ListActiveModelRegistry() []ModelRegistryRecord {
 	for rows.Next() {
 		rec, err := scanModelRegistryRecord(rows)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("store: scan active model registry: %w", err)
 		}
 		if err := s.loadModelRegistryFiles(ctx, rec); err != nil {
-			continue
+			return nil, err
 		}
 		records = append(records, *rec)
 	}
-	return records
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate active model registry: %w", err)
+	}
+	return records, nil
 }
 
 func (s *PostgresStore) GetModelRegistryRecord(modelID string) (*ModelRegistryRecord, error) {
@@ -217,12 +228,20 @@ func (s *PostgresStore) UpsertPublishingAPIKey(key *PublishingAPIKey) error {
 }
 
 func (s *PostgresStore) FindPublishingAPIKeys() []PublishingAPIKey {
+	keys, err := s.FindPublishingAPIKeysWithError()
+	if err != nil {
+		return nil
+	}
+	return keys
+}
+
+func (s *PostgresStore) FindPublishingAPIKeysWithError() ([]PublishingAPIKey, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx, `SELECT id, name, key_hash, active, created_at, last_used_at FROM publishing_api_keys ORDER BY created_at ASC`)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("store: find publishing API keys: %w", err)
 	}
 	defer rows.Close()
 
@@ -230,11 +249,14 @@ func (s *PostgresStore) FindPublishingAPIKeys() []PublishingAPIKey {
 	for rows.Next() {
 		var key PublishingAPIKey
 		if err := rows.Scan(&key.ID, &key.Name, &key.KeyHash, &key.Active, &key.CreatedAt, &key.LastUsedAt); err != nil {
-			continue
+			return nil, fmt.Errorf("store: scan publishing API key: %w", err)
 		}
 		keys = append(keys, key)
 	}
-	return keys
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate publishing API keys: %w", err)
+	}
+	return keys, nil
 }
 
 func (s *PostgresStore) MarkPublishingAPIKeyUsed(id string) error {
@@ -298,6 +320,9 @@ func (s *PostgresStore) loadModelRegistryFiles(ctx context.Context, rec *ModelRe
 			return fmt.Errorf("store: scan model version file: %w", err)
 		}
 		rec.Files = append(rec.Files, file)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: iterate model version files: %w", err)
 	}
 	if rec.Files == nil {
 		rec.Files = []ModelVersionFile{}

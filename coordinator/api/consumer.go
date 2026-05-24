@@ -2890,7 +2890,12 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	// Filter to only show models from the active catalog. Prefer the DB-backed
 	// registry; fall back to legacy supported_models only while old deployments
 	// still have rows there.
-	registryRows := s.store.ListActiveModelRegistry()
+	registryRows, err := s.store.ListActiveModelRegistryWithError()
+	if err != nil {
+		s.logger.Error("model registry: failed to list active models", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list models"))
+		return
+	}
 	catalogByID := make(map[string]store.SupportedModel, len(registryRows))
 	if len(registryRows) > 0 {
 		for _, row := range registryRows {

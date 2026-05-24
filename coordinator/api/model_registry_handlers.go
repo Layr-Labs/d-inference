@@ -243,7 +243,13 @@ func (s *Server) requirePublishingAPIKey(w http.ResponseWriter, r *http.Request)
 		return publishingActor{ID: "env-bootstrap", Name: "env-bootstrap"}, true
 	}
 	providedHash := publishingSHA256Hex(provided)
-	for _, key := range s.store.FindPublishingAPIKeys() {
+	keys, err := s.store.FindPublishingAPIKeysWithError()
+	if err != nil {
+		s.logger.Error("model registry: failed to find publishing API keys", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to verify publishing API key"))
+		return publishingActor{}, false
+	}
+	for _, key := range keys {
 		if !key.Active {
 			continue
 		}
@@ -355,10 +361,11 @@ func validateModelManifest(manifest *store.ModelManifest, modelID, version, r2Pr
 		if err := validateManifestFile(file); err != nil {
 			return err
 		}
-		if seenPaths[file.Path] {
+		pathKey := strings.ToLower(file.Path)
+		if seenPaths[pathKey] {
 			return fmt.Errorf("manifest file path %q is duplicated", file.Path)
 		}
-		seenPaths[file.Path] = true
+		seenPaths[pathKey] = true
 		totalSize += file.SizeBytes
 	}
 	if totalSize != manifest.TotalSizeBytes {

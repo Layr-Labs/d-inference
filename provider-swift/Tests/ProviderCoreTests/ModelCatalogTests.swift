@@ -195,6 +195,73 @@ struct ModelCatalogTests {
         #expect(RangeURLProtocol.lastRangeHeader == "bytes=8-")
     }
 
+    @Test("manifest download failure preserves existing local snapshot")
+    func manifestDownloadFailurePreservesExistingSnapshot() async throws {
+        let modelID = "test-org/staging-preserves-\(UUID().uuidString)"
+        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let snapshotDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let refsDir = modelDir.appendingPathComponent("refs", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+        try? FileManager.default.removeItem(at: modelDir)
+
+        try FileManager.default.createDirectory(at: snapshotDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: refsDir, withIntermediateDirectories: true)
+        let existingConfig = Data("known-good config".utf8)
+        try existingConfig.write(to: snapshotDir.appendingPathComponent("config.json"))
+        try "local".write(to: refsDir.appendingPathComponent("main"), atomically: true, encoding: .utf8)
+
+        let replacementConfig = Data("corrupt replacement".utf8)
+        let prefix = "v2/staging-preserves/v1"
+        let manifest = ModelManifest(
+            schemaVersion: 1,
+            modelID: modelID,
+            version: "v1",
+            r2Prefix: prefix,
+            aggregateSHA256: String(repeating: "a", count: 64),
+            totalSizeBytes: Int64(replacementConfig.count),
+            fileCount: 1,
+            files: [
+                ManifestFile(
+                    path: "config.json",
+                    sizeBytes: Int64(replacementConfig.count),
+                    sha256: String(repeating: "b", count: 64),
+                    role: "config"
+                ),
+            ],
+            createdAt: Date(timeIntervalSince1970: 0)
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        RegistryURLProtocol.manifestData = Data()
+        RegistryURLProtocol.files = [
+            "/\(prefix)/manifest.json": try encoder.encode(manifest),
+            "/\(prefix)/config.json": replacementConfig,
+        ]
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RegistryURLProtocol.self]
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: URLSession(configuration: config))
+        let model = CatalogModel(
+            id: modelID,
+            s3Name: "unused",
+            displayName: "Staging Preserve Test",
+            sizeGb: 0.001,
+            r2Prefix: prefix,
+            aggregateSHA256: manifest.aggregateSHA256
+        )
+
+        do {
+            try await downloader.download(model: model)
+            Issue.record("manifest download should fail on SHA-256 mismatch")
+        } catch is ModelCatalogError {
+        }
+
+        #expect(try Data(contentsOf: snapshotDir.appendingPathComponent("config.json")) == existingConfig)
+        #expect(try String(contentsOf: refsDir.appendingPathComponent("main"), encoding: .utf8) == "local")
+        let snapshotEntries = try FileManager.default.contentsOfDirectory(atPath: snapshotDir.deletingLastPathComponent().path)
+        #expect(!snapshotEntries.contains { $0.hasPrefix(".local-staging-") })
+    }
+
 }
 
 // Mirror of the private wrapper used inside ModelCatalog.swift so we can

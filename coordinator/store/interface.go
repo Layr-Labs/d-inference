@@ -167,10 +167,12 @@ type Store interface {
 	PromoteModelVersion(modelID, version string) error
 	SetModelStatus(modelID, status string) error
 	ListActiveModelRegistry() []ModelRegistryRecord
+	ListActiveModelRegistryWithError() ([]ModelRegistryRecord, error)
 	GetModelRegistryRecord(modelID string) (*ModelRegistryRecord, error)
 	GetModelManifest(modelID string) (*ModelManifest, error)
 	UpsertPublishingAPIKey(key *PublishingAPIKey) error
 	FindPublishingAPIKeys() []PublishingAPIKey
+	FindPublishingAPIKeysWithError() ([]PublishingAPIKey, error)
 	MarkPublishingAPIKeyUsed(id string) error
 
 	// --- Releases (provider binary versioning) ---

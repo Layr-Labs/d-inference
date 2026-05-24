@@ -419,13 +419,17 @@ public struct ModelDownloader: Sendable {
         }
 
         let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
-        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        try Self.ensureAvailableCapacity(at: cacheDir, requiredBytes: manifest.totalSizeBytes)
+        let snapshotsDir = cacheDir.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
+        try Self.ensureAvailableCapacity(at: snapshotsDir, requiredBytes: manifest.totalSizeBytes)
+
+        let stagingDir = snapshotsDir.appendingPathComponent(".local-staging-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
 
         var completed = false
         defer {
             if !completed {
-                try? FileManager.default.removeItem(at: cacheDir)
+                try? FileManager.default.removeItem(at: stagingDir)
             }
         }
 
@@ -433,7 +437,7 @@ public struct ModelDownloader: Sendable {
             let relativePath = try Self.validatedManifestRelativePath(file.path)
             return (
                 file: file,
-                destination: cacheDir.appendingPathComponent(relativePath, isDirectory: false),
+                destination: stagingDir.appendingPathComponent(relativePath, isDirectory: false),
                 url: "\(r2CDNURL)/\(Self.escapeR2Path(manifest.r2Prefix))/\(Self.escapeR2Path(relativePath))"
             )
         }
@@ -460,6 +464,7 @@ public struct ModelDownloader: Sendable {
             throw ModelCatalogError.downloadFailed("aggregate hash mismatch for \(model.id)")
         }
 
+        try Self.publishStagedSnapshot(stagingDir, to: cacheDir)
         try writeMainRef(for: model.id)
         completed = true
     }
@@ -706,6 +711,15 @@ public struct ModelDownloader: Sendable {
 
     private func fileSize(_ url: URL) -> Int64 {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+    }
+
+    private static func publishStagedSnapshot(_ stagingDir: URL, to cacheDir: URL) throws {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: cacheDir.path) {
+            _ = try fm.replaceItemAt(cacheDir, withItemAt: stagingDir)
+        } else {
+            try fm.moveItem(at: stagingDir, to: cacheDir)
+        }
     }
 
     private static func sha256Hex(of url: URL) -> String? {

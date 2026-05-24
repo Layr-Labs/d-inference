@@ -305,6 +305,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			capabilities TEXT[] NOT NULL DEFAULT '{}',
 			status TEXT NOT NULL DEFAULT 'beta',
 			description TEXT NOT NULL DEFAULT '',
+			runtime_parameters JSONB NOT NULL DEFAULT '{}',
 			metadata JSONB NOT NULL DEFAULT '{}',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -331,6 +332,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		END $$`,
 		`DO $$ BEGIN
 			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS max_output_length INTEGER NOT NULL DEFAULT 0;
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
+		`DO $$ BEGIN
+			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS runtime_parameters JSONB NOT NULL DEFAULT '{}';
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_model_versions_model ON model_versions(model_id)`,

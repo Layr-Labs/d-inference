@@ -30,6 +30,7 @@ struct ModelCatalogTests {
               "quantization": "8bit",
               "max_context_length": 32768,
               "max_output_length": 8192,
+              "runtime_parameters": {"chat_template_required": true, "default_temperature": 0},
               "capabilities": ["chat"]
             }
           ]
@@ -54,6 +55,8 @@ struct ModelCatalogTests {
         #expect(m.quantization == "8bit")
         #expect(m.maxContextLength == 32768)
         #expect(m.maxOutputLength == 8192)
+        #expect(m.runtimeParameters?["chat_template_required"] == .bool(true))
+        #expect(m.runtimeParameters?["default_temperature"] == .int(0))
         #expect(m.capabilities == ["chat"])
     }
 

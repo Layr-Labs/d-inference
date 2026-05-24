@@ -1031,6 +1031,7 @@ func cloneModelRegistryEntry(entry *ModelRegistryEntry) ModelRegistryEntry {
 	}
 	cp := *entry
 	cp.Capabilities = append([]string(nil), entry.Capabilities...)
+	cp.RuntimeParameters = cloneMetadata(entry.RuntimeParameters)
 	cp.Metadata = cloneMetadata(entry.Metadata)
 	return cp
 }

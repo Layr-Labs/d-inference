@@ -21,19 +21,20 @@ import (
 const defaultModelRegistryCDNBaseURL = "https://models.darkbloom.ai"
 
 type registerModelRequest struct {
-	ModelID          string         `json:"model_id"`
-	Version          string         `json:"version"`
-	DisplayName      string         `json:"display_name"`
-	Family           string         `json:"family"`
-	Architecture     string         `json:"architecture"`
-	Quantization     string         `json:"quantization"`
-	MaxContextLength int            `json:"max_context_length"`
-	MaxOutputLength  int            `json:"max_output_length"`
-	MinRAMGB         int            `json:"min_ram_gb"`
-	Capabilities     []string       `json:"capabilities"`
-	Description      string         `json:"description"`
-	Metadata         map[string]any `json:"metadata"`
-	Promote          bool           `json:"promote"`
+	ModelID           string         `json:"model_id"`
+	Version           string         `json:"version"`
+	DisplayName       string         `json:"display_name"`
+	Family            string         `json:"family"`
+	Architecture      string         `json:"architecture"`
+	Quantization      string         `json:"quantization"`
+	MaxContextLength  int            `json:"max_context_length"`
+	MaxOutputLength   int            `json:"max_output_length"`
+	MinRAMGB          int            `json:"min_ram_gb"`
+	Capabilities      []string       `json:"capabilities"`
+	Description       string         `json:"description"`
+	RuntimeParameters map[string]any `json:"runtime_parameters"`
+	Metadata          map[string]any `json:"metadata"`
+	Promote           bool           `json:"promote"`
 }
 
 type publishingActor struct {
@@ -98,18 +99,19 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entry := &store.ModelRegistryEntry{
-		ID:               req.ModelID,
-		DisplayName:      req.DisplayName,
-		Family:           req.Family,
-		Architecture:     req.Architecture,
-		Quantization:     req.Quantization,
-		MaxContextLength: req.MaxContextLength,
-		MaxOutputLength:  req.MaxOutputLength,
-		MinRAMGB:         req.MinRAMGB,
-		Capabilities:     req.Capabilities,
-		Status:           "beta",
-		Description:      req.Description,
-		Metadata:         req.Metadata,
+		ID:                req.ModelID,
+		DisplayName:       req.DisplayName,
+		Family:            req.Family,
+		Architecture:      req.Architecture,
+		Quantization:      req.Quantization,
+		MaxContextLength:  req.MaxContextLength,
+		MaxOutputLength:   req.MaxOutputLength,
+		MinRAMGB:          req.MinRAMGB,
+		Capabilities:      req.Capabilities,
+		Status:            "beta",
+		Description:       req.Description,
+		RuntimeParameters: req.RuntimeParameters,
+		Metadata:          req.Metadata,
 	}
 	if entry.DisplayName == "" {
 		entry.DisplayName = req.ModelID
@@ -472,6 +474,7 @@ func catalogModelFromRegistryRecord(rec *store.ModelRegistryRecord) map[string]a
 		"max_context_length": rec.MaxContextLength,
 		"max_output_length":  rec.MaxOutputLength,
 		"capabilities":       rec.Capabilities,
+		"runtime_parameters": rec.RuntimeParameters,
 		"metadata":           rec.Metadata,
 		"status":             rec.Status,
 	}

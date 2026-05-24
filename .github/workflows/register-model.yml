@@ -43,6 +43,10 @@ on:
         description: Model description
         required: false
         default: ''
+      runtime_parameters_json:
+        description: Runtime parameters JSON object
+        required: false
+        default: '{}'
       metadata_json:
         description: Metadata JSON object
         required: false
@@ -74,6 +78,7 @@ jobs:
           MAX_OUTPUT_LENGTH: ${{ inputs.max_output_length }}
           MIN_RAM_GB: ${{ inputs.min_ram_gb }}
           DESCRIPTION: ${{ inputs.description }}
+          RUNTIME_PARAMETERS_JSON: ${{ inputs.runtime_parameters_json }}
           METADATA_JSON: ${{ inputs.metadata_json }}
           PROMOTE: ${{ inputs.promote }}
         run: |
@@ -89,6 +94,7 @@ jobs:
             --argjson max_output_length "$MAX_OUTPUT_LENGTH" \
             --argjson min_ram_gb "$MIN_RAM_GB" \
             --arg description "$DESCRIPTION" \
+            --argjson runtime_parameters "$RUNTIME_PARAMETERS_JSON" \
             --argjson metadata "$METADATA_JSON" \
             --argjson promote "$PROMOTE" \
             '{
@@ -103,6 +109,7 @@ jobs:
               min_ram_gb: $min_ram_gb,
               capabilities: ($capabilities_csv | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))),
               description: $description,
+              runtime_parameters: $runtime_parameters,
               metadata: $metadata,
               promote: $promote
             }' > payload.json

@@ -115,6 +115,7 @@ func TestRegisterModelHandlerPromotesActiveRecord(t *testing.T) {
 		"min_ram_gb":         16,
 		"capabilities":       []string{"chat"},
 		"description":        "test",
+		"runtime_parameters": map[string]any{"default_temperature": 0, "chat_template_required": true},
 		"metadata":           map[string]any{"tier": "test"},
 		"promote":            true,
 	}
@@ -133,6 +134,9 @@ func TestRegisterModelHandlerPromotesActiveRecord(t *testing.T) {
 	}
 	if active.ActiveVersion == nil || active.ActiveVersion.Version != "v1" {
 		t.Fatalf("active version = %#v", active.ActiveVersion)
+	}
+	if active.RuntimeParameters["chat_template_required"] != true {
+		t.Fatalf("runtime parameters were not stored: %#v", active.RuntimeParameters)
 	}
 	if !reg.IsModelInCatalog("mlx-community/test") {
 		t.Fatal("expected registry routing catalog to include promoted model")

@@ -570,20 +570,21 @@ type SupportedModel struct {
 
 // ModelRegistryEntry is the canonical admin-managed model catalog row.
 type ModelRegistryEntry struct {
-	ID               string         `json:"id"`
-	DisplayName      string         `json:"display_name"`
-	Family           string         `json:"family"`
-	Architecture     string         `json:"architecture"`
-	Quantization     string         `json:"quantization"`
-	MaxContextLength int            `json:"max_context_length"`
-	MaxOutputLength  int            `json:"max_output_length"`
-	MinRAMGB         int            `json:"min_ram_gb"`
-	Capabilities     []string       `json:"capabilities"`
-	Status           string         `json:"status"`
-	Description      string         `json:"description"`
-	Metadata         map[string]any `json:"metadata"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
+	ID                string         `json:"id"`
+	DisplayName       string         `json:"display_name"`
+	Family            string         `json:"family"`
+	Architecture      string         `json:"architecture"`
+	Quantization      string         `json:"quantization"`
+	MaxContextLength  int            `json:"max_context_length"`
+	MaxOutputLength   int            `json:"max_output_length"`
+	MinRAMGB          int            `json:"min_ram_gb"`
+	Capabilities      []string       `json:"capabilities"`
+	Status            string         `json:"status"`
+	Description       string         `json:"description"`
+	RuntimeParameters map[string]any `json:"runtime_parameters"`
+	Metadata          map[string]any `json:"metadata"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
 }
 
 // ModelVersion is an uploaded manifest version for a registered model.

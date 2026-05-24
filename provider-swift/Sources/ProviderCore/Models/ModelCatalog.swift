@@ -40,6 +40,7 @@ public struct CatalogModel: Codable, Sendable, Equatable {
     public let maxContextLength: Int?
     public let maxOutputLength: Int?
     public let capabilities: [String]?
+    public let runtimeParameters: [String: JSONValue]?
     public let metadata: [String: JSONValue]?
 
     enum CodingKeys: String, CodingKey {
@@ -63,6 +64,7 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         case maxContextLength = "max_context_length"
         case maxOutputLength = "max_output_length"
         case capabilities
+        case runtimeParameters = "runtime_parameters"
         case metadata
     }
 
@@ -87,6 +89,7 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         maxContextLength: Int? = nil,
         maxOutputLength: Int? = nil,
         capabilities: [String]? = nil,
+        runtimeParameters: [String: JSONValue]? = nil,
         metadata: [String: JSONValue]? = nil
     ) {
         self.id = id
@@ -109,6 +112,7 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         self.maxContextLength = maxContextLength
         self.maxOutputLength = maxOutputLength
         self.capabilities = capabilities
+        self.runtimeParameters = runtimeParameters
         self.metadata = metadata
     }
 }

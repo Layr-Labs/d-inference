@@ -1,0 +1,128 @@
+name: Register Model
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_id:
+        description: Model ID, for example mlx-community/foo
+        required: true
+      version:
+        description: Manifest version
+        required: true
+      display_name:
+        description: Human-readable display name
+        required: true
+      family:
+        description: Model family
+        required: false
+        default: ''
+      architecture:
+        description: Architecture description
+        required: false
+        default: ''
+      quantization:
+        description: Quantization
+        required: true
+      capabilities_csv:
+        description: Comma-separated capabilities
+        required: false
+        default: chat
+      max_context_length:
+        description: Maximum context length
+        required: true
+      max_output_length:
+        description: Maximum output length
+        required: true
+      min_ram_gb:
+        description: Minimum RAM in GB
+        required: true
+      description:
+        description: Model description
+        required: false
+        default: ''
+      runtime_parameters_json:
+        description: Runtime parameters JSON object
+        required: false
+        default: '{}'
+      metadata_json:
+        description: Metadata JSON object
+        required: false
+        default: '{}'
+      promote:
+        description: Promote this version after registration
+        required: false
+        default: false
+        type: boolean
+      coordinator_url:
+        description: Coordinator base URL
+        required: false
+        default: https://api.darkbloom.dev
+
+jobs:
+  register:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - name: Build registration payload
+        env:
+          MODEL_ID: ${{ inputs.model_id }}
+          VERSION: ${{ inputs.version }}
+          DISPLAY_NAME: ${{ inputs.display_name }}
+          FAMILY: ${{ inputs.family }}
+          ARCHITECTURE: ${{ inputs.architecture }}
+          QUANTIZATION: ${{ inputs.quantization }}
+          CAPABILITIES_CSV: ${{ inputs.capabilities_csv }}
+          MAX_CONTEXT_LENGTH: ${{ inputs.max_context_length }}
+          MAX_OUTPUT_LENGTH: ${{ inputs.max_output_length }}
+          MIN_RAM_GB: ${{ inputs.min_ram_gb }}
+          DESCRIPTION: ${{ inputs.description }}
+          RUNTIME_PARAMETERS_JSON: ${{ inputs.runtime_parameters_json }}
+          METADATA_JSON: ${{ inputs.metadata_json }}
+          PROMOTE: ${{ inputs.promote }}
+        run: |
+          jq -n \
+            --arg model_id "$MODEL_ID" \
+            --arg version "$VERSION" \
+            --arg display_name "$DISPLAY_NAME" \
+            --arg family "$FAMILY" \
+            --arg architecture "$ARCHITECTURE" \
+            --arg quantization "$QUANTIZATION" \
+            --arg capabilities_csv "$CAPABILITIES_CSV" \
+            --argjson max_context_length "$MAX_CONTEXT_LENGTH" \
+            --argjson max_output_length "$MAX_OUTPUT_LENGTH" \
+            --argjson min_ram_gb "$MIN_RAM_GB" \
+            --arg description "$DESCRIPTION" \
+            --argjson runtime_parameters "$RUNTIME_PARAMETERS_JSON" \
+            --argjson metadata "$METADATA_JSON" \
+            --argjson promote "$PROMOTE" \
+            '{
+              model_id: $model_id,
+              version: $version,
+              display_name: $display_name,
+              family: $family,
+              architecture: $architecture,
+              quantization: $quantization,
+              max_context_length: $max_context_length,
+              max_output_length: $max_output_length,
+              min_ram_gb: $min_ram_gb,
+              capabilities: ($capabilities_csv | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))),
+              description: $description,
+              runtime_parameters: $runtime_parameters,
+              metadata: $metadata,
+              promote: $promote
+            }' > payload.json
+          jq . payload.json
+
+      - name: Register model with coordinator
+        env:
+          COORDINATOR_URL: ${{ inputs.coordinator_url }}
+          MODEL_REGISTRY_PUBLISHING_KEY: ${{ secrets.MODEL_REGISTRY_PUBLISHING_KEY }}
+        run: |
+          test -n "$MODEL_REGISTRY_PUBLISHING_KEY"
+          curl -fsS \
+            -H "Authorization: Bearer ${MODEL_REGISTRY_PUBLISHING_KEY}" \
+            -H "Content-Type: application/json" \
+            --data @payload.json \
+            "${COORDINATOR_URL%/}/v1/admin/models/register"

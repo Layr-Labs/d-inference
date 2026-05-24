@@ -724,11 +724,13 @@ type CatalogEntry struct {
 
 // SetModelCatalog updates the set of active models. Only models in this
 // set will be accepted from providers during registration and routable to
-// consumers. Pass nil or empty to disable catalog filtering.
+// consumers. Pass nil to disable catalog filtering for tests/dev flows. Passing
+// an empty non-nil slice configures a deny-all catalog, which is what a fresh
+// DB-backed registry should do until an operator registers and promotes models.
 func (r *Registry) SetModelCatalog(entries []CatalogEntry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(entries) == 0 {
+	if entries == nil {
 		r.modelCatalog = nil
 		return
 	}
@@ -757,12 +759,12 @@ func (r *Registry) ModelType(model string) string {
 	return "unknown"
 }
 
-// IsModelInCatalog returns true if the model is in the active catalog,
-// or if no catalog is configured (all models allowed).
+// IsModelInCatalog returns true if the model is in the active catalog, or if
+// catalog filtering has been explicitly disabled by setting a nil catalog.
 func (r *Registry) IsModelInCatalog(model string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if len(r.modelCatalog) == 0 {
+	if r.modelCatalog == nil {
 		return true
 	}
 	_, ok := r.modelCatalog[model]
@@ -778,6 +780,32 @@ func (r *Registry) CatalogWeightHash(model string) string {
 		return e.WeightHash
 	}
 	return ""
+}
+
+// modelAllowedByCatalogLocked returns whether a provider-reported model is
+// allowed by the current catalog. Caller must hold r.mu (read or write). A nil
+// catalog disables filtering; an empty non-nil catalog denies all models.
+func (r *Registry) modelAllowedByCatalogLocked(model protocol.ModelInfo) bool {
+	if r.modelCatalog == nil {
+		return true
+	}
+	entry, ok := r.modelCatalog[model.ID]
+	if !ok {
+		return false
+	}
+	return entry.WeightHash == "" || model.WeightHash == "" || model.WeightHash == entry.WeightHash
+}
+
+// providerServesCatalogModelLocked returns true if the provider advertises the
+// model and that model is currently allowed by the catalog. Caller must hold
+// r.mu and p.mu.
+func (r *Registry) providerServesCatalogModelLocked(p *Provider, model string) bool {
+	for _, m := range p.Models {
+		if m.ID == model && r.modelAllowedByCatalogLocked(m) {
+			return true
+		}
+	}
+	return false
 }
 
 // catalogSizeGBLocked returns the model's reported weight footprint in GB,
@@ -919,7 +947,10 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 }
 
 // Register adds a new provider to the registry, returning its assigned ID.
-// If a model catalog is configured, only models in the catalog are kept.
+// Provider-reported model inventory is preserved even when the current catalog
+// denies every model; catalog checks are applied dynamically during routing so
+// providers that connect before a model is promoted become routable immediately
+// after the catalog is updated.
 func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.RegisterMessage) *Provider {
 	// Clamp provider-reported performance stats used in routing score.
 	// Refuse to trust unbounded values — a malicious provider reporting
@@ -949,33 +980,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		}
 	}
 
-	// Filter models against the catalog before storing.
 	models := msg.Models
-	r.mu.RLock()
-	catalog := r.modelCatalog
-	r.mu.RUnlock()
-	if len(catalog) > 0 {
-		filtered := make([]protocol.ModelInfo, 0, len(models))
-		for _, m := range models {
-			entry, inCatalog := catalog[m.ID]
-			if !inCatalog {
-				r.logger.Debug("provider model not in catalog, skipping",
-					"provider_id", id, "model", m.ID)
-				continue
-			}
-			// Verify weight hash if the catalog has an expected hash.
-			if entry.WeightHash != "" && m.WeightHash != "" && m.WeightHash != entry.WeightHash {
-				r.logger.Warn("provider model weight hash mismatch, rejecting model",
-					"provider_id", id, "model", m.ID,
-					"expected", TruncHash(entry.WeightHash),
-					"got", TruncHash(m.WeightHash),
-				)
-				continue
-			}
-			filtered = append(filtered, m)
-		}
-		models = filtered
-	}
 
 	// Validate X25519 public key if provided.
 	// Reject invalid keys at registration rather than failing at encryption time.
@@ -1576,11 +1581,8 @@ func (r *Registry) FindProviderWithTrust(model string, minTrust TrustLevel, excl
 		if !hasHeadroom {
 			continue
 		}
-		for _, m := range p.Models {
-			if m.ID == model {
-				candidates = append(candidates, p)
-				break
-			}
+		if r.providerServesCatalogModelLocked(p, model) {
+			candidates = append(candidates, p)
 		}
 	}
 
@@ -1698,6 +1700,9 @@ func (r *Registry) ListModels() []AggregateModel {
 			continue
 		}
 		for _, m := range p.Models {
+			if !r.modelAllowedByCatalogLocked(m) {
+				continue
+			}
 			k := m.ID
 			a, ok := agg[k]
 			if !ok {
@@ -2012,6 +2017,9 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 
 		// Enumerate every model this provider serves.
 		for _, m := range p.Models {
+			if !r.modelAllowedByCatalogLocked(m) {
+				continue
+			}
 			hasHeadroom := p.hasConcurrencyHeadroomForModelLocked(m.ID)
 			// Count only pending requests for this specific model, not the
 			// total across all models. Using the total inflates

@@ -1,6 +1,6 @@
-import CryptoKit
+import Crypto
 import Foundation
-import os
+import Logging
 
 // MARK: - Weight Hasher
 
@@ -15,10 +15,7 @@ import os
 /// performed for the model actually being served, not during discovery.
 public struct WeightHasher: Sendable {
 
-    private static let logger = Logger(
-        subsystem: "dev.darkbloom.provider",
-        category: "WeightHasher"
-    )
+    private static let logger = Logger(label: "darkbloom.WeightHasher")
 
     /// Buffer size for streaming file reads (64 KB, matches Rust implementation).
     private static let bufferSize = 65536
@@ -64,13 +61,23 @@ public struct WeightHasher: Sendable {
     /// per-file SHA-256 digests are combined in sorted filename order into a single
     /// final SHA-256 hash. This produces a consistent result regardless of filesystem
     /// ordering and scales across CPU cores for sharded model weights.
-    static func hashFilesSorted(_ paths: [URL]) -> String? {
-        // Sort by full path (matches Rust's PathBuf::sort which sorts lexicographically)
-        let sorted = paths.sorted { $0.path < $1.path }
+    ///
+    /// Sort key is the full absolute path (matches the legacy provider's behaviour
+    /// where there is exactly one snapshot directory per call).
+    public static func hashFilesSorted(_ paths: [URL]) -> String? {
+        let keyed = paths.map { (file: $0, sortKey: $0.path) }
+        return hashFilesWithRelativeKey(keyed)
+    }
 
-        // Hash each file in parallel
+    /// Hash files in sorted order of the caller-supplied sort key, combining per-file
+    /// digests into a final hash. Used by both the legacy attestation path (sort key =
+    /// absolute path) and the manifest builder (sort key = relative POSIX path).
+    public static func hashFilesWithRelativeKey(_ files: [(file: URL, sortKey: String)]) -> String? {
+        let sorted = files.sorted { $0.sortKey < $1.sortKey }
+
+        // Hash each file in parallel.
         let group = DispatchGroup()
-        let queue = DispatchQueue(label: "dev.darkbloom.provider.weighthash", attributes: .concurrent)
+        let queue = DispatchQueue(label: "darkbloom.WeightHasher", attributes: .concurrent)
 
         // Pre-allocate array for per-file hashes, indexed by position.
         // Safety: each index is written by exactly one concurrent block, no two
@@ -86,17 +93,17 @@ public struct WeightHasher: Sendable {
             rawBuffer.deallocate()
         }
 
-        for (index, path) in sorted.enumerated() {
+        for (index, entry) in sorted.enumerated() {
             group.enter()
             queue.async {
-                buffer[index] = hashSingleFile(at: path)
+                buffer[index] = hashSingleFile(at: entry.file)
                 group.leave()
             }
         }
 
         group.wait()
 
-        // Combine per-file hashes in sorted order
+        // Combine per-file hashes in sorted order.
         var finalHasher = SHA256()
         for i in 0..<count {
             guard let fileDigest = buffer[i] else {
@@ -111,8 +118,9 @@ public struct WeightHasher: Sendable {
         return finalDigest.map { String(format: "%02x", $0) }.joined()
     }
 
-    /// SHA-256 hash a single file by streaming in chunks.
-    private static func hashSingleFile(at url: URL) -> SHA256Digest? {
+    /// SHA-256 hash a single file by streaming in chunks. Returns the raw digest
+    /// so callers can either hex-encode it or feed it into another hasher.
+    static func hashSingleFile(at url: URL) -> SHA256Digest? {
         guard let handle = try? FileHandle(forReadingFrom: url) else {
             return nil
         }

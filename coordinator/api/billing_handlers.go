@@ -641,10 +641,26 @@ func (s *Server) handleAdminDeleteModel(w http.ResponseWriter, r *http.Request) 
 // handleModelCatalog handles GET /v1/models/catalog.
 // Public endpoint — returns active models for providers and the install script.
 func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
-	allModels := s.store.ListSupportedModels()
-
 	// Optional filter: ?type=text
 	typeFilter := r.URL.Query().Get("type")
+	registryRows, err := s.store.ListActiveModelRegistryWithError()
+	if err != nil {
+		s.logger.Error("model registry: failed to list active models", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch model catalog"))
+		return
+	}
+	if len(registryRows) > 0 {
+		models := make([]map[string]any, 0, len(registryRows))
+		if typeFilter == "" || typeFilter == "text" {
+			for i := range registryRows {
+				models = append(models, catalogModelFromRegistryRecord(&registryRows[i]))
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"models": models})
+		return
+	}
+
+	allModels := s.store.ListSupportedModels()
 
 	// Filter to active models only (and by type if specified)
 	var active []store.SupportedModel

@@ -13,13 +13,14 @@ import {
   TrendingDown,
 } from "lucide-react";
 
-// Baseline pricing for comparison, static since these are external reference points.
-const baselinePricing: Record<string, { output: number; name: string; baseline: string; unit?: string }> = {
-  "qwen3.5-27b-claude-opus-8bit": { output: 1_560_000, name: "Qwen3.5 27B Claude Opus", baseline: "OpenRouter" },
-  "mlx-community/Trinity-Mini-8bit": { output: 150_000, name: "Trinity Mini", baseline: "OpenRouter" },
-  "mlx-community/gemma-4-26b-a4b-it-8bit": { output: 400_000, name: "Gemma 4 26B", baseline: "OpenRouter" },
-  "mlx-community/Qwen3.5-122B-A10B-8bit": { output: 2_080_000, name: "Qwen3.5 122B", baseline: "OpenRouter" },
-  "mlx-community/MiniMax-M2.5-8bit": { output: 1_000_000, name: "MiniMax M2.5", baseline: "OpenRouter" },
+// Optional display-only market references. The catalog rows always come from
+// the coordinator; entries here only enable a comparison when IDs match.
+const baselinePricing: Record<string, { output: number; baseline: string; unit?: string }> = {
+  "qwen3.5-27b-claude-opus-8bit": { output: 1_560_000, baseline: "OpenRouter" },
+  "mlx-community/Trinity-Mini-8bit": { output: 150_000, baseline: "OpenRouter" },
+  "mlx-community/gemma-4-26b-a4b-it-8bit": { output: 400_000, baseline: "OpenRouter" },
+  "mlx-community/Qwen3.5-122B-A10B-8bit": { output: 2_080_000, baseline: "OpenRouter" },
+  "mlx-community/MiniMax-M2.5-8bit": { output: 1_000_000, baseline: "OpenRouter" },
 };
 
 // Build a unified pricing lookup from the coordinator's response
@@ -87,6 +88,12 @@ export default function ModelsPage() {
   }, []);
 
   const eigenPricing = buildPricingLookup(pricing);
+  const modelNames = Object.fromEntries(
+    models.map((model) => [model.id, model.display_name || model.id.split("/").pop() || model.id])
+  );
+  const comparisonRows = models
+    .map((model) => ({ id: model.id, eigen: eigenPricing[model.id], baseline: baselinePricing[model.id] }))
+    .filter((row): row is { id: string; eigen: { input: number; output: number; unit?: string }; baseline: { output: number; baseline: string; unit?: string } } => Boolean(row.eigen && row.baseline));
 
   return (
     <div className="flex flex-col h-full">
@@ -242,16 +249,13 @@ export default function ModelsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {Object.entries(eigenPricing)
-                    .filter(([id]) => baselinePricing[id])
-                    .map(([id, eigen]) => {
-                      const baseline = baselinePricing[id];
+                  {comparisonRows.map(({ id, eigen, baseline }) => {
                       const savings = savingsPercent(eigen.output, baseline.output);
                       const unit = eigen.unit ?? "per 1M tokens";
                       return (
                         <tr key={id} className="border-b border-border-dim/50 hover:bg-bg-tertiary transition-colors">
                           <td className="px-4 py-3">
-                            <span className="font-medium text-text-primary">{baseline.name}</span>
+                            <span className="font-medium text-text-primary">{modelNames[id] ?? id}</span>
                             <span className="ml-2 text-xs text-text-tertiary">{unit}</span>
                           </td>
                           <td className="px-4 py-3 text-right font-mono text-text-secondary">

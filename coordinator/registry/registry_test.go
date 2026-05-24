@@ -1816,7 +1816,7 @@ func TestConcurrentFindProviderAndHeartbeat(t *testing.T) {
 // Model catalog enforcement
 // ---------------------------------------------------------------------------
 
-func TestModelCatalogFilterOnRegister(t *testing.T) {
+func TestModelCatalogGatesRoutingWithoutDroppingInventory(t *testing.T) {
 	reg := New(testLogger())
 	reg.MinTrustLevel = TrustNone
 
@@ -1824,22 +1824,22 @@ func TestModelCatalogFilterOnRegister(t *testing.T) {
 	reg.SetModelCatalog([]CatalogEntry{{ID: "mlx-community/Qwen3.5-9B-Instruct-4bit"}})
 
 	// Register a provider with two models — one in catalog, one not.
-	msg := &protocol.RegisterMessage{
-		Type:     protocol.TypeRegister,
-		Hardware: testRegisterMessage().Hardware,
-		Models: []protocol.ModelInfo{
-			{ID: "mlx-community/Qwen3.5-9B-Instruct-4bit", SizeBytes: 5700000000, ModelType: "qwen3", Quantization: "4bit"},
-			{ID: "mlx-community/random-model-not-in-catalog", SizeBytes: 1000000, ModelType: "llama", Quantization: "4bit"},
-		},
-		Backend: "vllm_mlx",
+	msg := testRegisterMessage()
+	msg.Models = []protocol.ModelInfo{
+		{ID: "mlx-community/Qwen3.5-9B-Instruct-4bit", SizeBytes: 5700000000, ModelType: "qwen3", Quantization: "4bit"},
+		{ID: "mlx-community/random-model-not-in-catalog", SizeBytes: 1000000, ModelType: "llama", Quantization: "4bit"},
 	}
 	p := reg.Register("p1", nil, msg)
 
-	if len(p.Models) != 1 {
-		t.Fatalf("expected 1 model after catalog filter, got %d", len(p.Models))
+	if len(p.Models) != 2 {
+		t.Fatalf("expected full provider inventory to be preserved, got %d models", len(p.Models))
 	}
-	if p.Models[0].ID != "mlx-community/Qwen3.5-9B-Instruct-4bit" {
-		t.Errorf("expected whitelisted model, got %q", p.Models[0].ID)
+	reg.ForceTrustProvider(p.ID)
+	if found := reg.FindProvider("mlx-community/random-model-not-in-catalog"); found != nil {
+		t.Fatal("expected non-catalog model to stay unroutable")
+	}
+	if found := reg.FindProvider("mlx-community/Qwen3.5-9B-Instruct-4bit"); found == nil {
+		t.Fatal("expected catalog model to be routable")
 	}
 }
 
@@ -1920,10 +1920,37 @@ func TestIsModelInCatalog(t *testing.T) {
 		t.Error("expected model-c to NOT be in catalog")
 	}
 
+	// Empty but configured catalog means deny-all. This is the production
+	// startup state for a fresh DB-backed model registry with no promoted rows.
+	reg.SetModelCatalog([]CatalogEntry{})
+	if reg.IsModelInCatalog("model-a") {
+		t.Error("expected configured empty catalog to deny all models")
+	}
+
 	// Clear catalog.
 	reg.SetModelCatalog(nil)
 	if !reg.IsModelInCatalog("model-c") {
 		t.Error("expected IsModelInCatalog to return true after clearing catalog")
+	}
+}
+
+func TestRegisterWithEmptyConfiguredCatalogPreservesInventoryButRoutesNothingUntilCatalogUpdates(t *testing.T) {
+	reg := New(testLogger())
+	reg.MinTrustLevel = TrustNone
+	reg.SetModelCatalog([]CatalogEntry{})
+
+	provider := reg.Register("p-empty-catalog", nil, testRegisterMessage())
+	if len(provider.Models) != 1 {
+		t.Fatalf("expected provider inventory to be preserved, got %#v", provider.Models)
+	}
+	reg.ForceTrustProvider(provider.ID)
+	modelID := provider.Models[0].ID
+	if found := reg.FindProvider(modelID); found != nil {
+		t.Fatal("expected empty configured catalog to route no models")
+	}
+	reg.SetModelCatalog([]CatalogEntry{{ID: modelID}})
+	if found := reg.FindProvider(modelID); found == nil {
+		t.Fatal("expected existing provider to become routable after catalog update")
 	}
 }
 
@@ -2000,11 +2027,20 @@ func TestModelCatalogWeightHashVerification(t *testing.T) {
 	}
 	p2 := reg.Register("p2", nil, msg2)
 
-	if len(p2.Models) != 1 {
-		t.Fatalf("expected 1 model (model-a rejected), got %d", len(p2.Models))
+	if len(p2.Models) != 2 {
+		t.Fatalf("expected full provider inventory to be preserved, got %d", len(p2.Models))
 	}
-	if p2.Models[0].ID != "model-b" {
-		t.Errorf("expected model-b to survive, got %q", p2.Models[0].ID)
+	reg.mu.RLock()
+	p2.mu.Lock()
+	modelAAllowed := reg.providerServesCatalogModelLocked(p2, "model-a")
+	modelBAllowed := reg.providerServesCatalogModelLocked(p2, "model-b")
+	p2.mu.Unlock()
+	reg.mu.RUnlock()
+	if modelAAllowed {
+		t.Fatal("expected model-a with wrong hash to be unroutable")
+	}
+	if !modelBAllowed {
+		t.Fatal("expected model-b to remain allowed")
 	}
 }
 

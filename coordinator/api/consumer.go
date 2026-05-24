@@ -2887,12 +2887,30 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		capByModel[capacities[i].ModelID] = &capacities[i]
 	}
 
-	// Filter to only show models from the catalog (active supported models).
-	catalogModels := s.store.ListSupportedModels()
-	catalogByID := make(map[string]store.SupportedModel, len(catalogModels))
-	for _, cm := range catalogModels {
-		if cm.Active && !IsRetiredProviderModel(cm) {
-			catalogByID[cm.ID] = cm
+	// Filter to only show models from the active catalog. Prefer the DB-backed
+	// registry; fall back to legacy supported_models only while old deployments
+	// still have rows there.
+	registryRows, err := s.store.ListActiveModelRegistryWithError()
+	if err != nil {
+		s.logger.Error("model registry: failed to list active models", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list models"))
+		return
+	}
+	catalogByID := make(map[string]store.SupportedModel, len(registryRows))
+	if len(registryRows) > 0 {
+		for _, row := range registryRows {
+			cm := supportedModelFromRegistryRecord(&row)
+			if cm.Active {
+				catalogByID[cm.ID] = cm
+			}
+		}
+	} else {
+		catalogModels := s.store.ListSupportedModels()
+		catalogByID = make(map[string]store.SupportedModel, len(catalogModels))
+		for _, cm := range catalogModels {
+			if cm.Active && !IsRetiredProviderModel(cm) {
+				catalogByID[cm.ID] = cm
+			}
 		}
 	}
 

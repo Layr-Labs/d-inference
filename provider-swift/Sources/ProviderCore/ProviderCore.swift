@@ -1,3 +1,5 @@
+@_exported import ProviderCoreFoundation
+
 import Foundation
 import MLX
 import MLXNN

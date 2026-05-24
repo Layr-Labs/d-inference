@@ -12,6 +12,7 @@
 /// matching what `ModelScanner` already discovers.
 
 import Foundation
+import Crypto
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -29,6 +30,18 @@ public struct CatalogModel: Codable, Sendable, Equatable {
     public let minRamGb: Int?
     public let active: Bool?
     public let weightHash: String?
+    public let version: String?
+    public let r2Prefix: String?
+    public let aggregateSHA256: String?
+    public let totalSizeBytes: Int64?
+    public let fileCount: Int?
+    public let family: String?
+    public let quantization: String?
+    public let maxContextLength: Int?
+    public let maxOutputLength: Int?
+    public let capabilities: [String]?
+    public let runtimeParameters: [String: JSONValue]?
+    public let metadata: [String: JSONValue]?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -41,6 +54,18 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         case minRamGb = "min_ram_gb"
         case active
         case weightHash = "weight_hash"
+        case version
+        case r2Prefix = "r2_prefix"
+        case aggregateSHA256 = "aggregate_sha256"
+        case totalSizeBytes = "total_size_bytes"
+        case fileCount = "file_count"
+        case family
+        case quantization
+        case maxContextLength = "max_context_length"
+        case maxOutputLength = "max_output_length"
+        case capabilities
+        case runtimeParameters = "runtime_parameters"
+        case metadata
     }
 
     public init(
@@ -53,7 +78,19 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         description: String? = nil,
         minRamGb: Int? = nil,
         active: Bool? = nil,
-        weightHash: String? = nil
+        weightHash: String? = nil,
+        version: String? = nil,
+        r2Prefix: String? = nil,
+        aggregateSHA256: String? = nil,
+        totalSizeBytes: Int64? = nil,
+        fileCount: Int? = nil,
+        family: String? = nil,
+        quantization: String? = nil,
+        maxContextLength: Int? = nil,
+        maxOutputLength: Int? = nil,
+        capabilities: [String]? = nil,
+        runtimeParameters: [String: JSONValue]? = nil,
+        metadata: [String: JSONValue]? = nil
     ) {
         self.id = id
         self.s3Name = s3Name
@@ -65,6 +102,18 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         self.minRamGb = minRamGb
         self.active = active
         self.weightHash = weightHash
+        self.version = version
+        self.r2Prefix = r2Prefix
+        self.aggregateSHA256 = aggregateSHA256
+        self.totalSizeBytes = totalSizeBytes
+        self.fileCount = fileCount
+        self.family = family
+        self.quantization = quantization
+        self.maxContextLength = maxContextLength
+        self.maxOutputLength = maxOutputLength
+        self.capabilities = capabilities
+        self.runtimeParameters = runtimeParameters
+        self.metadata = metadata
     }
 }
 
@@ -97,9 +146,11 @@ public enum ModelCatalogError: Error, CustomStringConvertible, Sendable {
 public struct ModelCatalogClient: Sendable {
 
     private let coordinatorURL: String
+    private let urlSession: URLSession
 
-    public init(coordinatorURL: String) {
+    public init(coordinatorURL: String, urlSession: URLSession = .shared) {
         self.coordinatorURL = coordinatorHTTPBase(coordinatorURL)
+        self.urlSession = urlSession
     }
 
     /// Fetch the active catalog from the coordinator. `typeFilter` mirrors
@@ -121,7 +172,7 @@ public struct ModelCatalogClient: Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await urlSession.data(for: request)
         } catch {
             throw ModelCatalogError.unreachable(error.localizedDescription)
         }
@@ -137,6 +188,51 @@ public struct ModelCatalogClient: Sendable {
             throw ModelCatalogError.decodeFailed(error.localizedDescription)
         }
     }
+
+    /// Fetch the active registry manifest for a model. Model IDs can contain
+    /// `/`, so the ID is percent-encoded as one path suffix.
+    public func fetchManifest(modelID: String) async throws -> ModelManifest {
+        guard let escapedID = Self.escapeModelIDForPath(modelID),
+              let url = URL(string: "\(coordinatorURL)/v1/models/catalog/manifest/\(escapedID)")
+        else {
+            throw ModelCatalogError.unreachable("invalid manifest URL")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await urlSession.data(for: request)
+        } catch {
+            throw ModelCatalogError.unreachable(error.localizedDescription)
+        }
+
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw ModelCatalogError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+        }
+
+        do {
+            return try Self.manifestDecoder.decode(ModelManifest.self, from: data)
+        } catch {
+            throw ModelCatalogError.decodeFailed(error.localizedDescription)
+        }
+    }
+
+    static let manifestDecoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
+
+    private static func escapeModelIDForPath(_ modelID: String) -> String? {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/")
+        return modelID.addingPercentEncoding(withAllowedCharacters: allowed)
+    }
 }
 
 // MARK: - Downloader
@@ -149,16 +245,21 @@ public struct ModelDownloader: Sendable {
         public let bytesTotal: Int64?
     }
 
-    /// CDN root for model artifacts. The provider used to read this from
-    /// `DEFAULT_R2_CDN_URL` baked at compile time; the Swift provider keeps
-    /// the same prod default, override with the `DARKBLOOM_R2_CDN_URL` env
-    /// var or the `r2CDNURL` init arg.
-    public static let defaultR2CDNURL = "https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev"
+    /// CDN root for model artifacts. Override with `DARKBLOOM_R2_CDN_URL` for
+    /// transition/testing against alternate buckets.
+    public static let defaultR2CDNURL = "https://models.darkbloom.ai"
 
     private let r2CDNURL: String
     private let urlSession: URLSession
+    private let catalogClient: ModelCatalogClient?
+    private let concurrency: Int
 
-    public init(r2CDNURL: String? = nil, urlSession: URLSession = .shared) {
+    public init(
+        r2CDNURL: String? = nil,
+        urlSession: URLSession = .shared,
+        catalogClient: ModelCatalogClient? = nil,
+        concurrency: Int = 8
+    ) {
         if let r2CDNURL { self.r2CDNURL = r2CDNURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
         else if let env = ProcessInfo.processInfo.environment["DARKBLOOM_R2_CDN_URL"], !env.isEmpty {
             self.r2CDNURL = env.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -166,6 +267,8 @@ public struct ModelDownloader: Sendable {
             self.r2CDNURL = ModelDownloader.defaultR2CDNURL
         }
         self.urlSession = urlSession
+        self.catalogClient = catalogClient
+        self.concurrency = max(1, concurrency)
     }
 
     /// Download a catalog model into the local HuggingFace cache.
@@ -183,6 +286,56 @@ public struct ModelDownloader: Sendable {
     public func download(
         model: CatalogModel,
         onProgress: (@Sendable (ProgressEvent) -> Void)? = nil
+    ) async throws {
+        if model.r2Prefix != nil, model.aggregateSHA256 != nil {
+            let manifest: ModelManifest
+            if let catalogClient {
+                manifest = try await catalogClient.fetchManifest(modelID: model.id)
+            } else {
+                manifest = try await fetchManifestFromCDN(model: model)
+            }
+            try await downloadManifestModel(model: model, manifest: manifest, onProgress: onProgress)
+            return
+        }
+
+        try await downloadLegacyModelFromCDN(model: model, onProgress: onProgress)
+    }
+
+    private func fetchManifestFromCDN(model: CatalogModel) async throws -> ModelManifest {
+        guard let r2Prefix = model.r2Prefix else {
+            throw ModelCatalogError.downloadFailed("model missing r2_prefix")
+        }
+        let urlString = "\(r2CDNURL)/\(Self.escapeR2Path(r2Prefix))/manifest.json"
+        guard let url = URL(string: urlString) else {
+            throw ModelCatalogError.downloadFailed("invalid manifest URL: \(urlString)")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await urlSession.data(for: request)
+        } catch {
+            throw ModelCatalogError.downloadFailed("manifest.json: \(error.localizedDescription)")
+        }
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw ModelCatalogError.downloadFailed("manifest.json: HTTP \(http.statusCode)")
+        }
+
+        do {
+            return try ModelCatalogClient.manifestDecoder.decode(ModelManifest.self, from: data)
+        } catch {
+            throw ModelCatalogError.downloadFailed("manifest.json decode failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func downloadLegacyModelFromCDN(
+        model: CatalogModel,
+        onProgress: (@Sendable (ProgressEvent) -> Void)?
     ) async throws {
         let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
@@ -244,6 +397,97 @@ public struct ModelDownloader: Sendable {
         try writeMainRef(for: model.id)
     }
 
+    private func downloadManifestModel(
+        model: CatalogModel,
+        manifest: ModelManifest,
+        onProgress: (@Sendable (ProgressEvent) -> Void)?
+    ) async throws {
+        guard manifest.modelID == model.id else {
+            throw ModelCatalogError.downloadFailed("manifest model_id \(manifest.modelID) does not match catalog id \(model.id)")
+        }
+        guard manifest.files.count == manifest.fileCount else {
+            throw ModelCatalogError.downloadFailed("manifest file_count \(manifest.fileCount) does not match files array")
+        }
+        guard !manifest.files.isEmpty else {
+            throw ModelCatalogError.downloadFailed("manifest contains no files")
+        }
+        if let aggregate = model.aggregateSHA256, aggregate != manifest.aggregateSHA256 {
+            throw ModelCatalogError.downloadFailed("catalog aggregate hash does not match manifest")
+        }
+        if let prefix = model.r2Prefix, prefix != manifest.r2Prefix {
+            throw ModelCatalogError.downloadFailed("catalog r2_prefix does not match manifest")
+        }
+
+        let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
+        let snapshotsDir = cacheDir.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
+        try Self.ensureAvailableCapacity(at: snapshotsDir, requiredBytes: manifest.totalSizeBytes)
+
+        let stagingDir = snapshotsDir.appendingPathComponent(".local-staging-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+
+        var completed = false
+        defer {
+            if !completed {
+                try? FileManager.default.removeItem(at: stagingDir)
+            }
+        }
+
+        let jobs = try manifest.files.map { file -> (file: ManifestFile, destination: URL, url: String) in
+            let relativePath = try Self.validatedManifestRelativePath(file.path)
+            return (
+                file: file,
+                destination: stagingDir.appendingPathComponent(relativePath, isDirectory: false),
+                url: "\(r2CDNURL)/\(Self.escapeR2Path(manifest.r2Prefix))/\(Self.escapeR2Path(relativePath))"
+            )
+        }
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            var next = 0
+            for _ in 0..<min(concurrency, jobs.count) {
+                let job = jobs[next]
+                next += 1
+                group.addTask { try await downloadManifestFile(job, onProgress: onProgress) }
+            }
+
+            while try await group.next() != nil {
+                if next < jobs.count {
+                    let job = jobs[next]
+                    next += 1
+                    group.addTask { try await downloadManifestFile(job, onProgress: onProgress) }
+                }
+            }
+        }
+
+        let aggregate = WeightHasher.hashFilesWithRelativeKey(jobs.map { (file: $0.destination, sortKey: $0.file.path) })
+        guard aggregate == manifest.aggregateSHA256 else {
+            throw ModelCatalogError.downloadFailed("aggregate hash mismatch for \(model.id)")
+        }
+
+        try Self.publishStagedSnapshot(stagingDir, to: cacheDir)
+        try writeMainRef(for: model.id)
+        completed = true
+    }
+
+    private func downloadManifestFile(
+        _ job: (file: ManifestFile, destination: URL, url: String),
+        onProgress: (@Sendable (ProgressEvent) -> Void)?
+    ) async throws {
+        onProgress?(ProgressEvent(file: job.file.path, bytesDownloaded: 0, bytesTotal: job.file.sizeBytes))
+        try await downloadFile(
+            from: job.url,
+            to: job.destination,
+            label: job.file.path,
+            onProgress: onProgress,
+            required: true,
+            expectedSHA256: job.file.sha256.lowercased()
+        )
+        let size = fileSize(job.destination)
+        guard size == job.file.sizeBytes else {
+            throw ModelCatalogError.downloadFailed("\(job.file.path): size \(size) != manifest size \(job.file.sizeBytes)")
+        }
+    }
+
     /// Remove a downloaded model from the cache. Returns true if anything was
     /// removed, false if the model was not present.
     @discardableResult
@@ -283,6 +527,28 @@ public struct ModelDownloader: Sendable {
         return unique.sorted()
     }
 
+    static func validatedManifestRelativePath(_ path: String) throws -> String {
+        guard !path.isEmpty else {
+            throw ModelCatalogError.downloadFailed("manifest contains empty file path")
+        }
+        guard !path.hasPrefix("/"), !path.contains("\\") else {
+            throw ModelCatalogError.downloadFailed("unsafe manifest path: \(path)")
+        }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+            throw ModelCatalogError.downloadFailed("unsafe manifest path: \(path)")
+        }
+        return path
+    }
+
+    static func escapeR2Path(_ path: String) -> String {
+        path.split(separator: "/", omittingEmptySubsequences: false)
+            .map { segment in
+                String(segment).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String(segment)
+            }
+            .joined(separator: "/")
+    }
+
     internal func downloadFileForTesting(
         from urlString: String,
         to destination: URL,
@@ -295,7 +561,8 @@ public struct ModelDownloader: Sendable {
             to: destination,
             label: label,
             onProgress: onProgress,
-            required: required
+            required: required,
+            expectedSHA256: nil
         )
     }
 
@@ -318,7 +585,8 @@ public struct ModelDownloader: Sendable {
         to destination: URL,
         label: String,
         onProgress: (@Sendable (ProgressEvent) -> Void)?,
-        required: Bool
+        required: Bool,
+        expectedSHA256: String? = nil
     ) async throws -> Bool {
         guard let url = URL(string: urlString) else {
             if required { throw ModelCatalogError.downloadFailed("invalid URL: \(urlString)") }
@@ -350,6 +618,13 @@ public struct ModelDownloader: Sendable {
                         throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")
                     }
                     return false
+                }
+                if http.statusCode == 416, existingBytes > 0 {
+                    // Stale .part is already complete or inconsistent with the
+                    // current object. Delete it and retry once from byte 0.
+                    try? fm.removeItem(at: partial)
+                    existingBytes = 0
+                    throw ModelCatalogError.downloadFailed("\(label): stale partial download")
                 }
                 guard (200..<300).contains(http.statusCode) else {
                     throw ModelCatalogError.downloadFailed("\(label): HTTP \(http.statusCode)")
@@ -397,6 +672,13 @@ public struct ModelDownloader: Sendable {
                     try handle.write(contentsOf: buffer)
                     downloaded += Int64(buffer.count)
                 }
+                try handle.close()
+                if let expectedSHA256 {
+                    guard let actual = Self.sha256Hex(of: partial), actual == expectedSHA256 else {
+                        try? fm.removeItem(at: partial)
+                        throw ModelCatalogError.downloadFailed("\(label): SHA-256 mismatch")
+                    }
+                }
                 try? fm.removeItem(at: destination)
                 try fm.moveItem(at: partial, to: destination)
                 onProgress?(ProgressEvent(file: label, bytesDownloaded: downloaded, bytesTotal: total ?? downloaded))
@@ -429,6 +711,39 @@ public struct ModelDownloader: Sendable {
 
     private func fileSize(_ url: URL) -> Int64 {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+    }
+
+    private static func publishStagedSnapshot(_ stagingDir: URL, to cacheDir: URL) throws {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: cacheDir.path) {
+            _ = try fm.replaceItemAt(cacheDir, withItemAt: stagingDir)
+        } else {
+            try fm.moveItem(at: stagingDir, to: cacheDir)
+        }
+    }
+
+    private static func sha256Hex(of url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        while true {
+            guard let chunk = try? handle.read(upToCount: 65536) else { return nil }
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func ensureAvailableCapacity(at directory: URL, requiredBytes: Int64) throws {
+        guard requiredBytes > 0 else { return }
+        let values = try directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
+        let available = values.volumeAvailableCapacityForImportantUsage ?? Int64(values.volumeAvailableCapacity ?? 0)
+        guard available <= 0 || available >= requiredBytes else {
+            throw ModelCatalogError.downloadFailed(
+                "insufficient disk space: need \(requiredBytes) bytes, available \(available) bytes"
+            )
+        }
     }
 
 }

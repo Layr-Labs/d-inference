@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-@Suite("Model catalog client + downloader")
+@Suite("Model catalog client + downloader", .serialized)
 struct ModelCatalogTests {
 
     @Test("catalog response decodes the coordinator wire shape")
@@ -20,7 +20,18 @@ struct ModelCatalogTests {
               "description": "Tiny",
               "min_ram_gb": 4,
               "active": true,
-              "weight_hash": "deadbeef"
+              "weight_hash": "deadbeef",
+              "version": "2026-05-23",
+              "r2_prefix": "v2/mlx-community__Qwen3-0.6B-8bit/2026-05-23",
+              "aggregate_sha256": "feedface",
+              "total_size_bytes": 42,
+              "file_count": 2,
+              "family": "qwen",
+              "quantization": "8bit",
+              "max_context_length": 32768,
+              "max_output_length": 8192,
+              "runtime_parameters": {"chat_template_required": true, "default_temperature": 0},
+              "capabilities": ["chat"]
             }
           ]
         }
@@ -35,6 +46,18 @@ struct ModelCatalogTests {
         #expect(m.sizeGb == 0.7)
         #expect(m.minRamGb == 4)
         #expect(m.weightHash == "deadbeef")
+        #expect(m.version == "2026-05-23")
+        #expect(m.r2Prefix == "v2/mlx-community__Qwen3-0.6B-8bit/2026-05-23")
+        #expect(m.aggregateSHA256 == "feedface")
+        #expect(m.totalSizeBytes == 42)
+        #expect(m.fileCount == 2)
+        #expect(m.family == "qwen")
+        #expect(m.quantization == "8bit")
+        #expect(m.maxContextLength == 32768)
+        #expect(m.maxOutputLength == 8192)
+        #expect(m.runtimeParameters?["chat_template_required"] == .bool(true))
+        #expect(m.runtimeParameters?["default_temperature"] == .int(0))
+        #expect(m.capabilities == ["chat"])
     }
 
     @Test("CatalogModel encodes back into the same JSON keys")
@@ -82,6 +105,45 @@ struct ModelCatalogTests {
 
         let names = try ModelDownloader.parseShardNames(indexPath: tmp)
         #expect(names == ["model-00001.safetensors", "model-00002.safetensors"])
+    }
+
+    @Test("manifest paths reject traversal and preserve nested files")
+    func manifestPathValidation() throws {
+        #expect(try ModelDownloader.validatedManifestRelativePath("config.json") == "config.json")
+        #expect(try ModelDownloader.validatedManifestRelativePath("adapters/lora.safetensors") == "adapters/lora.safetensors")
+
+        for path in ["", "/config.json", "../config.json", "adapters/../config.json", "adapters//lora.safetensors", "adapters\\lora.safetensors"] {
+            #expect(throws: ModelCatalogError.self) {
+                _ = try ModelDownloader.validatedManifestRelativePath(path)
+            }
+        }
+    }
+
+    @Test("fetchManifest decodes the registry manifest route")
+    func fetchManifestDecodesRegistryRoute() async throws {
+        let manifest = ModelManifest(
+            schemaVersion: 1,
+            modelID: "org/model/with/slash",
+            version: "v1",
+            r2Prefix: "v2/org__model__with__slash/v1",
+            aggregateSHA256: String(repeating: "a", count: 64),
+            totalSizeBytes: 5,
+            fileCount: 1,
+            files: [ManifestFile(path: "config.json", sizeBytes: 5, sha256: String(repeating: "b", count: 64), role: "config")],
+            createdAt: Date(timeIntervalSince1970: 0)
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        RegistryURLProtocol.manifestData = try encoder.encode(manifest)
+        RegistryURLProtocol.files = [:]
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RegistryURLProtocol.self]
+        let client = ModelCatalogClient(coordinatorURL: "https://coord.example.test", urlSession: URLSession(configuration: config))
+
+        let decoded = try await client.fetchManifest(modelID: manifest.modelID)
+        #expect(decoded == manifest)
+        #expect(RegistryURLProtocol.lastPath == "/v1/models/catalog/manifest/org%2Fmodel%2Fwith%2Fslash")
     }
 
     @Test("downloader honors DARKBLOOM_R2_CDN_URL env override")
@@ -132,6 +194,74 @@ struct ModelCatalogTests {
         #expect(!FileManager.default.fileExists(atPath: partial.path))
         #expect(RangeURLProtocol.lastRangeHeader == "bytes=8-")
     }
+
+    @Test("manifest download failure preserves existing local snapshot")
+    func manifestDownloadFailurePreservesExistingSnapshot() async throws {
+        let modelID = "test-org/staging-preserves-\(UUID().uuidString)"
+        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let snapshotDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let refsDir = modelDir.appendingPathComponent("refs", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+        try? FileManager.default.removeItem(at: modelDir)
+
+        try FileManager.default.createDirectory(at: snapshotDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: refsDir, withIntermediateDirectories: true)
+        let existingConfig = Data("known-good config".utf8)
+        try existingConfig.write(to: snapshotDir.appendingPathComponent("config.json"))
+        try "local".write(to: refsDir.appendingPathComponent("main"), atomically: true, encoding: .utf8)
+
+        let replacementConfig = Data("corrupt replacement".utf8)
+        let prefix = "v2/staging-preserves/v1"
+        let manifest = ModelManifest(
+            schemaVersion: 1,
+            modelID: modelID,
+            version: "v1",
+            r2Prefix: prefix,
+            aggregateSHA256: String(repeating: "a", count: 64),
+            totalSizeBytes: Int64(replacementConfig.count),
+            fileCount: 1,
+            files: [
+                ManifestFile(
+                    path: "config.json",
+                    sizeBytes: Int64(replacementConfig.count),
+                    sha256: String(repeating: "b", count: 64),
+                    role: "config"
+                ),
+            ],
+            createdAt: Date(timeIntervalSince1970: 0)
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        RegistryURLProtocol.manifestData = Data()
+        RegistryURLProtocol.files = [
+            "/\(prefix)/manifest.json": try encoder.encode(manifest),
+            "/\(prefix)/config.json": replacementConfig,
+        ]
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RegistryURLProtocol.self]
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: URLSession(configuration: config))
+        let model = CatalogModel(
+            id: modelID,
+            s3Name: "unused",
+            displayName: "Staging Preserve Test",
+            sizeGb: 0.001,
+            r2Prefix: prefix,
+            aggregateSHA256: manifest.aggregateSHA256
+        )
+
+        do {
+            try await downloader.download(model: model)
+            Issue.record("manifest download should fail on SHA-256 mismatch")
+        } catch is ModelCatalogError {
+        }
+
+        #expect(try Data(contentsOf: snapshotDir.appendingPathComponent("config.json")) == existingConfig)
+        #expect(try String(contentsOf: refsDir.appendingPathComponent("main"), encoding: .utf8) == "local")
+        let snapshotEntries = try FileManager.default.contentsOfDirectory(atPath: snapshotDir.deletingLastPathComponent().path)
+        #expect(!snapshotEntries.contains { $0.hasPrefix(".local-staging-") })
+    }
+
 }
 
 // Mirror of the private wrapper used inside ModelCatalog.swift so we can
@@ -166,6 +296,45 @@ private final class RangeURLProtocol: URLProtocol, @unchecked Sendable {
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class RegistryURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var manifestData = Data()
+    nonisolated(unsafe) static var files: [String: Data] = [:]
+    nonisolated(unsafe) static var lastPath: String?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        Self.lastPath = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? url.path
+        let body: Data
+        if url.path.hasPrefix("/v1/models/catalog/manifest/") {
+            body = Self.manifestData
+        } else if let data = Self.files[url.path] {
+            body = data
+        } else {
+            let response = HTTPURLResponse(url: url, statusCode: 404, httpVersion: "HTTP/1.1", headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Length": "\(body.count)"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
         client?.urlProtocolDidFinishLoading(self)
     }
 

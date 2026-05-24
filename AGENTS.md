@@ -45,55 +45,14 @@ testbed/              System-level testing framework (shared Go module with coor
 │   └── profile.go          Segment stats aggregation, diffing, JSON export
 └── integration/      Integration test suite (Docker Postgres + real coordinator)
 
-provider/             Rust provider agent for Apple Silicon Macs
-├── src/
-│   ├── main.rs       CLI (`serve`, `start`, `stop`, `models`, `benchmark`, `status`, `doctor`, `login`, etc.)
-│   ├── coordinator.rs WebSocket client, registration, heartbeats, request handling
-│   ├── proxy.rs      text, transcription, and image proxying to local backends
-│   ├── backend/      vllm-mlx backend process management
-│   ├── service.rs    launchd install/start/stop helpers
-│   ├── server.rs     local-only HTTP server mode
-│   ├── config.rs     TOML config + hardware-based defaults
-│   ├── hardware.rs   Apple Silicon detection + live system metrics
-│   ├── hypervisor.rs Hypervisor.framework Stage 2 page table memory isolation
-│   ├── scheduling.rs time-based availability windows
-│   ├── security.rs   SIP, Secure Boot, anti-debug (PT_DENY_ATTACH), integrity checks
-│   ├── crypto.rs     X25519 keypair management
-│   ├── models.rs     local text/image model discovery (fast scan, on-demand hashing)
-│   ├── inference.rs  in-process MLX inference (behind "python" feature flag)
-│   ├── protocol.rs   message types mirrored from coordinator/protocol
-│   └── wallet.rs     legacy provider wallet (secp256k1)
-├── stt_server.py     local speech-to-text server script used by bundles
-└── Cargo.toml        default `python` feature enables in-process PyO3 inference
+provider-swift/       Current Swift provider CLI for Apple Silicon Macs
+├── Sources/ProviderCore/             coordinator client, protocol, hardware, security, inference, server, telemetry, model downloads
+├── Sources/ProviderCoreFoundation/   model manifests, scanner, hashing, publish-safe foundation code
+├── Sources/darkbloom/                CLI (`serve`, `start`, `stop`, `models`, `benchmark`, `status`, `doctor`, `login`, etc.)
+├── Sources/darkbloom-publish/        registry manifest builder used by publish workflow
+└── Tests/                            ProviderCore and ProviderCoreFoundation tests
 
-image-bridge/         Python FastAPI image generation bridge
-├── eigeninference_image_bridge/
-│   ├── __main__.py
-│   ├── server.py              OpenAI-compatible `/v1/images/generations`
-│   ├── drawthings_backend.py  Draw Things gRPC backend adapter
-│   ├── generated/             generated protobuf/FlatBuffers glue
-│   └── proto/
-├── requirements.txt
-└── tests/                     pytest coverage for server/backend/integration
-
-app/EigenInference/            SwiftUI macOS menu bar app
-├── Sources/EigenInference/
-│   ├── EigenInferenceApp.swift
-│   ├── StatusViewModel.swift
-│   ├── ProviderManager.swift
-│   ├── CLIRunner.swift
-│   ├── ConfigManager.swift
-│   ├── LaunchAgentManager.swift
-│   ├── SecurityManager.swift
-│   ├── ModelManager.swift / ModelCatalog.swift
-│   ├── IdleDetector.swift
-│   ├── NotificationManager.swift / UpdateManager.swift
-│   ├── DesignSystem.swift / GuideAvatar.swift / Illustrations.swift
-│   ├── DashboardView.swift / SettingsView.swift
-│   ├── MenuBarView.swift / SetupWizardView.swift
-│   ├── DoctorView.swift / LogViewerView.swift / ModelCatalogView.swift
-│   └── Resources/
-└── Tests/EigenInferenceTests/
+provider/             Deprecated Rust provider retained for historical/reference work only
 
 enclave/              Swift Secure Enclave helper + bridge binary
 ├── Sources/EigenInferenceEnclave/      enclave key + attestation library + FFI bridge
@@ -113,8 +72,7 @@ console-ui/           Next.js 16 / React 19 frontend
 └── proxy.ts          Next.js 16 proxy (replaces middleware.ts)
 
 scripts/              build, signing, install, and deploy helpers
-├── build-bundle.sh   provider/enclave/python/ffmpeg bundle builder (+ optional upload)
-├── bundle-app.sh     build EigenInference.app + DMG
+├── build-bundle.sh   provider/enclave bundle builder (+ optional upload)
 ├── install.sh        end-user installer served from coordinator (hash + codesign verification)
 ├── sign-hardened.sh  hardened runtime signing helper
 ├── admin.sh          admin CLI (Privy auth, release mgmt, API calls)
@@ -131,8 +89,8 @@ docs/                 architecture, deploy runbooks, MDM/ACME notes, image/video
 - Coordinator HTTP routes include `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/messages`, `POST /v1/audio/transcriptions`, `POST /v1/images/generations`, `GET /v1/models`, billing/pricing endpoints, invite flows, stats, enrollment, device authorization, and release registration endpoints.
 - Coordinator auth is split between Privy JWTs, API keys, and device-code login (RFC 8628) for provider machines.
 - Billing logic is split between `coordinator/payments` (ledger + pricing) and `coordinator/billing` (Stripe, Solana USDC, referrals). Coordinator wallet derived from BIP39 mnemonic via SLIP-0010.
-- Providers can serve text models, transcription, and optional image models. Image generation goes through the separate `image-bridge/` process and uploads PNGs back to the coordinator over HTTP.
-- The macOS app is a real operational client, not just a wrapper. It manages installation, onboarding, launchd integration, diagnostics, and subprocess supervision for `darkbloom`.
+- Providers currently serve text inference through the Swift `darkbloom` CLI.
+- Model registry data is DB-backed in the coordinator and points to R2 manifests under `https://models.darkbloom.ai`; model bytes are not hardcoded in the provider or UI.
 
 ## Building And Testing
 
@@ -147,31 +105,10 @@ go build ./cmd/verify-attestation
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o eigeninference-coordinator-linux ./cmd/coordinator
 ```
 
-### Provider (Rust)
+### Provider (Swift)
 ```bash
-cd provider
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo test
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo build --release
-
-# Distribution bundle build (no embedded Python link)
-cargo build --release --no-default-features
-```
-
-The `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1` env var is still the safe default when local Python is newer than the PyO3 support window.
-
-### Image Bridge (Python)
-```bash
-cd image-bridge
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt pytest httpx
-PYTHONPATH=. pytest
-```
-
-### macOS App (Swift)
-```bash
-cd app/EigenInference
-swift build -c release
+cd provider-swift
+swift build
 swift test
 ```
 
@@ -223,27 +160,24 @@ Dev coordinator deploy (Google Cloud): see `docs/dev-environment.md`.
 
 ## Important Sync Points
 
-- Protocol changes must be mirrored in both `provider/src/protocol.rs` and `coordinator/protocol/messages.go`.
+- Protocol changes must be mirrored in both `provider-swift/Sources/ProviderCore/Protocol/` and `coordinator/protocol/messages.go`.
 - Telemetry wire types live in three places and MUST stay aligned:
   - `coordinator/protocol/telemetry.go` (canonical),
-  - `provider/src/telemetry/event.rs` (Rust mirror),
+  - `provider-swift/Sources/ProviderCore/Telemetry/` (Swift mirror),
   - `console-ui/src/lib/telemetry-types.ts` (TS mirror).
   Symmetry tests in each language pin enum casing and optional-field omission.
   Field allowlist additions need parallel updates in
   `coordinator/api/telemetry_handlers.go`,
-  `provider/src/telemetry/layer.rs`, and the TS set above.
-- If you change provider bundle semantics, keep `scripts/build-bundle.sh`, `scripts/install.sh`, the app launcher code, and `LatestProviderVersion` in sync.
-- If you change install paths or process invocation, update both the CLI/install flow and the Swift app's `CLIRunner` / `ProviderManager`.
-- Image generation changes often span three places: coordinator consumer/provider handlers, provider proxying, and `image-bridge/`.
+  `provider-swift/Sources/ProviderCore/Telemetry/`, and the TS set above.
+- If you change provider bundle semantics, keep `scripts/build-bundle.sh`, `scripts/install.sh`, and `LatestProviderVersion` in sync.
+- If you change install paths or process invocation, update both the CLI and install flow.
 - Device linking changes often span both coordinator device auth endpoints and the provider `login` / `logout` commands.
-- Model catalog changes must be reflected in coordinator's catalog, provider's `MODEL_CATALOG` in main.rs, and the Swift app's `ModelCatalog.swift`.
+- Model registry changes span coordinator registry schema/endpoints, `provider-swift` manifest download/publish code, `scripts/publish-model.sh`, and the console UI. Do not add hardcoded provider `MODEL_CATALOG` lists.
 
 ## Common Pitfalls
 
 - The repo contains mixed payment language: current coordinator code implements Privy + Stripe + Solana + referrals, but some provider comments/strings still mention Tempo/pathUSD.
 - `coordinator/coordinator` is a built binary checked into the tree. Do not model changes from it, and do not commit more built artifacts.
-- The provider's default Cargo feature still pulls in PyO3. Use `--no-default-features` for distributable bundles.
-- Provider image serving is opt-in through `EIGENINFERENCE_IMAGE_MODEL` and `EIGENINFERENCE_IMAGE_MODEL_PATH`; if you touch image flows, verify both the coordinator catalog and provider env/config path handling.
 - CI release workflow must compute binary SHA-256 hashes AFTER code signing, not before. Providers verify hashes of the signed binary.
 - Model scan uses fast discovery (no hashing) at startup. Weight hashing is on-demand via `compute_weight_hash()` only for the served model. Don't add hashing back to the scan path.
 - Provider auto-injects ChatML template for models missing `chat_template` field. This is intentional — Qwen3.5 base models ship without it.
@@ -262,7 +196,7 @@ git config core.hooksPath .githooks
 | Component | Check | Manual fix |
 |-----------|-------|------------|
 | Go (`coordinator/`) | `gofmt -l` | `gofmt -w <file>` |
-| Rust (`provider/`) | `cargo fmt --check` | `cd provider && cargo fmt` |
+| Swift (`provider-swift/`) | no enforced formatter | `cd provider-swift && swift test` |
 | TypeScript (`console-ui/`) | `npx eslint src/` | `cd console-ui && npx eslint src/ --fix` |
 | Swift (`app/`, `enclave/`) | skipped | no enforced formatter |
-| Python (`image-bridge/`, `tests/`) | no hook today | run `pytest` manually as needed |
+| Python (`tests/`) | no hook today | run `pytest` manually as needed |

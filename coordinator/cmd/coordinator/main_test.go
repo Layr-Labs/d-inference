@@ -60,7 +60,7 @@ func TestSeedModelCatalogRemovesRetiredProviderModels(t *testing.T) {
 	if _, ok := byID[keep.ID]; !ok {
 		t.Fatalf("supported model %q was removed", keep.ID)
 	}
-	if _, ok := byID["qwen3.5-27b-claude-opus-8bit"]; !ok {
-		t.Fatalf("seeded text model missing")
+	if _, ok := byID["qwen3.5-27b-claude-opus-8bit"]; ok {
+		t.Fatalf("legacy hardcoded text model was re-seeded")
 	}
 }

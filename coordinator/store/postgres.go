@@ -293,6 +293,77 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
 
+		`CREATE TABLE IF NOT EXISTS model_registry (
+			id TEXT PRIMARY KEY,
+			display_name TEXT NOT NULL,
+			family TEXT NOT NULL DEFAULT '',
+			architecture TEXT NOT NULL DEFAULT '',
+			quantization TEXT NOT NULL DEFAULT '',
+			max_context_length INTEGER NOT NULL DEFAULT 0,
+			max_output_length INTEGER NOT NULL DEFAULT 0,
+			min_ram_gb INTEGER NOT NULL DEFAULT 0,
+			capabilities TEXT[] NOT NULL DEFAULT '{}',
+			status TEXT NOT NULL DEFAULT 'beta',
+			description TEXT NOT NULL DEFAULT '',
+			runtime_parameters JSONB NOT NULL DEFAULT '{}',
+			metadata JSONB NOT NULL DEFAULT '{}',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_model_registry_status ON model_registry(status)`,
+		`CREATE TABLE IF NOT EXISTS model_versions (
+			id BIGSERIAL PRIMARY KEY,
+			model_id TEXT NOT NULL REFERENCES model_registry(id) ON DELETE CASCADE,
+			version TEXT NOT NULL,
+			r2_prefix TEXT NOT NULL,
+			aggregate_sha256 TEXT NOT NULL,
+			total_size_bytes BIGINT NOT NULL,
+			file_count INTEGER NOT NULL,
+			status TEXT NOT NULL DEFAULT 'ready',
+			uploaded_by TEXT NOT NULL DEFAULT '',
+			uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			promoted_at TIMESTAMPTZ,
+			metadata JSONB NOT NULL DEFAULT '{}',
+			UNIQUE(model_id, version)
+		)`,
+		`DO $$ BEGIN
+			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS max_context_length INTEGER NOT NULL DEFAULT 0;
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
+		`DO $$ BEGIN
+			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS max_output_length INTEGER NOT NULL DEFAULT 0;
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
+		`DO $$ BEGIN
+			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS runtime_parameters JSONB NOT NULL DEFAULT '{}';
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_model_versions_model ON model_versions(model_id)`,
+		`CREATE TABLE IF NOT EXISTS model_version_files (
+			id BIGSERIAL PRIMARY KEY,
+			model_version_id BIGINT NOT NULL REFERENCES model_versions(id) ON DELETE CASCADE,
+			path TEXT NOT NULL,
+			size_bytes BIGINT NOT NULL,
+			sha256 TEXT NOT NULL,
+			role TEXT NOT NULL,
+			UNIQUE(model_version_id, path)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_model_version_files_version ON model_version_files(model_version_id)`,
+		`CREATE TABLE IF NOT EXISTS model_active_versions (
+			model_id TEXT PRIMARY KEY REFERENCES model_registry(id) ON DELETE CASCADE,
+			model_version_id BIGINT NOT NULL REFERENCES model_versions(id) ON DELETE RESTRICT,
+			activated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS publishing_api_keys (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			key_hash TEXT NOT NULL,
+			active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_used_at TIMESTAMPTZ
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_publishing_api_keys_hash ON publishing_api_keys(key_hash)`,
+
 		// Releases (provider binary versioning)
 		`CREATE TABLE IF NOT EXISTS releases (
 			version TEXT NOT NULL,

@@ -435,6 +435,28 @@ func (s *Server) SetMDMClient(client *mdm.Client) {
 // SyncModelCatalog reads active models from the store and updates the
 // registry's model catalog. Call this at startup and after admin catalog changes.
 func (s *Server) SyncModelCatalog() {
+	registryRows, err := s.store.ListActiveModelRegistryWithError()
+	if err != nil {
+		s.logger.Error("model registry catalog sync failed", "error", err)
+		return
+	}
+	if len(registryRows) > 0 {
+		entries := make([]registry.CatalogEntry, 0, len(registryRows))
+		for _, row := range registryRows {
+			if row.ActiveVersion == nil {
+				continue
+			}
+			entries = append(entries, registry.CatalogEntry{
+				ID:         row.ID,
+				WeightHash: row.ActiveVersion.AggregateSHA256,
+				SizeGB:     float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
+			})
+		}
+		s.registry.SetModelCatalog(entries)
+		s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
+		return
+	}
+
 	models := s.store.ListSupportedModels()
 	entries := make([]registry.CatalogEntry, 0, len(models))
 	for _, m := range models {
@@ -1060,6 +1082,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/models", s.requireAuth(s.handleAdminListModels))
 	s.mux.HandleFunc("POST /v1/admin/models", s.requireAuth(s.handleAdminSetModel))
 	s.mux.HandleFunc("DELETE /v1/admin/models", s.requireAuth(s.handleAdminDeleteModel))
+	s.mux.HandleFunc("POST /v1/admin/models/register", s.handleRegisterModel)
+	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
 	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
 	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin
 
@@ -1069,6 +1093,8 @@ func (s *Server) routes() {
 
 	// Public model catalog — providers and install script fetch this
 	s.mux.HandleFunc("GET /v1/models/catalog", s.handleModelCatalog)
+	s.mux.HandleFunc("GET /v1/models/catalog/manifest/", s.handleModelCatalogManifest)
+	s.mux.HandleFunc("GET /v1/models/catalog/", s.handleModelCatalogItem)
 
 	// Runtime manifest — providers and users can inspect accepted runtime hashes.
 	s.mux.HandleFunc("GET /v1/runtime/manifest", s.handleRuntimeManifest)

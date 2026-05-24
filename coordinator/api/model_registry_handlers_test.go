@@ -32,6 +32,12 @@ func TestValidateModelManifestRejectsTraversalAndBadHashes(t *testing.T) {
 	}
 
 	manifest = validTestManifest()
+	manifest.AggregateSHA256 = testHash
+	if err := validateModelManifest(manifest, "mlx-community/test", "v1", prefix); err == nil {
+		t.Fatal("expected mismatched aggregate hash to be rejected")
+	}
+
+	manifest = validTestManifest()
 	manifest.Files[0].SHA256 = "bbbb"
 	if err := validateModelManifest(manifest, "mlx-community/test", "v1", prefix); err == nil {
 		t.Fatal("expected bad file hash to be rejected")
@@ -97,6 +103,17 @@ func TestRegisterValidationAndR2Prefix(t *testing.T) {
 	}
 	if got := modelR2Prefix("foo__bar", "v1"); got != "v2/foo__bar--a3a759156e88/v1" {
 		t.Fatalf("unexpected underscore slug prefix: %s", got)
+	}
+}
+
+func TestParseModelCatalogPathsDisambiguatesManifestSuffix(t *testing.T) {
+	modelID, ok := parseModelCatalogPath("/v1/models/catalog/org/manifest")
+	if !ok || modelID != "org/manifest" {
+		t.Fatalf("expected catalog item path to preserve /manifest model id, got %q ok=%v", modelID, ok)
+	}
+	manifestID, ok := parseModelCatalogManifestPath("/v1/models/catalog/manifest/org%2Fmanifest")
+	if !ok || manifestID != "org/manifest" {
+		t.Fatalf("expected manifest route to decode model id, got %q ok=%v", manifestID, ok)
 	}
 }
 
@@ -282,20 +299,21 @@ func TestModelRegistryNotFoundClassification(t *testing.T) {
 }
 
 func validTestManifest() *store.ModelManifest {
+	files := []store.ManifestFile{{
+		Path:      "config.json",
+		SizeBytes: 123,
+		SHA256:    testHash,
+		Role:      "config",
+	}}
 	return &store.ModelManifest{
 		SchemaVersion:   1,
 		ModelID:         "mlx-community/test",
 		Version:         "v1",
 		R2Prefix:        modelR2Prefix("mlx-community/test", "v1"),
-		AggregateSHA256: testHash,
+		AggregateSHA256: aggregateManifestFileHashes(files),
 		TotalSizeBytes:  123,
 		FileCount:       1,
-		Files: []store.ManifestFile{{
-			Path:      "config.json",
-			SizeBytes: 123,
-			SHA256:    testHash,
-			Role:      "config",
-		}},
-		CreatedAt: time.Now(),
+		Files:           files,
+		CreatedAt:       time.Now(),
 	}
 }

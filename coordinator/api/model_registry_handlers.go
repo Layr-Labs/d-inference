@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -43,18 +44,9 @@ type publishingActor struct {
 }
 
 func (s *Server) handleModelCatalogItem(w http.ResponseWriter, r *http.Request) {
-	modelID, manifest, ok := parseModelCatalogPath(r.URL.Path)
+	modelID, ok := parseModelCatalogPath(r.URL.Path)
 	if !ok || modelID == "" {
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "model not found"))
-		return
-	}
-	if manifest {
-		m, err := s.store.GetModelManifest(modelID)
-		if err != nil {
-			s.writeModelRegistryStoreError(w, "get manifest", err)
-			return
-		}
-		writeJSON(w, http.StatusOK, m)
 		return
 	}
 	rec, err := s.store.GetModelRegistryRecord(modelID)
@@ -63,6 +55,20 @@ func (s *Server) handleModelCatalogItem(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, catalogModelFromRegistryRecord(rec))
+}
+
+func (s *Server) handleModelCatalogManifest(w http.ResponseWriter, r *http.Request) {
+	modelID, ok := parseModelCatalogManifestPath(r.URL.Path)
+	if !ok || modelID == "" {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "model manifest not found"))
+		return
+	}
+	m, err := s.store.GetModelManifest(modelID)
+	if err != nil {
+		s.writeModelRegistryStoreError(w, "get manifest", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
 }
 
 func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
@@ -252,21 +258,28 @@ func (s *Server) requirePublishingAPIKey(w http.ResponseWriter, r *http.Request)
 	return publishingActor{}, false
 }
 
-func parseModelCatalogPath(p string) (string, bool, bool) {
+func parseModelCatalogPath(p string) (string, bool) {
 	rest := strings.TrimPrefix(p, "/v1/models/catalog/")
 	if rest == p || rest == "" {
-		return "", false, false
-	}
-	manifest := false
-	if strings.HasSuffix(rest, "/manifest") {
-		manifest = true
-		rest = strings.TrimSuffix(rest, "/manifest")
+		return "", false
 	}
 	modelID, err := url.PathUnescape(rest)
 	if err != nil {
-		return "", false, false
+		return "", false
 	}
-	return modelID, manifest, true
+	return modelID, true
+}
+
+func parseModelCatalogManifestPath(p string) (string, bool) {
+	rest := strings.TrimPrefix(p, "/v1/models/catalog/manifest/")
+	if rest == p || rest == "" {
+		return "", false
+	}
+	modelID, err := url.PathUnescape(rest)
+	if err != nil {
+		return "", false
+	}
+	return modelID, true
 }
 
 func parseAdminModelActionPath(p string) (string, string, bool) {
@@ -351,7 +364,24 @@ func validateModelManifest(manifest *store.ModelManifest, modelID, version, r2Pr
 	if totalSize != manifest.TotalSizeBytes {
 		return fmt.Errorf("manifest total_size_bytes does not match files sum")
 	}
+	if aggregate := aggregateManifestFileHashes(manifest.Files); aggregate != manifest.AggregateSHA256 {
+		return fmt.Errorf("manifest aggregate_sha256 does not match file hashes")
+	}
 	return nil
+}
+
+func aggregateManifestFileHashes(files []store.ManifestFile) string {
+	sorted := append([]store.ManifestFile(nil), files...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
+	h := sha256.New()
+	for _, file := range sorted {
+		digest, err := hex.DecodeString(file.SHA256)
+		if err != nil || len(digest) != sha256.Size {
+			return ""
+		}
+		h.Write(digest)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func validateManifestFile(file store.ManifestFile) error {

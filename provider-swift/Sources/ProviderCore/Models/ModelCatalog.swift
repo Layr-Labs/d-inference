@@ -193,7 +193,7 @@ public struct ModelCatalogClient: Sendable {
     /// `/`, so the ID is percent-encoded as one path suffix.
     public func fetchManifest(modelID: String) async throws -> ModelManifest {
         guard let escapedID = Self.escapeModelIDForPath(modelID),
-              let url = URL(string: "\(coordinatorURL)/v1/models/catalog/\(escapedID)/manifest")
+              let url = URL(string: "\(coordinatorURL)/v1/models/catalog/manifest/\(escapedID)")
         else {
             throw ModelCatalogError.unreachable("invalid manifest URL")
         }

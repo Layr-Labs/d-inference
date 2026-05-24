@@ -45,7 +45,6 @@ export interface Model {
   architecture?: string;
   family?: string;
   capabilities?: string[];
-  runtime_parameters?: Record<string, unknown>;
 }
 
 export interface BalanceResponse {
@@ -122,7 +121,6 @@ export async function fetchModels(): Promise<Model[]> {
       architecture: m.architecture ?? meta.architecture,
       family: m.family ?? meta.family,
       capabilities: m.capabilities ?? meta.capabilities,
-      runtime_parameters: m.runtime_parameters ?? meta.runtime_parameters,
     };
   });
 }

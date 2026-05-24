@@ -1071,6 +1071,7 @@ func (s *Server) routes() {
 
 	// Public model catalog — providers and install script fetch this
 	s.mux.HandleFunc("GET /v1/models/catalog", s.handleModelCatalog)
+	s.mux.HandleFunc("GET /v1/models/catalog/manifest/", s.handleModelCatalogManifest)
 	s.mux.HandleFunc("GET /v1/models/catalog/", s.handleModelCatalogItem)
 
 	// Runtime manifest — providers and users can inspect accepted runtime hashes.

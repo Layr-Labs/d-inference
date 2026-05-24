@@ -143,7 +143,7 @@ struct ModelCatalogTests {
 
         let decoded = try await client.fetchManifest(modelID: manifest.modelID)
         #expect(decoded == manifest)
-        #expect(RegistryURLProtocol.lastPath == "/v1/models/catalog/org%2Fmodel%2Fwith%2Fslash/manifest")
+        #expect(RegistryURLProtocol.lastPath == "/v1/models/catalog/manifest/org%2Fmodel%2Fwith%2Fslash")
     }
 
     @Test("downloader honors DARKBLOOM_R2_CDN_URL env override")
@@ -250,7 +250,7 @@ private final class RegistryURLProtocol: URLProtocol, @unchecked Sendable {
         }
         Self.lastPath = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? url.path
         let body: Data
-        if url.path.hasSuffix("/manifest") {
+        if url.path.hasPrefix("/v1/models/catalog/manifest/") {
             body = Self.manifestData
         } else if let data = Self.files[url.path] {
             body = data

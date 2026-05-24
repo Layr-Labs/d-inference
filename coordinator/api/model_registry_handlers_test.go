@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -252,6 +253,31 @@ func TestRegisteringNewVersionPreservesRetiredStatus(t *testing.T) {
 	}
 	if active := st.ListActiveModelRegistry(); len(active) != 0 {
 		t.Fatalf("expected retired model to remain hidden after registering a new version, got %#v", active)
+	}
+}
+
+func TestUpsertModelRegistryEntryPreservesExistingStatus(t *testing.T) {
+	st := store.NewMemory("")
+	entry := &store.ModelRegistryEntry{ID: "mlx-community/upsert", DisplayName: "Upsert", Status: "retired", Quantization: "8bit", MaxContextLength: 32768, MaxOutputLength: 8192, MinRAMGB: 32}
+	if err := st.UpsertModelRegistryEntry(entry); err != nil {
+		t.Fatal(err)
+	}
+	entry.Status = "beta"
+	entry.DisplayName = "Updated"
+	if err := st.UpsertModelRegistryEntry(entry); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetModelRegistryRecord(entry.ID); err == nil {
+		t.Fatal("expected retired model to remain hidden after upsert")
+	}
+}
+
+func TestModelRegistryNotFoundClassification(t *testing.T) {
+	if !isModelRegistryNotFound(fmt.Errorf("model %q not found", "x")) {
+		t.Fatal("expected not found error to classify as not found")
+	}
+	if isModelRegistryNotFound(fmt.Errorf("store: get model registry record: connection refused")) {
+		t.Fatal("expected DB error not to classify as not found")
 	}
 }
 

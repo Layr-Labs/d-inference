@@ -51,7 +51,7 @@ func (s *Server) handleModelCatalogItem(w http.ResponseWriter, r *http.Request) 
 	if manifest {
 		m, err := s.store.GetModelManifest(modelID)
 		if err != nil {
-			writeJSON(w, http.StatusNotFound, errorResponse("not_found", "model manifest not found"))
+			s.writeModelRegistryStoreError(w, "get manifest", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, m)
@@ -59,7 +59,7 @@ func (s *Server) handleModelCatalogItem(w http.ResponseWriter, r *http.Request) 
 	}
 	rec, err := s.store.GetModelRegistryRecord(modelID)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "model not found"))
+		s.writeModelRegistryStoreError(w, "get model", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, catalogModelFromRegistryRecord(rec))
@@ -139,7 +139,7 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 	if req.Promote {
 		if err := s.store.PromoteModelVersion(req.ModelID, req.Version); err != nil {
 			s.logger.Error("model registry: promote after register failed", "model_id", req.ModelID, "version", req.Version, "error", err)
-			writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to promote model version"))
+			s.writeModelRegistryStoreError(w, "promote model version", err)
 			return
 		}
 	}
@@ -176,7 +176,7 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 			return
 		}
 		if err := s.store.PromoteModelVersion(modelID, req.Version); err != nil {
-			writeJSON(w, http.StatusNotFound, errorResponse("not_found", err.Error()))
+			s.writeModelRegistryStoreError(w, "promote model version", err)
 			return
 		}
 		s.SyncModelCatalog()
@@ -194,7 +194,7 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 			return
 		}
 		if err := s.store.SetModelStatus(modelID, req.Status); err != nil {
-			writeJSON(w, http.StatusNotFound, errorResponse("not_found", err.Error()))
+			s.writeModelRegistryStoreError(w, "set model status", err)
 			return
 		}
 		s.SyncModelCatalog()
@@ -202,6 +202,22 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 	default:
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "model action not found"))
 	}
+}
+
+func (s *Server) writeModelRegistryStoreError(w http.ResponseWriter, operation string, err error) {
+	if isModelRegistryNotFound(err) {
+		writeJSON(w, http.StatusNotFound, errorResponse("not_found", err.Error()))
+		return
+	}
+	s.logger.Error("model registry store error", "operation", operation, "error", err)
+	writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "model registry store error"))
+}
+
+func isModelRegistryNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "not found")
 }
 
 func (s *Server) requirePublishingAPIKey(w http.ResponseWriter, r *http.Request) (publishingActor, bool) {
@@ -426,51 +442,67 @@ func fetchModelManifest(ctx context.Context, baseURL, r2Prefix string) (*store.M
 
 func verifyManifestFiles(ctx context.Context, baseURL string, manifest *store.ModelManifest, logger interface{ Warn(string, ...any) }) error {
 	client := &http.Client{Timeout: 30 * time.Second}
-	sem := make(chan struct{}, 8)
 	errCh := make(chan error, len(manifest.Files))
+	fileCh := make(chan store.ManifestFile)
 	var wg sync.WaitGroup
-	for _, file := range manifest.Files {
-		file := file
+	workers := 8
+	if len(manifest.Files) < workers {
+		workers = len(manifest.Files)
+	}
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			fileURL, err := url.JoinPath(baseURL, manifest.R2Prefix, file.Path)
-			if err != nil {
-				errCh <- err
-				return
-			}
-			req, err := http.NewRequestWithContext(ctx, http.MethodHead, fileURL, nil)
-			if err != nil {
-				errCh <- err
-				return
-			}
-			resp, err := client.Do(req)
-			if err != nil {
-				errCh <- fmt.Errorf("HEAD %s: %w", file.Path, err)
-				return
-			}
-			resp.Body.Close()
-			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				errCh <- fmt.Errorf("HEAD %s returned %s", file.Path, resp.Status)
-				return
-			}
-			if resp.ContentLength >= 0 && resp.ContentLength != file.SizeBytes {
-				errCh <- fmt.Errorf("HEAD %s content length %d != manifest size %d", file.Path, resp.ContentLength, file.SizeBytes)
-				return
-			}
-			if resp.ContentLength < 0 && logger != nil {
-				logger.Warn("model registry: HEAD missing Content-Length", "path", file.Path)
+			for file := range fileCh {
+				if err := verifyManifestFileHEAD(ctx, client, baseURL, manifest.R2Prefix, file, logger); err != nil {
+					errCh <- err
+				}
 			}
 		}()
 	}
+	for _, file := range manifest.Files {
+		select {
+		case fileCh <- file:
+		case <-ctx.Done():
+			close(fileCh)
+			wg.Wait()
+			close(errCh)
+			return ctx.Err()
+		}
+	}
+	close(fileCh)
 	wg.Wait()
 	close(errCh)
 	for err := range errCh {
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func verifyManifestFileHEAD(ctx context.Context, client *http.Client, baseURL, r2Prefix string, file store.ManifestFile, logger interface{ Warn(string, ...any) }) error {
+	fileURL, err := url.JoinPath(baseURL, r2Prefix, file.Path)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, fileURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("HEAD %s: %w", file.Path, err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("HEAD %s returned %s", file.Path, resp.Status)
+	}
+	if resp.ContentLength >= 0 && resp.ContentLength != file.SizeBytes {
+		return fmt.Errorf("HEAD %s content length %d != manifest size %d", file.Path, resp.ContentLength, file.SizeBytes)
+	}
+	if resp.ContentLength < 0 && logger != nil {
+		logger.Warn("model registry: HEAD missing Content-Length", "path", file.Path)
 	}
 	return nil
 }

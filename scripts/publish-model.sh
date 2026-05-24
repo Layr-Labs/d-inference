@@ -64,16 +64,25 @@ export AWS_DEFAULT_REGION="auto"
 export R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
 printf 'Uploading model files to s3://%s/%s with concurrency 8...\n' "$R2_BUCKET" "$R2_PREFIX"
-python3 - "$MANIFEST" "$MODEL_DIR" "$R2_BUCKET" "$R2_PREFIX" <<'PY' | xargs -0 -n 2 -P 8 sh -c 'aws s3 cp "$1" "s3://$2" --endpoint-url "$R2_ENDPOINT" --only-show-errors' sh
-import json, os, sys
+python3 - "$MANIFEST" "$MODEL_DIR" "$R2_BUCKET" "$R2_PREFIX" <<'PY'
+import concurrent.futures
+import json
+import os
+import subprocess
+import sys
 manifest_path, model_dir, bucket, prefix = sys.argv[1:]
+endpoint = os.environ["R2_ENDPOINT"]
 with open(manifest_path, 'r', encoding='utf-8') as f:
     manifest = json.load(f)
-for item in manifest['files']:
+
+def upload(item):
     rel = item['path']
     src = os.path.join(model_dir, rel)
-    dst = f"{bucket}/{prefix}/{rel}"
-    sys.stdout.buffer.write(src.encode() + b'\0' + dst.encode() + b'\0')
+    dst = f"s3://{bucket}/{prefix}/{rel}"
+    subprocess.run(["aws", "s3", "cp", src, dst, "--endpoint-url", endpoint, "--only-show-errors"], check=True)
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    list(executor.map(upload, manifest['files']))
 PY
 
 printf 'Uploading manifest last...\n'

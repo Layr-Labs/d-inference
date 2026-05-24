@@ -841,6 +841,7 @@ func (s *MemoryStore) UpsertModelRegistryEntry(entry *ModelRegistryEntry) error 
 	cp := cloneModelRegistryEntry(entry)
 	if existing, ok := s.modelRegistry[entry.ID]; ok && !existing.CreatedAt.IsZero() {
 		cp.CreatedAt = existing.CreatedAt
+		cp.Status = existing.Status
 	} else if cp.CreatedAt.IsZero() {
 		cp.CreatedAt = now
 	}

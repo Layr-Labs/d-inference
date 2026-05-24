@@ -420,6 +420,14 @@ public struct ModelDownloader: Sendable {
 
         let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        try Self.ensureAvailableCapacity(at: cacheDir, requiredBytes: manifest.totalSizeBytes)
+
+        var completed = false
+        defer {
+            if !completed {
+                try? FileManager.default.removeItem(at: cacheDir)
+            }
+        }
 
         let jobs = try manifest.files.map { file -> (file: ManifestFile, destination: URL, url: String) in
             let relativePath = try Self.validatedManifestRelativePath(file.path)
@@ -453,6 +461,7 @@ public struct ModelDownloader: Sendable {
         }
 
         try writeMainRef(for: model.id)
+        completed = true
     }
 
     private func downloadManifestFile(
@@ -658,14 +667,15 @@ public struct ModelDownloader: Sendable {
                     try handle.write(contentsOf: buffer)
                     downloaded += Int64(buffer.count)
                 }
-                try? fm.removeItem(at: destination)
-                try fm.moveItem(at: partial, to: destination)
+                try handle.close()
                 if let expectedSHA256 {
-                    guard let actual = Self.sha256Hex(of: destination), actual == expectedSHA256 else {
-                        try? fm.removeItem(at: destination)
+                    guard let actual = Self.sha256Hex(of: partial), actual == expectedSHA256 else {
+                        try? fm.removeItem(at: partial)
                         throw ModelCatalogError.downloadFailed("\(label): SHA-256 mismatch")
                     }
                 }
+                try? fm.removeItem(at: destination)
+                try fm.moveItem(at: partial, to: destination)
                 onProgress?(ProgressEvent(file: label, bytesDownloaded: downloaded, bytesTotal: total ?? downloaded))
                 return true
             } catch {
@@ -709,6 +719,17 @@ public struct ModelDownloader: Sendable {
             hasher.update(data: chunk)
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func ensureAvailableCapacity(at directory: URL, requiredBytes: Int64) throws {
+        guard requiredBytes > 0 else { return }
+        let values = try directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
+        let available = values.volumeAvailableCapacityForImportantUsage ?? Int64(values.volumeAvailableCapacity ?? 0)
+        guard available <= 0 || available >= requiredBytes else {
+            throw ModelCatalogError.downloadFailed(
+                "insufficient disk space: need \(requiredBytes) bytes, available \(available) bytes"
+            )
+        }
     }
 
 }

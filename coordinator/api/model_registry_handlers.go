@@ -99,8 +99,8 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 		return
 	}
-	if err := verifyManifestFiles(r.Context(), registryCDNBaseURL(), manifest, s.logger); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "manifest file verification failed: "+err.Error()))
+	if err := verifyManifestArtifacts(r.Context(), registryCDNBaseURL(), manifest, s.logger); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "manifest artifact verification failed: "+err.Error()))
 		return
 	}
 
@@ -477,8 +477,10 @@ func fetchModelManifest(ctx context.Context, baseURL, r2Prefix string) (*store.M
 	return &manifest, nil
 }
 
-func verifyManifestFiles(ctx context.Context, baseURL string, manifest *store.ModelManifest, logger interface{ Warn(string, ...any) }) error {
-	client := &http.Client{Timeout: 30 * time.Second}
+func verifyManifestArtifacts(ctx context.Context, baseURL string, manifest *store.ModelManifest, logger interface{ Warn(string, ...any) }) error {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 30 * time.Second
+	client := &http.Client{Transport: transport}
 	errCh := make(chan error, len(manifest.Files))
 	fileCh := make(chan store.ManifestFile)
 	var wg sync.WaitGroup
@@ -491,7 +493,7 @@ func verifyManifestFiles(ctx context.Context, baseURL string, manifest *store.Mo
 		go func() {
 			defer wg.Done()
 			for file := range fileCh {
-				if err := verifyManifestFileHEAD(ctx, client, baseURL, manifest.R2Prefix, file, logger); err != nil {
+				if err := verifyManifestFileArtifact(ctx, client, baseURL, manifest.R2Prefix, file, logger); err != nil {
 					errCh <- err
 				}
 			}
@@ -518,28 +520,41 @@ func verifyManifestFiles(ctx context.Context, baseURL string, manifest *store.Mo
 	return nil
 }
 
-func verifyManifestFileHEAD(ctx context.Context, client *http.Client, baseURL, r2Prefix string, file store.ManifestFile, logger interface{ Warn(string, ...any) }) error {
+func verifyManifestFileArtifact(ctx context.Context, client *http.Client, baseURL, r2Prefix string, file store.ManifestFile, logger interface{ Warn(string, ...any) }) error {
 	fileURL, err := url.JoinPath(baseURL, r2Prefix, file.Path)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, fileURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {
 		return err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("HEAD %s: %w", file.Path, err)
+		return fmt.Errorf("GET %s: %w", file.Path, err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("HEAD %s returned %s", file.Path, resp.Status)
+		return fmt.Errorf("GET %s returned %s", file.Path, resp.Status)
 	}
 	if resp.ContentLength >= 0 && resp.ContentLength != file.SizeBytes {
-		return fmt.Errorf("HEAD %s content length %d != manifest size %d", file.Path, resp.ContentLength, file.SizeBytes)
+		return fmt.Errorf("GET %s content length %d != manifest size %d", file.Path, resp.ContentLength, file.SizeBytes)
 	}
 	if resp.ContentLength < 0 && logger != nil {
-		logger.Warn("model registry: HEAD missing Content-Length", "path", file.Path)
+		logger.Warn("model registry: artifact GET missing Content-Length", "path", file.Path)
+	}
+
+	h := sha256.New()
+	n, err := io.Copy(h, resp.Body)
+	if err != nil {
+		return fmt.Errorf("GET %s body: %w", file.Path, err)
+	}
+	if n != file.SizeBytes {
+		return fmt.Errorf("GET %s read %d bytes != manifest size %d", file.Path, n, file.SizeBytes)
+	}
+	actualSHA256 := hex.EncodeToString(h.Sum(nil))
+	if subtle.ConstantTimeCompare([]byte(actualSHA256), []byte(file.SHA256)) != 1 {
+		return fmt.Errorf("GET %s sha256 %s != manifest sha256 %s", file.Path, actualSHA256, file.SHA256)
 	}
 	return nil
 }

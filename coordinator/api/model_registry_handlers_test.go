@@ -139,11 +139,12 @@ func TestRegisterModelHandlerPromotesActiveRecord(t *testing.T) {
 			}
 			writeJSON(w, http.StatusOK, manifest)
 		case "/" + prefix + "/config.json":
-			if r.Method != http.MethodHead {
+			if r.Method != http.MethodGet {
 				t.Fatalf("file method = %s", r.Method)
 			}
-			w.Header().Set("Content-Length", "123")
+			w.Header().Set("Content-Length", fmt.Sprint(len(testManifestFileBytes())))
 			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(testManifestFileBytes())
 		default:
 			http.NotFound(w, r)
 		}
@@ -209,6 +210,61 @@ func TestRegisterModelHandlerPromotesActiveRecord(t *testing.T) {
 	}
 	if len(catalog.Models) != 1 || catalog.Models[0]["id"] != "mlx-community/test" || catalog.Models[0]["version"] != "v1" {
 		t.Fatalf("unexpected catalog response: %#v", catalog.Models)
+	}
+}
+
+func TestRegisterModelHandlerVerifiesArtifactBytes(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       []byte
+		wantStatus int
+	}{
+		{name: "same size wrong bytes", body: bytes.Repeat([]byte{'x'}, len(testManifestFileBytes())), wantStatus: http.StatusBadRequest},
+		{name: "correct bytes", body: testManifestFileBytes(), wantStatus: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest := validTestManifest()
+			prefix := modelR2Prefix("mlx-community/test", "v1")
+			cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/" + prefix + "/manifest.json":
+					writeJSON(w, http.StatusOK, manifest)
+				case "/" + prefix + "/config.json":
+					if r.Method != http.MethodGet {
+						t.Fatalf("file method = %s", r.Method)
+					}
+					w.Header().Set("Content-Length", fmt.Sprint(len(tt.body)))
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write(tt.body)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer cdn.Close()
+			t.Setenv("MODEL_REGISTRY_CDN_BASE_URL", cdn.URL)
+			t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+
+			logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+			st := store.NewMemory("")
+			srv := NewServer(registry.New(logger), st, logger)
+			payload := map[string]any{
+				"model_id":           "mlx-community/test",
+				"version":            "v1",
+				"quantization":       "4bit",
+				"max_context_length": 32768,
+				"max_output_length":  8192,
+				"min_ram_gb":         16,
+			}
+			body, _ := json.Marshal(payload)
+			req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/register", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer publish-secret")
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("register status = %d body = %s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 
@@ -384,10 +440,11 @@ func TestModelRegistryNotFoundClassification(t *testing.T) {
 }
 
 func validTestManifest() *store.ModelManifest {
+	body := testManifestFileBytes()
 	files := []store.ManifestFile{{
 		Path:      "config.json",
-		SizeBytes: 123,
-		SHA256:    testHash,
+		SizeBytes: int64(len(body)),
+		SHA256:    sha256Hex(string(body)),
 		Role:      "config",
 	}}
 	return &store.ModelManifest{
@@ -396,9 +453,13 @@ func validTestManifest() *store.ModelManifest {
 		Version:         "v1",
 		R2Prefix:        modelR2Prefix("mlx-community/test", "v1"),
 		AggregateSHA256: aggregateManifestFileHashes(files),
-		TotalSizeBytes:  123,
+		TotalSizeBytes:  int64(len(body)),
 		FileCount:       1,
 		Files:           files,
 		CreatedAt:       time.Now(),
 	}
+}
+
+func testManifestFileBytes() []byte {
+	return []byte(`{"architectures":["TestForCausalLM"],"model_type":"test"}`)
 }

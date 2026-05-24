@@ -368,7 +368,7 @@ func (r *Registry) snapshotProviderLocked(p *Provider, model string) (routingSna
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if !providerServesModelLocked(p, model) {
+	if !r.providerServesCatalogModelLocked(p, model) {
 		return routingSnapshot{}, false
 	}
 	if p.Status == StatusOffline || p.Status == StatusUntrusted {
@@ -708,7 +708,7 @@ func (r *Registry) providerCanAdmitLocked(p *Provider, model string) bool {
 	if p.LastChallengeVerified.IsZero() || time.Since(p.LastChallengeVerified) > challengeFreshnessMaxAge {
 		return false
 	}
-	if !providerServesModelLocked(p, model) {
+	if !r.providerServesCatalogModelLocked(p, model) {
 		return false
 	}
 	if !p.hasConcurrencyHeadroomForModelLocked(model) {
@@ -781,7 +781,7 @@ func (r *Registry) QuickCapacityCheck(model string, estimatedPromptTokens, reque
 		p.mu.Lock()
 
 		// Structural gates (same as snapshotProviderLocked).
-		if !providerServesModelLocked(p, model) {
+		if !r.providerServesCatalogModelLocked(p, model) {
 			p.mu.Unlock()
 			continue
 		}

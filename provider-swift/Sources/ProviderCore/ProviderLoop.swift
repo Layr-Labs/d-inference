@@ -11,6 +11,7 @@
 
 import CryptoKit
 import Foundation
+import MLXLMServer
 #if canImport(os)
 import os
 #endif
@@ -220,6 +221,7 @@ public actor ProviderLoop {
     private struct ModelSlot {
         let scheduler: BatchScheduler
         let container: MLXLMCommon.ModelContainer
+        let tokenizer: TokenizerHandle
         var lastInferenceAt: ContinuousClock.Instant
     }
 
@@ -541,10 +543,15 @@ public actor ProviderLoop {
             return
         }
 
-        // 2. Parse the chat completion request
-        let chatRequest: ChatCompletionRequest
+        // 2. Parse the chat completion request. We accept the upstream
+        // `OpenAIChatCompletionRequest` shape and keep a fallback to our
+        // legacy `ChatCompletionRequest` so consumers that still send the
+        // pre-MLXLMServer payload shape (i.e. ones missing some of the
+        // newer optional fields) don't regress. JSON wire-format matches
+        // on the common fields between the two types.
+        let chatRequest: OpenAIChatCompletionRequest
         do {
-            chatRequest = try JSONDecoder().decode(ChatCompletionRequest.self, from: decryptedData)
+            chatRequest = try Self.decodeOpenAIRequest(decryptedData)
         } catch {
             logger.error("[\(requestId)] Failed to parse chat request: \(error)")
             send.send(.inferenceError(requestId: requestId, error: "invalid request body: \(error.localizedDescription)", statusCode: 400))
@@ -606,8 +613,18 @@ public actor ProviderLoop {
         let registry = self.cancellationRegistry
         let signingIdentity = self.signer
         let log = self.logger
+        let tokenizer = slot.tokenizer
 
-        // 7. Spawn inference task
+        // 7. Spawn inference task. The streaming pipeline now flows through
+        // the upstream `MLXLMServer` library:
+        //   - `MultiModelBatchSchedulerEngine` adapts our `BatchScheduler` to
+        //     the `MLXServerEngine` contract.
+        //   - `MLXOpenAIService.streamChatCompletionFrames` formats SSE
+        //     frames (matching the wire shape the coordinator already parses).
+        // We encrypt each frame and forward it via `inferenceChunk` exactly
+        // as before. The response hash for SE attestation is computed over
+        // the assembled assistant text, extracted by parsing each emitted
+        // chunk back from its JSON delta.
         let me = self
         let task = Task.detached {
             defer {
@@ -617,14 +634,9 @@ public actor ProviderLoop {
                 }
             }
 
-            var usageAccumulator = UsageAccumulator()
-            var fullResponseText = ""
-            let formatter = ChatSSEFormatter()
-            let responseId = "chatcmpl-\(UUID().uuidString.prefix(12).lowercased())"
-            let created = Int(Date().timeIntervalSince1970)
-
-            /// Encrypts and emits an SSE chunk. Returns `false` if encryption
-            /// failed — callers must abort the inference task immediately.
+            /// Encrypts and emits an SSE frame string. Returns `false` if
+            /// encryption failed — callers must abort the inference task
+            /// immediately.
             let emitSSE: @Sendable (String) -> Bool = { sseData in
                 let encryptedPayload: EncryptedPayload
                 do {
@@ -650,70 +662,162 @@ public actor ProviderLoop {
                 return true
             }
 
-            if let roleChunk = try? formatter.roleChunk(
-                id: responseId,
-                model: chatRequest.model,
-                created: created
-            ) {
-                if !emitSSE(roleChunk.formatted) { return }
+            // Build a single-model engine view bound to the scheduler we
+            // already resolved. This keeps the engine constructor's
+            // "model not loaded" path unreachable on this code path while
+            // still going through the upstream library for SSE encoding.
+            let providerEngine = MultiModelBatchSchedulerEngine(
+                registryProvider: { @Sendable in
+                    [chatRequest.model: .init(scheduler: sched, tokenizer: tokenizer)]
+                },
+                ensureLoaded: { _ in },
+                reserveModel: { _ in },
+                releaseModel: { _ in },
+                defaultMaxTokens: Self.schedulerDefaultMaxTokens
+            )
+
+            // Force-stream so we get SSE frames even if the original request
+            // had `stream: false`. The coordinator always uses streaming
+            // chunks on the wire today; non-streaming consumers reassemble
+            // on their end.
+            //
+            // Also force `streamOptions.includeUsage = true`. Without it,
+            // upstream's `MLXOpenAIService.streamChatCompletionFrames` will
+            // not emit the trailing usage chunk (see
+            // `libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift`
+            // line 88: `let includeUsage = request.streamOptions?.includeUsage == true`).
+            // Missing usage means `parseStreamChunk` never extracts
+            // `promptTokens`/`completionTokens`, and the coordinator bills
+            // $0 for the request. This is the C1 fix.
+            var streamingRequest = chatRequest
+            streamingRequest.stream = true
+            var forcedStreamOptions = streamingRequest.streamOptions
+                ?? OpenAIStreamOptions()
+            forcedStreamOptions.includeUsage = true
+            streamingRequest.streamOptions = forcedStreamOptions
+
+            let service = MLXOpenAIService(engine: providerEngine)
+            let frames: AsyncThrowingStream<String, Error>
+            do {
+                frames = try await service.streamChatCompletionFrames(
+                    request: streamingRequest
+                )
+            } catch {
+                log.error("[\(requestId)] Failed to start stream: \(error)")
+                let statusCode = Self.mapInferenceErrorToStatus(error)
+                send.send(.inferenceError(
+                    requestId: requestId,
+                    error: error.localizedDescription,
+                    statusCode: statusCode
+                ))
+                return
             }
 
-            // Submit to the BatchScheduler
-            let generationStream = await sched.submit(
-                request: chatRequest,
-                requestId: requestId
-            )
             await me.updateAggregateCapacity()
 
-            for await event in generationStream {
-                // Check cancellation
-                if token.isCancelled {
-                    log.info("[\(requestId)] Cancelled during generation")
-                    send.send(.inferenceError(requestId: requestId, error: "request cancelled", statusCode: 499))
-                    return
-                }
+            var fullResponseText = ""
+            var promptTokens = 0
+            var completionTokens = 0
 
-                switch event {
-                case .chunk(let text):
-                    fullResponseText += text
-                    usageAccumulator.recordCompletionChunk()
-
-                    if let contentChunk = try? formatter.contentChunk(
-                        id: responseId,
-                        model: chatRequest.model,
-                        created: created,
-                        text: text
-                    ) {
-                        if !emitSSE(contentChunk.formatted) { return }
+            do {
+                for try await frame in frames {
+                    if token.isCancelled {
+                        log.info("[\(requestId)] Cancelled during generation")
+                        send.send(.inferenceError(
+                            requestId: requestId,
+                            error: "request cancelled",
+                            statusCode: 499
+                        ))
+                        return
                     }
-
-                case .info(let promptTokens, let completionTokens, _):
-                    usageAccumulator.setPromptTokens(promptTokens)
-                    usageAccumulator.setCompletionTokens(completionTokens)
-
-                case .error(let errorMessage):
-                    log.error("[\(requestId)] Generation error: \(errorMessage)")
-                    send.send(.inferenceError(requestId: requestId, error: errorMessage, statusCode: 500))
+                    // Aggregate the assistant text + usage by parsing each
+                    // chunk back from its JSON delta. This is the cost of
+                    // routing through `streamChatCompletionFrames` instead
+                    // of the raw engine event stream — but the alternative
+                    // is duplicating SSE encoding logic.
+                    //
+                    // TB-007: hash domain = content + reasoning_content + tool_calls (canonicalized).
+                    // - `content` and `reasoning_content` are concatenated
+                    //   verbatim so the hash matches the engine's emitted
+                    //   bytes (and what the consumer reassembles after SSE
+                    //   parsing). When `reasoning_parser` is set, upstream
+                    //   splits `<think>...</think>` blocks into the
+                    //   `reasoning_content` delta field, so hashing only
+                    //   the visible `content` would commit to a different
+                    //   set of bytes than what the engine produced.
+                    // - `tool_calls` are folded in via
+                    //   `encodeToolCallsForHash(_:)` (P2 #2). Tool-calling
+                    //   responses often carry empty `content` with the
+                    //   real assistant output on `delta.tool_calls`; a
+                    //   hash that ignored them would commit to (near-)
+                    //   empty bytes instead of the actual output.
+                    if let parsed = Self.parseStreamChunk(frame) {
+                        if let content = parsed.contentDelta {
+                            fullResponseText += content
+                        }
+                        if let reasoning = parsed.reasoningDelta {
+                            fullResponseText += reasoning
+                        }
+                        if let toolCalls = parsed.toolCallsDelta, !toolCalls.isEmpty {
+                            fullResponseText += Self.encodeToolCallsForHash(toolCalls)
+                        }
+                        if let usage = parsed.usage {
+                            promptTokens = usage.promptTokens
+                            completionTokens = usage.completionTokens
+                        }
+                    }
+                    if !emitSSE(frame) { return }
+                }
+            } catch {
+                // P1 #2: CancellationError raised by `try await
+                // frame in frames` when the inflight task is cancelled
+                // BEFORE the explicit `token.isCancelled` early-exit
+                // branch runs. Map to 499 (Client Closed Request) so
+                // the coordinator forwards an accurate status to the
+                // consumer instead of a spurious 500. Mirrors the
+                // shape of the `token.isCancelled` branch above.
+                if error is CancellationError {
+                    log.info("[\(requestId)] Cancelled while waiting on next frame")
+                    send.send(.inferenceError(
+                        requestId: requestId,
+                        error: "request cancelled",
+                        statusCode: 499
+                    ))
                     return
                 }
+                log.error("[\(requestId)] Generation error: \(error)")
+                let statusCode = Self.mapInferenceErrorToStatus(error)
+                send.send(.inferenceError(
+                    requestId: requestId,
+                    error: error.localizedDescription,
+                    statusCode: statusCode
+                ))
+                return
             }
 
-            // Generation complete
-            let usage = usageAccumulator.snapshot
-            if let finishChunk = try? formatter.finishChunk(
-                id: responseId,
-                model: chatRequest.model,
-                created: created,
-                reason: .stop,
-                usage: usage
-            ) {
-                if !emitSSE(finishChunk.formatted) { return }
-                if !emitSSE(SSEChunk.done.formatted) { return }
+            // C1 defense-in-depth: if the usage chunk somehow never landed
+            // (upstream regression, parser drift, etc.) the coordinator
+            // would bill $0 for this request. Log at WARN, emit a
+            // diagnostic line, and continue. The chunk-parse path is the
+            // primary signal; if it ever stops working we want operators
+            // to see the regression in logs before the revenue impact
+            // shows up on the dashboard. `BatchScheduler` does not
+            // currently expose per-request token counts (only aggregate
+            // capacity), so we cannot fall back to engine-authoritative
+            // counts here without expanding its public surface.
+            if promptTokens == 0 || completionTokens == 0 {
+                log.warning(
+                    "[\(requestId)] CRITICAL: usage chunk missing or zero "
+                    + "(promptTokens=\(promptTokens), "
+                    + "completionTokens=\(completionTokens)). "
+                    + "Billing will be undercounted. Check upstream "
+                    + "MLXOpenAIService.streamChatCompletionFrames behavior."
+                )
             }
 
             // Update stats
             providerStats.incrementRequestsServed()
-            providerStats.addTokensGenerated(UInt64(usage.completionTokens))
+            providerStats.addTokensGenerated(UInt64(max(completionTokens, 0)))
 
             // Update state
             await me.updateAggregateCapacity()
@@ -722,17 +826,21 @@ public actor ProviderLoop {
             let attestation = computeResponseAttestation(
                 identity: signingIdentity,
                 requestId: requestId,
-                completionTokens: UInt64(max(usage.completionTokens, 0)),
+                completionTokens: UInt64(max(completionTokens, 0)),
                 responseBody: fullResponseText
+            )
+            let usageInfo = UsageInfo(
+                promptTokens: UInt64(max(0, promptTokens)),
+                completionTokens: UInt64(max(0, completionTokens))
             )
             send.send(.inferenceComplete(
                 requestId: requestId,
-                usage: usage.protocolUsageInfo,
+                usage: usageInfo,
                 seSignature: attestation.signature,
                 responseHash: attestation.hash
             ))
 
-            log.info("[\(requestId)] Complete: \(usage.promptTokens) prompt + \(usage.completionTokens) completion tokens")
+            log.info("[\(requestId)] Complete: \(promptTokens) prompt + \(completionTokens) completion tokens")
         }
 
         inflightTasks[requestId] = task
@@ -1094,9 +1202,13 @@ public actor ProviderLoop {
                 throw CancellationError()
             }
 
+            let tokenizer: TokenizerHandle = await container.perform { ctx in
+                TokenizerHandle(ctx.tokenizer)
+            }
             modelSlots[modelId] = ModelSlot(
                 scheduler: scheduler,
                 container: container,
+                tokenizer: tokenizer,
                 lastInferenceAt: .now
             )
 
@@ -1220,13 +1332,38 @@ public actor ProviderLoop {
     private func handleCancellation(requestId: String) async {
         logger.info("Cancelling request: \(requestId)")
 
+        // P1 #1 (CRITICAL): do NOT call `scheduler.cancel(requestId:)`
+        // directly here. After the MLXLMServer adoption,
+        // `MultiModelBatchSchedulerEngine.streamChatCompletion` mints
+        // a fresh internal request id when it calls
+        // `BatchScheduler.submit(requestId:)`, so the coordinator-side
+        // `requestId` we hold here does NOT match the id the scheduler
+        // is tracking. A direct `scheduler.cancel(<coordinator id>)`
+        // would be a no-op against an unknown id and let generation run
+        // until on-termination tearing happens organically.
+        //
+        // Instead, rely on Task cancellation propagation:
+        //
+        //   ProviderLoop.task.cancel()
+        //     -> `for try await frame in frames` raises CancellationError
+        //     -> the detached task exits, the `frames` AsyncThrowingStream
+        //        is deallocated, its `onTermination` fires
+        //     -> MLXOpenAIService.streamChatCompletionFrames's inner
+        //        task is cancelled, its iteration on the engine stream
+        //        exits, the engine stream is deallocated, its
+        //        `onTermination` fires
+        //     -> MultiModelBatchSchedulerEngine.streamChatCompletion's
+        //        `onTermination` calls
+        //        `scheduler.cancel(<internal id>)` with the correct id.
+        //
+        // The cancellation-registry token below remains so the explicit
+        // `if token.isCancelled` check inside the streaming loop also
+        // fires on the next iteration (defense in depth — both paths
+        // reach the same teardown).
         await cancellationRegistry.cancel(requestId: requestId)
 
-        if let modelId = requestToModel.removeValue(forKey: requestId) {
+        if requestToModel.removeValue(forKey: requestId) != nil {
             powerAssertion.release()
-            if let slot = modelSlots[modelId] {
-                await slot.scheduler.cancel(requestId: requestId)
-            }
         }
 
         syncWarmModelState()
@@ -1359,13 +1496,21 @@ public actor ProviderLoop {
     }
 
     // MARK: - Helpers
-
+    //
+    // SSE parsing, error-status mapping, and legacy-request lifting
+    // live in companion extension files for navigability:
+    //   - ProviderLoop+SSEParser.swift     (StreamChunkExtract, parseStreamChunk, encodeToolCallsForHash)
+    //   - ProviderLoop+ErrorMapping.swift  (mapInferenceErrorToStatus)
+    //   - ProviderLoop+LegacyDecode.swift  (decodeOpenAIRequest, liftLegacyRequest)
 }
 
 // MARK: - Logger wrapper
 
-/// Unified logger that uses os.Logger on macOS.
-private struct ProviderLogger: Sendable {
+/// Unified logger that uses os.Logger on macOS. Internal access so
+/// the `+SSEParser.swift` extension file can re-use it for its
+/// file-scope logger (parseStreamChunk is a `static` method and
+/// can't reach the per-instance logger on the actor).
+struct ProviderLogger: Sendable {
     #if canImport(os)
     private let osLogger: os.Logger
     #endif

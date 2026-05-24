@@ -74,6 +74,7 @@ let package = Package(
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "MLXLMServer", package: "mlx-swift-lm"),
                 .product(name: "Transformers", package: "swift-transformers"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Sodium", package: "swift-sodium"),

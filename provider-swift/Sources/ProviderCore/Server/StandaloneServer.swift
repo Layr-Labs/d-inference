@@ -1,13 +1,24 @@
 /// Standalone HTTP server for local/standalone mode.
 ///
 /// Serves OpenAI-compatible inference requests directly without a coordinator.
-/// The HTTP transport is handled by Hummingbird; inference still flows through
-/// `BatchScheduler`.
+/// HTTP routing, request decoding, SSE formatting, and non-streaming response
+/// assembly are delegated to the upstream `MLXLMServer` library via
+/// ``MLXServerApplication/buildRouter(service:)``. This file keeps only the
+/// Darkbloom-specific policy layer:
 ///
-/// Endpoints:
-///   - GET  /health              -> {"status":"ok","version":"..."}
-///   - GET  /v1/models           -> OpenAI models list
-///   - POST /v1/chat/completions -> streaming SSE or JSON response
+///   * Multi-model LRU + idle eviction
+///   * Memory-headroom gating before a load
+///   * Reservation counters that block eviction of in-flight models
+///   * `BatchScheduler` construction with the shared `GlobalKVCacheBudget`
+///
+/// HTTP wiring (Hummingbird application builder + `CORSResponder` +
+/// OpenAI-shaped error envelope) lives in
+/// ``StandaloneServer+HTTP.swift`` so this file can focus on the
+/// model lifecycle.
+///
+/// Endpoints served by the upstream router include `/health`, `/v1/models`,
+/// `/v1/chat/completions`, `/v1/completions`, `/v1/responses*`, `/tokenize`,
+/// `/detokenize`, `/apply-template`, plus `/metrics` and `/props`.
 
 import Darwin
 import Foundation
@@ -15,7 +26,7 @@ import Hummingbird
 import MLX
 import MLXLLM
 import MLXLMCommon
-import NIOCore
+import MLXLMServer
 import os
 
 private enum StandaloneServerError: Error, LocalizedError {
@@ -50,25 +61,18 @@ private let standaloneLogger = Logger(
     category: "StandaloneServer"
 )
 
-struct StandaloneRequestContext: RequestContext {
-    var coreContext: CoreRequestContextStorage
-    let channelCloseFuture: EventLoopFuture<Void>
-
-    init(source: ApplicationRequestContextSource) {
-        self.coreContext = .init(source: source)
-        self.channelCloseFuture = source.channel.closeFuture
-    }
-}
-
 public actor StandaloneServer {
 
     /// Tracks a loaded model scheduler and when it was last used for LRU eviction.
     private struct CachedScheduler {
         let scheduler: BatchScheduler
+        let tokenizer: TokenizerHandle
         var lastUsedAt: ContinuousClock.Instant
     }
 
-    private let config: StandaloneServerConfig
+    /// Internal access so the +HTTP extension can read host/port
+    /// when constructing the Hummingbird application.
+    let config: StandaloneServerConfig
     private var schedulers: [String: CachedScheduler] = [:]
     private var modelsLoading: Set<String> = []
     private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
@@ -89,11 +93,17 @@ public actor StandaloneServer {
         self.kvBudget = GlobalKVCacheBudget()
     }
 
-    private static let schedulerMaxConcurrent = 24
-    private static let schedulerPendingTimeout: Duration = .seconds(120)
-    private static let schedulerDefaultMaxTokens = 4096
-    private static let modelLoadMemoryMultiplier = 3.0
+    static let schedulerMaxConcurrent = 24
+    static let schedulerPendingTimeout: Duration = .seconds(120)
+    /// Internal access so the +HTTP extension can pass the same
+    /// default through to ``MultiModelBatchSchedulerEngine``.
+    static let schedulerDefaultMaxTokens = 4096
+    static let modelLoadMemoryMultiplier = 3.0
 
+    /// Map a scheduler-side admission error message to an HTTP status. Used
+    /// by tests and by any custom error-mapping middleware. Retained here
+    /// rather than moved into the upstream library because the keyword set
+    /// is specific to ``BatchScheduler``'s admission errors.
     static func schedulerErrorStatus(for message: String) -> HTTPResponse.Status {
         let lowercased = message.lowercased()
         if lowercased.contains("invalid token")
@@ -114,6 +124,78 @@ public actor StandaloneServer {
         return .internalServerError
     }
 
+    /// Update the advertised model list (e.g. after a rescan).
+    public func setModels(_ newModels: [ModelInfo]) {
+        self.models = newModels
+    }
+
+    /// Start listening for HTTP connections. The server runs in a child task.
+    public func start() throws {
+        guard serverTask == nil else { return }
+
+        let app = makeApplication()
+        serverTask = Task {
+            do {
+                standaloneLogger.info("Standalone server listening on \(self.config.host):\(self.config.port)")
+                try await app.runService(gracefulShutdownSignals: [])
+            } catch is CancellationError {
+                standaloneLogger.info("Standalone server cancelled")
+            } catch {
+                standaloneLogger.error("Standalone server failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Stop the server.
+    public func stop() {
+        serverTask?.cancel()
+        serverTask = nil
+    }
+
+    /// Test helper: wait for the Hummingbird service task to finish after
+    /// cancellation so socket-level tests don't leak listeners across cases.
+    func stopAndWait() async {
+        let task = serverTask
+        serverTask = nil
+        task?.cancel()
+        _ = await task?.value
+        for cached in schedulers.values {
+            await cached.scheduler.unloadModel()
+        }
+        schedulers.removeAll()
+        schedulerReservations.removeAll()
+    }
+
+    func debugCapacity(modelId: String) async -> SchedulerCapacity? {
+        guard let cached = schedulers[modelId] else { return nil }
+        return await cached.scheduler.capacity()
+    }
+
+    func debugSchedulerReservationCount(modelId: String) -> Int {
+        schedulerReservations[modelId] ?? 0
+    }
+
+    /// Returns the port the server is configured on.
+    public var port: UInt16 {
+        config.port
+    }
+
+    // MARK: - Registry snapshot consumed by MultiModelBatchSchedulerEngine
+
+    fileprivate func snapshotRegistry() -> [String: MultiModelBatchSchedulerEngine.ModelRegistryEntry] {
+        var registry: [String: MultiModelBatchSchedulerEngine.ModelRegistryEntry] = [:]
+        for (modelId, cached) in schedulers {
+            if evictingModels.contains(modelId) { continue }
+            registry[modelId] = .init(
+                scheduler: cached.scheduler,
+                tokenizer: cached.tokenizer
+            )
+        }
+        return registry
+    }
+
+    // MARK: - Model lifecycle (LRU + memory headroom + reservation)
+
     private func loadModel(_ modelId: String, container: MLXLMCommon.ModelContainer) async {
         let scheduler = BatchScheduler(
             maxConcurrentRequests: Self.schedulerMaxConcurrent,
@@ -122,7 +204,14 @@ public actor StandaloneServer {
             kvBudget: kvBudget
         )
         await scheduler.loadModel(container: container, modelId: modelId)
-        schedulers[modelId] = CachedScheduler(scheduler: scheduler, lastUsedAt: .now)
+        let tokenizer: TokenizerHandle = await container.perform { ctx in
+            TokenizerHandle(ctx.tokenizer)
+        }
+        schedulers[modelId] = CachedScheduler(
+            scheduler: scheduler,
+            tokenizer: tokenizer,
+            lastUsedAt: .now
+        )
     }
 
     private func evictLRUIdleScheduler() async -> Bool {
@@ -237,12 +326,12 @@ public actor StandaloneServer {
         schedulers[modelId]?.lastUsedAt = .now
     }
 
-    private func reserveScheduler(_ modelId: String) {
+    func reserveScheduler(_ modelId: String) {
         schedulerReservations[modelId, default: 0] += 1
         touchScheduler(modelId)
     }
 
-    private func releaseScheduler(_ modelId: String) {
+    func releaseScheduler(_ modelId: String) {
         guard let count = schedulerReservations[modelId] else { return }
         if count <= 1 {
             schedulerReservations.removeValue(forKey: modelId)
@@ -252,7 +341,107 @@ public actor StandaloneServer {
         touchScheduler(modelId)
     }
 
-    private func ensureModelLoaded(_ modelId: String) async throws {
+    /// I1: atomic `ensureLoaded + lookup + reserve`. All three steps
+    /// happen inside this single actor-isolated method so a concurrent
+    /// eviction cannot select the just-loaded model between
+    /// `ensureModelLoaded` returning and the reservation being
+    /// recorded. The returned `AcquiredModel` carries a one-shot
+    /// release token; the caller (the engine's streaming task) MUST
+    /// fire it exactly once when the request completes.
+    ///
+    /// Note: `ensureModelLoaded` can suspend and re-enter the actor
+    /// (it awaits `loadContainer` etc.), so between an `await` and
+    /// resumption another inflight method *could* call
+    /// `evictLRUIdleScheduler`. The reservation guard inside the
+    /// evictor (`schedulerReservations[key] == 0`) is what makes this
+    /// safe once we've bumped the count. We therefore lookup the
+    /// scheduler *after* taking the reservation, then drop the
+    /// reservation if the lookup somehow fails so a partial-acquire
+    /// doesn't pin a missing model forever.
+    func acquireModel(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+        do {
+            try await ensureModelLoaded(modelId)
+        } catch StandaloneServerError.modelNotFound {
+            // Unknown model id → 404 via mapInferenceErrorToStatus.
+            // StandaloneServerError is fileprivate so CORSResponder
+            // can't catch it; translate to the typed engine error.
+            throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
+        } catch StandaloneServerError.capacityUnavailable {
+            // Cache full / memory-headroom failure → 503 via
+            // mapInferenceErrorToStatus (`.queueFull` maps to 503
+            // already, which signals "transient, retry with backoff").
+            throw MultiModelBatchSchedulerEngineError.queueFull(
+                "standalone capacity unavailable for \(modelId)"
+            )
+        }
+        reserveScheduler(modelId)
+        guard let cached = schedulers[modelId], !evictingModels.contains(modelId) else {
+            // Roll the reservation back; the model is gone (evicted
+            // mid-load) and we cannot honor the acquisition.
+            releaseScheduler(modelId)
+            throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
+        }
+        let releaseClosure: @Sendable (String) async -> Void = { [weak self] mid in
+            await self?.releaseScheduler(mid)
+        }
+        let token = OneShotRelease(
+            release: releaseClosure,
+            modelId: modelId
+        )
+        return MultiModelBatchSchedulerEngine.AcquiredModel(
+            scheduler: cached.scheduler,
+            tokenizer: cached.tokenizer,
+            releaseToken: token
+        )
+    }
+
+    /// Resolve a tokenizer for the OpenAI token-utility endpoints
+    /// (`/tokenize`, `/detokenize`, `/apply-template`). Unlike
+    /// `acquireModel`, this does NOT bump a reservation: tokenizer
+    /// access is read-only and finishes synchronously inside the
+    /// upstream handler, so eviction races are not a concern.
+    func resolveTokenizer(_ modelId: String?) async throws -> TokenizerHandle {
+        if let modelId, let cached = schedulers[modelId] {
+            return cached.tokenizer
+        }
+        if let modelId, schedulers[modelId] == nil {
+            throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
+        }
+        if let firstKey = schedulers.keys.sorted().first,
+           let cached = schedulers[firstKey]
+        {
+            return cached.tokenizer
+        }
+        throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization
+    }
+
+    /// Sorted list of currently-resident model ids. Retained as an
+    /// internal capacity-introspection helper for tests and any future
+    /// "what is warm right now" surface — it is NOT what `/v1/models`
+    /// returns (P2 #3): the discovery endpoint reports the advertised
+    /// catalog via `advertisedModelIds()`.
+    func loadedModelIds() -> [String] {
+        schedulers.keys.filter { !evictingModels.contains($0) }.sorted()
+    }
+
+    /// Sorted list of model ids the provider advertises in
+    /// `/v1/models`. This is the catalog the operator configured the
+    /// provider to serve (passed at init or via ``setModels(_:)``),
+    /// not the currently-loaded subset.
+    ///
+    /// P2 #3: `/v1/models` is a discovery endpoint — clients hit it
+    /// before their first request to pick a valid model id. An empty
+    /// list at cold start (when no model is resident) would make them
+    /// give up. The pre-MLXLMServer implementation returned the
+    /// catalog here; this method restores that behaviour.
+    func advertisedModelIds() -> [String] {
+        models.map { $0.id }.sorted()
+    }
+
+    /// Lazy-load a model if it isn't already resident. Serializes loads and
+    /// applies LRU + memory-headroom eviction. Identical contract to the
+    /// pre-MLXLMServer implementation.
+    func ensureModelLoaded(_ modelId: String) async throws {
         try Task.checkCancellation()
         if schedulers[modelId] != nil, !evictingModels.contains(modelId) {
             touchScheduler(modelId)
@@ -287,7 +476,6 @@ public actor StandaloneServer {
                 loadGateWaiters.append(cont)
             }
             try Task.checkCancellation()
-            // Re-check: another load may have loaded our model while we waited
             if schedulers[modelId] != nil, !evictingModels.contains(modelId) {
                 touchScheduler(modelId)
                 return
@@ -339,298 +527,5 @@ public actor StandaloneServer {
             waiter.resume()
         }
     }
-
-    /// Update the advertised model list (e.g. after a rescan).
-    public func setModels(_ newModels: [ModelInfo]) {
-        self.models = newModels
-    }
-
-    /// Start listening for HTTP connections. The server runs in a child task.
-    public func start() throws {
-        guard serverTask == nil else { return }
-
-        let app = makeApplication()
-        serverTask = Task {
-            do {
-                standaloneLogger.info("Standalone server listening on \(self.config.host):\(self.config.port)")
-                try await app.runService(gracefulShutdownSignals: [])
-            } catch is CancellationError {
-                standaloneLogger.info("Standalone server cancelled")
-            } catch {
-                standaloneLogger.error("Standalone server failed: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    /// Stop the server.
-    public func stop() {
-        serverTask?.cancel()
-        serverTask = nil
-    }
-
-    /// Test helper that waits for the Hummingbird service task to finish after
-    /// cancellation, so socket-level tests don't leak listeners across cases.
-    func stopAndWait() async {
-        let task = serverTask
-        serverTask = nil
-        task?.cancel()
-        _ = await task?.value
-        for cached in schedulers.values {
-            await cached.scheduler.unloadModel()
-        }
-        schedulers.removeAll()
-        schedulerReservations.removeAll()
-    }
-
-    func debugCapacity(modelId: String) async -> SchedulerCapacity? {
-        guard let cached = schedulers[modelId] else { return nil }
-        return await cached.scheduler.capacity()
-    }
-
-    func debugSchedulerReservationCount(modelId: String) -> Int {
-        schedulerReservations[modelId] ?? 0
-    }
-
-    /// Returns the port the server is configured on.
-    public var port: UInt16 {
-        config.port
-    }
-
-    /// Build a Hummingbird application for this server. This is internal so
-    /// endpoint tests can exercise the router without opening a socket.
-    nonisolated func makeApplication() -> Application<RouterResponder<StandaloneRequestContext>> {
-        let router = Router(context: StandaloneRequestContext.self)
-        router.add(middleware: StandaloneHeadersMiddleware())
-
-        router.get("/health") { _, _ async -> Response in
-            self.healthResponse()
-        }
-
-        router.get("/v1/models") { _, _ async -> Response in
-            await self.modelsResponse()
-        }
-
-        router.post("/v1/chat/completions") { request, context async -> Response in
-            await self.chatCompletionsResponse(request: request, context: context)
-        }
-
-        return Application(
-            router: router,
-            configuration: .init(
-                address: .hostname(config.host, port: Int(config.port)),
-                serverName: "darkbloom-provider"
-            )
-        )
-    }
-
-    // MARK: - Endpoint Handlers
-
-    private nonisolated func healthResponse() -> Response {
-        jsonResponse(HealthResponse(status: "ok", version: ProviderCore.version))
-    }
-
-    private func modelsResponse() -> Response {
-        let modelObjects = models.map { model in
-            OpenAIModel(
-                id: model.id,
-                object: "model",
-                created: 0,
-                owned_by: "local"
-            )
-        }
-        let response = OpenAIModelsResponse(object: "list", data: modelObjects)
-        return jsonResponse(response)
-    }
-
-    private func chatCompletionsResponse(
-        request: Request,
-        context: StandaloneRequestContext
-    ) async -> Response {
-        if let contentType = request.headers[.contentType],
-           !contentType.lowercased().hasPrefix("application/json")
-        {
-            return openAIErrorResponse(
-                status: .unsupportedMediaType,
-                message: "Content-Type must be application/json"
-            )
-        }
-
-        let chatRequest: ChatCompletionRequest
-        do {
-            chatRequest = try await request.decode(as: ChatCompletionRequest.self, context: context)
-        } catch {
-            return openAIErrorResponse(status: .badRequest, message: "Invalid request body")
-        }
-
-        do {
-            try await ensureModelLoaded(chatRequest.model)
-        } catch StandaloneServerError.modelNotFound(let modelId) {
-            return openAIErrorResponse(
-                status: .notFound,
-                message: StandaloneServerError.modelNotFound(modelId).localizedDescription
-            )
-        } catch StandaloneServerError.capacityUnavailable(let message) {
-            return openAIErrorResponse(
-                status: .serviceUnavailable,
-                message: message
-            )
-        } catch {
-            return openAIErrorResponse(
-                status: .internalServerError,
-                message: "Failed to load model '\(chatRequest.model)': \(error.localizedDescription)"
-            )
-        }
-
-        guard let cached = schedulers[chatRequest.model] else {
-            return openAIErrorResponse(
-                status: .internalServerError,
-                message: "Model load succeeded but scheduler unavailable"
-            )
-        }
-        reserveScheduler(chatRequest.model)
-
-        if chatRequest.stream ?? false {
-            let requestID = "standalone-\(UUID().uuidString.prefix(12))"
-            let stream = await cached.scheduler.submit(request: chatRequest, requestId: requestID)
-            return streamingCompletionResponse(
-                stream: stream,
-                model: chatRequest.model,
-                onFinished: { [scheduler = cached.scheduler] in
-                    await scheduler.cancel(requestId: requestID)
-                    await self.releaseScheduler(chatRequest.model)
-                }
-            )
-        }
-
-        let requestID = "standalone-\(UUID().uuidString.prefix(12))"
-        let stream = await cached.scheduler.submit(request: chatRequest, requestId: requestID)
-        let disconnectTask = Task { [closeFuture = context.channelCloseFuture, scheduler = cached.scheduler] in
-            do {
-                try await closeFuture.get()
-                await scheduler.cancel(requestId: requestID)
-            } catch {
-                // Normal completion cancels this watcher before the channel closes.
-            }
-        }
-        defer { releaseScheduler(chatRequest.model) }
-        defer { disconnectTask.cancel() }
-        return await withTaskCancellationHandler {
-            await nonStreamingCompletion(chatRequest, stream: stream)
-        } onCancel: {
-            Task { await cached.scheduler.cancel(requestId: requestID) }
-        }
-    }
-
-    private nonisolated func streamingCompletionResponse(
-        stream: AsyncStream<GenerationEvent>,
-        model: String,
-        onFinished: @escaping @Sendable () async -> Void
-    ) -> Response {
-        var headers = defaultHeaders(contentType: "text/event-stream")
-        headers[.cacheControl] = "no-cache"
-        headers[.connection] = "keep-alive"
-
-        let body = ResponseBody { writer in
-            do {
-                let formatter = OpenAIFormatter()
-                let completionID = formatter.makeCompletionID()
-                let created = Int(Date().timeIntervalSince1970)
-
-                try await writer.write(ByteBuffer(string: formatter.roleChunk(
-                    id: completionID,
-                    model: model,
-                    created: created
-                ).formatted))
-
-                var promptTokens = 0
-                var completionTokens = 0
-
-                for await event in stream {
-                    switch event {
-                    case .chunk(let text):
-                        completionTokens += 1
-                        let chunk = formatter.contentChunk(
-                            id: completionID,
-                            model: model,
-                            created: created,
-                            text: text
-                        )
-                        try await writer.write(ByteBuffer(string: chunk.formatted))
-
-                    case .info(let prompt, let completion, _):
-                        promptTokens = prompt
-                        completionTokens = completion
-
-                    case .error(let message):
-                        standaloneLogger.error("Generation error during streaming: \(message)")
-                        try await writer.write(ByteBuffer(string: Self.sseErrorEvent(message: message)))
-                        try await writer.finish(nil)
-                        await onFinished()
-                        return
-                    }
-                }
-
-                let usage = ChunkUsage(prompt_tokens: promptTokens, completion_tokens: completionTokens)
-                let stopChunk = formatter.stopChunk(
-                    id: completionID,
-                    model: model,
-                    created: created,
-                    finishReason: "stop",
-                    usage: usage
-                )
-                try await writer.write(ByteBuffer(string: stopChunk.formatted))
-                try await writer.write(ByteBuffer(string: SSEChunk.done.formatted))
-                try await writer.finish(nil)
-                await onFinished()
-            } catch {
-                await onFinished()
-                throw error
-            }
-        }
-
-        return Response(status: .ok, headers: headers, body: body)
-    }
-
-    static func sseErrorEvent(message: String) -> String {
-        let response = OpenAIErrorResponse(error: .init(message: message, type: "server_error"))
-        let data = (try? JSONEncoder().encode(response)) ?? Data(#"{"error":{"message":"Generation failed","type":"server_error"}}"#.utf8)
-        let json = String(data: data, encoding: .utf8) ?? #"{"error":{"message":"Generation failed","type":"server_error"}}"#
-        return "event: error\ndata: \(json)\n\n"
-    }
-
-    private func nonStreamingCompletion(_ chatRequest: ChatCompletionRequest, stream: AsyncStream<GenerationEvent>) async -> Response {
-        let formatter = OpenAIFormatter()
-        let completionID = formatter.makeCompletionID()
-        let created = Int(Date().timeIntervalSince1970)
-
-        var fullContent = ""
-        var promptTokens = 0
-        var completionTokens = 0
-
-        for await event in stream {
-            switch event {
-            case .chunk(let text):
-                fullContent += text
-
-            case .info(let prompt, let completion, _):
-                promptTokens = prompt
-                completionTokens = completion
-
-            case .error(let message):
-                return openAIErrorResponse(status: Self.schedulerErrorStatus(for: message), message: message)
-            }
-        }
-
-        let usage = ChunkUsage(prompt_tokens: promptTokens, completion_tokens: completionTokens)
-        let response = formatter.nonStreamingResponse(
-            id: completionID,
-            model: chatRequest.model,
-            created: created,
-            content: fullContent,
-            finishReason: "stop",
-            usage: usage
-        )
-
-        return jsonResponse(response)
-    }
 }
+

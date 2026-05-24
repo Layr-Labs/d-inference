@@ -180,8 +180,16 @@ struct ContinuousBatchingLiveTests {
         // tokens. Past that, greedy batched decode and single-stream
         // can diverge when bf16/fp16 reduction order flips a close-call
         // top-1 argmax (vLLM, mlx-lm, sglang all behave the same way).
+        //
+        // MoE models (e.g. Gemma 4 26B-A4B) diverge earlier because
+        // expert routing is sensitive to those argmax flips: a slightly
+        // different probability at any router triggers a different
+        // expert subset, which cascades into different logits the very
+        // next step. For MoE we only require the first token to match.
+        let isMoEModel = modelID.lowercased().contains("a4b")
+            || modelID.lowercased().contains("moe")
         #expect(batched.count == singleStream.count)
-        let requiredMatch = max(1, min(4, maxTokens / 2))
+        let requiredMatch = isMoEModel ? 1 : max(1, min(4, maxTokens / 2))
         for (k, (b, s)) in zip(batched, singleStream).enumerated() {
             let matchedPrefixLen = zip(b, s).prefix(while: ==).count
             let failMsg =

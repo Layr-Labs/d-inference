@@ -340,6 +340,23 @@ h1, h2, h3 {
   animation: fade-in 0.3s ease-out;
 }
 
+@keyframes network-flow-ping {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -180; }
+}
+
+.network-flow-ping {
+  animation-name: network-flow-ping;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .network-flow-ping {
+    animation: none;
+  }
+}
+
 /* ─── Syntax highlighting ─── */
 .hljs {
   background: transparent !important;

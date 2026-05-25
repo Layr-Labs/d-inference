@@ -114,12 +114,12 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 	acmeResult := s.extractAndVerifyClientCert(r)
 
 	// Run the read loop; on return the provider is disconnected.
-	s.providerReadLoop(r.Context(), conn, providerID, acmeResult)
+	s.providerReadLoop(r.Context(), conn, providerID, acmeResult, r)
 }
 
 // providerReadLoop reads messages from the provider WebSocket and dispatches
 // them. It runs until the connection closes or the context is cancelled.
-func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, acmeResult *ACMEVerificationResult) {
+func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, acmeResult *ACMEVerificationResult, r *http.Request) {
 	var provider *registry.Provider
 	tracker := newChallengeTracker()
 
@@ -165,6 +165,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		case protocol.TypeRegister:
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
 			provider = s.registry.Register(providerID, conn, regMsg)
+			s.attachProviderLocation(providerID, provider, r)
 			s.verifyProviderAttestation(providerID, provider, regMsg)
 
 			// Record registration outcome metrics + telemetry.
@@ -317,6 +318,33 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			s.logger.Warn("unhandled provider message type", "provider_id", providerID, "type", msg.Type)
 		}
 	}
+}
+
+// attachProviderLocation resolves the provider's approximate geographic
+// location from the registration HTTP request. The resolved location is
+// stored on the Provider struct for stats aggregation. Raw IP addresses
+// are never persisted.
+func (s *Server) attachProviderLocation(providerID string, provider *registry.Provider, r *http.Request) {
+	if s.geoResolver == nil || provider == nil || r == nil {
+		return
+	}
+	loc := s.geoResolver.Lookup(r)
+	if loc == nil {
+		return
+	}
+	provider.Mu().Lock()
+	provider.Location = loc
+	provider.Mu().Unlock()
+	s.registry.PersistProvider(provider)
+	if s.readCache != nil {
+		s.readCache.Invalidate("stats:v1")
+	}
+	s.logger.Info("provider location resolved",
+		"provider_id", providerID,
+		"city", loc.City,
+		"country", loc.CountryCode,
+		"source", loc.Source,
+	)
 }
 
 func (s *Server) applyACMETrust(providerID string, provider *registry.Provider, acmeResult *ACMEVerificationResult) {
@@ -1089,7 +1117,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			CostMicroUSD:     totalCost,
 			Timestamp:        time.Now(),
 		})
-		s.store.RecordUsageWithCost(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost)
+		s.store.RecordUsageWithCostAndLocation(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
 		s.ddIncr("inference.completions", []string{"model:" + pr.Model})
 		s.ddCount("inference.prompt_tokens_total", int64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
 		s.ddHistogram("inference.prompt_tokens", float64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})

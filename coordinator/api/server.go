@@ -172,6 +172,10 @@ type Server struct {
 	// Populated once at startup from the store.
 	storedProviders map[string]*store.ProviderRecord
 
+	// geoResolver resolves provider and consumer request locations from IP
+	// addresses or trusted reverse-proxy headers. Nil when GeoIP is not configured.
+	geoResolver providerGeoResolver
+
 	// coordinatorKey is the long-lived X25519 keypair used to receive sealed
 	// requests from senders. Set via SetCoordinatorKey. nil disables the
 	// /v1/encryption-key endpoint and the sealed-request middleware.
@@ -238,6 +242,7 @@ func NewServer(reg *registry.Registry, st store.Store, logger *slog.Logger) *Ser
 		metrics:              NewMetrics(),
 		telemetryLimiter:     newTelemetryLimiter(),
 		readCache:            newTTLCache(),
+		geoResolver:          newProviderGeoResolverFromEnv(logger),
 	}
 	s.registerDefaultGauges()
 	s.routes()

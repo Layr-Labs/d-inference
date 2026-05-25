@@ -65,10 +65,11 @@ func BackendUsesSwiftRuntime(backend string) bool {
 
 // PendingRequest is a channel-based handle for an in-flight inference request.
 type PendingRequest struct {
-	RequestID   string
-	ProviderID  string
-	Model       string
-	ConsumerKey string
+	RequestID        string
+	ProviderID       string
+	Model            string
+	ConsumerKey      string
+	ConsumerLocation *store.ProviderLocation
 	// IsResponsesAPI tracks requests received through /v1/responses so the
 	// coordinator can translate provider chat-completions output back into
 	// Responses API objects for SDK clients.
@@ -146,6 +147,7 @@ type Provider struct {
 	Hardware          protocol.Hardware
 	Models            []protocol.ModelInfo
 	Backend           string
+	Location          *store.ProviderLocation
 	PublicKey         string // base64-encoded X25519 public key for E2E encryption
 	Attested          bool   // true if attestation was verified successfully
 	AttestationResult *attestation.VerificationResult
@@ -564,6 +566,14 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 	}
 	p.FailedChallenges = rec.FailedChallenges
 
+	// Restore location only if the provider doesn't already have a fresh one
+	// (attachProviderLocation may have set it from the current request before
+	// RestoreProviderState runs).
+	if rec.Location != nil && p.Location == nil {
+		cp := *rec.Location
+		p.Location = &cp
+	}
+
 	// Restore account linkage
 	if rec.AccountID != "" && p.AccountID == "" {
 		p.AccountID = rec.AccountID
@@ -644,11 +654,18 @@ func (r *Registry) persistProvider(p *Provider) {
 			lastChallenge = &t
 		}
 
+		var locationCopy *store.ProviderLocation
+		if p.Location != nil {
+			lc := *p.Location
+			locationCopy = &lc
+		}
+
 		rec := store.ProviderRecord{
 			ID:                         p.ID,
 			Hardware:                   hardwareJSON,
 			Models:                     modelsJSON,
 			Backend:                    p.Backend,
+			Location:                   locationCopy,
 			TrustLevel:                 string(p.TrustLevel),
 			Attested:                   p.Attested,
 			AttestationResult:          attestJSON,

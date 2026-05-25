@@ -10,8 +10,8 @@ package api
 //
 // Requirements:
 //   - Apple Silicon Mac with vllm-mlx installed
-//   - mlx-community/Qwen3.5-0.8B-MLX-4bit downloaded (~0.5GB per instance)
-//   - ~1GB RAM per provider instance
+//   - mlx-community/gemma-4-e4b-4bit downloaded (~5.2GB per instance)
+//   - ~6GB RAM per provider instance
 //
 // Gate: LIVE_FULLSTACK_TEST=1 cargo test (not run in CI)
 //
@@ -48,7 +48,7 @@ import (
 
 const (
 	// testModel is the small model used for full-stack tests.
-	testModel = "mlx-community/Qwen3.5-0.8B-MLX-4bit"
+	testModel = "mlx-community/gemma-4-e4b-4bit"
 
 	// basePort is the starting port for vllm-mlx backends.
 	basePort = 18200

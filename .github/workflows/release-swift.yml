@@ -239,15 +239,22 @@ jobs:
 
       # ----------------------------------------------------------------------
       # Download the tiny test model used by InferenceLiveTests. The
-      # `mlx-community/Qwen3-0.6B-8bit` model is ~600 MB and seeds
+      # `mlx-community/gemma-4-e4b-4bit` model is ~5 GB and seeds
       # ~/.cache/huggingface/hub so `ModelScanner.resolveLocalPath` finds
       # it. We pin the snapshot to keep CI deterministic across reruns.
       # ----------------------------------------------------------------------
+      - name: Cache HuggingFace test model
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-release-${{ runner.os }}-gemma4-e4b
+          restore-keys: hf-models-release-${{ runner.os }}-
+
       - name: Download tiny test model for live MLX tests
         run: |
           set -euo pipefail
           /tmp/mlxvenv/bin/pip install --quiet --no-cache-dir 'huggingface_hub[cli]'
-          /tmp/mlxvenv/bin/hf download mlx-community/Qwen3-0.6B-8bit \
+          /tmp/mlxvenv/bin/hf download mlx-community/gemma-4-e4b-4bit \
             --revision main \
             > /dev/null
           ls "${HOME}/.cache/huggingface/hub/" | head -20

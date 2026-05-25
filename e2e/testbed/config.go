@@ -21,8 +21,7 @@ func (ms ModelSpec) IDs() []string {
 }
 
 var KnownModelSizes = map[string]string{
-	"mlx-community/Qwen3.5-0.8B-MLX-4bit": "0.5 GB",
-	"mlx-community/gemma-3-270m-4bit":     "0.2 GB",
+	"mlx-community/gemma-4-e4b-4bit": "5.2 GB",
 }
 
 type TrustLevel string
@@ -93,7 +92,7 @@ type ModelConfig struct {
 
 func DefaultModelConfig() ModelConfig {
 	return ModelConfig{
-		ModelID:     "mlx-community/gemma-3-270m",
+		ModelID:     "mlx-community/gemma-4-e4b-4bit",
 		BackendPort: 8000,
 	}
 }
@@ -114,7 +113,7 @@ type SuiteConfig struct {
 
 func DefaultSuiteConfig() SuiteConfig {
 	return SuiteConfig{
-		ModelSpecs:    []ModelSpec{{ModelID: "mlx-community/Qwen3.5-0.8B-MLX-4bit", NumProviders: 1}},
+		ModelSpecs:    []ModelSpec{{ModelID: "mlx-community/gemma-4-e4b-4bit", NumProviders: 1}},
 		NumUsers:      1,
 		QueueCapacity: 100,
 		QueueTimeout:  120 * time.Second,
@@ -151,5 +150,5 @@ func (sc SuiteConfig) PrimaryModelID() string {
 			return ids[0]
 		}
 	}
-	return "mlx-community/Qwen3.5-0.8B-MLX-4bit"
+	return "mlx-community/gemma-4-e4b-4bit"
 }

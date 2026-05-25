@@ -25,6 +25,13 @@ jobs:
           gh pr diff ${{ github.event.pull_request.number }} > /tmp/pr.diff
           echo "Diff size: $(wc -c < /tmp/pr.diff) bytes"
 
+      - name: Cache pip packages
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/pip
+          key: pip-threat-model-${{ runner.os }}-anthropic
+          restore-keys: pip-threat-model-${{ runner.os }}-
+
       - name: Install Python dependencies
         run: pip install "anthropic>=0.50.0" pyyaml --quiet
 

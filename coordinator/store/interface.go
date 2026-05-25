@@ -42,11 +42,19 @@ type Store interface {
 	// RecordUsageWithCost logs an inference usage event including request ID and cost.
 	RecordUsageWithCost(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64)
 
+	// RecordUsageWithCostAndLocation logs an inference usage event with an
+	// approximate request-origin location. Raw IP addresses are not stored.
+	RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation)
+
 	// RecordPayment records a settled payment between consumer and provider.
 	RecordPayment(txHash, consumerAddr, providerAddr, amountUSD, model string, promptTokens, completionTokens int, memo string) error
 
 	// UsageRecords returns all usage records.
 	UsageRecords() []UsageRecord
+
+	// UsageRecordsSince returns usage records created at or after the given time.
+	// Zero since returns all records.
+	UsageRecordsSince(since time.Time) []UsageRecord
 
 	// UsageTotals returns aggregated lifetime totals across all usage records
 	// without transferring per-row data over the wire.
@@ -55,6 +63,10 @@ type Store interface {
 	// UsageTimeSeries returns per-minute aggregates for the given time window.
 	// Buckets the rows by created_at truncated to the minute.
 	UsageTimeSeries(since time.Time) []UsageBucket
+
+	// UsageLocationBuckets returns approximate request-origin aggregates for
+	// public stats. Implementations must not store or return raw client IPs.
+	UsageLocationBuckets(since time.Time) []UsageLocationBucket
 
 	// Leaderboard returns the top N accounts ranked by the given metric
 	// over the given time window. Zero `since` means all-time.
@@ -390,15 +402,16 @@ type TelemetryEventRecord struct {
 
 // UsageRecord captures a single inference usage event.
 type UsageRecord struct {
-	ProviderID       string    `json:"provider_id"`
-	ConsumerKey      string    `json:"consumer_key"`
-	Model            string    `json:"model"`
-	PromptTokens     int       `json:"prompt_tokens"`
-	CompletionTokens int       `json:"completion_tokens"`
-	Timestamp        time.Time `json:"timestamp"`
-	RequestID        string    `json:"request_id,omitempty"`
-	CostMicroUSD     int64     `json:"cost_micro_usd,omitempty"`
-	CreatedAt        time.Time `json:"created_at,omitempty"`
+	ProviderID       string            `json:"provider_id"`
+	ConsumerKey      string            `json:"consumer_key"`
+	Model            string            `json:"model"`
+	PromptTokens     int               `json:"prompt_tokens"`
+	CompletionTokens int               `json:"completion_tokens"`
+	RequestLocation  *ProviderLocation `json:"request_location,omitempty"`
+	Timestamp        time.Time         `json:"timestamp"`
+	RequestID        string            `json:"request_id,omitempty"`
+	CostMicroUSD     int64             `json:"cost_micro_usd,omitempty"`
+	CreatedAt        time.Time         `json:"created_at,omitempty"`
 }
 
 // UsageTotals aggregates the entire usage table.
@@ -414,6 +427,21 @@ type UsageBucket struct {
 	Requests         int64     `json:"requests"`
 	PromptTokens     int64     `json:"prompt_tokens"`
 	CompletionTokens int64     `json:"completion_tokens"`
+}
+
+// UsageLocationBucket aggregates request-origin location data for public stats.
+type UsageLocationBucket struct {
+	City             string  `json:"city"`
+	Region           string  `json:"region"`
+	RegionCode       string  `json:"region_code"`
+	Country          string  `json:"country"`
+	CountryCode      string  `json:"country_code"`
+	Latitude         float64 `json:"latitude"`
+	Longitude        float64 `json:"longitude"`
+	Requests         int64   `json:"requests"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	Providers        int     `json:"providers"`
 }
 
 // LeaderboardMetric selects the ranking column for a leaderboard query.
@@ -764,31 +792,49 @@ type BillingSession struct {
 // ProviderRecord is the persistent representation of a provider for storage.
 // Transient fields (WebSocket conn, pending requests, system metrics) are NOT persisted.
 type ProviderRecord struct {
-	ID                         string          `json:"id"`
-	Hardware                   json.RawMessage `json:"hardware"`
-	Models                     json.RawMessage `json:"models"`
-	Backend                    string          `json:"backend"`
-	TrustLevel                 string          `json:"trust_level"`
-	Attested                   bool            `json:"attested"`
-	AttestationResult          json.RawMessage `json:"attestation_result,omitempty"`
-	SEPublicKey                string          `json:"se_public_key,omitempty"`
-	SerialNumber               string          `json:"serial_number,omitempty"`
-	MDAVerified                bool            `json:"mda_verified"`
-	MDACertChain               json.RawMessage `json:"mda_cert_chain,omitempty"`
-	ACMEVerified               bool            `json:"acme_verified"`
-	Version                    string          `json:"version,omitempty"`
-	RuntimeVerified            bool            `json:"runtime_verified"`
-	PythonHash                 string          `json:"python_hash,omitempty"`
-	RuntimeHash                string          `json:"runtime_hash,omitempty"`
-	LastChallengeVerified      *time.Time      `json:"last_challenge_verified,omitempty"`
-	FailedChallenges           int             `json:"failed_challenges"`
-	AccountID                  string          `json:"account_id,omitempty"`
-	LifetimeRequestsServed     int64           `json:"lifetime_requests_served"`
-	LifetimeTokensGenerated    int64           `json:"lifetime_tokens_generated"`
-	LastSessionRequestsServed  int64           `json:"last_session_requests_served"`
-	LastSessionTokensGenerated int64           `json:"last_session_tokens_generated"`
-	RegisteredAt               time.Time       `json:"registered_at"`
-	LastSeen                   time.Time       `json:"last_seen"`
+	ID                         string            `json:"id"`
+	Hardware                   json.RawMessage   `json:"hardware"`
+	Models                     json.RawMessage   `json:"models"`
+	Backend                    string            `json:"backend"`
+	Location                   *ProviderLocation `json:"location,omitempty"`
+	TrustLevel                 string            `json:"trust_level"`
+	Attested                   bool              `json:"attested"`
+	AttestationResult          json.RawMessage   `json:"attestation_result,omitempty"`
+	SEPublicKey                string            `json:"se_public_key,omitempty"`
+	SerialNumber               string            `json:"serial_number,omitempty"`
+	MDAVerified                bool              `json:"mda_verified"`
+	MDACertChain               json.RawMessage   `json:"mda_cert_chain,omitempty"`
+	ACMEVerified               bool              `json:"acme_verified"`
+	Version                    string            `json:"version,omitempty"`
+	RuntimeVerified            bool              `json:"runtime_verified"`
+	PythonHash                 string            `json:"python_hash,omitempty"`
+	RuntimeHash                string            `json:"runtime_hash,omitempty"`
+	LastChallengeVerified      *time.Time        `json:"last_challenge_verified,omitempty"`
+	FailedChallenges           int               `json:"failed_challenges"`
+	AccountID                  string            `json:"account_id,omitempty"`
+	LifetimeRequestsServed     int64             `json:"lifetime_requests_served"`
+	LifetimeTokensGenerated    int64             `json:"lifetime_tokens_generated"`
+	LastSessionRequestsServed  int64             `json:"last_session_requests_served"`
+	LastSessionTokensGenerated int64             `json:"last_session_tokens_generated"`
+	RegisteredAt               time.Time         `json:"registered_at"`
+	LastSeen                   time.Time         `json:"last_seen"`
+}
+
+// ProviderLocation captures approximate geographic location for a provider or
+// request origin. Raw IP addresses are never stored. Populated from GeoIP
+// database lookups or trusted reverse-proxy headers.
+type ProviderLocation struct {
+	City             string    `json:"city,omitempty"`
+	Region           string    `json:"region,omitempty"`
+	RegionCode       string    `json:"region_code,omitempty"`
+	Country          string    `json:"country,omitempty"`
+	CountryCode      string    `json:"country_code,omitempty"`
+	Latitude         float64   `json:"latitude,omitempty"`
+	Longitude        float64   `json:"longitude,omitempty"`
+	AccuracyRadiusKM int       `json:"accuracy_radius_km,omitempty"`
+	Timezone         string    `json:"timezone,omitempty"`
+	Source           string    `json:"source,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at,omitempty"`
 }
 
 // ReputationRecord is the persistent representation of a provider's reputation.

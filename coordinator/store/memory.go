@@ -306,6 +306,49 @@ func (s *MemoryStore) UsageRecords() []UsageRecord {
 	defer s.mu.RUnlock()
 	out := make([]UsageRecord, len(s.usage))
 	copy(out, s.usage)
+	for i := range out {
+		if out[i].RequestLocation != nil {
+			loc := *out[i].RequestLocation
+			out[i].RequestLocation = &loc
+		}
+	}
+	return out
+}
+
+// UsageRecordsSince returns usage records created at or after the given time.
+func (s *MemoryStore) UsageRecordsSince(since time.Time) []UsageRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if since.IsZero() {
+		out := make([]UsageRecord, len(s.usage))
+		copy(out, s.usage)
+		for i := range out {
+			if out[i].RequestLocation != nil {
+				loc := *out[i].RequestLocation
+				out[i].RequestLocation = &loc
+			}
+		}
+		return out
+	}
+	var out []UsageRecord
+	for _, r := range s.usage {
+		ts := r.Timestamp
+		if ts.IsZero() {
+			ts = r.CreatedAt
+		}
+		if ts.Before(since) {
+			continue
+		}
+		cp := r
+		if cp.RequestLocation != nil {
+			loc := *cp.RequestLocation
+			cp.RequestLocation = &loc
+		}
+		out = append(out, cp)
+	}
+	if out == nil {
+		return []UsageRecord{}
+	}
 	return out
 }
 
@@ -436,18 +479,109 @@ func (s *MemoryStore) UsageByConsumer(consumerKey string) []UsageRecord {
 
 // RecordUsageWithCost logs a usage event with request ID and cost (in-memory).
 func (s *MemoryStore) RecordUsageWithCost(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64) {
+	s.RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID, promptTokens, completionTokens, costMicroUSD, nil)
+}
+
+// RecordUsageWithCostAndLocation logs a usage event with request location (in-memory).
+func (s *MemoryStore) RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var locCopy *ProviderLocation
+	if requestLocation != nil {
+		cp := *requestLocation
+		locCopy = &cp
+	}
 	s.usage = append(s.usage, UsageRecord{
 		ProviderID:       providerID,
 		ConsumerKey:      consumerKey,
 		Model:            model,
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
+		RequestLocation:  locCopy,
 		Timestamp:        time.Now(),
 		RequestID:        requestID,
 		CostMicroUSD:     costMicroUSD,
 	})
+}
+
+// UsageLocationBuckets returns approximate request-origin aggregates (in-memory).
+func (s *MemoryStore) UsageLocationBuckets(since time.Time) []UsageLocationBucket {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	type bucketKey struct {
+		City        string
+		Region      string
+		RegionCode  string
+		Country     string
+		CountryCode string
+	}
+	type agg struct {
+		key                              bucketKey
+		latSum, lngSum                   float64
+		coordCount                       int
+		requests, promptTok, completeTok int64
+		providers                        map[string]struct{}
+	}
+	buckets := make(map[bucketKey]*agg)
+	for _, r := range s.usage {
+		ts := r.Timestamp
+		if ts.IsZero() {
+			ts = r.CreatedAt
+		}
+		if !since.IsZero() && ts.Before(since) {
+			continue
+		}
+		if r.RequestLocation == nil {
+			continue
+		}
+		loc := r.RequestLocation
+		k := bucketKey{
+			City:        loc.City,
+			Region:      loc.Region,
+			RegionCode:  loc.RegionCode,
+			Country:     loc.Country,
+			CountryCode: loc.CountryCode,
+		}
+		b, ok := buckets[k]
+		if !ok {
+			b = &agg{key: k, providers: make(map[string]struct{})}
+			buckets[k] = b
+		}
+		b.requests++
+		b.promptTok += int64(r.PromptTokens)
+		b.completeTok += int64(r.CompletionTokens)
+		if loc.Latitude != 0 || loc.Longitude != 0 {
+			b.latSum += loc.Latitude
+			b.lngSum += loc.Longitude
+			b.coordCount++
+		}
+		if r.ProviderID != "" {
+			b.providers[r.ProviderID] = struct{}{}
+		}
+	}
+	out := make([]UsageLocationBucket, 0, len(buckets))
+	for _, b := range buckets {
+		var lat, lng float64
+		if b.coordCount > 0 {
+			lat = b.latSum / float64(b.coordCount)
+			lng = b.lngSum / float64(b.coordCount)
+		}
+		out = append(out, UsageLocationBucket{
+			City:             b.key.City,
+			Region:           b.key.Region,
+			RegionCode:       b.key.RegionCode,
+			Country:          b.key.Country,
+			CountryCode:      b.key.CountryCode,
+			Latitude:         lat,
+			Longitude:        lng,
+			Requests:         b.requests,
+			PromptTokens:     b.promptTok,
+			CompletionTokens: b.completeTok,
+			Providers:        len(b.providers),
+		})
+	}
+	return out
 }
 
 // KeyCount returns the number of active API keys.
@@ -1809,6 +1943,10 @@ func (s *MemoryStore) UpsertProvider(_ context.Context, p ProviderRecord) error 
 	}
 
 	cp := p
+	if p.Location != nil {
+		loc := *p.Location
+		cp.Location = &loc
+	}
 	s.providerRecords[p.ID] = &cp
 	return nil
 }
@@ -1822,6 +1960,10 @@ func (s *MemoryStore) GetProviderRecord(_ context.Context, id string) (*Provider
 		return nil, fmt.Errorf("provider %q not found", id)
 	}
 	cp := *p
+	if p.Location != nil {
+		loc := *p.Location
+		cp.Location = &loc
+	}
 	return &cp, nil
 }
 
@@ -1838,6 +1980,10 @@ func (s *MemoryStore) GetProviderBySerial(_ context.Context, serial string) (*Pr
 		return nil, fmt.Errorf("provider %q not found (stale serial index)", id)
 	}
 	cp := *p
+	if p.Location != nil {
+		loc := *p.Location
+		cp.Location = &loc
+	}
 	return &cp, nil
 }
 
@@ -1847,7 +1993,12 @@ func (s *MemoryStore) ListProviderRecords(_ context.Context) ([]ProviderRecord, 
 
 	records := make([]ProviderRecord, 0, len(s.providerRecords))
 	for _, p := range s.providerRecords {
-		records = append(records, *p)
+		cp := *p
+		if p.Location != nil {
+			loc := *p.Location
+			cp.Location = &loc
+		}
+		records = append(records, cp)
 	}
 	return records, nil
 }
@@ -1863,7 +2014,12 @@ func (s *MemoryStore) ListProvidersByAccount(_ context.Context, accountID string
 	records := make([]ProviderRecord, 0)
 	for _, p := range s.providerRecords {
 		if p.AccountID == accountID {
-			records = append(records, *p)
+			cp := *p
+			if p.Location != nil {
+				loc := *p.Location
+				cp.Location = &loc
+			}
+			records = append(records, cp)
 		}
 	}
 	sort.Slice(records, func(i, j int) bool {

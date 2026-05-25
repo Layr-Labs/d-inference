@@ -122,6 +122,7 @@ func (s *Server) dispatchOneProvider(
 	model string,
 	rawBody []byte,
 	consumerKey string,
+	consumerLocation *store.ProviderLocation,
 	reservedMicroUSD int64,
 	estimatedPromptTokens int,
 	requestedMaxTokens int,
@@ -141,6 +142,7 @@ func (s *Server) dispatchOneProvider(
 		RequestID:              requestID,
 		Model:                  model,
 		ConsumerKey:            consumerKey,
+		ConsumerLocation:       consumerLocation,
 		IsResponsesAPI:         isResponsesAPI,
 		EstimatedPromptTokens:  estimatedPromptTokens,
 		RequestedMaxTokens:     requestedMaxTokens,
@@ -939,6 +941,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	)
 
 	consumerKey := consumerKeyFromContext(r.Context())
+	consumerLocation := s.requestLocation(r)
 
 	// Track providers that failed during retry so we don't dispatch to them again.
 	excludeProviders := make(map[string]struct{})
@@ -951,7 +954,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		var dispatchErr string
 		var dispatchErrCode int
 		provider, pr, _, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
-			r, model, rawBody, consumerKey, reservedMicroUSD,
+			r, model, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
 			estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials,
 			isResponsesAPI, timing, excludeProviders,
 		)
@@ -986,6 +989,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				RequestID:              requestID,
 				Model:                  model,
 				ConsumerKey:            consumerKey,
+				ConsumerLocation:       consumerLocation,
 				IsResponsesAPI:         isResponsesAPI,
 				EstimatedPromptTokens:  estimatedPromptTokens,
 				RequestedMaxTokens:     requestedMaxTokens,
@@ -1230,7 +1234,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			backupExclude[provider.ID] = struct{}{}
 
 			backupProvider, backupPR, _, _, _ := s.dispatchOneProvider(
-				r, model, rawBody, consumerKey, reservedMicroUSD,
+				r, model, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
 				estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials,
 				isResponsesAPI, &registry.RequestTiming{ReceivedAt: timing.ReceivedAt},
 				backupExclude,
@@ -3262,6 +3266,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// paths routed without ANY reservation; the silent post-inference charge
 	// meant a consumer could receive full responses with a zero balance.
 	consumerKey := consumerKeyFromContext(r.Context())
+	consumerLocation := s.requestLocation(r)
 	var reservedMicroUSD int64
 	if s.billing != nil {
 		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
@@ -3301,6 +3306,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		RequestID:              requestID,
 		Model:                  model,
 		ConsumerKey:            consumerKey,
+		ConsumerLocation:       consumerLocation,
 		AllowedProviderSerials: allowedProviderSerials,
 		EstimatedPromptTokens:  estimatedPromptTokens,
 		RequestedMaxTokens:     requestedMaxTokens,

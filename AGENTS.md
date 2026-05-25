@@ -7,8 +7,6 @@ Darkbloom is a decentralized private inference network for Apple Silicon Macs. C
 ```text
 coordinator/          Go control plane (packages live at top level, not internal/)
 ├── cmd/coordinator/  main service entrypoint
-├── cmd/verify-attestation/
-│   └── main.go       verifies attestation blobs from /tmp/eigeninference_attestation.json
 ├── api/              HTTP + WebSocket handlers
 │   ├── consumer.go         OpenAI-compatible chat/completions/messages/transcriptions/images
 │   ├── provider.go         provider registration, heartbeats, attestation, relay
@@ -109,7 +107,6 @@ docs/                 architecture, deploy runbooks, MDM/ACME notes, threat mode
 cd coordinator
 go test ./...
 go build ./cmd/coordinator
-go build ./cmd/verify-attestation
 
 # Linux deployment build
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o coordinator-linux ./cmd/coordinator

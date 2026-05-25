@@ -293,6 +293,14 @@ func intFromRequestValue(v any) (int, bool) {
 	}
 }
 
+// approximateTokenCount returns a rough token estimate for routing and queue
+// admission. The len/4 heuristic is a reasonable average for English text
+// with GPT-style BPE tokenizers. This value feeds into the scheduler's
+// capacity checks (pendingTokenBudget, freeMemoryAdmits) where a tighter
+// estimate produces better routing decisions.
+//
+// For billing reservation (where underestimation causes provider shortfall),
+// use approximateTokenCountUpperBound instead.
 func approximateTokenCount(v any) int {
 	if v == nil {
 		return 0
@@ -320,6 +328,32 @@ func approximateTokenCount(v any) int {
 	}
 }
 
+// approximateTokenCountUpperBound returns a guaranteed upper bound on the
+// number of tokens a BPE tokenizer would produce for v. Every BPE vocabulary
+// starts with one token per byte and can only merge, so len(text) >= tokens
+// for any model family, any language, forever. This is used only for billing
+// reservation to ensure the pre-flight debit always covers the actual cost.
+//
+// Using len(text) over-reserves by ~3-4x on average for English prose, but
+// the difference is refunded immediately after inference completes, so
+// consumers are never overcharged — they only need sufficient balance to
+// cover the reservation hold.
+func approximateTokenCountUpperBound(v any) int {
+	if v == nil {
+		return 0
+	}
+	switch x := v.(type) {
+	case string:
+		return len(x)
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return 0
+		}
+		return len(b)
+	}
+}
+
 func estimatePromptTokens(parsed map[string]any) int {
 	total := 0
 	if v, ok := parsed["messages"]; ok {
@@ -333,6 +367,27 @@ func estimatePromptTokens(parsed map[string]any) int {
 	}
 	if total == 0 {
 		total = approximateTokenCount(parsed)
+	}
+	return total
+}
+
+// estimateBillingPromptTokens returns a guaranteed upper bound on prompt
+// tokens for billing reservation. Uses byte-length (not len/4) so the
+// pre-flight reservation always covers actual cost. This value must NOT
+// be used for routing — see estimatePromptTokens for that.
+func estimateBillingPromptTokens(parsed map[string]any) int {
+	total := 0
+	if v, ok := parsed["messages"]; ok {
+		total += approximateTokenCountUpperBound(v)
+	}
+	if v, ok := parsed["input"]; ok {
+		total += approximateTokenCountUpperBound(v)
+	}
+	if v, ok := parsed["prompt"]; ok {
+		total += approximateTokenCountUpperBound(v)
+	}
+	if total == 0 {
+		total = approximateTokenCountUpperBound(parsed)
 	}
 	return total
 }
@@ -852,6 +907,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := estimatePromptTokens(parsed)
+	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	timing.ParsedAt = time.Now()
 
@@ -865,14 +921,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Pre-flight balance reservation — atomically debit the worst-case cost
-	// (prompt tokens already consumed + max_tokens we just bounded the
-	// generation to) before routing to a provider. The post-inference charge
-	// refunds any unused portion. Reserving only the minimum charge let
-	// consumers receive streamed output far exceeding their actual balance.
+	// using the byte-length upper bound for prompt tokens (guaranteed >=
+	// actual tokens for any BPE tokenizer) plus max_tokens we just bounded
+	// the generation to. The post-inference charge refunds any unused
+	// portion. The routing estimate (estimatedPromptTokens, len/4) is kept
+	// separate so scheduler capacity checks aren't over-inflated.
 	var reservedMicroUSD int64
 	if s.billing != nil {
 		consumerKey := consumerKeyFromContext(r.Context())
-		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
+		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
 		start := time.Now()
 		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
@@ -3256,20 +3313,20 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := estimatePromptTokens(parsed)
+	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 
 	// Inject the endpoint so the provider knows which local path to forward to.
 	parsed["endpoint"] = endpoint
 
 	// Pre-flight balance reservation — same worst-case-cost reservation as
-	// handleChatCompletions. Before this fix the completions and Anthropic
-	// paths routed without ANY reservation; the silent post-inference charge
-	// meant a consumer could receive full responses with a zero balance.
+	// handleChatCompletions, using the byte-length upper bound for prompt
+	// tokens so the reservation always covers actual cost.
 	consumerKey := consumerKeyFromContext(r.Context())
 	consumerLocation := s.requestLocation(r)
 	var reservedMicroUSD int64
 	if s.billing != nil {
-		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
+		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
 		start := time.Now()
 		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",

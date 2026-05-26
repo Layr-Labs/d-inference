@@ -55,7 +55,7 @@ function LoginContent() {
         </p>
 
         <p className="mt-4 text-[10px] text-text-tertiary leading-relaxed max-w-xs mx-auto">
-          An Eigen Labs research project. Provided as-is for evaluation.
+          An Eigen Labs project, currently in public alpha. Provided as-is for evaluation.
         </p>
       </div>
     </div>

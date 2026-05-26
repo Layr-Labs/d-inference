@@ -165,6 +165,12 @@
   })();
   </script>
 
+  <!-- Vercel Web Analytics (cookieless, no consent required) -->
+  <script>
+    window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+  </script>
+  <script defer src="/_vercel/insights/script.js"></script>
+
   <style>
     /* ==================== BRAND FONTS (EigenCloud Brand Book v1.0) ==================== */
     @font-face { font-family: 'ABC Repro'; src: url('fonts/ABCRepro-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
@@ -1014,7 +1020,7 @@
 <main>
 
   <!-- ============ HERO ============ -->
-  <section class="hero">
+  <section class="hero" data-section="hero">
     <div class="container" style="display: grid; grid-template-columns: 1fr auto; gap: 48px; align-items: center;">
       <div>
         <h1 style="font-family: var(--font-logo); font-weight: 400;">Cost-efficient private AI inference</h1>
@@ -1104,7 +1110,7 @@
   <div class="container"><div class="rule"></div></div>
 
   <!-- ============ WHAT THIS ENABLES ============ -->
-  <section>
+  <section data-section="what-you-get">
     <div class="container">
       <div class="rv">
         <div class="sec-label">01 - What You Get</div>
@@ -1129,7 +1135,7 @@
   <div class="container"><div class="rule"></div></div>
 
   <!-- ============ THE PROBLEM ============ -->
-  <section id="thesis">
+  <section id="thesis" data-section="why-it-costs-less">
     <div class="container" style="max-width: 680px;">
       <div class="rv">
         <div class="sec-label">02 - Why It Costs Less</div>
@@ -1168,7 +1174,7 @@
   <div class="container"><div class="rule"></div></div>
 
   <!-- ============ THE GAP ============ -->
-  <section>
+  <section data-section="privacy-problem">
     <div class="container" style="max-width: 680px;">
       <div class="rv">
         <div class="sec-label">03 - The Privacy Problem</div>
@@ -1185,7 +1191,7 @@
   <div class="container"><div class="rule"></div></div>
 
   <!-- ============ THE BREAKTHROUGH ============ -->
-  <section id="security">
+  <section id="security" data-section="privacy-architecture">
     <div class="container">
       <div class="rv">
         <div class="sec-label">04 - Privacy Architecture</div>
@@ -1260,7 +1266,7 @@
   <div class="container"><div class="rule"></div></div>
 
   <!-- ============ FOR DEVELOPERS ============ -->
-  <section id="api">
+  <section id="api" data-section="developer-experience">
     <div class="container">
       <div class="rv">
         <div class="sec-label">05 - Developer Experience</div>
@@ -1298,7 +1304,7 @@ response = client.chat.completions.create(
   <div class="container"><div class="rule"></div></div>
 
   <!-- ============ PRICING ============ -->
-  <section id="pricing">
+  <section id="pricing" data-section="pricing">
     <div class="container">
       <div class="rv">
         <div class="sec-label">06 - Pricing</div>
@@ -1323,7 +1329,7 @@ response = client.chat.completions.create(
   <div class="container"><div class="rule"></div></div>
 
   <!-- ============ RUN A NODE ============ -->
-  <section id="nodes">
+  <section id="nodes" data-section="earn">
     <div class="container">
       <div class="rv">
         <div class="sec-label">07 - Earn</div>
@@ -1352,7 +1358,7 @@ response = client.chat.completions.create(
           <div class="imeta"><span>Apple Silicon only</span><span>macOS 14+</span><span>Includes CLI + backend</span></div>
         </div>
       </div>
-      <script>function swTab(t){document.getElementById('tab-a').classList.toggle('on',t==='a');document.getElementById('tab-c').classList.toggle('on',t==='c');document.getElementById('panel-a').style.display=t==='a'?'block':'none';document.getElementById('panel-c').style.display=t==='c'?'block':'none';}</script>
+      <script>function swTab(t){document.getElementById('tab-a').classList.toggle('on',t==='a');document.getElementById('tab-c').classList.toggle('on',t==='c');document.getElementById('panel-a').style.display=t==='a'?'block':'none';document.getElementById('panel-c').style.display=t==='c'?'block':'none';if(window.va)window.va('event',{name:'install_tab_click',data:{method:t==='c'?'cli':'mac_app'}});}</script>
 
       <!-- Earnings Calculator (logic synced with console-ui/src/app/earn/page.tsx) -->
       <div class="calc-box rv">
@@ -1436,9 +1442,83 @@ response = client.chat.completions.create(
 
 <script src="earn-calculator.js"></script>
 
-<!-- ============ SCROLL REVEAL ============ -->
+<!-- ============ SCROLL REVEAL + ANALYTICS ============ -->
 <script>
-(function(){const o=new IntersectionObserver(e=>{e.forEach(x=>{if(x.isIntersecting)x.target.classList.add('vis');});},{threshold:0.08,rootMargin:'0px 0px -20px 0px'});document.querySelectorAll('.rv').forEach(el=>o.observe(el));})();
+(function(){
+  // --- Scroll reveal animations ---
+  var ro = new IntersectionObserver(function(e){
+    e.forEach(function(x){ if(x.isIntersecting) x.target.classList.add('vis'); });
+  }, {threshold:0.08, rootMargin:'0px 0px -20px 0px'});
+  document.querySelectorAll('.rv').forEach(function(el){ ro.observe(el); });
+
+  // --- Section visibility funnel (Vercel Analytics) ---
+  var seen = {};
+  var so = new IntersectionObserver(function(entries){
+    entries.forEach(function(entry){
+      if (!entry.isIntersecting) return;
+      var name = entry.target.getAttribute('data-section');
+      if (!name || seen[name]) return;
+      seen[name] = true;
+      if (window.va) window.va('event', {name: 'section_viewed', data: {section: name}});
+    });
+  }, {threshold: 0.3});
+  document.querySelectorAll('section[data-section]').forEach(function(el){ so.observe(el); });
+
+  // --- Footer visibility ---
+  var footerSeen = false;
+  var fo = new IntersectionObserver(function(entries){
+    entries.forEach(function(entry){
+      if (entry.isIntersecting && !footerSeen) {
+        footerSeen = true;
+        if (window.va) window.va('event', {name: 'section_viewed', data: {section: 'footer'}});
+      }
+    });
+  }, {threshold: 0.5});
+  var footer = document.querySelector('footer');
+  if (footer) fo.observe(footer);
+
+  // --- CTA click tracking ---
+  function trackClick(name, data) {
+    if (window.va) window.va('event', {name: name, data: data});
+  }
+
+  // Hero CTAs
+  document.querySelectorAll('.hero .ctas a').forEach(function(a){
+    a.addEventListener('click', function(){
+      trackClick('cta_click', {section: 'hero', label: a.textContent.trim()});
+    });
+  });
+
+  // Card CTAs (sections 01, 04)
+  document.querySelectorAll('.card a.btn, .card a.btn-primary').forEach(function(a){
+    var section = a.closest('section');
+    var sectionName = section ? (section.getAttribute('data-section') || section.id || 'unknown') : 'unknown';
+    a.addEventListener('click', function(){
+      trackClick('cta_click', {section: sectionName, label: a.textContent.trim()});
+    });
+  });
+
+  // Eigen-block CTAs (paper download, "read the paper" links)
+  document.querySelectorAll('.eigen-block a').forEach(function(a){
+    a.addEventListener('click', function(){
+      trackClick('cta_click', {section: 'paper', label: a.textContent.trim()});
+    });
+  });
+
+  // Nav link clicks
+  document.querySelectorAll('header nav a').forEach(function(a){
+    a.addEventListener('click', function(){
+      trackClick('nav_click', {label: a.textContent.trim()});
+    });
+  });
+
+  // Footer link clicks
+  document.querySelectorAll('footer .fl a').forEach(function(a){
+    a.addEventListener('click', function(){
+      trackClick('footer_click', {label: a.textContent.trim()});
+    });
+  });
+})();
 </script>
 
 </body>

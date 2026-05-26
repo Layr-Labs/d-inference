@@ -1,3 +1,5 @@
+import { track } from "@vercel/analytics";
+
 const ATTRIBUTION_QUERY_PARAMS = new Set([
   "_gl",
   "dclid",
@@ -304,8 +306,30 @@ export function trackEvent(
   eventName: string,
   params: GoogleAnalyticsEventParams = {},
 ) {
+  if (!eventName) {
+    return;
+  }
+
+  // --- Vercel Analytics (cookieless, always-on) ---
+  const sanitized = sanitizeEventParams(params);
+  try {
+    // Vercel track() accepts up to 5 key-value pairs and string values
+    // only. Convert values to strings and take the first 5 entries.
+    const vercelData: Record<string, string> = {};
+    let count = 0;
+    for (const [key, value] of Object.entries(sanitized)) {
+      if (count >= 5) break;
+      vercelData[key] = String(value);
+      count++;
+    }
+    track(eventName, Object.keys(vercelData).length > 0 ? vercelData : undefined);
+  } catch {
+    // Vercel Analytics may not be loaded in non-Vercel environments
+  }
+
+  // --- Google Analytics (consent-gated) ---
   const analytics = getGtag();
-  if (!analytics || !eventName) {
+  if (!analytics) {
     return;
   }
 
@@ -314,7 +338,7 @@ export function trackEvent(
     page_referrer:
       window.__googleAnalyticsCurrentPageReferrer ||
       sanitizeReferrer(document.referrer),
-    ...sanitizeEventParams(params),
+    ...sanitized,
     send_to: analytics.measurementId,
   });
 }

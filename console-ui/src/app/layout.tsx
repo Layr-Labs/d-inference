@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { AppShell } from "@/components/AppShell";
 import { GoogleAnalytics } from "@/components/GoogleAnalytics";
+import { Analytics } from "@vercel/analytics/next";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { PrivyClientProvider } from "@/components/providers/PrivyClientProvider";
 import { VerificationModeProvider } from "@/lib/verification-mode";
@@ -28,6 +29,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="font-sans antialiased">
+        <Analytics />
         <GoogleAnalytics />
         <TelemetryInitializer />
         <DatadogRUM />

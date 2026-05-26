@@ -101,7 +101,13 @@ export async function fetchModels(): Promise<Model[]> {
   const res = await fetch("/api/models", { headers: proxyHeaders() });
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
   const data = await res.json();
-  const raw = data.data || data;
+  const raw = Array.isArray(data)
+    ? data
+    : Array.isArray(data.data)
+      ? data.data
+      : Array.isArray(data.models)
+        ? data.models
+        : [];
   // Flatten metadata into top-level fields for the UI
   return raw.map((m: Record<string, unknown>) => {
     const meta = (m.metadata || {}) as Record<string, unknown>;

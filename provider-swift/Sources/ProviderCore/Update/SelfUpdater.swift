@@ -329,6 +329,8 @@ public struct SelfUpdater: Sendable {
 
             case .success(let tempFile):
                 let replaceResult = installBundle(from: tempFile, release: release)
+                // Clean up the downloaded tarball regardless of install outcome.
+                try? FileManager.default.removeItem(at: tempFile)
                 switch replaceResult {
                 case .success:
                     return .updated(from: current, to: release.version)

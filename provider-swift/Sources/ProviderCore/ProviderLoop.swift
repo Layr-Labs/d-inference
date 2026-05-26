@@ -166,6 +166,11 @@ public actor ProviderLoop {
     /// long-running generations are still in flight.
     private var capacityRefreshTask: Task<Void, Never>?
 
+    /// Background task that periodically checks for provider updates and
+    /// applies them automatically. nil when auto-update is disabled or
+    /// before `run()` starts it.
+    private var autoUpdateTask: Task<Void, Never>?
+
     private let logger = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
 
     private static let shutdownDrainTimeout: Duration = .seconds(600)
@@ -318,6 +323,7 @@ public actor ProviderLoop {
         // timer.
         startIdleMonitor()
         startCapacityRefreshMonitor()
+        startAutoUpdateMonitor()
 
         logger.info("Coordinator client started, entering event loop")
 
@@ -374,6 +380,8 @@ public actor ProviderLoop {
         idleMonitorTask = nil
         capacityRefreshTask?.cancel()
         capacityRefreshTask = nil
+        autoUpdateTask?.cancel()
+        autoUpdateTask = nil
         let preloads = Array(preloadTasks.values)
         for task in preloads { task.cancel() }
         cancelLoadWaiters()
@@ -1108,6 +1116,88 @@ public actor ProviderLoop {
                 if Task.isCancelled { break }
                 await me.updateAggregateCapacity()
             }
+        }
+    }
+
+    // MARK: - Background Auto-Update
+
+    /// Initial delay before the first background update check (5 minutes).
+    /// Avoids slowing down startup; lets the provider stabilize first.
+    private static let autoUpdateInitialDelay: Duration = .seconds(300)
+
+    /// Interval between subsequent update checks (30 minutes).
+    private static let autoUpdateInterval: Duration = .seconds(1800)
+
+    /// Start the background auto-update monitor. Checks the coordinator
+    /// for a newer release every 30 minutes (after an initial 5-minute
+    /// delay), downloads + verifies + installs the update, then performs
+    /// a launchd-aware restart.
+    ///
+    /// The check is skipped when:
+    ///   - `config.provider.autoUpdate` is false
+    ///   - `DARKBLOOM_NO_UPDATE_CHECK` env var is set
+    ///   - inference requests are currently active (never update mid-inference)
+    ///
+    /// Failures are logged at warning level and never crash the provider.
+    private func startAutoUpdateMonitor() {
+        autoUpdateTask?.cancel()
+
+        guard loopConfig.config.provider.autoUpdate else {
+            logger.info("Background auto-update disabled (auto_update=false)")
+            return
+        }
+        guard ProcessInfo.processInfo.environment["DARKBLOOM_NO_UPDATE_CHECK"] == nil else {
+            logger.info("Background auto-update disabled (DARKBLOOM_NO_UPDATE_CHECK set)")
+            return
+        }
+
+        let coordinatorURL = loopConfig.coordinatorURL
+        let me = self
+        autoUpdateTask = Task.detached {
+            // Wait 5 minutes before first check.
+            try? await Task.sleep(for: Self.autoUpdateInitialDelay)
+
+            while !Task.isCancelled {
+                await me.performAutoUpdateCheck(coordinatorURL: coordinatorURL)
+                // Sleep 30 minutes before next check.
+                try? await Task.sleep(for: Self.autoUpdateInterval)
+            }
+        }
+        logger.info("Background auto-update monitor started (initial delay: 5m, interval: 30m)")
+    }
+
+    /// Perform a single background update check + apply cycle.
+    private func performAutoUpdateCheck(coordinatorURL: String) async {
+        // Skip if inference is active -- never update mid-inference.
+        if !requestToModel.isEmpty {
+            logger.info("Auto-update check skipped: inference requests in flight")
+            return
+        }
+
+        logger.info("Auto-update: checking for provider update...")
+        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+        let result = await updater.update()
+
+        switch result {
+        case .alreadyUpToDate:
+            logger.info("Auto-update: already running latest version")
+
+        case .updated(let from, let to):
+            logger.info("Auto-update: updated provider v\(from) -> v\(to), restarting...")
+            do {
+                try ProcessLifecycle.restartAfterUpdate()
+            } catch {
+                logger.warning("Auto-update: restart failed: \(error.localizedDescription)")
+            }
+
+        case .downloadFailed(let reason):
+            logger.warning("Auto-update: check failed: \(reason)")
+
+        case .hashMismatch(let expected, let got):
+            logger.warning("Auto-update: bundle hash mismatch (expected \(expected), got \(got))")
+
+        case .replaceFailed(let reason):
+            logger.warning("Auto-update: install failed: \(reason)")
         }
     }
 

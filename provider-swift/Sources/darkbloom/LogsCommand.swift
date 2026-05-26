@@ -18,6 +18,8 @@ struct Logs: AsyncParsableCommand {
     var watch = false
 
     mutating func run() async throws {
+        await runUpdateBannerIfEnabled()
+
         let path = LaunchAgent.logPath()
         let fm = FileManager.default
 

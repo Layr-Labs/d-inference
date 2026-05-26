@@ -122,21 +122,41 @@ extension Models {
                 return
             }
 
-            print("Coordinator catalog (\(coordinatorHTTPBase(coordinatorURL)))")
-            print("Models: \(entries.count)")
+            let localModels: [ModelInfo]
+            if let hardware = snapshot.hardware {
+                localModels = ModelScanner.scanModels(hardwareInfo: hardware)
+            } else {
+                localModels = []
+            }
+            let downloadedIDs = Set(localModels.map(\.id))
+            let catalogIDs = Set(entries.map(\.id))
+
+            // -- Supported models (from coordinator catalog) --
+            print("Supported models")
             print()
 
-            let downloadedIDs: Set<String>
-            if let hardware = snapshot.hardware {
-                downloadedIDs = Set(ModelScanner.scanModels(hardwareInfo: hardware).map(\.id))
+            if entries.isEmpty {
+                print("  (none)")
             } else {
-                downloadedIDs = []
+                for entry in entries {
+                    let mark = downloadedIDs.contains(entry.id) ? "✓" : " "
+                    let mem = entry.minRamGb.map { " (≥ \($0) GB RAM)" } ?? ""
+                    print("  \(mark) \(entry.displayName)  [\(entry.id)]  ~\(String(format: "%.1f", entry.sizeGb)) GB\(mem)")
+                }
             }
 
-            for entry in entries {
-                let mark = downloadedIDs.contains(entry.id) ? "✓" : "·"
-                let mem = entry.minRamGb.map { " (≥ \($0) GB RAM)" } ?? ""
-                print("  \(mark) \(entry.displayName)  [\(entry.id)]  ~\(String(format: "%.1f", entry.sizeGb)) GB\(mem)")
+            // -- Local-only models (downloaded but not in current catalog) --
+            let localOnly = localModels.filter { !catalogIDs.contains($0.id) }
+            if !localOnly.isEmpty {
+                print()
+                print("Local only (not in current catalog)")
+                print()
+                for m in localOnly {
+                    print("  \(m.id)  \(String(format: "%.1f", m.estimatedMemoryGb)) GB")
+                }
+                print()
+                print("  These models are no longer served by the network.")
+                print("  Remove with: darkbloom models remove <id>")
             }
         }
     }

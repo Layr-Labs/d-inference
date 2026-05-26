@@ -50,7 +50,7 @@ export function Sidebar() {
             Darkbloom
           </h1>
           <p className="text-[10px] font-mono text-text-tertiary tracking-wide uppercase mt-1">
-            An Eigen Labs project · Research Preview
+            An Eigen Labs project · Public Alpha
           </p>
         </Link>
         <button
@@ -166,10 +166,10 @@ export function Sidebar() {
         ))}
       </nav>
 
-      {/* Research disclaimer */}
+      {/* Alpha disclaimer */}
       <div className="px-4 py-2 border-t border-border-dim">
         <p className="text-[10px] text-text-tertiary leading-relaxed">
-          Experimental research preview. Provided as-is for evaluation. Not for production use.
+          Public alpha. Provided as-is for evaluation. Not for production use.
         </p>
       </div>
 

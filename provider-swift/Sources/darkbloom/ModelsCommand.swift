@@ -4,18 +4,18 @@ import ProviderCore
 
 struct Models: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Manage local MLX models.",
+        abstract: "Manage MLX models.",
         discussion: """
         Subcommands:
-          list      Show local models (default).
-          catalog   Show the coordinator's supported-model catalog.
+          catalog   Show available models with download status (default).
+          list      Show local models only.
           download  Download a catalog model into ~/.cache/huggingface/hub.
           remove    Delete a downloaded model.
 
-        With no subcommand, prints the local models table.
+        With no subcommand, shows the full catalog.
         """,
-        subcommands: [List.self, Catalog.self, Download.self, Remove.self],
-        defaultSubcommand: List.self
+        subcommands: [Catalog.self, List.self, Download.self, Remove.self],
+        defaultSubcommand: Catalog.self
     )
 }
 

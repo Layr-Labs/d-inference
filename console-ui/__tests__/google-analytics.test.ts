@@ -53,24 +53,29 @@ describe("google analytics helpers", () => {
   });
 
   it("enables analytics only when the measurement id exists", () => {
+    expect(isGoogleAnalyticsEnabled()).toBe(true);
+
+    vi.stubEnv("NEXT_PUBLIC_GA_MEASUREMENT_ID", "");
+
     expect(isGoogleAnalyticsEnabled()).toBe(false);
   });
 
-  it("requires explicit consent before enabling analytics", () => {
-    expect(getGoogleAnalyticsConsentStatus()).toBe("unset");
-    expect(hasGoogleAnalyticsConsent()).toBe(false);
+  it("enables analytics by default without requiring explicit consent", () => {
+    expect(getGoogleAnalyticsConsentStatus()).toBe("granted");
+    expect(hasGoogleAnalyticsConsent()).toBe(true);
+    expect(isGoogleAnalyticsEnabled()).toBe(true);
     grantGoogleAnalyticsConsent();
     expect(getGoogleAnalyticsConsentStatus()).toBe("granted");
     expect(hasGoogleAnalyticsConsent()).toBe(true);
     expect(isGoogleAnalyticsEnabled()).toBe(true);
     revokeGoogleAnalyticsConsent();
-    expect(getGoogleAnalyticsConsentStatus()).toBe("denied");
-    expect(hasGoogleAnalyticsConsent()).toBe(false);
-    expect(window.__googleAnalyticsInitialized).toBe(false);
+    expect(getGoogleAnalyticsConsentStatus()).toBe("granted");
+    expect(hasGoogleAnalyticsConsent()).toBe(true);
   });
 
-  it("falls back to the shared consent cookie when local storage is unset", () => {
-    document.cookie = "darkbloom_ga_consent=granted; path=/; max-age=60";
+  it("ignores stale local opt-out state from the removed consent prompt", () => {
+    localStorage.setItem("darkbloom_ga_consent", "denied");
+    document.cookie = "darkbloom_ga_consent=denied; path=/; max-age=60";
 
     expect(getGoogleAnalyticsConsentStatus()).toBe("granted");
     expect(hasGoogleAnalyticsConsent()).toBe(true);
@@ -90,15 +95,13 @@ describe("google analytics helpers", () => {
     localStorage.setItem("darkbloom_ga_consent", "denied");
     applyGoogleAnalyticsConsentState();
 
-    expect(getGoogleAnalyticsConsentStatus()).toBe("denied");
-    expect(window.__googleAnalyticsInitialized).toBe(false);
-    expect(window.__googleAnalyticsCurrentPageLocation).toBeUndefined();
-    expect(window.__googleAnalyticsCurrentPageReferrer).toBeUndefined();
+    expect(getGoogleAnalyticsConsentStatus()).toBe("granted");
+    expect(window.__googleAnalyticsInitialized).toBe(true);
     expect(
       (
         window as typeof window & Record<string, boolean | undefined>
       )[`ga-disable-${getGoogleAnalyticsMeasurementId()}`]
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("keeps only allowed attribution params on the initial page view", () => {

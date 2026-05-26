@@ -78,21 +78,6 @@ function getCookieDomain() {
   return "";
 }
 
-function getGoogleAnalyticsConsentCookie(): GoogleAnalyticsConsentStatus {
-  if (typeof document === "undefined") {
-    return "unset";
-  }
-
-  const prefix = `${GA_CONSENT_STORAGE_KEY}=`;
-  const cookie = document.cookie
-    .split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(prefix));
-
-  const value = cookie ? decodeURIComponent(cookie.slice(prefix.length)) : "";
-  return value === "granted" || value === "denied" ? value : "unset";
-}
-
 function setGoogleAnalyticsConsentCookie(status: Exclude<GoogleAnalyticsConsentStatus, "unset">) {
   if (typeof document === "undefined") {
     return;
@@ -109,12 +94,7 @@ export function getGoogleAnalyticsConsentStatus(): GoogleAnalyticsConsentStatus 
     return "unset";
   }
 
-  const stored = window.localStorage.getItem(GA_CONSENT_STORAGE_KEY);
-  if (stored === "granted" || stored === "denied") {
-    return stored;
-  }
-
-  return getGoogleAnalyticsConsentCookie();
+  return "granted";
 }
 
 export function applyGoogleAnalyticsConsentState(): GoogleAnalyticsConsentStatus {
@@ -124,12 +104,6 @@ export function applyGoogleAnalyticsConsentState(): GoogleAnalyticsConsentStatus
   }
 
   setGoogleAnalyticsDisabled(status !== "granted");
-
-  if (status !== "granted") {
-    window.__googleAnalyticsInitialized = false;
-    window.__googleAnalyticsCurrentPageLocation = undefined;
-    window.__googleAnalyticsCurrentPageReferrer = undefined;
-  }
 
   return status;
 }
@@ -154,8 +128,8 @@ export function revokeGoogleAnalyticsConsent() {
     return;
   }
 
-  window.localStorage.setItem(GA_CONSENT_STORAGE_KEY, "denied");
-  setGoogleAnalyticsConsentCookie("denied");
+  window.localStorage.removeItem(GA_CONSENT_STORAGE_KEY);
+  setGoogleAnalyticsConsentCookie("granted");
   applyGoogleAnalyticsConsentState();
   window.dispatchEvent(new Event("darkbloom-ga-consent-changed"));
 }

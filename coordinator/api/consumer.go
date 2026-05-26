@@ -588,20 +588,22 @@ func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provi
 	return required, nil
 }
 
-// ensureMaxTokensBound injects defaultMaxOutputTokens into parsed when the
+// ensureMaxTokensBound injects a max-tokens bound into parsed when the
 // consumer didn't specify any max-tokens field, so the outgoing request to
-// the provider is bounded by the amount we reserve upfront. The injected
-// field name depends on the API flavor: Responses API uses max_output_tokens,
-// everything else uses max_tokens. Returns true when an injection occurred,
-// so the caller can re-marshal the outgoing body if needed.
-func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool) bool {
+// the provider is bounded by the amount we reserve upfront. The bound is
+// the model's max_output_length from the registry (or defaultMaxOutputTokens
+// as fallback). The injected field name depends on the API flavor: Responses
+// API uses max_output_tokens, everything else uses max_tokens. Returns true
+// when an injection occurred, so the caller can re-marshal the outgoing body
+// if needed.
+func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool, bound int) bool {
 	if explicitMaxTokens(parsed) > 0 {
 		return false
 	}
 	if isResponsesAPI {
-		parsed["max_output_tokens"] = defaultMaxOutputTokens
+		parsed["max_output_tokens"] = bound
 	} else {
-		parsed["max_tokens"] = defaultMaxOutputTokens
+		parsed["max_tokens"] = bound
 	}
 	return true
 }
@@ -895,25 +897,34 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	isResponsesAPI := input != nil && len(messages) == 0
 
-	// Bound the generation so the pre-flight reservation covers it. If the
-	// consumer didn't set max_tokens, inject defaultMaxOutputTokens into the
-	// outgoing body. Without this bound the provider could return more tokens
-	// than we reserved for, and the silent post-inference charge failure would
-	// hand the consumer free inference (GitHub issue #33).
-	if ensureMaxTokensBound(parsed, isResponsesAPI) {
-		rawBody, _ = json.Marshal(parsed)
-	}
-
-	// Inject reasoning_parser from model registry runtime_parameters if the
-	// consumer hasn't specified one. This ensures models like GPT-OSS 20B
-	// (Harmony format) get their reasoning tokens parsed automatically.
-	if _, hasRP := parsed["reasoning_parser"]; !hasRP {
-		if rec, err := s.store.GetModelRegistryRecord(model); err == nil && rec.RuntimeParameters != nil {
+	// Inject model-specific defaults from the registry: reasoning_parser
+	// and max_tokens bound. Single DB lookup (cached for platform prices).
+	maxOutputBound := defaultMaxOutputTokens
+	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		// Reasoning parser from runtime_parameters.
+		if _, hasRP := parsed["reasoning_parser"]; !hasRP && rec.RuntimeParameters != nil {
 			if rp, ok := rec.RuntimeParameters["reasoning_parser"]; ok {
 				parsed["reasoning_parser"] = rp
 				rawBody, _ = json.Marshal(parsed)
 			}
 		}
+		// Use the registry's max_output_length as the default max_tokens
+		// bound instead of the hardcoded 8192. This lets models like
+		// GPT-OSS 20B (32K output) generate longer responses when the
+		// consumer omits max_tokens.
+		if rec.MaxOutputLength > 0 {
+			maxOutputBound = rec.MaxOutputLength
+		}
+	}
+
+	// Bound the generation so the pre-flight reservation covers it. If the
+	// consumer didn't set max_tokens, inject the model's max_output_length
+	// (or defaultMaxOutputTokens as fallback). Without this bound the
+	// provider could return more tokens than we reserved for, and the
+	// silent post-inference charge failure would hand the consumer free
+	// inference (GitHub issue #33).
+	if ensureMaxTokensBound(parsed, isResponsesAPI, maxOutputBound) {
+		rawBody, _ = json.Marshal(parsed)
 	}
 
 	stream, _ := parsed["stream"].(bool)
@@ -3320,7 +3331,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Completions and Anthropic messages both use the max_tokens field (never
 	// max_output_tokens, which is Responses API only). Inject a default if
 	// unset so the pre-flight reservation bounds the generation.
-	ensureMaxTokensBound(parsed, false)
+	genericMaxOutput := defaultMaxOutputTokens
+	if rec, err := s.store.GetModelRegistryRecord(model); err == nil && rec.MaxOutputLength > 0 {
+		genericMaxOutput = rec.MaxOutputLength
+	}
+	ensureMaxTokensBound(parsed, false, genericMaxOutput)
 
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := estimatePromptTokens(parsed)

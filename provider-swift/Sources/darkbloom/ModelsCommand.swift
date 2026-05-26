@@ -39,6 +39,8 @@ extension Models {
         var hash: String?
 
         mutating func run() async throws {
+            await runUpdateBannerIfEnabled()
+
             if let hash {
                 let digest = WeightHasher.computeHash(for: hash)
                 guard let digest else {

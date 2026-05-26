@@ -163,21 +163,40 @@ public struct SelfUpdater: Sendable {
 
     // MARK: - Install Bundle
 
-    /// Install a verified release bundle next to the running executable.
+    /// Install a verified release bundle into the darkbloom root directory.
     ///
-    /// Release artifacts are tarballs containing `bin/darkbloom`,
-    /// `bin/darkbloom-enclave`, and `bin/mlx.metallib`. Older local bundles
-    /// with root-level files are accepted for developer testing.
+    /// Release tarballs contain a signed `Darkbloom.app/` bundle alongside
+    /// flat `bin/` copies. The .app bundle is the canonical signed artifact;
+    /// `bin/` gets symlinks pointing into `Darkbloom.app/Contents/MacOS/`.
+    /// Older flat-only tarballs (no .app bundle) fall back to direct file
+    /// copy for backward compatibility.
     public func installBundle(from downloadedFile: URL, release: ReleaseInfo) -> Result<Void, UpdateError> {
         guard let executablePath = Bundle.main.executablePath else {
             return .failure(.replaceFailed("could not determine current executable path"))
         }
 
-        let installDir = URL(fileURLWithPath: executablePath).deletingLastPathComponent()
+        // Determine the darkbloom root directory (~/.darkbloom/).
+        // The executable could be at either:
+        //   ~/.darkbloom/bin/darkbloom                           -> root = ../../
+        //   ~/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom  -> root = ../../../../
+        let execURL = URL(fileURLWithPath: executablePath)
+        let parentDir = execURL.deletingLastPathComponent()
+        let darkbloomRoot: URL
+        if parentDir.lastPathComponent == "MacOS" {
+            // Inside .app bundle: MacOS -> Contents -> Darkbloom.app -> root
+            darkbloomRoot = parentDir
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+        } else {
+            // Flat bin/ layout or unknown: bin -> root
+            darkbloomRoot = parentDir.deletingLastPathComponent()
+        }
+
         return installBundle(
             from: downloadedFile,
             release: release,
-            installDir: installDir,
+            installDir: darkbloomRoot,
             verifyCodeSignatures: true
         )
     }
@@ -215,43 +234,67 @@ public struct SelfUpdater: Sendable {
             try fm.createDirectory(at: extractionRoot, withIntermediateDirectories: true)
             try runProcess("/usr/bin/tar", arguments: ["xzf", downloadedFile.path, "-C", extractionRoot.path])
 
-            let darkbloom = try requiredBundleFile(
+            // Use the flat bin/ copies for hash verification (release hashes
+            // are computed from the flat layout).
+            let flatDarkbloom = try requiredBundleFile(
                 names: ["bin/darkbloom", "darkbloom"],
                 root: extractionRoot
             )
-            let enclave = try requiredBundleFile(
+            let flatEnclave = try requiredBundleFile(
                 names: ["bin/darkbloom-enclave", "darkbloom-enclave", "bin/eigeninference-enclave", "eigeninference-enclave"],
                 root: extractionRoot
             )
-            let metallib = try requiredBundleFile(
+            let flatMetallib = try requiredBundleFile(
                 names: ["bin/mlx.metallib", "mlx.metallib"],
                 root: extractionRoot
             )
 
             if let binaryHash = release.binaryHash {
-                try verifyHash(file: darkbloom, expected: binaryHash, label: "darkbloom")
+                try verifyHash(file: flatDarkbloom, expected: binaryHash, label: "darkbloom")
             }
             if let metallibHash = release.metallibHash {
-                try verifyHash(file: metallib, expected: metallibHash, label: "mlx.metallib")
+                try verifyHash(file: flatMetallib, expected: metallibHash, label: "mlx.metallib")
             }
+
+            // Check for .app bundle layout (new signed bundle format).
+            // The .app bundle is the canonical signed artifact; the flat
+            // bin/ copies carry a bundle-contextual code signature that
+            // fails codesign --verify when run standalone, causing macOS
+            // to SIGKILL the process.
+            let extractedApp = extractionRoot.appendingPathComponent("Darkbloom.app")
+            if fm.fileExists(atPath: extractedApp.path) {
+                if verifyCodeSignatures {
+                    let appDarkbloom = extractedApp
+                        .appendingPathComponent("Contents/MacOS/darkbloom")
+                    try verifyCodeSignature(file: appDarkbloom, label: "darkbloom")
+                }
+                return try installAppBundle(
+                    extractedApp: extractedApp,
+                    installDir: installDir,
+                    backupRoot: backupRoot
+                )
+            }
+
+            // Legacy flat-only tarball: no .app bundle, install files directly.
             if verifyCodeSignatures {
-                try verifyCodeSignature(file: darkbloom, label: "darkbloom")
-                try verifyCodeSignature(file: enclave, label: "darkbloom-enclave")
+                try verifyCodeSignature(file: flatDarkbloom, label: "darkbloom")
             }
 
             try fm.createDirectory(at: installDir, withIntermediateDirectories: true)
             try fm.createDirectory(at: backupRoot, withIntermediateDirectories: true)
+            let binDir = installDir.appendingPathComponent("bin")
+            try fm.createDirectory(at: binDir, withIntermediateDirectories: true)
             let targets = [
-                ("darkbloom", darkbloom, 0o755),
-                ("darkbloom-enclave", enclave, 0o755),
-                ("mlx.metallib", metallib, 0o644),
+                ("darkbloom", flatDarkbloom, 0o755),
+                ("darkbloom-enclave", flatEnclave, 0o755),
+                ("mlx.metallib", flatMetallib, 0o644),
             ] as [(String, URL, Int)]
 
             var installed: [URL] = []
             var backups: [URL: URL] = [:]
             do {
                 for (name, source, mode) in targets {
-                    let destination = installDir.appendingPathComponent(name)
+                    let destination = binDir.appendingPathComponent(name)
                     let backup = backupRoot.appendingPathComponent(name)
                     if fm.fileExists(atPath: destination.path) {
                         try fm.copyItem(at: destination, to: backup)
@@ -263,7 +306,7 @@ public struct SelfUpdater: Sendable {
                     installed.append(destination)
                 }
 
-                let legacyLink = installDir.appendingPathComponent("eigeninference-enclave")
+                let legacyLink = binDir.appendingPathComponent("eigeninference-enclave")
                 let legacyBackup = backupRoot.appendingPathComponent("eigeninference-enclave")
                 if itemExistsIncludingSymlink(legacyLink) {
                     try fm.copyItem(at: legacyLink, to: legacyBackup)
@@ -288,6 +331,68 @@ public struct SelfUpdater: Sendable {
             return .failure(error)
         } catch {
             return .failure(.replaceFailed(error.localizedDescription))
+        }
+    }
+
+    /// Install a signed .app bundle and create bin/ symlinks.
+    ///
+    /// This mirrors the install.sh layout:
+    ///   installDir/Darkbloom.app/Contents/MacOS/{darkbloom,darkbloom-enclave,mlx.metallib}
+    ///   installDir/bin/darkbloom          -> ../Darkbloom.app/Contents/MacOS/darkbloom
+    ///   installDir/bin/darkbloom-enclave  -> ../Darkbloom.app/Contents/MacOS/darkbloom-enclave
+    ///   installDir/bin/mlx.metallib       -> ../Darkbloom.app/Contents/MacOS/mlx.metallib
+    private func installAppBundle(
+        extractedApp: URL,
+        installDir: URL,
+        backupRoot: URL
+    ) throws -> Result<Void, UpdateError> {
+        let fm = FileManager.default
+        try fm.createDirectory(at: installDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: backupRoot, withIntermediateDirectories: true)
+
+        let destinationApp = installDir.appendingPathComponent("Darkbloom.app")
+        let backupApp = backupRoot.appendingPathComponent("Darkbloom.app")
+
+        // Back up existing .app bundle.
+        if fm.fileExists(atPath: destinationApp.path) {
+            try fm.copyItem(at: destinationApp, to: backupApp)
+            try fm.removeItem(at: destinationApp)
+        }
+
+        do {
+            // Install the new .app bundle.
+            try fm.copyItem(at: extractedApp, to: destinationApp)
+
+            let appBin = "Darkbloom.app/Contents/MacOS"
+            let binDir = installDir.appendingPathComponent("bin")
+            try fm.createDirectory(at: binDir, withIntermediateDirectories: true)
+
+            // Create symlinks from bin/ into the .app bundle, matching install.sh.
+            // Use relative paths ("../Darkbloom.app/Contents/MacOS/X") so the
+            // layout is relocatable.
+            let symlinks = [
+                ("darkbloom", "../\(appBin)/darkbloom"),
+                ("darkbloom-enclave", "../\(appBin)/darkbloom-enclave"),
+                ("mlx.metallib", "../\(appBin)/mlx.metallib"),
+                ("eigeninference-enclave", "darkbloom-enclave"),
+            ]
+            for (name, target) in symlinks {
+                let link = binDir.appendingPathComponent(name)
+                // Remove existing file/symlink.
+                if itemExistsIncludingSymlink(link) {
+                    try fm.removeItem(at: link)
+                }
+                try fm.createSymbolicLink(atPath: link.path, withDestinationPath: target)
+            }
+
+            return .success(())
+        } catch {
+            // Rollback: restore backed-up .app bundle.
+            try? fm.removeItem(at: destinationApp)
+            if fm.fileExists(atPath: backupApp.path) {
+                try? fm.copyItem(at: backupApp, to: destinationApp)
+            }
+            throw error
         }
     }
 
@@ -322,6 +427,8 @@ public struct SelfUpdater: Sendable {
 
             case .success(let tempFile):
                 let replaceResult = installBundle(from: tempFile, release: release)
+                // Clean up the downloaded tarball regardless of install outcome.
+                try? FileManager.default.removeItem(at: tempFile)
                 switch replaceResult {
                 case .success:
                     return .updated(from: current, to: release.version)

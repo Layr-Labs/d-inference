@@ -1,45 +1,28 @@
 // End-to-end performance tests for the Swift provider.
 //
-// Goal: produce reproducible TTFT (time-to-first-token) and throughput
-// numbers that mirror what a coordinator-driven request actually pays
-// for in production. Five scenarios, each implemented as a parameterised
-// helper and run against two models:
+// Five scenarios per model:
+//   A) Warm + plaintext     -- pure inference TTFT (baseline)
+//   B) Cold (model load)    -- load_time + warm_TTFT
+//   C) Warm + encrypted     -- encrypt + decrypt + warm_TTFT (full E2E)
+//   D) Warm + batched       -- per-row TTFT + aggregate throughput
+//   E) Decode-tps bracket   -- pure loop / BatchedEngine / BatchScheduler
+//                              at B=1, max_tokens=64 to localize overhead
 //
-//   A) Warm + plaintext  -- pure inference TTFT (baseline)
-//   B) Cold (model load) -- load_time + warm_TTFT
-//   C) Warm + encrypted  -- encrypt + decrypt + warm_TTFT (full E2E)
-//   D) Warm + batched    -- 1, 2, 4 concurrent requests, per-row TTFT
-//                           and aggregate throughput
-//   E) Decode-tps bracket -- pure model loop vs BatchGenerator vs
-//                           BatchScheduler at B=1, max_tokens=64.
-//                           Localizes any per-token cost overhead.
+//   Qwen3 0.6B-8bit              smoke-tier  (DARKBLOOM_LIVE_MLX_TESTS=1)
+//   Gemma 4 26B-A4B-it-8bit MoE  prod-tier   (+ DARKBLOOM_LIVE_MLX_GEMMA=1)
 //
-//   Qwen3 0.6B-8bit             -- smoke-tier (DARKBLOOM_LIVE_MLX_TESTS=1)
-//   Gemma 4 26B-A4B-it-8bit MoE -- production-tier (DARKBLOOM_LIVE_MLX_GEMMA=1)
+// All numbers print to stderr with a `[perf]` prefix. Reproduce mlx_lm
+// reference values with `scripts/mlx_lm_batch_bench.py`. Always compare
+// against release-mode Swift; debug mode is several times slower.
 //
-// Numbers print to stderr in a `[perf]` prefix so they're easy to grep
-// out of CI logs.
-//
-// Reference points: mlx_lm 0.31.3 Python on the same hardware. Reproduce
-// with `scripts/mlx_lm_batch_bench.py`.
-//
+// Reference (mlx_lm 0.31.3 Python on same hardware):
 //   Qwen3 0.6B-8bit              B=1: 265 tok/s   B=2: 694 tok/s   B=4: 1119 tok/s
 //   Gemma 4 26B-A4B-it-8bit MoE  B=1:  74 tok/s   B=2: 126 tok/s   B=4:  181 tok/s
 //
-// Swift release-mode direct BatchGenerator numbers (decode-only, after
-// the greedy fast-path fixes: nil samplers for greedy rows, UInt32 token
-// tensors, no logSumExp on greedy, and mlx_lm-style double-buffering):
-//
+// Swift release-mode (pre-migration BatchGenerator numbers, kept as a
+// rough floor; re-measure under BatchedEngine):
 //   Qwen3 0.6B-8bit              B=1: ~400 tok/s  B=4: ~890 tok/s
 //   Gemma 4 26B-A4B-it-8bit MoE  B=1:  ~80 tok/s  B=4: ~186 tok/s
-//
-// This is effectively at parity with mlx_lm for Gemma B=4. If a
-// production streaming test is slower, this file prints separate
-// `model-side scheduler` and public aggregate numbers so we can tell
-// model decode from text streaming / AsyncStream / detokenization costs.
-// Always compare against release-mode Swift (`swift test -c release`);
-// debug-mode Swift is several times slower and is not a valid mlx_lm
-// comparison.
 
 import Foundation
 import MLX
@@ -53,10 +36,8 @@ struct PerformanceLiveTests {
 
     // MARK: - Configuration
 
-    /// Static configuration for one performance scenario. Captures the
-    /// model ID, the wired-memory budget MLX should target, and the
-    /// number of warm-iteration samples to collect (Gemma uses fewer
-    /// iterations because each load is ~30 s of disk I/O).
+    /// Per-scenario knobs. Gemma uses fewer iterations because each
+    /// load is ~30 s of disk I/O.
     private struct ModelConfig: Sendable {
         let label: String
         let modelID: String
@@ -84,21 +65,15 @@ struct PerformanceLiveTests {
         warmIterations: 2,
         coldIterations: 1,
         batchSizes: [1, 2, 4],
-        // 32 tokens lets steady-state decode dominate over prefill in
-        // the aggregate throughput print (prefill is ~250 ms; 32 decode
-        // steps at ~25 ms each is ~800 ms).
+        // 32 decode steps dominate the ~250ms prefill in aggregate TPS.
         maxTokens: 32
     )
 
-    /// Short prompt for TTFT measurements (encryption, cold load): a
-    /// model that emits EOS quickly is fine here because we only care
-    /// about first-token timing.
+    /// Short prompt; we only care about TTFT so early EOS is fine.
     private let ttftPromptText = "Reply with the single word 'hi'."
 
-    /// Long-output prompt for throughput measurements: explicitly asks
-    /// for a long response so decode runs to `max_tokens` and the
-    /// reported tok/s reflects steady-state, not a few amortised
-    /// post-EOS tokens.
+    /// Long-output prompt so decode runs to `max_tokens` and steady-state
+    /// throughput is not amortised over a few post-EOS tokens.
     private let throughputPromptText =
         "Tell me a 200-word story about a robot that learns to paint. "
         + "Be detailed and descriptive throughout."
@@ -181,10 +156,12 @@ struct PerformanceLiveTests {
     private func runWarmTTFT(_ config: ModelConfig) async throws {
         let loaded = try await loadOrSkip(config)
         let scheduler = loaded.scheduler
-        defer { Task { await scheduler.unloadModel() } }
+        // Note: unload synchronously at the END of each scenario so the
+        // next scenario doesn't race teardown. `defer` cannot await; we
+        // call `await scheduler.unloadModel()` at the natural end of
+        // each function body below.
 
-        // Warm-up pass: the very first generation pays JIT/Metal setup
-        // costs that have nothing to do with the steady-state TTFT.
+        // Burn off JIT/Metal setup before timing steady-state TTFT.
         _ = await timeFirstToken(scheduler: scheduler, request: ttftRequest(for: config))
 
         var samples: [Duration] = []
@@ -195,6 +172,7 @@ struct PerformanceLiveTests {
         }
         Self.printRow("\(config.label): warm TTFT", samples: samples, median: median(samples))
         #expect(median(samples) > .zero)
+        await scheduler.unloadModel()
     }
 
     /// B) Cold -- fresh ModelContainer per iteration so weights are
@@ -244,7 +222,10 @@ struct PerformanceLiveTests {
     private func runEncryptedTTFT(_ config: ModelConfig) async throws {
         let loaded = try await loadOrSkip(config)
         let scheduler = loaded.scheduler
-        defer { Task { await scheduler.unloadModel() } }
+        // Note: unload synchronously at the END of each scenario so the
+        // next scenario doesn't race teardown. `defer` cannot await; we
+        // call `await scheduler.unloadModel()` at the natural end of
+        // each function body below.
 
         let providerKeys = NodeKeyPair.generate()
         let consumerKeys = NodeKeyPair.generate()
@@ -293,6 +274,7 @@ struct PerformanceLiveTests {
         Self.printRow("\(config.label): E2E first-token",          samples: e2eFirstTokenSamples,  median: median(e2eFirstTokenSamples))
         #expect(median(encryptSamples) > .zero)
         #expect(median(decryptSamples) > .zero)
+        await scheduler.unloadModel()
     }
 
     /// D) Batched -- B=1, B=2, B=4 concurrent submissions on a single
@@ -305,10 +287,12 @@ struct PerformanceLiveTests {
             memoryBudgetBytes: config.wiredMemoryGB * 1024 * 1024 * 1024
         )
         let scheduler = loaded.scheduler
-        defer { Task { await scheduler.unloadModel() } }
+        // Note: unload synchronously at the END of each scenario so the
+        // next scenario doesn't race teardown. `defer` cannot await; we
+        // call `await scheduler.unloadModel()` at the natural end of
+        // each function body below.
 
-        // Warm-up with the same long-output prompt so JIT/Metal kernel
-        // compile costs are paid before the timed run.
+        // Burn off JIT/Metal compile with the same long prompt.
         _ = await timeFirstToken(scheduler: scheduler, request: throughputRequest(for: config))
 
         for batchSize in config.batchSizes {
@@ -328,12 +312,9 @@ struct PerformanceLiveTests {
             let aggregateTPS = totalSeconds > 0
                 ? Double(result.totalCompletionTokens) / totalSeconds : 0
 
-            // Steady-state decode TPS: prefill (everything up to the
-            // first token across all rows) is dominated by the MAX
-            // per-row TTFT. Subtract it from the wall-clock so we
-            // report decode-only throughput. This is the number that
-            // compares apples-to-apples with mlx_lm's "Generation:
-            // X tokens-per-sec" headline.
+            // Subtract prefill (max per-row TTFT) from wall-clock so
+            // the reported decode TPS is comparable to mlx_lm's
+            // "Generation: X tokens-per-sec".
             let prefillSeconds: Double = {
                 guard let maxTTFT = result.ttft.max() else { return 0 }
                 let s = Double(maxTTFT.components.seconds)
@@ -353,22 +334,15 @@ struct PerformanceLiveTests {
             """.utf8))
             #expect(result.ttft.allSatisfy { $0 > .zero })
         }
+        await scheduler.unloadModel()
     }
 
-    /// Decode-throughput bracket. Tokenizes a fixed prompt and runs the
-    /// same `decodeTokens`-token decode through three paths to localize
-    /// where time goes:
-    ///
-    ///   1. Pure model loop      -- `model.callAsFunction` directly,
-    ///                              greedy argMax, no BatchGenerator.
-    ///   2. BatchGenerator only  -- exercises the batched-cache path
-    ///                              but bypasses the scheduler actor.
-    ///   3. BatchScheduler.submit -- the production path (actor +
-    ///                              detached worker + AsyncStream).
-    ///
-    /// All three excluded the prefill cost (we time the steady-state
-    /// decode portion only). If (1) ~= mlx_lm but (2) or (3) is slower,
-    /// the cost is in our wrappers.
+    /// Decode-throughput bracket. Runs the same `decodeTokens` decode
+    /// through three paths (prefill excluded) to localize overhead:
+    ///   1. pure model loop (greedy argmax, no engine)
+    ///   2. BatchedEngine (bypasses BatchScheduler)
+    ///   3. BatchScheduler.submit (production path)
+    /// If (1) ~= mlx_lm but (2) or (3) lags, the cost is in our wrappers.
     private func runDecodeTPSBracket(_ config: ModelConfig, decodeTokens: Int) async throws {
         try ensureModelOrSkip(config)
         guard let modelDir = ModelScanner.resolveLocalPath(modelID: config.modelID) else {
@@ -382,8 +356,8 @@ struct PerformanceLiveTests {
             using: LocalTokenizerLoader()
         )
 
-        // Tokenize once. Use the throughput prompt so the model
-        // generates `decodeTokens` tokens before EOS.
+        // Throughput prompt ensures the model generates `decodeTokens`
+        // tokens before EOS.
         let promptTokens: [Int] = try await container.perform { ctx in
             try ctx.tokenizer.applyChatTemplate(
                 messages: [["role": "user", "content": self.throughputPromptText]],
@@ -392,9 +366,7 @@ struct PerformanceLiveTests {
             )
         }
 
-        // Path 1a: pure single-stream loop with SYNCHRONOUS eval per
-        // token. Matches what GenerationBatch.step() and the existing
-        // singleStreamGreedy helper do.
+        // Path 1a: synchronous eval per token.
         let pureSyncDecodeTPS = await container.perform { ctx in
             let cache = ctx.model.newCache(parameters: nil)
             let promptArr = MLXArray(promptTokens.map { UInt32($0) })
@@ -417,10 +389,9 @@ struct PerformanceLiveTests {
             return Self.tokensPerSecond(decodeTokens, elapsed)
         }
 
-        // Path 1b: pure single-stream loop with ASYNC-EVAL pipelining
-        // (the mlx_lm Python pattern). Dispatch the next forward
-        // speculatively while the current token's value copies back to
-        // the CPU, so the GPU stays saturated.
+        // Path 1b: async-eval pipelining (mlx_lm Python pattern).
+        // Dispatch the next forward while the current token copies back
+        // to CPU, keeping the GPU saturated.
         let pureAsyncDecodeTPS = await container.perform { ctx in
             let cache = ctx.model.newCache(parameters: nil)
             let promptArr = MLXArray(promptTokens.map { UInt32($0) })
@@ -433,17 +404,14 @@ struct PerformanceLiveTests {
 
             let start = ContinuousClock.now
             for _ in 0 ..< decodeTokens {
-                // Speculatively dispatch the *next* forward before we
-                // read the current token. Both ops run on the GPU
-                // command queue concurrently with the asArray copy.
+                // Dispatch next forward speculatively, then sync the
+                // previous token. The next forward overlaps the asArray
+                // copy on the GPU command queue.
                 let stepArr = current[0..., .newAxis]
                 logits = ctx.model.callAsFunction(stepArr, cache: cache)
                 logits = logits[.ellipsis, -1, 0...]
                 let next = argMax(logits, axis: -1)
                 asyncEval(next)
-                // Force sync of the *previous* iteration's token. By
-                // the time this returns, the next forward is already
-                // partway through.
                 _ = current.asArray(UInt32.self)[0]
                 current = next
             }
@@ -451,9 +419,8 @@ struct PerformanceLiveTests {
             return Self.tokensPerSecond(decodeTokens, elapsed)
         }
 
-        // Path 1c: pure loop with the decode step wrapped in
-        // mlx-swift's `compile`, matching the optimisation mlx_lm Python
-        // applies in its hot decode path.
+        // Path 1c: decode step wrapped in mlx-swift's `compile` to match
+        // the mlx_lm Python hot-path optimisation.
         let pureCompiledDecodeTPS = await container.perform { ctx in
             let cache = ctx.model.newCache(parameters: nil)
             let promptArr = MLXArray(promptTokens.map { UInt32($0) })
@@ -472,7 +439,7 @@ struct PerformanceLiveTests {
                 return argMax(logprobs, axis: -1)
             }
 
-            // First call pays tracing / compile cost; do not time it.
+            // First call pays the trace/compile cost; do not time it.
             current = compiledStep(current)
             eval(current)
 
@@ -485,57 +452,31 @@ struct PerformanceLiveTests {
             return Self.tokensPerSecond(decodeTokens, elapsed)
         }
 
-        // Path 2: BatchGenerator at B=1 (bypasses BatchScheduler).
-        let generatorTPS = await container.perform { ctx in
-            let gen = BatchGenerator(
-                model: ctx.model,
-                eosTokens: [],
-                defaultMaxTokens: decodeTokens + 1,
-                prefillStepSize: 2048,
-                prefillBatchSize: 1,
-                completionBatchSize: 1
+        // Path 2: BatchedEngine at B=1 (bypasses BatchScheduler).
+        let engineSingleTPS = await runBatchedEngineSingle(
+            container: container,
+            modelID: config.modelID,
+            promptTokens: promptTokens,
+            decodeTokens: decodeTokens,
+            batchSize: 1
+        )
+        // B=2 + B=4 must run sequentially: two engines on the same
+        // `ModelContainer` race on shared MLX/Metal state and produce
+        // non-deterministic numbers.
+        var engineBatchedTPS: [(Int, Double)] = []
+        for batchSize in [2, 4] {
+            let tps = await runBatchedEngineSingle(
+                container: container,
+                modelID: config.modelID,
+                promptTokens: promptTokens,
+                decodeTokens: decodeTokens,
+                batchSize: batchSize
             )
-            _ = gen.insert(prompts: [promptTokens])
-            // Drain the first token (prefill cost — NOT timed).
-            _ = gen.next()
-            let start = ContinuousClock.now
-            var produced = 0
-            while gen.hasWork, produced < decodeTokens {
-                let responses = gen.next()
-                produced += responses.count
-            }
-            let elapsed = ContinuousClock.now - start
-            gen.close()
-            return Self.tokensPerSecond(produced, elapsed)
+            engineBatchedTPS.append((batchSize, tps))
         }
 
-        let generatorBatchedTPS: [(Int, Double)] = await container.perform { ctx in
-            [2, 4].map { batchSize in
-                let gen = BatchGenerator(
-                    model: ctx.model,
-                    eosTokens: [],
-                    defaultMaxTokens: decodeTokens + 1,
-                    prefillStepSize: 2048,
-                    prefillBatchSize: batchSize,
-                    completionBatchSize: batchSize
-                )
-                _ = gen.insert(prompts: Array(repeating: promptTokens, count: batchSize))
-                _ = gen.next() // prefill / first token outside timed region
-                let start = ContinuousClock.now
-                var produced = 0
-                let target = decodeTokens * batchSize
-                while gen.hasWork, produced < target {
-                    produced += gen.next().count
-                }
-                let elapsed = ContinuousClock.now - start
-                gen.close()
-                return (batchSize, Self.tokensPerSecond(produced, elapsed))
-            }
-        }
-
-        // Path 3: BatchScheduler.submit (production path). Use
-        // max_tokens=decodeTokens+1 so we can drop the first token's
-        // prefill cost from the steady-state measurement.
+        // Path 3: BatchScheduler.submit (production path). max_tokens =
+        // decodeTokens+1 so we can drop the first token's prefill cost.
         let scheduler = BatchScheduler(
             maxConcurrentRequests: 4,
             pendingTimeout: .seconds(60),
@@ -574,9 +515,9 @@ struct PerformanceLiveTests {
         [perf] \(config.label): decode (pure loop, sync eval)         \(String(format: "%.1f", pureSyncDecodeTPS)) tok/s
         [perf] \(config.label): decode (pure loop, async eval)        \(String(format: "%.1f", pureAsyncDecodeTPS)) tok/s
         [perf] \(config.label): decode (pure loop, compile)           \(String(format: "%.1f", pureCompiledDecodeTPS)) tok/s
-        [perf] \(config.label): decode (BatchGenerator B=1)           \(String(format: "%.1f", generatorTPS)) tok/s
-        [perf] \(config.label): decode (BatchGenerator B=2)           \(String(format: "%.1f", generatorBatchedTPS[0].1)) tok/s
-        [perf] \(config.label): decode (BatchGenerator B=4)           \(String(format: "%.1f", generatorBatchedTPS[1].1)) tok/s
+        [perf] \(config.label): decode (BatchedEngine B=1)            \(String(format: "%.1f", engineSingleTPS)) tok/s
+        [perf] \(config.label): decode (BatchedEngine B=2)            \(String(format: "%.1f", engineBatchedTPS[0].1)) tok/s
+        [perf] \(config.label): decode (BatchedEngine B=4)            \(String(format: "%.1f", engineBatchedTPS[1].1)) tok/s
         [perf] \(config.label): decode (BatchScheduler.submit)        \(String(format: "%.1f", schedulerTPS)) tok/s
 
         """.utf8))
@@ -584,8 +525,97 @@ struct PerformanceLiveTests {
         #expect(pureSyncDecodeTPS > 0)
         #expect(pureAsyncDecodeTPS > 0)
         #expect(pureCompiledDecodeTPS > 0)
-        #expect(generatorTPS > 0)
+        #expect(engineSingleTPS > 0)
         #expect(schedulerTPS > 0)
+    }
+
+    /// Build a `BatchedEngine`, submit `batchSize` greedy requests with the
+    /// same pre-tokenized prompt, drop the first emitted token (prefill
+    /// cost) per row, and measure aggregate steady-state TPS over
+    /// `decodeTokens` tokens per row.
+    private func runBatchedEngineSingle(
+        container: ModelContainer,
+        modelID: String,
+        promptTokens: [Int],
+        decodeTokens: Int,
+        batchSize: Int
+    ) async -> Double {
+        let engine = await container.perform { ctx -> BatchedEngine in
+            let scheduler = Scheduler(
+                model: ctx.model,
+                tokenizer: ctx.tokenizer,
+                config: SchedulerConfig(
+                    maxNumSeqs: max(batchSize, 4),
+                    maxNumBatchedTokens: 8192,
+                    prefillStepSize: 2048,
+                    streamInterval: 1
+                ),
+                eosTokenIds: ctx.configuration.eosTokenIds,
+                prefixCache: nil
+            )
+            return BatchedEngine(
+                scheduler: scheduler,
+                tokenizer: ctx.tokenizer,
+                modelName: modelID,
+                config: ContinuousBatchingConfig(
+                    schedulerConfig: scheduler.config,
+                    stepInterval: 0.001,
+                    prefixCacheConfig: nil,
+                    mtpEnabled: false
+                ),
+                externalChatTemplate: nil
+            )
+        }
+        await engine.start()
+
+        struct RowMeasure: Sendable {
+            let produced: Int
+            let elapsed: Duration
+        }
+
+        let tps = await withTaskGroup(of: RowMeasure.self) { group -> Double in
+            for i in 0 ..< batchSize {
+                let id = "perf-\(i)-\(UUID().uuidString.prefix(6))"
+                group.addTask { [engine] in
+                    _ = await engine.core.addRequest(Request(
+                        requestId: id,
+                        prompt: promptTokens as AnyHashable,
+                        samplingParams: SamplingParams(
+                            maxTokens: decodeTokens + 1, temperature: 0.0
+                        )
+                    ))
+
+                    var sawFirst = false
+                    var start = ContinuousClock.now
+                    var produced = 0
+                    for await output in engine.core.streamOutputs(requestId: id) {
+                        if !sawFirst {
+                            // Start the clock after the first token to
+                            // discount prefill.
+                            sawFirst = true
+                            start = ContinuousClock.now
+                        } else {
+                            produced += output.newTokenIds.count
+                        }
+                        if output.finished || output.error != nil { break }
+                    }
+                    let elapsed = ContinuousClock.now - start
+                    return RowMeasure(produced: produced, elapsed: elapsed)
+                }
+            }
+            var totalTokens = 0
+            var maxElapsed: Duration = .zero
+            for await row in group {
+                totalTokens += row.produced
+                if row.elapsed > maxElapsed { maxElapsed = row.elapsed }
+            }
+            return Self.tokensPerSecond(totalTokens, maxElapsed)
+        }
+
+        // Synchronous stop: a detached teardown would race the next call
+        // against a live engine on the shared `ModelContainer`.
+        await engine.stop()
+        return tps
     }
 
     private static func tokensPerSecond(_ tokens: Int, _ duration: Duration) -> Double {
@@ -628,9 +658,8 @@ struct PerformanceLiveTests {
         MLX.GPU.set(memoryLimit: gigabytes * 1024 * 1024 * 1024)
     }
 
-    /// Submit `request` to `scheduler`, measure wall-clock from
-    /// submit() to the first `.chunk`, then drain the rest so the
-    /// scheduler's row count returns to zero before the next iteration.
+    /// Wall-clock from submit() to first `.chunk`; drains the rest so
+    /// the scheduler row count returns to zero.
     private func timeFirstToken(
         scheduler: BatchScheduler,
         request: ChatCompletionRequest

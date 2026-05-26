@@ -134,6 +134,52 @@ public enum ProcessLifecycle {
         #endif
     }
 
+    // MARK: - Launchd-Aware Restart
+
+    /// Restart the provider process after a background auto-update.
+    ///
+    /// If the process is managed by launchd, performs a stop + bootstrap +
+    /// kickstart cycle so launchd picks up the new binary. Otherwise,
+    /// falls back to `execCurrentProcess()` (execv) which replaces the
+    /// process image in-place.
+    ///
+    /// Mirrors the Rust provider's auto-update restart logic.
+    public static func restartAfterUpdate() throws -> Never {
+        if LaunchAgent.isLoaded() {
+            // Launchd-managed: stop the current service, then re-bootstrap
+            // and kickstart so launchd launches the new binary.
+            let domain = "gui/\(getuid())"
+            let target = "\(domain)/\(LaunchAgent.label)"
+            let plistPath = LaunchAgent.plistPath().path
+
+            // 1. Stop the current process via launchctl bootout.
+            //    This will terminate us, but we schedule the bootstrap
+            //    + kickstart first via a short-lived helper process.
+            let script = """
+            /bin/launchctl bootout \(target) 2>/dev/null; \
+            sleep 1; \
+            /bin/launchctl bootstrap \(domain) \(plistPath) 2>/dev/null; \
+            /bin/launchctl kickstart \(target) 2>/dev/null
+            """
+
+            let helper = Process()
+            helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+            helper.arguments = ["-c", script]
+            helper.standardOutput = FileHandle.nullDevice
+            helper.standardError = FileHandle.nullDevice
+            try helper.run()
+
+            // Give the helper a moment to issue bootout, then exit.
+            // The bootout will terminate us; if it doesn't within 2s,
+            // exit cleanly and let the helper finish the restart.
+            Thread.sleep(forTimeInterval: 2.0)
+            exit(0)
+        } else {
+            // Not under launchd: replace process image with execv.
+            try execCurrentProcess()
+        }
+    }
+
     // MARK: - Internals
 
     private static func readPID(at url: URL) -> Int32? {

@@ -169,32 +169,47 @@ public func checkSecureBootEnabled() -> Bool {
 /// reliably on all macOS configurations including multi-boot EC2 Macs
 /// where `csrutil authenticated-root status` prompts interactively.
 public func checkAuthenticatedRootEnabled() -> Bool {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
-    process.arguments = ["info", "/"]
+    // Primary: csrutil authenticated-root status. Works without root and
+    // correctly reports "enabled" on macOS 26 where diskutil shows
+    // "Sealed: Broken" due to changed APFS snapshot semantics.
+    if let csrResult = runSimpleProcess(
+        "/usr/bin/csrutil", arguments: ["authenticated-root", "status"]
+    ) {
+        if csrResult.lowercased().contains("enabled") {
+            return true
+        }
+    }
 
+    // Fallback: diskutil info / for older macOS versions.
+    if let diskResult = runSimpleProcess(
+        "/usr/sbin/diskutil", arguments: ["info", "/"]
+    ) {
+        for line in diskResult.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("Sealed:") {
+                return trimmed.contains("Yes")
+            }
+        }
+    }
+
+    return false
+}
+
+private func runSimpleProcess(_ path: String, arguments: [String]) -> String? {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: path)
+    process.arguments = arguments
     let pipe = Pipe()
     process.standardOutput = pipe
     process.standardError = Pipe()
-
     do {
         try process.run()
     } catch {
-        logger.error("ARV check: failed to run diskutil: \(error)")
-        return false
+        return nil
     }
     process.waitUntilExit()
-
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
-
-    for line in output.components(separatedBy: "\n") {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("Sealed:") {
-            return trimmed.contains("Yes")
-        }
-    }
-    return false
+    return String(data: data, encoding: .utf8)
 }
 
 // MARK: - Hardened Runtime Check

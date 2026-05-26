@@ -593,8 +593,11 @@ func TestIntegration_ProviderCustomPricePaidWithoutReservationClamp(t *testing.T
 	}
 }
 
-func TestIntegration_BillingSkipsProviderWithoutPayoutDestination(t *testing.T) {
-	srv, _, ledger := billingTestServer(t)
+// Providers without a payout destination should still serve requests.
+// Earnings are credited to the provider's internal ledger and can be
+// withdrawn once they complete Stripe Connect onboarding.
+func TestIntegration_BillingAllowsProviderWithoutPayoutDestination(t *testing.T) {
+	srv, _, _ := billingTestServer(t)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -603,21 +606,15 @@ func TestIntegration_BillingSkipsProviderWithoutPayoutDestination(t *testing.T) 
 	defer cancel()
 
 	consumerID := "test-key"
-	initialBalance := ledger.Balance(consumerID)
 
 	model := "no-payout-destination-model"
 	conn, _, _ := setupProviderForBillingNoPayoutDestination(t, ctx, ts, srv.registry, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	status := sendInferenceRequest(t, ctx, ts.URL, model, consumerID)
-	if status != http.StatusServiceUnavailable {
-		t.Fatalf("inference status = %d, want 503", status)
-	}
-	if got := ledger.Balance(consumerID); got != initialBalance {
-		t.Errorf("consumer balance = %d, want %d", got, initialBalance)
-	}
-	if got := len(ledger.Usage(consumerID)); got != 0 {
-		t.Errorf("usage entries = %d, want 0", got)
+	// Should NOT be 503 — providers without payout destination are allowed.
+	if status == http.StatusServiceUnavailable {
+		t.Fatalf("inference status = 503, providers without payout destination should be allowed")
 	}
 }
 
@@ -1120,6 +1117,132 @@ func TestIntegration_MultiNodeSameAccount(t *testing.T) {
 	}
 	if st.GetBalance("0xMultiNode2") != 0 {
 		t.Error("wallet 2 should not be credited when account is linked")
+	}
+}
+
+// TestOverageChargeBeforeClamp verifies that when a provider's actual cost
+// exceeds the pre-flight reservation, the coordinator attempts to charge the
+// consumer the overage before falling back to the hard clamp.
+func TestOverageChargeBeforeClamp(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+
+	model := "overage-test-model"
+	accountID := "overage-provider-account"
+	// Set a provider custom price well above the platform default so that
+	// the actual cost computed by handleComplete exceeds ReservedMicroUSD.
+	const customInputPrice int64 = 500_000     // 10x platform default
+	const customOutputPrice int64 = 50_000_000 // 10x platform default
+	if err := st.SetModelPrice(accountID, model, customInputPrice, customOutputPrice); err != nil {
+		t.Fatalf("set provider custom price: %v", err)
+	}
+
+	provider := srv.registry.Register("overage-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+	provider.Mu().Lock()
+	provider.AccountID = accountID
+	provider.Mu().Unlock()
+
+	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
+	actualCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customInputPrice, customOutputPrice, true)
+	// Reservation is deliberately lower than actual cost to trigger overage.
+	reservedAmount := actualCost / 2
+
+	consumerID := "test-key"
+	initialBalance := ledger.Balance(consumerID)
+	if err := ledger.Charge(consumerID, reservedAmount, "reserve:"+consumerID); err != nil {
+		t.Fatalf("reserve balance: %v", err)
+	}
+
+	pr := &registry.PendingRequest{
+		RequestID:        "overage-charge-test",
+		Model:            model,
+		ConsumerKey:      consumerID,
+		ReservedMicroUSD: reservedAmount,
+		ChunkCh:          make(chan string, 1),
+		CompleteCh:       make(chan protocol.UsageInfo, 1),
+		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type:      protocol.TypeInferenceComplete,
+		RequestID: pr.RequestID,
+		Usage:     usage,
+	})
+
+	// The overage should have been charged successfully, so the consumer
+	// pays the full actual cost (reservation + overage), not the clamped
+	// reservation amount.
+	expectedPayout := payments.ProviderPayout(actualCost)
+	if got := st.GetWithdrawableBalance(accountID); got != expectedPayout {
+		t.Errorf("provider payout = %d, want %d (full actual cost payout)", got, expectedPayout)
+	}
+	if got := ledger.Balance(consumerID); got != initialBalance-actualCost {
+		t.Errorf("consumer balance = %d, want %d (charged full actual cost)", got, initialBalance-actualCost)
+	}
+}
+
+// TestOverageChargeClampOnInsufficientBalance verifies that when the overage
+// charge fails (consumer balance drained mid-flight), the coordinator falls
+// back to the hard clamp at the reservation amount.
+func TestOverageChargeClampOnInsufficientBalance(t *testing.T) {
+	srv, st, _ := billingTestServer(t)
+
+	model := "overage-clamp-model"
+	accountID := "overage-clamp-account"
+	const customInputPrice int64 = 500_000
+	const customOutputPrice int64 = 50_000_000
+	if err := st.SetModelPrice(accountID, model, customInputPrice, customOutputPrice); err != nil {
+		t.Fatalf("set provider custom price: %v", err)
+	}
+
+	provider := srv.registry.Register("overage-clamp-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+	provider.Mu().Lock()
+	provider.AccountID = accountID
+	provider.Mu().Unlock()
+
+	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
+	actualCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customInputPrice, customOutputPrice, true)
+	reservedAmount := actualCost / 2
+
+	// Use a consumer with exactly the reserved amount so the overage charge
+	// will fail due to insufficient balance.
+	consumerID := "low-balance-consumer"
+	_ = st.Credit(consumerID, reservedAmount, store.LedgerDeposit, "test-setup")
+	if err := srv.ledger.Charge(consumerID, reservedAmount, "reserve:"+consumerID); err != nil {
+		t.Fatalf("reserve balance: %v", err)
+	}
+
+	pr := &registry.PendingRequest{
+		RequestID:        "overage-clamp-test",
+		Model:            model,
+		ConsumerKey:      consumerID,
+		ReservedMicroUSD: reservedAmount,
+		ChunkCh:          make(chan string, 1),
+		CompleteCh:       make(chan protocol.UsageInfo, 1),
+		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type:      protocol.TypeInferenceComplete,
+		RequestID: pr.RequestID,
+		Usage:     usage,
+	})
+
+	// Overage charge should have failed, so the provider gets paid based on
+	// the clamped reservation amount, not the full actual cost.
+	expectedPayout := payments.ProviderPayout(reservedAmount)
+	if got := st.GetWithdrawableBalance(accountID); got != expectedPayout {
+		t.Errorf("provider payout = %d, want %d (clamped to reservation)", got, expectedPayout)
+	}
+	// Consumer balance should be zero: entire deposit was reserved, overage
+	// failed, no refund since totalCost was clamped to exactly the reservation.
+	if got := srv.ledger.Balance(consumerID); got != 0 {
+		t.Errorf("consumer balance = %d, want 0", got)
 	}
 }
 

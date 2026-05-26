@@ -114,12 +114,12 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 	acmeResult := s.extractAndVerifyClientCert(r)
 
 	// Run the read loop; on return the provider is disconnected.
-	s.providerReadLoop(r.Context(), conn, providerID, acmeResult)
+	s.providerReadLoop(r.Context(), conn, providerID, acmeResult, r)
 }
 
 // providerReadLoop reads messages from the provider WebSocket and dispatches
 // them. It runs until the connection closes or the context is cancelled.
-func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, acmeResult *ACMEVerificationResult) {
+func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, acmeResult *ACMEVerificationResult, r *http.Request) {
 	var provider *registry.Provider
 	tracker := newChallengeTracker()
 
@@ -165,6 +165,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		case protocol.TypeRegister:
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
 			provider = s.registry.Register(providerID, conn, regMsg)
+			s.attachProviderLocation(providerID, provider, r)
 			s.verifyProviderAttestation(providerID, provider, regMsg)
 
 			// Record registration outcome metrics + telemetry.
@@ -317,6 +318,33 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			s.logger.Warn("unhandled provider message type", "provider_id", providerID, "type", msg.Type)
 		}
 	}
+}
+
+// attachProviderLocation resolves the provider's approximate geographic
+// location from the registration HTTP request. The resolved location is
+// stored on the Provider struct for stats aggregation. Raw IP addresses
+// are never persisted.
+func (s *Server) attachProviderLocation(providerID string, provider *registry.Provider, r *http.Request) {
+	if s.geoResolver == nil || provider == nil || r == nil {
+		return
+	}
+	loc := s.geoResolver.Lookup(r)
+	if loc == nil {
+		return
+	}
+	provider.Mu().Lock()
+	provider.Location = loc
+	provider.Mu().Unlock()
+	s.registry.PersistProvider(provider)
+	if s.readCache != nil {
+		s.readCache.Invalidate("stats:v1")
+	}
+	s.logger.Info("provider location resolved",
+		"provider_id", providerID,
+		"city", loc.City,
+		"country", loc.CountryCode,
+		"source", loc.Source,
+	)
 }
 
 func (s *Server) applyACMETrust(providerID string, provider *registry.Provider, acmeResult *ACMEVerificationResult) {
@@ -1025,33 +1053,13 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	}
 	totalCost := payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
 
-	// Clamp reported cost at the pre-flight reservation. The reservation
-	// uses platform-default and platform-override pricing; a provider that
-	// sets a custom price above the platform rate accepts revenue capped at
-	// the reservation (this is documented by reservationCost). The clamp
-	// also neutralizes over-reporting: with max_tokens injected into the
-	// outgoing request a cooperating provider can never legitimately bill
-	// more than the reservation, so excess means miscounting or fraud.
-	// Logged at Error so misbehavior shows in the operator dashboards.
-	if pr.ReservedMicroUSD > 0 && totalCost > pr.ReservedMicroUSD {
-		s.logger.Error("provider reported cost above reservation — clamping",
-			"provider_id", providerID,
-			"request_id", msg.RequestID,
-			"reported_cost_micro_usd", totalCost,
-			"reserved_micro_usd", pr.ReservedMicroUSD,
-			"prompt_tokens", msg.Usage.PromptTokens,
-			"completion_tokens", msg.Usage.CompletionTokens,
-		)
-		s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
-		totalCost = pr.ReservedMicroUSD
-	}
 	providerPayout := payments.ProviderPayout(totalCost)
 	billingFinalized := true
 
-	// Adjust billing against the pre-flight reservation. After the clamp above
-	// totalCost <= reserved, so the only path here is a refund of the unused
-	// portion. The old "charge extra" path is retained for the unreserved
-	// code path below (billing disabled / legacy requests).
+	// Settle billing against the pre-flight reservation. All balance
+	// mutations (overage charge, refund) happen inside the finalization
+	// gate so that a concurrent timeout/error refund path cannot race
+	// with the settlement here.
 	if pr.ReservedMicroUSD > 0 {
 		if !pr.MarkReservationFinalized() {
 			billingFinalized = false
@@ -1059,6 +1067,52 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 				"provider_id", providerID,
 				"request_id", msg.RequestID,
 			)
+		} else if totalCost > pr.ReservedMicroUSD {
+			// Actual cost exceeds reservation (e.g. provider custom
+			// pricing above platform rate). Attempt to charge the
+			// consumer the difference. Cap overage at the reservation
+			// amount as a fraud circuit-breaker — a provider cannot
+			// bill more than 2x the pre-flight estimate.
+			overage := totalCost - pr.ReservedMicroUSD
+			if overage > pr.ReservedMicroUSD {
+				s.logger.Error("overage exceeds reservation cap — clamping",
+					"provider_id", providerID,
+					"request_id", msg.RequestID,
+					"reported_cost_micro_usd", totalCost,
+					"reserved_micro_usd", pr.ReservedMicroUSD,
+					"uncapped_overage_micro_usd", overage,
+				)
+				s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
+				overage = pr.ReservedMicroUSD
+				totalCost = pr.ReservedMicroUSD * 2
+			}
+			if err := s.ledger.Charge(pr.ConsumerKey, overage, "overage:"+msg.RequestID); err != nil {
+				// Overage charge failed (insufficient balance). Clamp
+				// to reservation so the provider still gets paid
+				// something rather than nothing.
+				s.logger.Error("overage charge failed — clamping to reservation",
+					"provider_id", providerID,
+					"request_id", msg.RequestID,
+					"reported_cost_micro_usd", totalCost,
+					"reserved_micro_usd", pr.ReservedMicroUSD,
+					"overage_micro_usd", overage,
+					"error", err,
+				)
+				s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
+				totalCost = pr.ReservedMicroUSD
+			} else {
+				s.logger.Info("overage charged to consumer",
+					"provider_id", providerID,
+					"request_id", msg.RequestID,
+					"overage_micro_usd", overage,
+					"total_cost_micro_usd", totalCost,
+				)
+				s.ddIncr("billing.overage_charged", []string{"model:" + pr.Model})
+				s.ddHistogram("billing.overage_micro_usd", float64(overage), []string{"model:" + pr.Model})
+				pr.ReservedMicroUSD = totalCost
+			}
+			// Recompute payout after potential clamp.
+			providerPayout = payments.ProviderPayout(totalCost)
 		} else if totalCost < pr.ReservedMicroUSD {
 			refund := pr.ReservedMicroUSD - totalCost
 			start := time.Now()
@@ -1089,7 +1143,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			CostMicroUSD:     totalCost,
 			Timestamp:        time.Now(),
 		})
-		s.store.RecordUsageWithCost(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost)
+		s.store.RecordUsageWithCostAndLocation(providerID, pr.ConsumerKey, pr.Model, msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
 		s.ddIncr("inference.completions", []string{"model:" + pr.Model})
 		s.ddCount("inference.prompt_tokens_total", int64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
 		s.ddHistogram("inference.prompt_tokens", float64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})

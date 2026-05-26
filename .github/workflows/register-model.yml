@@ -51,6 +51,14 @@ on:
         description: Metadata JSON object
         required: false
         default: '{}'
+      input_price:
+        description: Input price in micro-USD per 1M tokens (e.g. 15000 = $0.015)
+        required: true
+        type: number
+      output_price:
+        description: Output price in micro-USD per 1M tokens (e.g. 70000 = $0.070)
+        required: true
+        type: number
       promote:
         description: Promote this version after registration
         required: false
@@ -81,6 +89,8 @@ jobs:
           RUNTIME_PARAMETERS_JSON: ${{ inputs.runtime_parameters_json }}
           METADATA_JSON: ${{ inputs.metadata_json }}
           PROMOTE: ${{ inputs.promote }}
+          INPUT_PRICE: ${{ inputs.input_price }}
+          OUTPUT_PRICE: ${{ inputs.output_price }}
         run: |
           jq -n \
             --arg model_id "$MODEL_ID" \
@@ -97,6 +107,8 @@ jobs:
             --argjson runtime_parameters "$RUNTIME_PARAMETERS_JSON" \
             --argjson metadata "$METADATA_JSON" \
             --argjson promote "$PROMOTE" \
+            --argjson input_price "$INPUT_PRICE" \
+            --argjson output_price "$OUTPUT_PRICE" \
             '{
               model_id: $model_id,
               version: $version,
@@ -111,7 +123,9 @@ jobs:
               description: $description,
               runtime_parameters: $runtime_parameters,
               metadata: $metadata,
-              promote: $promote
+              promote: $promote,
+              input_price: $input_price,
+              output_price: $output_price
             }' > payload.json
           jq . payload.json
 

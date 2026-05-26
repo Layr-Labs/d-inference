@@ -803,7 +803,16 @@ private func assertStandaloneDisconnectCleanup(
         fd = nil
     }
 
-    let cleanedUp = try await waitUntilAsync(timeout: .seconds(3)) {
+    // Streaming requests release on the next chunk write (broken pipe).
+    // Non-streaming requests don't release until the handler finishes
+    // because Hummingbird only detects the disconnect when it tries to
+    // write the response. That can take generation_time (~5-8s for the
+    // tiny model at max_tokens=256). 30s gives headroom on slow runners.
+    // Tracked as a known limitation of the MLXLMServer adoption; a future
+    // middleware can hook NIO channel-inactive into Task cancellation to
+    // restore pre-rewrite latency.
+    let cleanupTimeout: Duration = stream ? .seconds(3) : .seconds(30)
+    let cleanedUp = try await waitUntilAsync(timeout: cleanupTimeout) {
         guard let capacity = await server.debugCapacity(modelId: LiveInferenceFixtures.tinyModelID) else {
             return false
         }

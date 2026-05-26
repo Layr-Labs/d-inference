@@ -18,6 +18,8 @@ struct Logs: AsyncParsableCommand {
     var watch = false
 
     mutating func run() async throws {
+        await runUpdateBannerIfEnabled()
+
         let path = LaunchAgent.logPath()
         let fm = FileManager.default
 
@@ -43,8 +45,10 @@ struct Logs: AsyncParsableCommand {
         }
     }
 
-    /// Replace the current process with `tail -f`. Uses execv so Ctrl-C
-    /// behaves like tail rather than passing through Swift's signal layer.
+    /// Replace the current process with `tail -f`. Restores default signal
+    /// handling before exec because ArgumentParser's async infrastructure
+    /// sets SIG_IGN on SIGINT (via GCD signal sources), and SIG_IGN is
+    /// preserved across execv — causing tail to ignore Ctrl-C.
     private func execTail(path: URL, lines: Int) throws {
         let argv: [String] = [
             "tail",
@@ -54,6 +58,19 @@ struct Logs: AsyncParsableCommand {
         ]
         let cArgs: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) } + [nil]
         defer { cArgs.forEach { free($0) } }
+
+        // Restore default signal dispositions. SIG_IGN (set by GCD signal
+        // sources in ArgumentParser's async runtime) is preserved across
+        // exec, unlike custom handlers which are reset to SIG_DFL.
+        signal(SIGINT, SIG_DFL)
+        signal(SIGTERM, SIG_DFL)
+
+        // Unblock signals in case the Swift concurrency runtime masked them.
+        var mask = sigset_t()
+        sigemptyset(&mask)
+        sigaddset(&mask, SIGINT)
+        sigaddset(&mask, SIGTERM)
+        pthread_sigmask(SIG_UNBLOCK, &mask, nil)
 
         // execv replaces the current image; if it returns at all it failed.
         let rc = "/usr/bin/tail".withCString { execPath in

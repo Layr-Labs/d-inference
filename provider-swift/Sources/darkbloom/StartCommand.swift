@@ -1,6 +1,9 @@
 import Foundation
 import ArgumentParser
 import ProviderCore
+#if canImport(Darwin)
+import Darwin
+#endif
 
 struct Start: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -35,6 +38,8 @@ struct Start: AsyncParsableCommand {
     var port: UInt16 = 8000
 
     mutating func run() async throws {
+        Darkbloom.ensureLogging()
+
         // GPU is required. Reject CPU fallback up-front so we never
         // come up reporting healthy and then silently churn at 0.5 tok/s.
         do {
@@ -56,11 +61,6 @@ struct Start: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        guard !snapshot.models.isEmpty else {
-            printError("No local MLX models found. Download models to ~/.cache/huggingface/hub/")
-            throw ExitCode.failure
-        }
-
         if local {
             try await runLocalStandalone(
                 snapshot: snapshot,
@@ -75,7 +75,7 @@ struct Start: AsyncParsableCommand {
                 coordinatorURL: effectiveCoordinator
             )
         } else {
-            try launchDaemon(
+            try await launchDaemon(
                 snapshot: snapshot,
                 config: effectiveConfig,
                 coordinatorURL: effectiveCoordinator
@@ -303,11 +303,11 @@ struct Start: AsyncParsableCommand {
 
     // MARK: - Daemon (interactive picker → launchd)
 
-    private func launchDaemon(
+    private mutating func launchDaemon(
         snapshot: RuntimeSnapshot,
         config: ProviderConfig,
         coordinatorURL: String
-    ) throws {
+    ) async throws {
         let selectedModelIDs: [String]
 
         if !model.isEmpty {
@@ -315,7 +315,11 @@ struct Start: AsyncParsableCommand {
         } else if all {
             selectedModelIDs = snapshot.models.map(\.id)
         } else {
-            selectedModelIDs = try interactiveModelPicker(snapshot: snapshot, config: config)
+            selectedModelIDs = try await interactiveCatalogPicker(
+                snapshot: snapshot,
+                config: config,
+                coordinatorURL: coordinatorURL
+            )
         }
 
         guard !selectedModelIDs.isEmpty else {
@@ -341,21 +345,137 @@ struct Start: AsyncParsableCommand {
         print("  darkbloom status  Check status")
     }
 
-    // MARK: - Interactive Picker
+    // MARK: - Interactive Catalog Picker
 
-    private func interactiveModelPicker(
+    /// Entry shown in the interactive TUI model picker.
+    private struct PickerEntry {
+        let id: String
+        let catalogModel: CatalogModel
+        let displayName: String
+        let sizeGb: Double
+        let minRamGb: Int?
+        let downloaded: Bool
+    }
+
+    /// Fetches the model catalog from the coordinator, shows an interactive
+    /// terminal picker matching the Rust provider UX, downloads any missing
+    /// models, and returns the selected model IDs.
+    private func interactiveCatalogPicker(
         snapshot: RuntimeSnapshot,
-        config: ProviderConfig
-    ) throws -> [String] {
-        let models = snapshot.models.sorted { $0.id < $1.id }
+        config: ProviderConfig,
+        coordinatorURL: String
+    ) async throws -> [String] {
+        let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
 
+        let catalog: [CatalogModel]
+        do {
+            catalog = try await client.fetchCatalog(typeFilter: "text")
+        } catch {
+            printError("Could not fetch model catalog from coordinator: \(error)")
+            printError("hint: check your coordinator URL or use --model to specify models directly")
+            throw ExitCode.failure
+        }
+
+        guard !catalog.isEmpty else {
+            printError("No models in the coordinator catalog.")
+            throw ExitCode.failure
+        }
+
+        let localByID = Dictionary(uniqueKeysWithValues: snapshot.models.map { ($0.id, $0) })
+        let memoryGb: Double = Double(snapshot.hardware?.memoryGb ?? 16)
+
+        // Build picker entries: filter to models that fit, sort downloaded-first
+        // then by size descending.
+        var entries: [PickerEntry] = catalog.compactMap { entry in
+            if let minRam = entry.minRamGb, Double(minRam) > memoryGb {
+                return nil
+            }
+            let isDownloaded = localByID[entry.id] != nil
+            let size: Double
+            if isDownloaded, let local = localByID[entry.id] {
+                size = local.estimatedMemoryGb
+            } else {
+                size = entry.sizeGb
+            }
+            return PickerEntry(
+                id: entry.id,
+                catalogModel: entry,
+                displayName: entry.displayName,
+                sizeGb: size,
+                minRamGb: entry.minRamGb,
+                downloaded: isDownloaded
+            )
+        }
+
+        entries.sort { a, b in
+            if a.downloaded != b.downloaded { return a.downloaded }
+            return a.sizeGb > b.sizeGb
+        }
+
+        guard !entries.isEmpty else {
+            printError("No supported models fit in \(Int(memoryGb)) GB RAM.")
+            throw ExitCode.failure
+        }
+
+        // Fall back to simple numbered picker if stdin is not a TTY.
+        guard isatty(STDIN_FILENO) != 0 else {
+            return try await fallbackPicker(entries: entries, client: client)
+        }
+
+        // Run the interactive TUI picker.
+        let selectedIndices = try runModelPicker(entries: entries, memoryGb: memoryGb)
+
+        guard !selectedIndices.isEmpty else {
+            return []
+        }
+
+        // Download any selected models that aren't local yet.
+        let missing = selectedIndices
+            .map { entries[$0] }
+            .filter { !$0.downloaded }
+
+        if !missing.isEmpty {
+            print()
+            let downloader = ModelDownloader(catalogClient: client)
+            for entry in missing {
+                print("  Downloading \(entry.displayName) (\(String(format: "%.1f GB", entry.sizeGb)))...")
+                do {
+                    try await downloader.download(model: entry.catalogModel) { progress in
+                        let pct: String
+                        if let total = progress.bytesTotal, total > 0 {
+                            pct = String(format: " %.0f%%", Double(progress.bytesDownloaded) / Double(total) * 100)
+                        } else {
+                            pct = ""
+                        }
+                        let mb = Double(progress.bytesDownloaded) / 1_048_576
+                        print("    \(progress.file)  \(String(format: "%.1f MB", mb))\(pct)")
+                    }
+                    print("  \u{2713} Downloaded \(entry.displayName)")
+                } catch {
+                    printError("Failed to download \(entry.displayName): \(error)")
+                    printError("hint: download manually with `darkbloom models download \(entry.id)`")
+                    throw ExitCode.failure
+                }
+            }
+            print()
+        }
+
+        return selectedIndices.map { entries[$0].id }
+    }
+
+    /// Simple numbered fallback picker for non-TTY environments.
+    private func fallbackPicker(
+        entries: [PickerEntry],
+        client: ModelCatalogClient
+    ) async throws -> [String] {
         print()
-        print("  Available models:")
+        print("  Models (from coordinator catalog):")
         print()
-        for (i, m) in models.enumerated() {
-            let sizeStr = String(format: "%.1f GB", m.estimatedMemoryGb)
-            let quant = m.quantization ?? ""
-            print("    [\(i + 1)] \(m.id)  (\(sizeStr)\(quant.isEmpty ? "" : ", \(quant)"))")
+        for (i, entry) in entries.enumerated() {
+            let status = entry.downloaded ? "downloaded" : "not downloaded"
+            let sizeStr = String(format: "%.1f GB", entry.sizeGb)
+            let ramStr = entry.minRamGb.map { " (>= \($0) GB RAM)" } ?? ""
+            print("    [\(i + 1)] \(entry.displayName)  \(sizeStr)\(ramStr)  [\(status)]")
         }
         print()
         print("  Select models (comma-separated numbers, or 'all'): ", terminator: "")
@@ -364,23 +484,225 @@ struct Start: AsyncParsableCommand {
             return []
         }
 
+        let selected: [PickerEntry]
         if input.lowercased() == "all" {
-            return models.map(\.id)
-        }
-
-        let indices = input.split(separator: ",").compactMap { token -> Int? in
-            guard let n = Int(token.trimmingCharacters(in: .whitespaces)) else { return nil }
-            return n
-        }
-
-        var selected: [String] = []
-        for idx in indices {
-            guard idx >= 1, idx <= models.count else {
-                printError("Invalid selection: \(idx) (must be 1-\(models.count))")
-                throw ExitCode.failure
+            selected = entries
+        } else {
+            let indices = input.split(separator: ",").compactMap { token -> Int? in
+                guard let n = Int(token.trimmingCharacters(in: .whitespaces)) else { return nil }
+                return n
             }
-            selected.append(models[idx - 1].id)
+            var picked: [PickerEntry] = []
+            for idx in indices {
+                guard idx >= 1, idx <= entries.count else {
+                    printError("Invalid selection: \(idx) (must be 1-\(entries.count))")
+                    throw ExitCode.failure
+                }
+                picked.append(entries[idx - 1])
+            }
+            selected = picked
         }
-        return selected
+
+        let localIDs = Set(entries.filter(\.downloaded).map(\.id))
+        let missing = selected.filter { !localIDs.contains($0.id) }
+        if !missing.isEmpty {
+            print()
+            print("  Downloading \(missing.count) model(s)...")
+            print()
+            let downloader = ModelDownloader(catalogClient: client)
+            for entry in missing {
+                print("  Downloading \(entry.displayName) (\(String(format: "%.1f GB", entry.sizeGb)))...")
+                do {
+                    try await downloader.download(model: entry.catalogModel) { progress in
+                        let mb = Double(progress.bytesDownloaded) / 1_048_576
+                        print("    \(progress.file)  \(String(format: "%.1f MB", mb))")
+                    }
+                    print("  \(entry.displayName) downloaded.")
+                } catch {
+                    printError("Failed to download \(entry.displayName): \(error)")
+                    printError("hint: download manually with `darkbloom models download \(entry.id)`")
+                    throw ExitCode.failure
+                }
+            }
+            print()
+        }
+
+        return selected.map(\.id)
+    }
+
+    // MARK: - TUI Model Picker
+
+    /// Interactive multi-select model picker using raw terminal mode.
+    /// Arrow keys navigate, Space toggles selection, Enter confirms, Esc/q cancels.
+    /// Enforces memory budget and shows two sections: downloaded and available.
+    private func runModelPicker(entries: [PickerEntry], memoryGb: Double) throws -> [Int] {
+        let osReserve = 4.0
+        let budget = memoryGb - osReserve
+
+        var cursorPos = 0
+        var selected = [Bool](repeating: false, count: entries.count)
+
+        // Pre-select the largest downloaded model.
+        if let idx = entries.firstIndex(where: { $0.downloaded }) {
+            selected[idx] = true
+        }
+
+        let downloadedCount = entries.filter(\.downloaded).count
+        let availableCount = entries.count - downloadedCount
+
+        // Enable raw terminal mode.
+        var oldTermios = termios()
+        tcgetattr(STDIN_FILENO, &oldTermios)
+        var raw = oldTermios
+        raw.c_lflag &= ~UInt(ECHO | ICANON | ISIG)
+        raw.c_cc.16 = 1  // VMIN = 1 byte minimum
+        raw.c_cc.17 = 0  // VTIME = no timeout
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw)
+
+        // Ensure terminal is restored on any exit path.
+        defer {
+            // Show cursor, restore terminal.
+            write(STDOUT_FILENO, "\u{1B}[?25h", 6)
+            tcsetattr(STDIN_FILENO, TCSAFLUSH, &oldTermios)
+        }
+
+        // Hide cursor.
+        write(STDOUT_FILENO, "\u{1B}[?25l", 6)
+
+        var lastLineCount: Int = 0
+
+        /// Render the picker UI, returning the number of lines written.
+        func render(pos: Int, sel: [Bool], prevLines: Int) -> Int {
+            var output = ""
+
+            // Move cursor up to overwrite previous render.
+            if prevLines > 0 {
+                output += "\u{1B}[\(prevLines)A"
+            }
+            // Carriage return + clear to end of screen.
+            output += "\r\u{1B}[J"
+
+            let used: Double = entries.enumerated()
+                .filter { sel[$0.offset] }
+                .map(\.element.sizeGb)
+                .reduce(0, +)
+            let remaining = budget - used
+            let count = sel.filter { $0 }.count
+
+            var lines = 0
+
+            output += "  Select models (RAM: \(Int(memoryGb)) GB)  \u{2191}\u{2193} navigate \u{00B7} Space toggle \u{00B7} Enter confirm\r\n"
+            lines += 1
+
+            output += "  \u{1B}[2m\(count) selected \u{00B7} \(String(format: "%.1f", used)) GB used \u{00B7} \(String(format: "%.1f", remaining)) GB remaining\u{1B}[0m\r\n\r\n"
+            lines += 2
+
+            var idx = 0
+
+            // Section 1: Downloaded models.
+            if downloadedCount > 0 {
+                output += "  \u{1B}[1mReady to serve:\u{1B}[0m\r\n"
+                lines += 1
+                for entry in entries where entry.downloaded {
+                    let arrow = idx == pos ? "\u{25B8}" : " "
+                    let check = sel[idx] ? "\u{2713}" : " "
+                    let highlight = idx == pos ? "\u{1B}[36m" : ""
+                    let reset = highlight.isEmpty ? "" : "\u{1B}[0m"
+                    output += "    \(highlight)\(arrow) [\(check)] \(entry.displayName) (\(String(format: "%.1f", entry.sizeGb)) GB)\(reset)\r\n"
+                    lines += 1
+                    idx += 1
+                }
+            }
+
+            // Section 2: Not-downloaded models.
+            if availableCount > 0 {
+                if downloadedCount > 0 {
+                    output += "\r\n"
+                    lines += 1
+                }
+                output += "  \u{1B}[1mAvailable to download:\u{1B}[0m\r\n"
+                lines += 1
+                for entry in entries where !entry.downloaded {
+                    let arrow = idx == pos ? "\u{25B8}" : " "
+                    let check = sel[idx] ? "\u{2713}" : " "
+                    let fits = !sel[idx] && entry.sizeGb > remaining
+                    let highlight: String
+                    if idx == pos {
+                        highlight = "\u{1B}[33m"
+                    } else if fits {
+                        highlight = "\u{1B}[2;31m"
+                    } else {
+                        highlight = "\u{1B}[2m"
+                    }
+                    let warn = fits ? " \u{26A0} won't fit" : ""
+                    output += "    \(highlight)\(arrow) [\(check)] \u{2193} \(entry.displayName) (\(String(format: "%.1f", entry.sizeGb)) GB)\(warn)\u{1B}[0m\r\n"
+                    lines += 1
+                    idx += 1
+                }
+            }
+
+            // Write the full frame in one syscall.
+            output.withCString { ptr in
+                _ = write(STDOUT_FILENO, ptr, strlen(ptr))
+            }
+
+            return lines
+        }
+
+        // Initial render.
+        lastLineCount = render(pos: cursorPos, sel: selected, prevLines: 0)
+
+        // Input loop.
+        var buf = [UInt8](repeating: 0, count: 3)
+        while true {
+            let n = read(STDIN_FILENO, &buf, 3)
+            guard n > 0 else { continue }
+
+            if n == 1 {
+                switch buf[0] {
+                case 0x1B:
+                    // Bare Escape — cancel.
+                    print()
+                    return []
+                case 0x71: // 'q'
+                    print()
+                    return []
+                case 0x20: // Space — toggle selection.
+                    if selected[cursorPos] {
+                        selected[cursorPos] = false
+                    } else {
+                        let used: Double = entries.enumerated()
+                            .filter { selected[$0.offset] }
+                            .map(\.element.sizeGb)
+                            .reduce(0, +)
+                        if used + entries[cursorPos].sizeGb <= budget {
+                            selected[cursorPos] = true
+                        }
+                    }
+                case 0x0A, 0x0D: // Enter — confirm.
+                    if selected.contains(true) {
+                        print()
+                        return selected.enumerated()
+                            .filter(\.element)
+                            .map(\.offset)
+                    }
+                    // Don't allow confirm with nothing selected.
+                default:
+                    break
+                }
+            } else if n == 3, buf[0] == 0x1B, buf[1] == 0x5B {
+                // Arrow key escape sequence: ESC [ A/B/C/D
+                switch buf[2] {
+                case 0x41: // Up
+                    if cursorPos > 0 { cursorPos -= 1 }
+                case 0x42: // Down
+                    if cursorPos < entries.count - 1 { cursorPos += 1 }
+                default:
+                    break
+                }
+            }
+
+            lastLineCount = render(pos: cursorPos, sel: selected, prevLines: lastLineCount)
+        }
     }
 }

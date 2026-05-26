@@ -1,12 +1,85 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+// Privacy floor constants: aggregated location buckets with fewer entries
+// than these thresholds are suppressed from public stats to prevent
+// de-anonymization of individual providers or consumers.
+const (
+	minProvidersPerCityBucket = 2
+	minRequestsPerCityBucket  = 5
+	minRequestsPerFlowBucket  = 5
+)
+
+// publicProviderLocationBucket is the privacy-safe shape returned to
+// callers in the provider_locations array.
+type publicProviderLocationBucket struct {
+	Key              string   `json:"key"`
+	Scope            string   `json:"scope"`
+	City             string   `json:"city,omitempty"`
+	Region           string   `json:"region,omitempty"`
+	RegionCode       string   `json:"region_code,omitempty"`
+	Country          string   `json:"country,omitempty"`
+	CountryCode      string   `json:"country_code,omitempty"`
+	Latitude         float64  `json:"latitude,omitempty"`
+	Longitude        float64  `json:"longitude,omitempty"`
+	Providers        int      `json:"providers"`
+	HardwareAttested int      `json:"hardware_attested"`
+	GPUCores         int      `json:"gpu_cores"`
+	MemoryGB         int      `json:"memory_gb"`
+	Models           []string `json:"models,omitempty"`
+}
+
+// publicRequestLocationBucket is the privacy-safe shape returned for
+// request-origin location aggregation.
+type publicRequestLocationBucket struct {
+	Key              string  `json:"key"`
+	Scope            string  `json:"scope"`
+	City             string  `json:"city,omitempty"`
+	Region           string  `json:"region,omitempty"`
+	RegionCode       string  `json:"region_code,omitempty"`
+	Country          string  `json:"country,omitempty"`
+	CountryCode      string  `json:"country_code,omitempty"`
+	Latitude         float64 `json:"latitude,omitempty"`
+	Longitude        float64 `json:"longitude,omitempty"`
+	Requests         int64   `json:"requests"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	Providers        int     `json:"providers"`
+}
+
+// publicRequestFlowBucket represents a directional flow of requests
+// between a consumer region and a provider region.
+type publicRequestFlowBucket struct {
+	Key              string       `json:"key"`
+	From             flowEndpoint `json:"from"`
+	To               flowEndpoint `json:"to"`
+	Requests         int64        `json:"requests"`
+	PromptTokens     int64        `json:"prompt_tokens"`
+	CompletionTokens int64        `json:"completion_tokens"`
+}
+
+type flowEndpoint struct {
+	Key         string  `json:"key"`
+	Kind        string  `json:"kind"` // "consumer" or "provider"
+	City        string  `json:"city,omitempty"`
+	Region      string  `json:"region,omitempty"`
+	RegionCode  string  `json:"region_code,omitempty"`
+	Country     string  `json:"country,omitempty"`
+	CountryCode string  `json:"country_code,omitempty"`
+	Latitude    float64 `json:"latitude,omitempty"`
+	Longitude   float64 `json:"longitude,omitempty"`
+}
 
 // handleStats returns aggregate platform statistics for the frontend dashboard.
 //
@@ -48,23 +121,35 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			provModels = append(provModels, m.ID)
 		}
 
+		lastChallengeVerified := ""
+		if last := p.GetLastChallengeVerified(); !last.IsZero() {
+			lastChallengeVerified = last.UTC().Format(time.RFC3339)
+		}
+
 		prov := map[string]any{
-			"id":                   p.ID,
-			"chip":                 p.Hardware.ChipName,
-			"chip_family":          p.Hardware.ChipFamily,
-			"chip_tier":            p.Hardware.ChipTier,
-			"machine_model":        p.Hardware.MachineModel,
-			"memory_gb":            p.Hardware.MemoryGB,
-			"gpu_cores":            p.Hardware.GPUCores,
-			"cpu_cores":            p.Hardware.CPUCores,
-			"memory_bandwidth_gbs": p.Hardware.MemoryBandwidthGBs,
-			"status":               status,
-			"trust_level":          string(p.TrustLevel),
-			"decode_tps":           p.DecodeTPS,
-			"requests_served":      p.Stats.RequestsServed,
-			"tokens_generated":     p.Stats.TokensGenerated,
-			"models":               provModels,
-			"current_model":        p.CurrentModel,
+			"id":                      p.ID,
+			"chip":                    p.Hardware.ChipName,
+			"chip_family":             p.Hardware.ChipFamily,
+			"chip_tier":               p.Hardware.ChipTier,
+			"machine_model":           p.Hardware.MachineModel,
+			"memory_gb":               p.Hardware.MemoryGB,
+			"gpu_cores":               p.Hardware.GPUCores,
+			"cpu_cores":               p.Hardware.CPUCores,
+			"memory_bandwidth_gbs":    p.Hardware.MemoryBandwidthGBs,
+			"status":                  status,
+			"trust_level":             string(p.TrustLevel),
+			"decode_tps":              p.DecodeTPS,
+			"requests_served":         p.Stats.RequestsServed,
+			"tokens_generated":        p.Stats.TokensGenerated,
+			"models":                  provModels,
+			"current_model":           p.CurrentModel,
+			"attested":                p.Attested,
+			"mda_verified":            p.MDAVerified,
+			"acme_verified":           p.ACMEVerified,
+			"runtime_verified":        p.RuntimeVerified,
+			"certificate_available":   len(p.MDACertChain) > 0,
+			"last_challenge_verified": lastChallengeVerified,
+			"failed_challenges":       p.FailedChallenges,
 		}
 		providers = append(providers, prov)
 
@@ -120,6 +205,15 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// --- Provider location aggregation ---
+	providerLocations, providerRegions, unknownLocationProviders, suppressedCityProviders := s.aggregateProviderLocations()
+
+	// --- Request location aggregation ---
+	requestLocations, requestRegions, unknownRequestLocReqs, suppressedReqCityReqs := s.aggregateRequestLocations(cutoff)
+
+	// --- Request flow aggregation ---
+	requestFlows := s.aggregateRequestFlows(cutoff)
+
 	resp := map[string]any{
 		"total_requests":          totalRequests,
 		"total_prompt_tokens":     totalPromptTokens,
@@ -135,6 +229,21 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"providers":               providers,
 		"models":                  models,
 		"time_series":             timeSeries,
+
+		// Location analytics (privacy-floored).
+		"provider_locations":                 providerLocations,
+		"provider_regions":                   providerRegions,
+		"unknown_location_providers":         unknownLocationProviders,
+		"suppressed_city_location_providers": suppressedCityProviders,
+		"location_privacy_min_providers":     minProvidersPerCityBucket,
+
+		"request_locations":                     requestLocations,
+		"request_regions":                       requestRegions,
+		"unknown_request_location_requests":     unknownRequestLocReqs,
+		"suppressed_request_city_requests":      suppressedReqCityReqs,
+		"request_location_privacy_min_requests": minRequestsPerCityBucket,
+
+		"request_flows": requestFlows,
 	}
 	body, err := json.Marshal(resp)
 	if err != nil {
@@ -143,4 +252,387 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	s.readCache.Set(cacheKey, body, time.Minute)
 	writeCachedJSON(w, body)
+}
+
+// aggregateProviderLocations builds privacy-floored city and region
+// buckets from the live provider fleet.
+func (s *Server) aggregateProviderLocations() (
+	cityBuckets []publicProviderLocationBucket,
+	regionBuckets []publicProviderLocationBucket,
+	unknownProviders int,
+	suppressedCityProviders int,
+) {
+	type cityKey struct {
+		City, Region, RegionCode, Country, CountryCode string
+	}
+	type regionKey struct {
+		Region, RegionCode, Country, CountryCode string
+	}
+	type cityAgg struct {
+		key              cityKey
+		latSum, lngSum   float64
+		coordCount       int
+		providers        int
+		hardwareAttested int
+		gpuCores         int
+		memoryGB         int
+	}
+	type regionAgg struct {
+		key              regionKey
+		latSum, lngSum   float64
+		coordCount       int
+		providers        int
+		hardwareAttested int
+		gpuCores         int
+		memoryGB         int
+	}
+	cities := make(map[cityKey]*cityAgg)
+	regions := make(map[regionKey]*regionAgg)
+
+	s.registry.ForEachProvider(func(p *registry.Provider) {
+		if p.Location == nil || p.Location.CountryCode == "" {
+			unknownProviders++
+			return
+		}
+		loc := p.Location
+		hwAttested := 0
+		if p.Attested && p.TrustLevel == registry.TrustHardware {
+			hwAttested = 1
+		}
+
+		ck := cityKey{loc.City, loc.Region, loc.RegionCode, loc.Country, loc.CountryCode}
+		ca, ok := cities[ck]
+		if !ok {
+			ca = &cityAgg{key: ck}
+			cities[ck] = ca
+		}
+		ca.providers++
+		ca.hardwareAttested += hwAttested
+		ca.gpuCores += p.Hardware.GPUCores
+		ca.memoryGB += p.Hardware.MemoryGB
+		if loc.Latitude != 0 || loc.Longitude != 0 {
+			ca.latSum += loc.Latitude
+			ca.lngSum += loc.Longitude
+			ca.coordCount++
+		}
+
+		rk := regionKey{loc.Region, loc.RegionCode, loc.Country, loc.CountryCode}
+		ra, ok := regions[rk]
+		if !ok {
+			ra = &regionAgg{key: rk}
+			regions[rk] = ra
+		}
+		ra.providers++
+		ra.hardwareAttested += hwAttested
+		ra.gpuCores += p.Hardware.GPUCores
+		ra.memoryGB += p.Hardware.MemoryGB
+		if loc.Latitude != 0 || loc.Longitude != 0 {
+			ra.latSum += loc.Latitude
+			ra.lngSum += loc.Longitude
+			ra.coordCount++
+		}
+	})
+
+	cityBuckets = make([]publicProviderLocationBucket, 0, len(cities))
+	for _, ca := range cities {
+		if ca.providers < minProvidersPerCityBucket {
+			suppressedCityProviders += ca.providers
+			continue
+		}
+		b := publicProviderLocationBucket{
+			Key:              locationKey(ca.key.CountryCode, ca.key.RegionCode, ca.key.City),
+			Scope:            "city",
+			City:             ca.key.City,
+			Region:           ca.key.Region,
+			RegionCode:       ca.key.RegionCode,
+			Country:          ca.key.Country,
+			CountryCode:      ca.key.CountryCode,
+			Providers:        ca.providers,
+			HardwareAttested: ca.hardwareAttested,
+			GPUCores:         ca.gpuCores,
+			MemoryGB:         ca.memoryGB,
+		}
+		if ca.coordCount > 0 {
+			b.Latitude = ca.latSum / float64(ca.coordCount)
+			b.Longitude = ca.lngSum / float64(ca.coordCount)
+		}
+		cityBuckets = append(cityBuckets, b)
+	}
+	sort.Slice(cityBuckets, func(i, j int) bool {
+		return cityBuckets[i].Providers > cityBuckets[j].Providers
+	})
+
+	regionBuckets = make([]publicProviderLocationBucket, 0, len(regions))
+	for _, ra := range regions {
+		b := publicProviderLocationBucket{
+			Key:              locationKey(ra.key.CountryCode, ra.key.RegionCode, ""),
+			Scope:            "region",
+			Region:           ra.key.Region,
+			RegionCode:       ra.key.RegionCode,
+			Country:          ra.key.Country,
+			CountryCode:      ra.key.CountryCode,
+			Providers:        ra.providers,
+			HardwareAttested: ra.hardwareAttested,
+			GPUCores:         ra.gpuCores,
+			MemoryGB:         ra.memoryGB,
+		}
+		if ra.coordCount > 0 {
+			b.Latitude = ra.latSum / float64(ra.coordCount)
+			b.Longitude = ra.lngSum / float64(ra.coordCount)
+		}
+		regionBuckets = append(regionBuckets, b)
+	}
+	sort.Slice(regionBuckets, func(i, j int) bool {
+		return regionBuckets[i].Providers > regionBuckets[j].Providers
+	})
+	return
+}
+
+// aggregateRequestLocations builds privacy-floored city and region
+// buckets from usage records with request-origin locations.
+func (s *Server) aggregateRequestLocations(since time.Time) (
+	cityBuckets []publicRequestLocationBucket,
+	regionBuckets []publicRequestLocationBucket,
+	unknownRequests int64,
+	suppressedCityRequests int64,
+) {
+	locBuckets := s.store.UsageLocationBuckets(since)
+
+	// Count requests without any location by subtracting located requests
+	// from total requests in the window.
+	var locatedRequests int64
+	for _, b := range locBuckets {
+		locatedRequests += b.Requests
+	}
+	// Total usage records in the window for unknown count.
+	allRecords := s.store.UsageRecordsSince(since)
+	totalInWindow := int64(len(allRecords))
+	unknownRequests = totalInWindow - locatedRequests
+
+	type cityKey struct {
+		City, Region, RegionCode, Country, CountryCode string
+	}
+	type regionKey struct {
+		Region, RegionCode, Country, CountryCode string
+	}
+	type cityAgg struct {
+		key                              cityKey
+		lat, lng                         float64
+		requests, promptTok, completeTok int64
+		providers                        int
+	}
+	type regionAgg struct {
+		key                              regionKey
+		latSum, lngSum                   float64
+		coordCount                       int
+		requests, promptTok, completeTok int64
+		providers                        int
+	}
+	cities := make(map[cityKey]*cityAgg)
+	regions := make(map[regionKey]*regionAgg)
+
+	for _, b := range locBuckets {
+		if b.CountryCode == "" {
+			continue
+		}
+		ck := cityKey{b.City, b.Region, b.RegionCode, b.Country, b.CountryCode}
+		ca, ok := cities[ck]
+		if !ok {
+			ca = &cityAgg{key: ck, lat: b.Latitude, lng: b.Longitude}
+			cities[ck] = ca
+		}
+		ca.requests += b.Requests
+		ca.promptTok += b.PromptTokens
+		ca.completeTok += b.CompletionTokens
+		ca.providers += b.Providers
+
+		rk := regionKey{b.Region, b.RegionCode, b.Country, b.CountryCode}
+		ra, ok := regions[rk]
+		if !ok {
+			ra = &regionAgg{key: rk}
+			regions[rk] = ra
+		}
+		ra.requests += b.Requests
+		ra.promptTok += b.PromptTokens
+		ra.completeTok += b.CompletionTokens
+		// Use max across city buckets as a conservative distinct-provider
+		// estimate; summing would double-count providers serving multiple cities.
+		if b.Providers > ra.providers {
+			ra.providers = b.Providers
+		}
+		if b.Latitude != 0 || b.Longitude != 0 {
+			ra.latSum += b.Latitude
+			ra.lngSum += b.Longitude
+			ra.coordCount++
+		}
+	}
+
+	cityBuckets = make([]publicRequestLocationBucket, 0, len(cities))
+	for _, ca := range cities {
+		if ca.requests < int64(minRequestsPerCityBucket) {
+			suppressedCityRequests += ca.requests
+			continue
+		}
+		cityBuckets = append(cityBuckets, publicRequestLocationBucket{
+			Key:              locationKey(ca.key.CountryCode, ca.key.RegionCode, ca.key.City),
+			Scope:            "city",
+			City:             ca.key.City,
+			Region:           ca.key.Region,
+			RegionCode:       ca.key.RegionCode,
+			Country:          ca.key.Country,
+			CountryCode:      ca.key.CountryCode,
+			Latitude:         ca.lat,
+			Longitude:        ca.lng,
+			Requests:         ca.requests,
+			PromptTokens:     ca.promptTok,
+			CompletionTokens: ca.completeTok,
+			Providers:        ca.providers,
+		})
+	}
+	sort.Slice(cityBuckets, func(i, j int) bool {
+		return cityBuckets[i].Requests > cityBuckets[j].Requests
+	})
+
+	regionBuckets = make([]publicRequestLocationBucket, 0, len(regions))
+	for _, ra := range regions {
+		b := publicRequestLocationBucket{
+			Key:              locationKey(ra.key.CountryCode, ra.key.RegionCode, ""),
+			Scope:            "region",
+			Region:           ra.key.Region,
+			RegionCode:       ra.key.RegionCode,
+			Country:          ra.key.Country,
+			CountryCode:      ra.key.CountryCode,
+			Requests:         ra.requests,
+			PromptTokens:     ra.promptTok,
+			CompletionTokens: ra.completeTok,
+			Providers:        ra.providers,
+		}
+		if ra.coordCount > 0 {
+			b.Latitude = ra.latSum / float64(ra.coordCount)
+			b.Longitude = ra.lngSum / float64(ra.coordCount)
+		}
+		regionBuckets = append(regionBuckets, b)
+	}
+	sort.Slice(regionBuckets, func(i, j int) bool {
+		return regionBuckets[i].Requests > regionBuckets[j].Requests
+	})
+	return
+}
+
+// aggregateRequestFlows builds directional request flow buckets between
+// consumer and provider regions.
+func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucket {
+	type flowKey struct {
+		consumerCity, consumerRegion, consumerCountry string
+		providerCity, providerRegion, providerCountry string
+	}
+	type flowAgg struct {
+		from                             flowEndpoint
+		to                               flowEndpoint
+		requests, promptTok, completeTok int64
+	}
+
+	// Build a provider location lookup from the live fleet.
+	providerLocs := make(map[string]*store.ProviderLocation)
+	s.registry.ForEachProvider(func(p *registry.Provider) {
+		if p.Location != nil {
+			cp := *p.Location
+			providerLocs[p.ID] = &cp
+		}
+	})
+
+	// Fall back to stored provider records for providers that disconnected.
+	if storedRecords, err := s.store.ListProviderRecords(context.Background()); err == nil {
+		for _, rec := range storedRecords {
+			if _, live := providerLocs[rec.ID]; !live && rec.Location != nil {
+				cp := *rec.Location
+				providerLocs[rec.ID] = &cp
+			}
+		}
+	}
+
+	flows := make(map[flowKey]*flowAgg)
+	records := s.store.UsageRecordsSince(since)
+	for _, rec := range records {
+		consumerLoc := rec.RequestLocation
+		providerLoc := providerLocs[rec.ProviderID]
+		if consumerLoc == nil || providerLoc == nil {
+			continue
+		}
+		k := flowKey{
+			consumerCity:    consumerLoc.City,
+			consumerRegion:  consumerLoc.RegionCode,
+			consumerCountry: consumerLoc.CountryCode,
+			providerCity:    providerLoc.City,
+			providerRegion:  providerLoc.RegionCode,
+			providerCountry: providerLoc.CountryCode,
+		}
+		fa, ok := flows[k]
+		if !ok {
+			fromKey := "consumer:" + locationKey(consumerLoc.CountryCode, consumerLoc.RegionCode, consumerLoc.City)
+			toKey := "provider:" + locationKey(providerLoc.CountryCode, providerLoc.RegionCode, providerLoc.City)
+			fa = &flowAgg{
+				from: flowEndpoint{
+					Key:         fromKey,
+					Kind:        "consumer",
+					City:        consumerLoc.City,
+					Region:      consumerLoc.Region,
+					RegionCode:  consumerLoc.RegionCode,
+					Country:     consumerLoc.Country,
+					CountryCode: consumerLoc.CountryCode,
+					Latitude:    consumerLoc.Latitude,
+					Longitude:   consumerLoc.Longitude,
+				},
+				to: flowEndpoint{
+					Key:         toKey,
+					Kind:        "provider",
+					City:        providerLoc.City,
+					Region:      providerLoc.Region,
+					RegionCode:  providerLoc.RegionCode,
+					Country:     providerLoc.Country,
+					CountryCode: providerLoc.CountryCode,
+					Latitude:    providerLoc.Latitude,
+					Longitude:   providerLoc.Longitude,
+				},
+			}
+			flows[k] = fa
+		}
+		fa.requests++
+		fa.promptTok += int64(rec.PromptTokens)
+		fa.completeTok += int64(rec.CompletionTokens)
+	}
+
+	out := make([]publicRequestFlowBucket, 0, len(flows))
+	for _, fa := range flows {
+		if fa.requests < int64(minRequestsPerFlowBucket) {
+			continue
+		}
+		out = append(out, publicRequestFlowBucket{
+			Key:              fa.from.Key + "->" + fa.to.Key,
+			From:             fa.from,
+			To:               fa.to,
+			Requests:         fa.requests,
+			PromptTokens:     fa.promptTok,
+			CompletionTokens: fa.completeTok,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Requests > out[j].Requests
+	})
+	if len(out) > 24 {
+		out = out[:24]
+	}
+	return out
+}
+
+// locationKey builds a stable, lowercase key from country/region/city parts.
+func locationKey(parts ...string) string {
+	clean := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.ToLower(strings.TrimSpace(part))
+		if part != "" {
+			clean = append(clean, part)
+		}
+	}
+	return strings.Join(clean, "|")
 }

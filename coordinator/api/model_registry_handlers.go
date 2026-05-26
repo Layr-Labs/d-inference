@@ -36,6 +36,8 @@ type registerModelRequest struct {
 	RuntimeParameters map[string]any `json:"runtime_parameters"`
 	Metadata          map[string]any `json:"metadata"`
 	Promote           bool           `json:"promote"`
+	InputPrice        int64          `json:"input_price"`  // micro-USD per 1M tokens (required)
+	OutputPrice       int64          `json:"output_price"` // micro-USD per 1M tokens (required)
 }
 
 type publishingActor struct {
@@ -142,6 +144,13 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to save model version"))
 		return
 	}
+	// Set platform pricing for this model.
+	if err := s.store.SetModelPrice("platform", req.ModelID, req.InputPrice, req.OutputPrice); err != nil {
+		s.logger.Error("model registry: set pricing failed", "model_id", req.ModelID, "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "model registered but failed to set pricing"))
+		return
+	}
+
 	if req.Promote {
 		if err := s.store.PromoteModelVersion(req.ModelID, req.Version); err != nil {
 			s.logger.Error("model registry: promote after register failed", "model_id", req.ModelID, "version", req.Version, "error", err)
@@ -152,10 +161,12 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 	s.SyncModelCatalog()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "registered",
-		"model":   entry,
-		"version": version,
-		"files":   len(files),
+		"status":       "registered",
+		"model":        entry,
+		"version":      version,
+		"files":        len(files),
+		"input_price":  req.InputPrice,
+		"output_price": req.OutputPrice,
 	})
 }
 
@@ -205,6 +216,55 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 		}
 		s.SyncModelCatalog()
 		writeJSON(w, http.StatusOK, map[string]any{"status": "updated", "model_id": modelID, "model_status": req.Status})
+	case "runtime-parameters":
+		var req struct {
+			RuntimeParameters map[string]any `json:"runtime_parameters"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+			return
+		}
+		if req.RuntimeParameters == nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "runtime_parameters is required"))
+			return
+		}
+		rec, err := s.store.GetModelRegistryRecord(modelID)
+		if err != nil {
+			s.writeModelRegistryStoreError(w, "get model for runtime_parameters update", err)
+			return
+		}
+		// Merge new parameters into existing ones (allows partial updates).
+		if rec.RuntimeParameters == nil {
+			rec.RuntimeParameters = make(map[string]any)
+		}
+		for k, v := range req.RuntimeParameters {
+			rec.RuntimeParameters[k] = v
+		}
+		entry := &store.ModelRegistryEntry{
+			ID:                rec.ID,
+			DisplayName:       rec.DisplayName,
+			Family:            rec.Family,
+			Architecture:      rec.Architecture,
+			Quantization:      rec.Quantization,
+			MaxContextLength:  rec.MaxContextLength,
+			MaxOutputLength:   rec.MaxOutputLength,
+			MinRAMGB:          rec.MinRAMGB,
+			Capabilities:      rec.Capabilities,
+			Status:            rec.Status,
+			Description:       rec.Description,
+			RuntimeParameters: rec.RuntimeParameters,
+			Metadata:          rec.Metadata,
+		}
+		if err := s.store.UpsertModelRegistryEntry(entry); err != nil {
+			s.writeModelRegistryStoreError(w, "update runtime_parameters", err)
+			return
+		}
+		s.SyncModelCatalog()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":             "updated",
+			"model_id":           modelID,
+			"runtime_parameters": rec.RuntimeParameters,
+		})
 	default:
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "model action not found"))
 	}
@@ -293,7 +353,7 @@ func parseAdminModelActionPath(p string) (string, string, bool) {
 	if rest == p || rest == "" {
 		return "", "", false
 	}
-	for _, action := range []string{"/promote", "/status"} {
+	for _, action := range []string{"/promote", "/status", "/runtime-parameters"} {
 		if strings.HasSuffix(rest, action) {
 			modelID, err := url.PathUnescape(strings.TrimSuffix(rest, action))
 			if err != nil {
@@ -329,6 +389,12 @@ func validateRegisterModelRequest(req registerModelRequest) error {
 	}
 	if req.MinRAMGB <= 0 {
 		return fmt.Errorf("min_ram_gb must be greater than zero")
+	}
+	if req.InputPrice <= 0 {
+		return fmt.Errorf("input_price is required and must be positive (micro-USD per 1M tokens)")
+	}
+	if req.OutputPrice <= 0 {
+		return fmt.Errorf("output_price is required and must be positive (micro-USD per 1M tokens)")
 	}
 	return nil
 }

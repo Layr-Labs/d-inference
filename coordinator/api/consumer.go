@@ -122,6 +122,7 @@ func (s *Server) dispatchOneProvider(
 	model string,
 	rawBody []byte,
 	consumerKey string,
+	consumerLocation *store.ProviderLocation,
 	reservedMicroUSD int64,
 	estimatedPromptTokens int,
 	requestedMaxTokens int,
@@ -141,6 +142,7 @@ func (s *Server) dispatchOneProvider(
 		RequestID:              requestID,
 		Model:                  model,
 		ConsumerKey:            consumerKey,
+		ConsumerLocation:       consumerLocation,
 		IsResponsesAPI:         isResponsesAPI,
 		EstimatedPromptTokens:  estimatedPromptTokens,
 		RequestedMaxTokens:     requestedMaxTokens,
@@ -179,9 +181,8 @@ func (s *Server) dispatchOneProvider(
 	}
 
 	if s.billing != nil && !providerHasPayoutDestination(provider) {
-		cleanupPending()
-		excludeProviders[provider.ID] = struct{}{}
-		return nil, nil, decision, "provider missing payout destination", http.StatusServiceUnavailable
+		s.logger.Warn("provider missing payout destination, crediting to internal ledger",
+			"provider_id", provider.ID)
 	}
 
 	if s.billing != nil {
@@ -291,6 +292,14 @@ func intFromRequestValue(v any) (int, bool) {
 	}
 }
 
+// approximateTokenCount returns a rough token estimate for routing and queue
+// admission. The len/4 heuristic is a reasonable average for English text
+// with GPT-style BPE tokenizers. This value feeds into the scheduler's
+// capacity checks (pendingTokenBudget, freeMemoryAdmits) where a tighter
+// estimate produces better routing decisions.
+//
+// For billing reservation (where underestimation causes provider shortfall),
+// use approximateTokenCountUpperBound instead.
 func approximateTokenCount(v any) int {
 	if v == nil {
 		return 0
@@ -318,6 +327,32 @@ func approximateTokenCount(v any) int {
 	}
 }
 
+// approximateTokenCountUpperBound returns a guaranteed upper bound on the
+// number of tokens a BPE tokenizer would produce for v. Every BPE vocabulary
+// starts with one token per byte and can only merge, so len(text) >= tokens
+// for any model family, any language, forever. This is used only for billing
+// reservation to ensure the pre-flight debit always covers the actual cost.
+//
+// Using len(text) over-reserves by ~3-4x on average for English prose, but
+// the difference is refunded immediately after inference completes, so
+// consumers are never overcharged — they only need sufficient balance to
+// cover the reservation hold.
+func approximateTokenCountUpperBound(v any) int {
+	if v == nil {
+		return 0
+	}
+	switch x := v.(type) {
+	case string:
+		return len(x)
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return 0
+		}
+		return len(b)
+	}
+}
+
 func estimatePromptTokens(parsed map[string]any) int {
 	total := 0
 	if v, ok := parsed["messages"]; ok {
@@ -331,6 +366,27 @@ func estimatePromptTokens(parsed map[string]any) int {
 	}
 	if total == 0 {
 		total = approximateTokenCount(parsed)
+	}
+	return total
+}
+
+// estimateBillingPromptTokens returns a guaranteed upper bound on prompt
+// tokens for billing reservation. Uses byte-length (not len/4) so the
+// pre-flight reservation always covers actual cost. This value must NOT
+// be used for routing — see estimatePromptTokens for that.
+func estimateBillingPromptTokens(parsed map[string]any) int {
+	total := 0
+	if v, ok := parsed["messages"]; ok {
+		total += approximateTokenCountUpperBound(v)
+	}
+	if v, ok := parsed["input"]; ok {
+		total += approximateTokenCountUpperBound(v)
+	}
+	if v, ok := parsed["prompt"]; ok {
+		total += approximateTokenCountUpperBound(v)
+	}
+	if total == 0 {
+		total = approximateTokenCountUpperBound(parsed)
 	}
 	return total
 }
@@ -532,20 +588,22 @@ func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provi
 	return required, nil
 }
 
-// ensureMaxTokensBound injects defaultMaxOutputTokens into parsed when the
+// ensureMaxTokensBound injects a max-tokens bound into parsed when the
 // consumer didn't specify any max-tokens field, so the outgoing request to
-// the provider is bounded by the amount we reserve upfront. The injected
-// field name depends on the API flavor: Responses API uses max_output_tokens,
-// everything else uses max_tokens. Returns true when an injection occurred,
-// so the caller can re-marshal the outgoing body if needed.
-func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool) bool {
+// the provider is bounded by the amount we reserve upfront. The bound is
+// the model's max_output_length from the registry (or defaultMaxOutputTokens
+// as fallback). The injected field name depends on the API flavor: Responses
+// API uses max_output_tokens, everything else uses max_tokens. Returns true
+// when an injection occurred, so the caller can re-marshal the outgoing body
+// if needed.
+func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool, bound int) bool {
 	if explicitMaxTokens(parsed) > 0 {
 		return false
 	}
 	if isResponsesAPI {
-		parsed["max_output_tokens"] = defaultMaxOutputTokens
+		parsed["max_output_tokens"] = bound
 	} else {
-		parsed["max_tokens"] = defaultMaxOutputTokens
+		parsed["max_tokens"] = bound
 	}
 	return true
 }
@@ -839,17 +897,39 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	isResponsesAPI := input != nil && len(messages) == 0
 
+	// Inject model-specific defaults from the registry: reasoning_parser
+	// and max_tokens bound. Single DB lookup (cached for platform prices).
+	maxOutputBound := defaultMaxOutputTokens
+	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		// Reasoning parser from runtime_parameters.
+		if _, hasRP := parsed["reasoning_parser"]; !hasRP && rec.RuntimeParameters != nil {
+			if rp, ok := rec.RuntimeParameters["reasoning_parser"]; ok {
+				parsed["reasoning_parser"] = rp
+				rawBody, _ = json.Marshal(parsed)
+			}
+		}
+		// Use the registry's max_output_length as the default max_tokens
+		// bound instead of the hardcoded 8192. This lets models like
+		// GPT-OSS 20B (32K output) generate longer responses when the
+		// consumer omits max_tokens.
+		if rec.MaxOutputLength > 0 {
+			maxOutputBound = rec.MaxOutputLength
+		}
+	}
+
 	// Bound the generation so the pre-flight reservation covers it. If the
-	// consumer didn't set max_tokens, inject defaultMaxOutputTokens into the
-	// outgoing body. Without this bound the provider could return more tokens
-	// than we reserved for, and the silent post-inference charge failure would
-	// hand the consumer free inference (GitHub issue #33).
-	if ensureMaxTokensBound(parsed, isResponsesAPI) {
+	// consumer didn't set max_tokens, inject the model's max_output_length
+	// (or defaultMaxOutputTokens as fallback). Without this bound the
+	// provider could return more tokens than we reserved for, and the
+	// silent post-inference charge failure would hand the consumer free
+	// inference (GitHub issue #33).
+	if ensureMaxTokensBound(parsed, isResponsesAPI, maxOutputBound) {
 		rawBody, _ = json.Marshal(parsed)
 	}
 
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := estimatePromptTokens(parsed)
+	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	timing.ParsedAt = time.Now()
 
@@ -863,14 +943,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Pre-flight balance reservation — atomically debit the worst-case cost
-	// (prompt tokens already consumed + max_tokens we just bounded the
-	// generation to) before routing to a provider. The post-inference charge
-	// refunds any unused portion. Reserving only the minimum charge let
-	// consumers receive streamed output far exceeding their actual balance.
+	// using the byte-length upper bound for prompt tokens (guaranteed >=
+	// actual tokens for any BPE tokenizer) plus max_tokens we just bounded
+	// the generation to. The post-inference charge refunds any unused
+	// portion. The routing estimate (estimatedPromptTokens, len/4) is kept
+	// separate so scheduler capacity checks aren't over-inflated.
 	var reservedMicroUSD int64
 	if s.billing != nil {
 		consumerKey := consumerKeyFromContext(r.Context())
-		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
+		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
 		start := time.Now()
 		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
@@ -939,6 +1020,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	)
 
 	consumerKey := consumerKeyFromContext(r.Context())
+	consumerLocation := s.requestLocation(r)
 
 	// Track providers that failed during retry so we don't dispatch to them again.
 	excludeProviders := make(map[string]struct{})
@@ -951,7 +1033,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		var dispatchErr string
 		var dispatchErrCode int
 		provider, pr, _, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
-			r, model, rawBody, consumerKey, reservedMicroUSD,
+			r, model, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
 			estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials,
 			isResponsesAPI, timing, excludeProviders,
 		)
@@ -986,6 +1068,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				RequestID:              requestID,
 				Model:                  model,
 				ConsumerKey:            consumerKey,
+				ConsumerLocation:       consumerLocation,
 				IsResponsesAPI:         isResponsesAPI,
 				EstimatedPromptTokens:  estimatedPromptTokens,
 				RequestedMaxTokens:     requestedMaxTokens,
@@ -1043,18 +1126,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			requestID = pr.RequestID
 			timing.RoutedAt = time.Now()
 
-			// Payout destination check — same as dispatchOneProvider.
+			// Log missing payout destination but don't skip — earnings
+			// are credited to the provider's internal ledger and can be
+			// withdrawn once they complete Stripe Connect onboarding.
 			if s.billing != nil && !providerHasPayoutDestination(provider) {
-				s.logger.Warn("queued provider missing payout destination, skipping",
+				s.logger.Warn("queued provider missing payout destination, crediting to internal ledger",
 					"request_id", requestID,
 					"provider_id", provider.ID,
 				)
-				provider.RemovePending(requestID)
-				s.registry.SetProviderIdle(provider.ID)
-				excludeProviders[provider.ID] = struct{}{}
-				lastErr = "provider missing payout destination"
-				lastErrCode = http.StatusServiceUnavailable
-				continue
 			}
 
 			// Custom pricing check — provider may charge more than the
@@ -1230,7 +1309,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			backupExclude[provider.ID] = struct{}{}
 
 			backupProvider, backupPR, _, _, _ := s.dispatchOneProvider(
-				r, model, rawBody, consumerKey, reservedMicroUSD,
+				r, model, rawBody, consumerKey, consumerLocation, reservedMicroUSD,
 				estimatedPromptTokens, requestedMaxTokens, allowedProviderSerials,
 				isResponsesAPI, &registry.RequestTiming{ReceivedAt: timing.ReceivedAt},
 				backupExclude,
@@ -1629,7 +1708,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 					pr.Timing.FirstChunkAt = time.Now()
 					committed = true
 				} else {
-					// Closed — check for error (same race as above).
+					// Closed — check for error. Use a short grace
+					// period instead of a non-blocking default to
+					// close the race where Go's select picks the
+					// ChunkCh close before the ErrorCh value (sent
+					// by the provider handler before closing ChunkCh).
 					select {
 					case errMsg := <-pr.ErrorCh:
 						excludeProviders[provider.ID] = struct{}{}
@@ -1657,7 +1740,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 						provider = nil
 						pr = nil
 						continue
-					default:
+					case <-time.After(50 * time.Millisecond):
 						committed = true
 					}
 				}
@@ -2530,18 +2613,18 @@ func normalizeSSEChunk(chunk string) string {
 							delta["tool_calls"] = json.RawMessage(`[]`)
 							changed = true
 						}
-						// ForgeCode uses #[serde(alias = "reasoning_content")] on
-						// the "reasoning" field. If both keys are present, serde
-						// fails with a duplicate-field error. Keep only "reasoning".
+						// Emit BOTH "reasoning" and "reasoning_content" so both
+						// AI SDK (reads reasoning_content) and ForgeCode/other
+						// clients (reads reasoning) see reasoning tokens.
 						if _, hasR := delta["reasoning"]; hasR {
-							if _, hasRC := delta["reasoning_content"]; hasRC {
-								delete(delta, "reasoning_content")
+							if _, hasRC := delta["reasoning_content"]; !hasRC {
+								// Only reasoning exists — copy to reasoning_content for AI SDK.
+								delta["reasoning_content"] = delta["reasoning"]
 								changed = true
 							}
 						} else if rc, hasRC := delta["reasoning_content"]; hasRC {
-							// Only reasoning_content exists — rename to reasoning.
+							// Only reasoning_content exists — add reasoning alias.
 							delta["reasoning"] = rc
-							delete(delta, "reasoning_content")
 							changed = true
 						}
 						if changed {
@@ -3248,23 +3331,28 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Completions and Anthropic messages both use the max_tokens field (never
 	// max_output_tokens, which is Responses API only). Inject a default if
 	// unset so the pre-flight reservation bounds the generation.
-	ensureMaxTokensBound(parsed, false)
+	genericMaxOutput := defaultMaxOutputTokens
+	if rec, err := s.store.GetModelRegistryRecord(model); err == nil && rec.MaxOutputLength > 0 {
+		genericMaxOutput = rec.MaxOutputLength
+	}
+	ensureMaxTokensBound(parsed, false, genericMaxOutput)
 
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := estimatePromptTokens(parsed)
+	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 
 	// Inject the endpoint so the provider knows which local path to forward to.
 	parsed["endpoint"] = endpoint
 
 	// Pre-flight balance reservation — same worst-case-cost reservation as
-	// handleChatCompletions. Before this fix the completions and Anthropic
-	// paths routed without ANY reservation; the silent post-inference charge
-	// meant a consumer could receive full responses with a zero balance.
+	// handleChatCompletions, using the byte-length upper bound for prompt
+	// tokens so the reservation always covers actual cost.
 	consumerKey := consumerKeyFromContext(r.Context())
+	consumerLocation := s.requestLocation(r)
 	var reservedMicroUSD int64
 	if s.billing != nil {
-		reservedMicroUSD = s.reservationCost(model, estimatedPromptTokens, requestedMaxTokens)
+		reservedMicroUSD = s.reservationCost(model, billingPromptTokens, requestedMaxTokens)
 		start := time.Now()
 		if err := s.ledger.Charge(consumerKey, reservedMicroUSD, "reserve:"+consumerKey); err != nil {
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
@@ -3301,6 +3389,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		RequestID:              requestID,
 		Model:                  model,
 		ConsumerKey:            consumerKey,
+		ConsumerLocation:       consumerLocation,
 		AllowedProviderSerials: allowedProviderSerials,
 		EstimatedPromptTokens:  estimatedPromptTokens,
 		RequestedMaxTokens:     requestedMaxTokens,
@@ -3336,12 +3425,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			break
 		}
 
-		// Payout destination check — skip providers that can't receive payment.
 		if s.billing != nil && !providerHasPayoutDestination(provider) {
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			excludeProviders = append(excludeProviders, provider.ID)
-			continue
+			s.logger.Warn("provider missing payout destination, crediting to internal ledger",
+				"provider_id", provider.ID)
 		}
 
 		// Custom pricing check — provider may charge more than the platform rate.
@@ -3407,12 +3493,8 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 	defer cleanupPending()
 	if s.billing != nil && !providerHasPayoutDestination(provider) {
-		cleanupPending()
-		refundExtra()
-		refundReservation()
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-			fmt.Sprintf("no payable provider available for model %q", model)))
-		return
+		s.logger.Warn("provider missing payout destination, crediting to internal ledger",
+			"provider_id", provider.ID)
 	}
 	if s.billing != nil {
 		if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {

@@ -4,67 +4,31 @@ import (
 	"testing"
 )
 
-func TestOutputPriceKnownModels(t *testing.T) {
-	tests := []struct {
-		model string
-		want  int64
-	}{
-		{"qwen3.5-27b-claude-opus-8bit", 780_000},
-		{"mlx-community/Trinity-Mini-8bit", 75_000},
-		{"mlx-community/Qwen3.5-122B-A10B-8bit", 1_040_000},
-		{"mlx-community/MiniMax-M2.5-8bit", 500_000},
+func TestFallbackPricesForAnyModel(t *testing.T) {
+	// Without DB-configured prices, all models get the fallback defaults.
+	models := []string{
+		"gpt-oss-20b",
+		"gemma-4-26b",
+		"qwen3.5-27b-claude-opus-8bit",
+		"mlx-community/Trinity-Mini-8bit",
+		"totally-unknown-model",
 	}
 
-	for _, tc := range tests {
-		got := OutputPricePerMillion(tc.model)
-		if got != tc.want {
-			t.Errorf("OutputPricePerMillion(%q) = %d, want %d", tc.model, got, tc.want)
-		}
-	}
-}
-
-func TestInputPriceKnownModels(t *testing.T) {
-	tests := []struct {
-		model string
-		want  int64
-	}{
-		{"qwen3.5-27b-claude-opus-8bit", 100_000},
-		{"mlx-community/Trinity-Mini-8bit", 23_000},
-		{"mlx-community/Qwen3.5-122B-A10B-8bit", 130_000},
-		{"mlx-community/MiniMax-M2.5-8bit", 60_000},
-	}
-
-	for _, tc := range tests {
-		got := InputPricePerMillion(tc.model)
-		if got != tc.want {
-			t.Errorf("InputPricePerMillion(%q) = %d, want %d", tc.model, got, tc.want)
-		}
-	}
-}
-
-func TestInputCheaperThanOutput(t *testing.T) {
-	for model := range modelPricing {
+	for _, model := range models {
 		input := InputPricePerMillion(model)
 		output := OutputPricePerMillion(model)
-		if input >= output {
-			t.Errorf("%s: input price %d >= output price %d", model, input, output)
+
+		if input != DefaultInputPricePerMillion {
+			t.Errorf("InputPricePerMillion(%q) = %d, want fallback %d", model, input, DefaultInputPricePerMillion)
 		}
-	}
-}
-
-func TestDefaultPricesForUnknownModel(t *testing.T) {
-	input := InputPricePerMillion("unknown-model")
-	output := OutputPricePerMillion("unknown-model")
-
-	if input != defaultInputPricePerMillion {
-		t.Errorf("default input = %d, want %d", input, defaultInputPricePerMillion)
-	}
-	if output != defaultOutputPricePerMillion {
-		t.Errorf("default output = %d, want %d", output, defaultOutputPricePerMillion)
+		if output != DefaultOutputPricePerMillion {
+			t.Errorf("OutputPricePerMillion(%q) = %d, want fallback %d", model, output, DefaultOutputPricePerMillion)
+		}
 	}
 }
 
 func TestCalculateCost(t *testing.T) {
+	// All models use fallback pricing ($0.05 input, $0.20 output per 1M tokens).
 	tests := []struct {
 		name             string
 		model            string
@@ -73,53 +37,39 @@ func TestCalculateCost(t *testing.T) {
 		want             int64
 	}{
 		{
-			name:             "1M output tokens at Trinity Mini rate, no input",
-			model:            "mlx-community/Trinity-Mini-8bit",
+			name:             "1M output tokens at fallback rate",
+			model:            "any-model",
 			promptTokens:     0,
 			completionTokens: 1_000_000,
-			want:             75_000, // $0.075 output only
+			want:             200_000, // $0.20 output
 		},
 		{
-			name:             "1M input + 1M output at Trinity Mini rate",
-			model:            "mlx-community/Trinity-Mini-8bit",
+			name:             "1M input + 1M output at fallback rate",
+			model:            "any-model",
 			promptTokens:     1_000_000,
 			completionTokens: 1_000_000,
-			want:             98_000, // $0.023 input + $0.075 output = $0.098
+			want:             250_000, // $0.05 input + $0.20 output = $0.25
 		},
 		{
-			name:             "only input tokens at MiniMax rate",
-			model:            "mlx-community/MiniMax-M2.5-8bit",
+			name:             "only input tokens at fallback rate",
+			model:            "any-model",
 			promptTokens:     1_000_000,
 			completionTokens: 0,
-			want:             60_000, // $0.06 input, no output
-		},
-		{
-			name:             "122B model 1M each",
-			model:            "mlx-community/Qwen3.5-122B-A10B-8bit",
-			promptTokens:     1_000_000,
-			completionTokens: 1_000_000,
-			want:             1_170_000, // $0.13 input + $1.04 output = $1.17
+			want:             50_000, // $0.05 input
 		},
 		{
 			name:             "small request hits minimum",
-			model:            "mlx-community/Trinity-Mini-8bit",
+			model:            "any-model",
 			promptTokens:     10,
 			completionTokens: 10,
 			want:             100, // minimum $0.0001
 		},
 		{
 			name:             "zero tokens hits minimum",
-			model:            "mlx-community/Trinity-Mini-8bit",
+			model:            "any-model",
 			promptTokens:     0,
 			completionTokens: 0,
 			want:             100, // minimum
-		},
-		{
-			name:             "Qwen3.5 27B Claude Opus 1M output",
-			model:            "qwen3.5-27b-claude-opus-8bit",
-			promptTokens:     0,
-			completionTokens: 1_000_000,
-			want:             780_000, // $0.78
 		},
 	}
 
@@ -129,6 +79,54 @@ func TestCalculateCost(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("CalculateCost(%q, %d, %d) = %d, want %d",
 					tc.model, tc.promptTokens, tc.completionTokens, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCalculateCostWithOverrides(t *testing.T) {
+	tests := []struct {
+		name             string
+		customInput      int64
+		customOutput     int64
+		hasCustom        bool
+		promptTokens     int
+		completionTokens int
+		want             int64
+	}{
+		{
+			name:             "custom prices override fallback",
+			customInput:      15_000,  // $0.015
+			customOutput:     70_000,  // $0.070
+			hasCustom:        true,
+			promptTokens:     1_000_000,
+			completionTokens: 1_000_000,
+			want:             85_000, // $0.015 + $0.070 = $0.085
+		},
+		{
+			name:             "no custom falls back to defaults",
+			hasCustom:        false,
+			promptTokens:     1_000_000,
+			completionTokens: 1_000_000,
+			want:             250_000, // $0.05 + $0.20 = $0.25
+		},
+		{
+			name:             "custom prices with minimum charge",
+			customInput:      1_000,
+			customOutput:     1_000,
+			hasCustom:        true,
+			promptTokens:     10,
+			completionTokens: 10,
+			want:             100, // minimum
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CalculateCostWithOverrides("test-model", tc.promptTokens, tc.completionTokens,
+				tc.customInput, tc.customOutput, tc.hasCustom)
+			if got != tc.want {
+				t.Errorf("CalculateCostWithOverrides = %d, want %d", got, tc.want)
 			}
 		})
 	}
@@ -181,38 +179,6 @@ func TestPlatformFeeAndProviderPayoutSumToTotal(t *testing.T) {
 		if fee+payout != total {
 			t.Errorf("PlatformFee(%d) + ProviderPayout(%d) = %d + %d = %d, want %d",
 				total, total, fee, payout, fee+payout, total)
-		}
-	}
-}
-
-func TestAllModelPricesUndercutCompetitors(t *testing.T) {
-	// Competitor output prices (micro-USD per 1M tokens)
-	competitorOutput := map[string]int64{
-		"qwen3.5-27b-claude-opus-8bit":         1_560_000, // OpenRouter $1.56
-		"mlx-community/Trinity-Mini-8bit":      150_000,   // OpenRouter $0.15
-		"mlx-community/Qwen3.5-122B-A10B-8bit": 2_080_000, // OpenRouter $2.08
-		"mlx-community/MiniMax-M2.5-8bit":      1_000_000, // OpenRouter $1.00
-	}
-
-	for model, compPrice := range competitorOutput {
-		ourPrice := OutputPricePerMillion(model)
-		if ourPrice >= compPrice {
-			t.Errorf("%s: our output price %d >= competitor %d", model, ourPrice, compPrice)
-		}
-	}
-
-	// Competitor input prices (micro-USD per 1M tokens)
-	competitorInput := map[string]int64{
-		"qwen3.5-27b-claude-opus-8bit":         200_000, // OpenRouter $0.20
-		"mlx-community/Trinity-Mini-8bit":      46_000,  // OpenRouter $0.046
-		"mlx-community/Qwen3.5-122B-A10B-8bit": 260_000, // OpenRouter $0.26
-		"mlx-community/MiniMax-M2.5-8bit":      120_000, // OpenRouter $0.12
-	}
-
-	for model, compPrice := range competitorInput {
-		ourPrice := InputPricePerMillion(model)
-		if ourPrice >= compPrice {
-			t.Errorf("%s: our input price %d >= competitor %d", model, ourPrice, compPrice)
 		}
 	}
 }

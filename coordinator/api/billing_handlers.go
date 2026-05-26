@@ -327,8 +327,6 @@ func (s *Server) handleReferralInfo(w http.ResponseWriter, r *http.Request) {
 // Public endpoint — returns platform default prices. Also overlays platform
 // DB overrides (set via admin endpoint).
 func (s *Server) handleGetPricing(w http.ResponseWriter, r *http.Request) {
-	defaults := payments.DefaultPrices()
-
 	type priceEntry struct {
 		Model       string `json:"model"`
 		InputPrice  int64  `json:"input_price"`  // micro-USD per 1M tokens
@@ -337,37 +335,25 @@ func (s *Server) handleGetPricing(w http.ResponseWriter, r *http.Request) {
 		OutputUSD   string `json:"output_usd"`
 	}
 
-	// Start with hardcoded defaults.
-	priceMap := make(map[string]priceEntry)
-	for model, prices := range defaults {
-		priceMap[model] = priceEntry{
-			Model:       model,
-			InputPrice:  prices[0],
-			OutputPrice: prices[1],
-			InputUSD:    fmt.Sprintf("$%.4f", float64(prices[0])/1_000_000),
-			OutputUSD:   fmt.Sprintf("$%.4f", float64(prices[1])/1_000_000),
-		}
-	}
-
-	// Overlay admin-set platform prices (account_id = "platform").
+	// All model prices come from the database (set via PUT /v1/admin/pricing).
 	platformPrices := s.store.ListModelPrices("platform")
+	prices := make([]priceEntry, 0, len(platformPrices))
 	for _, mp := range platformPrices {
-		priceMap[mp.Model] = priceEntry{
+		prices = append(prices, priceEntry{
 			Model:       mp.Model,
 			InputPrice:  mp.InputPrice,
 			OutputPrice: mp.OutputPrice,
 			InputUSD:    fmt.Sprintf("$%.4f", float64(mp.InputPrice)/1_000_000),
 			OutputUSD:   fmt.Sprintf("$%.4f", float64(mp.OutputPrice)/1_000_000),
-		}
-	}
-
-	var prices []priceEntry
-	for _, p := range priceMap {
-		prices = append(prices, p)
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"prices": prices,
+		"fallback_input_price":  payments.DefaultInputPricePerMillion,
+		"fallback_output_price": payments.DefaultOutputPricePerMillion,
+		"fallback_input_usd":    fmt.Sprintf("$%.4f", float64(payments.DefaultInputPricePerMillion)/1_000_000),
+		"fallback_output_usd":   fmt.Sprintf("$%.4f", float64(payments.DefaultOutputPricePerMillion)/1_000_000),
 	})
 }
 
@@ -375,9 +361,7 @@ func (s *Server) handleGetPricing(w http.ResponseWriter, r *http.Request) {
 // Sets platform default prices for a model. Requires a Privy account with
 // an admin email. These defaults apply to all users who haven't set custom prices.
 func (s *Server) handleAdminPricing(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil || !s.isAdmin(user) {
-		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
+	if !s.isAdminAuthorized(w, r) {
 		return
 	}
 
@@ -545,9 +529,7 @@ func (s *Server) requirePrivyUser(w http.ResponseWriter, r *http.Request) *store
 // handleAdminListModels handles GET /v1/admin/models.
 // Returns the full supported model catalog. Requires admin auth.
 func (s *Server) handleAdminListModels(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil || !s.isAdmin(user) {
-		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
+	if !s.isAdminAuthorized(w, r) {
 		return
 	}
 
@@ -560,31 +542,55 @@ func (s *Server) handleAdminListModels(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminSetModel handles POST /v1/admin/models.
 // Adds or updates a model in the catalog. Requires admin auth.
+// If input_price and output_price are provided, sets platform pricing too.
 func (s *Server) handleAdminSetModel(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil || !s.isAdmin(user) {
-		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
+	if !s.isAdminAuthorized(w, r) {
 		return
 	}
 
-	var model store.SupportedModel
-	if err := json.NewDecoder(r.Body).Decode(&model); err != nil {
+	var req struct {
+		store.SupportedModel
+		InputPrice  int64 `json:"input_price"`  // optional, micro-USD per 1M tokens
+		OutputPrice int64 `json:"output_price"` // optional, micro-USD per 1M tokens
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
 		return
 	}
-	if model.ID == "" {
+	if req.ID == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "id is required"))
 		return
 	}
-	if model.DisplayName == "" {
+	if req.DisplayName == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "display_name is required"))
 		return
 	}
 
+	model := req.SupportedModel
 	if err := s.store.SetSupportedModel(&model); err != nil {
 		s.logger.Error("admin: set model failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to save model"))
 		return
+	}
+
+	// Set platform pricing if provided.
+	resp := map[string]any{
+		"status": "model_saved",
+		"model":  model,
+	}
+	if req.InputPrice > 0 && req.OutputPrice > 0 {
+		if err := s.store.SetModelPrice("platform", model.ID, req.InputPrice, req.OutputPrice); err != nil {
+			s.logger.Error("admin: set model price failed", "model_id", model.ID, "error", err)
+			writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "model saved but failed to set pricing"))
+			return
+		}
+		resp["input_price"] = req.InputPrice
+		resp["output_price"] = req.OutputPrice
+		s.logger.Info("admin: model pricing set",
+			"model_id", model.ID,
+			"input_price", req.InputPrice,
+			"output_price", req.OutputPrice,
+		)
 	}
 
 	// Sync the updated catalog to the registry so routing reflects the change.
@@ -596,18 +602,13 @@ func (s *Server) handleAdminSetModel(w http.ResponseWriter, r *http.Request) {
 		"active", model.Active,
 	)
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status": "model_saved",
-		"model":  model,
-	})
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleAdminDeleteModel handles DELETE /v1/admin/models.
 // Removes a model from the catalog. Requires admin auth.
 func (s *Server) handleAdminDeleteModel(w http.ResponseWriter, r *http.Request) {
-	user := auth.UserFromContext(r.Context())
-	if user == nil || !s.isAdmin(user) {
-		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
+	if !s.isAdminAuthorized(w, r) {
 		return
 	}
 

@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -34,6 +35,17 @@ var _ Store = (*PostgresStore)(nil)
 // PostgresStore is a PostgreSQL-backed implementation of Store.
 type PostgresStore struct {
 	pool *pgxpool.Pool
+
+	// In-memory cache for model prices. Keyed by "accountID:model".
+	// Eliminates a DB round trip on every inference request for
+	// platform pricing lookups (which change rarely).
+	priceCacheMu sync.RWMutex
+	priceCache   map[string]cachedPrice
+}
+
+type cachedPrice struct {
+	input, output int64
+	at            time.Time
 }
 
 // NewPostgres creates a new PostgresStore connected to the given database URL.
@@ -63,7 +75,10 @@ func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 		return nil, fmt.Errorf("store: ping postgres: %w", err)
 	}
 
-	s := &PostgresStore{pool: pool}
+	s := &PostgresStore{
+		pool:       pool,
+		priceCache: make(map[string]cachedPrice),
+	}
 	if err := s.migrate(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("store: run migrations: %w", err)
@@ -85,6 +100,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			hardware JSONB NOT NULL,
 			models JSONB NOT NULL,
 			backend TEXT NOT NULL,
+			location JSONB,
 			registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			trust_level TEXT NOT NULL DEFAULT 'none',
@@ -108,6 +124,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			last_session_tokens_generated BIGINT NOT NULL DEFAULT 0
 		)`,
 		// Migrate existing providers table: add new columns if upgrading from previous schema
+		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS location JSONB; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS trust_level TEXT NOT NULL DEFAULT 'none'; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS attested BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS attestation_result JSONB; EXCEPTION WHEN others THEN NULL; END $$`,
@@ -133,6 +150,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// Migrate usage table: add request_id and cost columns
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS cost_micro_usd BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS request_location JSONB; EXCEPTION WHEN others THEN NULL; END $$`,
 
 		// Provider reputation — persistent reputation tracking
 		`CREATE TABLE IF NOT EXISTS provider_reputation (
@@ -166,7 +184,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			completion_tokens INTEGER NOT NULL,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			request_id TEXT NOT NULL DEFAULT '',
-			cost_micro_usd BIGINT NOT NULL DEFAULT 0
+			cost_micro_usd BIGINT NOT NULL DEFAULT 0,
+			request_location JSONB
 		)`,
 		`CREATE TABLE IF NOT EXISTS payments (
 			id BIGSERIAL PRIMARY KEY,
@@ -734,16 +753,82 @@ func (s *PostgresStore) UsageByConsumer(consumerKey string) []UsageRecord {
 
 // RecordUsageWithCost inserts a usage record with request ID and cost.
 func (s *PostgresStore) RecordUsageWithCost(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64) {
+	s.RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID, promptTokens, completionTokens, costMicroUSD, nil)
+}
+
+// RecordUsageWithCostAndLocation inserts a usage record with request ID, cost,
+// and approximate request-origin location.
+func (s *PostgresStore) RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
 	h := hashKey(consumerKey)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	_, _ = s.pool.Exec(ctx,
-		`INSERT INTO usage (provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens, request_id, cost_micro_usd)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		providerID, h, model, promptTokens, completionTokens, requestID, costMicroUSD,
+		`INSERT INTO usage (provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens, request_id, cost_micro_usd, request_location)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		providerID, h, model, promptTokens, completionTokens, requestID, costMicroUSD, marshalProviderLocation(requestLocation),
 	)
+}
+
+// UsageLocationBuckets aggregates usage by approximate request origin.
+func (s *PostgresStore) UsageLocationBuckets(since time.Time) []UsageLocationBucket {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT
+			COALESCE(request_location->>'city', '') AS city,
+			COALESCE(request_location->>'region', '') AS region,
+			COALESCE(request_location->>'region_code', '') AS region_code,
+			COALESCE(request_location->>'country', '') AS country,
+			COALESCE(request_location->>'country_code', '') AS country_code,
+			COALESCE(AVG(NULLIF(request_location->>'latitude', '')::double precision), 0),
+			COALESCE(AVG(NULLIF(request_location->>'longitude', '')::double precision), 0),
+			COUNT(*),
+			COALESCE(SUM(prompt_tokens), 0),
+			COALESCE(SUM(completion_tokens), 0),
+			COUNT(DISTINCT provider_id)
+		 FROM usage
+		 WHERE request_location IS NOT NULL
+		   AND ($1::timestamptz IS NULL OR created_at >= $1)
+		 GROUP BY city, region, region_code, country, country_code
+		 ORDER BY COUNT(*) DESC`,
+		nullSince(since),
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var buckets []UsageLocationBucket
+	for rows.Next() {
+		var b UsageLocationBucket
+		if err := rows.Scan(
+			&b.City,
+			&b.Region,
+			&b.RegionCode,
+			&b.Country,
+			&b.CountryCode,
+			&b.Latitude,
+			&b.Longitude,
+			&b.Requests,
+			&b.PromptTokens,
+			&b.CompletionTokens,
+			&b.Providers,
+		); err != nil {
+			continue
+		}
+		buckets = append(buckets, b)
+	}
+	return buckets
+}
+
+func nullSince(since time.Time) any {
+	if since.IsZero() {
+		return nil
+	}
+	return since
 }
 
 // RecordPayment inserts a payment record into PostgreSQL.
@@ -893,7 +978,7 @@ func (s *PostgresStore) UsageRecords() []UsageRecord {
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens, created_at
+		`SELECT provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens, created_at, request_id, cost_micro_usd, request_location
 		 FROM usage ORDER BY created_at ASC`,
 	)
 	if err != nil {
@@ -904,13 +989,70 @@ func (s *PostgresStore) UsageRecords() []UsageRecord {
 	var records []UsageRecord
 	for rows.Next() {
 		var r UsageRecord
-		if err := rows.Scan(&r.ProviderID, &r.ConsumerKey, &r.Model, &r.PromptTokens, &r.CompletionTokens, &r.Timestamp); err != nil {
+		var locationRaw []byte
+		if err := rows.Scan(
+			&r.ProviderID,
+			&r.ConsumerKey,
+			&r.Model,
+			&r.PromptTokens,
+			&r.CompletionTokens,
+			&r.Timestamp,
+			&r.RequestID,
+			&r.CostMicroUSD,
+			&locationRaw,
+		); err != nil {
 			continue
 		}
+		r.CreatedAt = r.Timestamp
+		r.RequestLocation = unmarshalProviderLocation(locationRaw)
 		records = append(records, r)
 	}
 	if records == nil {
 		records = make([]UsageRecord, 0)
+	}
+	return records
+}
+
+// UsageRecordsSince returns usage records created at or after the given time.
+func (s *PostgresStore) UsageRecordsSince(since time.Time) []UsageRecord {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT provider_id, consumer_key_hash, model, prompt_tokens, completion_tokens, created_at, request_id, cost_micro_usd, request_location
+		 FROM usage
+		 WHERE ($1::timestamptz IS NULL OR created_at >= $1)
+		 ORDER BY created_at ASC`,
+		nullSince(since),
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var records []UsageRecord
+	for rows.Next() {
+		var r UsageRecord
+		var locationRaw []byte
+		if err := rows.Scan(
+			&r.ProviderID,
+			&r.ConsumerKey,
+			&r.Model,
+			&r.PromptTokens,
+			&r.CompletionTokens,
+			&r.Timestamp,
+			&r.RequestID,
+			&r.CostMicroUSD,
+			&locationRaw,
+		); err != nil {
+			continue
+		}
+		r.CreatedAt = r.Timestamp
+		r.RequestLocation = unmarshalProviderLocation(locationRaw)
+		records = append(records, r)
+	}
+	if records == nil {
+		return []UsageRecord{}
 	}
 	return records
 }
@@ -1061,43 +1203,31 @@ func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("store: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	// Check and update balance atomically
+	// Single-statement CTE: debit balance, cap withdrawable, insert ledger
+	// entry -- all in one round trip. The old implementation used 5 sequential
+	// round trips (BEGIN + 2 UPDATEs + INSERT + COMMIT) which paid full
+	// network latency to Postgres on each hop (~200ms × 5 = 1s+).
 	var balanceAfter int64
-	err = tx.QueryRow(ctx,
-		`UPDATE balances
-		 SET balance_micro_usd = balance_micro_usd - $2, updated_at = NOW()
-		 WHERE account_id = $1 AND balance_micro_usd >= $2
-		 RETURNING balance_micro_usd`,
-		accountID, amountMicroUSD,
+	err := s.pool.QueryRow(ctx, `
+		WITH debit AS (
+			UPDATE balances
+			SET balance_micro_usd = balance_micro_usd - $2,
+			    withdrawable_micro_usd = LEAST(withdrawable_micro_usd, balance_micro_usd - $2),
+			    updated_at = NOW()
+			WHERE account_id = $1 AND balance_micro_usd >= $2
+			RETURNING balance_micro_usd
+		), ledger AS (
+			INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
+			SELECT $1, $3, -$2, balance_micro_usd, $4
+			FROM debit
+		)
+		SELECT balance_micro_usd FROM debit`,
+		accountID, amountMicroUSD, string(entryType), reference,
 	).Scan(&balanceAfter)
 	if err != nil {
 		return errors.New("insufficient balance or account not found")
 	}
-
-	// Cap withdrawable at the new balance (credits consumed first).
-	_, _ = tx.Exec(ctx,
-		`UPDATE balances SET withdrawable_micro_usd = LEAST(withdrawable_micro_usd, balance_micro_usd)
-		 WHERE account_id = $1`,
-		accountID,
-	)
-
-	// Record ledger entry
-	_, err = tx.Exec(ctx,
-		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		accountID, string(entryType), -amountMicroUSD, balanceAfter, reference,
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert ledger entry: %w", err)
-	}
-
-	return tx.Commit(ctx)
+	return nil
 }
 
 // DebitWithdrawable subtracts micro-USD from both the total balance and the
@@ -1387,10 +1517,27 @@ func (s *PostgresStore) SetModelPrice(accountID, model string, inputPrice, outpu
 	if err != nil {
 		return fmt.Errorf("store: set model price: %w", err)
 	}
+
+	// Invalidate cache.
+	key := accountID + ":" + model
+	s.priceCacheMu.Lock()
+	delete(s.priceCache, key)
+	s.priceCacheMu.Unlock()
+
 	return nil
 }
 
 func (s *PostgresStore) GetModelPrice(accountID, model string) (int64, int64, bool) {
+	key := accountID + ":" + model
+
+	// Check in-memory cache (30-second TTL).
+	s.priceCacheMu.RLock()
+	if cached, ok := s.priceCache[key]; ok && time.Since(cached.at) < 30*time.Second {
+		s.priceCacheMu.RUnlock()
+		return cached.input, cached.output, true
+	}
+	s.priceCacheMu.RUnlock()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -1402,6 +1549,12 @@ func (s *PostgresStore) GetModelPrice(accountID, model string) (int64, int64, bo
 	if err != nil {
 		return 0, 0, false
 	}
+
+	// Populate cache.
+	s.priceCacheMu.Lock()
+	s.priceCache[key] = cachedPrice{input: input, output: output, at: time.Now()}
+	s.priceCacheMu.Unlock()
+
 	return input, output, true
 }
 
@@ -2404,13 +2557,35 @@ func (s *PostgresStore) CreditProviderWallet(payout *ProviderPayout) error {
 
 // --- Provider Fleet Persistence ---
 
+func marshalProviderLocation(loc *ProviderLocation) json.RawMessage {
+	if loc == nil {
+		return nil
+	}
+	b, err := json.Marshal(loc)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+func unmarshalProviderLocation(raw []byte) *ProviderLocation {
+	if len(raw) == 0 {
+		return nil
+	}
+	var loc ProviderLocation
+	if err := json.Unmarshal(raw, &loc); err != nil {
+		return nil
+	}
+	return &loc
+}
+
 func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO providers (
-			id, hardware, models, backend, trust_level, attested,
+			id, hardware, models, backend, location, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
 			mda_verified, mda_cert_chain, acme_verified,
 			version, runtime_verified, python_hash, runtime_hash,
@@ -2419,25 +2594,26 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			last_session_requests_served, last_session_tokens_generated,
 			registered_at, last_seen
 		) VALUES (
-			$1, $2, $3, $4, $5, $6,
-			$7, $8, $9,
-			$10, $11, $12,
-			$13, $14, $15, $16,
-			$17, $18, $19,
-			$20, $21, $22, $23,
-			$24, $25
+			$1, $2, $3, $4, $5, $6, $7,
+			$8, $9, $10,
+			$11, $12, $13,
+			$14, $15, $16, $17,
+			$18, $19, $20,
+			$21, $22, $23, $24,
+			$25, $26
 		)
 		ON CONFLICT (id) DO UPDATE SET
-			hardware = $2, models = $3, backend = $4,
-			trust_level = $5, attested = $6,
-			attestation_result = $7, se_public_key = $8, serial_number = $9,
-			mda_verified = $10, mda_cert_chain = $11, acme_verified = $12,
-			version = $13, runtime_verified = $14, python_hash = $15, runtime_hash = $16,
-			last_challenge_verified = $17, failed_challenges = $18, account_id = $19,
-			lifetime_requests_served = $20, lifetime_tokens_generated = $21,
-			last_session_requests_served = $22, last_session_tokens_generated = $23,
-			last_seen = $25`,
+			hardware = $2, models = $3, backend = $4, location = $5,
+			trust_level = $6, attested = $7,
+			attestation_result = $8, se_public_key = $9, serial_number = $10,
+			mda_verified = $11, mda_cert_chain = $12, acme_verified = $13,
+			version = $14, runtime_verified = $15, python_hash = $16, runtime_hash = $17,
+			last_challenge_verified = $18, failed_challenges = $19, account_id = $20,
+			lifetime_requests_served = $21, lifetime_tokens_generated = $22,
+			last_session_requests_served = $23, last_session_tokens_generated = $24,
+			last_seen = $26`,
 		p.ID, p.Hardware, p.Models, p.Backend,
+		marshalProviderLocation(p.Location),
 		p.TrustLevel, p.Attested,
 		p.AttestationResult, p.SEPublicKey, p.SerialNumber,
 		p.MDAVerified, p.MDACertChain, p.ACMEVerified,
@@ -2458,8 +2634,9 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 	defer cancel()
 
 	var p ProviderRecord
+	var locationRaw []byte
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, hardware, models, backend, trust_level, attested,
+		`SELECT id, hardware, models, backend, location, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
 			mda_verified, mda_cert_chain, acme_verified,
 			version, runtime_verified, python_hash, runtime_hash,
@@ -2470,6 +2647,7 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 		 FROM providers WHERE id = $1`, id,
 	).Scan(
 		&p.ID, &p.Hardware, &p.Models, &p.Backend,
+		&locationRaw,
 		&p.TrustLevel, &p.Attested,
 		&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
 		&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
@@ -2482,6 +2660,7 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 	if err != nil {
 		return nil, fmt.Errorf("store: provider not found: %w", err)
 	}
+	p.Location = unmarshalProviderLocation(locationRaw)
 	return &p, nil
 }
 
@@ -2490,8 +2669,9 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 	defer cancel()
 
 	var p ProviderRecord
+	var locationRaw []byte
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, hardware, models, backend, trust_level, attested,
+		`SELECT id, hardware, models, backend, location, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
 			mda_verified, mda_cert_chain, acme_verified,
 			version, runtime_verified, python_hash, runtime_hash,
@@ -2503,6 +2683,7 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 		 ORDER BY last_seen DESC LIMIT 1`, serial,
 	).Scan(
 		&p.ID, &p.Hardware, &p.Models, &p.Backend,
+		&locationRaw,
 		&p.TrustLevel, &p.Attested,
 		&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
 		&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
@@ -2515,6 +2696,7 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 	if err != nil {
 		return nil, fmt.Errorf("store: provider with serial not found: %w", err)
 	}
+	p.Location = unmarshalProviderLocation(locationRaw)
 	return &p, nil
 }
 
@@ -2523,7 +2705,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, hardware, models, backend, trust_level, attested,
+		`SELECT id, hardware, models, backend, location, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
 			mda_verified, mda_cert_chain, acme_verified,
 			version, runtime_verified, python_hash, runtime_hash,
@@ -2541,8 +2723,10 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 	var records []ProviderRecord
 	for rows.Next() {
 		var p ProviderRecord
+		var locationRaw []byte
 		if err := rows.Scan(
 			&p.ID, &p.Hardware, &p.Models, &p.Backend,
+			&locationRaw,
 			&p.TrustLevel, &p.Attested,
 			&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
 			&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
@@ -2554,6 +2738,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 		); err != nil {
 			continue
 		}
+		p.Location = unmarshalProviderLocation(locationRaw)
 		records = append(records, p)
 	}
 	if records == nil {
@@ -2580,7 +2765,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			         NULLIF(se_public_key, ''),
 			         id)
 		 )
-		 id, hardware, models, backend, trust_level, attested,
+		 id, hardware, models, backend, location, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
 			mda_verified, mda_cert_chain, acme_verified,
 			version, runtime_verified, python_hash, runtime_hash,
@@ -2604,8 +2789,10 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 	records := make([]ProviderRecord, 0)
 	for rows.Next() {
 		var p ProviderRecord
+		var locationRaw []byte
 		if err := rows.Scan(
 			&p.ID, &p.Hardware, &p.Models, &p.Backend,
+			&locationRaw,
 			&p.TrustLevel, &p.Attested,
 			&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
 			&p.MDAVerified, &p.MDACertChain, &p.ACMEVerified,
@@ -2617,6 +2804,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 		); err != nil {
 			continue
 		}
+		p.Location = unmarshalProviderLocation(locationRaw)
 		records = append(records, p)
 	}
 	return records, nil

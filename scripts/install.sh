@@ -11,8 +11,7 @@ set -euo pipefail
 #   2. Downloads the provider bundle (darkbloom + darkbloom-enclave + mlx.metallib)
 #   3. Verifies bundle SHA-256 + Apple Developer ID code signature
 #   4. Sets up the Secure Enclave identity
-#   5. Optionally enrolls in MDM (device attestation)
-#   6. Optionally downloads a starter model
+#   5. Kicks off MDM enrollment (non-blocking)
 #
 # Zero prerequisites — just macOS 14+ on Apple Silicon. The Swift CLI
 # links mlx-swift directly and ships a colocated mlx.metallib for Metal
@@ -56,7 +55,7 @@ echo "  $CHIP · ${MEM}GB · macOS $MACOS"
 echo ""
 
 # ─── Step 1: Fetch latest release ────────────────────────────
-echo "→ [1/5] Fetching latest release from $COORD_URL ..."
+echo "→ [1/4] Fetching latest release from $COORD_URL ..."
 
 RELEASE_JSON=$(curl -fsSL "$COORD_URL/v1/releases/latest" 2>/dev/null || echo "")
 if [ -z "$RELEASE_JSON" ]; then
@@ -86,7 +85,7 @@ echo "  Signed by: Developer ID Application: Eigen Labs, Inc."
 echo ""
 
 # ─── Step 2: Download + verify bundle ────────────────────────
-echo "→ [2/5] Downloading Darkbloom v${VERSION}..."
+echo "→ [2/4] Downloading Darkbloom v${VERSION}..."
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
 TARBALL="/tmp/darkbloom-bundle.tar.gz"
@@ -208,7 +207,7 @@ done
 
 # ─── Step 3: Secure Enclave identity ─────────────────────────
 echo ""
-echo "→ [3/5] Provisioning Secure Enclave identity..."
+echo "→ [3/4] Provisioning Secure Enclave identity..."
 if "$BIN_DIR/darkbloom-enclave" info >/dev/null 2>&1; then
     echo "  Secure Enclave ✓ (P-256 key generated)"
 else
@@ -217,7 +216,7 @@ fi
 
 # ─── Step 4: Enrollment + device attestation ─────────────────
 echo ""
-echo "→ [4/5] Enrollment + device attestation..."
+echo "→ [4/4] Enrollment + device attestation..."
 
 ALREADY_ENROLLED=false
 if profiles status -type enrollment 2>&1 | grep -q "MDM enrollment: Yes"; then
@@ -252,45 +251,13 @@ elif [ -n "$SERIAL" ]; then
         open "x-apple.systempreferences:com.apple.Profiles-Settings.extension"
 
         echo "  System Settings opened — click Install and enter your password."
-        if [ "$INTERACTIVE" = true ]; then
-            echo ""
-            read -p "  Press Enter once you have installed the profile..." || true
-        else
-            echo "  After installing, the provider will verify on first start."
-            sleep 3
-        fi
-        echo "  Enrollment ✓"
+        echo "  You can finish this now or later; the provider works either way."
+        sleep 2
     else
         echo "  Enrollment ⚠ (coordinator unreachable — enroll later with: darkbloom enroll)"
     fi
 else
     echo "  Enrollment ⚠ (could not read serial number — enroll later with: darkbloom enroll)"
-fi
-
-# ─── Step 5: Optional starter model ──────────────────────────
-echo ""
-echo "→ [5/5] Inference model..."
-
-CATALOG_JSON=$(curl -fsSL "$COORD_URL/v1/models/catalog?type=text" 2>/dev/null || echo "")
-
-if [ -n "$CATALOG_JSON" ]; then
-    if [ "$INTERACTIVE" = true ]; then
-        echo ""
-        echo "  Available text models:"
-        echo "$CATALOG_JSON" \
-          | tr ',' '\n' \
-          | sed -n 's/.*"id":"\([^"]*\)".*"display_name":"\([^"]*\)".*"size_gb":\([0-9.]*\).*"min_ram_gb":\([0-9]*\).*/  • \2  ~\3 GB  (≥\4 GB RAM)  [\1]/p' \
-          | head -20
-        echo ""
-        echo "  Download a model with:"
-        echo "    darkbloom models download <id>"
-    else
-        echo "  Run interactively to pick a starter model:"
-        echo "    curl -fsSL $COORD_URL/install.sh | bash -s"
-        echo "  Or list the catalog with:  darkbloom models catalog"
-    fi
-else
-    echo "  Could not fetch model catalog (continuing anyway)."
 fi
 
 # ─── Done ────────────────────────────────────────────────────
@@ -299,10 +266,7 @@ echo "╔═══════════════════════�
 echo "║  Install complete                            ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
-echo "  Next steps:"
-echo "    darkbloom doctor             # verify the system is ready"
-echo "    darkbloom models catalog     # browse available models"
-echo "    darkbloom models download <id>"
-echo "    darkbloom login              # link this Mac to your account"
-echo "    darkbloom start              # serve inference (interactive picker)"
+echo "  Start serving:"
+echo ""
+echo "    source ~/.zshrc && darkbloom start"
 echo ""

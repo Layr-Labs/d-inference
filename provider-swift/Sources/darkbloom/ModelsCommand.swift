@@ -4,18 +4,18 @@ import ProviderCore
 
 struct Models: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Manage local MLX models.",
+        abstract: "Manage MLX models.",
         discussion: """
         Subcommands:
-          list      Show local models (default).
-          catalog   Show the coordinator's supported-model catalog.
+          catalog   Show available models with download status (default).
+          list      Show local models only.
           download  Download a catalog model into ~/.cache/huggingface/hub.
           remove    Delete a downloaded model.
 
-        With no subcommand, prints the local models table.
+        With no subcommand, shows the full catalog.
         """,
-        subcommands: [List.self, Catalog.self, Download.self, Remove.self],
-        defaultSubcommand: List.self
+        subcommands: [Catalog.self, List.self, Download.self, Remove.self],
+        defaultSubcommand: Catalog.self
     )
 }
 
@@ -122,21 +122,41 @@ extension Models {
                 return
             }
 
-            print("Coordinator catalog (\(coordinatorHTTPBase(coordinatorURL)))")
-            print("Models: \(entries.count)")
+            let localModels: [ModelInfo]
+            if let hardware = snapshot.hardware {
+                localModels = ModelScanner.scanModels(hardwareInfo: hardware)
+            } else {
+                localModels = []
+            }
+            let downloadedIDs = Set(localModels.map(\.id))
+            let catalogIDs = Set(entries.map(\.id))
+
+            // -- Supported models (from coordinator catalog) --
+            print("Supported models")
             print()
 
-            let downloadedIDs: Set<String>
-            if let hardware = snapshot.hardware {
-                downloadedIDs = Set(ModelScanner.scanModels(hardwareInfo: hardware).map(\.id))
+            if entries.isEmpty {
+                print("  (none)")
             } else {
-                downloadedIDs = []
+                for entry in entries {
+                    let mark = downloadedIDs.contains(entry.id) ? "✓" : " "
+                    let mem = entry.minRamGb.map { " (≥ \($0) GB RAM)" } ?? ""
+                    print("  \(mark) \(entry.displayName)  [\(entry.id)]  ~\(String(format: "%.1f", entry.sizeGb)) GB\(mem)")
+                }
             }
 
-            for entry in entries {
-                let mark = downloadedIDs.contains(entry.id) ? "✓" : "·"
-                let mem = entry.minRamGb.map { " (≥ \($0) GB RAM)" } ?? ""
-                print("  \(mark) \(entry.displayName)  [\(entry.id)]  ~\(String(format: "%.1f", entry.sizeGb)) GB\(mem)")
+            // -- Local-only models (downloaded but not in current catalog) --
+            let localOnly = localModels.filter { !catalogIDs.contains($0.id) }
+            if !localOnly.isEmpty {
+                print()
+                print("Local only (not in current catalog)")
+                print()
+                for m in localOnly {
+                    print("  \(m.id)  \(String(format: "%.1f", m.estimatedMemoryGb)) GB")
+                }
+                print()
+                print("  These models are no longer served by the network.")
+                print("  Remove with: darkbloom models remove <id>")
             }
         }
     }

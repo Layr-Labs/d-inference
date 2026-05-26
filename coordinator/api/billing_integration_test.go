@@ -593,8 +593,11 @@ func TestIntegration_ProviderCustomPricePaidWithoutReservationClamp(t *testing.T
 	}
 }
 
-func TestIntegration_BillingSkipsProviderWithoutPayoutDestination(t *testing.T) {
-	srv, _, ledger := billingTestServer(t)
+// Providers without a payout destination should still serve requests.
+// Earnings are credited to the provider's internal ledger and can be
+// withdrawn once they complete Stripe Connect onboarding.
+func TestIntegration_BillingAllowsProviderWithoutPayoutDestination(t *testing.T) {
+	srv, _, _ := billingTestServer(t)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -603,21 +606,15 @@ func TestIntegration_BillingSkipsProviderWithoutPayoutDestination(t *testing.T) 
 	defer cancel()
 
 	consumerID := "test-key"
-	initialBalance := ledger.Balance(consumerID)
 
 	model := "no-payout-destination-model"
 	conn, _, _ := setupProviderForBillingNoPayoutDestination(t, ctx, ts, srv.registry, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	status := sendInferenceRequest(t, ctx, ts.URL, model, consumerID)
-	if status != http.StatusServiceUnavailable {
-		t.Fatalf("inference status = %d, want 503", status)
-	}
-	if got := ledger.Balance(consumerID); got != initialBalance {
-		t.Errorf("consumer balance = %d, want %d", got, initialBalance)
-	}
-	if got := len(ledger.Usage(consumerID)); got != 0 {
-		t.Errorf("usage entries = %d, want 0", got)
+	// Should NOT be 503 — providers without payout destination are allowed.
+	if status == http.StatusServiceUnavailable {
+		t.Fatalf("inference status = 503, providers without payout destination should be allowed")
 	}
 }
 

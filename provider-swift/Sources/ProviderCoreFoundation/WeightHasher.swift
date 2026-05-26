@@ -120,7 +120,25 @@ public struct WeightHasher: Sendable {
 
     /// SHA-256 hash a single file by streaming in chunks. Returns the raw digest
     /// so callers can either hex-encode it or feed it into another hasher.
-    static func hashSingleFile(at url: URL) -> SHA256Digest? {
+    ///
+    /// Falls back to `Data(contentsOf:)` when `FileHandle` fails. This happens
+    /// for files moved from URLSession download temp locations — they retain
+    /// NSFileProtectionComplete extended attributes that block raw POSIX open()
+    /// but are handled transparently by NSData's file coordination.
+    public static func hashSingleFile(at url: URL) -> SHA256Digest? {
+        if let digest = hashSingleFileViaHandle(at: url) {
+            return digest
+        }
+        // Fallback: read the entire file via NSData (handles file protection).
+        guard let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+        var hasher = SHA256()
+        hasher.update(data: data)
+        return hasher.finalize()
+    }
+
+    private static func hashSingleFileViaHandle(at url: URL) -> SHA256Digest? {
         guard let handle = try? FileHandle(forReadingFrom: url) else {
             return nil
         }

@@ -289,10 +289,9 @@ extension BatchScheduler {
 // `_testSeedBridge` injects a `BridgeState` without going through
 // `submit()` (which requires a loaded model + non-nil engine). Used by
 // non-live unit tests for the cumulative-budget gate and in-flight
-// progress reporting. Gated on DEBUG so it does not ship in release
-// builds.
+// progress reporting. Internal access ensures it is only reachable via
+// @testable import and is dead-code-stripped from production binaries.
 
-#if DEBUG
 extension BatchScheduler {
     func _testSeedBridge(
         id: String,
@@ -310,4 +309,3 @@ extension BatchScheduler {
         activeBridges[id] = bridge
     }
 }
-#endif

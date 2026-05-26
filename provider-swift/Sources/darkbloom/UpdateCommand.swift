@@ -9,6 +9,9 @@ struct Update: AsyncParsableCommand {
 
     @OptionGroup var configOptions: ConfigOptions
 
+    @Option(help: "Override coordinator URL.")
+    var coordinator: String?
+
     @Flag(help: "Only check for updates without installing.")
     var checkOnly = false
 
@@ -25,7 +28,8 @@ struct Update: AsyncParsableCommand {
         print("Current version: \(ProviderCore.version)")
         print("")
 
-        let updater = SelfUpdater(coordinatorBaseURL: config.coordinator.url)
+        let coordinatorURL = coordinator ?? config.coordinator.url
+        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
 
         if checkOnly {
             let result = await updater.checkForUpdate()

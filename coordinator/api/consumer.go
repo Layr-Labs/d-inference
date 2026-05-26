@@ -181,9 +181,8 @@ func (s *Server) dispatchOneProvider(
 	}
 
 	if s.billing != nil && !providerHasPayoutDestination(provider) {
-		cleanupPending()
-		excludeProviders[provider.ID] = struct{}{}
-		return nil, nil, decision, "provider missing payout destination", http.StatusServiceUnavailable
+		s.logger.Warn("provider missing payout destination, crediting to internal ledger",
+			"provider_id", provider.ID)
 	}
 
 	if s.billing != nil {
@@ -1104,18 +1103,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			requestID = pr.RequestID
 			timing.RoutedAt = time.Now()
 
-			// Payout destination check — same as dispatchOneProvider.
+			// Log missing payout destination but don't skip — earnings
+			// are credited to the provider's internal ledger and can be
+			// withdrawn once they complete Stripe Connect onboarding.
 			if s.billing != nil && !providerHasPayoutDestination(provider) {
-				s.logger.Warn("queued provider missing payout destination, skipping",
+				s.logger.Warn("queued provider missing payout destination, crediting to internal ledger",
 					"request_id", requestID,
 					"provider_id", provider.ID,
 				)
-				provider.RemovePending(requestID)
-				s.registry.SetProviderIdle(provider.ID)
-				excludeProviders[provider.ID] = struct{}{}
-				lastErr = "provider missing payout destination"
-				lastErrCode = http.StatusServiceUnavailable
-				continue
 			}
 
 			// Custom pricing check — provider may charge more than the
@@ -3399,12 +3394,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			break
 		}
 
-		// Payout destination check — skip providers that can't receive payment.
 		if s.billing != nil && !providerHasPayoutDestination(provider) {
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			excludeProviders = append(excludeProviders, provider.ID)
-			continue
+			s.logger.Warn("provider missing payout destination, crediting to internal ledger",
+				"provider_id", provider.ID)
 		}
 
 		// Custom pricing check — provider may charge more than the platform rate.
@@ -3470,12 +3462,8 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 	defer cleanupPending()
 	if s.billing != nil && !providerHasPayoutDestination(provider) {
-		cleanupPending()
-		refundExtra()
-		refundReservation()
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_available",
-			fmt.Sprintf("no payable provider available for model %q", model)))
-		return
+		s.logger.Warn("provider missing payout destination, crediting to internal ledger",
+			"provider_id", provider.ID)
 	}
 	if s.billing != nil {
 		if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {

@@ -99,7 +99,7 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
     public var url: String
     public var heartbeatIntervalSecs: UInt64
 
-    public init(url: String = "ws://localhost:8080/ws/provider", heartbeatIntervalSecs: UInt64 = 5) {
+    public init(url: String = "wss://api.darkbloom.dev/ws/provider", heartbeatIntervalSecs: UInt64 = 5) {
         self.url = url
         self.heartbeatIntervalSecs = heartbeatIntervalSecs
     }
@@ -111,7 +111,7 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.url = try container.decodeIfPresent(String.self, forKey: .url) ?? "ws://localhost:8080/ws/provider"
+        self.url = try container.decodeIfPresent(String.self, forKey: .url) ?? "wss://api.darkbloom.dev/ws/provider"
         self.heartbeatIntervalSecs = try container.decodeIfPresent(UInt64.self, forKey: .heartbeatIntervalSecs) ?? 5
     }
 }
@@ -166,7 +166,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
                 maxModelSlots: 3
             ),
             coordinator: CoordinatorSettings(
-                url: "ws://localhost:8080/ws/provider",
+                url: "wss://api.darkbloom.dev/ws/provider",
                 heartbeatIntervalSecs: 5
             ),
             schedule: nil

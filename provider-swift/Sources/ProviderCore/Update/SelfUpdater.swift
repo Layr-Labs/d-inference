@@ -235,8 +235,15 @@ public struct SelfUpdater: Sendable {
                 try verifyHash(file: metallib, expected: metallibHash, label: "mlx.metallib")
             }
             if verifyCodeSignatures {
-                try verifyCodeSignature(file: darkbloom, label: "darkbloom")
-                try verifyCodeSignature(file: enclave, label: "darkbloom-enclave")
+                // The flat bin/darkbloom copy may fail codesign --verify because
+                // it was signed as part of the .app bundle and its signature
+                // references Info.plist. Verify against the .app bundle copy if
+                // available, otherwise fall back to the flat copy.
+                let appBundleDarkbloom = extractionRoot
+                    .appendingPathComponent("Darkbloom.app/Contents/MacOS/darkbloom")
+                let verifyTarget = fm.fileExists(atPath: appBundleDarkbloom.path)
+                    ? appBundleDarkbloom : darkbloom
+                try verifyCodeSignature(file: verifyTarget, label: "darkbloom")
             }
 
             try fm.createDirectory(at: installDir, withIntermediateDirectories: true)

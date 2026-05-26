@@ -235,6 +235,14 @@ enum KVEstimation {
 
     /// Sum per-layer KV bytes for hybrid-attention models, skipping
     /// recurrent layers (which hold a fixed state, not per-token KV).
+    /// Compute KV bytes per token for hybrid-attention models.
+    ///
+    /// Only **full-attention** layers contribute a per-token cost (their KV
+    /// cache grows linearly with sequence length). Sliding-attention layers
+    /// have a **fixed** KV cache (window × per-layer bytes) that does NOT
+    /// grow with sequence length. Counting them in the per-token cost
+    /// overestimates by up to 2x for models like GPT-OSS 20B (50% sliding)
+    /// and Gemma 4 (similar hybrid layout).
     private static func totalHybridBytesPerToken(
         cachedLayers: Int,
         layerTypes: [String],
@@ -250,6 +258,13 @@ enum KVEstimation {
         for i in 0..<cachedLayers {
             let layerType = layerTypes[i]
             if recurrentLayerTypes.contains(layerType) {
+                continue
+            }
+            // Sliding-attention layers have a fixed-size KV cache (bounded
+            // by the window size). Their per-token marginal cost is zero
+            // once the window fills -- they do NOT grow the KV cache with
+            // sequence length. Only full-attention layers contribute.
+            if slidingLayerTypes.contains(layerType) {
                 continue
             }
 
@@ -268,6 +283,11 @@ enum KVEstimation {
         }
         return totalBytesPerToken
     }
+
+    private static let slidingLayerTypes: Set<String> = [
+        "sliding_attention",
+        "local_sliding_attention",
+    ]
 }
 
 // MARK: - BatchScheduler convenience shims

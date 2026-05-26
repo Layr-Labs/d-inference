@@ -66,7 +66,12 @@ struct Update: AsyncParsableCommand {
 
         case .updated(let from, let to):
             print("Updated: v\(from) -> v\(to)")
-            print("Restart the provider for the new version to take effect.")
+            if LaunchAgent.isLoaded() {
+                print("Restarting provider via launchd...")
+                try ProcessLifecycle.restartAfterUpdate()
+            } else {
+                print("Restart the provider for the new version to take effect.")
+            }
 
         case .downloadFailed(let reason):
             printError("download failed: \(reason)")

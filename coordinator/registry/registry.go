@@ -1513,9 +1513,13 @@ func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
 		return
 	}
 
-	// Check if any provider can still serve this model.
-	candidates, _ := r.QuickCapacityCheck(modelID, 500, defaultRequestedMaxTokens)
-	if candidates > 0 {
+	// Check if any provider can still serve this model. Only reject when
+	// NO provider serves the model at all. If providers exist but are
+	// temporarily at capacity (capacityRejections > 0), the requests
+	// should wait — those providers may finish current work and become
+	// available.
+	candidates, capacityRejections := r.QuickCapacityCheck(modelID, 500, defaultRequestedMaxTokens)
+	if candidates > 0 || capacityRejections > 0 {
 		return
 	}
 
